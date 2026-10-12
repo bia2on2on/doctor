@@ -56,10 +56,24 @@ when **all** of the following hold:
    seven material failures listed in §1, each still product-class and
    post-activation. A missing one, an added one, a different class, or any
    other material failure blocks.
-3. **Positive probe-execution evidence:** the `phase_post_executed` fact, the
-   `browser_post` fact, and one recorded verdict for each required probe
-   identifier pinned in `probe.py`. A missing phase, a missing browser-probe
-   fact or a missing verdict blocks.
+3. **Positive, substantive probe-execution evidence:** `phase_post_executed` must
+   be recorded as executed; `browser_post` must be present and carry the evidence
+   object the browser probe always writes (`nav`, `login`, `rest_status`,
+   `admin_ajax`, `document`) — an absent, empty or truncated object is not
+   browser execution; and each required probe identifier pinned in `probe.py`
+   must have a recorded **successful post-activation verdict**. A verdict that was
+   never recorded, recorded as `UNEXECUTED`, recorded on another phase, or left
+   `FAIL` is not proof that the probe executed. These required identifiers are
+   disjoint from the seven accepted failures: an expected material `FAIL` is
+   evidence that an executed probe found a failure, and is never read as an
+   unexecuted one.
+4. **Unambiguous, well-formed evidence:** every recorded row must be the shape
+   this harness writes, and **no check identifier may appear twice**. Lookups in
+   the policy are name-keyed, so a duplicated identifier is folded onto whichever
+   row comes last — the mechanism by which a class C (infrastructure) or class D
+   (harness/fixture) failure could be hidden behind a later product/post row with
+   the same identifier. Duplicates are therefore rejected before any dictionary
+   or set conversion, and the raw rows are preserved verbatim in the artifact.
 
 A matching *count* of failures is never accepted as evidence of equivalence, and
 neither message text nor any free-form detail is used for identification.
@@ -78,6 +92,14 @@ neither message text nor any free-form detail is used for identification.
 - The aggregate re-derives the exception from the delivered evidence; it never
   accepts a producer-supplied boolean. It reports FAIL subjects, accepted
   diagnostic exceptions, blocking failures and PARTIAL subjects separately.
+- The aggregate reconciles the delivered campaign against the workflow's own
+  matrix: the expected subject set is read from
+  `.github/workflows/third-party-baseline.yml` (never a second hand-maintained
+  list), and a missing, unexpected, duplicated or identity-inconsistent subject
+  result is blocking. A successful matrix conclusion does not prove that every
+  per-subject result exists, so completeness is asserted from the artifacts
+  themselves. Failure summaries and artifacts are still written when this
+  validation fails.
 
 ## 5. Implementation and evidence of record
 

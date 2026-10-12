@@ -98,15 +98,25 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #       declared dependency `woocommerce=11.2.0`;
 #     - the exact pinned set of material failing CHECK IDENTIFIERS (all
 #       product-class, all post-activation) — never a count, never message text;
-#     - positive proof that the expected probes executed: the post-activation
-#       phase marker, the browser-probe fact, and one recorded verdict per
-#       required probe.
+#     - positive, substantive proof that the expected probes executed: the
+#       post-activation phase marker, the browser probe's own evidence object
+#       (`nav`/`login`/`rest_status`/`admin_ajax`/`document` — an absent, empty or
+#       truncated object is not execution), and a recorded SUCCESSFUL
+#       post-activation verdict for every required probe (never-recorded,
+#       UNEXECUTED, wrong-phase or FAILed verdicts do not prove execution);
+#     - unambiguous evidence: every row must be the recorded check shape and no
+#       check identifier may appear twice, because the policy's lookups are
+#       name-keyed and a duplicate row could hide a class C/D failure behind a
+#       later product/post row with the same identifier. Raw rows are preserved.
 #   Anything else blocks: another slug or version, a changed or additional
 #   material failure, a missing verdict, a missing phase, an environment (C) or
-#   harness (D) failure, and an unexpected matrix-leg failure. No blanket
-#   `continue-on-error`, no disabled probe, no removed matrix leg and no pin
-#   change is involved anywhere in this policy, and `report.py` re-derives the
-#   exception from the delivered evidence rather than trusting the boolean.
+#   harness (D) failure, duplicated or malformed rows, and an unexpected
+#   matrix-leg failure. No blanket `continue-on-error`, no disabled probe, no
+#   removed matrix leg and no pin change is involved anywhere in this policy, and
+#   `report.py` re-derives the exception from the delivered evidence rather than
+#   trusting the boolean. The summary job additionally reconciles the delivered
+#   campaign against this workflow's own matrix (exact set equality) so an
+#   incomplete artifact set can never be aggregated as a complete campaign.
 #
 # LANE SCOPE
 #   Implemented now : one lane — WordPress 7.1.3 / PHP 8.3 / MySQL 8.4.11 /
@@ -1026,9 +1036,14 @@ jobs:
           # is still printed and published, then re-raise it so a red campaign
           # cannot be published as a green aggregate.
           rc=0
+          # --expect-matrix points at this workflow: the expected subject set is
+          # read from the matrix that actually ran, never from a second
+          # hand-maintained list, and a missing, unexpected, duplicated or
+          # identity-inconsistent subject result is a blocking aggregate problem.
           python3 .github/third-party-baseline/report.py \
             --results-dir /tmp/tpb-results \
             --out-dir /tmp/tpb-summary \
+            --expect-matrix .github/workflows/third-party-baseline.yml \
             --lane "$LANE" \
             --head-sha "$GITHUB_SHA" \
             --run-url "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" || rc=$?

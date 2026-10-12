@@ -2011,8 +2011,14 @@ DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
         "wp_admin_reachable_post",
         "wp_cli_bootstrap_post",
     }),
-    # Verdicts that must exist before the exception may apply: they prove the
-    # WordPress/HTTP/database probes and the browser probe really ran.
+    # Verdicts that must exist AND be a recorded successful post-activation
+    # verdict before the exception may apply: they prove the WordPress / HTTP /
+    # database probes and the browser probe really ran and produced a real
+    # result. These ten are deliberately disjoint from the seven accepted
+    # failures below — an expected material FAIL is evidence of an executed probe
+    # that found a failure, and is never treated as an unexecuted one. A subject
+    # that did not reach one of these verdicts, recorded it as UNEXECUTED, or
+    # left it FAIL is not the accepted signature and blocks.
     "required_checks": frozenset({
         "php_web_version_exact_post",
         "wp_core_version_exact_post",
@@ -2027,7 +2033,48 @@ DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
     }),
     # Facts that prove the post-activation phases completed.
     "required_facts": ("phase_post_executed", "browser_post"),
+    # The evidence record the browser probe always writes when it executes
+    # (cmd_browser's `store.fact(f"browser_{phase}", ...)`). An absent, empty or
+    # truncated object is not browser execution evidence.
+    "browser_evidence_keys": ("nav", "login", "rest_status", "admin_ajax", "document"),
 }
+
+# The complete vocabulary Store.record() writes, used to reject malformed rows.
+CHECK_STATUSES = (PASS, FAIL, INFO, UNAVAILABLE, UNEXECUTED, NOT_RUN)
+CHECK_CLASSES = (PRODUCT, ENVIRONMENT, HARNESS, UNAVAILABLE_KLASS, UNEXECUTED_KLASS)
+CHECK_ROW_KEYS = ("name", "status", "klass", "material", "phase", "detail")
+
+
+def malformed_rows(checks: Any) -> List[str]:
+    """Descriptions of rows that are not the record shape ``Store.record`` writes.
+
+    A row this harness did not write cannot be adjudicated from, so it is
+    reported rather than skipped — an unreadable verdict must never be treated as
+    an absent one, and never as a passing one.
+    """
+    if not isinstance(checks, list):
+        return ["the recorded checks are not a list of rows"]
+    problems: List[str] = []
+    for index, row in enumerate(checks):
+        if not isinstance(row, dict) or not set(CHECK_ROW_KEYS) <= set(row):
+            problems.append(f"row {index} is not a recorded check row")
+        elif row["status"] not in CHECK_STATUSES:
+            problems.append(f"row {index} ({row['name']!r}) has an out-of-contract "
+                            f"status {row['status']!r}")
+        elif row["klass"] not in CHECK_CLASSES:
+            problems.append(f"row {index} ({row['name']!r}) has an out-of-contract "
+                            f"class {row['klass']!r}")
+        elif not isinstance(row["material"], bool):
+            problems.append(f"row {index} ({row['name']!r}) has a non-boolean material flag")
+    return problems
+
+
+def well_formed_rows(checks: Any) -> List[Dict[str, Any]]:
+    """The rows of ``checks`` that are the recorded shape, in order."""
+    if not isinstance(checks, list):
+        return []
+    return [row for row in checks
+            if isinstance(row, dict) and set(CHECK_ROW_KEYS) <= set(row)]
 
 
 def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
@@ -2037,14 +2084,44 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
     Returns the disposition, never a verdict about compatibility: ``applies`` is
     true only when the recorded evidence is the accepted signature in full. The
     caller keeps the raw subject state exactly as derived.
+
+    The evidence is read straight from the raw recorded rows — the shape
+    ``Store.record`` writes: ``name``/``status``/``klass``/``material``/``phase``/
+    ``detail`` — and nothing here is inferred from a failure count or from
+    free-form message text.
     """
     policy = DIAGNOSTIC_EXCEPTION
-    recorded = {check["name"]: check for check in checks}
-    expected = set(policy["material_failures"])
-    observed = {check["name"] for check in checks
-                if check["material"] and check["status"] == FAIL}
-
     reasons: List[str] = []
+
+    if not isinstance(subject, dict):
+        subject = {}
+        reasons.append("the delivered subject record is not a mapping")
+    if not isinstance(facts, dict):
+        facts = {}
+        reasons.append("the delivered facts record is not a mapping")
+    broken_rows = malformed_rows(checks)
+    if broken_rows:
+        reasons.append("the evidence rows are malformed: " + "; ".join(broken_rows[:6]))
+
+    rows = well_formed_rows(checks)
+    # -- raw rows first: duplicate identifiers ------------------------------ #
+    # Every lookup below is name-keyed, so a duplicated identifier is folded onto
+    # whichever row comes last. That fold is exactly how a class C/D failure
+    # could be hidden behind a later product/post row with the same identifier,
+    # so duplicates are rejected outright, before any dict or set conversion.
+    names = [row["name"] for row in rows]
+    duplicates = sorted({str(name) for name in set(names) if names.count(name) > 1})
+    if duplicates:
+        reasons.append(
+            "duplicate check identifiers make the evidence ambiguous, so the accepted "
+            f"signature cannot be identified: {duplicates}")
+
+    recorded = {row["name"]: row for row in rows}
+    expected = set(policy["material_failures"])
+    observed = {row["name"] for row in rows
+                if row["material"] and row["status"] == FAIL}
+
+    # -- exact pinned identity --------------------------------------------- #
     if not (subject.get("slug") == policy["slug"]
             and subject.get("version_requested") == policy["version"]
             and tuple(subject.get("dependencies") or ()) == policy["dependencies"]):
@@ -2055,6 +2132,7 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
             f"{subject.get('slug')!r} version={subject.get('version_requested')!r} "
             f"dependencies={subject.get('dependencies')!r})")
 
+    # -- the exact accepted failing set, by stable identifier --------------- #
     absent = sorted(expected - observed)
     if absent:
         reasons.append(f"the accepted failure signature is incomplete: {absent}")
@@ -2065,13 +2143,29 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
     if outside:
         reasons.append(f"material failures outside the accepted signature: {outside}")
 
-    missing_evidence = [f"fact {key}" for key in policy["required_facts"]
-                        if facts.get(key) in (None, False)]
-    missing_evidence += [f"check {name}" for name in sorted(policy["required_checks"])
-                         if name not in recorded]
-    if missing_evidence:
-        reasons.append("no positive evidence that the expected probes executed: "
-                       + ", ".join(missing_evidence))
+    # -- positive, substantive probe-execution evidence --------------------- #
+    if facts.get("phase_post_executed") is not True:
+        reasons.append("the post-activation probe phase is not recorded as executed")
+
+    browser = facts.get("browser_post")
+    missing_keys = (sorted(set(policy["browser_evidence_keys"]) - set(browser))
+                    if isinstance(browser, dict) else [])
+    if not isinstance(browser, dict) or missing_keys:
+        reasons.append(
+            "the browser probe's recorded evidence object is absent, empty or truncated "
+            f"(missing {missing_keys or 'the object itself'}), so browser execution is "
+            "not proven")
+
+    unexecuted = [name for name in sorted(policy["required_checks"])
+                  if name not in recorded]
+    unproven = [f"{name}={recorded[name]['status']!r}@phase{recorded[name]['phase']!r}"
+                for name in sorted(policy["required_checks"]) if name in recorded
+                and not (recorded[name]["status"] == PASS
+                         and recorded[name]["phase"] == "post")]
+    if unexecuted or unproven:
+        reasons.append(
+            "no recorded successful post-activation verdict for every required probe "
+            f"(never recorded: {unexecuted}; not an executed success: {unproven})")
 
     return {
         "applies": not reasons,
@@ -2080,6 +2174,7 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
                     "version": subject.get("version_requested"),
                     "dependencies": list(subject.get("dependencies") or ())},
         "accepted_material_failures": sorted(expected),
+        "duplicate_identifiers": duplicates,
         "reasons": reasons,
     }
 
@@ -2122,7 +2217,19 @@ def cmd_finalize(args: argparse.Namespace) -> int:
                      "evidence exists for this subject in this environment",
                      True, "post", "post probes executed", "post probes absent")
 
-    checks = store.data["checks"]
+    raw_checks = store.data["checks"]
+    # A recorded row this harness did not write cannot be adjudicated from. It is
+    # reported as a harness/fixture failure and excluded from counting, while the
+    # raw rows are preserved verbatim in the artifact below.
+    broken_rows = malformed_rows(raw_checks)
+    if broken_rows:
+        store.record("evidence_rows_well_formed", FAIL, HARNESS,
+                     "; ".join(broken_rows[:6]), True, "post",
+                     "every recorded row is the check shape this harness writes",
+                     broken_rows[:6])
+        raw_checks = store.data["checks"]
+
+    checks = well_formed_rows(raw_checks)
     counts: Dict[str, int] = {}
     for check in checks:
         counts[check["status"]] = counts.get(check["status"], 0) + 1
@@ -2200,7 +2307,9 @@ def cmd_finalize(args: argparse.Namespace) -> int:
             "timezone": facts.get("timezone_post", facts.get("timezone_pre")),
             "locale": facts.get("locale_post", facts.get("locale_pre")),
         },
-        "checks": checks,
+        # Every raw recorded row, exactly as delivered — malformed rows are
+        # preserved here, not repaired, filtered or rewritten.
+        "checks": raw_checks,
         "facts": facts,
         # Deterministic follow-up rerun evidence. Any material FAIL must be
         # repeated once in a fresh environment before causal attribution; a

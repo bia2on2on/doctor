@@ -107,22 +107,46 @@ class PropagationCase(unittest.TestCase):
         result = json.loads(out.read_text(encoding="utf-8")) if out.exists() else {}
         return completed, result
 
-    def deliver(self, subject_id: str) -> Path:
-        """Copy one produced artifact into the results tree the way the job does."""
-        target = self.root / "results" / subject_id
+    def deliver(self, subject_id: str, directory: str | None = None) -> Path:
+        """Copy one produced artifact into the results tree the way the job does.
+
+        ``directory`` overrides the artifact directory name so identity
+        consistency cases can be exercised (the job's own layout is
+        ``tpb-<subject-id>``).
+        """
+        target = self.root / "results" / (directory or subject_id)
         target.mkdir(parents=True, exist_ok=True)
         (target / "subject-result.json").write_text(
             (self.root / subject_id / "subject-result.json").read_text(encoding="utf-8"),
             encoding="utf-8")
         return target / "subject-result.json"
 
-    def report_run(self, extra=()):
-        """Run the real aggregate CLI over whatever is in the results tree."""
+    def write_matrix(self, subject_ids: list) -> Path:
+        """The authoritative expectation, in the shape the real workflow uses."""
+        path = self.root / "matrix.yml"
+        body = "".join(f"          - id: {subject_id}\n            name: {subject_id}\n"
+                       for subject_id in subject_ids)
+        path.write_text("name: fixture\non:\n  push:\n    branches: [main]\n"
+                        "jobs:\n  subject-baseline:\n"
+                        "    strategy:\n      matrix:\n        include:\n" + body +
+                        "    runs-on: ubuntu-latest\n", encoding="utf-8")
+        return path
+
+    def report_run(self, expected: list | None = None, extra=()):
+        """Run the real aggregate CLI over whatever is in the results tree.
+
+        ``expected`` is the matrix expectation; by default it is whatever was
+        delivered, so tests that are not about reconciliation stay focused.
+        """
         results_dir, out_dir = self.root / "results", self.root / "summary"
         results_dir.mkdir(exist_ok=True)
+        if expected is None:
+            expected = sorted(p.name for p in results_dir.iterdir() if p.is_dir())
+        matrix = self.write_matrix(list(expected))
         completed = subprocess.run(
             [sys.executable, str(REPORT), "--results-dir", str(results_dir),
-             "--out-dir", str(out_dir), "--lane", "A", "--head-sha", "0" * 40,
+             "--out-dir", str(out_dir), "--expect-matrix", str(matrix),
+             "--lane", "A", "--head-sha", "0" * 40,
              "--run-url", "https://example.invalid/run/0", *extra],
             capture_output=True, text=True, env=ENV, check=False)
         summary = (out_dir / "summary.json")
@@ -131,11 +155,11 @@ class PropagationCase(unittest.TestCase):
                 json.loads(summary.read_text(encoding="utf-8")) if summary.exists() else {},
                 markdown.read_text(encoding="utf-8") if markdown.exists() else "")
 
-    def aggregate(self, subject_dirs: list, extra=()):
+    def aggregate(self, subject_dirs: list, expected: list | None = None, extra=()):
         """Deliver artifacts, then run the real aggregate CLI over them."""
         for subject_id in subject_dirs:
             self.deliver(subject_id)
-        return self.report_run(extra)
+        return self.report_run(expected, extra)
 
 
 class SubjectStateTests(PropagationCase):
@@ -259,7 +283,15 @@ class DiagnosticExceptionTests(PropagationCase):
     )
     SUBJECT = {"slug": "persian-woocommerce", "version_requested": "10.0.5",
                "dependencies": ["woocommerce=11.2.0"]}
-    FACTS = {"browser_post": {"nav": {"front_status": 200}, "rest_status": 200}}
+    # The evidence record cmd_browser always writes when it executes.
+    FACTS = {"browser_post": {
+        "nav": {"front_status": 200, "front_url": "http://localhost:8080/",
+                "front_redirects": []},
+        "login": {"ok": True, "final_url": "http://localhost:8080/wp-admin/", "error": ""},
+        "rest_status": 200,
+        "admin_ajax": {"status": 200, "body": "0", "reached_wp_layer": True},
+        "document": {"lang": "en-US", "dir": "ltr", "text": {"persian_char_count": 0}},
+    }}
 
     def historical_checks(self, material=None, extra=()):
         material = self.MATERIAL_FAILURES if material is None else material
@@ -381,6 +413,85 @@ class DiagnosticExceptionTests(PropagationCase):
                     for name in self.MATERIAL_FAILURES], facts={})
         self.assert_blocking(completed, result, "no probe-execution evidence")
 
+    # -- BLOCKER 1: evidence must be substantive, not merely named ----------- #
+    def test_empty_browser_evidence_blocks(self):
+        completed, result = self.run_case(facts={"browser_post": {}})
+        self.assert_blocking(completed, result, "an empty browser evidence object")
+
+    def test_truncated_browser_evidence_blocks(self):
+        completed, result = self.run_case(facts={"browser_post": {"nav": {}, "rest_status": 0}})
+        self.assert_blocking(completed, result, "a truncated browser evidence object")
+
+    def test_unexecuted_required_probe_blocks(self):
+        checks = [row if row["name"] != "browser_rest_index" else
+                  check("browser_rest_index", probe.UNEXECUTED, probe.UNEXECUTED_KLASS,
+                        detail="the probe could not run")
+                  for row in self.historical_checks()]
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "an UNEXECUTED required probe")
+
+    def test_required_probe_recorded_on_the_wrong_phase_blocks(self):
+        checks = [row if row["name"] != "cpms_tables_absent_post" else
+                  {**row, "phase": "pre"} for row in self.historical_checks()]
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a required verdict that is not post-activation")
+
+    def test_missing_substantive_verdict_blocks(self):
+        # The row exists by name but carries no verdict fields at all.
+        checks = [row for row in self.historical_checks() if row["name"] != "cpms_options_absent_post"]
+        checks.append({"name": "cpms_options_absent_post", "status": probe.PASS,
+                       "phase": "post"})
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a malformed required verdict")
+
+    def test_malformed_evidence_rows_block(self):
+        checks = self.historical_checks()
+        checks.append("not-a-row")
+        checks.append({**check("browser_front_page_render", "SUCCESS", probe.PRODUCT),
+                       "name": "browser_admin_ajax_wp_layer"})
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "malformed rows / out-of-contract status")
+
+    def test_required_probes_are_disjoint_from_the_accepted_failures(self):
+        policy = probe.DIAGNOSTIC_EXCEPTION
+        self.assertEqual(set(policy["material_failures"]) & set(policy["required_checks"]),
+                         set(), "an expected FAIL must never double as an executed-probe proof")
+
+    # -- BLOCKER 2: duplicate identifiers ------------------------------------ #
+    def test_duplicate_approved_identifier_blocks(self):
+        checks = self.historical_checks()
+        checks.append(check("front_page_http_200_post", probe.FAIL, probe.PRODUCT,
+                            material=True, detail="duplicated row"))
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a duplicated approved identifier")
+        self.assertIn("front_page_http_200_post",
+                      result["ci_gate"]["diagnostic_exception"]["duplicate_identifiers"])
+
+    def test_duplicate_identifier_cannot_hide_a_class_c_failure(self):
+        # An environment failure first, then a product/post row with the same
+        # identifier: a name-keyed lookup keeps only the last row.
+        first = check("front_page_http_200_post", probe.FAIL, probe.ENVIRONMENT, material=True,
+                      detail="infrastructure failure recorded first")
+        checks = [first] + self.historical_checks()
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a class C failure hidden behind a duplicate")
+        self.assertIn("C (infrastructure/environment)", result["taxonomy"])
+
+    def test_duplicate_identifier_cannot_hide_a_class_d_failure(self):
+        first = check("wp_cli_bootstrap_post", probe.FAIL, probe.HARNESS, material=True,
+                      detail="harness failure recorded first")
+        checks = [first] + self.historical_checks()
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "a class D failure hidden behind a duplicate")
+        self.assertIn("D (test/test-infrastructure/fixture defect)", result["taxonomy"])
+
+    def test_unrelated_duplicate_identifier_also_blocks(self):
+        checks = self.historical_checks()
+        checks.append(check("php_warnings_after_activation", probe.FAIL, probe.PRODUCT,
+                            detail="recorded twice"))
+        completed, result = self.run_case(checks=checks)
+        self.assert_blocking(completed, result, "ambiguous duplicated evidence")
+
     # -- non-FAIL states never acquire the exception -------------------------- #
     def test_clean_pass_and_partial_never_apply_the_exception(self):
         for label, checks in (
@@ -499,6 +610,92 @@ class AggregatePropagationTests(PropagationCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertEqual(summary["dispositions"]["blocking_failures"], ["material-fail"])
 
+    # -- BLOCKER 3: campaign completeness against the workflow matrix --------- #
+    def test_expected_subjects_are_read_from_the_real_workflow_matrix(self):
+        ids = report.expected_subjects(str(WORKFLOW))
+        self.assertEqual(len(ids), 21, "the campaign declares 21 matrix legs")
+        self.assertEqual(len(set(ids)), len(ids), "matrix ids must be unique")
+        for subject_id in ("persian-woocommerce", "locale-baseline-fa-ir",
+                           "dep-control-woocommerce", "woocommerce"):
+            self.assertIn(subject_id, ids)
+
+    def test_aggregate_blocks_on_a_missing_expected_subject(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.build("second-subject", [PASS_CHECK])
+        self.deliver("clean-subject")  # second subject never delivers a result
+        completed, summary, _markdown = self.report_run(
+            expected=["clean-subject", "second-subject"])
+        self.assertNotEqual(completed.returncode, 0, "a missing expected subject must block")
+        self.assertIn("missing expected subject result", completed.stdout)
+        self.assertEqual(summary["campaign"]["missing_subjects"], ["second-subject"])
+
+    def test_aggregate_blocks_on_an_unexpected_subject(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.build("stowaway-subject", [PASS_CHECK])
+        self.deliver("clean-subject")
+        self.deliver("stowaway-subject")
+        completed, summary, _markdown = self.report_run(expected=["clean-subject"])
+        self.assertNotEqual(completed.returncode, 0, "an unexpected subject must block")
+        self.assertIn("unexpected subject result", completed.stdout)
+        self.assertEqual(summary["campaign"]["unexpected_subjects"], ["stowaway-subject"])
+
+    def test_aggregate_blocks_on_a_duplicate_subject(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject")
+        # Same subject delivered twice under the production artifact layout.
+        self.deliver("clean-subject", directory="tpb-clean-subject")
+        completed, _summary, _markdown = self.report_run(expected=["clean-subject"])
+        self.assertNotEqual(completed.returncode, 0, "a duplicated subject must block")
+        self.assertIn("duplicate subject result", completed.stdout)
+
+    def test_aggregate_blocks_on_inconsistent_subject_and_file_identity(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject", directory="a-different-name")
+        completed, _summary, _markdown = self.report_run(expected=["clean-subject"])
+        self.assertNotEqual(completed.returncode, 0, "an identity mismatch must block")
+        self.assertIn("identity mismatch", completed.stdout)
+
+    def test_aggregate_accepts_the_production_artifact_layout(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject", directory="tpb-clean-subject")
+        completed, summary, _markdown = self.report_run(expected=["clean-subject"])
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(summary["campaign"]["delivered_subjects"], ["clean-subject"])
+        self.assertEqual(summary["campaign"]["missing_subjects"], [])
+
+    def test_aggregate_blocks_when_the_matrix_is_not_declared(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject")
+        self.write_matrix([])
+        completed, _summary, _markdown = self.report_run(expected=[])
+        self.assertNotEqual(completed.returncode, 0, "an empty expectation must block")
+
+    def test_complete_expected_campaign_is_green_and_reports_reconciliation(self):
+        self.build("clean-subject", [PASS_CHECK, ENV_PASS_CHECK])
+        self.build("partial-subject", [PASS_CHECK,
+                                       check("php_warnings_after_activation", probe.FAIL,
+                                             probe.PRODUCT, detail="recorded only")])
+        completed, summary, markdown = self.aggregate(
+            ["clean-subject", "partial-subject"],
+            expected=["clean-subject", "partial-subject"])
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertEqual(summary["campaign"]["expected_subjects"],
+                         ["clean-subject", "partial-subject"])
+        self.assertEqual(summary["campaign"]["missing_subjects"], [])
+        self.assertEqual(summary["campaign"]["unexpected_subjects"], [])
+        self.assertIn("- campaign: 2/2 expected matrix subject results delivered", markdown)
+
+    def test_campaign_validation_still_publishes_the_artifacts_when_red(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject")
+        completed, summary, markdown = self.report_run(expected=["clean-subject", "absent-one"])
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertTrue(summary, "summary.json must survive a failed reconciliation")
+        self.assertIn("missing expected subject result", completed.stdout)
+        self.assertEqual(summary["campaign"]["missing_subjects"], ["absent-one"])
+        self.assertIn("| `clean-subject` |", markdown)
+        self.assertIn("- campaign: 1/2 expected matrix subject results delivered", markdown)
+
     def test_aggregate_publishes_evidence_even_when_red(self):
         self.build("material-fail", [check("front_page_http_200_post", probe.FAIL,
                                            probe.PRODUCT, material=True)])
@@ -553,6 +750,11 @@ class WorkflowWiringTests(unittest.TestCase):
     def test_summary_artifact_is_published_even_when_the_aggregate_is_red(self):
         body = self.step("Summary artifact")
         self.assertIn("if: always()", body)
+
+    def test_aggregate_step_reconciles_against_the_workflow_matrix(self):
+        body = self.step("Build the human-readable summary")
+        self.assertIn("--expect-matrix .github/workflows/third-party-baseline.yml", body,
+                      "the aggregate must read the expected subjects from the matrix itself")
 
     def test_this_suite_is_run_by_the_workflow(self):
         self.assertIn("test_result_propagation.py", self.text)

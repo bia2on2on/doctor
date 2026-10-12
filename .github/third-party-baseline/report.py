@@ -29,7 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
+from pathlib import Path
 from typing import Any, Dict, List
 
 # The diagnostic policy lives in probe.py, beside the checks it is written
@@ -42,10 +44,45 @@ STATE_ORDER = ["FAIL", "PARTIAL", "PASS", "NOT RUN"]
 REQUIRED_KEYS = ("schema", "subject", "state", "checks", "environment")
 
 
-def load_results(root: str) -> tuple[List[Dict[str, Any]], List[str]]:
-    """Load every subject result, returning (results, fatal_problems)."""
+def expected_subjects(workflow_path: str) -> List[str]:
+    """The subject ids this workflow's matrix declares — the authoritative set.
+
+    Read from the workflow itself, so the expected campaign cannot drift from a
+    second hand-maintained list. Deliberately a line scan and not a YAML parse:
+    the harness has no YAML dependency, the matrix is the only place these ids
+    exist, and the scan fails closed — a file that yields no ids is an error for
+    the caller, never an empty expectation.
+    """
+    ids: List[str] = []
+    include_indent: int | None = None
+    for line in Path(workflow_path).read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(line) - len(line.lstrip())
+        if include_indent is None:
+            if stripped == "include:":
+                include_indent = indent
+            continue
+        if indent <= include_indent and not stripped.startswith("-"):
+            break  # the matrix block ended
+        found = re.match(r"-\s*id:\s*(\S+)\s*$", stripped)
+        if found:
+            ids.append(found.group(1).strip("'\""))
+    return ids
+
+
+def load_results(root: str) -> tuple[List[Dict[str, Any]], List[str], List[str]]:
+    """Load every subject result.
+
+    Returns ``(results, fatal_problems, delivered_ids)``. Each delivered id is
+    the artifact-directory identity, and it must equal the identity recorded
+    inside the result: a mismatch means the delivered evidence is inconsistent,
+    which is a blocking problem rather than a subject to report.
+    """
     results: List[Dict[str, Any]] = []
     problems: List[str] = []
+    delivered: List[str] = []
     for dirpath, _dirs, files in os.walk(root):
         for name in files:
             if name != "subject-result.json":
@@ -61,14 +98,34 @@ def load_results(root: str) -> tuple[List[Dict[str, Any]], List[str]]:
             if missing:
                 problems.append(f"{path} is missing required keys: {missing}")
                 continue
+            if not isinstance(data.get("subject"), dict):
+                problems.append(f"{path} has no subject record")
+                continue
             if data.get("state") not in STATE_ORDER:
                 problems.append(f"{path} has an out-of-contract state: {data.get('state')!r}")
                 continue
+
+            relative = os.path.relpath(dirpath, root)
+            if relative in (".", ""):
+                problems.append(f"{path} is not inside a per-subject artifact directory")
+                continue
+            directory = relative.split(os.sep)[0]
+            subject_id = directory[4:] if directory.startswith("tpb-") else directory
+            recorded_id = data["subject"].get("id")
+            if subject_id != recorded_id:
+                problems.append(
+                    f"{path} identity mismatch: artifact directory says {subject_id!r} but the "
+                    f"result records {recorded_id!r}")
+                continue
+            if subject_id in delivered:
+                problems.append(f"duplicate subject result for {subject_id!r} ({path})")
+                continue
+            delivered.append(subject_id)
             results.append(data)
 
     results.sort(key=lambda item: (STATE_ORDER.index(item["state"]),
                                    str(item["subject"].get("id", ""))))
-    return results, problems
+    return results, problems, delivered
 
 
 def absent_flag(phase: Dict[str, Any] | None) -> str:
@@ -125,6 +182,8 @@ def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
         f"- head SHA: `{meta['head_sha']}`",
         f"- run: {meta['run_url']}",
         "- subjects: " + " · ".join(f"{state} {totals.get(state, 0)}" for state in STATE_ORDER),
+        f"- campaign: {meta['delivered_subjects']}/{meta['expected_subjects']} expected "
+        "matrix subject results delivered",
         "- gate: " + gate_line(results, totals),
         "",
         "## Results",
@@ -240,19 +299,38 @@ def main() -> int:
         description="Aggregate Phase 18 third-party baseline subject results.")
     parser.add_argument("--results-dir", required=True)
     parser.add_argument("--out-dir", required=True)
+    # The authoritative expected campaign. Required: aggregating without the
+    # workflow's own matrix would silently accept an incomplete set.
+    parser.add_argument("--expect-matrix", required=True,
+                        help="workflow file whose matrix declares the expected subjects")
     parser.add_argument("--lane", default="A")
     parser.add_argument("--head-sha", default="")
     parser.add_argument("--run-url", default="")
     args = parser.parse_args()
 
-    results, problems = load_results(args.results_dir)
+    results, problems, delivered = load_results(args.results_dir)
+    # Campaign completeness: exact set equality against the workflow matrix. A
+    # matrix job that never ran, never uploaded or was cancelled leaves no
+    # artifact, and a successful matrix conclusion does not prove otherwise.
+    expected = expected_subjects(args.expect_matrix)
+    if not expected:
+        problems.append(f"{args.expect_matrix} declares no matrix subject ids; refusing to "
+                        "reconcile the campaign against an empty expectation")
+    missing = sorted(set(expected) - set(delivered))
+    unexpected = sorted(set(delivered) - set(expected))
+    for subject_id in missing:
+        problems.append(f"missing expected subject result: {subject_id!r} is a matrix leg but "
+                        "no consistent result was delivered for it")
+    for subject_id in unexpected:
+        problems.append(f"unexpected subject result: {subject_id!r} is not a matrix leg")
     for problem in problems:
         print(f"::error::{problem}")
     if not results:
         print("::error::no readable subject result found; refusing to publish an empty summary")
         return 1
 
-    meta = {"lane": args.lane, "head_sha": args.head_sha, "run_url": args.run_url}
+    meta = {"lane": args.lane, "head_sha": args.head_sha, "run_url": args.run_url,
+            "expected_subjects": len(expected), "delivered_subjects": len(delivered)}
     totals: Dict[str, int] = {state: 0 for state in STATE_ORDER}
     for result in results:
         totals[result["state"]] += 1
@@ -291,6 +369,13 @@ def main() -> int:
                        "blocking_failures": [r["subject"].get("id") for r in blocking],
                        "partial_subjects": [r["subject"].get("id") for r in results
                                             if r["state"] == "PARTIAL"],
+                   },
+                   # Campaign reconciliation against the workflow matrix itself.
+                   "campaign": {
+                       "expected_subjects": sorted(expected),
+                       "delivered_subjects": sorted(delivered),
+                       "missing_subjects": missing,
+                       "unexpected_subjects": unexpected,
                    },
                    "subjects": results},
                   handle, indent=2)
