@@ -1157,9 +1157,20 @@ final class FinanceService
 
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
-        // Defense-in-depth: cap سراسری هرگز مرجع نهایی نیست.
-        if (!user_can($wpUserId, $cap)) {
-            throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+        // Clinic-scoped authority is the authoritative gate: an ACTIVE
+        // Clinic-local custom role is legitimate authority and can never
+        // satisfy a WordPress-GLOBAL capability. When a trusted Clinic scope is
+        // already established the scoped engine decides; without one the legacy
+        // global check is kept unchanged (the caller then fails the scope
+        // requirement exactly as before). Never a widening: every caller still
+        // runs authorizeScoped()/the scoped engine for the same capability.
+        $scope_context = ScopeContext::tryGet();
+        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId;
+        $authorized    = $clinic_id > 0
+            ? App::authorization_service()->can( $wpUserId, $clinic_id, $cap )
+            : user_can( $wpUserId, $cap );
+        if ( ! $authorized ) {
+            throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, [ 'scope' => $scope ] );
         }
     }
 

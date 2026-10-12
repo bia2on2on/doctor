@@ -1163,10 +1163,9 @@ final class FinancePortalController extends RestBase {
 
 	/** Existing cpms_invoice_create authority for this Clinic — UI hint only. */
 	private function can_issue_invoice( int $clinic_id, int $user_id ): bool {
-		$user = $user_id > 0 ? get_userdata( $user_id ) : false;
-		if ( false === $user || ! $user->exists() || ! $user->has_cap( self::WRITE_CAP ) ) {
-			return false;
-		}
+		// UI hint only (every route re-checks server-side): effective
+		// Clinic-scoped authority, so a legitimate Clinic-local custom role
+		// is not hidden while a WP-global-only actor stays unauthorized.
 
 		return App::authorization_service()->can( $user_id, $clinic_id, self::WRITE_CAP );
 	}
@@ -1177,10 +1176,9 @@ final class FinancePortalController extends RestBase {
 	 * access: the Slice 1/2 read+module contract is unchanged.
 	 */
 	private function can_capture_payment( int $clinic_id, int $user_id ): bool {
-		$user = $user_id > 0 ? get_userdata( $user_id ) : false;
-		if ( false === $user || ! $user->exists() || ! $user->has_cap( self::PAYMENT_CAP ) ) {
-			return false;
-		}
+		// UI hint only (every route re-checks server-side): effective
+		// Clinic-scoped authority, so a legitimate Clinic-local custom role
+		// is not hidden while a WP-global-only actor stays unauthorized.
 
 		return App::authorization_service()->can( $user_id, $clinic_id, self::PAYMENT_CAP );
 	}
@@ -1191,10 +1189,9 @@ final class FinancePortalController extends RestBase {
 	 * role gains access: the Slice 1/2/3 module contract is unchanged.
 	 */
 	private function can_check_out( int $clinic_id, int $user_id ): bool {
-		$user = $user_id > 0 ? get_userdata( $user_id ) : false;
-		if ( false === $user || ! $user->exists() || ! $user->has_cap( self::CHECKOUT_CAP ) ) {
-			return false;
-		}
+		// UI hint only (every route re-checks server-side): effective
+		// Clinic-scoped authority, so a legitimate Clinic-local custom role
+		// is not hidden while a WP-global-only actor stays unauthorized.
 
 		return App::authorization_service()->can( $user_id, $clinic_id, self::CHECKOUT_CAP );
 	}
@@ -1215,12 +1212,13 @@ final class FinancePortalController extends RestBase {
 		if ( false === $user || ! $user->exists() ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید.' );
 		}
-		foreach ( $caps as $capability ) {
-			if ( ! $user->has_cap( $capability ) ) {
-				return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید.' );
-			}
-		}
-
+		// The Clinic-scoped authority decided below is the ONLY authority for
+		// these Staff Portal finance routes: an ACTIVE Clinic-local custom role
+		// is legitimate authority and can never satisfy a WordPress-GLOBAL
+		// capability, so the global capability is deliberately not consulted
+		// here. Clinic scope is still established first, and the scoped check
+		// below still runs for every requested capability — an actor holding
+		// only a WP-global capability (or none) is denied exactly as before.
 		$scope = $this->trusted_scope();
 		if ( $scope instanceof WP_Error ) {
 			return $scope;
