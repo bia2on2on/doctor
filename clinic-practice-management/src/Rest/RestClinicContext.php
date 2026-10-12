@@ -8,6 +8,7 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
+use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -182,7 +183,7 @@ final class RestClinicContext
          * واقعی همچنان با Capability در لایهٔ خشن و با سیاست Service/Membership
          * سنجیده می‌شود و fail‑closed است: staff بدون عضویت فعال → 403.
          */
-        if (!self::currentUserIsStaff()) {
+        if ( ! self::current_user_is_staff( $request ) ) {
             return false;
         }
 
@@ -283,7 +284,7 @@ final class RestClinicContext
         );
     }
 
-    private static function currentUserIsStaff(): bool
+    private static function current_user_is_staff( WP_REST_Request $request ): bool
     {
         $userId = get_current_user_id();
         $user = $userId > 0 ? get_userdata($userId) : false;
@@ -302,11 +303,63 @@ final class RestClinicContext
             return true;
         }
 
-        return $user->has_cap(RolesAndCapabilities::REPORT_READ)
-            || $user->has_cap(RolesAndCapabilities::APPT_CANCEL)
-            || $user->has_cap(RolesAndCapabilities::INVOICE_READ)
-            || $user->has_cap(RolesAndCapabilities::QUEUE_READ)
-            || $user->has_cap(RolesAndCapabilities::CONFIG);
+        if (
+            $user->has_cap( RolesAndCapabilities::REPORT_READ )
+            || $user->has_cap( RolesAndCapabilities::APPT_CANCEL )
+            || $user->has_cap( RolesAndCapabilities::INVOICE_READ )
+            || $user->has_cap( RolesAndCapabilities::QUEUE_READ )
+            || $user->has_cap( RolesAndCapabilities::CONFIG )
+        ) {
+            return true;
+        }
+
+        // 3B follow-up — a Clinic-local custom role is DURABLE MEMBERSHIP data,
+        // never a WordPress-global grant, so the WP-global signals above can
+        // never recognize it. An actor with an ACTIVE STAFF membership in the
+        // REQUESTED Clinic is routed through scope establishment; this grants no
+        // authority of its own: TrustedClinicEstablisher still requires the
+        // durable ACTIVE membership and a real trusted Clinic, every route gate
+        // and the delegated service still decide capability and object ownership
+        // (fail closed), and non-members are still refused. Patient memberships
+        // are deliberately excluded — this is the staff surface.
+        return self::has_active_staff_membership_in_request( $userId, $request );
+    }
+
+    /**
+     * Durable, request-scoped staff-membership probe (routing signal only; never
+     * an authorization decision — see the contract above).
+     */
+    private static function has_active_staff_membership_in_request( int $user_id, WP_REST_Request $request ): bool
+    {
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+
+        $raw = $request->get_header( 'X-CPMS-Clinic-Id' );
+        if ( ! is_scalar( $raw ) || '' === trim( (string) $raw ) ) {
+            $raw = $request->get_param( 'clinic_id' );
+        }
+        $clinic_id = is_scalar( $raw ) ? (int) $raw : 0;
+        if ( $clinic_id <= 0 ) {
+            return false;
+        }
+
+        $membership = ( new MembershipRepository( App::db() ) )->find_active( $clinic_id, $user_id );
+        if ( $membership === null ) {
+            return false;
+        }
+        $role_key = (string) ( $membership['role_key'] ?? '' );
+
+        return in_array(
+            $role_key,
+            [
+                RolesAndCapabilities::ROLE_SECRETARY,
+                RolesAndCapabilities::ROLE_DOCTOR,
+                RolesAndCapabilities::ROLE_ACCOUNTANT,
+                RolesAndCapabilities::ROLE_MANAGER,
+            ],
+            true
+        ) || CustomRolePolicy::is_definable_role_key( $role_key );
     }
 
     private static function toError( ScopeRequiredException $e ): WP_Error { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract

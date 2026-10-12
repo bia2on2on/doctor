@@ -1155,7 +1155,7 @@ final class FinanceService
         return [$code, $name, $this->minorToDb($price)];
     }
 
-    private function requireCap(int $wpUserId, string $cap, string $scope): void
+    private function requireCap(int $wp_user_id, string $cap, string $scope): void
     {
         // Clinic-scoped authority is the authoritative gate: an ACTIVE
         // Clinic-local custom role is legitimate authority and can never
@@ -1165,10 +1165,10 @@ final class FinanceService
         // requirement exactly as before). Never a widening: every caller still
         // runs authorizeScoped()/the scoped engine for the same capability.
         $scope_context = ScopeContext::tryGet();
-        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId;
+        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
         $authorized    = $clinic_id > 0
-            ? App::authorization_service()->can( $wpUserId, $clinic_id, $cap )
-            : user_can( $wpUserId, $cap );
+            ? App::authorization_service()->can( $wp_user_id, $clinic_id, $cap )
+            : user_can( $wp_user_id, $cap );
         if ( ! $authorized ) {
             throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, [ 'scope' => $scope ] );
         }
