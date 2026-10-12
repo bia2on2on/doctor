@@ -167,7 +167,9 @@ final class MedicalFileService
             'patient',
             $patientId
         );
-        $onlyVisible = !$this->canSeePrivate($actorUserId);
+            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        $onlyVisible = ! $this->can_see_private( $actorUserId, $durableClinicId );
+            // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
     }
@@ -377,6 +379,14 @@ final class MedicalFileService
                 'patient',
                 $patientId
             );
+            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+            // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+            // doctor_private = سطح Private (P-6): ثبت آن علاوه بر نقش سراسری پزشک،
+            // به اختیار Clinic-scoped «ایجاد یادداشت خصوصی» نیاز دارد.
+            if ( $visibility === 'doctor_private' ) {
+                $this->authorizeScoped( $actorUserId, $patientClinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'patient', $patientId );
+            }
+            // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         } else {
             // مسیر بیمار (Phase 9 Slice 7): رکوردِ هدف همین حالا از طریقِ
             // `PatientService::require_selected_patient` حل و تأیید شده — پس
@@ -389,6 +399,13 @@ final class MedicalFileService
                 $this->auditAndThrow( $actorUserId, 'patient', $patientId, 'دسترسی به این فایل مجاز نیست' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامترهای قدیمیِ متدِ میزبان.
             }
         }
+        // C-V: visit_id باید به همان Clinic و همان بیمار تعلق داشته باشد. رد ⇒ پیش از
+        // هر نوشتن (نه بایت، نه ردیف متادیتا)؛ پاسخ مشابه «یافت نشد».
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        if ( $visitId !== null ) {
+            $this->assert_visit_of_patient( $visitId, $patientClinicId, $patientId );
+        }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
 
         $fileId = $this->files->insert($patientClinicId, [
@@ -436,14 +453,38 @@ final class MedicalFileService
         return is_string($mime) && $mime !== '' ? $mime : null;
     }
 
-    private function canSeePrivate(int $actorUserId): bool
-    {
-        $user = get_userdata($actorUserId);
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+    /**
+     * doctor_private فقط با هر دو: نقش سراسری پزشک (سیاست قبلی) و اختیار Clinic-scoped
+     * «خواندن یادداشت خصوصی» در Clinicِ همین فایل. عضویتِ منشی با FILE_READ به‌تنهایی کافی نیست.
+     */
+    private function can_see_private( int $actorUserId, int $durableClinicId ): bool {
+        $user = get_userdata( $actorUserId );
+        if ( false === $user || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
+            return false;
+        }
+        if ( $durableClinicId <= 0 || ! user_can( $actorUserId, RolesAndCapabilities::FILE_READ ) ) {
+            return false;
+        }
 
-        return $user !== false
-            && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true)
-            && user_can($actorUserId, RolesAndCapabilities::FILE_READ);
+        return App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ );
     }
+
+    /**
+     * visit_id فقط وقتی معتبر است که ردیف ویزیت در همان Clinic و همان بیمار باشد.
+     */
+    private function assert_visit_of_patient( int $visitId, int $patientClinicId, int $patientId ): void {
+        $table = App::db()->table( 'cpms_visits' );
+        $sql   = 'SELECT clinic_id, patient_id FROM ' . $table . ' WHERE id = %d LIMIT 1';
+        $visit = App::db()->fetchRow( $sql, [ $visitId ] );
+
+        $clinic_ok  = null !== $visit && (int) $visit['clinic_id'] === $patientClinicId;
+        $patient_ok = null !== $visit && (int) $visit['patient_id'] === $patientId;
+        if ( ! $clinic_ok || ! $patient_ok ) {
+            throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404 );
+        }
+    }
+    // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
     /**
      * **Phase 9 Slice 7 — سیاستِ واحدِ انتخاب رکورد بیمار برای C3/C4.**
@@ -774,6 +815,14 @@ final class MedicalFileService
             'file',
             $fileId
         );
+
+        // doctor_private: اختیار خصوصی Clinic-scoped لازم است (نقش سراسری کافی نیست).
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        $visibility = (string) ( $row['visibility'] ?? '' );
+        if ( 'doctor_private' === $visibility && ! $this->can_see_private( $actorUserId, $durableClinicId ) ) {
+            $this->auditAndThrow( $actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد' );
+        }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     }
 
     /**
