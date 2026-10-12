@@ -89,7 +89,7 @@ final class StaffManagementPage
         $rows           = self::list_users( $clinic_id );
         $roles = self::roleLabels();
         $clinic_choices = self::managed_clinic_choices( (int) get_current_user_id() );
-        $assignable     = self::assignment_options( $rows );
+        $assignable     = self::assignment_options( $clinic_id, $rows );
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
@@ -233,7 +233,7 @@ final class StaffManagementPage
                 <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
                     <?php wp_nonce_field( self::NONCE_ASSIGN ); ?>
                     <input type="hidden" name="action" value="cpms_staff_assign_custom_role">
-                    <input type="hidden" name="clinic_id" value="<?php echo (int) $assignable['clinic_id']; ?>">
+                    <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
                     <table class="form-table" role="presentation">
                         <tr><th><label for="cpms_assign_target">کارمند موجود (عضویت فعال)</label></th>
                             <td>
