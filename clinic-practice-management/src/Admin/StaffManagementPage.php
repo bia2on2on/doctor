@@ -5,11 +5,14 @@ declare(strict_types=1);
 namespace ClinicCore\Admin;
 
 use ClinicCore\Application\Authorization\AuthorizationException;
+use ClinicCore\Application\Roles\CustomRoleAssignmentException;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
+use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Membership\MembershipException;
+use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -36,8 +39,9 @@ final class StaffManagementPage
 {
     public const PAGE_SLUG = 'cpms-staff';
 
-    private const NONCE_ACTION = 'cpms_staff_save';
-    private const NOTICE_KEY = 'cpms_staff_notice';
+    private const NONCE_ACTION   = 'cpms_staff_save';
+    private const NONCE_ASSIGN   = 'cpms_staff_assign_custom_role';
+    private const NOTICE_KEY     = 'cpms_staff_notice';
     private const META_PREV_ROLE = 'cpms_previous_role';
 
     /** نقش‌های قابل‌مدیریت (قابل‌انتساب/ویرایش/فعال/غیرفعال). */
@@ -55,6 +59,7 @@ final class StaffManagementPage
         add_action('admin_post_cpms_staff_save', [self::class, 'save']);
         add_action('admin_post_cpms_staff_toggle', [self::class, 'toggle']);
         add_action('admin_post_cpms_staff_password', [self::class, 'sendPasswordReset']);
+        add_action( 'admin_post_cpms_staff_assign_custom_role', [self::class, 'assign_custom_role'] );
     }
 
     public static function menu(): void
@@ -80,10 +85,11 @@ final class StaffManagementPage
             delete_transient(self::NOTICE_KEY);
         }
 
-        $clinicId = self::formClinicId();
-        $rows = self::listUsers($clinicId);
+        $clinic_id      = self::formClinicId();
+        $rows           = self::list_users( $clinic_id );
         $roles = self::roleLabels();
-        $clinicChoices = self::managedClinicChoices((int) get_current_user_id());
+        $clinic_choices = self::managed_clinic_choices( (int) get_current_user_id() );
+        $assignable     = self::assignment_options( $clinic_id, $rows );
         ?>
         <div class="wrap" dir="rtl">
             <h1>کاربران و دسترسی‌ها</h1>
@@ -91,14 +97,14 @@ final class StaffManagementPage
                 مدیریت می‌کند؛ مدیر وردپرس (administrator) از این‌جا قابل تغییر نیست — برای امنیت، نقش‌های فنی/امنیتی و ویرایش
                 ماتریس دسترسی از صفحهٔ «دسترسی‌ها» (فقط مالک فنی) انجام می‌شود.</p>
 
-            <?php if ($clinicChoices !== []) : ?>
+            <?php if ( $clinic_choices !== [] ) : ?>
                 <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" class="cpms-autofocus">
                     <input type="hidden" name="page" value="<?php echo esc_attr(self::PAGE_SLUG); ?>">
                     <label for="cpms_staff_clinic">Clinic هدف</label>
                     <select id="cpms_staff_clinic" name="clinic_id" required>
                         <option value="">انتخاب Clinic</option>
-                        <?php foreach ($clinicChoices as $choice) : ?>
-                            <option value="<?php echo (int) $choice['clinic_id']; ?>" <?php selected($clinicId, (int) $choice['clinic_id']); ?>><?php echo esc_html((string) $choice['clinic_name']); ?></option>
+                        <?php foreach ( $clinic_choices as $choice ) : ?>
+                            <option value="<?php echo (int) $choice['clinic_id']; ?>" <?php selected( $clinic_id, (int) $choice['clinic_id'] ); ?>><?php echo esc_html( (string) $choice['clinic_name'] ); ?></option>
                         <?php endforeach; ?>
                     </select>
                     <button type="submit" class="button">اعمال Clinic</button>
@@ -128,12 +134,12 @@ final class StaffManagementPage
                             <td data-label="پزشک مرتبط"><?php echo $r['clinician'] !== '' ? esc_html($r['clinician']) : '—'; ?></td>
                             <td data-label="وضعیت"><?php echo $r['active'] ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
                             <td class="cpms-actions-cell" data-label="عملیات">
-                                <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'] . '&clinic_id=' . $clinicId)); ?>">ویرایش</a>
-                                <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id'] . '&clinic_id=' . $clinicId), 'cpms_staff_password_' . (int) $r['id'])); ?>">لینک بازیابی رمز</a>
+                                <a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'] . '&clinic_id=' . $clinic_id ) ); ?>">ویرایش</a>
+                                <a class="button button-small" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=cpms_staff_password&user_id=' . (int) $r['id'] . '&clinic_id=' . $clinic_id ), 'cpms_staff_password_' . (int) $r['id'] ) ); ?>">لینک بازیابی رمز</a>
                                 <?php if ($r['active']) : ?>
-                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate&clinic_id=' . $clinicId), 'cpms_staff_toggle_' . (int) $r['id'])); ?>" data-cpms-confirm="غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟">غیرفعال</a>
+                                    <a class="button button-small" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=deactivate&clinic_id=' . $clinic_id ), 'cpms_staff_toggle_' . (int) $r['id'] ) ); ?>" data-cpms-confirm="غیرفعال‌سازی: این کاربر به‌طور موقت از نقش CPMS حذف می‌شود (تاریخچه حذف نمی‌شود). ادامه می‌دهید؟">غیرفعال</a>
                                 <?php else : ?>
-                                    <a class="button button-small" href="<?php echo esc_url(wp_nonce_url(admin_url('admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=activate&clinic_id=' . $clinicId), 'cpms_staff_toggle_' . (int) $r['id'])); ?>">فعال‌سازی مجدد</a>
+                                    <a class="button button-small" href="<?php echo esc_url( wp_nonce_url( admin_url( 'admin-post.php?action=cpms_staff_toggle&user_id=' . (int) $r['id'] . '&state=activate&clinic_id=' . $clinic_id ), 'cpms_staff_toggle_' . (int) $r['id'] ) ); ?>">فعال‌سازی مجدد</a>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -144,14 +150,14 @@ final class StaffManagementPage
                 <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران کلینیک (پزشک، منشی، حسابدار، مدیر کلینیک، بیمار) را با فرم پایین اضافه کنید. فقط نقش‌های CPMS از این‌جا قابل مدیریت‌اند؛ administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG)); ?>
             <?php endif; ?>
 
-            <?php $edit = self::editTarget($clinicId); ?>
+            <?php $edit = self::edit_target( $clinic_id ); ?>
             <h2><?php echo $edit !== null ? 'ویرایش کاربر' : 'افزودن کاربر'; ?></h2>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field(self::NONCE_ACTION); ?>
                 <input type="hidden" name="action" value="cpms_staff_save">
                 <input type="hidden" name="mode" value="<?php echo $edit !== null ? 'update' : 'create'; ?>">
                 <input type="hidden" name="user_id" value="<?php echo $edit !== null ? (int) $edit['id'] : 0; ?>">
-                <input type="hidden" name="clinic_id" value="<?php echo $clinicId; ?>">
+                <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
 
                 <table class="form-table" role="presentation">
                     <?php if ($edit === null) : ?>
@@ -163,10 +169,17 @@ final class StaffManagementPage
                     <tr><th><label for="u_email">ایمیل</label></th><td><input type="email" id="u_email" name="email" class="regular-text" required value="<?php echo esc_attr($edit !== null ? (string) $edit['email'] : ''); ?>"></td></tr>
                     <tr><th><label for="u_role">نقش CPMS</label></th>
                         <td><select id="u_role" name="role">
+                            <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
+                                <option value="" selected><?php echo esc_html( '— حفظ نقش سفارشی فعلی: ' . (string) $edit['role_label'] . ' (بدون تغییر عضویت و بدون تغییر نقش WordPress) —' ); ?></option>
+                            <?php endif; ?>
                             <?php foreach ($roles as $slug => $label) : ?>
                                 <option value="<?php echo esc_attr($slug); ?>" <?php selected($edit === null ? '' : (string) $edit['role'], $slug); ?>><?php echo esc_html($label); ?></option>
                             <?php endforeach; ?>
-                        </select></td>
+                        </select>
+                            <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
+                                <p class="description">این کارمند در این Clinic یک نقش سفارشی دارد. با گزینهٔ بالا فقط نام/ایمیل/رمز تغییر می‌کند؛ اگر یکی از نقش‌های CPMS را انتخاب کنید، انتساب سفارشی با همان نقش داخلی جایگزین می‌شود.</p>
+                            <?php endif; ?>
+                        </td>
                     </tr>
                     <tr><th><label for="u_password">رمز عبور</label></th>
                         <td>
@@ -180,14 +193,14 @@ final class StaffManagementPage
                 </p>
             </form>
 
-            <?php if ($clinicId > 0) : ?>
+            <?php if ( $clinic_id > 0 ) : ?>
                 <h2>افزودن کاربر موجود به این Clinic</h2>
                 <p class="description">شناسهٔ عددی WordPress حساب موجود را وارد کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field(self::NONCE_ACTION); ?>
                     <input type="hidden" name="action" value="cpms_staff_save">
                     <input type="hidden" name="mode" value="attach_existing">
-                    <input type="hidden" name="clinic_id" value="<?php echo $clinicId; ?>">
+                    <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
                     <table class="form-table" role="presentation">
                         <tr><th><label for="cpms_existing_user">شناسهٔ حساب WordPress موجود</label></th>
                             <td>
@@ -207,6 +220,51 @@ final class StaffManagementPage
                         </tr>
                     </table>
                     <p class="submit"><button type="submit" class="button button-primary">افزودن کاربر موجود</button></p>
+                </form>
+            <?php endif; ?>
+
+            <?php if ( [] !== $assignable['definitions'] && [] !== $assignable['members'] ) : ?>
+                <h2>انتساب نقش سفارشی Clinic</h2>
+                <p class="description">
+                    این انتساب فقط روی «عضویت همین Clinic» اثر می‌گذارد: نقش سراسری WordPress تغییر نمی‌کند، پروفایل حرفه‌ای (پزشک) دست‌نخورده
+                    می‌ماند و ردیف‌های GRANT/DENY عضویت جابه‌جا نمی‌شوند. فقط نقش‌های سفارشیِ <strong>فعالِ همین Clinic</strong> و فقط تا سقف
+                    اختیار مؤثر شما قابل انتساب‌اند. بازگردانی به نقش داخلی از همان فرم «ویرایش» این صفحه (انتخاب یکی از نقش‌های CPMS) انجام می‌شود.
+                </p>
+                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                    <?php wp_nonce_field( self::NONCE_ASSIGN ); ?>
+                    <input type="hidden" name="action" value="cpms_staff_assign_custom_role">
+                    <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
+                    <table class="form-table" role="presentation">
+                        <tr><th><label for="cpms_assign_target">کارمند موجود (عضویت فعال)</label></th>
+                            <td>
+                                <select id="cpms_assign_target" name="target_user_id" required>
+                                    <?php foreach ( $assignable['members'] as $member ) : ?>
+                                        <option value="<?php echo (int) $member['id']; ?>"><?php echo esc_html( (string) $member['label'] ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description">فقط عضویت‌های فعال همین Clinic؛ این عمل هیچ عضویت، حساب WordPress یا پروفایل حرفه‌ای تازه‌ای نمی‌سازد.</p>
+                            </td>
+                        </tr>
+                        <tr><th><label for="cpms_assign_role">نقش سفارشی</label></th>
+                            <td>
+                                <select id="cpms_assign_role" name="custom_role_key" required>
+                                    <?php foreach ( $assignable['definitions'] as $definition ) : ?>
+                                        <?php
+                                        $cpms_definition_label  = ( null !== $definition['display_name'] && '' !== $definition['display_name'] )
+                                            ? (string) $definition['display_name']
+                                            : (string) $definition['role_key'];
+                                        $cpms_definition_effect = $definition['empty']
+                                            ? 'بدون هیچ مجوزی — فقط برچسب عضویت؛ هیچ دسترسی‌ای ایجاد نمی‌کند'
+                                            : 'مجوزها: ' . implode( ', ', $definition['capabilities'] );
+                                        ?>
+                                        <option value="<?php echo esc_attr( (string) $definition['role_key'] ); ?>"><?php echo esc_html( $cpms_definition_label . ' — ' . $cpms_definition_effect ); ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                                <p class="description">نقش‌هایی که مجوزی خارج از اختیار مؤثر شما در این Clinic دارند در این فهرست نمایش داده نمی‌شوند و انتساب آن‌ها رد می‌شود.</p>
+                            </td>
+                        </tr>
+                    </table>
+                    <p class="submit"><button type="submit" class="button button-primary">انتساب نقش سفارشی</button></p>
                 </form>
             <?php endif; ?>
         </div>
@@ -247,15 +305,15 @@ final class StaffManagementPage
 
     public static function toggle(): void
     {
-        $userId = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
+        $user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
         if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
-        check_admin_referer('cpms_staff_toggle_' . $userId);
+        check_admin_referer( 'cpms_staff_toggle_' . $user_id );
 
         $state = (string) ($_GET['state'] ?? '');
-        $clinicId = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null;
-        $result = self::toggleUser($userId, $state, (int) get_current_user_id(), $clinicId);
+        $clinic_id = array_key_exists( 'clinic_id', $_GET ) ? absint( $_GET['clinic_id'] ) : null;
+        $result    = self::toggleUser( $user_id, $state, (int) get_current_user_id(), $clinic_id );
         set_transient(self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : 'وضعیت کاربر به‌روزرسانی شد.', 60);
         wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
         exit;
@@ -269,14 +327,14 @@ final class StaffManagementPage
      */
     public static function sendPasswordReset(): void
     {
-        $userId = isset($_GET['user_id']) ? absint($_GET['user_id']) : 0;
+        $user_id = isset( $_GET['user_id'] ) ? absint( $_GET['user_id'] ) : 0;
         if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
-        check_admin_referer('cpms_staff_password_' . $userId);
+        check_admin_referer( 'cpms_staff_password_' . $user_id );
 
-        $clinicId = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null;
-        $result = self::initiatePasswordReset($userId, (int) get_current_user_id(), $clinicId);
+        $clinic_id = array_key_exists( 'clinic_id', $_GET ) ? absint( $_GET['clinic_id'] ) : null;
+        $result    = self::initiatePasswordReset( $user_id, (int) get_current_user_id(), $clinic_id );
         if ($result['error'] !== '') {
             set_transient(self::NOTICE_KEY, 'خطا: ' . $result['error'], 60);
             wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG));
@@ -296,14 +354,13 @@ final class StaffManagementPage
      *
      * @return array{error:string, display_name:string}
      */
-    public static function initiatePasswordReset(int $userId, int $updatedBy, ?int $clinicId = null): array
-    {
-        $user = $userId > 0 ? get_userdata($userId) : false;
-        if ($user === false || !self::isManageable($userId)) {
+    public static function initiatePasswordReset( int $user_id, int $updated_by, ?int $clinic_id = null ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change outside Slice 3B.
+        $user = $user_id > 0 ? get_userdata( $user_id ) : false;
+        if ( $user === false || ! self::is_manageable( $user_id ) ) {
             return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'display_name' => ''];
         }
 
-        $authorization = self::authorizeStaffWrite($updatedBy, $clinicId, $userId);
+        $authorization = self::authorize_staff_write( $updated_by, $clinic_id, $user_id );
         if ($authorization['error'] !== '') {
             return ['error' => $authorization['error'], 'display_name' => ''];
         }
@@ -317,9 +374,9 @@ final class StaffManagementPage
 
         App::audit()->log(
             'STAFF_PASSWORD_RESET_INITIATED',
-            ['wp_user_id' => $updatedBy],
+            ['wp_user_id' => $updated_by],
             'user',
-            $userId,
+            $user_id,
             null,
             null,
             [
@@ -338,42 +395,52 @@ final class StaffManagementPage
      *
      * @return array{error:string, generated:string, user_id:int}
      */
-    public static function upsertUser(array $in, int $updatedBy): array
-    {
+    public static function upsertUser( array $in, int $updated_by ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change outside Slice 3B.
         if (($in['mode'] ?? 'create') === 'attach_existing') {
-            return self::attachExistingUser($in, $updatedBy);
+            return self::attachExistingUser( $in, $updated_by );
         }
 
         $mode = ($in['mode'] ?? 'create') === 'update' ? 'update' : 'create';
-        $userId = (int) ($in['user_id'] ?? 0);
+        $user_id             = (int) ( $in['user_id'] ?? 0 );
         $username = trim((string) ($in['username'] ?? ''));
-        $displayName = trim((string) ($in['display_name'] ?? ''));
+        $display_name        = trim( (string) ( $in['display_name'] ?? '' ) );
         $email = (string) ($in['email'] ?? '');
         $role = trim((string) ($in['role'] ?? ''));
         $password = (string) ($in['password'] ?? '');
-        $requestedClinicId = array_key_exists('clinic_id', $in) && $in['clinic_id'] !== null
+        $requested_clinic_id = array_key_exists( 'clinic_id', $in ) && $in['clinic_id'] !== null
             ? (int) $in['clinic_id']
             : null;
 
-        if ($mode === 'update' && ($userId <= 0 || !self::isManageable($userId))) {
+        if ( $mode === 'update' && ( $user_id <= 0 || ! self::is_manageable( $user_id ) ) ) {
             return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'generated' => '', 'user_id' => 0];
         }
 
-        $authorization = self::authorizeStaffWrite(
-            $updatedBy,
-            $requestedClinicId,
-            $mode === 'update' ? $userId : null
+        $authorization = self::authorize_staff_write(
+            $updated_by,
+            $requested_clinic_id,
+            $mode === 'update' ? $user_id : null
         );
         if ($authorization['error'] !== '') {
             return ['error' => $authorization['error'], 'generated' => '', 'user_id' => 0];
         }
-        $clinicId = $authorization['clinic_id'];
-        $targetMembership = $authorization['target_membership'];
+        $clinic_id         = $authorization['clinic_id'];
+        $target_membership = $authorization['target_membership'];
 
-        if ($role === '' || !in_array($role, self::MANAGEABLE_ROLES, true)) {
+        // حفظ نقش سفارشیِ عضویت (Custom Role Slice 3B): فقط در ویرایشِ کارمندی که
+        // همین حالا یک نقش سفارشیِ Clinic-local دارد و فقط وقتی مدیر هیچ نقش داخلی
+        // انتخاب نکرده باشد. در این حالت نه نقش سراسری WordPress و نه role_key
+        // عضویت تغییر نمی‌کند — هیچ انتساب/بازگردانیِ ضمنی رخ نمی‌دهد.
+        $preserve_membership_role = false;
+        if ( $mode === 'update' && $role === '' && $target_membership !== null ) {
+            $membership_role_key      = (string) ( $target_membership['role_key'] ?? '' );
+            $preserve_membership_role = ! in_array( $membership_role_key, self::MANAGEABLE_ROLES, true )
+                && CustomRolePolicy::is_definable_role_key( $membership_role_key );
+        }
+
+        if ( ! $preserve_membership_role && ( $role === '' || ! in_array( $role, self::MANAGEABLE_ROLES, true ) ) ) {
             return ['error' => 'نقش غیرمجاز است (فقط نقش‌های CPMS قابل انتساب‌اند؛ از انتساب administrator جلوگیری شد).', 'generated' => '', 'user_id' => 0];
         }
-        if ($displayName === '') {
+        if ( $display_name === '' ) {
             return ['error' => 'نام نمایشی الزامی است.', 'generated' => '', 'user_id' => 0];
         }
         if ($email === '' || !is_email($email)) {
@@ -392,70 +459,80 @@ final class StaffManagementPage
         } elseif (!self::validatePassword($password)) {
             return ['error' => 'رمز عبور باید حداقل ۱۰ کاراکتر شامل حرف و عدد باشد.', 'generated' => '', 'user_id' => 0];
         }
-        $plainPassword = $password !== '' ? $password : $generated;
+        $plain_password = $password !== '' ? $password : $generated;
 
         if ($mode === 'create') {
-            $userId = wp_insert_user([
-                'user_login' => $username,
-                'user_pass' => $plainPassword,
-                'user_email' => $email,
-                'display_name' => $displayName,
-                'role' => $role,
-            ]);
-            if (is_wp_error($userId)) {
-                return ['error' => $userId->get_error_message(), 'generated' => '', 'user_id' => 0];
+            $user_id = wp_insert_user(
+                [
+                    'user_login'   => $username,
+                    'user_pass'    => $plain_password,
+                    'user_email'   => $email,
+                    'display_name' => $display_name,
+                    'role'         => $role,
+                ]
+            );
+            if ( is_wp_error( $user_id ) ) {
+                return ['error' => $user_id->get_error_message(), 'generated' => '', 'user_id' => 0];
             }
-            $userId = (int) $userId;
+            $user_id = (int) $user_id;
             try {
                 App::membership_service()->create_membership(
-                    $clinicId,
-                    $userId,
+                    $clinic_id,
+                    $user_id,
                     $role,
                     'clinic',
-                    $updatedBy
+                    $updated_by
                 );
             } catch (\Throwable $e) {
-                wp_delete_user($userId);
+                wp_delete_user( $user_id );
 
                 return ['error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0];
             }
             App::audit()->log(
                 'STAFF_USER_CREATED',
-                ['wp_user_id' => $updatedBy],
+                ['wp_user_id' => $updated_by],
                 'user',
-                $userId,
+                $user_id,
                 null,
                 null,
-                ['clinic_id' => $clinicId, 'role' => $role, 'login' => $username]
+                ['clinic_id' => $clinic_id, 'role' => $role, 'login' => $username]
             );
         } else {
-            $args = ['ID' => $userId, 'display_name' => $displayName, 'user_email' => $email, 'role' => $role];
+            $args = ['ID' => $user_id, 'display_name' => $display_name, 'user_email' => $email];
+            if ( ! $preserve_membership_role ) {
+                $args['role'] = $role;
+            }
             if ($password !== '') {
-                $args['user_pass'] = $plainPassword;
+                $args['user_pass'] = $plain_password;
             }
             $res = wp_update_user($args);
             if (is_wp_error($res)) {
-                return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $userId];
+                return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $user_id];
             }
-            if ($targetMembership !== null) {
-                App::membership_service()->set_role_key((int) $targetMembership['id'], $role);
+            if ( ! $preserve_membership_role && $target_membership !== null ) {
+                App::membership_service()->set_role_key( (int) $target_membership['id'], $role );
             }
             // اگر کاربر قبلاً غیرفعال بود (subscriber + usermeta)، اکنون نقش واقعی گرفت → پاک کردن flag.
-            if (get_user_meta($userId, self::META_PREV_ROLE, true) !== '') {
-                delete_user_meta($userId, self::META_PREV_ROLE);
+            if ( get_user_meta( $user_id, self::META_PREV_ROLE, true ) !== '' ) {
+                delete_user_meta( $user_id, self::META_PREV_ROLE );
             }
             App::audit()->log(
                 'STAFF_USER_UPDATED',
-                ['wp_user_id' => $updatedBy],
+                ['wp_user_id' => $updated_by],
                 'user',
-                $userId,
+                $user_id,
                 null,
                 null,
-                ['clinic_id' => $clinicId, 'role' => $role, 'password_reset' => $password !== '']
+                [
+                    'clinic_id'      => $clinic_id,
+                    'role'           => $preserve_membership_role ? (string) ( $target_membership['role_key'] ?? '' ) : $role,
+                    'role_scope'     => $preserve_membership_role ? 'clinic_local_membership' : 'builtin_cpms_role',
+                    'password_reset' => $password !== '',
+                ]
             );
         }
 
-        return ['error' => '', 'generated' => $generated, 'user_id' => $userId];
+        return ['error' => '', 'generated' => $generated, 'user_id' => $user_id];
     }
 
     /**
@@ -469,16 +546,15 @@ final class StaffManagementPage
      *
      * @return array{error:string, generated:string, user_id:int}
      */
-    public static function attachExistingUser(array $in, int $updatedBy): array
-    {
-        if ($updatedBy <= 0 || !is_user_logged_in() || (int) get_current_user_id() !== $updatedBy) {
+    public static function attachExistingUser( array $in, int $updated_by ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change outside Slice 3B.
+        if ( $updated_by <= 0 || ! is_user_logged_in() || (int) get_current_user_id() !== $updated_by ) {
             return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'generated' => '', 'user_id' => 0];
         }
 
-        $requestedClinicId = array_key_exists('clinic_id', $in) && $in['clinic_id'] !== null
+        $requested_clinic_id = array_key_exists( 'clinic_id', $in ) && $in['clinic_id'] !== null
             ? (int) $in['clinic_id']
             : null;
-        $authorization = self::authorizeStaffWrite($updatedBy, $requestedClinicId);
+        $authorization       = self::authorize_staff_write( $updated_by, $requested_clinic_id );
         if ($authorization['error'] !== '') {
             return ['error' => $authorization['error'], 'generated' => '', 'user_id' => 0];
         }
@@ -500,7 +576,7 @@ final class StaffManagementPage
                 $existingUserId,
                 $role,
                 'clinic',
-                $updatedBy
+                $updated_by
             );
         } catch (MembershipException $e) {
             // create_membership() is the single membership write path. In
@@ -513,7 +589,7 @@ final class StaffManagementPage
 
         App::audit()->log(
             'STAFF_USER_ATTACHED',
-            ['wp_user_id' => $updatedBy],
+            ['wp_user_id' => $updated_by],
             'user',
             $existingUserId,
             null,
@@ -533,27 +609,26 @@ final class StaffManagementPage
      *
      * @return array{error:string}
      */
-    public static function toggleUser(int $userId, string $state, int $updatedBy, ?int $clinicId = null): array
-    {
-        if ($userId <= 0 || !self::isManageable($userId)) {
+    public static function toggleUser( int $user_id, string $state, int $updated_by, ?int $clinic_id = null ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change outside Slice 3B.
+        if ( $user_id <= 0 || ! self::is_manageable( $user_id ) ) {
             return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.'];
         }
-        $user = get_userdata($userId);
+        $user = get_userdata( $user_id );
         if ($user === false) {
             return ['error' => 'کاربر یافت نشد.'];
         }
 
-        $authorization = self::authorizeStaffWrite($updatedBy, $clinicId, $userId);
+        $authorization = self::authorize_staff_write( $updated_by, $clinic_id, $user_id );
         if ($authorization['error'] !== '') {
             return ['error' => $authorization['error']];
         }
-        $targetMembership = $authorization['target_membership'];
-        if ($targetMembership === null) {
+        $target_membership = $authorization['target_membership'];
+        if ( $target_membership === null ) {
             return ['error' => 'عضویت هدف برای این Clinic یافت نشد.'];
         }
 
         // جلوگیری از قفل‌کردن خود: عاملِ غیرفعال‌سازی نمی‌تواند حساب خودش را غیرفعال کند.
-        if ($state === 'deactivate' && $userId === $updatedBy) {
+        if ( $state === 'deactivate' && $user_id === $updated_by ) {
             return ['error' => 'نمی‌توانید حساب خودتان را غیرفعال کنید (جلوگیری از قفل‌شدن).'];
         }
 
@@ -562,58 +637,189 @@ final class StaffManagementPage
         }
 
         if ($state === 'deactivate') {
-            $prevRole = (string) ($user->roles[0] ?? '');
-            if (!in_array($prevRole, self::MANAGEABLE_ROLES, true)) {
+            // Durable Clinic membership is the staff criterion, NOT the WP-global
+            // role (Custom Role Slice 3B): a member carrying a custom or
+            // membership-only role must stay suspendable/manageable. The
+            // WP-global role is parked to `subscriber` only when it is one of the
+            // CPMS built-in roles that CPMS itself assigned; a WordPress-global
+            // role CPMS never assigned is left untouched.
+            $wp_role      = (string) ( $user->roles[0] ?? '' );
+            $park_wp_role = in_array( $wp_role, self::MANAGEABLE_ROLES, true );
+            $prev_role    = $park_wp_role ? $wp_role : (string) ( $target_membership['role_key'] ?? '' );
+            if ( $prev_role === '' || ( ! in_array( $prev_role, self::MANAGEABLE_ROLES, true ) && ! CustomRolePolicy::is_definable_role_key( $prev_role ) ) ) {
                 return ['error' => 'این کاربر نقش قابل غیرفعال‌سازی ندارد.'];
             }
-            if ((string) ($targetMembership['status'] ?? '') !== 'active') {
+            if ( (string) ( $target_membership['status'] ?? '' ) !== 'active' ) {
                 return ['error' => 'عضویت هدف از قبل غیرفعال است.'];
             }
-            App::membership_service()->suspend_membership((int) $targetMembership['id']);
-            update_user_meta($userId, self::META_PREV_ROLE, $prevRole);
-            $updated = wp_update_user(['ID' => $userId, 'role' => 'subscriber']);
-            if (is_wp_error($updated)) {
-                App::membership_service()->reactivate_membership((int) $targetMembership['id']);
+            App::membership_service()->suspend_membership( (int) $target_membership['id'] );
+            update_user_meta( $user_id, self::META_PREV_ROLE, $prev_role );
+            if ( $park_wp_role ) {
+                $updated = wp_update_user( ['ID' => $user_id, 'role' => 'subscriber'] );
+                if ( is_wp_error( $updated ) ) {
+                    App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
 
-                return ['error' => $updated->get_error_message()];
+                    return ['error' => $updated->get_error_message()];
+                }
             }
             App::audit()->log(
                 'STAFF_USER_DEACTIVATED',
-                ['wp_user_id' => $updatedBy],
+                ['wp_user_id' => $updated_by],
                 'user',
-                $userId,
+                $user_id,
                 null,
-                ['clinic_id' => $authorization['clinic_id'], 'role' => $prevRole, 'membership_status' => 'active'],
-                ['clinic_id' => $authorization['clinic_id'], 'role' => 'subscriber', 'membership_status' => 'suspended']
+                ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active'],
+                [
+                    'clinic_id'         => $authorization['clinic_id'],
+                    'role'              => $park_wp_role ? 'subscriber' : $prev_role,
+                    'membership_status' => 'suspended',
+                    'wp_global_role'    => $park_wp_role ? 'subscriber' : 'unchanged',
+                ]
             );
         } else {
-            $prevRole = (string) get_user_meta($userId, self::META_PREV_ROLE, true);
-            if ($prevRole === '' || !in_array($prevRole, self::MANAGEABLE_ROLES, true)) {
+            $prev_role       = (string) get_user_meta( $user_id, self::META_PREV_ROLE, true );
+            $restore_wp_role = in_array( $prev_role, self::MANAGEABLE_ROLES, true );
+            if ( $prev_role === '' || ( ! $restore_wp_role && ! CustomRolePolicy::is_definable_role_key( $prev_role ) ) ) {
                 return ['error' => 'نقش قبلی برای فعال‌سازی یافت نشد.'];
             }
-            if ((string) ($targetMembership['status'] ?? '') !== 'suspended') {
+            if ( (string) ( $target_membership['status'] ?? '' ) !== 'suspended' ) {
                 return ['error' => 'عضویت هدف فعال است.'];
             }
-            App::membership_service()->reactivate_membership((int) $targetMembership['id']);
-            delete_user_meta($userId, self::META_PREV_ROLE);
-            $updated = wp_update_user(['ID' => $userId, 'role' => $prevRole]);
-            if (is_wp_error($updated)) {
-                App::membership_service()->suspend_membership((int) $targetMembership['id']);
+            // Suspension preserves role_key on the membership row itself, so
+            // reactivation restores a custom assignment without any extra write.
+            App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+            delete_user_meta( $user_id, self::META_PREV_ROLE );
+            if ( $restore_wp_role ) {
+                $updated = wp_update_user( ['ID' => $user_id, 'role' => $prev_role] );
+                if ( is_wp_error( $updated ) ) {
+                    App::membership_service()->suspend_membership( (int) $target_membership['id'] );
 
-                return ['error' => $updated->get_error_message()];
+                    return ['error' => $updated->get_error_message()];
+                }
             }
             App::audit()->log(
                 'STAFF_USER_ACTIVATED',
-                ['wp_user_id' => $updatedBy],
+                ['wp_user_id' => $updated_by],
                 'user',
-                $userId,
+                $user_id,
                 null,
-                ['clinic_id' => $authorization['clinic_id'], 'role' => 'subscriber', 'membership_status' => 'suspended'],
-                ['clinic_id' => $authorization['clinic_id'], 'role' => $prevRole, 'membership_status' => 'active']
+                [
+                    'clinic_id'         => $authorization['clinic_id'],
+                    'role'              => $prev_role,
+                    'membership_status' => 'suspended',
+                    'wp_global_role'    => $restore_wp_role ? 'subscriber' : 'unchanged',
+                ],
+                ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active']
             );
         }
 
         return ['error' => ''];
+    }
+
+    /**
+     * انتساب نقش سفارشی Clinic (admin-post handler).
+     *
+     * Nonce/CSRF و transport در این مرز است؛ مجوز Clinic-scoped و مالکیت اشیای
+     * durable داخل CustomRoleAssignmentService احراز می‌شود. این handler هیچ
+     * نقش WordPress را تغییر نمی‌دهد.
+     */
+    public static function assign_custom_role(): void {
+        if ( ! is_user_logged_in() ) {
+            wp_die( 'دسترسی ندارید', 403 );
+        }
+        check_admin_referer( self::NONCE_ASSIGN );
+
+        $target_user_id = isset( $_POST['target_user_id'] ) ? absint( $_POST['target_user_id'] ) : 0;
+        $clinic_id      = array_key_exists( 'clinic_id', $_POST ) ? absint( $_POST['clinic_id'] ) : null;
+        $role_key       = isset( $_POST['custom_role_key'] ) ? sanitize_key( wp_unslash( $_POST['custom_role_key'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+
+        $result = self::assign_custom_role_to( $target_user_id, (string) $role_key, (int) get_current_user_id(), $clinic_id );
+        set_transient( self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : $result['notice'], 60 );
+        wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
+        exit;
+    }
+
+    /**
+     * مرز آزمون‌پذیرِ انتساب نقش سفارشی (بدون nonce/redirect).
+     *
+     * @return array{error:string, notice:string, clinic_id:int}
+     */
+    public static function assign_custom_role_to( int $target_user_id, string $role_key, int $updated_by, ?int $clinic_id = null ): array {
+        if ( $updated_by <= 0 || $target_user_id <= 0 ) {
+            return ['error' => 'درخواست انتساب نامعتبر است.', 'notice' => '', 'clinic_id' => 0];
+        }
+
+        try {
+            $assigned = App::custom_role_assignment_service()->assign( $updated_by, $clinic_id, $target_user_id, $role_key );
+        } catch ( ScopeRequiredException | AuthorizationException $e ) {
+            return ['error' => 'انتساب نقش سفارشی برای این Clinic مجاز نیست.', 'notice' => '', 'clinic_id' => 0];
+        } catch ( CustomRoleAssignmentException $e ) {
+            return ['error' => self::assignment_error_message( $e ), 'notice' => '', 'clinic_id' => 0];
+        } catch ( \Throwable $e ) {
+            return ['error' => 'انتساب نقش سفارشی انجام نشد.', 'notice' => '', 'clinic_id' => 0];
+        }
+
+        $label = ( $assigned['display_name'] !== null && $assigned['display_name'] !== '' )
+            ? (string) $assigned['display_name']
+            : (string) $assigned['role_key'];
+
+        return [
+            'error'     => '',
+            'notice'    => $assigned['changed']
+                ? 'نقش سفارشی «' . $label . '» به عضویت این کارمند در همین Clinic منتسب شد؛ نقش WordPress تغییر نکرد.'
+                : 'این کارمند از قبل همین نقش سفارشی را داشت؛ هیچ تغییری ثبت نشد.',
+            'clinic_id' => (int) $assigned['clinic_id'],
+        ];
+    }
+
+    /** پیام فارسیِ محدود برای کدهای دلیلِ انتساب (هرگز مقدار خامِ درخواست). */
+    private static function assignment_error_message( CustomRoleAssignmentException $e ): string {
+        return match ( $e->reason_code() ) {
+            CustomRoleAssignmentException::CODE_INVALID_ROLE_KEY => 'فقط نقش‌های سفارشیِ همین Clinic قابل انتساب‌اند (نقش داخلی/ناشناخته از این مسیر رد می‌شود).',
+            CustomRoleAssignmentException::CODE_TARGET_MEMBERSHIP_REQUIRED => 'کارمند انتخاب‌شده عضویت فعال در همین Clinic ندارد.',
+            CustomRoleAssignmentException::CODE_DEFINITION_NOT_ACTIVE => 'این نقش سفارشی در این Clinic فعال نیست و قابل انتساب نیست.',
+            CustomRoleAssignmentException::CODE_CAPABILITY_NOT_DELEGABLE => 'این نقش سفارشی مجوزی بیرون از اختیار مؤثر شما دارد و قابل انتساب نیست.',
+            CustomRoleAssignmentException::CODE_MEMBERSHIP_UPDATE_FAILED => 'ثبت عضویت انجام نشد؛ هیچ انتساب نیمه‌کاری باقی نمانده است.',
+            default => 'نقش سفارشی موردنظر در این Clinic یافت نشد.',
+        };
+    }
+
+    /**
+     * گزینه‌های فرمِ انتساب: نقش‌های سفارشیِ فعالِ قابل‌واگذاری (سقف اختیار مؤثر
+     * عامل) و کارکنانِ دارای عضویت فعال در همین Clinic.
+     *
+     * @param array<int, array<string,mixed>> $rows
+     *
+     * @return array{definitions:list<array{role_key:string, display_name:string|null, capabilities:list<string>, empty:bool}>, members:list<array{id:int, label:string}>}
+     */
+    private static function assignment_options( int $clinic_id, array $rows ): array {
+        $empty = ['definitions' => [], 'members' => []];
+        if ( $clinic_id <= 0 || $rows === [] ) {
+            return $empty;
+        }
+
+        try {
+            $assignable = App::custom_role_assignment_service()->assignable_definitions( (int) get_current_user_id(), $clinic_id );
+        } catch ( \Throwable $e ) {
+            // Fail closed: بدون مجوز نمایشی، هیچ گزینه‌ای ساخته نمی‌شود.
+            return $empty;
+        }
+
+        $members = [];
+        foreach ( $rows as $row ) {
+            if ( ( $row['active'] ?? false ) !== true ) {
+                continue;
+            }
+            $members[] = [
+                'id'    => (int) $row['id'],
+                'label' => (string) $row['display_name'] . ' (' . (string) $row['login'] . ') — ' . (string) $row['role_label'],
+            ];
+        }
+
+        return [
+            'definitions' => $assignable['definitions'],
+            'members'     => $members,
+        ];
     }
 
     // ================= helpers =================
@@ -621,7 +827,7 @@ final class StaffManagementPage
     /**
      * Resolve and authorize the Clinic write boundary for staff management.
      *
-     * `$requestedClinicId` is only a caller-selected context. The establisher
+     * `$requested_clinic_id` is only a caller-selected context. The establisher
      * validates it against the actor's durable active membership; AuthorizationService
      * then evaluates the scoped permission. For an existing target, its Clinic owner
      * is independently retrieved from the durable membership row before the object
@@ -629,37 +835,36 @@ final class StaffManagementPage
      *
      * @return array{error:string, clinic_id:int, target_membership:array<string,mixed>|null}
      */
-    private static function authorizeStaffWrite(int $actorUserId, ?int $requestedClinicId, ?int $targetUserId = null): array
-    {
+    private static function authorize_staff_write( int $actor_user_id, ?int $requested_clinic_id, ?int $target_user_id = null ): array {
         try {
             $scope = (new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db())))
-                ->establish($actorUserId, $requestedClinicId);
+                ->establish( $actor_user_id, $requested_clinic_id );
             $authorization = App::authorization_service();
-            $authorization->authorize($actorUserId, $scope->clinicId, RolesAndCapabilities::CONFIG);
+            $authorization->authorize( $actor_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 
-            $targetMembership = null;
-            if ($targetUserId !== null) {
-                $targetMembership = (new MembershipRepository(App::db()))->find($scope->clinicId, $targetUserId);
-                if ($targetMembership === null) {
+            $target_membership = null;
+            if ( $target_user_id !== null ) {
+                $target_membership = ( new MembershipRepository( App::db() ) )->find( $scope->clinicId, $target_user_id ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+                if ( $target_membership === null ) {
                     throw new AuthorizationException('AUTH_NO_MEMBERSHIP', 'AUTH_NO_MEMBERSHIP');
                 }
 
                 // This owner value came from the durable membership row above, not
                 // from the request. Equality is checked by the service, but the
                 // source-of-truth retrieval remains at this boundary.
-                $targetClinicId = (int) ($targetMembership['clinic_id'] ?? 0);
+                $target_clinic_id = (int) ( $target_membership['clinic_id'] ?? 0 );
                 $authorization->authorizeForObject(
-                    $actorUserId,
+                    $actor_user_id,
                     $scope->clinicId,
                     RolesAndCapabilities::CONFIG,
-                    $targetClinicId
+                    $target_clinic_id
                 );
             }
 
             return [
                 'error' => '',
                 'clinic_id' => $scope->clinicId,
-                'target_membership' => $targetMembership,
+                'target_membership' => $target_membership,
             ];
         } catch (ScopeRequiredException|AuthorizationException $e) {
             return [
@@ -673,21 +878,20 @@ final class StaffManagementPage
     /**
      * @return list<array{clinic_id:int, clinic_name:string}>
      */
-    private static function managedClinicChoices(int $actorUserId): array
-    {
-        if ($actorUserId <= 0) {
+    private static function managed_clinic_choices( int $actor_user_id ): array {
+        if ( $actor_user_id <= 0 ) {
             return [];
         }
 
         $choices = [];
-        foreach (App::membership_service()->active_memberships_for_user($actorUserId) as $membership) {
-            $clinicId = (int) ($membership['clinic_id'] ?? 0);
-            if ($clinicId <= 0 || !App::authorization_service()->can($actorUserId, $clinicId, RolesAndCapabilities::CONFIG)) {
+        foreach ( App::membership_service()->active_memberships_for_user( $actor_user_id ) as $membership ) {
+            $clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
+            if ( $clinic_id <= 0 || ! App::authorization_service()->can( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG ) ) {
                 continue;
             }
             $choices[] = [
-                'clinic_id' => $clinicId,
-                'clinic_name' => (string) ($membership['clinic_name'] ?? ('Clinic #' . $clinicId)),
+                'clinic_id'   => $clinic_id,
+                'clinic_name' => (string) ( $membership['clinic_name'] ?? ( 'Clinic #' . $clinic_id ) ),
             ];
         }
 
@@ -696,21 +900,32 @@ final class StaffManagementPage
 
     /**
      * Clinic selector for the rendered form. It is display context only; every
-     * write validates the value again through authorizeStaffWrite().
+     * write validates the value again through authorize_staff_write().
      */
     private static function formClinicId(): int
     {
         $requested = array_key_exists('clinic_id', $_GET) ? absint($_GET['clinic_id']) : null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
-        $authorization = self::authorizeStaffWrite((int) get_current_user_id(), $requested);
+        $authorization = self::authorize_staff_write( (int) get_current_user_id(), $requested );
 
         return $authorization['clinic_id'];
     }
 
-    /** آیا این کاربر قابل‌مدیریت است؟ (نقش قابل‌مدیریت یا غیرفعالِ دارای usermeta نقش قبلی) */
-    private static function isManageable(int $userId): bool
-    {
-        $user = get_userdata($userId);
+    /**
+     * آیا این کاربر قابل‌مدیریت است؟
+     *
+     * معیار «سه‌گانه» است و نقش سراسری WordPress تنها معیار نیست: نقش داخلی CPMS،
+     * usermeta غیرفعال‌سازی، یا وجود عضویتِ Clinic (شامل عضویت با نقش سفارشی که
+     * نقش WP آن داخلی نیست — Custom Role Slice 3B). این تابع فقط «قابل‌مدیریت بودن»
+     * را می‌گوید؛ مجوز هر write همچنان Clinic-scoped و در authorize_staff_write است.
+     */
+    private static function is_manageable( int $user_id ): bool {
+        $user = get_userdata( $user_id );
         if ($user === false) {
+            return false;
+        }
+        // WordPress administrator حسابِ CPMS نیست: نه قابل ویرایش/غیرفعال‌سازی است و
+        // نه عضویت به‌تنهایی آن را قابل‌مدیریت می‌کند (حفظِ مرزِ موجود — P-3).
+        if ( in_array( 'administrator', (array) $user->roles, true ) ) {
             return false;
         }
         foreach ($user->roles as $role) {
@@ -719,72 +934,100 @@ final class StaffManagementPage
             }
         }
         // کاربر غیرفعال (subscriber + usermeta) هم قابل مدیریت است تا بتوان فعال/re-activate کرد.
-        return get_user_meta($userId, self::META_PREV_ROLE, true) !== '';
+        if ( get_user_meta( $user_id, self::META_PREV_ROLE, true ) !== '' ) {
+            return true;
+        }
+
+        // عضویت Clinic معیار پایدار است، نه نقش سراسری WordPress: کارمندی که فقط
+        // از طریق عضویت (نقش داخلی یا سفارشی) به Clinic وصل است باید قابل مدیریت بماند.
+        return self::has_any_membership( $user_id );
     }
 
-    /** @return array<int, array<string,mixed>> */
-    private static function listUsers(int $clinicId): array
-    {
+    /** آیا این کاربر هر عضویتی در هر Clinic دارد؟ (معیار قابلیت‌مدیریت، نه مجوز) */
+    private static function has_any_membership( int $user_id ): bool {
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+
+        return App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_clinic_memberships' ) . ' WHERE wp_user_id = %d LIMIT 1',
+            [$user_id]
+        ) !== null;
+    }
+
+    /**
+     * فهرست پرسنل Clinic مورد اعتماد.
+     *
+     * معیارِ فهرست، «عضویت پایدار در همین Clinic» است — نه نقش سراسری WordPress
+     * (Custom Role Slice 3B). بنابراین کارمندی که نقش عضویت آن یک نقش سفارشیِ
+     * Clinic-local است (و نقش WP آن داخلی نیست) همچنان دیده می‌شود و قابل مدیریت
+     * می‌ماند. دامنهٔ پرس‌وجو همیشه شناسه‌های عضویت همین Clinic است، پس هیچ کاربرِ
+     * کلینیک دیگر (یا بدون عضویت) نمی‌تواند ظاهر شود.
+     *
+     * @return array<int, array<string,mixed>>
+     */
+    private static function list_users( int $clinic_id ): array {
         // No trusted/authorized Clinic means no Clinic-sensitive read. In
         // particular, clinic_id=0 must never fall through to installation-wide
         // get_users(); a global WP capability is not a Clinic context.
-        if ($clinicId <= 0) {
+        if ( $clinic_id <= 0 ) {
             return [];
         }
 
-        $membershipRows = App::db()->fetchAll(
-            'SELECT wp_user_id FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
-            [$clinicId]
+        $memberships = self::membership_rows_by_user( $clinic_id );
+        if ( $memberships === [] ) {
+            return [];
+        }
+        $user_ids = array_keys( $memberships );
+
+        $users = get_users(
+            [
+                'include' => $user_ids,
+                'fields'  => 'all',
+                'number'  => 500,
+                'orderby' => 'display_name',
+                'order'   => 'ASC',
+            ]
         );
-        $userIds = array_values(array_unique(array_filter(array_map(
-            static fn (array $row): int => (int) ($row['wp_user_id'] ?? 0),
-            is_array($membershipRows) ? $membershipRows : []
-        ), static fn (int $userId): bool => $userId > 0)));
-        if ($userIds === []) {
-            return [];
-        }
-
-        $manageableQuery = [
-            'role__in' => self::MANAGEABLE_ROLES,
-            'fields' => 'all',
-            'number' => 500,
-            'orderby' => 'display_name',
-            'order' => 'ASC',
-        ];
-        $inactiveQuery = [
-            'meta_key' => self::META_PREV_ROLE,
-            'fields' => 'all',
-            'number' => 500,
-        ];
-        $manageableQuery['include'] = $userIds;
-        $inactiveQuery['include'] = $userIds;
-
-        $users = get_users($manageableQuery);
-        // کاربران غیرفعال (دارای usermeta cpms_previous_role) نیز نمایش داده شوند.
-        $users = array_merge($users, get_users($inactiveQuery));
 
         $rows = [];
         $seen = [];
         $labels = self::roleLabels();
-        $clinicianByUser = self::clinicianLinkMap($clinicId);
+        $custom_labels     = self::custom_role_labels( $clinic_id );
+        $clinician_by_user = self::clinician_link_map( $clinic_id );
         foreach ($users as $u) {
             $id = (int) $u->ID;
             if (isset($seen[$id])) {
                 continue;
             }
             $seen[$id] = true;
-            $prevRole = (string) get_user_meta($id, self::META_PREV_ROLE, true);
-            $active = $prevRole === '';
-            $role = $active ? ($u->roles[0] ?? '') : $prevRole;
+            $membership        = $memberships[ $id ] ?? null;
+            $membership_role   = $membership === null ? '' : (string) ( $membership['role_key'] ?? '' );
+            $membership_status = $membership === null ? 'suspended' : (string) ( $membership['status'] ?? 'suspended' );
+            $wp_role           = (string) ( $u->roles[0] ?? '' );
+            // Clinic-local membership role_key is authoritative for the Clinic;
+            // the WP-global role is only a fallback for rows without a membership
+            // role (which the membership-based listing no longer produces).
+            $role   = $membership_role !== '' ? $membership_role : $wp_role;
+            $custom = array_key_exists( $role, $custom_labels );
+            $label  = $labels[ $role ] ?? '';
+
+            if ( $label === '' ) {
+                $custom_name = $custom ? $custom_labels[ $role ] : '';
+                $label       = ( $custom_name !== null && $custom_name !== '' ? $custom_name : $role ) . ( $custom ? ' (نقش سفارشی)' : '' );
+            }
+
             $rows[] = [
                 'id' => $id,
                 'login' => (string) $u->user_login,
                 'email' => (string) $u->user_email,
                 'display_name' => (string) $u->display_name,
-                'role' => (string) $role,
-                'role_label' => $labels[$role] ?? $role,
-                'active' => $active,
-                'clinician' => $clinicianByUser[$id] ?? '',
+                'role'            => $role,
+                'role_label'      => $label,
+                'active'          => $membership_status === 'active',
+                'membership_role' => $membership_role,
+                'custom_role'     => $custom,
+                'clinician'       => $clinician_by_user[ $id ] ?? '',
             ];
         }
 
@@ -792,20 +1035,71 @@ final class StaffManagementPage
     }
 
     /**
+     * عضویت‌های همین Clinic، کلید‌شده با wp_user_id (منبعِ نمایش و انتساب).
+     *
+     * @return array<int, array<string,mixed>>
+     */
+    private static function membership_rows_by_user( int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
+            return [];
+        }
+
+        $rows = App::db()->fetchAll(
+            'SELECT id, wp_user_id, role_key, status FROM ' . App::db()->table( 'cpms_clinic_memberships' ) .
+            ' WHERE clinic_id = %d ORDER BY wp_user_id LIMIT 500',
+            [$clinic_id]
+        );
+
+        $map = [];
+        foreach ( is_array( $rows ) ? $rows : [] as $row ) {
+            if ( ! is_array( $row ) ) {
+                continue;
+            }
+            $user_id = (int) ( $row['wp_user_id'] ?? 0 );
+            if ( $user_id > 0 ) {
+                $map[ $user_id ] = $row;
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * نقشه role_key سفارشی → نام نمایشی، فقط برای تعریف‌های همین Clinic.
+     * یک مقدار نامعتبر/ناموجود در UI به کلید فنی برمی‌گردد (هرگز برچسب گمراه‌کننده).
+     *
+     * @return array<string, string|null>
+     */
+    private static function custom_role_labels( int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
+            return [];
+        }
+
+        $labels = [];
+        foreach ( ( new CustomRoleRepository( App::db() ) )->list_definitions( $clinic_id ) as $definition ) {
+            $key = (string) ( $definition['role_key'] ?? '' );
+            if ( $key !== '' ) {
+                $labels[ $key ] = $definition['display_name'];
+            }
+        }
+
+        return $labels;
+    }
+
+    /**
      * نقشه wp_user_id → نام پزشک، فقط برای Clinic مورد اعتمادِ همین فهرست.
      *
      * @return array<int, string>
      */
-    private static function clinicianLinkMap(int $clinicId): array
-    {
-        if ($clinicId <= 0) {
+    private static function clinician_link_map( int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
             return [];
         }
 
         $rows = App::db()->fetchAll(
             'SELECT wp_user_id, full_name FROM ' . App::db()->table('cpms_clinicians') .
             ' WHERE clinic_id = %d AND wp_user_id IS NOT NULL AND is_active = 1',
-            [$clinicId]
+            [$clinic_id]
         );
         $map = [];
         foreach (is_array($rows) ? $rows : [] as $r) {
@@ -831,13 +1125,12 @@ final class StaffManagementPage
     }
 
     /** @return array<string,mixed>|null */
-    private static function editTarget(int $clinicId): ?array
-    {
+    private static function edit_target( int $clinic_id ): ?array {
         $id = isset($_GET['edit']) ? absint($_GET['edit']) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        if ($id <= 0 || $clinicId <= 0) {
+        if ( $id <= 0 || $clinic_id <= 0 ) {
             return null;
         }
-        foreach (self::listUsers($clinicId) as $r) {
+        foreach ( self::list_users( $clinic_id ) as $r ) {
             if ((int) $r['id'] === $id) {
                 return $r;
             }

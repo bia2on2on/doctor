@@ -1155,11 +1155,21 @@ final class FinanceService
         return [$code, $name, $this->minorToDb($price)];
     }
 
-    private function requireCap(int $wpUserId, string $cap, string $scope): void
-    {
-        // Defense-in-depth: cap سراسری هرگز مرجع نهایی نیست.
-        if (!user_can($wpUserId, $cap)) {
-            throw FinanceException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+    private function requireCap( int $wp_user_id, string $cap, string $scope ): void { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style method name on this pre-existing service (the whole class is camelCase); renaming one method is an unnecessary cross-cutting churn outside this correction.
+        // Clinic-scoped authority is the authoritative gate: an ACTIVE
+        // Clinic-local custom role is legitimate authority and can never
+        // satisfy a WordPress-GLOBAL capability. When a trusted Clinic scope is
+        // already established the scoped engine decides; without one the legacy
+        // global check is kept unchanged (the caller then fails the scope
+        // requirement exactly as before). Never a widening: every caller still
+        // runs authorizeScoped()/the scoped engine for the same capability.
+        $scope_context = ScopeContext::tryGet();
+        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+        $authorized    = $clinic_id > 0
+            ? App::authorization_service()->can( $wp_user_id, $clinic_id, $cap )
+            : user_can( $wp_user_id, $cap );
+        if ( ! $authorized ) {
+            throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, [ 'scope' => $scope ] );
         }
     }
 

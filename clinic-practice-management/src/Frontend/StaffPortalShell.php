@@ -521,9 +521,27 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Finance board visibility is derived from the existing global and
-	 * Clinic-scoped finance + invoice + queue read authority. Membership alone
-	 * is never sufficient; no role or capability is introduced here.
+	 * Finance board visibility is derived from the existing Clinic-scoped
+	 * finance + invoice + queue read authority. ALL module capabilities must be
+	 * effective inside the SAME ACTIVE Clinic via AuthorizationService (explicit
+	 * deny, then grant, then preset — the deny precedence is the engine's, not a
+	 * local rule). Membership alone is never sufficient; no role or capability is
+	 * introduced here.
+	 *
+	 * The WordPress-GLOBAL capability check is deliberately NOT part of this
+	 * decision: a Clinic-local custom role is durable membership data, so a
+	 * WP-global `has_cap()` can never recognize it and would hide the module from
+	 * legitimate staff. Removing it widens nothing — the scoped engine below still
+	 * requires every read capability in one Clinic, an ACTIVE membership, and
+	 * answers false for a WP-global-only actor (no membership) and for the
+	 * built-in presets that lack a read capability.
+	 *
+	 * A page request carries no trusted Clinic, so this only answers whether at
+	 * least one ACTIVE Clinic grants the read capabilities. The module keeps
+	 * requiring explicit trusted Clinic selection before any Clinic data is read,
+	 * and every REST call re-authorizes (see the finance context route).
+	 *
+	 * @param int $user_id WordPress user id.
 	 */
 	public static function finance_module_eligible( int $user_id ): bool {
 		if ( $user_id <= 0 ) {
@@ -532,11 +550,6 @@ final class StaffPortalShell {
 		$user = get_userdata( $user_id );
 		if ( false === $user || ! $user->exists() ) {
 			return false;
-		}
-		foreach ( self::FINANCE_MODULE_CAPS as $cap ) {
-			if ( ! $user->has_cap( $cap ) ) {
-				return false;
-			}
 		}
 
 		$auth = App::authorization_service();
