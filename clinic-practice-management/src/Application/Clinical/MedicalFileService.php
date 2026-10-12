@@ -171,7 +171,27 @@ final class MedicalFileService
         $onlyVisible = ! $this->can_see_private( $actorUserId, $durableClinicId );
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
-        return array_map([$this, 'presentFile'], $this->files->forPatient($patientId, $onlyVisible));
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameters.
+        $rows = $this->files->forPatient( $patientId, $onlyVisible );
+        $rows = array_values(
+            array_filter(
+                $rows,
+                function ( array $row ) use ( $actorUserId, $durableClinicId ): bool {
+                    if ( (int) ( $row['clinic_id'] ?? 0 ) !== $durableClinicId ) {
+                        return false;
+                    }
+                    if ( (string) ( $row['visibility'] ?? '' ) === 'doctor_private' ) {
+                        return $this->ownsPrivateFile( $actorUserId, $row );
+                    }
+
+                    return true;
+                }
+            )
+        );
+
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+
+        return array_map( [ $this, 'presentFile' ], $rows );
     }
 
     // ================= E17 — Stream مجوزیافته =================
@@ -274,6 +294,20 @@ final class MedicalFileService
             'file',
             $fileId
         );
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameters.
+        if (
+            (string) ( $row['visibility'] ?? '' ) === 'doctor_private'
+            && ! $this->ownsPrivateFile( $actorUserId, $row )
+        ) {
+            $this->auditAndThrow(
+                $actorUserId,
+                'file',
+                $fileId,
+                'actor does not own the private-file Visit',
+                'فایل یافت نشد'
+            );
+        }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->files->softDelete($fileId);
         $this->audit->log(
             'FILE_SOFT_DELETED',
@@ -319,6 +353,25 @@ final class MedicalFileService
             }
         }
 
+        // Private attachment authority is resolved before even validating/opening
+        // the presented temp path: the Visit and active clinician identity are the
+        // durable source of ownership, never the uploader id.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase store parameters.
+        $patientClinicId = 0;
+        if ( $visibility === 'doctor_private' ) {
+            $patientClinicId = $this->patientClinicId( $patientId );
+            if ( $patientClinicId === 0 ) {
+                throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
+            }
+            $this->assertPrivateFileUploadAuthority(
+                $actorUserId,
+                $patientClinicId,
+                $patientId,
+                $visitId
+            );
+        }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+
         $tmp = (string) ($file['tmp_name'] ?? '');
         if ($tmp === '' || !is_uploaded_file($tmp) && !is_file($tmp)) {
             throw ClinicalException::of('CLINIC_FILE_INVALID', 'فایلی برای ذخیره دریافت نشد', 400);
@@ -329,12 +382,15 @@ final class MedicalFileService
 
         // Clinicِ فایل = Clinicِ بیمار (relation). این lookup اینجا لازم است چون
         // سقفِ حجم یک Settingِ per-Clinic است و باید از Clinicِ مالکِ همین عملیات
-        // خوانده شود؛ در نبودِ بیمار، درخواست چند خط پایین‌تر با 404 رد می‌شود
-        // (پیش از هر نوشتن روی دیسک).
-        $patientClinicId = $this->patientClinicId($patientId);
-        if ($patientClinicId === 0) {
-            throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+        // خوانده شود؛ در نبودِ بیمار، درخواست با 404 رد می‌شود.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase store parameters.
+        if ( $patientClinicId === 0 ) {
+            $patientClinicId = $this->patientClinicId( $patientId );
+            if ( $patientClinicId === 0 ) {
+                throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
+            }
         }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         // F-3: حجم (سقف از Settingِ Clinicِ مالک)
         $maxBytes = max(1, (int) $this->settingsFor($patientClinicId)->get('files.max_upload_bytes', 10485760));
@@ -405,6 +461,16 @@ final class MedicalFileService
         if ( $visitId !== null ) {
             $this->assert_visit_of_patient( $visitId, $patientClinicId, $patientId );
         }
+        if ( $visibility === 'doctor_private' ) {
+            // Recheck ownership after content validation but immediately before any
+            // protected write, in addition to the pre-read authorization above.
+            $this->assertPrivateFileUploadVisitOwner(
+                $actorUserId,
+                $patientClinicId,
+                $patientId,
+                $visitId
+            );
+        }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
 
@@ -468,6 +534,117 @@ final class MedicalFileService
         }
 
         return App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ );
+    }
+
+    /**
+     * Resolve only a persisted Visit that matches the attachment's Clinic and Patient.
+     * Legacy/malformed rows with a missing or inconsistent link return null.
+     *
+     * @param array<string, mixed> $file
+     * @return array<string, mixed>|null
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing camelCase service convention.
+    private function privateFileVisit( array $file ): ?array {
+        $clinicId  = (int) ( $file['clinic_id'] ?? 0 );
+        $patientId = (int) ( $file['patient_id'] ?? 0 );
+        $visitId   = (int) ( $file['visit_id'] ?? 0 );
+        if ( $clinicId <= 0 || $patientId <= 0 || $visitId <= 0 ) {
+            return null;
+        }
+
+        $visits   = App::db()->table( 'cpms_visits' );
+        $patients = App::db()->table( 'cpms_patients' );
+        $sql      = 'SELECT v.id, v.clinic_id, v.patient_id, v.clinician_id FROM ' . $visits . ' v'
+            . ' INNER JOIN ' . $patients . ' p ON p.id = v.patient_id AND p.clinic_id = v.clinic_id'
+            . ' WHERE v.id = %d AND v.clinic_id = %d AND v.patient_id = %d LIMIT 1';
+
+        return App::db()->fetchRow( $sql, [ $visitId, $clinicId, $patientId ] );
+    }
+
+    /**
+     * Private-file owner check backed by the same active clinician/Visit predicate
+     * used by ClinicalService private notes.
+     *
+     * @param array<string, mixed> $file
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing camelCase service convention.
+    private function ownsPrivateFile( int $actorUserId, array $file ): bool {
+        $visit = $this->privateFileVisit( $file );
+
+        return $visit !== null && App::clinicalService()->ownsVisit( $actorUserId, $visit );
+    }
+
+    /**
+     * Clinic authority and both existing scoped upload capabilities are necessary,
+     * then the file must be attached to a same-Clinic/same-Patient Visit owned by
+     * the authenticated user's active clinician identity. Called before file reads.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing camelCase service convention.
+    private function assertPrivateFileUploadAuthority(
+        int $actorUserId,
+        int $clinicId,
+        int $patientId,
+        ?int $visitId
+    ): void {
+        $this->assertStaffClinic( $actorUserId, $clinicId, 'patient', $patientId );
+        $this->authorizeScoped(
+            $actorUserId,
+            $clinicId,
+            RolesAndCapabilities::FILE_UPLOAD,
+            'patient',
+            $patientId
+        );
+        $this->authorizeScoped(
+            $actorUserId,
+            $clinicId,
+            RolesAndCapabilities::PRIVATE_NOTE_CREATE,
+            'patient',
+            $patientId
+        );
+        $this->assertPrivateFileUploadVisitOwner(
+            $actorUserId,
+            $clinicId,
+            $patientId,
+            $visitId
+        );
+    }
+
+    /**
+     * Fail closed for visitless, foreign, cross-Patient, or non-owned Visits.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing camelCase service convention.
+    private function assertPrivateFileUploadVisitOwner(
+        int $actorUserId,
+        int $clinicId,
+        int $patientId,
+        ?int $visitId
+    ): void {
+        if ( $visitId === null ) {
+            $this->auditAndThrow(
+                $actorUserId,
+                'patient',
+                $patientId,
+                'doctor_private requires a persisted Visit',
+                'فایل یافت نشد'
+            );
+        }
+
+        $visit = $this->privateFileVisit(
+            [
+                'clinic_id'  => $clinicId,
+                'patient_id' => $patientId,
+                'visit_id'   => $visitId,
+            ]
+        );
+        if ( $visit === null || ! App::clinicalService()->ownsVisit( $actorUserId, $visit ) ) {
+            $this->auditAndThrow(
+                $actorUserId,
+                'visit',
+                $visitId,
+                'actor does not own the private-file Visit',
+                'فایل یافت نشد'
+            );
+        }
     }
 
     /**
@@ -819,8 +996,25 @@ final class MedicalFileService
         // doctor_private: اختیار خصوصی Clinic-scoped لازم است (نقش سراسری کافی نیست).
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
         $visibility = (string) ( $row['visibility'] ?? '' );
-        if ( 'doctor_private' === $visibility && ! $this->can_see_private( $actorUserId, $durableClinicId ) ) {
-            $this->auditAndThrow( $actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد' );
+        if ( 'doctor_private' === $visibility ) {
+            if ( ! $this->can_see_private( $actorUserId, $durableClinicId ) ) {
+                $this->auditAndThrow(
+                    $actorUserId,
+                    'file',
+                    $fileId,
+                    'دسترسی به این فایل مجاز نیست',
+                    'فایل یافت نشد'
+                );
+            }
+            if ( ! $this->ownsPrivateFile( $actorUserId, $row ) ) {
+                $this->auditAndThrow(
+                    $actorUserId,
+                    'file',
+                    $fileId,
+                    'actor does not own the private-file Visit',
+                    'فایل یافت نشد'
+                );
+            }
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     }

@@ -924,7 +924,8 @@ final class Phase10StaffPortalVisitMedicalFilesRedTest extends WP_UnitTestCase
         $patientUser = $this->makeUser('g7_patient', RolesAndCapabilities::ROLE_PATIENT);
         $this->insertPatientLink($fx['clinic'], $patient, $patientUser);
         $fPub = $this->seedFile($fx['doctor'], $patient, null, 'document', 'patient_visible', 'g7-pub.pdf', $this->pdfContent() . "%g7pub\n");
-        $fPriv = $this->seedFile($fx['doctor'], $patient, null, 'lab_result', 'doctor_private', 'g7-priv.pdf', $this->pdfContent() . "%g7priv\n");
+        $privateVisit = $this->insertVisit($patient, $fx['clinician'], $fx['clinic'], $fx['location'], 'in_consultation');
+        $fPriv = $this->seedFile($fx['doctor'], $patient, $privateVisit, 'lab_result', 'doctor_private', 'g7-priv.pdf', $this->pdfContent() . "%g7priv\n");
 
         wp_set_current_user($patientUser);
         $rList = $this->dispatch('GET', '/' . sprintf(self::PATIENT_FILES, $patient), [], $this->scopeHeaders($fx['clinic'], null));

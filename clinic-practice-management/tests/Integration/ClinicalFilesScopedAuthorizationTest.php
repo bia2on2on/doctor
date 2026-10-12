@@ -133,7 +133,8 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
     {
         $actor = $this->doctorWithScopedDeny($this->clinicA, RolesAndCapabilities::FILE_READ, 's5_reda');
         $patient = $this->createPatient($this->clinicA);
-        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'red-a-secret.pdf');
+        $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $actor));
+        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'red-a-secret.pdf', $visitId);
 
         $this->assertScopedDenyPreconditions($actor, $this->clinicA, RolesAndCapabilities::FILE_READ);
         self::assertSame($this->clinicA, $this->attachmentClinicId($fileId), 'precondition: durable file clinic = A');
@@ -169,7 +170,8 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
     {
         $actor = $this->doctorWithScopedDeny($this->clinicA, RolesAndCapabilities::FILE_READ, 's5_reda2');
         $patient = $this->createPatient($this->clinicA);
-        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'red-a-secret2.pdf');
+        $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $actor));
+        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'red-a-secret2.pdf', $visitId);
 
         $this->assertScopedDenyPreconditions($actor, $this->clinicA, RolesAndCapabilities::FILE_READ);
         self::assertTrue($this->storedFileExists($fileId), 'precondition: the bytes are really on disk');
@@ -301,7 +303,8 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $actor = $this->makeUser('s5_susp', RolesAndCapabilities::ROLE_DOCTOR);
         $membershipId = $this->createMembership($actor, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR);
         $patient = $this->createPatient($this->clinicA);
-        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'suspend-me.pdf');
+        $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $actor));
+        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'suspend-me.pdf', $visitId);
 
         App::membership_service()->suspend_membership($membershipId);
         self::assertNull(
@@ -476,8 +479,9 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $doctor = $this->makeUser('s5_doc_priv', RolesAndCapabilities::ROLE_DOCTOR);
         $this->createMembership($doctor, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR);
         $patient = $this->createPatient($this->clinicA);
+        $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $doctor));
 
-        $privateFile = $this->uploadViaService($doctor, $patient, 'doctor_private', 'private-for-doctor.pdf');
+        $privateFile = $this->uploadViaService($doctor, $patient, 'doctor_private', 'private-for-doctor.pdf', $visitId);
         $publicFile = $this->uploadViaService($secretary, $patient, 'patient_visible', 'front-desk.pdf');
 
         self::assertTrue(
@@ -655,7 +659,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $this->createMembership($actor, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR);
         $patient = $this->createPatient($this->clinicA);
         $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $actor));
-        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'allowed.pdf');
+        $fileId = $this->uploadViaService($actor, $patient, 'doctor_private', 'allowed.pdf', $visitId);
 
         self::assertTrue($this->authz()->can($actor, $this->clinicA, RolesAndCapabilities::FILE_READ));
 
@@ -837,7 +841,8 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $this->createMembership($doctor, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR);
         $patient = $this->createPatient($this->clinicA);
         $patientUser = $this->linkPatientUser($patient, $this->clinicA, 's5_pat_priv')[1];
-        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'hidden-from-patient.pdf');
+        $visitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $doctor));
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'hidden-from-patient.pdf', $visitId);
 
         try {
             App::medicalFileService()->stream($patientUser, $fileId);
@@ -918,7 +923,8 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         self::assertSame($bytesBefore, $this->storedByteCount(), 'no byte may reach storage');
 
         // (d) read denied ⇒ no bytes and no FILE_READ audit.
-        $secretFile = $this->uploadViaService($uploader, $patient, 'doctor_private', 'private-denial.pdf');
+        $uploaderVisitId = $this->createVisit($this->clinicA, $patient, $this->createClinician($this->clinicA, $uploader));
+        $secretFile = $this->uploadViaService($uploader, $patient, 'doctor_private', 'private-denial.pdf', $uploaderVisitId);
         $leaked = -1;
         try {
             $readable = App::medicalFileService()->stream($actor, $secretFile);
@@ -928,6 +934,430 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         }
         self::assertSame(-1, $leaked, 'a denied stream must throw before reading (observed bytes=' . $leaked . ')');
         self::assertSame(0, $this->auditCount('FILE_READ', 'file', $secretFile));
+    }
+
+    public function testSameClinicNonOwnerCannotStreamVisitOwnersPrivateFile(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_owner_stream');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'owner-only-stream.pdf', $visitId);
+
+        $peer = $this->authorizedDoctorIn($this->clinicA, 'private_peer_stream');
+        $this->createClinician($this->clinicA, $peer);
+        $this->bindHarnessScope($this->clinicA);
+        self::assertTrue($this->authz()->can($peer, $this->clinicA, RolesAndCapabilities::FILE_READ));
+        self::assertTrue($this->authz()->can($peer, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ));
+
+        $denied = null;
+        $content = '';
+        try {
+            $streamed = App::medicalFileService()->stream($peer, $fileId);
+            $content = (string) ($streamed['content'] ?? '');
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'same-Clinic doctor without the persisted Visit clinician identity must be denied');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(404, $denied->httpStatus);
+        self::assertSame('', $content, 'no private bytes may be returned to a same-Clinic non-owner');
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId), 'denial must happen before a successful-read audit');
+
+        $restDenied = $this->dispatchStream($peer, $fileId);
+        self::assertSame(404, $restDenied->get_status(), 'the authenticated REST download route preserves non-owner denial');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($restDenied));
+        self::assertSame('', is_string($restDenied->get_data()) ? $restDenied->get_data() : '');
+
+        $ownerStream = App::medicalFileService()->stream($owner, $fileId);
+        self::assertStringContainsString(self::SECRET_MARKER, (string) $ownerStream['content'], 'positive owner control');
+    }
+
+    public function testUploaderIdentityCannotReplaceThePersistedVisitClinician(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_uploader_visit_owner');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $uploader = $this->authorizedDoctorIn($this->clinicA, 'private_uploader_is_not_owner');
+        $this->createClinician($this->clinicA, $uploader);
+        $path = $this->writeRawStoredFile($this->clinicA, 'uploader-is-not-owner.pdf');
+        $fileId = $this->insertAttachmentRow(
+            $this->clinicA,
+            $patient,
+            $path,
+            'uploader-is-not-owner.pdf',
+            $uploader,
+            $visitId,
+            'doctor_private'
+        );
+
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($uploader, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+        self::assertNotNull($denied, 'uploaded_by_wp_user_id is not responsible-clinician ownership proof');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
+
+        self::assertStringContainsString(
+            self::SECRET_MARKER,
+            (string) App::medicalFileService()->stream($owner, $fileId)['content'],
+            'positive control: persisted Visit clinician can read'
+        );
+    }
+
+    public function testExplicitPrivateNoteReadDenyStillBlocksVisitOwnersPrivateFile(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_owner_note_read_deny');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'private-read-deny.pdf', $visitId);
+
+        $membership = App::membership_service()->membership_for($this->clinicA, $owner);
+        self::assertIsArray($membership);
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
+        $this->bindHarnessScope($this->clinicA);
+
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($owner, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+        self::assertNotNull($denied, 'durable Visit ownership does not override the existing scoped private-read DENY');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
+
+        $listedIds = array_map(
+            static fn (array $file): int => (int) $file['id'],
+            App::medicalFileService()->staffFiles($owner, $patient)
+        );
+        self::assertNotContains($fileId, $listedIds, 'Clinic-scoped PRIVATE_NOTE_READ DENY also removes private list metadata');
+
+        $record = App::clinicalService()->record($owner, $visitId);
+        self::assertNotContains(
+            $fileId,
+            array_map(static fn (array $file): int => (int) $file['id'], $record['files']),
+            'Visit-record private metadata keeps the explicit private-read DENY'
+        );
+    }
+
+    public function testSameClinicNonOwnerCannotSoftDeletePrivateFile(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_owner_delete');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'owner-only-delete.pdf', $visitId);
+
+        $peer = $this->authorizedDoctorIn($this->clinicA, 'private_peer_delete');
+        $this->createClinician($this->clinicA, $peer);
+        $this->bindHarnessScope($this->clinicA);
+        $denied = null;
+        try {
+            App::medicalFileService()->softDelete($peer, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'Clinic-scoped FILE_UPLOAD does not grant ownership of another clinician private file');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame('', $this->attachmentDeletedAt($fileId), 'non-owner cannot mutate private attachment metadata');
+    }
+
+    public function testSameClinicNonOwnerDoesNotSeePrivateFileMetadataInListsOrRecord(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_owner_meta');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'owner-only-meta.pdf', $visitId);
+        App::clinicalService()->addNote($owner, $visitId, [
+            'category' => 'private_note',
+            'visibility' => 'doctor_private',
+            'content_text' => 'private-note-owner-control',
+        ]);
+
+        $peer = $this->authorizedDoctorIn($this->clinicA, 'private_peer_meta');
+        $this->createClinician($this->clinicA, $peer);
+        $this->bindHarnessScope($this->clinicA);
+
+        $listedIds = array_map(
+            static fn (array $file): int => (int) $file['id'],
+            App::medicalFileService()->staffFiles($peer, $patient)
+        );
+        self::assertNotContains($fileId, $listedIds, 'same-Clinic non-owner must not receive private file list metadata');
+
+        $record = App::clinicalService()->record($peer, $visitId);
+        self::assertSame([], array_values(array_filter(
+            $record['notes'],
+            static fn (array $note): bool => (string) ($note['visibility'] ?? '') === 'doctor_private'
+        )), 'existing private-note ownership remains enforced');
+        $recordFileIds = array_map(static fn (array $file): int => (int) $file['id'], $record['files']);
+        self::assertNotContains($fileId, $recordFileIds, 'same-Clinic non-owner must not receive Visit-record private file metadata');
+
+        $ownerRecord = App::clinicalService()->record($owner, $visitId);
+        self::assertContains($fileId, array_map(static fn (array $file): int => (int) $file['id'], $ownerRecord['files']), 'positive Visit-owner metadata control');
+    }
+
+    public function testLegacyVisitlessPrivateFileFailsClosedEvenForItsUploader(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_legacy_uploader');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $path = $this->writeRawStoredFile($this->clinicA, 'legacy-private.pdf');
+        $fileId = $this->insertAttachmentRow(
+            $this->clinicA,
+            $patient,
+            $path,
+            'legacy-private.pdf',
+            $owner,
+            null,
+            'doctor_private'
+        );
+        self::assertTrue($this->storedFileExists($fileId), 'legacy fixture has real protected bytes');
+
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($owner, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'legacy visitless private files fail closed; uploader id is not ownership');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
+    }
+
+    public function testPrivateFileWithMismatchedVisitPatientFailsClosed(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_bad_patient');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $otherPatient = $this->createPatient($this->clinicA);
+        $path = $this->writeRawStoredFile($this->clinicA, 'mismatched-visit-patient.pdf');
+        $fileId = $this->insertAttachmentRow(
+            $this->clinicA,
+            $otherPatient,
+            $path,
+            'mismatched-visit-patient.pdf',
+            $owner,
+            $visitId,
+            'doctor_private'
+        );
+
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($owner, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+        self::assertNotNull($denied, 'private attachment Visit must belong to the same persisted Patient');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
+    }
+
+    public function testDoctorWithoutActiveClinicianIdentityCannotReadPrivateFile(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicA, 'private_identity_owner');
+        $visitId = $this->createVisitFixture($this->clinicA, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'active-identity-required.pdf', $visitId);
+
+        // This doctor has ordinary same-Clinic role/capabilities but deliberately
+        // has no active cpms_clinicians row linked to their WP user.
+        $unlinkedDoctor = $this->authorizedDoctorIn($this->clinicA, 'private_identity_missing');
+        $this->bindHarnessScope($this->clinicA);
+        self::assertTrue($this->authz()->can($unlinkedDoctor, $this->clinicA, RolesAndCapabilities::FILE_READ));
+
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($unlinkedDoctor, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+        self::assertNotNull($denied, 'WP doctor role and Clinic permission do not replace an active clinician identity');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
+    }
+
+    public function testVisitlessPrivateUploadIsRejectedBeforeReadingOrWritingBytes(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'private_upload_no_visit');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $denied = null;
+        try {
+            App::medicalFileService()->upload(
+                $doctor,
+                $this->missingUploadedFileArgs('visitless-private.pdf'),
+                $patient,
+                null,
+                'document',
+                'doctor_private'
+            );
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'new doctor_private uploads require a Visit');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode, 'Visit ownership is checked before temp-file validation');
+        self::assertSame(404, $denied->httpStatus);
+        self::assertSame($rowsBefore, $this->attachmentRowCount(), 'no private attachment metadata row');
+        self::assertSame($bytesBefore, $this->storedByteCount(), 'no private bytes reach protected storage');
+    }
+
+    public function testPrivateUploadByDifferentSameClinicDoctorIsRejectedBeforeFileRead(): void
+    {
+        $visitOwner = $this->authorizedDoctorIn($this->clinicA, 'private_upload_visit_owner');
+        $visitId = $this->createVisitFixture($this->clinicA, $visitOwner);
+        $patient = $this->patientOfVisit($visitId);
+        $otherDoctor = $this->authorizedDoctorIn($this->clinicA, 'private_upload_other_doctor');
+        $this->createClinician($this->clinicA, $otherDoctor);
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $denied = null;
+        try {
+            App::medicalFileService()->upload(
+                $otherDoctor,
+                $this->missingUploadedFileArgs('different-doctor-private.pdf'),
+                $patient,
+                $visitId,
+                'document',
+                'doctor_private'
+            );
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'a same-Clinic doctor cannot upload into a Visit owned by another clinician');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode, 'responsible-clinician authorization precedes file reads');
+        self::assertSame($rowsBefore, $this->attachmentRowCount());
+        self::assertSame($bytesBefore, $this->storedByteCount());
+    }
+
+    public function testPrivateUploadWithForeignClinicVisitIsRejectedBeforeFileRead(): void
+    {
+        $doctorA = $this->authorizedDoctorIn($this->clinicA, 'private_upload_clinic_a');
+        $visitA = $this->createVisitFixture($this->clinicA, $doctorA);
+        $patientA = $this->patientOfVisit($visitA);
+        $doctorB = $this->authorizedDoctorIn($this->clinicB, 'private_upload_clinic_b');
+        $visitB = $this->createVisitFixture($this->clinicB, $doctorB);
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $denied = null;
+        try {
+            App::medicalFileService()->upload(
+                $doctorA,
+                $this->missingUploadedFileArgs('foreign-clinic-visit-private.pdf'),
+                $patientA,
+                $visitB,
+                'document',
+                'doctor_private'
+            );
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'a private attachment cannot bind a Visit from another Clinic');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode, 'foreign Visit denied before file reads');
+        self::assertSame($rowsBefore, $this->attachmentRowCount());
+        self::assertSame($bytesBefore, $this->storedByteCount());
+    }
+
+    public function testPrivateUploadWithAnotherPatientsVisitIsRejectedBeforeReadingOrWritingBytes(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'private_upload_bad_patient');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $otherPatient = $this->createPatient($this->clinicA);
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $denied = null;
+        try {
+            App::medicalFileService()->upload(
+                $doctor,
+                $this->missingUploadedFileArgs('mismatched-visit-private.pdf'),
+                $otherPatient,
+                $visitId,
+                'document',
+                'doctor_private'
+            );
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'a private upload Visit must belong to its attachment Patient');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode, 'durable Visit/patient validation precedes file reads');
+        self::assertSame($rowsBefore, $this->attachmentRowCount());
+        self::assertSame($bytesBefore, $this->storedByteCount());
+    }
+
+    public function testPrivateUploadClinicScopedDenyPrecedesFileRead(): void
+    {
+        $doctor = $this->authorizedDoctorIn($this->clinicA, 'private_upload_scoped_deny');
+        $visitId = $this->createVisitFixture($this->clinicA, $doctor);
+        $patient = $this->patientOfVisit($visitId);
+        $membership = App::membership_service()->membership_for($this->clinicA, $doctor);
+        self::assertIsArray($membership);
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::FILE_UPLOAD, 'deny');
+        $this->bindHarnessScope($this->clinicA);
+        $rowsBefore = $this->attachmentRowCount();
+        $bytesBefore = $this->storedByteCount();
+
+        $denied = null;
+        try {
+            App::medicalFileService()->upload(
+                $doctor,
+                $this->missingUploadedFileArgs('scoped-deny-private.pdf'),
+                $patient,
+                $visitId,
+                'document',
+                'doctor_private'
+            );
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+
+        self::assertNotNull($denied, 'Clinic-scoped FILE_UPLOAD deny is authoritative');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode, 'scoped authorization precedes temp-file validation');
+        self::assertSame($rowsBefore, $this->attachmentRowCount());
+        self::assertSame($bytesBefore, $this->storedByteCount());
+    }
+
+    public function testPrivateFileInAnotherClinicRemainsInaccessible(): void
+    {
+        $owner = $this->authorizedDoctorIn($this->clinicB, 'private_other_clinic_owner');
+        $visitId = $this->createVisitFixture($this->clinicB, $owner);
+        $patient = $this->patientOfVisit($visitId);
+        $this->bindHarnessScope($this->clinicB);
+        $fileId = $this->uploadViaService($owner, $patient, 'doctor_private', 'clinic-b-private.pdf', $visitId);
+
+        $otherClinicDoctor = $this->authorizedDoctorIn($this->clinicA, 'private_other_clinic_reader');
+        $this->createClinician($this->clinicA, $otherClinicDoctor);
+        $this->bindHarnessScope($this->clinicA);
+        $denied = null;
+        try {
+            App::medicalFileService()->stream($otherClinicDoctor, $fileId);
+        } catch (ClinicalException $e) {
+            $denied = $e;
+        }
+        self::assertNotNull($denied, 'visit ownership never bypasses the trusted-Clinic object boundary');
+        self::assertSame('CLINIC_NOT_FOUND', $denied->errorCode);
+        self::assertSame(0, $this->auditCount('FILE_READ', 'file', $fileId));
     }
 
     // =====================================================================
@@ -1003,7 +1433,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $visitId = $this->createVisitFixture($this->clinicA, $doctor);
         $patient = $this->patientOfVisit($visitId);
         $this->bindHarnessScope($this->clinicA);
-        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-stream.pdf');
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-stream.pdf', $visitId);
 
         $mixed = $this->wpDoctorSecretaryMember($this->clinicA, 'dp_mixed_stream');
         $this->bindHarnessScope($this->clinicA);
@@ -1026,7 +1456,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $visitId = $this->createVisitFixture($this->clinicA, $doctor);
         $patient = $this->patientOfVisit($visitId);
         $this->bindHarnessScope($this->clinicA);
-        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-list.pdf');
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-list.pdf', $visitId);
 
         $mixed = $this->wpDoctorSecretaryMember($this->clinicA, 'dp_mixed_list');
         $this->bindHarnessScope($this->clinicA);
@@ -1070,7 +1500,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
         $visitId = $this->createVisitFixture($this->clinicA, $doctor);
         $patient = $this->patientOfVisit($visitId);
         $this->bindHarnessScope($this->clinicA);
-        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-ok.pdf');
+        $fileId = $this->uploadViaService($doctor, $patient, 'doctor_private', 'dp-ok.pdf', $visitId);
 
         $listed = array_map(static fn (array $f): int => (int) $f['id'], App::medicalFileService()->staffFiles($doctor, $patient));
         $streamed = App::medicalFileService()->stream($doctor, $fileId);
@@ -1525,15 +1955,31 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
     }
 
     /**
+     * @return array{name: string, tmp_name: string, size: int, error: int}
+     */
+    private function missingUploadedFileArgs(string $name): array
+    {
+        $missingPath = sys_get_temp_dir() . '/s5-missing-' . bin2hex(random_bytes(12));
+        self::assertFileDoesNotExist($missingPath, 'precondition: no temp-file bytes can be read');
+
+        return [
+            'name' => $name,
+            'tmp_name' => $missingPath,
+            'size' => 512,
+            'error' => UPLOAD_ERR_OK,
+        ];
+    }
+
+    /**
      * Upload through the product service (the real MIME/storage/metadata path).
      */
-    private function uploadViaService(int $actor, int $patientId, string $visibility, string $filename): int
+    private function uploadViaService(int $actor, int $patientId, string $visibility, string $filename, ?int $visitId = null): int
     {
         $row = App::medicalFileService()->upload(
             $actor,
             $this->uploadedFileArgs($filename, $this->pdfContent()),
             $patientId,
-            null,
+            $visitId,
             'document',
             $visibility
         );
@@ -1621,23 +2067,25 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
     }
 
     /**
-     * Durable attachment row + real bytes on disk, built directly because the
-     * product would never produce this durable/ownership combination.
+     * Direct durable row + real bytes for legacy/malformed-ownership fixtures
+     * that the product service must now reject.
      */
     private function insertAttachmentRow(
         int $clinicId,
         int $patientId,
         string $relativePath,
         string $filename,
-        int $uploadedBy
+        int $uploadedBy,
+        ?int $visitId = null,
+        string $visibility = 'patient_visible'
     ): int {
         global $wpdb;
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_medical_attachments
-                     (clinic_id, patient_id, original_filename, stored_filename, mime_type, file_size,
+                     (clinic_id, patient_id, visit_id, original_filename, stored_filename, mime_type, file_size,
                       storage_path, visibility, category, uploaded_by_wp_user_id, created_at)
-                 VALUES (%d, %d, %s, %s, %s, %d, %s, %s, %s, %d, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, ' . ($visitId === null ? 'NULL' : (string) $visitId) . ', %s, %s, %s, %d, %s, %s, %s, %d, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $clinicId,
                 $patientId,
                 $filename,
@@ -1645,7 +2093,7 @@ final class ClinicalFilesScopedAuthorizationTest extends WP_UnitTestCase
                 'application/pdf',
                 strlen($this->pdfContent()),
                 $relativePath,
-                'patient_visible',
+                $visibility,
                 'document',
                 $uploadedBy,
                 App::db()->nowUtcSql()

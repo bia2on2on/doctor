@@ -140,7 +140,11 @@ final class ClinicalService
         );
 
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
-        $visit_files = $this->visit_owned_files( $this->files->forVisit( $visitId ), $visit );
+        $visit_files = $this->visit_owned_files(
+            $this->files->forVisit( $visitId ),
+            $visit,
+            $actorUserId
+        );
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         return [
@@ -159,7 +163,8 @@ final class ClinicalService
             'prescriptions' => $rxList,
             'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visitId)),
             'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visitId)),
-            // E7 contract: فایل‌های ویزیت (پزشک همه Visibilityها را می‌بیند — ماتریس §4.3)
+            // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
+            // the Visit-owner file authority.
             'files' => array_map(static fn (array $f): array => [
                 'id' => (int) $f['id'],
                 'original_filename' => (string) $f['original_filename'],
@@ -1457,17 +1462,64 @@ final class ClinicalService
      * @param array<string, mixed>       $visit
      * @return list<array<string, mixed>>
      */
-    private function visit_owned_files( array $files, array $visit ): array {
-        $clinic_id  = (int) $visit['clinic_id'];
-        $patient_id = (int) $visit['patient_id'];
-        $owned      = [];
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing private helper name.
+    private function visit_owned_files( array $files, array $visit, int $actor_user_id ): array {
+        $clinic_id              = (int) $visit['clinic_id'];
+        $patient_id             = (int) $visit['patient_id'];
+        $can_read_private_files = $this->canReadPrivateFiles( $actor_user_id, $visit );
+        $owned                  = [];
         foreach ( $files as $file ) {
-            if ( (int) $file['clinic_id'] === $clinic_id && (int) $file['patient_id'] === $patient_id ) {
-                $owned[] = $file;
+            if (
+                (int) $file['clinic_id'] !== $clinic_id
+                || (int) $file['patient_id'] !== $patient_id
+            ) {
+                continue;
             }
+            if ( (int) ( $file['visit_id'] ?? 0 ) !== (int) $visit['id'] ) {
+                continue;
+            }
+            if (
+                (string) ( $file['visibility'] ?? '' ) === 'doctor_private'
+                && ! $can_read_private_files
+            ) {
+                continue;
+            }
+            $owned[] = $file;
         }
 
         return $owned;
+    }
+
+    /**
+     * Visit-record private-file metadata follows the established file-read and
+     * private-note authority: global doctor role, Clinic-scoped FILE_READ and
+     * PRIVATE_NOTE_READ, plus the durable active Visit clinician identity.
+     * Private-note filtering itself remains unchanged.
+     *
+     * @param array<string, mixed> $visit
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing service naming convention.
+    private function canReadPrivateFiles( int $actor_user_id, array $visit ): bool {
+        $user = get_userdata( $actor_user_id );
+        if (
+            false === $user
+            || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true )
+        ) {
+            return false;
+        }
+
+        return $this->owns_visit( $actor_user_id, $visit )
+            && user_can( $actor_user_id, RolesAndCapabilities::FILE_READ )
+            && $this->has_clinic_read(
+                $actor_user_id,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::FILE_READ
+            )
+            && $this->has_clinic_read(
+                $actor_user_id,
+                (int) $visit['clinic_id'],
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            );
     }
 
     private function has_clinic_read( int $actor_user_id, int $clinic_id, string $capability ): bool {
@@ -1561,6 +1613,17 @@ final class ClinicalService
         }
 
         return $this->is_active_clinician_of_user( $visit_clinician_id, $actor_user_id );
+    }
+
+    /**
+     * Shared read-only bridge for services that must use the established
+     * clinician-ownership predicate without duplicating its identity rules.
+     *
+     * @param array<string, mixed> $visit Durable Visit row from the repository.
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Public cross-service adapter over the established predicate.
+    public function ownsVisit( int $actor_user_id, array $visit ): bool {
+        return $this->owns_visit( $actor_user_id, $visit );
     }
 
     /**

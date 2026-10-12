@@ -31,6 +31,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
     private int $patientBUser;
     private int $secretaryUserId;
     private int $doctorUserId;
+    private int $doctorVisitId;
 
     protected function setUp(): void
     {
@@ -82,6 +83,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
         cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
         $this->doctorUserId = $this->makeUser('mf_doctor', 'cpms_doctor');
         cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
+        $this->doctorVisitId = $this->createVisitForDoctor($this->doctorUserId, $this->patientAId);
     }
 
     protected function tearDown(): void
@@ -221,7 +223,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
     public function testSecretaryCannotStreamDoctorPrivateFile(): void
     {
         $file = $this->makeUploadedFile('private.pdf', $this->pdfContent());
-        $row = App::medicalFileService()->upload($this->doctorUserId, $file, $this->patientAId, null, 'document', 'doctor_private');
+        $row = App::medicalFileService()->upload($this->doctorUserId, $file, $this->patientAId, $this->doctorVisitId, 'document', 'doctor_private');
 
         try {
             App::medicalFileService()->stream($this->secretaryUserId, (int) $row['id']);
@@ -240,7 +242,7 @@ final class MedicalFilesTest extends WP_UnitTestCase
         $pub = $this->makeUploadedFile('pub.pdf', $this->pdfContent());
         $priv = $this->makeUploadedFile('priv.pdf', $this->pdfContent());
         App::medicalFileService()->upload($this->secretaryUserId, $pub, $this->patientAId, null, 'document', 'patient_visible');
-        App::medicalFileService()->upload($this->doctorUserId, $priv, $this->patientAId, null, 'document', 'doctor_private');
+        App::medicalFileService()->upload($this->doctorUserId, $priv, $this->patientAId, $this->doctorVisitId, 'document', 'doctor_private');
 
         $list = App::medicalFileService()->patientFiles($this->patientAUser, $this->patientAId);
         $this->assertCount(1, $list);
@@ -372,6 +374,48 @@ final class MedicalFilesTest extends WP_UnitTestCase
             'error' => 0,
             'type' => 'application/octet-stream', // عمداً نادیده گرفته می‌شود — finfo ملاک است
         ];
+    }
+
+    private function createVisitForDoctor(int $doctorUserId, int $patientId): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
+                 (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+             VALUES (1, %s, %d, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'Dr MedicalFiles ' . $doctorUserId,
+            $doctorUserId,
+            $now,
+            $now
+        ));
+        $clinicianId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $clinicianId, 'fixture: active clinician identity persisted');
+
+        $locationId = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d AND is_primary = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            1
+        ));
+        self::assertGreaterThan(0, $locationId, 'fixture: primary Location for Clinic 1 exists');
+        $date = gmdate('Y-m-d');
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                 (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, created_at, updated_at)
+             VALUES (1, %d, %d, %d, %s, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $locationId,
+            $clinicianId,
+            $patientId,
+            'walk_in',
+            'in_consultation',
+            $date,
+            $now,
+            $now,
+            $now
+        ));
+        $visitId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $visitId, 'fixture: valid Visit persisted for the doctor identity');
+
+        return $visitId;
     }
 
     private function makeUser(string $login, string $role): int
