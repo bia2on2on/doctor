@@ -1464,10 +1464,10 @@ final class ClinicalService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing private helper name.
     private function visit_owned_files( array $files, array $visit, int $actor_user_id ): array {
-        $clinic_id                 = (int) $visit['clinic_id'];
-        $patient_id                = (int) $visit['patient_id'];
-        $can_read_private_files    = $this->canReadPrivateFiles( $actor_user_id, $visit );
-        $owned                     = [];
+        $clinic_id              = (int) $visit['clinic_id'];
+        $patient_id             = (int) $visit['patient_id'];
+        $can_read_private_files = $this->canReadPrivateFiles( $actor_user_id, $visit );
+        $owned                  = [];
         foreach ( $files as $file ) {
             if (
                 (int) $file['clinic_id'] !== $clinic_id

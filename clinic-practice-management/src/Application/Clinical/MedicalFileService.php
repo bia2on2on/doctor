@@ -171,6 +171,7 @@ final class MedicalFileService
         $onlyVisible = ! $this->can_see_private( $actorUserId, $durableClinicId );
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameters.
         $rows = $this->files->forPatient( $patientId, $onlyVisible );
         $rows = array_values(
             array_filter(
@@ -187,6 +188,8 @@ final class MedicalFileService
                 }
             )
         );
+
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         return array_map( [ $this, 'presentFile' ], $rows );
     }
@@ -291,6 +294,7 @@ final class MedicalFileService
             'file',
             $fileId
         );
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameters.
         if (
             (string) ( $row['visibility'] ?? '' ) === 'doctor_private'
             && ! $this->ownsPrivateFile( $actorUserId, $row )
@@ -303,6 +307,7 @@ final class MedicalFileService
                 'فایل یافت نشد'
             );
         }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->files->softDelete($fileId);
         $this->audit->log(
             'FILE_SOFT_DELETED',
@@ -351,10 +356,11 @@ final class MedicalFileService
         // Private attachment authority is resolved before even validating/opening
         // the presented temp path: the Visit and active clinician identity are the
         // durable source of ownership, never the uploader id.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase store parameters.
         $patientClinicId = 0;
-        if ($visibility === 'doctor_private') {
-            $patientClinicId = $this->patientClinicId($patientId);
-            if ($patientClinicId === 0) {
+        if ( $visibility === 'doctor_private' ) {
+            $patientClinicId = $this->patientClinicId( $patientId );
+            if ( $patientClinicId === 0 ) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
             }
             $this->assertPrivateFileUploadAuthority(
@@ -364,6 +370,7 @@ final class MedicalFileService
                 $visitId
             );
         }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         $tmp = (string) ($file['tmp_name'] ?? '');
         if ($tmp === '' || !is_uploaded_file($tmp) && !is_file($tmp)) {
@@ -376,12 +383,14 @@ final class MedicalFileService
         // Clinicِ فایل = Clinicِ بیمار (relation). این lookup اینجا لازم است چون
         // سقفِ حجم یک Settingِ per-Clinic است و باید از Clinicِ مالکِ همین عملیات
         // خوانده شود؛ در نبودِ بیمار، درخواست با 404 رد می‌شود.
-        if ($patientClinicId === 0) {
-            $patientClinicId = $this->patientClinicId($patientId);
-            if ($patientClinicId === 0) {
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase store parameters.
+        if ( $patientClinicId === 0 ) {
+            $patientClinicId = $this->patientClinicId( $patientId );
+            if ( $patientClinicId === 0 ) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
             }
         }
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         // F-3: حجم (سقف از Settingِ Clinicِ مالک)
         $maxBytes = max(1, (int) $this->settingsFor($patientClinicId)->get('files.max_upload_bytes', 10485760));
@@ -622,9 +631,9 @@ final class MedicalFileService
 
         $visit = $this->privateFileVisit(
             [
-                'clinic_id' => $clinicId,
+                'clinic_id'  => $clinicId,
                 'patient_id' => $patientId,
-                'visit_id' => $visitId,
+                'visit_id'   => $visitId,
             ]
         );
         if ( $visit === null || ! App::clinicalService()->ownsVisit( $actorUserId, $visit ) ) {
