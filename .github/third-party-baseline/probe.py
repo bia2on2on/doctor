@@ -2035,7 +2035,9 @@ DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
     "required_facts": ("phase_post_executed", "browser_post"),
     # The evidence record the browser probe always writes when it executes
     # (cmd_browser's `store.fact(f"browser_{phase}", ...)`). An absent, empty or
-    # truncated object is not browser execution evidence.
+    # truncated object is not browser execution evidence. The values inside it
+    # are validated against the producer's own contract by
+    # ``browser_execution_problems``, never against an invented expectation.
     "browser_evidence_keys": ("nav", "login", "rest_status", "admin_ajax", "document"),
 }
 
@@ -2043,6 +2045,108 @@ DIAGNOSTIC_EXCEPTION: Dict[str, Any] = {
 CHECK_STATUSES = (PASS, FAIL, INFO, UNAVAILABLE, UNEXECUTED, NOT_RUN)
 CHECK_CLASSES = (PRODUCT, ENVIRONMENT, HARNESS, UNAVAILABLE_KLASS, UNEXECUTED_KLASS)
 CHECK_ROW_KEYS = ("name", "status", "klass", "material", "phase", "detail")
+
+
+def is_int(value: Any) -> bool:
+    """True for a real integer. ``bool`` is an ``int`` in Python and is excluded."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def browser_execution_problems(browser: Any) -> List[str]:
+    """Problems with the browser probe's own evidence record.
+
+    The expected shape is the one ``cmd_browser`` actually writes through
+    ``store.fact(f"browser_{phase}", ...)``; nothing here is invented:
+
+      nav         {"front_status": int, "front_url": str, "front_redirects": list}
+                  — written only after the front page was really navigated, so an
+                  absent/empty nav is the marker of a browser that did not get there
+      login       {"ok": bool, "final_url": str, "error": str} — always written
+      rest_status int — the real REST index status the browser saw
+      admin_ajax  {"status": int, "body": str, "reached_wp_layer": bool}
+      document    the admin document probe; a product leg passes no --expect-dir,
+                  so cmd_browser leaves it ``{}`` there and that is legitimate. When
+                  it is populated, the keys its own two branches always set are
+                  checked. Absence of the RTL probe is never treated as malformed.
+
+    A truncated or placeholder object yields problems; a record produced by a real
+    browser run never does.
+    """
+    if not isinstance(browser, dict):
+        return ["the recorded browser evidence is not an object"]
+    problems: List[str] = []
+
+    nav = browser.get("nav")
+    if not isinstance(nav, dict) or not nav:
+        problems.append("nav is absent or empty, so no front-page navigation was recorded")
+    else:
+        # 200 is what the required `browser_front_page_render` verdict asserts, and
+        # the producer records the response status, which is an int.
+        if not is_int(nav.get("front_status")) or nav["front_status"] != 200:
+            problems.append(f"nav.front_status is not the 200 the front-page probe "
+                            f"recorded: {nav.get('front_status')!r}")
+        if not isinstance(nav.get("front_url"), str) or not nav["front_url"]:
+            problems.append("nav.front_url is absent or empty")
+        if not isinstance(nav.get("front_redirects"), list):
+            problems.append("nav.front_redirects is not a list")
+
+    login = browser.get("login")
+    if not isinstance(login, dict) or not login:
+        problems.append("login is absent or empty, so no admin session was recorded")
+    else:
+        # The record shape only. Whether the session completed is NOT asserted here:
+        # no required verdict is derived from `login.ok`, and demanding a completed
+        # session would invent an expectation the producer never pinned. A failed
+        # browser login is a real observation and, being material, would have to
+        # appear as one of the seven pinned identifiers to be accepted at all.
+        if not isinstance(login.get("ok"), bool):
+            problems.append(f"login.ok is not the recorded boolean: {login.get('ok')!r}")
+        if not isinstance(login.get("final_url"), str) or not login["final_url"]:
+            problems.append("login.final_url is absent or empty")
+        if not isinstance(login.get("error"), str):
+            problems.append("login.error is not a string")
+
+    # 200 is what the required `browser_rest_index` verdict asserts, and the
+    # producer records the response status, which is an int.
+    if not is_int(browser.get("rest_status")) or browser["rest_status"] != 200:
+        problems.append(f"rest_status is not the 200 the REST index probe recorded: "
+                        f"{browser.get('rest_status')!r}")
+
+    ajax = browser.get("admin_ajax")
+    if not isinstance(ajax, dict) or not ajax:
+        problems.append("admin_ajax is absent or empty")
+    else:
+        # Record shape only, for the same reason as `login`: the browser-level
+        # admin-ajax outcome is not asserted by any required verdict, and this very
+        # subject's accepted signature contains a failed admin-ajax probe, so the
+        # observed values (`status` 0 and an empty `body` in the producer's own
+        # failure branch) must stay acceptable. A fabricated one cannot unlock the
+        # exception on its own: the ten required verdicts are still enforced.
+        if not is_int(ajax.get("status")):
+            problems.append(f"admin_ajax.status is not the recorded integer: "
+                            f"{ajax.get('status')!r}")
+        if not isinstance(ajax.get("body"), str):
+            problems.append(f"admin_ajax.body is not the recorded string: "
+                            f"{ajax.get('body')!r}")
+        if not isinstance(ajax.get("reached_wp_layer"), bool):
+            problems.append("admin_ajax.reached_wp_layer is not the recorded boolean")
+
+    document = browser.get("document")
+    if not isinstance(document, dict):
+        problems.append("document is not an object")
+    elif document:
+        # Both populated branches always set `dir`/`lang`/`url`; only the successful
+        # `evaluate` branch adds `text` and only the RTL legs add `computed_dir`, so
+        # nothing beyond the always-present keys is demanded. `dir` may legitimately
+        # be "" when the page declares no direction.
+        for key in ("dir", "lang"):
+            if not isinstance(document.get(key), str):
+                problems.append(f"document.{key} is not a string in a populated document "
+                                f"record")
+        if not isinstance(document.get("url"), str) or not document["url"]:
+            problems.append("document.url is absent or empty in a populated document "
+                            "record")
+    return problems
 
 
 def malformed_rows(checks: Any) -> List[str]:
@@ -2155,6 +2259,13 @@ def diagnostic_exception(subject: Dict[str, Any], facts: Dict[str, Any],
             "the browser probe's recorded evidence object is absent, empty or truncated "
             f"(missing {missing_keys or 'the object itself'}), so browser execution is "
             "not proven")
+    else:
+        # Key presence alone is not execution: the recorded values must be the ones
+        # a real browser run produces.
+        browser_problems = browser_execution_problems(browser)
+        if browser_problems:
+            reasons.append("the recorded browser evidence is not from a real browser run: "
+                           + "; ".join(browser_problems[:6]))
 
     unexecuted = [name for name in sorted(policy["required_checks"])
                   if name not in recorded]

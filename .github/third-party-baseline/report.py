@@ -168,7 +168,38 @@ def gate_line(results: List[Dict[str, Any]], totals: Dict[str, int]) -> str:
 
 
 def render_markdown(results: List[Dict[str, Any]], meta: Dict[str, Any],
-                    totals: Dict[str, int]) -> str:
+                    totals: Dict[str, int], campaign: Dict[str, Any] | None = None,
+                    problems: List[str] | None = None) -> str:
+    if not results:
+        # An empty or wholly unreadable campaign is a FAILED campaign, never an
+        # absent one. The failure summary is deterministic and states the cause.
+        campaign, problems = campaign or {}, problems or []
+        return "\n".join([
+            "# Phase 18 third-party compatibility baseline — Lane A",
+            "",
+            "**CAMPAIGN FAILED — required subject evidence is missing or unreadable.** "
+            "No subject result was aggregated, so nothing here is a verdict about any "
+            "subject: no PASS, no PARTIAL, no NOT RUN, and no fabricated result.",
+            "",
+            f"- lane: **{meta['lane']}**",
+            f"- head SHA: `{meta['head_sha']}`",
+            f"- run: {meta['run_url']}",
+            f"- campaign: {len(campaign.get('delivered_subjects') or [])}/"
+            f"{len(campaign.get('expected_subjects') or [])} expected matrix subject "
+            "results delivered",
+            "",
+            "## Causes",
+            "",
+            *([f"- {problem}" for problem in problems] or
+              ["- no subject result was delivered and no diagnostic was recorded"]),
+            "",
+            "## Expected subjects with no delivered result",
+            "",
+            *([f"- `{subject_id}`" for subject_id in campaign.get("missing_subjects") or []]
+              or ["- none (the expected set is empty, which is itself a configuration "
+                  "fault)"]),
+            "",
+        ])
     lines: List[str] = [
         "# Phase 18 third-party compatibility baseline — Lane A",
         "",
@@ -323,11 +354,15 @@ def main() -> int:
                         "no consistent result was delivered for it")
     for subject_id in unexpected:
         problems.append(f"unexpected subject result: {subject_id!r} is not a matrix leg")
+    if not results:
+        # An empty or wholly unreadable delivery is a blocking campaign failure,
+        # and it must still leave the deterministic failure summary behind: the
+        # summary step and the artifact upload are `if: always()` precisely so a
+        # failed campaign is diagnosable. Nothing is fabricated for it.
+        problems.append("no readable subject result was delivered; refusing to present an "
+                        "empty campaign as a result")
     for problem in problems:
         print(f"::error::{problem}")
-    if not results:
-        print("::error::no readable subject result found; refusing to publish an empty summary")
-        return 1
 
     meta = {"lane": args.lane, "head_sha": args.head_sha, "run_url": args.run_url,
             "expected_subjects": len(expected), "delivered_subjects": len(delivered)}
@@ -354,7 +389,17 @@ def main() -> int:
               f"taxonomy={json.dumps(result.get('taxonomy') or [])} "
               f"material failures: {json.dumps(blockers)}")
 
-    markdown = render_markdown(results, meta, totals)
+    # Campaign reconciliation against the workflow matrix itself, carried in the
+    # artifact and rendered into the failure summary as well as the normal one.
+    campaign = {
+        "expected_subjects": sorted(expected),
+        "delivered_subjects": sorted(delivered),
+        "missing_subjects": missing,
+        "unexpected_subjects": unexpected,
+    }
+    markdown = render_markdown(results, meta, totals, campaign, problems)
+    # Written before any exit decision: a failed campaign must still deliver its
+    # deterministic failure summary for the `if: always()` upload step.
     os.makedirs(args.out_dir, exist_ok=True)
     json_path = os.path.join(args.out_dir, "summary.json")
     with open(json_path, "w", encoding="utf-8") as handle:
@@ -370,13 +415,8 @@ def main() -> int:
                        "partial_subjects": [r["subject"].get("id") for r in results
                                             if r["state"] == "PARTIAL"],
                    },
-                   # Campaign reconciliation against the workflow matrix itself.
-                   "campaign": {
-                       "expected_subjects": sorted(expected),
-                       "delivered_subjects": sorted(delivered),
-                       "missing_subjects": missing,
-                       "unexpected_subjects": unexpected,
-                   },
+                   "campaign": campaign,
+                   # Never fabricated: an empty campaign carries an empty list.
                    "subjects": results},
                   handle, indent=2)
         handle.write("\n")

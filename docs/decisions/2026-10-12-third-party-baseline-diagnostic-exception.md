@@ -60,7 +60,27 @@ when **all** of the following hold:
    be recorded as executed; `browser_post` must be present and carry the evidence
    object the browser probe always writes (`nav`, `login`, `rest_status`,
    `admin_ajax`, `document`) — an absent, empty or truncated object is not
-   browser execution; and each required probe identifier pinned in `probe.py`
+   browser execution, and the recorded record must be the shape and *type* the
+   producer itself writes: `nav` = `{front_status: int, front_url: str,
+   front_redirects: list}`, `login` = `{ok: bool, final_url: str, error: str}`,
+   `rest_status` = real `int`, `admin_ajax` = `{status: int, body: str,
+   reached_wp_layer: bool}`, `document` = `{}` on legs that pass no
+   `--expect-dir` (legitimate, not malformed) and, when populated, at least
+   `{dir: str, lang: str, url: str}`. Two further rules, no more:
+   (a) the two browser values that a required verdict is *derived from* must agree
+   with that verdict — `browser_front_page_render` is computed as
+   `nav["front_status"] == 200` and `browser_rest_index` as `rest_status == 200`,
+   so a record claiming those PASSes while carrying another value is inconsistent
+   evidence and blocks; (b) values no required verdict is derived from
+   (`login.ok`, `admin_ajax.status`/`body`) are checked for type only — a browser
+   login that did not complete, or a failed admin-ajax request, is a real
+   observation of a probe that executed, and demanding a *successful* one would
+   invent an expectation the producer never pinned (and, for this subject, would
+   contradict the accepted signature, which contains the failing
+   `admin_ajax_wp_layer_reachable_post`). A fabricated record cannot unlock the
+   exception on its own: the ten required verdicts, the seven pinned identifiers
+   and the duplicate/malformed-row rules are all still enforced. No generic schema
+   validator is involved, and each required probe identifier pinned in `probe.py`
    must have a recorded **successful post-activation verdict**. A verdict that was
    never recorded, recorded as `UNEXECUTED`, recorded on another phase, or left
    `FAIL` is not proof that the probe executed. These required identifiers are
@@ -92,6 +112,13 @@ neither message text nor any free-form detail is used for identification.
 - The aggregate re-derives the exception from the delivered evidence; it never
   accepts a producer-supplied boolean. It reports FAIL subjects, accepted
   diagnostic exceptions, blocking failures and PARTIAL subjects separately.
+- An empty or wholly unreadable campaign keeps a non-zero exit **and** publishes
+  a deterministic failure summary: `report.py` writes `summary.json` and
+  `summary.md` before exiting, naming the missing/unreadable evidence and the
+  expected-matrix reconciliation, with the existing `if: always()` artifact upload
+  still able to publish it. Nothing is fabricated (`subjects: []`,
+  `totals: {PASS: 0, PARTIAL: 0, FAIL: 0, NOT RUN: 0}`), and an empty campaign is
+  never presented as PARTIAL, NOT RUN or PASS.
 - The aggregate reconciles the delivered campaign against the workflow's own
   matrix: the expected subject set is read from
   `.github/workflows/third-party-baseline.yml` (never a second hand-maintained

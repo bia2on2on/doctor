@@ -101,7 +101,9 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #     - positive, substantive proof that the expected probes executed: the
 #       post-activation phase marker, the browser probe's own evidence object
 #       (`nav`/`login`/`rest_status`/`admin_ajax`/`document` — an absent, empty or
-#       truncated object is not execution), and a recorded SUCCESSFUL
+#       truncated object is not execution; its recorded values must be the ones a
+#       real browser run produces, and the values a required verdict is derived
+#       from must agree with that verdict), and a recorded SUCCESSFUL
 #       post-activation verdict for every required probe (never-recorded,
 #       UNEXECUTED, wrong-phase or FAILed verdicts do not prove execution);
 #     - unambiguous evidence: every row must be the recorded check shape and no

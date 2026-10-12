@@ -283,14 +283,15 @@ class DiagnosticExceptionTests(PropagationCase):
     )
     SUBJECT = {"slug": "persian-woocommerce", "version_requested": "10.0.5",
                "dependencies": ["woocommerce=11.2.0"]}
-    # The evidence record cmd_browser always writes when it executes.
+    # Exactly what cmd_browser writes on a product leg: --expect-dir is empty
+    # there, so `document` stays {} and that is legitimate, not malformed.
     FACTS = {"browser_post": {
         "nav": {"front_status": 200, "front_url": "http://localhost:8080/",
                 "front_redirects": []},
         "login": {"ok": True, "final_url": "http://localhost:8080/wp-admin/", "error": ""},
         "rest_status": 200,
         "admin_ajax": {"status": 200, "body": "0", "reached_wp_layer": True},
-        "document": {"lang": "en-US", "dir": "ltr", "text": {"persian_char_count": 0}},
+        "document": {},
     }}
 
     def historical_checks(self, material=None, extra=()):
@@ -452,6 +453,125 @@ class DiagnosticExceptionTests(PropagationCase):
         completed, result = self.run_case(checks=checks)
         self.assert_blocking(completed, result, "malformed rows / out-of-contract status")
 
+    # -- BLOCKER 1 (values): the recorded browser record must be producer-shaped -- #
+    def test_valid_producer_shaped_browser_evidence_is_accepted(self):
+        completed, result = self.run_case()  # FACTS is the real product-leg record
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+
+    def test_populated_document_record_from_the_locale_probe_is_accepted(self):
+        # The locale leg's shape: the RTL branch of cmd_browser populates it.
+        facts = {"browser_post": {**self.FACTS["browser_post"], "document": {
+            "dir": "rtl", "lang": "fa-IR", "url": "http://localhost:8080/wp-admin/",
+            "text": {"persian_char_count": 120}}}}
+        completed, result = self.run_case(facts=facts)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+
+    def test_wrong_typed_nav_blocks(self):
+        for nav in ("http://localhost:8080/", [], {"front_status": 200},
+                    {"front_status": "200", "front_url": "http://x/", "front_redirects": []},
+                    {"front_status": 200, "front_url": "", "front_redirects": []},
+                    {"front_status": 200, "front_url": "http://x/", "front_redirects": "none"},
+                    {"front_status": 0, "front_url": "http://x/", "front_redirects": []},
+                    {"front_status": True, "front_url": "http://x/", "front_redirects": []}):
+            with self.subTest(nav=nav):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"], "nav": nav}})
+                self.assert_blocking(completed, result, f"nav={nav!r}")
+
+    def test_wrong_typed_rest_status_blocks(self):
+        for rest_status in ("200", True, 0, None, 200.0):
+            with self.subTest(rest_status=rest_status):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"],
+                                            "rest_status": rest_status}})
+                self.assert_blocking(completed, result, f"rest_status={rest_status!r}")
+
+    def test_malformed_login_evidence_blocks(self):
+        # Wrong types and missing recorded fields only. `{"ok": False, ...}` is the
+        # producer's own failure-branch shape and is deliberately NOT asserted as
+        # malformed: no required verdict is derived from `login.ok`, and a browser
+        # login that did not complete is a real observation, not corrupt evidence.
+        cases = [{}, "ok", {"ok": True}, {"ok": "yes", "final_url": "http://x/", "error": ""},
+                 {"ok": True, "final_url": 5, "error": ""},
+                 {"ok": True, "final_url": "", "error": ""},
+                 {"ok": True, "final_url": "http://x/", "error": 5},
+                 {"ok": None, "final_url": "http://x/", "error": ""}]
+        for login in cases:
+            with self.subTest(login=login):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"], "login": login}})
+                self.assert_blocking(completed, result, f"login={login!r}")
+
+    def test_malformed_admin_ajax_evidence_blocks(self):
+        # Record shape only: the observed admin-ajax outcome is not asserted by any
+        # required verdict, so `{"status": 0, "body": "", "reached_wp_layer": False}`
+        # (the producer's own request-failure branch) must stay acceptable as evidence
+        # that the probe ran, while truncated or mistyped records must not be.
+        cases = [{}, "200", {"status": "200", "body": "0", "reached_wp_layer": True},
+                 {"status": 200, "body": 0, "reached_wp_layer": True},
+                 {"status": 200, "body": "0", "reached_wp_layer": "yes"},
+                 {"status": True, "body": "0", "reached_wp_layer": True},
+                 {"body": "0", "reached_wp_layer": True}]
+        for ajax in cases:
+            with self.subTest(admin_ajax=ajax):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"], "admin_ajax": ajax}})
+                self.assert_blocking(completed, result, f"admin_ajax={ajax!r}")
+
+    def test_malformed_document_evidence_blocks(self):
+        # `{"dir": "", "url": ...}` is deliberately NOT here: the producer records an
+        # empty direction when the page declares none (and its error branch sets it),
+        # so requiring a non-empty value would be an invented expectation.
+        for document in ("rtl", [], {"dir": 1, "url": "http://x/"}, {"dir": "ltr"},
+                         {"dir": "ltr", "lang": "en-US"},
+                         {"dir": "ltr", "lang": "en-US", "url": ""}):
+            with self.subTest(document=document):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"],
+                                            "document": document}})
+                self.assert_blocking(completed, result, f"document={document!r}")
+
+    def test_producer_failure_branch_records_are_accepted_shape_wise(self):
+        # The producer's own failure branches for the two sub-probes no required
+        # verdict is derived from. They are real observations of a browser that ran.
+        facts = {"browser_post": {
+            **self.FACTS["browser_post"],
+            "login": {"ok": False, "final_url": "http://localhost:8080/wp-login.php",
+                      "error": "the login form is absent from wp-login.php after activation"},
+            "admin_ajax": {"status": 0, "body": "", "reached_wp_layer": False},
+        }}
+        completed, result = self.run_case(facts=facts)
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIs(result["ci_gate"]["diagnostic_exception"]["applies"], True)
+
+    def test_incomplete_browser_evidence_blocks(self):
+        for missing in ("nav", "login", "rest_status", "admin_ajax", "document"):
+            with self.subTest(missing=missing):
+                facts = {"browser_post": {k: v for k, v in self.FACTS["browser_post"].items()
+                                          if k != missing}}
+                completed, result = self.run_case(facts=facts)
+                self.assert_blocking(completed, result, f"missing browser key {missing!r}")
+
+    def test_placeholder_browser_values_cannot_pass(self):
+        # `nav.front_status` and `rest_status` are the two browser values a required
+        # verdict is derived from (`browser_front_page_render`, `browser_rest_index`),
+        # so a fact that disagrees with the PASSes recorded beside it is inconsistent
+        # evidence and must block. No invented expectation is added: these are exactly
+        # the values those two verdicts assert.
+        placeholders = (
+            {"nav": {"front_status": 1, "front_url": "http://x/", "front_redirects": []}},
+            {"nav": {"front_status": 302, "front_url": "http://x/", "front_redirects": []}},
+            {"rest_status": 1},
+            {"rest_status": 404},
+        )
+        for override in placeholders:
+            with self.subTest(override=override):
+                completed, result = self.run_case(
+                    facts={"browser_post": {**self.FACTS["browser_post"], **override}})
+                self.assert_blocking(completed, result, f"placeholder {override!r}")
+
     def test_required_probes_are_disjoint_from_the_accepted_failures(self):
         policy = probe.DIAGNOSTIC_EXCEPTION
         self.assertEqual(set(policy["material_failures"]) & set(policy["required_checks"]),
@@ -553,9 +673,11 @@ class AggregatePropagationTests(PropagationCase):
         self.assertIn("unreadable subject result", completed.stdout)
 
     def test_aggregate_refuses_an_empty_campaign(self):
-        completed, _summary, _markdown = self.aggregate([])
+        completed, summary, markdown = self.aggregate([])
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("refusing to publish an empty summary", completed.stdout)
+        self.assertIn("no readable subject result was delivered", completed.stdout)
+        self.assertTrue(summary, "the failure summary must be written even for an empty campaign")
+        self.assertTrue(markdown, "summary.md must be written even for an empty campaign")
 
     def diagnostic_subject(self, subject_id="persian-woocommerce", **overrides):
         case = DiagnosticExceptionTests("test_exact_historical_signature_is_diagnostic_only_not_blocking")
@@ -669,6 +791,67 @@ class AggregatePropagationTests(PropagationCase):
         self.write_matrix([])
         completed, _summary, _markdown = self.report_run(expected=[])
         self.assertNotEqual(completed.returncode, 0, "an empty expectation must block")
+
+    # -- BLOCKER 2: an empty or unreadable campaign still publishes its failure -- #
+    def test_zero_delivered_results_fails_and_publishes_the_failure_summary(self):
+        results_dir, out_dir = self.root / "results", self.root / "summary"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        self.write_matrix(["expected-one", "expected-two"])
+        completed = subprocess.run(
+            [sys.executable, str(REPORT), "--results-dir", str(results_dir),
+             "--out-dir", str(out_dir), "--expect-matrix", str(self.root / "matrix.yml"),
+             "--lane", "A", "--head-sha", "0" * 40,
+             "--run-url", "https://example.invalid/run/0"],
+            capture_output=True, text=True, env=ENV, check=False)
+        self.assertNotEqual(completed.returncode, 0, "an empty campaign must fail")
+        summary_path, markdown_path = out_dir / "summary.json", out_dir / "summary.md"
+        self.assertTrue(summary_path.is_file(), "summary.json must exist for an empty campaign")
+        self.assertTrue(markdown_path.is_file(), "summary.md must exist for an empty campaign")
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        markdown = markdown_path.read_text(encoding="utf-8")
+        self.assertEqual(summary["subjects"], [], "nothing may be fabricated")
+        self.assertEqual(summary["totals"], {"FAIL": 0, "PARTIAL": 0, "PASS": 0, "NOT RUN": 0})
+        self.assertEqual(summary["campaign"]["missing_subjects"], ["expected-one", "expected-two"])
+        self.assertIn("CAMPAIGN FAILED", markdown)
+        self.assertIn("no readable subject result was delivered", markdown)
+        self.assertIn("`expected-one`", markdown)
+        for state in ("| PASS |", "| PARTIAL |", "| NOT RUN |", "| FAIL |"):
+            self.assertNotIn(state, markdown, f"an empty campaign must not claim any {state}")
+
+    def test_wholly_unreadable_results_fail_and_publish_the_failure_summary(self):
+        results_dir, out_dir = self.root / "results", self.root / "summary"
+        broken = results_dir / "tpb-broken-subject"
+        broken.mkdir(parents=True, exist_ok=True)
+        (broken / "subject-result.json").write_text("{not json", encoding="utf-8")
+        self.write_matrix(["broken-subject"])
+        completed = subprocess.run(
+            [sys.executable, str(REPORT), "--results-dir", str(results_dir),
+             "--out-dir", str(out_dir), "--expect-matrix", str(self.root / "matrix.yml"),
+             "--lane", "A", "--head-sha", "0" * 40,
+             "--run-url", "https://example.invalid/run/0"],
+            capture_output=True, text=True, env=ENV, check=False)
+        self.assertNotEqual(completed.returncode, 0)
+        summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+        markdown = (out_dir / "summary.md").read_text(encoding="utf-8")
+        self.assertEqual(summary["subjects"], [])
+        self.assertTrue(any("unreadable subject result" in problem for problem in summary["problems"]))
+        self.assertTrue(any("no readable subject result was delivered" in problem
+                            for problem in summary["problems"]))
+        self.assertIn("CAMPAIGN FAILED", markdown)
+        self.assertIn("unreadable subject result", markdown)
+        self.assertIn("`broken-subject`", markdown)
+
+    def test_failure_summary_survives_unreadable_and_missing_subjects_together(self):
+        self.build("clean-subject", [PASS_CHECK])
+        self.deliver("clean-subject")
+        broken = self.root / "results" / "tpb-broken"
+        broken.mkdir(parents=True, exist_ok=True)
+        (broken / "subject-result.json").write_text("{}", encoding="utf-8")
+        completed, summary, markdown = self.report_run(expected=["clean-subject", "never-ran"])
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertEqual(summary["campaign"]["missing_subjects"], ["never-ran"])
+        self.assertTrue(any("missing required keys" in problem for problem in summary["problems"]))
+        self.assertIn("| `clean-subject` |", markdown)  # available evidence preserved
 
     def test_complete_expected_campaign_is_green_and_reports_reconciliation(self):
         self.build("clean-subject", [PASS_CHECK, ENV_PASS_CHECK])
