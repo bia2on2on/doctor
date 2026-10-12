@@ -6,8 +6,9 @@
  * real-browser journey proves the STRICT Location policy (N>1 => explicit
  * selection REQUIRED before any reception data). Location 1 carries exactly two
  * of TODAY's booked appointments (one express); Location 2 carries none (empty
- * state). Appointment dates are each Location's LOCAL operational day — the
- * browser does not freeze time and no timezone is hardcoded.
+ * state). Appointment dates are each Location's LOCAL operational day. The Pilot Gate
+ * runs this PHP fixture and its Apache acceptance process under the same
+ * controlled clock; the browser clock and Location-timezone policy stay unchanged.
  *
  * Phase 11 Slice 5 adds the appointment-booking stage: already-generated FREE /
  * FULL / CLOSED slots for today plus one FREE slot on the next Tehran-local day,
@@ -19,6 +20,7 @@
  */
 
 require getenv('WP_HOME') . '/wp-load.php';
+require_once __DIR__ . '/../Support/ReceptionFixtureClockPolicy.php';
 
 global $wpdb;
 
@@ -472,15 +474,9 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
 // seeds booked appointments; both transitions themselves run through the real
 // Reception UI/service, never by changing the source status in the fixture.
 $upcomingProof = [];
-$upcomingDestToday = $nowTehran->add(new DateInterval('PT90M'));
-if ($upcomingDestToday->format('Y-m-d') !== $todayTehran) {
-    // The reception slots read correctly hides already-started same-day slots.
-    // Keep this late-day proof in the last minute instead of seeding 23:54, which
-    // can already be past when the fixture runs around 23:54.
-    $upcomingDestToday = $nowTehran->setTime(23, 59);
-}
-if ($upcomingDestToday <= $nowTehran->add(new DateInterval('PT3M'))) {
-    rp_fail('upcoming same-day destination must retain a three-minute browser runway');
+$upcomingDestToday = ReceptionFixtureClockPolicy::upcomingSameDayDestination($nowTehran);
+if ($upcomingDestToday === null) {
+    rp_fail('no valid same-day upcoming destination has the required three-minute browser runway');
 }
 foreach (['future' => [$tomorrowTehran, '13:00:00', $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d'), '15:00:00'],
           'today' => [$tomorrowTehran, '14:00:00', $todayTehran, $upcomingDestToday->format('H:i:s')]] as $kind => $spec) {

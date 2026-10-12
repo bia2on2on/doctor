@@ -1518,7 +1518,7 @@ jobs:
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
       - name: Tooling (wp-cli + apache + playwright)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl faketime > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
@@ -2031,13 +2031,36 @@ jobs:
           fi
           test "${BROWSER_EXIT}" -eq 0
 
-      # Phase 11 Slice 1 — همان Chromium و همان وردپرس. تختهٔ پذیرش پورتال کارکنان:
-      # انتخاب الزامی Location (N>1)، نوبت‌های امروزِ همان Location، یک اقدام حضور
-      # با سرویس‌ها/گذارهای موجود، صف فقط‌خواندنی و حالت‌های خالی/خطا. بدون فریم‌ورک
-      # جدید و بدون توقف زمان.
+      # Phase 11 Slice 1 — same Chromium and WordPress. Freeze only the PHP/Apache
+      # wall clock for this Reception fixture + browser pair; restore it immediately
+      # afterward. The browser clock, product services, and Location timezone policy
+      # are not changed. The same-day proof is still an actual persisted future slot.
+      - name: Freeze the PHP/Apache clock for Reception acceptance
+        run: |
+          reception_local_day="$(TZ=Asia/Tehran date +%F)"
+          reception_fake_epoch="$(TZ=Asia/Tehran date -d "${reception_local_day} 12:00:00" +%s)"
+          test "$(TZ=Asia/Tehran date -d "@${reception_fake_epoch}" '+%F %T')" = "${reception_local_day} 12:00:00"
+          faketime_lib="$(ldconfig -p | awk '/libfaketime\.so\.1 / {print $NF; exit}')"
+          test -f "${faketime_lib}"
+          echo "RECEPTION_FAKE_EPOCH=${reception_fake_epoch}" >> "$GITHUB_ENV"
+          echo "RECEPTION_FAKETIME_LIB=${faketime_lib}" >> "$GITHUB_ENV"
+          sudo cp /etc/apache2/envvars /tmp/reception-apache-envvars.original
+          sudo tee -a /etc/apache2/envvars >/dev/null <<EOF
+          export FAKETIME_FMT=%s
+          export FAKETIME=${reception_fake_epoch}
+          export FAKETIME_DONT_FAKE_MONOTONIC=1
+          export LD_PRELOAD=${faketime_lib}
+          EOF
+          sudo service apache2 restart
+          php_clock="$(env FAKETIME_FMT=%s FAKETIME="${reception_fake_epoch}" FAKETIME_DONT_FAKE_MONOTONIC=1 LD_PRELOAD="${faketime_lib}" php -r 'echo (new DateTimeImmutable("now", new DateTimeZone("Asia/Tehran")))->format("Y-m-d H:i:s");')"
+          test "${php_clock}" = "${reception_local_day} 12:00:00"
+          apache_pid="$(pgrep -xo apache2)"
+          grep -Fq 'libfaketime.so.1' "/proc/${apache_pid}/maps"
+          echo "Reception PHP/Apache test clock: ${reception_local_day} 12:00:00 Asia/Tehran"
+
       - name: Reception fixture — two Locations + today's booked rows + empty Location
         run: |
-          WP_HOME="$WP_DIR" php tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
+          FAKETIME_FMT=%s FAKETIME="$RECEPTION_FAKE_EPOCH" FAKETIME_DONT_FAKE_MONOTONIC=1 LD_PRELOAD="$RECEPTION_FAKETIME_LIB" WP_HOME="$WP_DIR" php tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
             echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reception.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reception-fixture.log 2>/dev/null | tr '\n' '~')"
@@ -2062,6 +2085,17 @@ jobs:
             echo "::error::reception-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
           fi
           test "${BROWSER_EXIT}" -eq 0
+
+      - name: Restore Apache wall clock after Reception acceptance
+        if: always()
+        run: |
+          if [ -s /tmp/reception-apache-envvars.original ]; then
+            sudo cp /tmp/reception-apache-envvars.original /etc/apache2/envvars
+            sudo service apache2 restart
+            echo 'Apache wall clock restored after Reception acceptance.'
+          else
+            echo 'Reception clock override was not installed; nothing to restore.'
+          fi
 
       # Phase 14 Slice 1 (multi-Clinic repair) — همان Chromium و همان وردپرس. ماژول
       # گزارش‌ها: یک Clinic مجاز (خودکار) / دو Clinic مجاز (انتخاب صریح، بدون پیش‌فرض)

@@ -2,9 +2,10 @@
 """Staff Portal Reception Arrival Board proof on the existing Pilot Chromium job.
 
 Real WordPress page, real authenticated secretary session, real REST, and the
-existing server authorization/transitions. No new browser framework and no time
-freeze. Location-local operational days come from the fixture's two IANA
-timezones (Asia/Tehran + Asia/Tokyo).
+existing server authorization/transitions. No new browser framework or
+browser-clock override; the Pilot Gate controls PHP/Apache time for the fixture
+and this acceptance. Location-local operational days come from the fixture's two
+IANA timezones (Asia/Tehran + Asia/Tokyo).
 
 Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids.
 Passwords, patient names, nonces, and cookies are not printed.
