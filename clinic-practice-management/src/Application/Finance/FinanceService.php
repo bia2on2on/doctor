@@ -93,7 +93,7 @@ final class FinanceService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
     public function createService( int $actor_user_id, array $input ): array {
-        $this->require_cap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
         $clinic_id = $this->requireTrustedClinicId();
         $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
         [ $code, $name, $price ] = $this->validateServiceInput( $input, null );
@@ -147,7 +147,7 @@ final class FinanceService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
     public function updateService( int $actor_user_id, int $id, array $input ): array {
-        $this->require_cap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
         $clinic_id = $this->requireTrustedClinicId();
         $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
         $existing = $this->services->find( $id );
@@ -203,7 +203,7 @@ final class FinanceService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established public service-catalog API name; renaming it is a breaking change outside this fix.
     public function deactivateService( int $actor_user_id, int $id ): array {
-        $this->require_cap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::CONFIG, 'services.config' );
         $clinic_id = $this->requireTrustedClinicId();
         $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG, 'services.config' );
         $existing = $this->services->find( $id );
@@ -241,7 +241,7 @@ final class FinanceService
      */
     public function issueInvoice(int $actorUserId, array $input): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
 
@@ -406,7 +406,7 @@ final class FinanceService
      */
     public function recordPayment(int $actorUserId, int $invoiceId, array $input, string $idempotencyKey): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::PAYMENT_CREATE, 'payment.capture');
+        $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_CREATE, 'payment.capture');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_CREATE, 'payment.capture');
         if ($idempotencyKey === '') {
@@ -514,7 +514,7 @@ final class FinanceService
      */
     public function voidPayment(int $actorUserId, int $paymentId, string $reason): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
+        $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $reason = trim($reason);
@@ -598,7 +598,7 @@ final class FinanceService
      */
     public function refundPayment(int $actorUserId, int $paymentId, string $reason, ?array $input = null): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
+        $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $reason = trim($reason);
@@ -688,7 +688,7 @@ final class FinanceService
      */
     public function addAdjustment(int $actorUserId, int $invoiceId, string $type, array $input): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::INVOICE_ADJUST, 'invoice.adjust');
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_ADJUST, 'invoice.adjust');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_ADJUST, 'invoice.adjust');
         if (!in_array($type, ['credit', 'debit'], true)) {
@@ -787,7 +787,7 @@ final class FinanceService
      */
     public function receipt(int $actorUserId, int $invoiceId): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.receipt');
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.receipt');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.receipt');
         $invoice = $this->invoices->find($invoiceId);
@@ -850,7 +850,7 @@ final class FinanceService
      */
     public function summary(int $actorUserId, ?string $from = null, ?string $to = null): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::FINANCE_READ, 'finance.summary');
+        $this->requireCap($actorUserId, RolesAndCapabilities::FINANCE_READ, 'finance.summary');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::FINANCE_READ, 'finance.summary');
         $from = $from ?? gmdate('Y-m-d');
@@ -944,7 +944,7 @@ final class FinanceService
      */
     public function findInvoiceForActor(int $actorUserId, int $invoiceId): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
 
@@ -961,7 +961,7 @@ final class FinanceService
      */
     public function invoiceForVisit(int $actorUserId, int $visitId): array
     {
-        $this->require_cap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_READ, 'invoice.read');
         $invoice = $this->invoices->activeForVisit($visitId);
@@ -1155,8 +1155,7 @@ final class FinanceService
         return [$code, $name, $this->minorToDb($price)];
     }
 
-    private function require_cap( int $wp_user_id, string $cap, string $scope ): void
-    {
+    private function requireCap( int $wp_user_id, string $cap, string $scope ): void { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style method name on this pre-existing service (the whole class is camelCase); renaming one method is an unnecessary cross-cutting churn outside this correction.
         // Clinic-scoped authority is the authoritative gate: an ACTIVE
         // Clinic-local custom role is legitimate authority and can never
         // satisfy a WordPress-GLOBAL capability. When a trusted Clinic scope is
