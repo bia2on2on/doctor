@@ -189,6 +189,9 @@ jobs:
       # skipped execution or missing lock evidence. The full Integration suite
       # runs immediately afterward against the same real MySQL service.
       - name: Run focused custom-role lock-wait race
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
@@ -215,6 +218,18 @@ jobs:
           if ! grep -q '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log; then
             echo '::error::Focused race completed without its required exact-connection/lock-edge evidence.'
             exit 1
+          fi
+          grep -m1 '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log > /tmp/custom-role-race-evidence.txt
+          {
+            echo "### Slice 4A exact MySQL concurrency evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            echo '```'
+            cat /tmp/custom-role-race-evidence.txt
+            echo '```'
+          } > /tmp/custom-role-race-pr.md
+          cat /tmp/custom-role-race-pr.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-race-pr.md \
+              || { echo '::error::Could not mirror the focused race evidence to the PR.'; exit 1; }
           fi
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
