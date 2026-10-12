@@ -286,6 +286,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             $targetUser,
             RolesAndCapabilities::ROLE_SECRETARY
         );
+        self::assertGreaterThan(0, $targetMembershipId);
         $clinicId = $this->clinicA;
         $managerId = $this->managerA;
         $targetWpUserBefore = get_userdata($targetUser);
@@ -384,8 +385,8 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     'Parent A must hold a granted X record lock on the exact custom-role definition row before child B starts.'
                 );
 
-                $pipes = [];
-                if (stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP, $pipes) !== true) {
+                $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+                if ($pipes === false) {
                     throw new RuntimeException('Could not create the parent/child synchronization pipe.');
                 }
 
