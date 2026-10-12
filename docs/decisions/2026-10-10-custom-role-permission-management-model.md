@@ -59,6 +59,13 @@
 - New visitless `doctor_private` uploads are prohibited. Legacy visitless, missing-Visit, or mismatched Visit/private rows remain untouched and fail closed; never delete, reassign, or fabricate ownership. Visitless `patient_visible` attachments remain supported and visible under the existing rules.
 - This is an additive enforcement slice only: no delegation/sharing policy, no custom-role staff assignment, no WordPress-global role mutation, and no schema migration unless an implementation blocker proves one unavoidable. Existing private-note ownership rules remain unchanged.
 
+## 3d. Slice 4A — reversible custom-role deactivation/reactivation
+
+- Lifecycle is a reversible `active`/`inactive` status transition, not archive or deletion. Preserve the immutable role key, definition/capability rows, membership assignments, membership GRANT/DENY overrides, and audit history. An inactive definition supplies no role-derived authority; the existing `AuthorizationService` continues to decide all precedence.
+- Every real transition locks the exact Clinic-local definition, checks the expected version, and writes status/version plus its hash-chained audit event in one fail-closed transaction. Same-status requests are true no-ops. Reactivation re-establishes current Clinic management authority and revalidates every stored capability against the actor's current bounded delegation authority.
+- Assignment and lifecycle transitions serialize on the same definition row. A waiting assignment must re-read current status after the lock and refuse an inactive definition without changing the existing membership.
+- The server-rendered management page exposes nonce-protected, confirmed controls with consequence text and feedback. Its wp-admin entry uses ordinary `read` only so Clinic-local managers do not need WordPress-global `cpms_config`; every read and mutation still re-establishes the trusted Clinic and uses `AuthorizationService`. No WordPress-global role/capability mutation or schema change is introduced.
+
 ## 4. Workstream ordering and non-claims
 
 - The Custom Role & Permission Management workstream remains **before Phase 20** and is not resequenced.

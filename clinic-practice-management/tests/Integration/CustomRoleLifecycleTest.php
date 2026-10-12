@@ -292,6 +292,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         self::assertIsResource($childPipe);
 
         $targetRoleAfter = '';
+        $deactivationAuditCount = 0;
         remove_all_filters('query');
         try {
             App::db()->transactional(function () use (
@@ -410,6 +411,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     [$targetMembership]
                 );
             });
+            $deactivationAuditCount = $this->statusAuditCount('CUSTOM_ROLE_DEACTIVATED', $definitionId);
 
             if (!$childFinished && $childPid > 0) {
                 pcntl_waitpid($childPid, $status);
@@ -441,17 +443,14 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             if (is_resource($childPipe)) {
                 fclose($childPipe);
             }
-            $preservedClinicId = $this->statusAuditCount('CUSTOM_ROLE_DEACTIVATED', $definitionId) > 0
-                ? $this->clinicA
-                : 0;
             $this->cleanupCommittedRaceFixtures(
                 [$this->clinicA, $this->clinicB],
                 [$managerId, $this->managerB, $this->suspendedManager, $this->member, $this->nonMember, $targetUser],
-                $definitionId,
-                $preservedClinicId
+                $definitionId
             );
         }
 
+        self::assertSame(1, $deactivationAuditCount, 'the committed status transition must have exactly one audit event before test-fixture cleanup');
         self::assertTrue($lockWasWaited, 'the assignment connection must be observed waiting on the locked custom-role row');
         self::assertSame('denied:CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE', $childOutcome, 'the assignment must re-read status after the lock is released');
         self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, $targetRoleAfter, 'the failed concurrent assignment must not change the existing membership');
@@ -660,30 +659,34 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
     }
 
     /**
-     * Removes committed race-fixture users, memberships, and role definition.
-     * If deactivation committed its append-only audit event, retain only the
-     * event's Clinic and inactive definition as historical evidence.
+     * Test-only teardown for the committed two-connection fixture. The test
+     * asserts the deactivation event before this cleanup; production lifecycle
+     * paths never delete audit records, definitions, memberships or overrides.
      *
      * @param list<int> $clinicIds
      * @param list<int> $userIds
      */
-    private function cleanupCommittedRaceFixtures(
-        array $clinicIds,
-        array $userIds,
-        int $definitionId,
-        int $preservedClinicId
-    ): void {
+    private function cleanupCommittedRaceFixtures(array $clinicIds, array $userIds, int $definitionId): void
+    {
         $db = App::db();
-        if ($preservedClinicId === 0) {
+        $clinicId = (int) ($clinicIds[0] ?? 0);
+        if ($clinicId > 0) {
+            // Remove only this ephemeral test event so the integration suite's
+            // global hash-chain fixtures and Clinic-count assumptions are reset.
             $db->query(
-                'DELETE FROM ' . $db->table('cpms_custom_role_capabilities') . ' WHERE role_def_id = %d',
-                [$definitionId]
-            );
-            $db->query(
-                'DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE id = %d',
-                [$definitionId]
+                'DELETE FROM ' . $db->table('cpms_audit_logs') .
+                ' WHERE clinic_id = %d AND action = %s AND resource_type = %s AND resource_id = %d',
+                [$clinicId, 'CUSTOM_ROLE_DEACTIVATED', 'custom_role_definition', $definitionId]
             );
         }
+        $db->query(
+            'DELETE FROM ' . $db->table('cpms_custom_role_capabilities') . ' WHERE role_def_id = %d',
+            [$definitionId]
+        );
+        $db->query(
+            'DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE id = %d',
+            [$definitionId]
+        );
         foreach ($clinicIds as $clinicId) {
             $memberships = $db->fetchAll(
                 'SELECT id FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
@@ -702,9 +705,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             wp_delete_user($userId);
         }
         foreach ($clinicIds as $clinicId) {
-            if ($clinicId !== $preservedClinicId) {
-                $db->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]);
-            }
+            $db->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]);
         }
     }
 
