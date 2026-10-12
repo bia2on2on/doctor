@@ -52,6 +52,13 @@
 - **Display names (internationalization):** persistent, Unicode-general (`display_name VARCHAR(190)` utf8mb4, nullable), validated in code points (≤120) with no Persian-only or single-language rule. Unicode format characters such as ZWNJ are preserved; control characters are stripped; a malformed stored value falls back to the immutable technical key. The technical `role_key` stays immutable and independent of the display name.
 - **Audit:** every successful mutation is written to the hash-chained audit log with the explicit Clinic, actor, role key and before/after change set; refused writes are not audited as changes and never partially persist (the durable `version` only advances on a committed write).
 
+## 3c. Slice 3B — responsible-clinician ownership for private files (approved 2026-10-12)
+
+- Every newly uploaded `doctor_private` attachment must reference a persisted Visit belonging to the same Clinic and Patient as the attachment. The responsible clinician is the Visit's durable `clinician_id`, matched to the authenticated user's established ACTIVE clinician identity; uploader, WP-global role, current user context, and patient identity are not substitutes.
+- Preserve the existing trusted-Clinic boundary, Clinic-scoped `cpms_file_read` / `cpms_file_upload` and private-note capability checks, visibility rules, and object checks. A same-Clinic doctor is not automatically entitled to another clinician's private file. Listing, Visit-record metadata, and streaming all fail closed for a non-owner; streaming authorization completes before protected bytes are read.
+- New visitless `doctor_private` uploads are prohibited. Legacy visitless, missing-Visit, or mismatched Visit/private rows remain untouched and fail closed; never delete, reassign, or fabricate ownership. Visitless `patient_visible` attachments remain supported and visible under the existing rules.
+- This is an additive enforcement slice only: no delegation/sharing policy, no custom-role staff assignment, no WordPress-global role mutation, and no schema migration unless an implementation blocker proves one unavoidable. Existing private-note ownership rules remain unchanged.
+
 ## 4. Workstream ordering and non-claims
 
 - The Custom Role & Permission Management workstream remains **before Phase 20** and is not resequenced.
