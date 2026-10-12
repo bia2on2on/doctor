@@ -229,7 +229,7 @@
 - **Preserved:** built-in role workflows, the published camelCase method names that other files call (kept with targeted `phpcs:ignore` + reason), membership GRANT/DENY rows, clinician identity, and the audit hash chain (verified by the suite).
 - **Not modified:** no merge, no force-push, no existing staff-management system, no new authorization engine, no WP-global role registration, no capability GRANT/DENY writing, no auto-granted finance permission.
 
-### [2026-10-12 16:00 UTC] — Arena agent (fixed branch `arena/3ae97438-doctor`; DRAFT PR #219) — Clinic-local custom roles vs ordinary finance/payment operations
+### [2026-10-12 15:56 UTC] — Arena agent (fixed branch `arena/3ae97438-doctor`; DRAFT PR #219) — Clinic-local custom roles vs ordinary finance/payment operations
 
 - **Authorization:** window receipt `2026-10-12T15:26:09Z` (UTC); safe stop `16:21:09Z`, hard maximum `16:26:09Z`. All work inside the window.
 - **Preflight (live):** `main` = `origin/main` = `a4af1c2df8df35706a940403c2a41b25a4b98dc4`; exactly one open PR (#219, DRAFT, base `main`, unmerged); latest migration `2026_10_11_0026_clinic_first_setup_marker.php`. The local checkout had been reconstructed at `main` with the Slice 3B product files as *uncommitted* work while the remote branch was six commits ahead; the six files were proven byte-identical to `cba6134`, then `git stash push --include-untracked` (stash **kept**, not dropped) + `git merge --ff-only origin/arena/3ae97438-doctor`. No reset, no clean, no rebase, no force-push, no history rewrite, no retrigger-only commit, no manual `workflow_dispatch`.
