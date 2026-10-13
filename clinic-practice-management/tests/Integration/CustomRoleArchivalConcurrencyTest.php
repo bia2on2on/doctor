@@ -39,15 +39,19 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
 {
     use CustomRoleLockWaitFixture;
 
-    private int $clinicId;
-    private int $manager;
-    private int $target;
+    private int $clinicId = 0;
+    private int $manager = 0;
+    private int $target = 0;
+
+    /** Clinic count before this test created its own Clinic. */
+    private int $clinicCountBefore = 0;
 
     protected function setUp(): void
     {
         parent::setUp();
         App::migrations()->migrate();
         App::resetScope();
+        $this->clinicCountBefore = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics'));
         $organization = (int) App::db()->fetchValue('SELECT organization_id FROM ' . App::db()->table('cpms_clinics') . ' ORDER BY id LIMIT 1');
         self::assertGreaterThan(0, $organization);
         $this->clinicId = $this->makeClinic($organization, 'archive-race');
@@ -62,7 +66,49 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
     {
         wp_set_current_user(0);
         App::resetScope();
+        $this->removeOwnFixtures();
         parent::tearDown();
+    }
+
+    /**
+     * Removes exactly the durable fixtures this test created.
+     *
+     * They are committed on purpose: an independent MySQL session can only see
+     * and lock committed rows. That makes cleanup this test's own
+     * responsibility — the shared suite database must look as it did before the
+     * test, because SystemClinicResolver fails closed when a different number of
+     * Clinic rows exists, and every suite that runs later in the same database
+     * would inherit that (run 38426092585: clinic_count=5, 417 errors in the
+     * Integration suite that followed this one).
+     *
+     * Ordering follows the real foreign keys: audit rows reference the Clinic
+     * without a delete cascade, custom-role definitions and memberships
+     * (with their capabilities/assignments) cascade from the Clinic row.
+     */
+    private function removeOwnFixtures(): void
+    {
+        if ($this->clinicId <= 0) {
+            return;
+        }
+        $db = App::db();
+        $db->query('DELETE FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d', [$this->clinicId]);
+        $db->query('DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE clinic_id = %d', [$this->clinicId]);
+        $db->query('DELETE FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d', [$this->clinicId]);
+        $db->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$this->clinicId]);
+        if (!function_exists('wp_delete_user')) {
+            require_once ABSPATH . 'wp-admin/includes/user.php';
+        }
+        foreach ([$this->manager, $this->target] as $userId) {
+            if ($userId > 0 && get_userdata($userId) !== false) {
+                wp_delete_user($userId);
+            }
+        }
+        $remaining = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
+        self::assertSame(
+            $this->clinicCountBefore,
+            $remaining,
+            'the archival race must leave the shared database exactly as it found it'
+        );
     }
 
     public static function winnerCases(): array
