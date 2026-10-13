@@ -112,7 +112,34 @@ jobs:
           retention-days: 14
 
       - name: Run unit tests (no WP)
-        run: php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit
+        run: |
+          set -o pipefail
+          php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit 2>&1 | tee /tmp/cpms-unit.log
+
+      # The same failure-mirror pattern the Integration job already uses. Unit
+      # failures were previously visible only inside the job log, whose blob some
+      # agent environments cannot read, so a unit-side defect could not be
+      # diagnosed from evidence at all.
+      - name: Post unit test failures to PR
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          {
+            echo "### Unit test failures (PHP ${{ matrix.php }}; run ${{ github.run_id }})"
+            echo '```'
+            grep -E "^(OK \(|Tests:|FAILURES|ERRORS)" /tmp/cpms-unit.log | tail -n 3 || true
+            echo "--- FAILURE/ERROR DETAILS (test + message + location) ---"
+            awk '/^There (were|was)/{flag=1;next}/^--$/{}flag' /tmp/cpms-unit.log \
+              | grep -B 1 -A 10 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 220 || true
+            echo "--- TAIL (last 60 lines) ---"
+            tail -n 60 /tmp/cpms-unit.log || true
+            echo '```'
+          } > /tmp/unit-body.md
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/unit-body.md || echo "::notice::PR comment failed (permissions?)"
+          fi
 
       - name: Locked production install / platform / built-ZIP SDK smoke
         run: |
