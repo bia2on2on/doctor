@@ -85,13 +85,14 @@ final class ArchivalRaceWorker
     private ?int $pid = null;
 
     /**
-     * Pinned descriptor targets, index => target. Stable for this process's
-     * lifetime once pinned, which is what lets the worker's inventory be
-     * compared after the fact.
+     * Pinned descriptor targets, index => target, for this process. Static
+     * because pinning happens before any worker handle exists and the set is a
+     * property of the process, not of one handle: which descriptors were hidden
+     * is what the worker's inventory is compared against.
      *
      * @var array<int, string>
      */
-    private array $pinnedDescriptors = [];
+    private static array $pinnedDescriptors = [];
 
     /**
      * The worker's own descriptor inventory, captured on its first line.
@@ -329,7 +330,7 @@ final class ArchivalRaceWorker
      */
     private function assertPinnedDescriptorsPresent(): void
     {
-        foreach ($this->pinnedDescriptors as $fd => $target) {
+        foreach (self::$pinnedDescriptors as $fd => $target) {
             if (self::readDescriptorTarget($fd) !== $target) {
                 $this->terminate();
 
@@ -383,7 +384,7 @@ final class ArchivalRaceWorker
             : [];
 
         $targetsAreNull = true;
-        foreach (array_keys($this->pinnedDescriptors) as $fd) {
+        foreach (array_keys(self::$pinnedDescriptors) as $fd) {
             $reported = $fds[(string) $fd] ?? $fds[$fd] ?? null;
             if ($reported !== 'dev-null') {
                 $targetsAreNull = false;
@@ -394,8 +395,8 @@ final class ArchivalRaceWorker
 
         return [
             'proc_fd' => is_array($probe) ? (bool) ($probe['proc_fd'] ?? false) : false,
-            'pinned_fd_count' => count($this->pinnedDescriptors),
-            'pinned_isolation_proven' => $this->pinnedDescriptors !== [] && $targetsAreNull,
+            'pinned_fd_count' => count(self::$pinnedDescriptors),
+            'pinned_isolation_proven' => self::$pinnedDescriptors !== [] && $targetsAreNull,
             'worker_fds_beyond_stdio' => $fds,
             'worker_socket_count' => $socketCount,
             'worker_env_keys' => is_array($probe) && is_array($probe['env_keys'] ?? null) ? $probe['env_keys'] : [],
@@ -642,8 +643,8 @@ final class ArchivalRaceWorker
         if ($this->pid === null && (int) ($status['pid'] ?? 0) > 0) {
             $this->pid = (int) $status['pid'];
         }
-        if (($status['running'] ?? false) === true && $this->pinnedDescriptors !== [] && $this->observedFds === []) {
-            $this->observedFds = self::readDescriptorTargets($this->pid, array_keys($this->pinnedDescriptors));
+        if (($status['running'] ?? false) === true && self::$pinnedDescriptors !== [] && $this->observedFds === []) {
+            $this->observedFds = self::readDescriptorTargets($this->pid, array_keys(self::$pinnedDescriptors));
         }
         if (($status['running'] ?? false) === false && $this->exitCode === null) {
             $this->exitCode = (int) ($status['exitcode'] ?? -1);

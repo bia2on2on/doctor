@@ -59,8 +59,8 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
         $prefix = (string) $wpdb->prefix;
         $markerKey = 'cpms_fixture_owner';
 
-        $ownedTable = $this->createFixtureTable($prefix . 'cpms_unit_owned_' . bin2hex(random_bytes(4)));
-        $lookalikeTable = $this->createFixtureTable($prefix . 'cpms_unit_lookalike_' . bin2hex(random_bytes(4)));
+        $ownedTable = $this->createFixtureTable($prefix . 'unit_race_fixture_owned_' . bin2hex(random_bytes(4)));
+        $lookalikeTable = $this->createFixtureTable($prefix . 'unit_race_fixture_lookalike_' . bin2hex(random_bytes(4)));
         $ownerKey = 'cpms_owned_' . bin2hex(random_bytes(4));
 
         // The owned fixtures, committed like the race's real fixtures are.
