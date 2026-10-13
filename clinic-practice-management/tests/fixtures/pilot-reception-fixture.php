@@ -7,8 +7,8 @@
  * selection REQUIRED before any reception data). Location 1 carries exactly two
  * of TODAY's booked appointments (one express); Location 2 carries none (empty
  * state). Appointment dates are each Location's LOCAL operational day. The Pilot Gate
- * runs this PHP fixture and its Apache acceptance process under the same
- * controlled clock; the browser clock and Location-timezone policy stay unchanged.
+ * runs this fixture, Apache, and the browser on the environment's ordinary wall clock.
+ * The fixture fails closed if TODAY has no valid same-day browser runway.
  *
  * Phase 11 Slice 5 adds the appointment-booking stage: already-generated FREE /
  * FULL / CLOSED slots for today plus one FREE slot on the next Tehran-local day,

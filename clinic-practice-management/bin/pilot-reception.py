@@ -2,10 +2,10 @@
 """Staff Portal Reception Arrival Board proof on the existing Pilot Chromium job.
 
 Real WordPress page, real authenticated secretary session, real REST, and the
-existing server authorization/transitions. No new browser framework or
-browser-clock override; the Pilot Gate controls PHP/Apache time for the fixture
-and this acceptance. Location-local operational days come from the fixture's two
-IANA timezones (Asia/Tehran + Asia/Tokyo).
+existing server authorization/transitions. No new browser framework or clock
+override: PHP, Apache, and Chromium observe the environment's ordinary wall
+clock. Location-local operational days come from the fixture's two IANA timezones
+(Asia/Tehran + Asia/Tokyo).
 
 Evidence lines are PASS/FAIL/INFO/SHOT with booleans and non-sensitive ids.
 Passwords, patient names, nonces, and cookies are not printed.
@@ -217,8 +217,9 @@ def new_page(browser, vp):
     )
     page = ctx.new_page()
     page.set_default_timeout(25000)
-    state = {"reqs": [], "rest": [], "console": [], "pageerrors": [], "failed": [], "unanswered": []}
-    NAV[id(page)] = {"harness": False, "harness_docs": 0, "product_docs": 0, "rest_total": 0}
+    state = {"reqs": [], "rest": [], "http": [], "console": [], "pageerrors": [], "failed": [], "unanswered": []}
+    NAV[id(page)] = {"harness": False, "harness_docs": 0, "product_docs": 0, "rest_total": 0, "state": state}
+    http_pending = {}
 
     def on_nav_request(req):
         try:
@@ -257,6 +258,48 @@ def new_page(browser, vp):
         match = re.search(r"ERR_[A-Z_]+", text)
         return match.group(0) if match else "other-redacted"
 
+    def on_http_request(req):
+        if not req.url.startswith(BASE):
+            return
+        try:
+            is_navigation = req.is_navigation_request()
+        except Exception:
+            is_navigation = False
+        route = route_of(req.url)
+        if not is_navigation and not route.startswith("/clinic/v1"):
+            return
+        event = {"method": req.method, "route": route, "status": None, "ttfb_ms": None, "total_ms": None, "failure": None}
+        state["http"].append(event)
+        key = (req.method, req.url)
+        http_pending.setdefault(key, []).append((time.monotonic(), event))
+
+    def on_http_response(resp):
+        key = (resp.request.method, resp.request.url)
+        pending = http_pending.get(key)
+        if not pending:
+            return
+        started, event = pending[0]
+        event["status"] = resp.status
+        event["ttfb_ms"] = round((time.monotonic() - started) * 1000)
+
+    def finish_http(req, failure=None):
+        key = (req.method, req.url)
+        pending = http_pending.get(key)
+        if not pending:
+            return
+        started, event = pending.pop(0)
+        event["total_ms"] = round((time.monotonic() - started) * 1000)
+        if failure:
+            event["failure"] = safe_error(failure)
+        if not pending:
+            http_pending.pop(key, None)
+
+    def on_http_finished(req):
+        finish_http(req)
+
+    def on_http_failed(req):
+        finish_http(req, req.failure or "failed")
+
     def on_console(msg):
         if msg.type != "error":
             return
@@ -288,9 +331,13 @@ def new_page(browser, vp):
 
     page.on("request", on_request)
     page.on("request", on_nav_request)
+    page.on("request", on_http_request)
     page.on("response", on_response)
+    page.on("response", on_http_response)
+    page.on("requestfinished", on_http_finished)
     page.on("console", on_console)
     page.on("pageerror", on_pageerror)
+    page.on("requestfailed", on_http_failed)
     page.on("requestfailed", on_requestfailed)
     return ctx, page, state
 
@@ -304,14 +351,46 @@ def route_of(url):
     return path.rstrip("/") or "/"
 
 
+def auth_http_trace(state):
+    """Safe login/server trace: path, status, and monotonic timings only."""
+    events = [
+        event
+        for event in state.get("http", [])
+        if event["route"] == "/wp-login.php"
+        or event["route"].startswith("/wp-admin/")
+        or event["route"].startswith("/clinic/v1")
+    ][-8:]
+    summaries = []
+    for event in events:
+        status = event["status"] if event["status"] is not None else "pending"
+        ttfb = event["ttfb_ms"] if event["ttfb_ms"] is not None else "-"
+        total = event["total_ms"] if event["total_ms"] is not None else "-"
+        failure = event["failure"] or "none"
+        summaries.append(
+            f"{event['method']} {event['route']} status={status} ttfb_ms={ttfb} total_ms={total} failure={failure}"
+        )
+    return "http=[" + "; ".join(summaries) + "]"
+
+
 def login(page, user):
-    page.goto(f"{BASE}/wp-login.php", wait_until="networkidle")
-    page.fill("#user_login", user["login"])
-    page.fill("#user_pass", user["password"])
-    page.click("#wp-submit")
-    page.wait_for_load_state("networkidle")
-    if "wp-login.php" in (page.url or "") and "loggedout" not in (page.url or ""):
-        raise RuntimeError("login failed")
+    started = time.monotonic()
+    state = NAV[id(page)]["state"]
+    try:
+        page.goto(f"{BASE}/wp-login.php", wait_until="networkidle")
+        page.fill("#user_login", user["login"])
+        page.fill("#user_pass", user["password"])
+        page.click("#wp-submit")
+        page.wait_for_load_state("networkidle")
+        if "wp-login.php" in (page.url or "") and "loggedout" not in (page.url or ""):
+            raise RuntimeError("login failed")
+    except Exception:
+        path = urlparse(page.url or "").path or "/"
+        elapsed_ms = round((time.monotonic() - started) * 1000)
+        info(f"AUTH login result=FAIL elapsed_ms={elapsed_ms} path={path} {auth_http_trace(state)}")
+        raise
+    path = urlparse(page.url or "").path or "/"
+    elapsed_ms = round((time.monotonic() - started) * 1000)
+    info(f"AUTH login result=PASS elapsed_ms={elapsed_ms} path={path} {auth_http_trace(state)}")
 
 
 def harness_goto(page, url, **kwargs):
