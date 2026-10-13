@@ -260,12 +260,18 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
                 $this->realFixtureTables
             );
 
+            // The structured report must name the surviving table ...
+            $failures = $this->assertRealTableAbsentFailures($conn, $table);
+            self::assertNotSame([], $failures, 'a surviving real table must be reported, never assumed gone');
+            self::assertStringContainsString($table, implode(' ', $failures));
+
+            // ... and the verification built on it must actually fail, so a
+            // surviving table can never leave the test green.
             $detected = false;
             try {
                 $this->assertRealTableAbsent($conn, $table);
-            } catch (AssertionFailedError $failure) {
+            } catch (AssertionFailedError $detectedFailure) {
                 $detected = true;
-                self::assertStringContainsString($table, $failure->getMessage());
             }
             self::assertTrue($detected, 'a real table that still exists must fail verification');
 
