@@ -3,6 +3,63 @@
 > Recover the project from this file + Git/remote/PR + linked canonical docs.
 > Do **not** use a previous chat session as memory.
 >
+> **Read this first:** the current authoritative checkpoint is
+> [Custom Role & Permission Management — authoritative current-state checkpoint (2026-10-13)](#custom-role-current-state-2026-10-13).
+> Every section below it is a **dated historical record**, preserved unrewritten; some of their
+> "current" pointers (including the Phase 19 pointer that the Custom Role workstream was "frozen /
+> not implemented") were true **at their own checkpoint** and are superseded for current state.
+
+<a id="custom-role-current-state-2026-10-13"></a>
+
+## Custom Role & Permission Management — authoritative current-state checkpoint (2026-10-13)
+
+**Document type:** documentation-only current-state correction after the merge of PR #221. No product code, test, workflow, schema or migration was changed by this checkpoint.
+
+**Receipt time / authorization window for this correction:** receipt `2026-10-13T21:41:09Z`, safe stop ≈ `2026-10-13T22:36:09Z`, hard maximum `2026-10-13T22:41:09Z`.
+
+**Current verified main (all three read live in this session):** authoritative GitHub `main` = fetched `origin/main` = this session `HEAD` = **`8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`**, which is exactly the merge SHA of **PR #221** ("Slice 4B: safe terminal custom-role archival", MERGED `2026-10-13T21:06:11Z`, merged by the repository owner). **Open PRs at verification = 0.** (The requester-supplied historical main `8f8ca4bfc8e4cbc828f9689833392a1482a35d1a` is byte-identical to live main, so this checkpoint had no forward drift to reconcile.)
+
+**Latest migration:** **`2026_10_13_0027_custom_role_archival.php`** (`2026_10_13_0027`) is the schema head. The four newest versioned migrations are `2026_10_10_0024_custom_role_definitions.php`, `2026_10_11_0025_custom_role_display_name.php`, `2026_10_11_0026_clinic_first_setup_marker.php`, `2026_10_13_0027_custom_role_archival.php`. Earlier Phase 17/18/19 checkpoint statements below that "the latest migration remains `2026_09_26_0023`" were accurate at their own dates and are historical.
+
+**Four completed Custom Role Management slices (all MERGED to `main`; each merge SHA is a native `push → main`):**
+
+| Slice | Delivered (bounded) | PR | Merged | Merge SHA |
+|---|---|---|---|---|
+| **Slice 1** | Clinic-local custom-role persistence (`0024`) + authorization resolution inside the existing `AuthorizationService`; no UI, no assignment, no archive | [#213](https://github.com/bia2on2on/doctor/pull/213) | 2026-10-11T09:01:41Z | `bc43af24fa9dc746d164397b78f804f32436c8fa` |
+| **Slice 2** | Authorized Clinic-local definition management: list / create / display-name rename / permitted-capability replacement (`0025`), server-rendered wp-admin page `cpms-custom-roles` | [#214](https://github.com/bia2on2on/doctor/pull/214) | 2026-10-11T14:55:34Z | `936ee69c9bb74dbf40cf13238487fe0688fcd359` |
+| **Slice 3A** | Simple and secure first-clinic onboarding: one-shot bootstrap to the existing built-in `cpms_manager` membership (`0026`) | [#215](https://github.com/bia2on2on/doctor/pull/215) | 2026-10-11T19:18:31Z | `dc1cb1c0ea67c22ff1507957f22fa1ba4a18287a` |
+| **Slice 3B** | Clinic-local custom-role **assignment** for existing staff membership + responsible-clinician ownership for private files | [#216](https://github.com/bia2on2on/doctor/pull/216) (RED prep) → [#217](https://github.com/bia2on2on/doctor/pull/217), [#219](https://github.com/bia2on2on/doctor/pull/219) | 2026-10-12T02:39:05Z / 04:36:55Z / 17:42:21Z | `a4a07568ee4c3b6447e48ff622af0e4cccaf5fc9` / `b925f873c1eb822b394531a8e2906c204c0850da` / `8a3f5f40fe413316aa2b14155f97419a351870b7` |
+| **Slice 4A** | Reversible `active` ⇄ `inactive` deactivation/reactivation with versioned, locked, audited transitions and confirmed UI controls | [#220](https://github.com/bia2on2on/doctor/pull/220) | 2026-10-13T05:06:05Z | `4c3dbe86ef5e069548d2c54f77b66a3aaa746060` |
+| **Slice 4B** | Terminal archival of unassigned custom roles (`0027`) + the membership-only reassignment of suspended members needed to release references | [#221](https://github.com/bia2on2on/doctor/pull/221) | 2026-10-13T21:06:11Z | `8f8ca4bfc8e4cbc828f9689833392a1482a35d1a` |
+
+Grouped as four workstream slices: **1 / 2 / 3 (3A + 3B) / 4 (4A + 4B)**. The durable contract for Slice 4B is recorded in [`docs/testing/custom-role-archival-slice4b.md`](testing/custom-role-archival-slice4b.md); the approved model, security boundaries and immutability/terminality semantics remain those of the Product Decision [`docs/decisions/2026-10-10-custom-role-permission-management-model.md`](decisions/2026-10-10-custom-role-permission-management-model.md).
+
+**Exact merge-SHA CI closure on `8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`** — every run below is a native `push → main` event whose `head_sha` is that exact SHA; all six required workflow families are terminal `completed / success`:
+
+| Required workflow family | Exact `push → main` run | Result |
+|---|---:|---|
+| CI | [38468036296](https://github.com/bia2on2on/doctor/actions/runs/38468036296) | `completed / success` |
+| Real WordPress Acceptance (ZIP → clean WP → browser) | [38468036367](https://github.com/bia2on2on/doctor/actions/runs/38468036367) | `completed / success` |
+| Closure Gate (GO-LIVE evidence closure) | [38468036428](https://github.com/bia2on2on/doctor/actions/runs/38468036428) | `completed / success` |
+| Pilot/Staging Readiness Gate | [38468036189](https://github.com/bia2on2on/doctor/actions/runs/38468036189) | `completed / success` |
+| Third-Party Compatibility Baseline (Phase 18 Lane A) | [38468036238](https://github.com/bia2on2on/doctor/actions/runs/38468036238) | `completed / success` |
+| Persian five-plugin coexistence (Phase 18) | [38468036426](https://github.com/bia2on2on/doctor/actions/runs/38468036426) | `completed / success` |
+
+Check-runs API on the same exact SHA: **47/47 check runs `completed` / `success`** (no failures, no skips, no pending). Supporting head-level evidence retrieved live in this session: PR #221 final head `c71cd3d9ce335014530bcaafc835a2eb17d88c3f` has **47/47** check runs `completed`/`success`, including CI `38460269890` with the `Integration (WP 6.7 + MySQL 8)` job `115513969996` = `success`, and WPCS / PHPStan ×4 PHP legs / Tenant Tripwire all `success`.
+
+**Evidence honesty — what these runs do and do not prove:**
+- Verified by direct API read in this session: the SHA equality above, the six workflow-family conclusions, the 47/47 check-run tally, and the per-job conclusions of CI run `38460269890`.
+- **NOT re-read in this session:** the raw job logs / PHPUnit numeric summaries for the merge SHA (`gh api …/actions/jobs/115513969996/logs` returned no retrievable content here). No test/assertion count is asserted at this checkpoint beyond what is already preserved in the Slice 4B evidence files.
+- Gate closure on the merge SHA proves the required gate families passed at that SHA. It is **not** a clinical-safety, security-audit, release or commercial-readiness verdict.
+
+**Status statements that are current as of this checkpoint:**
+- **Phase 19 — Automated Testing remains CLOSED** (`4cd5046d1ed8baf3734a7c6742d20f191ab40626`, PR #206). The Custom Role workstream did not reopen it.
+- **Phase 20 has NOT started.** The Custom Role & Permission Management workstream was executed in its approved slot *after Phase 19 and before Phase 20* and is not a Phase 20 deliverable.
+- **Classic remains the current and only shipped CPMS application skin.** No Modern skin exists, and none is claimed.
+- **No commercial-readiness claim.** The four completed slices deliver a bounded Clinic-local feature; they do not constitute a release, go-live, V1/commercial or "complete product" claim, and they do not re-open or re-close any phase.
+- Remaining out-of-scope / not delivered here (unchanged, non-exhaustive): multi-Clinic provisioning UI (pre-existing gap), Organization-level role tooling, any WordPress-global role registration or mutation, and role-name-sensitive legacy workflow extensions beyond what the merged slices explicitly covered.
+
+---
 
 <a id="phase19-closure"></a>
 
@@ -54,7 +111,8 @@ The exact merge-SHA check-runs/check-suites API reports **47/47 check runs `comp
 - **Independent Persian WooCommerce coverage** is preserved (unchanged `coexistence-persian-woocommerce-diagnosis`, `coexistence-persian-woocommerce-sms`, and the third-party-baseline subject matrix).
 - **Mandatory core WooCommerce compatibility** is preserved (the core `woocommerce` baseline remains an individual subject; the Persian coexistence workflow family above succeeded on the closure merge SHA).
 
-**Roadmap ordering preserved:** Phase 19 = CLOSED. The future **Custom Role & Permission Management** workstream remains **frozen after Phase 19 and before Phase 20** — not implemented, not reordered. **Phase 20 is NOT started** by this closure. **Phase 19 closure ≠ commercial readiness.**
+**Roadmap ordering preserved:** Phase 19 = CLOSED. *As of this Phase 19 checkpoint (2026-10-09)* the future **Custom Role & Permission Management** workstream remained **frozen after Phase 19 and before Phase 20** — not implemented, not reordered. **Phase 20 is NOT started** by this closure. **Phase 19 closure ≠ commercial readiness.**
+> *Historical sentence, preserved verbatim above.* For **current** state, that workstream has since been executed in its approved slot (Slices 1–4, PR #213–#215, #216–#217, #219–#221) — see [Custom Role current-state checkpoint](#custom-role-current-state-2026-10-13). Phase 19 remains CLOSED and Phase 20 remains NOT started.
 
 ---
 
@@ -105,7 +163,7 @@ clinical behavior are unchanged.
 
 **Non-claims:** no release / go-live / commercial readiness; no NFR compliance; no Persian WooCommerce 10.0.5 compatibility beyond the diagnostic lane; no all-19 combined compatibility. No product code, tests, migrations, or schema changed in this closure.
 
-**Active phase pointer (historical at this Phase 18 closure checkpoint; corrected 2026-10-09 — superseded by [the Phase 19 formal closure](#phase19-closure)):** at this checkpoint **Phase 19 — Automated Testing** was the active phase pointer (advanced 2026-10-08); Phase 19 is now **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** at `4cd5046d1ed8baf3734a7c6742d20f191ab40626` (PR #206). The frozen future **Custom Role & Permission Management** workstream remains after Phase 19 and before Phase 20; **Phase 20 is NOT started**.
+**Active phase pointer (historical at this Phase 18 closure checkpoint; corrected 2026-10-09 — superseded by [the Phase 19 formal closure](#phase19-closure)):** at this checkpoint **Phase 19 — Automated Testing** was the active phase pointer (advanced 2026-10-08); Phase 19 is now **FORMALLY CLOSED / TECHNICALLY COMPLETE (BOUNDED)** at `4cd5046d1ed8baf3734a7c6742d20f191ab40626` (PR #206). The frozen future **Custom Role & Permission Management** workstream remains after Phase 19 and before Phase 20; **Phase 20 is NOT started**. *(Historical pointer at this checkpoint: the workstream has since been delivered in that slot — see [Custom Role current-state checkpoint](#custom-role-current-state-2026-10-13).)*
 
 ---
 
@@ -1613,6 +1671,9 @@ Full slice-by-slice RED→GREEN history with run IDs:
 ## Linked canonical docs
 
 - [`docs/roadmap/roadmap.md`](roadmap/roadmap.md)
+- [`docs/decisions/2026-10-10-custom-role-permission-management-model.md`](decisions/2026-10-10-custom-role-permission-management-model.md) — authoritative Product Decision for Custom Role & Permission Management (approved model, fail-closed security boundaries, immutability/terminality semantics)
+- [`docs/testing/custom-role-archival-slice4b.md`](testing/custom-role-archival-slice4b.md) — Slice 4B frozen archival contract and its dated execution/evidence checkpoints
+- [`docs/user-guide.md`](user-guide.md) §7 — operator-facing Custom Role procedures (create/edit, assign, deactivate/reactivate, archive, suspended-member reassignment)
 - [`docs/adr/ADR-0031-organization-clinic-location-scoped-authorization.md`](adr/ADR-0031-organization-clinic-location-scoped-authorization.md)
 - [`docs/architecture/phase0.5-target-model.md`](architecture/phase0.5-target-model.md)
 - [`docs/security/phase1b-deferred-register.md`](security/phase1b-deferred-register.md)

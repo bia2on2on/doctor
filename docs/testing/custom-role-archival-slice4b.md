@@ -3,6 +3,21 @@
 Prompt receipt / live preflight: **2026-10-13T05:39:22Z**. Safe stop: **06:34:22Z**;
 maximum authorization: **06:39:22Z**. An internal continuation does not renew it.
 
+> **Status note (appended 2026-10-13T21:41Z, documentation-only):** this is a **frozen
+> contract + dated evidence log**, not the current-state record. Everything below the
+> note is preserved verbatim as historical checkpoints, including the "PR is DRAFT /
+> NOT merged" and "READY FOR INDEPENDENT ACCEPTANCE: NO" lines, which were accurate at
+> their own timestamps. The slice itself has since been **merged**: PR #221 →
+> `main` at `8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`. See the final section
+> "[Merged state and closure (2026-10-13)](#merged-state-and-closure-2026-10-13)" and
+> [`../project-current-state.md`](../project-current-state.md#custom-role-current-state-2026-10-13).
+> No line above this note was edited, re-ordered or deleted.
+>
+> The preflight lines below describe the state **at 05:39Z on 2026-10-13** and are now
+> historical: at that moment `main` = `4c3dbe86…` (Slice 4A merge), the schema head was
+> `2026_10_11_0026`, and PR #221 was the only open (DRAFT) PR. The current schema head
+> is `2026_10_13_0027_custom_role_archival.php`.
+
 Live root `/home/user/doctor`; clean worktree; legal source branch
 `arena/a3e54c26-doctor`; HEAD and authoritative GitHub `main` both
 `4c3dbe86ef5e069548d2c54f77b66a3aaa746060`; zero open PRs at preflight;
@@ -149,3 +164,62 @@ on its own line. No assertion, lock-edge requirement, four-case requirement, JUn
 check or fail-closed collector rule was changed or weakened, and the collector itself
 is untouched. Migration, authorization, archival, membership and lifecycle code paths
 are unchanged by this commit.
+
+<a id="merged-state-and-closure-2026-10-13"></a>
+
+## Merged state and closure (2026-10-13) — appended documentation-only checkpoint
+
+Appended `2026-10-13T21:41Z` by a later, documentation-only session. Nothing above this
+heading is edited. This section closes the loop between the frozen contract and the state
+that is now on `main`; it does not re-adjudicate the security contract itself.
+
+**Merged:** PR #221 (source `arena/a3e54c26-doctor`, base `main`) is **MERGED**, accepted
+head `c71cd3d9ce335014530bcaafc835a2eb17d88c3f`, `mergedAt = 2026-10-13T21:06:11Z`, merge
+SHA **`8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`** = current authoritative `main` (re-read
+live; `origin/main` and this session's `HEAD` are byte-identical to it; open PRs = 0).
+The "one DRAFT PR, no merge" and "READY FOR INDEPENDENT ACCEPTANCE: NO" lines above remain
+the record of their own checkpoints and are **not** reclassified retroactively as approval.
+
+**Commit sequence after the 07:58Z checkpoint (forward commits only — no reset, rebase or
+force-push):** `668316a0` (race evidence line-start framing), `c143a01e`…`24f41a50` and
+`58a0d8bf` (test-only diagnostics + archival-race fixture-ownership / descriptor-isolation
+corrections, the escaped-delimiter migration-guard recognition, and WPCS alignment), then
+`9f190d3f` (Reception fixture same-day collision) and `c71cd3d9` (bounded Reception fixture
+failure category published to the existing channels). Verified via the GitHub commit API in
+this session: `9f190d3f` touched only test/harness files plus `docs/agent-log.md`, and
+`c71cd3d9` only `.github/workflows/pilot-gate.yml` plus `docs/agent-log.md`. No migration,
+authorization, archival, membership or lifecycle code path was altered by that final pair.
+
+**Exact merge-SHA closure (read live from the GitHub API in this documentation session):**
+six required workflow families, each a `push → main` run whose `head_sha` is
+`8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`, all `completed / success` — CI `38468036296` ·
+Real WordPress Acceptance `38468036367` · Closure Gate `38468036428` · Pilot/Staging
+Readiness Gate `38468036189` · Third-Party Compatibility Baseline `38468036238` · Persian
+five-plugin coexistence `38468036426`. Check-runs API on the same SHA: **47/47
+`completed`/`success`**. The check-runs API on the accepted head `c71cd3d9…` likewise reports
+**47/47 `completed`/`success`**, including CI `38460269890`, whose `Integration (WP 6.7 +
+MySQL 8)` job `115513969996` concluded `success` together with WPCS, PHPStan, Tenant Tripwire
+and the four PHP 8.1–8.4 Unit legs.
+
+**What this closure does and does not establish:**
+- It establishes that the full CI + acceptance gate families (including the full Integration
+  suite that previously failed at `94d26438` and the focused schema family that failed at
+  `bd4c1b68`) are green at the accepted head and at the merge SHA. The downgrade-guard and
+  evidence-framing blockers recorded above are therefore closed **by gate evidence**, not by
+  a new local run.
+- It does **not** restate numeric PHPUnit totals for those runs: the job logs were
+  **NOT retrievable** from this documentation environment
+  (`gh api …/actions/jobs/115513969996/logs` returned no content), so no "N tests / M
+  assertions" figure is claimed here.
+- The four independent-session race contracts remain evidenced by their own `performance_schema`
+  wait-edge records as described in the 07:58Z checkpoint; this section adds no new concurrency
+  claim beyond the green CI at the merge SHA.
+- Schema reality on `main` today: the versioned head is **`2026_10_13_0027_custom_role_archival.php`**
+  (0024 → 0025 → 0026 → 0027). No applied migration was edited.
+- Operational consequence (unchanged, restated because it is now on `main`): archival is
+  **terminal** — key reserved, definition and capability rows retained, no edit/assignment/
+  reactivation, `active`-version retry is a reported no-op, stale-version retry refused; and
+  **binary rollback to a pre-4B build while archived rows exist remains unsupported**, so
+  writers must be quiesced and a backup taken before any schema maintenance.
+- Gate success is exact-SHA CI closure only. It is **not** a commercial-readiness, release,
+  security-audit or "feature complete for all customers" claim, and it does not start Phase 20.

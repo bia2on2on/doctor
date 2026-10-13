@@ -4,6 +4,15 @@
 > **Recorded:** 2026-10-10.
 > **Scope of this record:** documents the approved model only. Slice 1 implements the backend foundations bounded by this record; this record is not itself a broad documentation checkpoint and rewrites no historical ADR.
 > **Historical ADRs remain untouched.** Where this record and an older document overlap, the precedence rules in `docs/decisions/2026-09-05-document-precedence-policy.md` apply.
+>
+> **Implementation-status note (documentation-only correction, 2026-10-13):** §§3, 3b, 3c and 3d record the
+> contracts of the slices as they were approved and delivered. Sections **3** (Slice 1), **3b** (Slice 2),
+> **3c**/**3B** (assignment + private-file ownership) and **3d** (Slice 4A) are implemented and merged, and
+> **§3e** records the Slice 4B archival contract that is now implemented and merged. The §1 item 3 wording
+> "future slices" and the §4 "future slices must deliver" list are therefore **historical planning prose at
+> their recording dates** and are annotated in place rather than rewritten. The approved model, the fail-closed
+> security boundaries and the immutability/terminality semantics below are **unchanged** by this note. Current
+> main/CI status is recorded only in [`../project-current-state.md`](../project-current-state.md#custom-role-current-state-2026-10-13).
 
 ---
 
@@ -11,7 +20,7 @@
 
 1. **Custom role definitions are Clinic-local.** A custom role belongs to exactly one Clinic; the same key may exist in different Clinics with different capability sets and resolves independently per Clinic.
 2. **Existing built-in CPMS roles remain available and backward-compatible** (`cpms_patient`, `cpms_secretary`, `cpms_doctor`, `cpms_accountant`, `cpms_manager`).
-3. **Authorized Clinic management may configure custom roles** (management surface and its authority are future slices).
+3. **Authorized Clinic management may configure custom roles** (management surface and its authority are future slices). *(Status 2026-10-13: delivered — the server-rendered definition-management surface and its Clinic-local authority model shipped in Slice 2, PR #214; see §3b.)*
 4. **A role editor must never grant capabilities exceeding the editor's own effective Clinic-scoped authority.**
 5. **WordPress administrator status alone does not confer clinical authority.**
 6. **Sensitive capabilities are excluded from ordinary custom-role editing in V1** (§2).
@@ -66,8 +75,34 @@
 - Assignment and lifecycle transitions serialize on the same definition row. A waiting assignment must re-read current status after the lock and refuse an inactive definition without changing the existing membership.
 - The server-rendered management page exposes nonce-protected, confirmed controls with consequence text and feedback. Its wp-admin entry uses ordinary `read` only so Clinic-local managers do not need WordPress-global `cpms_config`; every read and mutation still re-establishes the trusted Clinic and uses `AuthorizationService`. No WordPress-global role/capability mutation or schema change is introduced.
 
+## 3e. Slice 4B — terminal archival of unassigned roles (implemented 2026-10-13)
+
+- **Merged:** **PR #221** (source `arena/a3e54c26-doctor`, accepted head `c71cd3d9ce335014530bcaafc835a2eb17d88c3f`), MERGED `2026-10-13T21:06:11Z`; merge SHA `8f8ca4bfc8e4cbc828f9689833392a1482a35d1a` = current `main`. Exact merge-SHA gate closure and the evidence-honesty notes for that SHA are recorded in [`../project-current-state.md`](../project-current-state.md#custom-role-current-state-2026-10-13); the frozen contract and the dated execution checkpoints are in [`../testing/custom-role-archival-slice4b.md`](../testing/custom-role-archival-slice4b.md).
+- **Lifecycle position:** archival is a third, **terminal** status (`active` → `inactive` → `archived`) distinct from the reversible deactivation of §3d. It is decided by decision 9, not by an editor's convenience.
+- **Precondition:** an archive request is accepted only when the Clinic-local definition has **zero membership references of any membership status, suspended included** (`CustomRoleManagementService::archive()` → `CustomRoleRepository::has_membership_references_for_update()` inside the locked transaction). Any reference is refused; nothing is auto-reassigned, auto-suspended or silently dropped.
+- **Persistence:** forward-only migration `2026_10_13_0027_custom_role_archival.php` widens the status domain to include `archived`. It adds no `archived_at` column and edits no previously applied migration. Its downgrade path is fail-closed: an enforced CHECK guard refuses a `0027 → 0026` narrowing while any archived row exists, in both default and non-strict SQL modes, because MySQL DDL cannot be represented as a transactional rollback.
+- **Terminal semantics that operators and integrators must rely on:** the `role_key` stays reserved and immutable; the definition and capability rows are retained, never deleted; an archived definition confers **no** role-derived authority and is not editable, assignable, reactivatable or re-archivable. The technical key can therefore never be reused to mean something else in that Clinic.
+- **Idempotence rule:** an archive retry that carries the **current** version is a reported no-op (`changed: false`, no second audit event); a retry carrying a **stale** version is refused (`stale_version`), and any mutation of an archived definition is refused with the typed terminal-state error.
+- **Unknown status values fail closed rather than being "normalized to active":** `CustomRoleRepository::active_capabilities_for()` resolves authority only for a row whose status is exactly `active`, so a foreign/unexpected status confers nothing; the management UI renders such a row read-only (`unknown status — read-only`) and a status transition on it is refused with the typed invalid-state error.
+- **Compatibility boundary (explicit, not a bug to paper over):** binary rollback to a pre-4B build **while archived rows exist is unsupported** — older readers normalize `archived` to `active` and older status paths do not enforce terminality. Do not run mixed old writers after archival; quiesce writers and back up before schema maintenance.
+- **Suspended-member release path:** the only membership write added by 4B is the explicit, bounded reassignment of an **already suspended** member of the same Clinic to another active custom role (`StaffManagementPage::reassign_suspended_custom_role*` → `CustomRoleAssignmentService::reassign_suspended()`). Suspension state, membership GRANT/DENY rows, WordPress roles, professional identity and Location assignments are untouched by it.
+
 ## 4. Workstream ordering and non-claims
 
 - The Custom Role & Permission Management workstream remains **before Phase 20** and is not resequenced.
 - **This slice does NOT make custom roles ready for general staff assignment.** Future slices must deliver, at minimum: authorized role management (editor-authority bounding per decision 4), membership assignment, safe archive lifecycle (decision 9), Clinic-correct staff UI, and explicit compatibility with role-name-sensitive workflows (doctor-ownership, private-note, portal surfaces) before the feature can be declared complete.
-- Role-sensitive legacy workflows are not modified in Slice 1; a custom role never impersonates a built-in role key in those workflows.
+- This record's approved model remains binding; a later documentation or code change may not silently relax §1 or §2.
+
+### 4b. Status of the §4 "future slices" list (annotated 2026-10-13 — historical prose preserved above, not rewritten)
+
+The item-2 sentence above was written when only Slice 1 existed. The listed requirements have since been delivered as merged slices, so the sentence **no longer describes current state**:
+
+| Requirement in that sentence | Status on `main` (2026-10-13) |
+|---|---|
+| authorized role management (editor-authority bounding per decision 4) | Delivered — Slice 2, **PR #214** (`CustomRoleManagementService`, delegable-capability bounding) |
+| membership assignment | Delivered — Slice 3B, **PR #219** (`CustomRoleAssignmentService`, membership-only write) |
+| safe archive lifecycle (decision 9) | Delivered — Slice 4B, **PR #221** (terminal `archived` status + migration `0027`, zero-reference precondition) |
+| Clinic-correct staff UI | Delivered for the bounded scope — `cpms-custom-roles` definition page (Slices 2/4A/4B) and the `cpms-staff` assignment + suspended-reassignment forms (Slice 3B/4B); server-rendered wp-admin only, no SPA |
+| explicit compatibility with role-name-sensitive workflows (doctor-ownership, private-note, portal surfaces) | Delivered for the bounded scope — private-file responsible-clinician ownership (**PR #217**), suspend/manage of custom-role members (**PR #219**), reversible deactivation preserving assignments (**PR #220**) |
+
+**What is still NOT claimed:** that the workstream as a whole is "complete" in any commercial or release sense; that custom roles are ready to be treated as an audited product guarantee beyond the bounded slices above; multi-Clinic/Organization provisioning UI (a pre-existing gap outside this workstream); any WordPress-global role registration, WP-role mutation or new capability vocabulary; any change to the built-in role presets or to the `DENY > GRANT > role > DENY` precedence. **Phase 20 is NOT started by this workstream, Classic remains the shipped skin, and none of the above is a commercial-readiness statement.**
