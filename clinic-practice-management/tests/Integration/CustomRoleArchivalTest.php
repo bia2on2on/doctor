@@ -474,7 +474,7 @@ final class CustomRoleArchivalTest extends WP_UnitTestCase
     private function clinicalSnapshot(): array
     {
         $snapshot = [];
-        foreach (['cpms_patients', 'cpms_clinicians', 'cpms_visits', 'cpms_visit_notes', 'cpms_prescriptions', 'cpms_attachments', 'cpms_clinician_locations'] as $table) {
+        foreach (['cpms_patients', 'cpms_clinicians', 'cpms_visits', 'cpms_clinical_notes', 'cpms_clinical_note_versions', 'cpms_prescriptions', 'cpms_prescription_items', 'cpms_medical_attachments', 'cpms_patient_identities', 'cpms_patient_identity_links', 'cpms_clinician_locations'] as $table) {
             $physical = App::db()->table($table);
             if ((int) App::db()->fetchValue('SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s', [$physical]) > 0) {
                 $snapshot[$table] = App::db()->fetchAll('SELECT * FROM ' . $physical);

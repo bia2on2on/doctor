@@ -26,7 +26,7 @@ final class TrustedClinicEstablisher {
 	/**
 	 * @throws ScopeRequiredException
 	 */
-	public function establish( int $wp_user_id, ?int $clinic_id, ?int $location_id = null ): ClinicScope {
+	public function establish( int $wp_user_id, ?int $clinic_id, ?int $location_id = null, bool $for_update = false ): ClinicScope {
 		if ( $wp_user_id <= 0 ) {
 			$this->unavailable( 'unauthenticated' );
 		}
@@ -41,16 +41,16 @@ final class TrustedClinicEstablisher {
 				);
 			}
 
-			return $this->from_unique_membership( $wp_user_id );
+			return $this->from_unique_membership( $wp_user_id, $for_update );
 		}
 
-		return $this->from_requested_clinic( $wp_user_id, $clinic_id, $location_id );
+		return $this->from_requested_clinic( $wp_user_id, $clinic_id, $location_id, $for_update );
 	}
 
 	/**
 	 * @throws ScopeRequiredException
 	 */
-	private function from_unique_membership( int $wp_user_id ): ClinicScope {
+	private function from_unique_membership( int $wp_user_id, bool $for_update ): ClinicScope {
 		$ids = $this->memberships->active_clinic_ids_for_user( $wp_user_id );
 		if ( [] === $ids ) {
 			$this->unavailable( 'no_membership' );
@@ -64,13 +64,13 @@ final class TrustedClinicEstablisher {
 			);
 		}
 
-		return $this->verified_scope( $wp_user_id, $ids[0], null );
+		return $this->verified_scope( $wp_user_id, $ids[0], null, $for_update );
 	}
 
 	/**
 	 * @throws ScopeRequiredException
 	 */
-	private function from_requested_clinic( int $wp_user_id, int $clinic_id, ?int $location_id ): ClinicScope {
+	private function from_requested_clinic( int $wp_user_id, int $clinic_id, ?int $location_id, bool $for_update ): ClinicScope {
 		if ( $clinic_id <= 0 ) {
 			throw new ScopeRequiredException(
 				'CLINIC_VALIDATION_FAILED',
@@ -80,7 +80,7 @@ final class TrustedClinicEstablisher {
 			);
 		}
 
-		return $this->verified_scope( $wp_user_id, $clinic_id, $location_id );
+		return $this->verified_scope( $wp_user_id, $clinic_id, $location_id, $for_update );
 	}
 
 	/**
@@ -89,13 +89,14 @@ final class TrustedClinicEstablisher {
 	 *
 	 * @throws ScopeRequiredException
 	 */
-	private function verified_scope( int $wp_user_id, int $clinic_id, ?int $location_id ): ClinicScope {
-		$membership = $this->memberships->find_active( $clinic_id, $wp_user_id );
+	private function verified_scope( int $wp_user_id, int $clinic_id, ?int $location_id, bool $for_update ): ClinicScope {
+		$membership = $this->memberships->find_active( $clinic_id, $wp_user_id, $for_update );
 		if ( null === $membership ) {
 			$this->unavailable( 'membership' );
 		}
 
-		$clinic = $this->db->fetchRow(
+		$read   = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
+		$clinic = $this->db->$read(
 			'SELECT c.id, c.organization_id, o.status AS organization_status
 			   FROM ' . $this->db->table( 'cpms_clinics' ) . ' c
 			   INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
@@ -103,6 +104,9 @@ final class TrustedClinicEstablisher {
 			  LIMIT 1',
 			[ $clinic_id ]
 		);
+		if ( $for_update && $this->db->wpdb()->last_error !== '' ) {
+			throw new \RuntimeException( 'trusted Clinic locking read failed' );
+		}
 		if ( null === $clinic ) {
 			$this->unavailable( 'clinic' );
 		}

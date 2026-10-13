@@ -9,6 +9,7 @@ use ClinicCore\Application\Roles\CustomRoleManagementException;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 
 /**
  * «نقش‌های سفارشی» — Clinic-local custom-role definition management
@@ -25,8 +26,8 @@ use ClinicCore\Bootstrap\App;
  *    Backend مستقل از UI همان مجموعه را دوباره اعتبارسنجی می‌کند (all-or-nothing).
  *  - Nonce (CSRF) روی هر action، Sanitize روی هر ورودی، خروجی Escape‌شده.
  *  - کلید فنی نقش immutable است: فرم rename فقط نام نمایشی را تغییر می‌دهد.
- *  - هیچ Assign/Archive/Delete در این صفحه نیست؛ lifecycle فقط تغییر وضعیت
- *    برگشت‌پذیر و Auditشده است. هیچ نقش WordPress-global ثبت نمی‌شود.
+ *  - هیچ Assign/Delete در این صفحه نیست؛ بایگانی پایانی از غیرفعال‌سازی
+ *    برگشت‌پذیر جداست و فقط بدون ارجاع عضویت انجام می‌شود. هیچ نقش WordPress-global ثبت نمی‌شود.
  *    نام‌های نمایشی Unicode-عمومی‌اند (بدون قاعدهٔ
  *    فارسی‌محور) و متن‌ها با توابع ترجمهٔ وردپرس رندر می‌شوند.
  */
@@ -39,6 +40,7 @@ final class CustomRoleDefinitionsPage {
 	private const NONCE_CAPS       = 'cpms_custom_role_caps';
 	private const NONCE_DEACTIVATE = 'cpms_custom_role_deactivate';
 	private const NONCE_REACTIVATE = 'cpms_custom_role_reactivate';
+	private const NONCE_ARCHIVE    = 'cpms_custom_role_archive';
 	private const NOTICE_KEY       = 'cpms_custom_roles_notice';
 
 	public static function register(): void {
@@ -48,6 +50,7 @@ final class CustomRoleDefinitionsPage {
 		add_action( 'admin_post_cpms_custom_role_caps', [ self::class, 'handle_replace_capabilities' ] );
 		add_action( 'admin_post_cpms_custom_role_deactivate', [ self::class, 'handle_deactivate' ] );
 		add_action( 'admin_post_cpms_custom_role_reactivate', [ self::class, 'handle_reactivate' ] );
+		add_action( 'admin_post_cpms_custom_role_archive', [ self::class, 'handle_archive' ] );
 	}
 
 	public static function menu(): void {
@@ -123,6 +126,9 @@ final class CustomRoleDefinitionsPage {
 		} else {
 			self::render_create_form( $clinic_id, $delegable );
 			foreach ( $listing['definitions'] as $definition ) {
+				if ( ! CustomRoleRepository::is_mutable_status( (string) $definition['status'] ) ) {
+					continue;
+				}
 				self::render_edit_forms( $clinic_id, $definition, $delegable );
 			}
 		}
@@ -174,13 +180,15 @@ final class CustomRoleDefinitionsPage {
 		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
 		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
 		$display_name = sanitize_text_field( wp_unslash( (string) ( $_POST['display_name'] ?? '' ) ) );
+		$expected_version = absint( wp_unslash( $_POST['version'] ?? 0 ) );
 
 		try {
 			$renamed = App::custom_role_management_service()->rename(
 				(int) get_current_user_id(),
 				$clinic_id,
 				$role_key,
-				$display_name
+				$display_name,
+				$expected_version
 			);
 			self::set_notice(
 				'success',
@@ -209,13 +217,15 @@ final class CustomRoleDefinitionsPage {
 		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
 		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
 		$capabilities = self::sanitize_capability_input( wp_unslash( $_POST['capabilities'] ?? [] ) );
+		$expected_version = absint( wp_unslash( $_POST['version'] ?? 0 ) );
 
 		try {
 			$updated = App::custom_role_management_service()->replace_capabilities(
 				(int) get_current_user_id(),
 				$clinic_id,
 				$role_key,
-				$capabilities
+				$capabilities,
+				$expected_version
 			);
 			self::set_notice(
 				'success',
@@ -243,6 +253,44 @@ final class CustomRoleDefinitionsPage {
 
 	public static function handle_reactivate(): void {
 		self::handle_status_change( true );
+	}
+
+	public static function handle_archive(): void {
+		self::assert_entry();
+		check_admin_referer( self::NONCE_ARCHIVE );
+
+		$clinic_id = isset( $_POST['cpms_clinic_id'] ) && is_scalar( $_POST['cpms_clinic_id'] )
+			? absint( wp_unslash( (string) $_POST['cpms_clinic_id'] ) ) : 0;
+		$role_key = isset( $_POST['role_key'] ) && is_string( $_POST['role_key'] )
+			? sanitize_key( wp_unslash( $_POST['role_key'] ) ) : '';
+		$version = isset( $_POST['version'] ) && is_string( $_POST['version'] )
+			? sanitize_text_field( wp_unslash( $_POST['version'] ) ) : '';
+		$expected_version = ctype_digit( $version ) ? (int) $version : 0;
+		$confirmed = isset( $_POST['confirm_archive'] ) && is_string( $_POST['confirm_archive'] )
+			&& sanitize_text_field( wp_unslash( $_POST['confirm_archive'] ) ) === '1';
+
+		if ( ! $confirmed ) {
+			self::set_notice( 'error', __( 'بایگانی برگشت‌پذیر نیست؛ ابتدا پیامدهای آن را تأیید کنید. هیچ تغییری ثبت نشد.', 'cpms' ) );
+			self::redirect_back( $clinic_id );
+		}
+
+		try {
+			$result = App::custom_role_management_service()->archive( (int) get_current_user_id(), $clinic_id, $role_key, $expected_version );
+			self::set_notice(
+				'success',
+				$result['changed']
+					? __( 'نقش برای همیشه بایگانی شد؛ تعریف و کلید محفوظ‌اند و هیچ عضوی جابه‌جا یا فعال نشده است.', 'cpms' )
+					: __( 'نقش از قبل بایگانی بود؛ تغییر یا رویداد Audit دیگری ثبت نشد.', 'cpms' )
+			);
+		} catch ( CustomRoleManagementException $e ) {
+			self::set_notice( 'error', self::describe_failure( $e ) );
+		} catch ( ScopeRequiredException | AuthorizationException $e ) {
+			self::set_notice( 'error', __( 'بایگانی نقش در این Clinic برای شما مجاز نیست.', 'cpms' ) );
+		} catch ( \RuntimeException $e ) {
+			self::report_infrastructure_failure( $e, __FUNCTION__ );
+		}
+
+		self::redirect_back( $clinic_id );
 	}
 
 	private static function handle_status_change( bool $is_reactivate ): void {
@@ -335,9 +383,12 @@ final class CustomRoleDefinitionsPage {
 			echo '<tr>';
 			echo '<td>' . esc_html( $label ) . '</td>';
 			echo '<td><code dir="ltr">' . esc_html( $definition['role_key'] ) . '</code></td>';
-			$status_label = 'inactive' === $definition['status']
-				? __( 'غیرفعال', 'cpms' )
-				: __( 'فعال', 'cpms' );
+			$status_label = match ( $definition['status'] ) {
+				CustomRoleRepository::STATUS_ACTIVE   => __( 'فعال', 'cpms' ),
+				CustomRoleRepository::STATUS_INACTIVE => __( 'غیرفعال', 'cpms' ),
+				CustomRoleRepository::STATUS_ARCHIVED => __( 'بایگانی‌شده (پایانی)', 'cpms' ),
+				default                               => __( 'وضعیت ناشناخته — فقط خواندنی', 'cpms' ),
+			};
 			echo '<td>' . esc_html( $status_label ) . '</td>';
 			echo '<td>' . esc_html( (string) $definition['version'] ) . '</td>';
 			echo '<td>';
@@ -358,6 +409,11 @@ final class CustomRoleDefinitionsPage {
 	 * @param array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>} $definition
 	 */
 	private static function render_lifecycle_form( int $clinic_id, array $definition ): void {
+		if ( ! CustomRoleRepository::is_mutable_status( (string) $definition['status'] ) ) {
+			echo '<p class="description">' . esc_html__( 'فقط خواندنی؛ کلید محفوظ است و این تعریف قابل انتساب، ویرایش یا فعال‌سازی نیست.', 'cpms' ) . '</p>';
+
+			return;
+		}
 		$is_active    = 'active' === $definition['status'];
 		$action       = $is_active ? 'cpms_custom_role_deactivate' : 'cpms_custom_role_reactivate';
 		$nonce        = $is_active ? self::NONCE_DEACTIVATE : self::NONCE_REACTIVATE;
@@ -378,6 +434,23 @@ final class CustomRoleDefinitionsPage {
 		wp_nonce_field( $nonce );
 		$onclick = 'return confirm(' . wp_json_encode( $confirmation ) . ');';
 		echo '<button type="submit" class="button" onclick="' . esc_attr( $onclick ) . '">' . esc_html( $button_label ) . '</button>';
+		echo '</form>';
+		self::render_archive_form( $clinic_id, $definition );
+	}
+
+	/** @param array{role_key:string,version:int} $definition */
+	private static function render_archive_form( int $clinic_id, array $definition ): void {
+		$explanation = __( 'بایگانی پایانی و برگشت‌ناپذیر است؛ تعریف و کلید محفوظ می‌مانند اما قابل ویرایش، انتساب یا فعال‌سازی نیستند. ابتدا همهٔ اعضای این Clinic، حتی اعضای معلق، باید صریحاً نقش دیگری بگیرند.', 'cpms' );
+		echo '<p class="description">' . esc_html( $explanation ) . '</p>';
+		echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+		echo '<input type="hidden" name="action" value="cpms_custom_role_archive">';
+		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+		echo '<input type="hidden" name="role_key" value="' . esc_attr( $definition['role_key'] ) . '">';
+		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
+		wp_nonce_field( self::NONCE_ARCHIVE );
+		echo '<label><input type="checkbox" name="confirm_archive" value="1" required> ' . esc_html__( 'پیامدهای برگشت‌ناپذیر بایگانی را می‌پذیرم.', 'cpms' ) . '</label> ';
+		$onclick = 'return confirm(' . wp_json_encode( $explanation ) . ');';
+		echo '<button type="submit" class="button" onclick="' . esc_attr( $onclick ) . '">' . esc_html__( 'بایگانی دائمی', 'cpms' ) . '</button>';
 		echo '</form>';
 	}
 
@@ -423,6 +496,7 @@ final class CustomRoleDefinitionsPage {
 		echo '<input type="hidden" name="action" value="cpms_custom_role_rename">';
 		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
 		echo '<input type="hidden" name="role_key" value="' . esc_attr( $role_key ) . '">';
+		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
 		wp_nonce_field( self::NONCE_RENAME );
 		echo '<label for="cpms-rename-' . esc_attr( $role_key ) . '">' . esc_html__( 'ویرایش نام نمایشی', 'cpms' ) . '</label> ';
 		echo '<input name="display_name" id="cpms-rename-' . esc_attr( $role_key ) . '" type="text" required maxlength="' . esc_attr( (string) CustomRolePolicy::DISPLAY_NAME_MAX_CODE_POINTS ) . '" value="' . esc_attr( (string) ( $definition['display_name'] ?? '' ) ) . '" class="regular-text"> ';
@@ -433,6 +507,7 @@ final class CustomRoleDefinitionsPage {
 		echo '<input type="hidden" name="action" value="cpms_custom_role_caps">';
 		echo '<input type="hidden" name="cpms_clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
 		echo '<input type="hidden" name="role_key" value="' . esc_attr( $role_key ) . '">';
+		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
 		wp_nonce_field( self::NONCE_CAPS );
 
 		self::render_capability_checkboxes( 'capabilities', $definition['capabilities'], $delegable );
@@ -480,6 +555,12 @@ final class CustomRoleDefinitionsPage {
 				return __( 'یکی از مجوزهای انتخابی خارج از اختیار مؤثر شما در این Clinic است؛ هیچ تغییری ذخیره نشد.', 'cpms' );
 			case CustomRoleManagementException::CODE_KEY_CONFLICT:
 				return __( 'این کلید فنی در همین Clinic قبلاً تعریف شده است.', 'cpms' );
+			case CustomRoleManagementException::CODE_MEMBERSHIP_REFERENCES:
+				return __( 'بایگانی انجام نشد: هنوز عضویت‌هایی در همین Clinic این نقش را دارند، حتی اگر معلق باشند. ابتدا نقش همه را صریحاً تغییر دهید؛ هیچ جابه‌جایی خودکاری انجام نمی‌شود.', 'cpms' );
+			case CustomRoleManagementException::CODE_TERMINAL_STATE:
+				return __( 'این نقش بایگانی شده و پایانی است؛ ویرایش یا فعال‌سازی آن مجاز نیست.', 'cpms' );
+			case CustomRoleManagementException::CODE_INVALID_STATE:
+				return __( 'وضعیت ذخیره‌شدهٔ نقش شناخته‌شده نیست؛ هیچ تغییری مجاز نیست.', 'cpms' );
 			case CustomRoleManagementException::CODE_STALE_VERSION:
 				return __( 'این نقش هم‌زمان تغییر کرده است؛ صفحه را تازه کنید و دوباره تلاش کنید.', 'cpms' );
 			default:
