@@ -2062,10 +2062,18 @@ jobs:
 
       - name: Reception fixture — two Locations + today's booked rows + empty Location
         run: |
-          FAKETIME_FMT=%s FAKETIME="$RECEPTION_FAKE_EPOCH" FAKETIME_DONT_FAKE_MONOTONIC=1 LD_PRELOAD="$RECEPTION_FAKETIME_LIB" WP_HOME="$WP_DIR" php tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
+          # Keep the PHP CLI fatal/stack log because WordPress renders a generic error page.
+          : > /tmp/reception-php-error.log
+          FAKETIME_FMT=%s FAKETIME="$RECEPTION_FAKE_EPOCH" FAKETIME_DONT_FAKE_MONOTONIC=1 LD_PRELOAD="$RECEPTION_FAKETIME_LIB" WP_HOME="$WP_DIR" php -d log_errors=1 -d error_log=/tmp/reception-php-error.log tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
+          php_error_tail="$(tail -c 6000 /tmp/reception-php-error.log 2>/dev/null | tr '\n' '~' | sed -E 's/[0-9]{10,}/[redacted]/g')"
+          if [ -s /tmp/reception.env ]; then
+            env_bytes="$(wc -c < /tmp/reception.env)"
+          else
+            env_bytes=MISSING
+          fi
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
-            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reception.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reception-fixture.log 2>/dev/null | tr '\n' '~')"
+            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=${env_bytes} php_error_tail=${php_error_tail:-MISSING} log_tail=$(tail -c 1500 /tmp/reception-fixture.log 2>/dev/null | tr '\n' '~')"
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/reception.env

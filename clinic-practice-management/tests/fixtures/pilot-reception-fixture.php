@@ -19,7 +19,19 @@
  * Stdout is redacted. Passwords go only to /tmp/reception.env.
  */
 
+fwrite(
+    STDERR,
+    'RECEPTION_FIXTURE_CLOCK_BEFORE_WP_LOAD='
+    . (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d H:i:s')
+    . "\n"
+);
 require getenv('WP_HOME') . '/wp-load.php';
+fwrite(
+    STDERR,
+    'RECEPTION_FIXTURE_CLOCK_AFTER_WP_LOAD='
+    . (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d H:i:s')
+    . "\n"
+);
 require_once __DIR__ . '/../Support/ReceptionFixtureClockPolicy.php';
 
 global $wpdb;
