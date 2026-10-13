@@ -27,7 +27,7 @@ final class ConnectionDiagnostics
 {
     private const PREFIX    = 'CPMS_CONN_DIAG ';
     private const FILE      = '/tmp/cpms-conn-diag.jsonl';
-    private const MAX_LINES = 60;
+    private const MAX_LINES = 40;
 
     private static int $emitted = 0;
 
