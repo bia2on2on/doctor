@@ -275,6 +275,86 @@ jobs:
             /tmp/custom-role-archive-junit.xml
           if-no-files-found: warn
 
+      - name: Run focused archival schema and downgrade safety
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/custom-role-archive-migration-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-archive-migration.log
+          TEST_RC=$?
+          set -e
+          {
+            echo "### Slice 4B schema/downgrade evidence (run ${{ github.run_id }}, head ${{ github.event.pull_request.head.sha || github.sha }})"
+            echo '```'
+            tail -n 180 /tmp/custom-role-archive-migration.log
+            echo '```'
+          } > /tmp/custom-role-archive-migration-pr.md
+          cat /tmp/custom-role-archive-migration-pr.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-migration-pr.md; fi
+          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          grep -qE '^OK \(' /tmp/custom-role-archive-migration.log
+
+      - name: Run focused archival independent MySQL races
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/custom-role-archive-race-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalConcurrencyTest.php 2>&1 | tee /tmp/custom-role-archive-race.log
+          TEST_RC=$?
+          set -e
+          {
+            echo "### Slice 4B independent MySQL races (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}; head ${{ github.event.pull_request.head.sha || github.sha }})"
+            echo '```'
+            tail -n 160 /tmp/custom-role-archive-race.log
+            echo '```'
+          } > /tmp/custom-role-archive-race-pr.md
+          cat /tmp/custom-role-archive-race-pr.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-race-pr.md; fi
+          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          python3 - <<'PYRACE'
+          import json
+          import sys
+          import xml.etree.ElementTree as ET
+          cases = ET.parse('/tmp/custom-role-archive-race-junit.xml').getroot().findall('.//testcase')
+          if len(cases) != 4 or any(c.find(tag) is not None for c in cases for tag in ('skipped', 'failure', 'error')):
+              sys.exit('All four independent archival races must execute, never skip.')
+          prefix = 'CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE '
+          evidence = [json.loads(line[len(prefix):]) for line in open('/tmp/custom-role-archive-race.log') if line.startswith(prefix)]
+          expected = {'archive_before_assign', 'assign_before_archive', 'archive_before_rename', 'archive_before_capabilities'}
+          if len(evidence) != 4 or {row['case'] for row in evidence} != expected:
+              sys.exit('Missing/duplicate archival race evidence.')
+          for row in evidence:
+              edge = row['wait_edge']
+              if (row['parent_connection_id'] == row['child_connection_id']
+                  or edge['requesting_lock_status'] != 'WAITING'
+                  or edge['blocking_lock_status'] != 'GRANTED'
+                  or row['child_transaction_state'] != 'LOCK WAIT'
+                  or not row['same_wait_edge_through_mutation_and_audit_before_commit']):
+                  sys.exit('Race lacks genuine independent-session contention evidence.')
+          print('Four archival races executed; exact MySQL wait edges and post-commit refusals verified.')
+          PYRACE
+          grep -qE '^OK \(' /tmp/custom-role-archive-race.log
+
+      - name: Preserve archival schema and concurrency evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-role-archive-races-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/custom-role-archive-race.log
+            /tmp/custom-role-archive-race-junit.xml
+            /tmp/custom-role-archive-migration.log
+            /tmp/custom-role-archive-migration-junit.xml
+          if-no-files-found: warn
+
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests

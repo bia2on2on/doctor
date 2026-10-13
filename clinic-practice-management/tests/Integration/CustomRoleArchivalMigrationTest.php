@@ -53,7 +53,17 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             $repository->set_status($clinic, 'arc_mig_inactive', 'inactive');
             $ids = [$active, $inactive];
             try {
-                self::assertSame(self::VERSION, App::migrations()->rollbackOne());
+                try {
+                    self::assertSame(self::VERSION, App::migrations()->rollbackOne());
+                } catch (\Throwable $failure) {
+                    $causes = [];
+                    for ($cause = $failure; $cause !== null; $cause = $cause->getPrevious()) { $causes[] = $cause->getMessage(); }
+                    fwrite(STDERR, 'ARCHIVAL_DOWNGRADE_FAILURE_EVIDENCE ' . json_encode([
+                        'causes' => $causes, 'status_column' => $this->statusColumn(),
+                        'constraints' => App::db()->fetchAll('SELECT tc.CONSTRAINT_NAME, tc.ENFORCED, cc.CHECK_CLAUSE FROM information_schema.TABLE_CONSTRAINTS tc LEFT JOIN information_schema.CHECK_CONSTRAINTS cc ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.TABLE_NAME = %s', [App::db()->table('cpms_custom_role_defs')]),
+                    ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
+                    throw $failure;
+                }
                 self::assertSame('2026_10_11_0026', App::migrations()->currentVersion());
                 $beforeColumn = $this->statusColumn();
                 $beforeIndexes = $this->indexes();

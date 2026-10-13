@@ -177,9 +177,9 @@ final class CustomRoleDefinitionsPage {
 		self::assert_entry();
 		check_admin_referer( self::NONCE_RENAME );
 
-		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
-		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
-		$display_name = sanitize_text_field( wp_unslash( (string) ( $_POST['display_name'] ?? '' ) ) );
+		$clinic_id        = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
+		$role_key         = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
+		$display_name     = sanitize_text_field( wp_unslash( (string) ( $_POST['display_name'] ?? '' ) ) );
 		$expected_version = absint( wp_unslash( $_POST['version'] ?? 0 ) );
 
 		try {
@@ -214,9 +214,9 @@ final class CustomRoleDefinitionsPage {
 		self::assert_entry();
 		check_admin_referer( self::NONCE_CAPS );
 
-		$clinic_id    = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
-		$role_key     = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
-		$capabilities = self::sanitize_capability_input( wp_unslash( $_POST['capabilities'] ?? [] ) );
+		$clinic_id        = absint( wp_unslash( $_POST['cpms_clinic_id'] ?? 0 ) );
+		$role_key         = sanitize_key( wp_unslash( (string) ( $_POST['role_key'] ?? '' ) ) );
+		$capabilities     = self::sanitize_capability_input( wp_unslash( $_POST['capabilities'] ?? [] ) );
 		$expected_version = absint( wp_unslash( $_POST['version'] ?? 0 ) );
 
 		try {
@@ -259,14 +259,14 @@ final class CustomRoleDefinitionsPage {
 		self::assert_entry();
 		check_admin_referer( self::NONCE_ARCHIVE );
 
-		$clinic_id = isset( $_POST['cpms_clinic_id'] ) && is_scalar( $_POST['cpms_clinic_id'] )
+		$clinic_id        = isset( $_POST['cpms_clinic_id'] ) && is_scalar( $_POST['cpms_clinic_id'] )
 			? absint( wp_unslash( (string) $_POST['cpms_clinic_id'] ) ) : 0;
-		$role_key = isset( $_POST['role_key'] ) && is_string( $_POST['role_key'] )
+		$role_key         = isset( $_POST['role_key'] ) && is_string( $_POST['role_key'] )
 			? sanitize_key( wp_unslash( $_POST['role_key'] ) ) : '';
-		$version = isset( $_POST['version'] ) && is_string( $_POST['version'] )
+		$version          = isset( $_POST['version'] ) && is_string( $_POST['version'] )
 			? sanitize_text_field( wp_unslash( $_POST['version'] ) ) : '';
 		$expected_version = ctype_digit( $version ) ? (int) $version : 0;
-		$confirmed = isset( $_POST['confirm_archive'] ) && is_string( $_POST['confirm_archive'] )
+		$confirmed        = isset( $_POST['confirm_archive'] ) && is_string( $_POST['confirm_archive'] )
 			&& sanitize_text_field( wp_unslash( $_POST['confirm_archive'] ) ) === '1';
 
 		if ( ! $confirmed ) {

@@ -70,7 +70,7 @@ final class AuthorizationService
      * @param int    $clinicId      Trusted durable clinic id (>0, from TrustedClinicEstablisher or durable ownership)
      * @param string $permission    Requested scoped permission (e.g. cpms_patient_read)
      */
-    public function can(int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false): bool
+    public function can( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): bool // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
     {
         // Fail closed: unauthenticated, invalid clinic, empty permission
         if ($actorWpUserId <= 0) {
@@ -84,7 +84,7 @@ final class AuthorizationService
         }
 
         // Durable ACTIVE membership is required (suspended => find_active returns null)
-        $membership = $this->memberships->find_active($clinicId, $actorWpUserId, $for_update);
+        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
         if ($membership === null) {
             return false;
         }
@@ -95,7 +95,7 @@ final class AuthorizationService
         }
 
         // Fetch explicit capability overrides for this membership (deny > grant)
-        $caps = $this->memberships->capabilities_for($membershipId, $for_update);
+        $caps = $this->memberships->capabilities_for( $membershipId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
 
         // Explicit deny overrides everything
         foreach ($caps as $row) {
@@ -183,7 +183,7 @@ final class AuthorizationService
      *
      * @throws AuthorizationException
      */
-    public function authorize(int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false): void
+    public function authorize( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): void // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
     {
         if ($actorWpUserId <= 0) {
             throw new AuthorizationException('AUTH_UNAUTHENTICATED', 'AUTH_UNAUTHENTICATED', ['reason' => 'unauthenticated'], 401);
@@ -195,17 +195,17 @@ final class AuthorizationService
             throw new AuthorizationException('AUTH_INVALID_PERMISSION', 'AUTH_INVALID_PERMISSION', ['reason' => 'empty_permission'], 400);
         }
 
-        $membership = $this->memberships->find_active($clinicId, $actorWpUserId, $for_update);
+        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
         if ($membership === null) {
             // Distinguish suspended vs non-member for audit, but both deny
-            $any = $this->memberships->find($clinicId, $actorWpUserId, $for_update);
+            $any = $this->memberships->find( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
             if ($any !== null && (string) ($any['status'] ?? '') === 'suspended') {
                 throw new AuthorizationException('AUTH_SUSPENDED', 'AUTH_SUSPENDED', ['clinic_id' => $clinicId], 403);
             }
             throw new AuthorizationException('AUTH_NO_MEMBERSHIP', 'AUTH_NO_MEMBERSHIP', ['clinic_id' => $clinicId], 403);
         }
 
-        if (!$this->can($actorWpUserId, $clinicId, $permission, $for_update)) {
+        if ( ! $this->can( $actorWpUserId, $clinicId, $permission, $for_update ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
             throw new AuthorizationException('AUTH_DENIED', 'AUTH_DENIED', ['clinic_id' => $clinicId, 'permission' => $permission], 403);
         }
     }
@@ -226,7 +226,7 @@ final class AuthorizationService
      *
      * @throws AuthorizationException
      */
-    public function authorizeForObject(int $actorWpUserId, int $clinicId, string $permission, int $objectClinicId, bool $for_update = false): void
+    public function authorizeForObject( int $actorWpUserId, int $clinicId, string $permission, int $objectClinicId, bool $for_update = false ): void // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Preserve the existing published named-argument API and surrounding legacy variable names.
     {
         if ($actorWpUserId <= 0) {
             throw new AuthorizationException('AUTH_UNAUTHENTICATED', 'AUTH_UNAUTHENTICATED', ['reason' => 'unauthenticated'], 401);
@@ -238,6 +238,6 @@ final class AuthorizationService
             throw new AuthorizationException('AUTH_CROSS_CLINIC', 'AUTH_CROSS_CLINIC', ['requested_clinic' => $clinicId, 'object_clinic' => $objectClinicId], 403);
         }
 
-        $this->authorize($actorWpUserId, $clinicId, $permission, $for_update);
+        $this->authorize( $actorWpUserId, $clinicId, $permission, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
     }
 }
