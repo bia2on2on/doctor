@@ -306,11 +306,14 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 $canary = 'cpms-canary-' . bin2hex(random_bytes(6));
                 @putenv('CPMS_UNRELATED_SECRET=' . $canary);
                 $_ENV['CPMS_UNRELATED_SECRET'] = $canary;
-                $privacyPins = ArchivalRaceWorker::pinProcessEnvironment(ArchivalRaceWorker::PRIVACY_MARKER_VARS);
-                self::assertArrayHasKey(
-                    'CPMS_UNRELATED_SECRET',
-                    $privacyPins,
-                    'the privacy probe needs an inherited name to prove the worker does not receive it'
+                $privacyPins = ArchivalRaceWorker::pinProcessEnvironment(array_values(array_diff(
+                    ArchivalRaceWorker::PRIVACY_MARKER_VARS,
+                    ['CPMS_UNRELATED_SECRET'] // keeps the canary live in this process at launch
+                )));
+                self::assertNotSame(
+                    '',
+                    (string) getenv('CPMS_UNRELATED_SECRET'),
+                    'the canary must be present in this process when the worker starts'
                 );
                 $faultInjection = [
                     'extension' => '/nonexistent/cpms-fault-injection-' . bin2hex(random_bytes(4)),
@@ -381,11 +384,11 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                         'a non-allowlisted name reached the worker: ' . $envName
                     );
                 }
-                foreach (array_keys($privacyPins) as $pinnedName) {
+                foreach (array_merge(array_keys($privacyPins), ['CPMS_UNRELATED_SECRET']) as $pinnedName) {
                     self::assertNotContains(
                         $pinnedName,
                         $isolationProbe['worker_env_keys'],
-                        'a pinned name reached the worker environment: ' . $pinnedName
+                        'a name this process holds reached the worker environment: ' . $pinnedName
                     );
                 }
 

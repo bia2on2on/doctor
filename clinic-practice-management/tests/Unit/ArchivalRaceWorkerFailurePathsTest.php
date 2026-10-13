@@ -124,22 +124,39 @@ final class ArchivalRaceWorkerFailurePathsTest extends TestCase
      */
     public function testWorkerDescriptorInventoryIsStdioAndDevNullOnly(): void
     {
-        $worker = ArchivalRaceWorker::launch($this->task([
-            'WP_TESTS_CONFIG_FILE_PATH' => self::MISSING_CONFIG,
-        ]));
+        // Hold a real socket in this process first. A socket beyond stdio is
+        // exactly the shape the isolation exists for (a parent-owned MySQL
+        // session socket), so this proves the mechanism in this suite instead of
+        // only where a database happens to be open.
+        self::assertTrue(function_exists('stream_socket_pair'), 'the isolation proof needs a real socket');
+        $pair = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
+        self::assertIsArray($pair, 'the isolation proof needs a live socket pair');
 
-        self::assertIsString($worker->nextLine(20.0), 'protocol: ' . $worker->diagnostics());
-        $probe = $worker->descriptorIsolationProbe();
+        try {
+            $worker = ArchivalRaceWorker::launch($this->task([
+                'WP_TESTS_CONFIG_FILE_PATH' => self::MISSING_CONFIG,
+            ]));
 
-        self::assertTrue($probe['proc_fd'], 'this proof requires /proc');
-        self::assertGreaterThan(0, $probe['pinned_fd_count'], 'the launcher must hold descriptors to pin');
-        self::assertTrue($probe['pinned_isolation_proven'], json_encode($probe));
-        self::assertSame(0, $probe['worker_socket_count'], 'no inherited socket may exist: ' . json_encode($probe));
-        foreach ($probe['worker_fds_beyond_stdio'] as $fd => $class) {
-            self::assertSame('dev-null', $class, 'descriptor ' . $fd . ' is not inert: ' . json_encode($probe));
+            self::assertIsString($worker->nextLine(20.0), 'protocol: ' . $worker->diagnostics());
+            $probe = $worker->descriptorIsolationProbe();
+
+            self::assertTrue($probe['proc_fd'], 'this proof requires /proc');
+            self::assertGreaterThan(
+                0,
+                $probe['pinned_fd_count'],
+                'this process holds a socket, so the launcher must have descriptors to pin'
+            );
+            self::assertTrue($probe['pinned_isolation_proven'], json_encode($probe));
+            self::assertSame(0, $probe['worker_socket_count'], 'no inherited socket may reach the worker: ' . json_encode($probe));
+            foreach ($probe['worker_fds_beyond_stdio'] as $fd => $class) {
+                self::assertSame('dev-null', $class, 'descriptor ' . $fd . ' is not inert: ' . json_encode($probe));
+            }
+            self::assertGreaterThan(0, $probe['parent_observed_fd_count'], 'the parent side must be observed too');
+            $worker->terminate();
+        } finally {
+            fclose($pair[0]);
+            fclose($pair[1]);
         }
-        self::assertGreaterThan(0, $probe['parent_observed_fd_count'], 'the parent side must be observed too');
-        $worker->terminate();
     }
 
     /**
@@ -152,8 +169,11 @@ final class ArchivalRaceWorkerFailurePathsTest extends TestCase
         $canary = 'cpms-env-canary-' . bin2hex(random_bytes(6));
         @putenv('CPMS_UNRELATED_SECRET=' . $canary);
         $_ENV['CPMS_UNRELATED_SECRET'] = $canary;
-        $pins = ArchivalRaceWorker::pinProcessEnvironment(ArchivalRaceWorker::PRIVACY_MARKER_VARS);
-        self::assertArrayHasKey('CPMS_UNRELATED_SECRET', $pins, 'the probe needs an inherited name to exclude');
+        $pins = ArchivalRaceWorker::pinProcessEnvironment(array_values(array_diff(
+            ArchivalRaceWorker::PRIVACY_MARKER_VARS,
+            ['CPMS_UNRELATED_SECRET'] // this one keeps the canary: it must be live in this process at launch
+        )));
+        self::assertNotSame('', (string) getenv('CPMS_UNRELATED_SECRET'), 'the canary must be present in this process when the worker starts');
 
         try {
             $worker = ArchivalRaceWorker::launch($this->task([
@@ -162,7 +182,7 @@ final class ArchivalRaceWorkerFailurePathsTest extends TestCase
             self::assertIsString($worker->nextLine(20.0), 'protocol: ' . $worker->diagnostics());
             $probe = $worker->descriptorIsolationProbe();
 
-            foreach (array_keys($pins) as $name) {
+            foreach (array_merge(array_keys($pins), ['CPMS_UNRELATED_SECRET']) as $name) {
                 self::assertNotContains($name, $probe['worker_env_keys'], 'name reached the worker: ' . $name);
             }
             self::assertNotEmpty($probe['launch_environment_keys'], 'the launcher must have sent a non-empty environment');
