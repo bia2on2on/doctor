@@ -94,12 +94,15 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         $lockBefore = null;
         $parentTransaction = null;
         $childTransaction = null;
+        $liveConnectionId = 0;
+        $selfTransaction = null;
         $outcome = '';
         remove_all_filters('query');
         try {
             $db->transactional(function () use ($db, $key, $definitionId, $winner, $waiter, $parentConnectionId,
                 &$pid, &$reaped, &$childStatus, &$pipe, &$observer, &$childConnectionId, &$childQuery,
-                &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction): void {
+                &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction,
+                &$liveConnectionId, &$selfTransaction): void {
                 $locked = (new CustomRoleRepository($db))->definition_for_update($this->clinicId, $key);
                 self::assertNotNull($locked);
                 self::assertSame('active', $locked['status']);
@@ -222,6 +225,16 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertNotSame($waitEdge['requesting_transaction_id'], $waitEdge['blocking_transaction_id']);
                 $parentTransaction = $this->innodbTransactionForConnection($observer, $parentConnectionId);
                 $childTransaction = $this->innodbTransactionForConnection($observer, $childConnectionId);
+                // Runtime identity evidence (assert-only, no behaviour change): the
+                // winner's own session must still be the session captured before the
+                // fork, and it must still see its own transaction. This separates
+                // "session replaced" from "transaction lost on the same session".
+                $liveConnectionId = (int) $db->fetchValue('SELECT CONNECTION_ID()');
+                self::assertSame($parentConnectionId, $liveConnectionId, 'the winner session must not be replaced during the race');
+                $selfTransaction = $db->fetchRow(
+                    'SELECT trx_id, trx_state FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID() LIMIT 1'
+                );
+                self::assertIsArray($selfTransaction, 'the winner transaction must still exist when read on its own session');
                 self::assertIsArray($parentTransaction);
                 self::assertIsArray($childTransaction);
                 self::assertSame('RUNNING', $parentTransaction['trx_state']);
@@ -291,6 +304,8 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'definition_id' => $definitionId,
                 'parent_connection_id' => $parentConnectionId,
                 'child_connection_id' => $childConnectionId,
+                'parent_connection_id_live_on_own_session' => $liveConnectionId,
+                'parent_transaction_visible_on_own_session' => is_array($selfTransaction),
                 'parent_transaction_state' => $parentTransaction['trx_state'],
                 'child_transaction_state' => $childTransaction['trx_state'],
                 'waiter_lock_query' => $childQuery,
