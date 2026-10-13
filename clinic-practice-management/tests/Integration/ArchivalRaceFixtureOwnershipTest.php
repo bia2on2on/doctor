@@ -60,7 +60,6 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
         $markerKey = 'cpms_fixture_owner';
 
         $ownedTable = $this->createFixtureTable($prefix . 'unit_race_fixture_owned_' . bin2hex(random_bytes(4)));
-        $lookalikeTable = $this->createFixtureTable($prefix . 'unit_race_fixture_lookalike_' . bin2hex(random_bytes(4)));
         $ownerKey = 'cpms_owned_' . bin2hex(random_bytes(4));
 
         // The owned fixtures, committed like the race's real fixtures are.
@@ -75,11 +74,23 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
 
         // Lookalikes: same shapes, different owners, committed from a parallel
         // session so they are genuinely unrelated to this test's transaction.
+        // The table itself is created on that session: the suite's query filter
+        // rewrites CREATE TABLE into a session-scoped temporary table, so one
+        // made through wpdb would be invisible to another connection.
         $lookalike = $this->freshMysqli();
-        self::assertNotFalse($lookalike->query('COMMIT'));
-        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_a\')'));
-        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_b\')'));
-        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_c\')'));
+        $lookalikeTable = $prefix . 'unit_race_fixture_lookalike_' . bin2hex(random_bytes(4));
+        self::assertFalse($this->tableExists($lookalike, $lookalikeTable), 'the lookalike table must not exist yet');
+        self::assertNotFalse(
+            $lookalike->query(
+                'CREATE TABLE `' . $lookalikeTable . '` (id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY, owner_key VARCHAR(64) NOT NULL) ENGINE=InnoDB'
+            ),
+            'lookalike table creation: ' . (string) $lookalike->error
+        );
+        $this->createdTables[] = $lookalikeTable;
+        self::assertNotFalse($lookalike->query('COMMIT'), 'parallel session: ' . (string) $lookalike->error);
+        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_a\')'), (string) $lookalike->error);
+        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_b\')'), (string) $lookalike->error);
+        self::assertNotFalse($lookalike->query('INSERT INTO `' . $lookalikeTable . '` (owner_key) VALUES (\'cpms_lookalike_c\')'), (string) $lookalike->error);
         $markerUsers = [];
         foreach (['cpms_marker_a', 'cpms_marker_b'] as $login) {
             $userId = (int) self::factory()->user->create(['user_login' => $login . '_' . bin2hex(random_bytes(3))]);
@@ -156,6 +167,13 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
         } finally {
             $conn->close();
         }
+    }
+
+    private function tableExists(\mysqli $conn, string $table): bool
+    {
+        $result = $conn->query('SHOW TABLES LIKE \'' . $conn->real_escape_string($table) . '\'');
+
+        return $result instanceof \mysqli_result && $result->num_rows > 0;
     }
 
     private function createFixtureTable(string $table): string
