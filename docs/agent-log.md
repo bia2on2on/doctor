@@ -420,3 +420,18 @@ date guard in the fixture is unchanged, the destination policy is unchanged, bro
 untouched, and no production scheduling behaviour changes. Unit coverage: per-clock expectations plus
 a minute-by-minute sweep of a full Tehran day asserting the destination minute is never among the
 seeded same-day row times.
+
+## 2026-10-13 — Reception failure reporting: name the stage instead of losing it
+
+The failed fixture advertised only `exit`, `env_bytes` and `php_error_kinds`, so the first meaningful
+error was unrecoverable from the run: `rp_fail()` prints `RECEPTION_FIXTURE_ERROR: <redacted message>`
+to stdout (tee'd to `/tmp/reception-fixture.log`) but nothing read that line, and a `wpdb` duplicate-key
+message is not a PHP error kind, so `php_error_kinds=none` looked like a clean fixture. The existing
+channels now carry a bounded category: the failing step's `::error::` annotation (which is readable
+from the API even when job logs are not) gains `clock=<BEFORE_WP_LOAD marker>` and
+`stage_error=<one 300-char line>`, and the "Post Reception evidence to PR" comment gains a
+"fixture failure category" line. `rp_fail()`'s existing long-digit-run redaction is kept, only one
+truncated line is ever published, no raw fixture/PHP log is attached, the original exit code and
+`test -s /tmp/reception.env` gate are unchanged, existing browser assertions are untouched and no
+production scheduling behaviour changes. Workflow validated with js-yaml plus `bash -n` over all 63
+extracted `run:` blocks.

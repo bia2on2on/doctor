@@ -2050,7 +2050,12 @@ jobs:
             env_bytes=MISSING
           fi
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
-            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=${env_bytes} php_error_kinds=${php_error_kinds:-none}; raw fixture/PHP logs are not posted"
+            # Bounded, sanitized failure category: rp_fail() already redacts long
+            # digit runs, and this keeps exactly one truncated line so the annotation
+            # names the fixture stage instead of requiring the raw fixture log.
+            fixture_error="$(grep -m1 -a '^RECEPTION_FIXTURE_ERROR:' /tmp/reception-fixture.log 2>/dev/null | cut -c1-300 | tr -d '\r\n')"
+            fixture_clock="$(grep -m1 -E '^RECEPTION_FIXTURE_CLOCK_BEFORE_WP_LOAD=' /tmp/reception-fixture.log 2>/dev/null | cut -c1-80 | tr -d '\r\n')"
+            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=${env_bytes} php_error_kinds=${php_error_kinds:-none} clock=${fixture_clock:-MISSING} stage_error=${fixture_error:-RECEPTION_FIXTURE_ERROR_NOT_LOGGED}; raw fixture/PHP logs are not posted"
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/reception.env
@@ -2290,6 +2295,10 @@ jobs:
             cat /tmp/reception-http-before.log /tmp/reception-http-after.log 2>/dev/null || echo '(HTTP probe output missing)'
             echo '--- fixture public ids only ---'
             grep '^RECEPTION_PUBLIC=' /tmp/reception.env 2>/dev/null || echo '(RECEPTION_PUBLIC not produced — reception NOT exercised)'
+            echo '--- fixture failure category (bounded to one 300-char line; no raw log) ---'
+            fixture_error_line="$(grep -m1 -a '^RECEPTION_FIXTURE_ERROR:' /tmp/reception-fixture.log 2>/dev/null | cut -c1-300 | tr -d '\r\n')"
+            echo "${fixture_error_line:-(no RECEPTION_FIXTURE_ERROR line — the fixture reached its browser-handoff stage)}"
+
             echo '--- PASS/FAIL/INFO/SHOT ---'
             grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/reception.log 2>/dev/null || echo '(reception.log missing)'
             echo '```'
