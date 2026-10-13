@@ -59,3 +59,51 @@ PHP, Composer or MySQL binaries; the existing real WordPress/MySQL GitHub CI is
 used for execution. Missing APIs are asserted explicitly (the existing Slice 4A
 pattern), not hidden as infrastructure errors. The unknown-status regression
 exercises existing behavior independently of the missing archive API.
+
+## Preserved implementation / failure checkpoint (2026-10-13)
+
+- Exactly one DRAFT PR: [#221](https://github.com/bia2on2on/doctor/pull/221),
+  source `arena/a3e54c26-doctor`, base `main`; no merge.
+- VALID RED: `ee163c3a4a591da934009f0f60efc8b7f2853797`, CI
+  [38352981951](https://github.com/bia2on2on/doctor/actions/runs/38352981951):
+  focused archival **25 tests / 199 assertions / 24 failures**. Raw mirrored
+  evidence is preserved in `evidence/custom-role-archival-valid-red.md`.
+  The unknown-status normalization is an executed behavioral regression,
+  independently of the missing archival API. Full Integration did NOT RUN at
+  this RED checkpoint; its downstream coverage guard correctly failed.
+- First implementation `94d264382fdf8d9dccee88ba877caa4779cce828`, CI
+  [38354086771](https://github.com/bia2on2on/doctor/actions/runs/38354086771):
+  focused security **OK (25 tests, 327 assertions)**, including authorization,
+  references, terminal state, audit rollback, suspension/restore preservation,
+  unknown status and server-rendered controls/nonce. All four Unit legs,
+  PHPStan and Tenant Tripwire passed. **WPCS FAILED**. Full Integration also
+  **FAILED**: first downgrade fixture failed and left its fail-closed CHECK
+  guard in place; subsequent tests cascaded (**1850 tests, 13891 assertions,
+  1415 errors, 5 failures**). Those are not additional valid feature RED.
+- The downgrade root cause is NOT yet established from execution. New focused
+  schema diagnostics publish the previous exception chain and live CHECK
+  metadata to the PR. The guard intentionally fails closed, but a partial
+  downgrade is not a transactional rollback and can block archival until
+  verified forward recovery. This is an acceptance blocker, not a PASS.
+- Four independent-session race contracts are added using the proven Slice 4A
+  observer/connection/socket queries. They require exact PRIMARY-record
+  `performance_schema.data_lock_waits` edges and post-commit refusal in both
+  winner orders and both edit paths. **New Slice 4B concurrency execution is
+  PENDING/NOT ESTABLISHED at this checkpoint**. Slice 4A is unchanged.
+- PHP AST parsing and local Tenant Tripwire were actually run. AST parsing is
+  NOT PHP runtime/Unit/Integration evidence. No local PHP/MySQL runtime exists.
+- Applied migrations were not modified. Migration 0027 appends `archived`,
+  preserves status attributes/indexes/data, and adds no archived_at. Downgrade
+  uses an enforced CHECK across implicit DDL commits rather than a TOCTOU row
+  check; strict/non-strict refusal is tested, but safe down/up remains blocked
+  by the execution failure above. **Binary rollback to pre-4B with archived
+  rows is UNSUPPORTED**: old definition readers normalize archived to active,
+  and old edit/status paths do not enforce terminality. Do not run mixed old
+  writers after archival; quiesce writers/back up before schema maintenance.
+- No clinical or WP-global role write is introduced in production archival or
+  reassignment. Explicit membership GRANT/DENY precedence remains in the same
+  AuthorizationService; its optional current-read mode is used by serialized
+  role writes, not a second authorization engine.
+- Final exact-head six-family conclusions must be read live. Historical
+  success cannot substitute for them. NOT RUN/PENDING/SKIPPED/CANCELLED is
+  never PASS. **READY FOR INDEPENDENT ACCEPTANCE: NO** at this checkpoint.

@@ -1,14 +1,15 @@
 <?php
-
-declare(strict_types=1);
-
-use ClinicCore\Infrastructure\Db\CpmsDb;
-
 /**
  * Build MODIFY from verified live attributes, preserving collation/comment,
  * NOT NULL/default, position, indexes and data. Unexpected schema fails closed.
  * No archived_at or data rewrite is introduced.
  */
+
+declare(strict_types=1);
+
+use ClinicCore\Infrastructure\Db\CpmsDb;
+
+
 $cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ): string {
     $column = $db->fetchRow(
         'SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, CHARACTER_SET_NAME, COLLATION_NAME, COLUMN_COMMENT, EXTRA' .
@@ -64,9 +65,9 @@ return [
     'version'     => '2026_10_13_0027',
     'description' => 'Slice 4B: terminal archived custom-role status, durable definitions and fail-closed downgrade',
     'up'          => static function ( CpmsDb $db ) use ( $cpms_archival_status_sql, $cpms_archival_guard_exists ): void {
-        $defs       = $db->table( 'cpms_custom_role_defs' );
-        $column_sql = $cpms_archival_status_sql( $db, true );
-        $guard      = 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
+        $defs         = $db->table( 'cpms_custom_role_defs' );
+        $column_sql   = $cpms_archival_status_sql( $db, true );
+        $guard        = 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
         $guard_exists = $cpms_archival_guard_exists( $db, $defs, $guard );
         $column = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
         if ( $column === null ) {
@@ -115,7 +116,7 @@ return [
                 throw new \RuntimeException( 'narrowed enum is not verified; rollback marker must remain' );
             }
         } catch ( \RuntimeException $failure ) {
-            throw new \RuntimeException( 'migration 0027: unsafe rollback refused; definitions and archival state must be preserved', 0, $failure );
+            throw new \RuntimeException( 'migration 0027: unsafe rollback refused; definitions and archival state must be preserved: ' . $failure->getMessage(), 0, $failure );
         }
     },
 ];

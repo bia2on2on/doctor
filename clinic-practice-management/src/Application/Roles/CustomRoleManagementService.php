@@ -211,7 +211,7 @@ final class CustomRoleManagementService {
         return $this->db->transactional(
             function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_display_name, $expected_version ): array {
                 $existing = $this->require_mutable_definition_for_update( $actor_wp_user_id, $clinic_id, $role_key, $expected_version );
-                $updated = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
+                $updated  = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
                 if ( ! $updated ) {
                     throw CustomRoleManagementException::not_found( $role_key );
                 }

@@ -39,11 +39,11 @@ final class StaffManagementPage
 {
     public const PAGE_SLUG = 'cpms-staff';
 
-    private const NONCE_ACTION   = 'cpms_staff_save';
-    private const NONCE_ASSIGN   = 'cpms_staff_assign_custom_role';
+    private const NONCE_ACTION             = 'cpms_staff_save';
+    private const NONCE_ASSIGN             = 'cpms_staff_assign_custom_role';
     private const NONCE_REASSIGN_SUSPENDED = 'cpms_staff_reassign_suspended_custom_role';
-    private const NOTICE_KEY     = 'cpms_staff_notice';
-    private const META_PREV_ROLE = 'cpms_previous_role';
+    private const NOTICE_KEY               = 'cpms_staff_notice';
+    private const META_PREV_ROLE           = 'cpms_previous_role';
 
     /** نقش‌های قابل‌مدیریت (قابل‌انتساب/ویرایش/فعال/غیرفعال). */
     private const MANAGEABLE_ROLES = [
@@ -879,8 +879,8 @@ final class StaffManagementPage
         }
 
         return [
-            'definitions' => $assignable['definitions'],
-            'members'     => $members,
+            'definitions'       => $assignable['definitions'],
+            'members'           => $members,
             'suspended_members' => $suspended_members,
         ];
     }
@@ -1081,17 +1081,17 @@ final class StaffManagementPage
             }
 
             $rows[] = [
-                'id' => $id,
-                'login' => (string) $u->user_login,
-                'email' => (string) $u->user_email,
-                'display_name' => (string) $u->display_name,
-                'role'            => $role,
-                'role_label'      => $label,
-                'active'          => $membership_status === 'active',
-                'membership_role' => $membership_role,
+                'id'                => $id,
+                'login'             => (string) $u->user_login,
+                'email'             => (string) $u->user_email,
+                'display_name'      => (string) $u->display_name,
+                'role'              => $role,
+                'role_label'        => $label,
+                'active'            => $membership_status === 'active',
+                'membership_role'   => $membership_role,
                 'membership_status' => $membership_status,
-                'custom_role'     => $custom,
-                'clinician'       => $clinician_by_user[ $id ] ?? '',
+                'custom_role'       => $custom,
+                'clinician'         => $clinician_by_user[ $id ] ?? '',
             ];
         }
 

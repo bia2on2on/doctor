@@ -335,8 +335,8 @@ final class CustomRoleRepository {
                 if ( $definition === null ) {
                     return false;
                 }
-                $def_id = (int) $definition['id'];
-                $now    = $this->db->nowUtcSql();
+                $def_id  = (int) $definition['id'];
+                $now     = $this->db->nowUtcSql();
                 $cleared = $this->db->query(
                     'DELETE FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) . ' WHERE role_def_id = %d',
                     [ $def_id ]
