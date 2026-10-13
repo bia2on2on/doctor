@@ -17,7 +17,54 @@ use RuntimeException;
  */
 final class ArchivalRaceWorker
 {
-    private const PROTOCOL = ['READY:', 'LOCK_QUERY:', 'RESULT:', 'ERROR:'];
+    private const PROTOCOL = ['FD_PROBE:', 'READY:', 'LOCK_QUERY:', 'RESULT:', 'ERROR:'];
+
+    /**
+     * Protocol lines are never free text. A field value has to be one of these
+     * shapes, so an exception message — which can carry credentials, SQL or
+     * patient text — cannot travel through the protocol even by accident.
+     */
+    private const JSON_SCHEMA = [
+        'FD_PROBE' => ['proc_fd', 'fds_beyond_stdio', 'socket_count', 'env_keys'],
+        'READY' => ['connection_id'],
+        'LOCK_QUERY' => ['connection_id', 'sha256', 'base64'],
+        'RESULT' => ['outcome'],
+        // Codes only, plus an optional opaque digest reference. The reference is
+        // derived from the code, the exception class and the message length, so
+        // it can be compared across runs without the message ever leaving.
+        'ERROR' => ['code', 'ref'],
+    ];
+
+    /**
+     * The worker's entire environment. Nothing else is forwarded: an allowlist
+     * cannot leak a credential the test runner happens to export, and the child
+     * gets no ambient configuration it does not need (no HOME, no WordPress or
+     * Composer developer variables, no CI job metadata).
+     *
+     * WP_CORE_DIR is carried because wp-tests-config.php can define ABSPATH from
+     * it; nothing else from wp-content comes across.
+     */
+    public const ENVIRONMENT_ALLOWLIST = [
+        'PATH',
+        'TMPDIR',
+        'SYSTEMROOT',
+        'WP_TESTS_DIR',
+        'WP_TESTS_CONFIG_FILE_PATH',
+        'WP_CORE_DIR',
+        'CPMS_RACE_DB_NAME',
+        'CPMS_RACE_DB_USER',
+        'CPMS_RACE_DB_PASSWORD',
+        'CPMS_RACE_DB_HOST',
+        'CPMS_RACE_TABLE_PREFIX',
+        'CPMS_RACE_CLINIC_ID',
+        'CPMS_RACE_DEFINITION_ID',
+        'CPMS_RACE_MANAGER_USER_ID',
+        'CPMS_RACE_TARGET_USER_ID',
+        'CPMS_RACE_ROLE_KEY',
+        'CPMS_RACE_OPERATION',
+        'CPMS_RACE_LOCK_WAIT_TIMEOUT',
+        'CPMS_RACE_FAULT_INJECT',
+    ];
 
     /** @var resource */
     private $process;
@@ -36,6 +83,43 @@ final class ArchivalRaceWorker
     private bool $closed = false;
 
     private ?int $pid = null;
+
+    /**
+     * Pinned descriptor targets, index => target. Stable for this process's
+     * lifetime once pinned, which is what lets the worker's inventory be
+     * compared after the fact.
+     *
+     * @var array<int, string>
+     */
+    private array $pinnedDescriptors = [];
+
+    /**
+     * The worker's own descriptor inventory, captured on its first line.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $fdProbe = null;
+
+    /**
+     * Pins for the names every worker needs. Process-global because the
+     * environment is, and restored in close().
+     *
+     * @var array<string, array{real: string, marker: string}>
+     */
+    private static array $requiredEnvironmentPins = [];
+
+    /** @var array<string, array{real: string, marker: string}> */
+    private array $environmentRestores = [];
+
+    /**
+     * What the parent saw on the pinned fd numbers while the worker was running:
+     * the parent's own descriptors, unchanged. This is the counterpart of the
+     * worker's /dev/null inventory — same fd numbers, two processes, different
+     * targets.
+     *
+     * @var array<int, string>
+     */
+    private array $observedFds = [];
 
     /**
      * @param resource             $process
@@ -95,6 +179,42 @@ final class ArchivalRaceWorker
     }
 
     /**
+     * Identity of one synthetic WordPress user: the login the test owns, its
+     * numeric id, and the usermeta marker only fixture provisioning writes.
+     *
+     * @return list<array{login: string, id: int, user_rows: int, usermeta_rows: int}>|null
+     */
+    public static function ownershipKeys(\mysqli $conn, string $prefix, string $login): ?array
+    {
+        $stmt = $conn->prepare(
+            'SELECT u.ID, u.user_login, '
+            . '(SELECT COUNT(*) FROM `' . $prefix . 'users` WHERE ID = u.ID) AS user_rows, '
+            . '(SELECT COUNT(*) FROM `' . $prefix . 'usermeta` WHERE user_id = u.ID AND meta_key = ?) AS usermeta_rows '
+            . 'FROM `' . $prefix . 'users` u WHERE u.user_login = ? LIMIT 1'
+        );
+        if (!$stmt instanceof \mysqli_stmt) {
+            return null;
+        }
+        $marker = 'cpms_fixture_owner';
+        $stmt->bind_param('ss', $marker, $login);
+        $stmt->execute();
+        $row = ['id' => 0, 'login' => '', 'user_rows' => 0, 'usermeta_rows' => 0];
+        $stmt->bind_result($row['id'], $row['login'], $row['user_rows'], $row['usermeta_rows']);
+        $fetched = $stmt->fetch();
+        $stmt->close();
+        if (!$fetched) {
+            return null;
+        }
+
+        return [[
+            'login' => (string) $row['login'],
+            'id' => (int) $row['id'],
+            'user_rows' => (int) $row['user_rows'],
+            'usermeta_rows' => (int) $row['usermeta_rows'],
+        ]];
+    }
+
+    /**
      * Concurrency is mandatory in this suite: never SKIPPED.
      */
     public static function available(): bool
@@ -110,12 +230,19 @@ final class ArchivalRaceWorker
      */
     public static function launch(array $task): self
     {
-        $environment = getenv();
-        if (!is_array($environment)) {
-            $environment = [];
-        }
-        foreach ($task as $name => $value) {
-            $environment[$name] = (string) $value;
+        // Allowlist only: the child sees exactly these names, each either from
+        // the caller or from this process's environment when already set.
+        $environment = [];
+        // The required names are pinned too: even though they must reach the
+        // child, no value of theirs may appear in the worker's output, and the
+        // pins are restored when the handle closes.
+        self::$requiredEnvironmentPins = self::pinProcessEnvironment(self::ENVIRONMENT_ALLOWLIST);
+        $environment = [];
+        foreach (self::ENVIRONMENT_ALLOWLIST as $name) {
+            $value = array_key_exists($name, $task) ? $task[$name] : getenv($name);
+            if (is_string($value) && $value !== '' || is_int($value)) {
+                $environment[$name] = (string) $value;
+            }
         }
 
         $descriptors = [
@@ -123,6 +250,18 @@ final class ArchivalRaceWorker
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
+
+        // Descriptor isolation. PHP never sets FD_CLOEXEC on the MySQL socket it
+        // creates (main/streams/xp_socket.c) and proc_open() closes only the
+        // parent ends of its own pipes, so a parent-held session socket would
+        // survive exec into the worker as an inheritable descriptor. Every
+        // descriptor this process owns beyond stdio is therefore pinned to
+        // /dev/null: the descriptor-spec key is the child's fd number, so the
+        // child dup2()s /dev/null over each one before execvp().
+        self::$pinnedDescriptors = self::pinDescriptorTargets(array_keys($descriptors));
+        foreach (self::$pinnedDescriptors as $fd => $target) {
+            $descriptors[$fd] = ['null'];
+        }
 
         $process = @proc_open([PHP_BINARY, self::scriptPath()], $descriptors, $pipes, dirname(self::scriptPath(), 3), $environment);
         if (!is_resource($process) || !isset($pipes[1], $pipes[2])) {
@@ -132,7 +271,223 @@ final class ArchivalRaceWorker
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
 
-        return new self($process, [1 => $pipes[1], 2 => $pipes[2]]);
+        $worker = new self($process, [1 => $pipes[1], 2 => $pipes[2]]);
+        $worker->assertPinnedDescriptorsPresent();
+
+        return $worker;
+    }
+
+    /**
+     * Descriptor numbers this process currently holds beyond stdio, mapped to
+     * their targets. Read through /proc, so no descriptor is opened, dup()ed or
+     * closed by this method — the very mistake it exists to prevent.
+     *
+     * @return array<int, string>
+     */
+    private static function pinDescriptorTargets(array $exclude): array
+    {
+        $pinned = [];
+        $dir = '/proc/self/fd';
+        $entries = @scandir($dir);
+        if (!is_array($entries)) {
+            return $pinned; // /proc-less host: nothing can be enumerated, so nothing is pinned
+        }
+        foreach ($entries as $entry) {
+            if (!is_string($entry) || !ctype_digit($entry)) {
+                continue;
+            }
+            $fd = (int) $entry;
+            if ($fd <= 2 || in_array($fd, $exclude, true)) {
+                continue;
+            }
+            $target = @readlink($dir . '/' . $fd);
+            if (is_string($target)) {
+                $pinned[$fd] = $target;
+            }
+        }
+
+        return $pinned;
+    }
+
+    /**
+     * The pinned descriptors must still resolve while a worker is in flight: if
+     * any of them were closed or reused, comparing the worker's inventory with
+     * the pinned one afterwards would be meaningless. Runs in the parent, before
+     * the child has executed anything.
+     */
+    private function assertPinnedDescriptorsPresent(): void
+    {
+        foreach ($this->pinnedDescriptors as $fd => $target) {
+            if (self::readDescriptorTarget($fd) !== $target) {
+                $this->terminate();
+
+                throw new RuntimeException('descriptor ' . $fd . ' changed between pinning and launch; isolation cannot be asserted');
+            }
+        }
+    }
+
+    /** @return string|null */
+    private static function readDescriptorTarget(int $fd): ?string
+    {
+        $target = @readlink('/proc/self/fd/' . $fd);
+
+        return is_string($target) ? $target : null;
+    }
+
+    /**
+     * @param list<int> $fds
+     *
+     * @return array<int, string>
+     */
+    private static function readDescriptorTargets(int $pid, array $fds): array
+    {
+        $targets = [];
+        foreach ($fds as $fd) {
+            $target = @readlink('/proc/' . $pid . '/fd/' . $fd);
+            if (is_string($target)) {
+                $targets[$fd] = $target;
+            }
+        }
+
+        return $targets;
+    }
+
+    /**
+     * Assertion-ready outcome of the worker's descriptor-isolation proof.
+     *
+     * `pinned_isolation_proven` is true only when the pinned inventory was
+     * non-empty, every pinned fd is present in the worker's own inventory *and*
+     * every target the worker reported for those fds is exactly /dev/null. On a
+     * /proc-less host — where the inventory cannot be read at all — it is false
+     * and the caller reports the mechanism as unproven rather than assuming it.
+     *
+     * @return array<string, mixed>
+     */
+    public function descriptorIsolationProbe(): array
+    {
+        $probe = $this->fdProbe;
+        $fds = is_array($probe) && is_array($probe['fds_beyond_stdio'] ?? null)
+            ? $probe['fds_beyond_stdio']
+            : [];
+
+        $targetsAreNull = true;
+        foreach (array_keys($this->pinnedDescriptors) as $fd) {
+            $reported = $fds[(string) $fd] ?? $fds[$fd] ?? null;
+            if ($reported !== 'dev-null') {
+                $targetsAreNull = false;
+            }
+        }
+
+        $socketCount = is_array($probe) && is_int($probe['socket_count'] ?? null) ? (int) $probe['socket_count'] : null;
+
+        return [
+            'proc_fd' => is_array($probe) ? (bool) ($probe['proc_fd'] ?? false) : false,
+            'pinned_fd_count' => count($this->pinnedDescriptors),
+            'pinned_isolation_proven' => $this->pinnedDescriptors !== [] && $targetsAreNull,
+            'worker_fds_beyond_stdio' => $fds,
+            'worker_socket_count' => $socketCount,
+            'worker_env_keys' => is_array($probe) && is_array($probe['env_keys'] ?? null) ? $probe['env_keys'] : [],
+            'parent_observed_fd_count' => count($this->observedFds),
+        ];
+    }
+
+    /**
+     * Identifiers the worker must have inherited but provably did not: each one
+     * is set here, then replaced with a marker before launch, so the worker can
+     * report the marker while the parent still reads the real value.
+     *
+     * @return array<string, array{real: string, marker: string}>
+     */
+    public function pinEnvironmentKeys(array $names): array
+    {
+        $pins = [];
+        foreach ($names as $name) {
+            $real = getenv($name);
+            if (!is_string($real) || $real === '') {
+                continue;
+            }
+            $marker = 'cpms-env-marker-' . bin2hex(random_bytes(6));
+            $pin = ['real' => $real, 'marker' => $marker];
+            @putenv($name . '=' . $marker);
+            $_ENV[$name] = $marker;
+            $_SERVER[$name] = $marker;
+            $pins[$name] = $pin;
+            $this->environmentRestores[$name] = $pin;
+        }
+
+        return $pins;
+    }
+
+    /**
+     * Restores every name pinned at launch to its real value, so this process's
+     * environment is exactly as it was before the launch.
+     */
+    public function releaseEnvironmentKeys(): void
+    {
+        self::restoreProcessEnvironment($this->environmentRestores);
+        $this->environmentRestores = [];
+    }
+
+    /**
+     * Names a worker must never inherit. The probe pins each of these to a
+     * unique marker before launch: a forwarded name would show up in the
+     * worker's environment inventory, and no marker value may appear anywhere in
+     * the worker's output or in the evidence record.
+     */
+    public const PRIVACY_MARKER_VARS = [
+        'CPMS_UNRELATED_SECRET',
+        'GITHUB_REPOSITORY',
+        'GITHUB_ACTION',
+        'GITHUB_TOKEN',
+        'HOME',
+        'USER',
+        'HOSTNAME',
+        'LANG',
+    ];
+
+    /**
+     * Replaces the value of every named variable that exists with a unique
+     * marker and returns the pins that restore it. The environment is a
+     * process-global resource, so the pins are handled explicitly by the caller
+     * (the parent reads the real values; only the child is ever shown markers).
+     *
+     * @param list<string> $names
+     *
+     * @return array<string, array{real: string, marker: string}>
+     */
+    public static function pinProcessEnvironment(array $names): array
+    {
+        $pins = [];
+        foreach ($names as $name) {
+            $real = getenv($name);
+            if (!is_string($real) || $real === '') {
+                continue;
+            }
+            $marker = 'cpms-env-marker-' . bin2hex(random_bytes(6));
+            $pins[$name] = ['real' => $real, 'marker' => $marker];
+            @putenv($name . '=' . $marker);
+            $_ENV[$name] = $marker;
+            $_SERVER[$name] = $marker;
+        }
+
+        return $pins;
+    }
+
+    /**
+     * @param array<string, array{real: string, marker: string}> $pins
+     */
+    public static function restoreProcessEnvironment(array $pins): void
+    {
+        foreach ($pins as $name => $pin) {
+            @putenv($name . '=' . $pin['real']);
+            $_ENV[$name] = $pin['real'];
+            $_SERVER[$name] = $pin['real'];
+        }
+    }
+
+    private static function bytesLower(string $value): string
+    {
+        return function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
     }
 
     public function pid(): int
@@ -164,8 +519,11 @@ final class ArchivalRaceWorker
         $deadline = microtime(true) + $timeoutSeconds;
         do {
             $this->pump();
-            $line = $this->shiftProtocolLine();
-            if ($line !== null) {
+            while (($line = $this->shiftProtocolLine()) !== null) {
+                if (str_starts_with($line, 'FD_PROBE:')) {
+                    continue; // inventory, not a step of the handshake
+                }
+
                 return $line;
             }
             if (!$this->isRunning() && $this->stdoutBuffer === '') {
@@ -271,6 +629,9 @@ final class ArchivalRaceWorker
         if ($this->pid === null && (int) ($status['pid'] ?? 0) > 0) {
             $this->pid = (int) $status['pid'];
         }
+        if (($status['running'] ?? false) === true && $this->pinnedDescriptors !== [] && $this->observedFds === []) {
+            $this->observedFds = self::readDescriptorTargets($this->pid, array_keys($this->pinnedDescriptors));
+        }
         if (($status['running'] ?? false) === false && $this->exitCode === null) {
             $this->exitCode = (int) ($status['exitcode'] ?? -1);
         }
@@ -310,6 +671,10 @@ final class ArchivalRaceWorker
                     if ($prefix === 'RESULT:' || $prefix === 'ERROR:') {
                         $this->outcome = substr($line, strlen($prefix));
                     }
+                    if ($prefix === 'FD_PROBE:') {
+                        $decoded = json_decode(substr($line, strlen($prefix)), true);
+                        $this->fdProbe = is_array($decoded) ? $decoded : null;
+                    }
 
                     return $line;
                 }
@@ -326,6 +691,9 @@ final class ArchivalRaceWorker
             return;
         }
         $this->closed = true;
+        self::restoreProcessEnvironment(self::$requiredEnvironmentPins);
+        self::$requiredEnvironmentPins = [];
+        $this->releaseEnvironmentKeys();
         foreach ($this->pipes as $pipe) {
             if (is_resource($pipe)) {
                 fclose($pipe);

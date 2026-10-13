@@ -6,22 +6,37 @@ declare(strict_types=1);
  * Independent archival-race waiter — launched as its own PHP process by
  * CustomRoleArchivalConcurrencyTest through proc_open().
  *
- * Why a separate process instead of pcntl_fork():
- *   A fork inherits every live descriptor of the parent, including the parent's
- *   MySQL socket. The child then either queries that session (corrupting the
- *   parent's in-flight responses) or, on graceful exit, closes the inherited
- *   mysqli handle — which sends COM_QUIT on the socket the parent still holds and
- *   silently replaces the parent's session mid-transaction. Both shapes were
- *   observed in CI. A process started with proc_open() shares nothing: this
- *   worker opens its own MySQL connection, so the parent keeps ownership of its
- *   transaction and row lock no matter when or how the worker exits.
+ * Descriptor isolation, with sources:
+ *   - A pcntl_fork() child inherits the parent's *live* MySQL handle: on
+ *     graceful exit it sends COM_QUIT on the socket the parent still uses and
+ *     silently replaces the parent's session mid-transaction (observed in CI),
+ *     which is why the fork implementation was removed.
+ *   - proc_open() does not close unrelated descriptors in the child: it closes
+ *     only the parent ends of the pipes it created and dup2()s the child ends
+ *     (ext/standard/proc_open.c, close_parentends_of_pipes()). Only those parent
+ *     ends are FD_CLOEXEC (same file, make_descriptor_cloexec()).
+ *   - PHP creates the MySQLi socket with a bare socket() and never sets
+ *     FD_CLOEXEC (main/streams/xp_socket.c, php_tcp_sockop_connect()), so a
+ *     parent-held session socket would otherwise survive execvp() into this
+ *     process as a raw descriptor that php://fd/N could wrap.
+ *   - The launcher therefore maps every descriptor the parent holds above stdio
+ *     to the /dev/null descriptor: the descriptor-spec key is the *child's* fd
+ *     number, so the child dup2()s /dev/null over each of them before execvp().
+ *     This process starts with stdio plus inert /dev/null only — reported by the
+ *     FD_PROBE line, which the parent asserts against.
  *
  * Contract with the parent (stdout, one line per message; nothing else is ever
- * written to stdout — the WordPress test bootstrap output is buffered away):
+ * written to stdout — the WordPress bootstrap output is buffered away):
+ *   FD_PROBE:<json>                           descriptor/env inventory, first line
  *   READY:<connection_id>                     own session established
  *   LOCK_QUERY:<conn_id>:<sha256>:<base64>    the real production locking query ran
  *   RESULT:<outcome>                          operation finished (exit 0)
- *   ERROR:<class>:<message>                   fatal, exit 1
+ *   ERROR:<CODE>[:ref=<8 hex>]                fatal, exit 1
+ *
+ * The error protocol is sanitized: the code is from a fixed vocabulary and the
+ * reference is a digest of the code, the exception class and the message
+ * *length* only — never of the message text — so caller-controlled or
+ * secret-bearing text can never leave this process through the protocol.
  *
  * Parameters arrive through the environment, never argv — no credentials or
  * identifiers appear in the process list. WordPress core is loaded through the
@@ -34,6 +49,14 @@ declare(strict_types=1);
 
 $pluginRoot = dirname(__DIR__, 2);
 
+/*
+ * Raw PHP error text is never emitted. Uncaught error messages can carry
+ * connection strings, SQL fragments or file contents, and they would land in
+ * stderr — which is public CI evidence. Failures travel as sanitized codes.
+ */
+ini_set('display_errors', '0');
+ini_set('log_errors', '0');
+
 /** @return string */
 function cpms_race_env(string $name, string $default = ''): string
 {
@@ -42,13 +65,130 @@ function cpms_race_env(string $name, string $default = ''): string
     return is_string($value) && $value !== '' ? $value : $default;
 }
 
-/**
- * @param array<string, mixed> $payload
- */
 function cpms_race_emit(string $line): void
 {
     fwrite(STDOUT, $line . "\n");
     fflush(STDOUT);
+}
+
+/**
+ * Sanitized terminal failure: a fixed code plus an opaque reference.
+ *
+ * @param string          $code  one of the codes below, never free text
+ * @param \Throwable|null $cause used only for its class name and message length
+ */
+function cpms_race_fail(string $code, ?\Throwable $cause = null): void
+{
+    $ref = '';
+    if ($cause instanceof \Throwable) {
+        $ref = ':ref=' . substr(
+            hash('sha256', $code . '|' . get_class($cause) . '|' . strlen($cause->getMessage())),
+            0,
+            8
+        );
+    }
+    while (ob_get_level() > 0) {
+        ob_end_clean();
+    }
+    cpms_race_emit('ERROR:' . $code . $ref);
+    exit(1);
+}
+
+/**
+ * Descriptor and environment inventory, taken before this process opens
+ * anything of its own.
+ *
+ * Descriptors are reported as classes only ("dev-null", "socket", "pipe",
+ * "regular") — no paths, no link targets. The environment is reported as sorted
+ * *names* only, bounded, and never as values.
+ *
+ * @return array<string, mixed>
+ */
+function cpms_race_descriptor_probe(): array
+{
+    $probe = [
+        'proc_fd' => false,
+        'fds_beyond_stdio' => [],
+        'socket_count' => -1,
+        'env_keys' => [],
+    ];
+
+    $names = getenv();
+    if (is_array($names)) {
+        $names = array_values(array_filter(array_keys($names), static function ($name): bool {
+            return is_string($name) && preg_match('/^[A-Z][A-Z0-9_]{0,39}$/', $name) === 1;
+        }));
+        sort($names);
+        $probe['env_keys'] = array_slice($names, 0, 32);
+    }
+
+    $dir = '/proc/self/fd';
+    $entries = @scandir($dir);
+    if (!is_array($entries)) {
+        return $probe;
+    }
+
+    $probe['proc_fd'] = true;
+    $probe['socket_count'] = 0;
+    $classes = [];
+    foreach ($entries as $entry) {
+        if (!is_string($entry) || !ctype_digit($entry)) {
+            continue;
+        }
+        $fd = (int) $entry;
+        if ($fd <= 2) {
+            continue;
+        }
+        $target = @readlink($dir . '/' . $fd);
+        if (!is_string($target)) {
+            continue; // already closed again (the directory handle scandir used)
+        }
+        $class = 'regular';
+        if ($target === '/dev/null') {
+            $class = 'dev-null';
+        } elseif (str_starts_with($target, 'socket:')) {
+            $class = 'socket';
+        } elseif (str_starts_with($target, 'pipe:')) {
+            $class = 'pipe';
+        }
+        $classes[(string) $fd] = $class;
+        if ($class === 'socket') {
+            $probe['socket_count']++;
+        }
+    }
+    $probe['fds_beyond_stdio'] = $classes;
+
+    return $probe;
+}
+
+$probeJson = json_encode(cpms_race_descriptor_probe());
+cpms_race_emit('FD_PROBE:' . (is_string($probeJson) ? $probeJson : '{"proc_fd":false}'));
+
+/*
+ * Controlled fault injection, used by the launcher's privacy tests: the marker
+ * values are applied to a real runtime setting (include_path) and to real
+ * environment configuration, and provoke a genuine user-level warning. Because
+ * raw error text is suppressed above, the marker must not appear on any channel.
+ */
+$faultRaw = cpms_race_env('CPMS_RACE_FAULT_INJECT');
+if ($faultRaw !== '') {
+    $faultSpec = json_decode($faultRaw, true);
+    if (is_array($faultSpec)) {
+        $faultExtension = isset($faultSpec['extension']) && is_string($faultSpec['extension'])
+            ? trim($faultSpec['extension'])
+            : '';
+        $faultDir = isset($faultSpec['dir']) && is_string($faultSpec['dir']) ? trim($faultSpec['dir']) : '';
+        if ($faultDir !== '') {
+            @putenv('WP_CONTENT_DIR=' . $faultDir);
+            $_ENV['WP_CONTENT_DIR'] = $faultDir;
+            @putenv('WP_PLUGIN_DIR=' . $faultDir);
+            $_ENV['WP_PLUGIN_DIR'] = $faultDir;
+        }
+        if ($faultExtension !== '') {
+            ini_set('include_path', $faultExtension);
+            trigger_error('cpms-race-fault-injection ' . $faultExtension, E_USER_WARNING);
+        }
+    }
 }
 
 $testsDir = rtrim(cpms_race_env('WP_TESTS_DIR', '/tmp/wordpress-test-lib'), '/');
@@ -57,14 +197,12 @@ if ($configPath === '' && is_file($testsDir . '/wp-tests-config.php')) {
     $configPath = $testsDir . '/wp-tests-config.php';
 }
 if ($configPath === '' || !is_file($configPath)) {
-    cpms_race_emit('ERROR:RuntimeException:wp tests config not found');
-    exit(1);
+    cpms_race_fail('CONFIG_NOT_FOUND');
 }
 
 $autoload = $pluginRoot . '/vendor/autoload.php';
 if (!is_file($autoload)) {
-    cpms_race_emit('ERROR:RuntimeException:plugin autoloader not found');
-    exit(1);
+    cpms_race_fail('AUTOLOADER_MISSING');
 }
 
 /*
@@ -89,7 +227,7 @@ try {
         }
     }
     if ($coreDir === '' || !is_file($coreDir . '/wp-settings.php')) {
-        throw new \RuntimeException('WordPress core directory with wp-settings.php is unavailable');
+        cpms_race_fail('CORE_UNAVAILABLE');
     }
     if (!defined('WP_USE_THEMES')) {
         define('WP_USE_THEMES', false);
@@ -101,11 +239,7 @@ try {
     require_once $autoload;
     ob_end_clean();
 } catch (\Throwable $bootstrapFailure) {
-    while (ob_get_level() > 0) {
-        ob_end_clean();
-    }
-    cpms_race_emit('ERROR:' . get_class($bootstrapFailure) . ':' . $bootstrapFailure->getMessage());
-    exit(1);
+    cpms_race_fail('BOOTSTRAP_FAILED', $bootstrapFailure);
 }
 
 try {
@@ -119,7 +253,7 @@ try {
     $lockTimeout  = max(1, (int) cpms_race_env('CPMS_RACE_LOCK_WAIT_TIMEOUT', '20'));
 
     if ($clinicId <= 0 || $definitionId <= 0 || $managerId <= 0 || $roleKey === '' || $operation === '') {
-        throw new \RuntimeException('worker task parameters are incomplete');
+        cpms_race_fail('TASK_INCOMPLETE');
     }
 
     $own = new \wpdb(
@@ -135,14 +269,14 @@ try {
     // transactions must be real commits visible to the parent's observer session.
     remove_all_filters('query');
     if (!$own->check_connection(false)) {
-        throw new \RuntimeException('worker could not open an independent database connection');
+        cpms_race_fail('CONNECT_FAILED');
     }
     $own->query('SET SESSION innodb_lock_wait_timeout = ' . $lockTimeout);
 
     $db  = new \ClinicCore\Infrastructure\Db\CpmsDb($own);
     $id  = (int) $own->get_var('SELECT CONNECTION_ID()');
     if ($id <= 0) {
-        throw new \RuntimeException('worker has no observable MySQL connection identity');
+        cpms_race_fail('CONNECTION_IDENTITY_MISSING');
     }
 
     $definitionsTable = strtolower($db->table('cpms_custom_role_defs'));
@@ -198,7 +332,7 @@ try {
                         'archive' => $service->archive($managerId, $clinicId, $roleKey, 1),
                         'rename' => $service->rename($managerId, $clinicId, $roleKey, 'Forbidden post-archive name'),
                         'capabilities' => $service->replace_capabilities($managerId, $clinicId, $roleKey, []),
-                        default => throw new \RuntimeException('unknown race operation'),
+                        default => throw new \RuntimeException('cpms-race-unknown-operation'),
                     };
                 }
             } catch (\ClinicCore\Application\Roles\CustomRoleAssignmentException
@@ -210,20 +344,19 @@ try {
         });
     } catch (\RuntimeException $rollback) {
         if ($rollback->getMessage() !== 'intentional archival race rollback') {
-            throw $rollback;
+            if ($rollback->getMessage() === 'cpms-race-unknown-operation') {
+                cpms_race_fail('UNKNOWN_OPERATION');
+            }
+            cpms_race_fail('ROLLBACK_FAILED', $rollback);
         }
     }
 
     if (!$signalSent) {
-        throw new \RuntimeException('waiter never executed the real target definition locking query');
+        cpms_race_fail('LOCK_QUERY_MISSING');
     }
 
     cpms_race_emit('RESULT:' . $outcome);
     exit(0);
 } catch (\Throwable $failure) {
-    while (ob_get_level() > 0) {
-        ob_end_clean();
-    }
-    cpms_race_emit('ERROR:' . get_class($failure) . ':' . $failure->getMessage());
-    exit(1);
+    cpms_race_fail('UNEXPECTED', $failure);
 }

@@ -71,52 +71,155 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
     }
 
     /**
-     * Removes exactly the durable fixtures this test created.
+     * Removes exactly the durable fixtures this test created, and proves it.
      *
-     * They are committed on purpose: an independent MySQL session can only see
-     * and lock committed rows. That makes cleanup this test's own
+     * The fixtures are committed on purpose: an independent MySQL session can
+     * only see and lock committed rows. That makes cleanup this test's own
      * responsibility — the shared suite database must look as it did before the
      * test, because SystemClinicResolver fails closed when a different number of
-     * Clinic rows exists, and every suite that runs later in the same database
-     * would inherit that (run 38426092585: clinic_count=5, 417 errors in the
-     * Integration suite that followed this one).
+     * Clinic rows exists (run 38426092585: clinic_count=5, 417 errors in the
+     * Integration suite that followed).
      *
-     * Ordering follows the real foreign keys: audit rows reference the Clinic
-     * without a delete cascade, custom-role definitions and memberships
-     * (with their capabilities/assignments) cascade from the Clinic row.
+     * Ownership is proven by row identity — the Clinic's own id, its
+     * membership/definition/audit rows, and the two WordPress users this test
+     * created with their usermeta — never by a global count alone. Every
+     * statement is scoped to a key this test created; no broad DELETE or
+     * TRUNCATE is performed, and unrelated rows are never touched. A failed
+     * statement is reported separately, so a cleanup defect cannot be silent and
+     * cannot hide the body's own result (PHPUnit reports both).
      */
     private function removeOwnFixtures(): void
     {
         if ($this->clinicId <= 0) {
             return;
         }
+        global $wpdb;
         $db = App::db();
-        $db->query('DELETE FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d', [$this->clinicId]);
-        $db->query('DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE clinic_id = %d', [$this->clinicId]);
-        $db->query('DELETE FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d', [$this->clinicId]);
-        $db->query('DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$this->clinicId]);
-        if (!function_exists('wp_delete_user')) {
-            require_once ABSPATH . 'wp-admin/includes/user.php';
-        }
-        foreach ([$this->manager, $this->target] as $userId) {
-            if ($userId > 0 && get_userdata($userId) !== false) {
-                wp_delete_user($userId);
+        $failures = [];
+
+        // 1) The WordPress users this fixture created. Deleted first so no
+        // membership can outlive its user; their usermeta goes with them.
+        $userIds = array_values(array_filter(
+            [$this->manager, $this->target],
+            static fn (int $id): bool => $id > 0
+        ));
+        if ($userIds !== []) {
+            if (!function_exists('wp_delete_user')) {
+                require_once ABSPATH . 'wp-admin/includes/user.php';
+            }
+            foreach ($userIds as $userId) {
+                if (get_userdata($userId) !== false) {
+                    wp_delete_user($userId);
+                }
             }
         }
-        global $wpdb;
-        // The fixtures were committed on purpose, so the removal must be
-        // committed as well: the test framework opens its own transaction around
-        // every test, and rows deleted inside it would be rolled back by
-        // parent::tearDown() while a count read in the same transaction still
-        // looked clean (run 38427517780: four cases, four Clinic rows left
-        // behind, clinic_count 1 -> 5).
-        self::assertNotFalse($wpdb->query('COMMIT'), 'fixture removal must be durable, not rolled back with the test');
+
+        // 2) Clinic-owned rows in foreign-key order: audit rows first
+        // (cpms_audit_logs.clinic_id references the Clinic without a delete
+        // cascade), then the definition (its capability rows cascade) and the
+        // memberships (their capability/assignment rows cascade), then the Clinic.
+        $statements = [
+            'audit rows' => [
+                'DELETE FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+                [$this->clinicId],
+            ],
+            'custom-role definitions' => [
+                'DELETE FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE clinic_id = %d',
+                [$this->clinicId],
+            ],
+            'memberships' => [
+                'DELETE FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+                [$this->clinicId],
+            ],
+            'clinic' => [
+                'DELETE FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d',
+                [$this->clinicId],
+            ],
+        ];
+        foreach ($statements as $label => [$sql, $params]) {
+            if (!$db->query($sql, $params)) {
+                $failures[] = $label;
+            }
+        }
+
+        // 3) Durable: the fixtures were committed, so the removal must be too —
+        // the framework's own per-test transaction would otherwise roll the
+        // deletes back while a count read inside it still looked clean
+        // (run 38427517780: four cases, four Clinic rows left behind).
+        if ($wpdb->query('COMMIT') === false) {
+            $failures[] = 'commit';
+        }
+        if ($failures !== []) {
+            self::fail(
+                'archival race cleanup failed ('
+                . implode(', ', $failures)
+                . '); the test body result above is unaffected by this cleanup failure'
+            );
+        }
+
+        // 4) Prove ownership row by row, by the keys this test created.
+        $after = $this->ownershipRowCounts($db, $wpdb);
+        self::assertSame(
+            array_fill_keys(array_keys($after), 0),
+            $after,
+            'cleanup must remove every row this test owns (by key, not by count)'
+        );
+        foreach ($userIds as $userId) {
+            self::assertFalse(
+                get_userdata($userId) !== false,
+                'tracked WordPress user ' . $userId . ' must be gone after cleanup'
+            );
+        }
         $remaining = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertSame(
             $this->clinicCountBefore,
             $remaining,
             'the archival race must leave the shared database exactly as it found it'
         );
+    }
+
+    /**
+     * Every row this test owns, counted by the key it was created with.
+     *
+     * @return array<string, int>
+     */
+    private function ownershipRowCounts(CpmsDb $db, \wpdb $wpdb): array
+    {
+        $userIds = array_values(array_filter(
+            [$this->manager, $this->target],
+            static fn (int $id): bool => $id > 0
+        ));
+        $in = $userIds === [] ? '0' : implode(',', array_map('intval', $userIds));
+
+        return [
+            'clinic_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d',
+                [$this->clinicId]
+            ),
+            'definition_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE clinic_id = %d',
+                [$this->clinicId]
+            ),
+            'definition_capability_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table('cpms_custom_role_capabilities')
+                . ' WHERE role_def_id IN (SELECT id FROM ' . $db->table('cpms_custom_role_defs') . ' WHERE clinic_id = %d)',
+                [$this->clinicId]
+            ),
+            'membership_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+                [$this->clinicId]
+            ),
+            'audit_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+                [$this->clinicId]
+            ),
+            'owned_user_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM `' . $wpdb->prefix . 'users` WHERE ID IN (' . $in . ')'
+            ),
+            'owned_usermeta_rows' => (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM `' . $wpdb->prefix . 'usermeta` WHERE user_id IN (' . $in . ')'
+            ),
+        ];
     }
 
     public static function winnerCases(): array
@@ -149,6 +252,10 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         $worker = null;
         $workerPid = 0;
         $startupProbeAfter = [];
+        $isolationProbe = [];
+        $privacyPins = [];
+        $canary = '';
+        $faultInjection = ['extension' => '', 'dir' => ''];
         $workerExit = -1;
         $observer = null;
         $childConnectionId = 0;
@@ -165,6 +272,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         try {
             $db->transactional(function () use ($db, $key, $definitionId, $winner, $waiter, $parentConnectionId,
                 &$worker, &$workerPid, &$workerExit, $tablePrefix, &$startupProbeAfter,
+                &$isolationProbe, &$privacyPins, &$canary, &$faultInjection,
                 &$observer, &$childConnectionId, &$childQuery,
                 &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction,
                 &$liveConnectionId, &$selfTransaction): void {
@@ -190,8 +298,28 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                     'fixture precondition: the exact synthetic rows must exist before the worker starts'
                 );
 
+                // Privacy probe. The canary is a secret-like marker that exists
+                // only in this process's environment: no channel of the worker
+                // may ever show it. The fault identifiers are controlled strings
+                // used to force real failure paths inside the worker; they must
+                // not reach the protocol or the evidence record either.
+                $canary = 'cpms-canary-' . bin2hex(random_bytes(6));
+                @putenv('CPMS_UNRELATED_SECRET=' . $canary);
+                $_ENV['CPMS_UNRELATED_SECRET'] = $canary;
+                $privacyPins = ArchivalRaceWorker::pinProcessEnvironment(ArchivalRaceWorker::PRIVACY_MARKER_VARS);
+                self::assertArrayHasKey(
+                    'CPMS_UNRELATED_SECRET',
+                    $privacyPins,
+                    'the privacy probe needs an inherited name to prove the worker does not receive it'
+                );
+                $faultInjection = [
+                    'extension' => '/nonexistent/cpms-fault-injection-' . bin2hex(random_bytes(4)),
+                    'dir' => '/nonexistent/cpms-fault-content-' . bin2hex(random_bytes(4)),
+                ];
+
                 $worker = ArchivalRaceWorker::launch([
                     'WP_TESTS_DIR' => getenv('WP_TESTS_DIR') ?: '/tmp/wp-tests',
+                    'CPMS_RACE_FAULT_INJECT' => json_encode($faultInjection, JSON_THROW_ON_ERROR),
                     'CPMS_RACE_DB_NAME' => DB_NAME,
                     'CPMS_RACE_DB_USER' => DB_USER,
                     'CPMS_RACE_DB_PASSWORD' => DB_PASSWORD,
@@ -213,6 +341,54 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertMatchesRegularExpression('/^READY:[1-9][0-9]*$/', $ready);
                 $childConnectionId = (int) substr($ready, strlen('READY:'));
                 self::assertNotSame($parentConnectionId, $childConnectionId);
+
+                // Descriptor isolation. The worker reported its own inventory as
+                // its first line; every descriptor this process holds beyond
+                // stdio must appear there as inert /dev/null, which is what the
+                // launcher pinned them to, and the worker must hold no socket of
+                // its own before it creates one.
+                $isolationProbe = $worker->descriptorIsolationProbe();
+                self::assertTrue($isolationProbe['proc_fd'], 'descriptor isolation needs /proc on this host to be proven, never assumed');
+                self::assertGreaterThan(0, $isolationProbe['pinned_fd_count'], 'the launcher must hold descriptors to pin');
+                self::assertTrue(
+                    $isolationProbe['pinned_isolation_proven'],
+                    'the launcher descriptors are not /dev/null inside the worker: ' . json_encode($isolationProbe)
+                );
+                self::assertSame(
+                    0,
+                    $isolationProbe['worker_socket_count'],
+                    'the worker must start with no inherited socket: ' . json_encode($isolationProbe)
+                );
+                self::assertGreaterThan(
+                    0,
+                    $isolationProbe['parent_observed_fd_count'],
+                    'the parent must be observed holding its own descriptors while the worker runs'
+                );
+
+                // Environment: exactly the allowlist, and none of the pinned
+                // names — a forwarded name would be visible here even though its
+                // value never leaves this process.
+                $expectedEnvironment = [];
+                foreach (ArchivalRaceWorker::ENVIRONMENT_ALLOWLIST as $envName) {
+                    $envValue = getenv($envName);
+                    if (is_string($envValue) && $envValue !== '') {
+                        $expectedEnvironment[] = $envName;
+                    }
+                }
+                sort($expectedEnvironment);
+                self::assertSame(
+                    $expectedEnvironment,
+                    $isolationProbe['worker_env_keys'],
+                    'the worker environment must be exactly the allowlist, never the launcher environment'
+                );
+                foreach (array_keys($privacyPins) as $pinnedName) {
+                    self::assertNotContains(
+                        $pinnedName,
+                        $isolationProbe['worker_env_keys'],
+                        'a pinned name reached the worker environment: ' . $pinnedName
+                    );
+                }
+
                 $startupProbeAfter = ArchivalRaceWorker::fixtureProbe(
                     $observer,
                     $tablePrefix,
@@ -318,7 +494,9 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
             // PHPUnit prints the previous test's progress dot without a trailing
             // newline, so a bare write would concatenate this record onto that
             // dot and the line-oriented CI collector would miss it.
-            fwrite(STDERR, PHP_EOL . 'CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE ' . json_encode([
+            self::assertMatchesRegularExpression('/^denied:[A-Z_]+$/', $outcome);
+            self::assertStringNotContainsString($canary, $waiterDiagnostics, 'the canary must never reach the worker at all');
+            $evidence = json_encode([
                 'case' => $winner . '_before_' . $waiter,
                 'mysql_schema' => DB_NAME,
                 'definition_id' => $definitionId,
@@ -343,8 +521,23 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'membership_role_after_commit' => $memberAfter['role_key'],
                 'archival_audit_count' => $archivalAudits,
                 'assignment_audit_count' => $assignmentAudits,
-            ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
+                'descriptor_isolation' => $isolationProbe,
+                'environment_allowlist_verified' => true,
+                'privacy_marker_absent' => true,
+            ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            self::assertStringNotContainsString($canary, $evidence, 'no marker value may enter the evidence record');
+            foreach ($faultInjection as $faultMarker) {
+                self::assertStringNotContainsString(
+                    $faultMarker,
+                    $evidence . $queryLine,
+                    'controlled fault identifiers must not leak into the protocol or the evidence record'
+                );
+            }
+            fwrite(STDERR, PHP_EOL . 'CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE ' . $evidence . PHP_EOL);
         } finally {
+            if ($privacyPins !== []) {
+                ArchivalRaceWorker::restoreProcessEnvironment($privacyPins);
+            }
             if ($observer instanceof \mysqli && $childConnectionId > 0) {
                 $observer->query('KILL ' . $childConnectionId);
             }
