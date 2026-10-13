@@ -89,6 +89,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         $wpRolesBefore = get_userdata($this->target)->roles;
         global $wpdb;
         self::assertNotFalse($wpdb->query('COMMIT'), 'independent sessions require committed fixtures');
+        $tablePrefix = (string) $wpdb->prefix;
         $parentConnectionId = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
         $hooks = isset($GLOBALS['wp_filter']['query']) ? clone $GLOBALS['wp_filter']['query'] : null;
         $worker = null;
@@ -108,7 +109,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         remove_all_filters('query');
         try {
             $db->transactional(function () use ($db, $key, $definitionId, $winner, $waiter, $parentConnectionId,
-                &$worker, &$workerPid, &$workerExit, &$observer, &$childConnectionId, &$childQuery,
+                &$worker, &$workerPid, &$workerExit, $tablePrefix, &$observer, &$childConnectionId, &$childQuery,
                 &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction,
                 &$liveConnectionId, &$selfTransaction): void {
                 $locked = (new CustomRoleRepository($db))->definition_for_update($this->clinicId, $key);
@@ -124,7 +125,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                     'CPMS_RACE_DB_USER' => DB_USER,
                     'CPMS_RACE_DB_PASSWORD' => DB_PASSWORD,
                     'CPMS_RACE_DB_HOST' => DB_HOST,
-                    'CPMS_RACE_TABLE_PREFIX' => $wpdb->prefix,
+                    'CPMS_RACE_TABLE_PREFIX' => $tablePrefix,
                     'CPMS_RACE_CLINIC_ID' => $this->clinicId,
                     'CPMS_RACE_ROLE_KEY' => $key,
                     'CPMS_RACE_DEFINITION_ID' => $definitionId,
