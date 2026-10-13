@@ -35,6 +35,8 @@ final class ArchivalRaceWorker
 
     private bool $closed = false;
 
+    private ?int $pid = null;
+
     /**
      * @param resource             $process
      * @param array<int, resource> $pipes
@@ -135,14 +137,20 @@ final class ArchivalRaceWorker
 
     public function pid(): int
     {
-        $status = @proc_get_status($this->process);
+        $this->refreshStatus();
 
-        return is_array($status) ? (int) ($status['pid'] ?? 0) : 0;
+        // The pid is captured on the first status poll: after close() the handle
+        // is no longer a process resource and must not be polled again.
+        return $this->pid ?? 0;
     }
 
     public function isRunning(): bool
     {
-        $status = @proc_get_status($this->process);
+        if ($this->closed) {
+            return false;
+        }
+
+        $status = $this->refreshStatus();
 
         return is_array($status) && ($status['running'] ?? false) === true;
     }
@@ -183,12 +191,15 @@ final class ArchivalRaceWorker
         $deadline = microtime(true) + $timeoutSeconds;
         do {
             $this->pump();
-            $status = @proc_get_status($this->process);
+            if ($this->closed) {
+                return $this->exitCode ?? -1;
+            }
+            $status = $this->refreshStatus();
             if (is_array($status) && ($status['running'] ?? false) === false) {
-                $this->exitCode = (int) ($status['exitcode'] ?? -1);
+                $exitCode = $this->exitCode ?? (int) ($status['exitcode'] ?? -1);
                 $this->close();
 
-                return $this->exitCode;
+                return $exitCode;
             }
             usleep(10000);
         } while (microtime(true) < $deadline);
@@ -235,6 +246,36 @@ final class ArchivalRaceWorker
             }
         }
         $this->close();
+    }
+
+    /**
+     * Polls the process once and caches the two facts a single poll can report:
+     * the pid, and the exit code.
+     *
+     * PHP's proc_get_status() waits with WNOHANG on every call, so the child is
+     * reaped by whichever call observes it first and every later call reports
+     * running=false with exitcode -1. Caching the first observation is the only
+     * way for a caller to learn the real exit code.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function refreshStatus(): ?array
+    {
+        if ($this->closed || !is_resource($this->process)) {
+            return null;
+        }
+        $status = @proc_get_status($this->process);
+        if (!is_array($status)) {
+            return null;
+        }
+        if ($this->pid === null && (int) ($status['pid'] ?? 0) > 0) {
+            $this->pid = (int) $status['pid'];
+        }
+        if (($status['running'] ?? false) === false && $this->exitCode === null) {
+            $this->exitCode = (int) ($status['exitcode'] ?? -1);
+        }
+
+        return $status;
     }
 
     private function pump(): void
