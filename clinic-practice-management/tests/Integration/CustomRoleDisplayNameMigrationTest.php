@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use WP_UnitTestCase;
 
 /**
@@ -136,6 +137,10 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
         global $wpdb;
         $defs = App::db()->table('cpms_custom_role_defs');
 
+        // Archived rows must survive this test and its cleanup untouched.
+        $archivedBefore = $this->withRealTables(fn (): int => $this->archivedDefinitionCount());
+        $bodyFailure    = null;
+
         try {
             $this->withRealTables(function () use ($wpdb, $defs): void {
                 self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
@@ -170,17 +175,127 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
                 App::migrations()->currentVersion(),
                 'the failed migration must never be recorded'
             );
+        } catch (\Throwable $failure) {
+            // Keep the original failure: the verified restoration below must never mask it.
+            $bodyFailure = $failure;
+            throw $failure;
         } finally {
-            // Deterministic cleanup: drop the malformed column and re-migrate cleanly.
-            $this->withRealTables(function () use ($wpdb, $defs): void {
-                $wpdb->query("ALTER TABLE {$defs} DROP COLUMN display_name"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                App::migrations()->migrate();
-            });
+            try {
+                $this->withRealTables(function () use ($defs, $archivedBefore): void {
+                    $this->restoreReviewedDisplayNameColumn($defs, $archivedBefore);
+                });
+            } catch (\Throwable $cleanupFailure) {
+                if ($bodyFailure !== null) {
+                    throw new \RuntimeException(
+                        'display_name restoration failed after the original test failure: ' . $cleanupFailure->getMessage(),
+                        0,
+                        $bodyFailure
+                    );
+                }
+
+                throw $cleanupFailure;
+            }
         }
 
         self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'suite schema must be restored');
-        $column = $wpdb->get_row("SHOW COLUMNS FROM {$defs} LIKE 'display_name'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $column = $this->displayNameColumn();
         self::assertIsArray($column, 'the well-formed column must be restored after cleanup');
-        self::assertSame('YES', strtoupper((string) $column['Null']));
+        self::assertTrue(
+            $this->displayNameColumnMatchesContract($column),
+            'the reviewed display_name contract must hold after cleanup'
+        );
+    }
+
+    /**
+     * Shared-schema restoration for the malformed-column fixture — verified, never assumed.
+     *
+     * Why migrate() alone cannot be trusted here: migration 0027's guarded downgrade may
+     * refuse the very first rollback (committed archived/unknown rows), so the balanced
+     * 0027 → 0026 → 0025 down cycle never runs and 0025 stays recorded as applied. The
+     * runner skips recorded versions, so a dropped column is never re-created by a later
+     * migrate(). MySQL DDL also implicitly commits, so restoration is deterministic DDL
+     * against the real table instead of a rollback-dependent transaction.
+     */
+    private function restoreReviewedDisplayNameColumn(string $defs, int $archivedBefore): void
+    {
+        global $wpdb;
+
+        if (App::migrations()->currentVersion() === self::PREVIOUS_VERSION) {
+            // The down cycle completed: whatever display_name is present now (the malformed
+            // fixture or older debris) is not owned by the recorded state — remove it and let
+            // the official 0025 up() re-create the reviewed column and its version marker.
+            if ($this->displayNameColumn() !== null) {
+                $wpdb->query("ALTER TABLE {$defs} DROP COLUMN display_name"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            }
+            App::migrations()->migrate();
+        } else {
+            // The downgrade was refused (or stopped early): migrate() realigns the version
+            // markers, but the column itself must be repaired explicitly — 0025 is already
+            // recorded, so its up() will not run again.
+            App::migrations()->migrate();
+
+            $column = $this->displayNameColumn();
+            if ($column === null) {
+                $wpdb->query(
+                    "ALTER TABLE {$defs} ADD COLUMN `display_name` VARCHAR(190) NULL DEFAULT NULL AFTER `role_key`"
+                ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            } elseif (! $this->displayNameColumnMatchesContract($column)) {
+                // Fixture debris (VARCHAR(50) NOT NULL): relax and widen in place so stored
+                // values survive; the reviewed contract is a NULL-able utf8mb4 VARCHAR(190).
+                $wpdb->query(
+                    "ALTER TABLE {$defs} MODIFY COLUMN `display_name` VARCHAR(190) NULL DEFAULT NULL"
+                ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            }
+        }
+
+        // Restoration is asserted, not inferred: a still-broken shared schema fails loudly.
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'migration markers must be restored to the suite head');
+
+        $column = $this->displayNameColumn();
+        self::assertIsArray($column, 'display_name must exist after restoration');
+        self::assertTrue($this->displayNameColumnMatchesContract($column), 'display_name must match the reviewed migration 0025 contract');
+
+        // One real product read path that selects display_name must resolve again.
+        $clinicId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinics') . ' ORDER BY id LIMIT 1'
+        );
+        if ($clinicId > 0) {
+            self::assertIsArray(
+                (new CustomRoleRepository(App::db()))->list_definitions($clinicId),
+                'custom-role reads must resolve display_name after restoration'
+            );
+        }
+
+        // Archived definitions are preserved: this cleanup issues no row DML at all.
+        self::assertSame($archivedBefore, $this->archivedDefinitionCount(), 'archived rows must survive the fixture cleanup');
+    }
+
+    /**
+     * @param array<string, mixed> $column information_schema.COLUMNS row
+     */
+    private function displayNameColumnMatchesContract(array $column): bool
+    {
+        return strtolower((string) ($column['DATA_TYPE'] ?? '')) === 'varchar'
+            && (int) ($column['CHARACTER_MAXIMUM_LENGTH'] ?? 0) === 190
+            && strtoupper((string) ($column['IS_NULLABLE'] ?? '')) === 'YES'
+            && strtolower((string) ($column['CHARACTER_SET_NAME'] ?? '')) === 'utf8mb4';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function displayNameColumn(): ?array
+    {
+        return App::db()->fetchRow(
+            'SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, CHARACTER_MAXIMUM_LENGTH, CHARACTER_SET_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
+            [App::db()->table('cpms_custom_role_defs'), 'display_name']
+        );
+    }
+
+    private function archivedDefinitionCount(): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_custom_role_defs') . " WHERE status = 'archived'"
+        );
     }
 }
