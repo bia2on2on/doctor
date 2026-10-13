@@ -282,7 +282,10 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
             }
             clean_user_cache($this->target);
             self::assertSame($wpRolesBefore, get_userdata($this->target)->roles);
-            fwrite(STDERR, 'CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE ' . json_encode([
+            // PHPUnit prints the previous test's progress dot without a trailing
+            // newline, so a bare write would concatenate this record onto that
+            // dot and the line-oriented CI collector would miss it.
+            fwrite(STDERR, PHP_EOL . 'CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE ' . json_encode([
                 'case' => $winner . '_before_' . $waiter,
                 'mysql_schema' => DB_NAME,
                 'definition_id' => $definitionId,

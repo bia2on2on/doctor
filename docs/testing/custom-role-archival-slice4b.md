@@ -123,3 +123,29 @@ constraint. The only remaining WPCS added-line violation was `$column`
 alignment; corrected. **These fixes have NOT yet passed runtime validation.**
 Root cause of this observed first guard-verification failure is established;
 subsequent enum narrowing/forward recovery and the four races remain unproven.
+
+### Runtime confirmation and evidence-framing correction — 2026-10-13T07:58:41Z
+
+The correction committed at `107d4982` did pass its focused steps on CI run
+38357339882 (head `107d498237af18d78a9f0515ceab58e780c61e2c`):
+
+- focused terminal-role archival security contract: **OK (25 tests, 327 assertions)**;
+- focused archival schema/downgrade safety: **OK (4 tests, 37 assertions)** — fresh
+  schema, `0026 → 0027` down/up round trip with row, capability, attribute and index
+  preservation, guarded refusal of an archived-row downgrade in default and explicit
+  non-strict SQL mode, and a retained 0027 marker with unchanged data;
+- focused independent MySQL races: **OK (4 tests, 190 assertions)** — all four cases
+  executed on distinct connections with exact `performance_schema` wait-edge evidence.
+
+The CI check nevertheless failed because three of the four emitted evidence records
+shared a line with PHPUnit's progress dot, while the line-oriented collector in
+`.github/workflows/ci.yml` accepts only records that begin a line; it therefore saw
+one of four and reported `Missing/duplicate archival race evidence.` This is a
+test/CI evidence-framing defect (class D), not a migration, concurrency or product
+defect; the migration correction itself is runtime-proven.
+
+Correction in this commit: each record now starts with `PHP_EOL`, so it always begins
+on its own line. No assertion, lock-edge requirement, four-case requirement, JUnit
+check or fail-closed collector rule was changed or weakened, and the collector itself
+is untouched. Migration, authorization, archival, membership and lifecycle code paths
+are unchanged by this commit.
