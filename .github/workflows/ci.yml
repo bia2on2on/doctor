@@ -231,6 +231,50 @@ jobs:
             gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-race-pr.md \
               || { echo '::error::Could not mirror the focused race evidence to the PR.'; exit 1; }
           fi
+      - name: Run focused terminal role archival security contract
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/custom-role-archive-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalTest.php 2>&1 | tee /tmp/custom-role-archive.log
+          TEST_RC=$?
+          set -e
+          {
+            echo "### Slice 4B focused archival contract (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}; head ${{ github.event.pull_request.head.sha || github.sha }})"
+            echo '```'
+            tail -n 240 /tmp/custom-role-archive.log
+            echo '```'
+          } > /tmp/custom-role-archive-pr.md
+          cat /tmp/custom-role-archive-pr.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-pr.md
+          fi
+          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          python3 - <<'PYARCHIVE'
+          import sys
+          import xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/custom-role-archive-junit.xml').getroot()
+          cases = root.findall('.//testcase')
+          print(f'Focused archival JUnit: tests={len(cases)}')
+          if len(cases) < 25 or any(c.find(tag) is not None for c in cases for tag in ('skipped', 'failure', 'error')):
+              sys.exit('Archival contract must execute all tests without skip/failure/error.')
+          PYARCHIVE
+          grep -qE '^OK \(' /tmp/custom-role-archive.log
+
+      - name: Preserve focused archival security evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-role-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/custom-role-archive.log
+            /tmp/custom-role-archive-junit.xml
+          if-no-files-found: warn
+
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests
