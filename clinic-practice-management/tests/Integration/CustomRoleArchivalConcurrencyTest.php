@@ -94,6 +94,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         $hooks = isset($GLOBALS['wp_filter']['query']) ? clone $GLOBALS['wp_filter']['query'] : null;
         $worker = null;
         $workerPid = 0;
+        $startupProbeAfter = [];
         $workerExit = -1;
         $observer = null;
         $childConnectionId = 0;
@@ -109,7 +110,8 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         remove_all_filters('query');
         try {
             $db->transactional(function () use ($db, $key, $definitionId, $winner, $waiter, $parentConnectionId,
-                &$worker, &$workerPid, &$workerExit, $tablePrefix, &$observer, &$childConnectionId, &$childQuery,
+                &$worker, &$workerPid, &$workerExit, $tablePrefix, &$startupProbeAfter,
+                &$observer, &$childConnectionId, &$childQuery,
                 &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction,
                 &$liveConnectionId, &$selfTransaction): void {
                 $locked = (new CustomRoleRepository($db))->definition_for_update($this->clinicId, $key);
