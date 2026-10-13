@@ -51,8 +51,11 @@ $cpms_archival_guard_exists = static function ( CpmsDb $db, string $defs, string
     if ( $constraint === null ) {
         return false;
     }
-    // MySQL renders string literals with a charset introducer and parentheses.
-    $clause = (string) preg_replace( "/_[a-zA-Z0-9]+(?=')/", '', (string) $constraint['CHECK_CLAUSE'] );
+    // Metadata can escape the quote delimiters; recognize only that exact
+    // representation before removing charset introducers and parentheses.
+    // Enforcement and the complete active/inactive expression still must match.
+    $clause = str_replace( "\\'", "'", (string) $constraint['CHECK_CLAUSE'] );
+    $clause = (string) preg_replace( "/_[a-zA-Z0-9]+(?=')/", '', $clause );
     $clause = strtolower( str_replace( [ '`', '(', ')', ' ', "\n", "\r", "\t" ], '', $clause ) );
     if ( (string) $constraint['ENFORCED'] !== 'YES' || $clause !== "statusin'active','inactive'" ) {
         throw new \RuntimeException( 'migration 0027: unexpected rollback guard; no constraint may be silently reused or removed' );
@@ -69,7 +72,7 @@ return [
         $column_sql   = $cpms_archival_status_sql( $db, true );
         $guard        = 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
         $guard_exists = $cpms_archival_guard_exists( $db, $defs, $guard );
-        $column = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
+        $column       = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
         if ( $column === null ) {
             throw new \RuntimeException( 'migration 0027: missing status column' );
         }

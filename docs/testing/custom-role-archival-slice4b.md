@@ -107,3 +107,19 @@ exercises existing behavior independently of the missing archive API.
 - Final exact-head six-family conclusions must be read live. Historical
   success cannot substitute for them. NOT RUN/PENDING/SKIPPED/CANCELLED is
   never PASS. **READY FOR INDEPENDENT ACCEPTANCE: NO** at this checkpoint.
+
+### Subsequent actual schema diagnostic — 06:32 UTC
+
+CI 38356935641 at `bd4c1b68b18f9647f39e48b8fc78fec71397054c`
+repeated focused security PASS and failed focused schema (**4 tests / 10
+assertions / 1 error / 2 failures**). New race and downstream full-suite steps
+were **SKIPPED**, not PASS. The exact exception chain and live CHECK metadata
+are preserved in `evidence/custom-role-archival-downgrade-failure.md`.
+The enforced `YES` active/inactive guard returned escaped quote delimiters
+(`_utf8mb4\'active\'`) which the exact normalizer rejected. A narrow fix
+recognizes that delimiter representation before charset normalization; it still
+requires enforcement and the complete two-state expression, not an arbitrary
+constraint. The only remaining WPCS added-line violation was `$column`
+alignment; corrected. **These fixes have NOT yet passed runtime validation.**
+Root cause of this observed first guard-verification failure is established;
+subsequent enum narrowing/forward recovery and the four races remain unproven.
