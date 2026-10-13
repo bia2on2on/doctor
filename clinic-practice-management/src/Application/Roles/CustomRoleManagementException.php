@@ -22,6 +22,9 @@ final class CustomRoleManagementException extends \RuntimeException {
 	public const CODE_NOT_FOUND                = 'CUSTOM_ROLE_NOT_FOUND';
 	public const CODE_KEY_CONFLICT             = 'CUSTOM_ROLE_KEY_CONFLICT';
 	public const CODE_STALE_VERSION            = 'CUSTOM_ROLE_STALE_VERSION';
+	public const CODE_TERMINAL_STATE           = 'CUSTOM_ROLE_TERMINAL_STATE';
+	public const CODE_INVALID_STATE            = 'CUSTOM_ROLE_INVALID_STATE';
+	public const CODE_MEMBERSHIP_REFERENCES    = 'CUSTOM_ROLE_MEMBERSHIP_REFERENCES';
 
 	/**
 	 * Narrow, non-sensitive reason code (never a raw request value). Not the
@@ -72,6 +75,18 @@ final class CustomRoleManagementException extends \RuntimeException {
 		return new self( self::CODE_STALE_VERSION, '' );
 	}
 
+	public static function terminal_state(): self {
+		return new self( self::CODE_TERMINAL_STATE, '' );
+	}
+
+	public static function invalid_state(): self {
+		return new self( self::CODE_INVALID_STATE, '' );
+	}
+
+	public static function membership_references(): self {
+		return new self( self::CODE_MEMBERSHIP_REFERENCES, '' );
+	}
+
 	/**
 	 * Safe, translated-free catalogue of operator-facing messages. A reason code
 	 * that is not in the catalogue can only be produced by an internal defect and
@@ -85,6 +100,9 @@ final class CustomRoleManagementException extends \RuntimeException {
 			self::CODE_CAPABILITY_NOT_DELEGABLE => 'A requested capability exceeds the effective Clinic authority of the editor.',
 			self::CODE_KEY_CONFLICT             => 'That custom role key is already defined in this Clinic.',
 			self::CODE_STALE_VERSION            => 'The custom role definition changed; reload it before retrying.',
+			self::CODE_TERMINAL_STATE           => 'The archived custom role is terminal and read-only.',
+			self::CODE_INVALID_STATE            => 'The custom role has an unrecognized status; no mutation is allowed.',
+			self::CODE_MEMBERSHIP_REFERENCES    => 'Reassign every same-Clinic membership, including suspended memberships, before archival.',
 			default                             => 'No custom role definition with that key exists in this Clinic.',
 		};
 	}

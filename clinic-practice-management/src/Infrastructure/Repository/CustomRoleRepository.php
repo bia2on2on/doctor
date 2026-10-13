@@ -11,7 +11,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 // record: docs/decisions/2026-10-10-custom-role-permission-management-model.md).
 //
 // Tables (Migration 2026_10_10_0024):
-//  - cpms_custom_role_defs: UNIQUE(clinic_id, role_key), status active/inactive,
+//  - cpms_custom_role_defs: UNIQUE(clinic_id, role_key), status active/inactive/archived,
 //    monotonic `version` (forward-only: updates only advance the version).
 //  - cpms_custom_role_capabilities: UNIQUE(role_def_id, capability).
 //
@@ -31,6 +31,7 @@ final class CustomRoleRepository {
 
     public const STATUS_ACTIVE   = 'active';
     public const STATUS_INACTIVE = 'inactive';
+    public const STATUS_ARCHIVED = 'archived';
 
     public function __construct( private readonly CpmsDb $db ) {
     }
@@ -42,7 +43,7 @@ final class CustomRoleRepository {
      *
      * @return list<string>
      */
-    public function active_capabilities_for( int $clinic_id, string $role_key ): array {
+    public function active_capabilities_for( int $clinic_id, string $role_key, bool $for_update = false ): array {
         if ( $clinic_id <= 0 ) {
             return [];
         }
@@ -51,7 +52,8 @@ final class CustomRoleRepository {
             return [];
         }
 
-        $def = $this->db->fetchRow(
+        $read = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
+        $def  = $this->db->$read(
             'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
             " WHERE clinic_id = %d AND role_key = %s AND status = 'active' LIMIT 1",
             [ $clinic_id, $role_key ]
@@ -66,7 +68,7 @@ final class CustomRoleRepository {
 
         // Defense in depth: even a raw-SQL writer cannot make a non-allowlisted
         // capability operational.
-        return CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $def_id ) );
+        return CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $def_id, $for_update ) );
     }
 
     /**
@@ -105,7 +107,7 @@ final class CustomRoleRepository {
                 'id'           => $id,
                 'role_key'     => $key,
                 'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
-                'status'       => self::STATUS_INACTIVE === $status ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+                'status'       => $status,
                 'version'      => (int) ( $row['version'] ?? 0 ),
                 'updated_at'   => (string) ( $row['updated_at'] ?? '' ),
                 'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
@@ -151,7 +153,7 @@ final class CustomRoleRepository {
             'id'           => $id,
             'role_key'     => (string) ( $row['role_key'] ?? '' ),
             'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
-            'status'       => self::STATUS_INACTIVE === $status ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+            'status'       => $status,
             'version'      => (int) ( $row['version'] ?? 0 ),
             'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
         ];
@@ -174,6 +176,7 @@ final class CustomRoleRepository {
             ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
             [ $clinic_id, $role_key ]
         );
+        $this->require_successful_read();
         if ( $definition_id <= 0 ) {
             return null;
         }
@@ -186,6 +189,7 @@ final class CustomRoleRepository {
             ' WHERE id = %d AND clinic_id = %d LIMIT 1',
             [ $definition_id, $clinic_id ]
         );
+        $this->require_successful_read();
         if ( $row === null ) {
             return null;
         }
@@ -202,9 +206,9 @@ final class CustomRoleRepository {
             'id'           => $id,
             'role_key'     => (string) ( $row['role_key'] ?? '' ),
             'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
-            'status'       => self::STATUS_INACTIVE === (string) ( $row['status'] ?? '' ) ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+            'status'       => (string) ( $row['status'] ?? '' ),
             'version'      => (int) ( $row['version'] ?? 0 ),
-            'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
+            'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id, true ) ),
         ];
     }
 
@@ -220,27 +224,26 @@ final class CustomRoleRepository {
      * @return bool false when no such definition exists
      */
     public function set_display_name( int $clinic_id, string $role_key, string $display_name ): bool {
-        $def_id = $this->require_definition( $clinic_id, $role_key );
-        if ( $def_id <= 0 ) {
-            return false;
-        }
         $clean = self::require_display_name( $display_name );
 
-        $now = $this->db->nowUtcSql();
-        $this->db->transactional(
-            function () use ( $def_id, $clean, $now ): void {
+        return $this->db->transactional(
+            function () use ( $clinic_id, $role_key, $clean ): bool {
+                $definition = $this->mutable_definition_for_update( $clinic_id, $role_key );
+                if ( $definition === null ) {
+                    return false;
+                }
                 $updated = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
-                    ' SET display_name = %s, version = version + 1, updated_at = %s WHERE id = %d',
-                    [ $clean, $now, $def_id ]
+                    ' SET display_name = %s, version = version + 1, updated_at = %s WHERE id = %d AND version = %d',
+                    [ $clean, $this->db->nowUtcSql(), (int) $definition['id'], (int) $definition['version'] ]
                 );
                 if ( $updated !== 1 ) {
-                    throw new \RuntimeException( 'custom role display name update failed for definition: ' . $def_id );
+                    throw new \RuntimeException( 'custom role display name update failed' );
                 }
+
+                return true;
             }
         );
-
-        return true;
     }
 
     /**
@@ -324,21 +327,18 @@ final class CustomRoleRepository {
      * @return bool false when no such definition exists
      */
     public function replace_capabilities( int $clinic_id, string $role_key, array $capabilities ): bool {
-        $def_id = $this->require_definition( $clinic_id, $role_key );
-        if ( $def_id <= 0 ) {
-            return false;
-        }
         $clean = self::require_editable_capabilities( $capabilities );
 
-        $now = $this->db->nowUtcSql();
-        $this->db->transactional(
-            function () use ( $def_id, $clean, $now ): void {
-                // Every write is checked; a failure throws inside the
-                // transaction so the previous capability set and version are
-                // preserved and a partial replacement can never persist.
+        return $this->db->transactional(
+            function () use ( $clinic_id, $role_key, $clean ): bool {
+                $definition = $this->mutable_definition_for_update( $clinic_id, $role_key );
+                if ( $definition === null ) {
+                    return false;
+                }
+                $def_id  = (int) $definition['id'];
+                $now     = $this->db->nowUtcSql();
                 $cleared = $this->db->query(
-                    'DELETE FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
-                    ' WHERE role_def_id = %d',
+                    'DELETE FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) . ' WHERE role_def_id = %d',
                     [ $def_id ]
                 );
                 if ( ! $cleared ) {
@@ -347,16 +347,16 @@ final class CustomRoleRepository {
                 $this->insert_capability_rows( $def_id, $clean, $now );
                 $advanced = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
-                    ' SET version = version + 1, updated_at = %s WHERE id = %d',
-                    [ $now, $def_id ]
+                    ' SET version = version + 1, updated_at = %s WHERE id = %d AND version = %d',
+                    [ $now, $def_id, (int) $definition['version'] ]
                 );
                 if ( $advanced !== 1 ) {
                     throw new \RuntimeException( 'custom role version advance failed for definition: ' . $def_id );
                 }
+
+                return true;
             }
         );
-
-        return true;
     }
 
     /**
@@ -377,8 +377,8 @@ final class CustomRoleRepository {
             throw new \InvalidArgumentException( 'invalid Clinic or custom role key for status transition' );
         }
         if ( ! in_array( $expected_status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true )
-            || ! in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true ) ) {
-            throw new \InvalidArgumentException( 'status must be active or inactive' );
+            || ! in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE, self::STATUS_ARCHIVED ], true ) ) {
+            throw new \InvalidArgumentException( 'only mutable definitions may transition to a recognized status' );
         }
         if ( $expected_version <= 0 ) {
             return false;
@@ -402,43 +402,86 @@ final class CustomRoleRepository {
      * @return bool false when no such definition exists
      */
     public function set_status( int $clinic_id, string $role_key, string $status ): bool {
-        $def_id = $this->require_definition( $clinic_id, $role_key );
-        if ( $def_id <= 0 ) {
-            return false;
-        }
-        if ( ! in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true ) ) {
-            throw new \InvalidArgumentException( 'status must be active or inactive: ' . $status );
+        if ( ! self::is_mutable_status( $status ) ) {
+            throw new \InvalidArgumentException( 'legacy status writes accept only active or inactive' );
         }
 
-        $now = $this->db->nowUtcSql();
-        $this->db->transactional(
-            function () use ( $def_id, $status, $now ): void {
-                $updated = $this->db->execute(
-                    'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
-                    ' SET status = %s, version = version + 1, updated_at = %s WHERE id = %d',
-                    [ $status, $now, $def_id ]
-                );
-                if ( $updated !== 1 ) {
-                    throw new \RuntimeException( 'custom role status update failed for definition: ' . $def_id );
+        return $this->db->transactional(
+            function () use ( $clinic_id, $role_key, $status ): bool {
+                $definition = $this->mutable_definition_for_update( $clinic_id, $role_key );
+                if ( $definition === null ) {
+                    return false;
                 }
+                if ( ! $this->transition_status( $clinic_id, $role_key, (string) $definition['status'], $status, (int) $definition['version'] ) ) {
+                    throw new \RuntimeException( 'custom role status update failed' );
+                }
+
+                return true;
             }
         );
+    }
 
-        return true;
+    /** Only explicitly recognized reversible states may be edited. */
+    public static function is_mutable_status( string $status ): bool {
+        return in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true );
+    }
+
+    /**
+     * Current locking reference check, deliberately WITHOUT a status filter.
+     * Definition lock must already be held. A failed read is never zero refs.
+     */
+    public function has_membership_references_for_update( int $clinic_id, string $role_key ): bool {
+        if ( $clinic_id <= 0 || ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            throw new \InvalidArgumentException( 'invalid Clinic or role reference selector' );
+        }
+        $reference = $this->db->fetchRowForUpdate(
+            'SELECT id FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
+            ' WHERE clinic_id = %d AND role_key = %s ORDER BY id LIMIT 1',
+            [ $clinic_id, $role_key ]
+        );
+        $this->require_successful_read();
+
+        return $reference !== null;
+    }
+
+    /**
+     * @return array{clinic_id:int,id:int,role_key:string,display_name:string|null,status:string,version:int,capabilities:list<string>}|null
+     */
+    private function mutable_definition_for_update( int $clinic_id, string $role_key ): ?array {
+        if ( $clinic_id <= 0 || ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            throw new \InvalidArgumentException( 'invalid Clinic or custom role key' );
+        }
+        $definition = $this->definition_for_update( $clinic_id, $role_key );
+        if ( $definition !== null && ! self::is_mutable_status( (string) $definition['status'] ) ) {
+            throw new \InvalidArgumentException( 'archived or unknown custom role status is immutable' );
+        }
+
+        return $definition;
+    }
+
+    private function require_successful_read(): void {
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'custom role locking read failed' );
+        }
     }
 
     /**
      * @return list<string> raw stored capability strings (NOT allowlist-filtered)
      */
-    private function stored_capabilities( int $role_def_id ): array {
+    private function stored_capabilities( int $role_def_id, bool $for_update = false ): array {
         if ( $role_def_id <= 0 ) {
             return [];
         }
-        $rows = $this->db->fetchAll(
+        $read = $for_update ? 'fetchAllForUpdate' : 'fetchAll';
+        $rows = $this->db->$read(
             'SELECT capability FROM ' . $this->db->table( 'cpms_custom_role_capabilities' ) .
             ' WHERE role_def_id = %d ORDER BY capability',
             [ $role_def_id ]
         );
+
+        if ( $for_update ) {
+            $this->require_successful_read();
+        }
 
         $stored = [];
         foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
@@ -498,26 +541,6 @@ final class CustomRoleRepository {
         }
 
         return CustomRolePolicy::sanitize_display_name( $display_name );
-    }
-
-    /**
-     * @return int definition id, 0 when absent
-     */
-    private function require_definition( int $clinic_id, string $role_key ): int {
-        if ( $clinic_id <= 0 ) {
-            throw new \InvalidArgumentException( 'clinic_id must be > 0 for a custom role definition' );
-        }
-        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
-            throw new \InvalidArgumentException( 'role key is not definable (format or built-in collision): ' . $role_key );
-        }
-
-        $id = $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
-            ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
-            [ $clinic_id, $role_key ]
-        );
-
-        return (int) ( $id ?? 0 );
     }
 
     /**

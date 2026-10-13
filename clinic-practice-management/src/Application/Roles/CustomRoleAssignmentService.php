@@ -30,7 +30,7 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *  2. Effective assignment authority = AuthorizationService::can(actor, trusted
  *     Clinic, cpms_config). WordPress `manage_options`, the WP `administrator`
  *     role and any WP-global capability are never consulted.
- *  3. The TARGET must already hold an ACTIVE membership in that exact Clinic
+ *  3. The ordinary TARGET must already hold an ACTIVE membership in that exact Clinic
  *     (no membership is created here — this is an assignment for existing staff,
  *     never an onboarding path).
  *  4. Only an ACTIVE custom-role DEFINITION of the exact trusted Clinic is
@@ -58,7 +58,8 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *
  * There is deliberately NO WordPress-global role registration, NO WP role
  * mutation, NO membership creation, NO capability GRANT/DENY writing and no
- * delete/archive behaviour in this service.
+ * automatic reactivation or deletion in this service. Slice 4B adds only the
+ * explicit suspended-member reassignment path needed to release role references.
  */
 final class CustomRoleAssignmentService {
 
@@ -146,6 +147,34 @@ final class CustomRoleAssignmentService {
         int $target_wp_user_id,
         string $role_key
     ): array {
+        return $this->assign_membership( $actor_wp_user_id, $requested_clinic_id, $target_wp_user_id, $role_key, 'active' );
+    }
+
+    /**
+     * Explicit suspended-member reference resolution. Only role_key/updated_at
+     * change; suspension, overrides, restore metadata and identities do not.
+     *
+     * @return array{clinic_id:int,membership_id:int,wp_user_id:int,role_key:string,display_name:string|null,capabilities:list<string>,previous_role_key:string,changed:bool}
+     */
+    public function reassign_suspended(
+        int $actor_wp_user_id,
+        ?int $requested_clinic_id,
+        int $target_wp_user_id,
+        string $role_key
+    ): array {
+        return $this->assign_membership( $actor_wp_user_id, $requested_clinic_id, $target_wp_user_id, $role_key, 'suspended' );
+    }
+
+    /**
+     * @return array{clinic_id:int,membership_id:int,wp_user_id:int,role_key:string,display_name:string|null,capabilities:list<string>,previous_role_key:string,changed:bool}
+     */
+    private function assign_membership(
+        int $actor_wp_user_id,
+        ?int $requested_clinic_id,
+        int $target_wp_user_id,
+        string $role_key,
+        string $required_membership_status
+    ): array {
         $clinic_id = $this->require_management_authority( $actor_wp_user_id, $requested_clinic_id );
 
         // Built-in keys, numeric/malformed keys and unknown vocabulary are not
@@ -161,7 +190,7 @@ final class CustomRoleAssignmentService {
         // membership mutation and audit. Lifecycle transitions take the same
         // lock, so whichever request wins is revalidated by the one that waits.
         return $this->db->transactional(
-            function () use ( $actor_wp_user_id, $clinic_id, $target_wp_user_id, $role_key ): array {
+            function () use ( $actor_wp_user_id, $clinic_id, $target_wp_user_id, $role_key, $required_membership_status ): array {
                 $definition = $this->roles->definition_for_update( $clinic_id, $role_key );
                 if ( $definition === null ) {
                     throw CustomRoleAssignmentException::definition_not_found( $role_key );
@@ -170,35 +199,38 @@ final class CustomRoleAssignmentService {
                 // Revalidate trusted Clinic management authority after any wait
                 // on the definition row, then check object ownership for both
                 // the persisted definition and target membership.
-                $this->require_management_authority( $actor_wp_user_id, $clinic_id );
+                $this->require_management_authority( $actor_wp_user_id, $clinic_id, true );
                 $this->authorization->authorizeForObject(
                     $actor_wp_user_id,
                     $clinic_id,
                     RolesAndCapabilities::CONFIG,
-                    (int) $definition['clinic_id']
+                    (int) $definition['clinic_id'],
+                    true
                 );
 
                 if ( (string) $definition['status'] !== CustomRoleRepository::STATUS_ACTIVE ) {
                     throw CustomRoleAssignmentException::definition_not_active( $role_key );
                 }
 
-                $target        = $this->memberships->find_active( $clinic_id, $target_wp_user_id );
+                $target        = $this->memberships->find( $clinic_id, $target_wp_user_id, true );
                 $membership_id = $target === null ? 0 : (int) ( $target['id'] ?? 0 );
-                if ( $target === null || $membership_id <= 0 || (int) ( $target['clinic_id'] ?? 0 ) !== $clinic_id ) {
+                if ( $target === null || $membership_id <= 0 || (int) ( $target['clinic_id'] ?? 0 ) !== $clinic_id
+                    || (string) ( $target['status'] ?? '' ) !== $required_membership_status ) {
                     throw CustomRoleAssignmentException::target_membership_required();
                 }
                 $this->authorization->authorizeForObject(
                     $actor_wp_user_id,
                     $clinic_id,
                     RolesAndCapabilities::CONFIG,
-                    (int) $target['clinic_id']
+                    (int) $target['clinic_id'],
+                    true
                 );
 
                 // Bounded delegation is checked while the definition remains
                 // locked. A changed manager capability set cannot race a role
                 // status transition into an unauthorized membership write.
                 $capabilities  = $definition['capabilities'];
-                $not_delegable = $this->not_delegable( $actor_wp_user_id, $clinic_id, $capabilities );
+                $not_delegable = $this->not_delegable( $actor_wp_user_id, $clinic_id, $capabilities, true );
                 if ( $not_delegable !== [] ) {
                     throw CustomRoleAssignmentException::capability_not_delegable( $not_delegable );
                 }
@@ -239,14 +271,15 @@ final class CustomRoleAssignmentService {
                         'clinic_id'         => $clinic_id,
                         'wp_user_id'        => $target_wp_user_id,
                         'role_key'          => $previous_role_key,
-                        'membership_status' => 'active',
+                        'membership_status' => $required_membership_status,
                     ],
                     [
-                        'clinic_id'    => $clinic_id,
-                        'wp_user_id'   => $target_wp_user_id,
-                        'role_key'     => $role_key,
-                        'capabilities' => $capabilities,
-                        'scope'        => 'clinic_local_membership',
+                        'clinic_id'         => $clinic_id,
+                        'wp_user_id'        => $target_wp_user_id,
+                        'role_key'          => $role_key,
+                        'capabilities'      => $capabilities,
+                        'scope'             => 'clinic_local_membership',
+                        'membership_status' => $required_membership_status,
                     ],
                     [ 'clinic_id' => $clinic_id, 'wp_global_role_modified' => false ],
                     $clinic_id
@@ -267,10 +300,10 @@ final class CustomRoleAssignmentService {
      *
      * @return list<string>
      */
-    private function not_delegable( int $actor_wp_user_id, int $clinic_id, array $capabilities ): array {
+    private function not_delegable( int $actor_wp_user_id, int $clinic_id, array $capabilities, bool $for_update = false ): array {
         $not_delegable = [];
         foreach ( $capabilities as $capability ) {
-            if ( ! $this->authorization->can( $actor_wp_user_id, $clinic_id, $capability ) ) {
+            if ( ! $this->authorization->can( $actor_wp_user_id, $clinic_id, $capability, $for_update ) ) {
                 $not_delegable[] = $capability;
             }
         }
@@ -284,16 +317,16 @@ final class CustomRoleAssignmentService {
      * @throws ScopeRequiredException unauthenticated / no durable membership / unknown Clinic / inactive Organization
      * @throws \ClinicCore\Application\Authorization\AuthorizationException suspended membership or denied permission
      */
-    private function require_management_authority( int $actor_wp_user_id, ?int $requested_clinic_id ): int {
+    private function require_management_authority( int $actor_wp_user_id, ?int $requested_clinic_id, bool $for_update = false ): int {
         if ( $actor_wp_user_id <= 0 ) {
             throw new ScopeRequiredException( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'reason' => 'unauthenticated' ], 403 );
         }
 
         // The selector is validated against durable persistence; it is never
         // trusted by itself, and a forged value cannot conjure a membership.
-        $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id );
+        $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id, null, $for_update );
 
-        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 
         return $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
     }

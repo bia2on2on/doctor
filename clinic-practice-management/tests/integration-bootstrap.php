@@ -35,6 +35,20 @@ tests_add_filter('muplugins_loaded', static function (): void {
 require $_tests_dir . '/includes/bootstrap.php';
 
 /*
+ * ── دفترِ تشخیصیِ خطاهای SQL (فقط تست؛ هیچ اثرِ محصولی) ──────────────────────
+ *
+ * مسیرِ محصول متن/کدِ خطای واقعیِ MySQL را دور می‌ریزد: `CpmsDb` بیرون از
+ * MigrationRunner در حالت غیر-strict است و `CustomRoleRepository` هر INSERT
+ * ناموفق را با پیامِ عمومیِ «... already defined ...» گزارش می‌کند. وردپرس خودش
+ * منبعِ کاملِ خطا را در `$GLOBALS['EZSQL_ERROR']` نگه می‌دارد (در `print_error()`
+ * پیش از بررسی `suppress_errors` اضافه می‌شود)، پس با یک dump در shutdown می‌توان
+ * خطای واقعی را در لاگ CI دید. این کلاس هیچ انتظار تست، SQL، اسکیما، مجوزدهی یا
+ * رفتار محصولی را تغییر نمی‌دهد؛ فقط می‌خواند و به STDERR می‌نویسد.
+ */
+require_once __DIR__ . '/Support/WpSqlFailureLedger.php';
+\ClinicCore\Tests\Support\WpSqlFailureLedger::register();
+
+/*
  * جداول افزونه را یک‌بار «واقعی» می‌سازیم — بعد از bootstrap وردپرس.
  *
  * دلیل: WP Test Suite داخل هر تست، فیلترهایی روی query فعال می‌کند که

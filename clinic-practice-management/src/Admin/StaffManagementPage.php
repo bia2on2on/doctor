@@ -39,10 +39,11 @@ final class StaffManagementPage
 {
     public const PAGE_SLUG = 'cpms-staff';
 
-    private const NONCE_ACTION   = 'cpms_staff_save';
-    private const NONCE_ASSIGN   = 'cpms_staff_assign_custom_role';
-    private const NOTICE_KEY     = 'cpms_staff_notice';
-    private const META_PREV_ROLE = 'cpms_previous_role';
+    private const NONCE_ACTION             = 'cpms_staff_save';
+    private const NONCE_ASSIGN             = 'cpms_staff_assign_custom_role';
+    private const NONCE_REASSIGN_SUSPENDED = 'cpms_staff_reassign_suspended_custom_role';
+    private const NOTICE_KEY               = 'cpms_staff_notice';
+    private const META_PREV_ROLE           = 'cpms_previous_role';
 
     /** نقش‌های قابل‌مدیریت (قابل‌انتساب/ویرایش/فعال/غیرفعال). */
     private const MANAGEABLE_ROLES = [
@@ -60,6 +61,7 @@ final class StaffManagementPage
         add_action('admin_post_cpms_staff_toggle', [self::class, 'toggle']);
         add_action('admin_post_cpms_staff_password', [self::class, 'sendPasswordReset']);
         add_action( 'admin_post_cpms_staff_assign_custom_role', [self::class, 'assign_custom_role'] );
+        add_action( 'admin_post_cpms_staff_reassign_suspended_custom_role', [self::class, 'reassign_suspended_custom_role'] );
     }
 
     public static function menu(): void
@@ -267,8 +269,39 @@ final class StaffManagementPage
                     <p class="submit"><button type="submit" class="button button-primary">انتساب نقش سفارشی</button></p>
                 </form>
             <?php endif; ?>
+            <?php self::render_suspended_reassignment( $clinic_id, $assignable ); ?>
         </div>
         <?php
+    }
+
+    /**
+     * @param array{definitions:list<array{role_key:string,display_name:string|null,capabilities:list<string>,empty:bool}>,members:list<array{id:int,label:string}>,suspended_members:list<array{id:int,label:string}>} $options
+     */
+    private static function render_suspended_reassignment( int $clinic_id, array $options ): void {
+        if ( $options['definitions'] === [] || $options['suspended_members'] === [] ) {
+            return;
+        }
+        echo '<h2>' . esc_html__( 'تغییر نقش عضویت معلق (بدون فعال‌سازی)', 'cpms' ) . '</h2>';
+        echo '<p class="description">' . esc_html__( 'برای رفع ارجاع نقش پیش از بایگانی: فقط نقش عضویت همین Clinic عوض می‌شود؛ تعلیق، GRANT/DENY، اطلاعات بازگردانی، نقش WordPress، هویت حرفه‌ای و محل‌های تخصیص‌یافته حفظ می‌شوند.', 'cpms' ) . '</p>';
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '">';
+        wp_nonce_field( self::NONCE_REASSIGN_SUSPENDED );
+        echo '<input type="hidden" name="action" value="cpms_staff_reassign_suspended_custom_role">';
+        echo '<input type="hidden" name="clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+        echo '<label for="cpms-suspended-target">' . esc_html__( 'عضویت معلق', 'cpms' ) . '</label> ';
+        echo '<select id="cpms-suspended-target" name="target_user_id" required>';
+        foreach ( $options['suspended_members'] as $member ) {
+            echo '<option value="' . esc_attr( (string) $member['id'] ) . '">' . esc_html( $member['label'] ) . '</option>';
+        }
+        echo '</select> ';
+        echo '<label for="cpms-suspended-role">' . esc_html__( 'نقش سفارشی فعال', 'cpms' ) . '</label> ';
+        echo '<select id="cpms-suspended-role" name="custom_role_key" required>';
+        foreach ( $options['definitions'] as $definition ) {
+            $label = $definition['display_name'] ?? $definition['role_key'];
+            echo '<option value="' . esc_attr( $definition['role_key'] ) . '">' . esc_html( $label ) . '</option>';
+        }
+        echo '</select> ';
+        echo '<button type="submit" class="button">' . esc_html__( 'تغییر نقش و حفظ تعلیق', 'cpms' ) . '</button>';
+        echo '</form>';
     }
 
     // ================= Save / actions =================
@@ -724,16 +757,24 @@ final class StaffManagementPage
      * نقش WordPress را تغییر نمی‌دهد.
      */
     public static function assign_custom_role(): void {
+        self::handle_custom_role_assignment( false );
+    }
+
+    public static function reassign_suspended_custom_role(): void {
+        self::handle_custom_role_assignment( true );
+    }
+
+    private static function handle_custom_role_assignment( bool $suspended_only ): void {
         if ( ! is_user_logged_in() ) {
             wp_die( 'دسترسی ندارید', 403 );
         }
-        check_admin_referer( self::NONCE_ASSIGN );
+        check_admin_referer( $suspended_only ? self::NONCE_REASSIGN_SUSPENDED : self::NONCE_ASSIGN );
 
         $target_user_id = isset( $_POST['target_user_id'] ) ? absint( $_POST['target_user_id'] ) : 0;
         $clinic_id      = array_key_exists( 'clinic_id', $_POST ) ? absint( $_POST['clinic_id'] ) : null;
         $role_key       = isset( $_POST['custom_role_key'] ) ? sanitize_key( wp_unslash( $_POST['custom_role_key'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 
-        $result = self::assign_custom_role_to( $target_user_id, (string) $role_key, (int) get_current_user_id(), $clinic_id );
+        $result = self::write_custom_role_assignment( $target_user_id, (string) $role_key, (int) get_current_user_id(), $clinic_id, $suspended_only );
         set_transient( self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : $result['notice'], 60 );
         wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
         exit;
@@ -745,12 +786,25 @@ final class StaffManagementPage
      * @return array{error:string, notice:string, clinic_id:int}
      */
     public static function assign_custom_role_to( int $target_user_id, string $role_key, int $updated_by, ?int $clinic_id = null ): array {
+        return self::write_custom_role_assignment( $target_user_id, $role_key, $updated_by, $clinic_id, false );
+    }
+
+    /** @return array{error:string,notice:string,clinic_id:int} */
+    public static function reassign_suspended_custom_role_to( int $target_user_id, string $role_key, int $updated_by, ?int $clinic_id = null ): array {
+        return self::write_custom_role_assignment( $target_user_id, $role_key, $updated_by, $clinic_id, true );
+    }
+
+    /** @return array{error:string,notice:string,clinic_id:int} */
+    private static function write_custom_role_assignment( int $target_user_id, string $role_key, int $updated_by, ?int $clinic_id, bool $suspended_only ): array {
         if ( $updated_by <= 0 || $target_user_id <= 0 ) {
             return ['error' => 'درخواست انتساب نامعتبر است.', 'notice' => '', 'clinic_id' => 0];
         }
 
         try {
-            $assigned = App::custom_role_assignment_service()->assign( $updated_by, $clinic_id, $target_user_id, $role_key );
+            $service  = App::custom_role_assignment_service();
+            $assigned = $suspended_only
+                ? $service->reassign_suspended( $updated_by, $clinic_id, $target_user_id, $role_key )
+                : $service->assign( $updated_by, $clinic_id, $target_user_id, $role_key );
         } catch ( ScopeRequiredException | AuthorizationException $e ) {
             return ['error' => 'انتساب نقش سفارشی برای این Clinic مجاز نیست.', 'notice' => '', 'clinic_id' => 0];
         } catch ( CustomRoleAssignmentException $e ) {
@@ -765,9 +819,11 @@ final class StaffManagementPage
 
         return [
             'error'     => '',
-            'notice'    => $assigned['changed']
+            'notice'    => $suspended_only && $assigned['changed']
+                ? __( 'نقش عضویت معلق تغییر کرد؛ تعلیق و اطلاعات بازگردانی حفظ شدند و هیچ فعال‌سازی انجام نشد.', 'cpms' )
+                : ( $assigned['changed']
                 ? 'نقش سفارشی «' . $label . '» به عضویت این کارمند در همین Clinic منتسب شد؛ نقش WordPress تغییر نکرد.'
-                : 'این کارمند از قبل همین نقش سفارشی را داشت؛ هیچ تغییری ثبت نشد.',
+                : 'این کارمند از قبل همین نقش سفارشی را داشت؛ هیچ تغییری ثبت نشد.' ),
             'clinic_id' => (int) $assigned['clinic_id'],
         ];
     }
@@ -776,7 +832,7 @@ final class StaffManagementPage
     private static function assignment_error_message( CustomRoleAssignmentException $e ): string {
         return match ( $e->reason_code() ) {
             CustomRoleAssignmentException::CODE_INVALID_ROLE_KEY => 'فقط نقش‌های سفارشیِ همین Clinic قابل انتساب‌اند (نقش داخلی/ناشناخته از این مسیر رد می‌شود).',
-            CustomRoleAssignmentException::CODE_TARGET_MEMBERSHIP_REQUIRED => 'کارمند انتخاب‌شده عضویت فعال در همین Clinic ندارد.',
+            CustomRoleAssignmentException::CODE_TARGET_MEMBERSHIP_REQUIRED => 'عضویت کارمند در همین Clinic با وضعیت لازم برای این عملیات مطابقت ندارد.',
             CustomRoleAssignmentException::CODE_DEFINITION_NOT_ACTIVE => 'این نقش سفارشی در این Clinic فعال نیست و قابل انتساب نیست.',
             CustomRoleAssignmentException::CODE_CAPABILITY_NOT_DELEGABLE => 'این نقش سفارشی مجوزی بیرون از اختیار مؤثر شما دارد و قابل انتساب نیست.',
             CustomRoleAssignmentException::CODE_MEMBERSHIP_UPDATE_FAILED => 'ثبت عضویت انجام نشد؛ هیچ انتساب نیمه‌کاری باقی نمانده است.',
@@ -790,10 +846,10 @@ final class StaffManagementPage
      *
      * @param array<int, array<string,mixed>> $rows
      *
-     * @return array{definitions:list<array{role_key:string, display_name:string|null, capabilities:list<string>, empty:bool}>, members:list<array{id:int, label:string}>}
+     * @return array{definitions:list<array{role_key:string, display_name:string|null, capabilities:list<string>, empty:bool}>, members:list<array{id:int, label:string}>, suspended_members:list<array{id:int, label:string}>}
      */
     private static function assignment_options( int $clinic_id, array $rows ): array {
-        $empty = ['definitions' => [], 'members' => []];
+        $empty = ['definitions' => [], 'members' => [], 'suspended_members' => []];
         if ( $clinic_id <= 0 || $rows === [] ) {
             return $empty;
         }
@@ -805,20 +861,27 @@ final class StaffManagementPage
             return $empty;
         }
 
-        $members = [];
+        $members           = [];
+        $suspended_members = [];
         foreach ( $rows as $row ) {
-            if ( ( $row['active'] ?? false ) !== true ) {
+            if ( ( $row['active'] ?? false ) !== true && ( $row['membership_status'] ?? '' ) !== 'suspended' ) {
                 continue;
             }
-            $members[] = [
+            $member = [
                 'id'    => (int) $row['id'],
                 'label' => (string) $row['display_name'] . ' (' . (string) $row['login'] . ') — ' . (string) $row['role_label'],
             ];
+            if ( ( $row['active'] ?? false ) === true ) {
+                $members[] = $member;
+            } else {
+                $suspended_members[] = $member;
+            }
         }
 
         return [
-            'definitions' => $assignable['definitions'],
-            'members'     => $members,
+            'definitions'       => $assignable['definitions'],
+            'members'           => $members,
+            'suspended_members' => $suspended_members,
         ];
     }
 
@@ -1018,16 +1081,17 @@ final class StaffManagementPage
             }
 
             $rows[] = [
-                'id' => $id,
-                'login' => (string) $u->user_login,
-                'email' => (string) $u->user_email,
-                'display_name' => (string) $u->display_name,
-                'role'            => $role,
-                'role_label'      => $label,
-                'active'          => $membership_status === 'active',
-                'membership_role' => $membership_role,
-                'custom_role'     => $custom,
-                'clinician'       => $clinician_by_user[ $id ] ?? '',
+                'id'                => $id,
+                'login'             => (string) $u->user_login,
+                'email'             => (string) $u->user_email,
+                'display_name'      => (string) $u->display_name,
+                'role'              => $role,
+                'role_label'        => $label,
+                'active'            => $membership_status === 'active',
+                'membership_role'   => $membership_role,
+                'membership_status' => $membership_status,
+                'custom_role'       => $custom,
+                'clinician'         => $clinician_by_user[ $id ] ?? '',
             ];
         }
 

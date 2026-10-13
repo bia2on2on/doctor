@@ -1264,6 +1264,10 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
 
     private function insertPatient(int $clinicId, string $mrn, string $now): int {
         global $wpdb;
+
+        // Bounded diagnostics: snapshot before the insert (property reads only, no query).
+        $diagPre = \ClinicCore\Tests\Support\ConnectionDiagnostics::wpdbState($wpdb);
+
         $ok = $wpdb->insert(
             $wpdb->prefix . 'cpms_patients',
             [
@@ -1277,6 +1281,35 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
             ],
             ['%d', '%s', '%s', '%s', '%s', '%s', '%s']
         );
+        $diagId    = (int) $wpdb->insert_id;
+        $diagErrno = $wpdb->dbh instanceof \mysqli ? (int) mysqli_errno($wpdb->dbh) : -1;
+        if (! $ok || $diagId <= 0 || $diagErrno !== 0) {
+            \ClinicCore\Tests\Support\ConnectionDiagnostics::emit([
+                'test' => 'Phase7Fr55NoShow::testConcurrentCheckInAndNoShow',
+                'phase' => 'anomaly',
+                'insert_returned_truthy' => (bool) $ok,
+                'pre' => $diagPre,
+                'post' => \ClinicCore\Tests\Support\ConnectionDiagnostics::wpdbState($wpdb),
+                'filters' => \ClinicCore\Tests\Support\ConnectionDiagnostics::queryFilters(),
+            ]);
+            $diagConn = \ClinicCore\Tests\Support\ConnectionDiagnostics::independent();
+            if ($diagConn instanceof \mysqli) {
+                \ClinicCore\Tests\Support\ConnectionDiagnostics::emit([
+                    'test' => 'Phase7Fr55NoShow::testConcurrentCheckInAndNoShow',
+                    'phase' => 'anomaly_independent',
+                    'facts' => \ClinicCore\Tests\Support\ConnectionDiagnostics::tableFacts($diagConn, 'cpms_patients', 'id', $diagId),
+                    'identity' => \ClinicCore\Tests\Support\ConnectionDiagnostics::identityFacts(
+                        $diagConn,
+                        $wpdb->prefix . 'cpms_patients',
+                        'clinic_id',
+                        $clinicId,
+                        $mrn,
+                        'id'
+                    ),
+                ]);
+                $diagConn->close();
+            }
+        }
         self::assertTrue((bool) $ok, 'patient insert failed: ' . $wpdb->last_error); // phpcs:ignore WordPress.DB.DirectDatabaseQuery
         $id = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $id, 'patient id must be positive');

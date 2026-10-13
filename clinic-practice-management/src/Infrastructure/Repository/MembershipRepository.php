@@ -5,6 +5,7 @@ declare( strict_types=1 );
 namespace ClinicCore\Infrastructure\Repository;
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Auth\CustomRolePolicy;
 
 /**
  * Repository عضویت‌ها (Phase 2 — C4 primitives / ADR-0031 / P2-D1).
@@ -31,23 +32,35 @@ final class MembershipRepository {
      *
      * @return array<string, mixed>|null
      */
-    public function find( int $clinic_id, int $wp_user_id ): ?array {
-        return $this->db->fetchRow(
+    public function find( int $clinic_id, int $wp_user_id, bool $for_update = false ): ?array {
+        $read = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
+        $row  = $this->db->$read(
             'SELECT * FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
             ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1',
             [ $clinic_id, $wp_user_id ]
         );
+        if ( $for_update ) {
+            $this->require_successful_read();
+        }
+
+        return $row;
     }
 
     /**
      * @return array<string, mixed>|null
      */
-    public function find_by_id( int $membership_id ): ?array {
-        return $this->db->fetchRow(
+    public function find_by_id( int $membership_id, bool $for_update = false ): ?array {
+        $read = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
+        $row  = $this->db->$read(
             'SELECT * FROM ' . $this->db->table( 'cpms_clinic_memberships' ) .
             ' WHERE id = %d LIMIT 1',
             [ $membership_id ]
         );
+        if ( $for_update ) {
+            $this->require_successful_read();
+        }
+
+        return $row;
     }
 
     /**
@@ -55,12 +68,18 @@ final class MembershipRepository {
      *
      * @return array<string, mixed>|null
      */
-    public function find_active( int $clinic_id, int $wp_user_id ): ?array {
-        return $this->db->fetchRow(
+    public function find_active( int $clinic_id, int $wp_user_id, bool $for_update = false ): ?array {
+        $read = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
+        $row  = $this->db->$read(
             'SELECT m.* FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m' .
             ' WHERE m.clinic_id = %d AND m.wp_user_id = %d AND m.status = \'active\' LIMIT 1',
             [ $clinic_id, $wp_user_id ]
         );
+        if ( $for_update ) {
+            $this->require_successful_read();
+        }
+
+        return $row;
     }
 
     /**
@@ -118,7 +137,18 @@ final class MembershipRepository {
      * @param array<string, mixed> $fields
      */
     public function insert( array $fields ): bool {
-        return $this->db->insert( 'cpms_clinic_memberships', $fields );
+        $role_key = (string) ( $fields['role_key'] ?? '' );
+        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            return $this->db->insert( 'cpms_clinic_memberships', $fields );
+        }
+
+        return $this->db->transactional(
+            function () use ( $fields, $role_key ): bool {
+                $this->lock_assignable_definition( (int) ( $fields['clinic_id'] ?? 0 ), $role_key );
+
+                return $this->db->insert( 'cpms_clinic_memberships', $fields );
+            }
+        );
     }
 
     /**
@@ -126,7 +156,55 @@ final class MembershipRepository {
      * @param array<string, mixed> $where
      */
     public function update( array $data, array $where ): int {
-        return $this->db->update( 'cpms_clinic_memberships', $data, $where );
+        if ( ! array_key_exists( 'role_key', $data ) ) {
+            return $this->db->update( 'cpms_clinic_memberships', $data, $where );
+        }
+        // A role write must address one durable membership, never a bulk selector.
+        $membership_id = (int) ( $where['id'] ?? 0 );
+        if ( $membership_id <= 0 ) {
+            throw new \InvalidArgumentException( 'role assignment requires an exact membership id' );
+        }
+        $membership = $this->find_by_id( $membership_id );
+        if ( $membership === null ) {
+            return 0;
+        }
+        $clinic_id = (int) $membership['clinic_id'];
+        $role_key  = (string) $data['role_key'];
+
+        return $this->db->transactional(
+            function () use ( $data, $where, $membership_id, $clinic_id, $role_key ): int {
+                // Consistent business lock order: destination definition first,
+                // then exact membership. Built-in destinations need no definition.
+                $this->lock_assignable_definition( $clinic_id, $role_key );
+                $current = $this->find_by_id( $membership_id, true );
+                if ( $current === null || (int) $current['clinic_id'] !== $clinic_id ) {
+                    return 0;
+                }
+
+                return $this->db->update( 'cpms_clinic_memberships', $data, $where );
+            }
+        );
+    }
+
+    /**
+     * Persistence backstop, not authorization. Legacy undefined role labels
+     * remain inert; a persisted definition is assignable ONLY when ACTIVE.
+     * All public services still establish Clinic authority independently.
+     */
+    private function lock_assignable_definition( int $clinic_id, string $role_key ): void {
+        if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            return;
+        }
+        $definition = ( new CustomRoleRepository( $this->db ) )->definition_for_update( $clinic_id, $role_key );
+        if ( $definition !== null && (string) $definition['status'] !== CustomRoleRepository::STATUS_ACTIVE ) {
+            throw new \InvalidArgumentException( 'inactive, archived or unknown custom role cannot be assigned' );
+        }
+    }
+
+    private function require_successful_read(): void {
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'membership locking read failed' );
+        }
     }
 
     // ---------------- Capability primitives (metadata فاز ۳) ----------------
@@ -134,12 +212,17 @@ final class MembershipRepository {
     /**
      * @return list<array<string, mixed>>
      */
-    public function capabilities_for( int $membership_id ): array {
-        $rows = $this->db->fetchAll(
+    public function capabilities_for( int $membership_id, bool $for_update = false ): array {
+        $read = $for_update ? 'fetchAllForUpdate' : 'fetchAll';
+        $rows = $this->db->$read(
             'SELECT capability, effect FROM ' . $this->db->table( 'cpms_membership_capabilities' ) .
             ' WHERE membership_id = %d ORDER BY capability',
             [ $membership_id ]
         );
+
+        if ( $for_update ) {
+            $this->require_successful_read();
+        }
 
         return is_array( $rows ) ? $rows : [];
     }

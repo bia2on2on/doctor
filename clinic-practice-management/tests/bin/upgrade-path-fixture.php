@@ -19,7 +19,7 @@ $baselinePath = getenv('UPGRADE_FIXTURE_PATH');
 // Schema reached by the PINNED PREVIOUS source at seed time.
 $expectedPreviousVersion = '2026_09_26_0023';
 // Schema the CANDIDATE artifact must reach after migrating forward.
-$expectedCandidateVersion = '2026_10_11_0026';
+$expectedCandidateVersion = '2026_10_13_0027';
 /*
  * Reviewed additive schema evolution of the CANDIDATE over the pinned previous
  * release — the only shared-table drift this upgrade may introduce. Migration

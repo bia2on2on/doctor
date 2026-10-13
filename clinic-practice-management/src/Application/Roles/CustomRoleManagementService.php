@@ -46,9 +46,9 @@ use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
  *     explicit Clinic, actor, role key, before/after change set and version.
  *     There is no PHI in a custom-role definition or in the audit payload.
  *
- * Slice 4A adds reversible active/inactive status transitions. There is still
- * NO delete, NO archive, NO role assignment and NO WordPress-global role
- * registration in this management surface.
+ * Slice 4B adds terminal archival alongside reversible active/inactive changes.
+ * Definitions and keys survive. No deletion, automatic reassignment, clinical
+ * write or WordPress-global role registration is performed.
  */
 final class CustomRoleManagementService {
 
@@ -57,6 +57,7 @@ final class CustomRoleManagementService {
     public const AUDIT_CAPABILITIES_CHANGED = 'CUSTOM_ROLE_CAPABILITIES_CHANGED';
     public const AUDIT_DEACTIVATED          = 'CUSTOM_ROLE_DEACTIVATED';
     public const AUDIT_REACTIVATED          = 'CUSTOM_ROLE_REACTIVATED';
+    public const AUDIT_ARCHIVED             = 'CUSTOM_ROLE_ARCHIVED';
 
     public const RESOURCE_TYPE = 'custom_role_definition';
 
@@ -201,16 +202,16 @@ final class CustomRoleManagementService {
      *
      * @return array{clinic_id:int, id:int, role_key:string, display_name:string, version:int, capabilities:list<string>}
      */
-    public function rename( int $actor_wp_user_id, ?int $requested_clinic_id, string $role_key, string $display_name ): array {
+    public function rename( int $actor_wp_user_id, ?int $requested_clinic_id, string $role_key, string $display_name, ?int $expected_version = null ): array {
         $clinic_id = $this->require_management_authority( $actor_wp_user_id, $requested_clinic_id );
-        $existing  = $this->require_owned_definition( $actor_wp_user_id, $clinic_id, $role_key );
 
         $clean_display_name = $this->require_display_name( $display_name );
 
         // Atomicidade (F2-1): نام نمایشی و رویداد Audit اجباری آن در یک مرز.
         return $this->db->transactional(
-            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_display_name, $existing ): array {
-                $updated = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
+            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_display_name, $expected_version ): array {
+                $existing = $this->require_mutable_definition_for_update( $actor_wp_user_id, $clinic_id, $role_key, $expected_version );
+                $updated  = $this->roles->set_display_name( $clinic_id, $role_key, $clean_display_name );
                 if ( ! $updated ) {
                     throw CustomRoleManagementException::not_found( $role_key );
                 }
@@ -258,17 +259,19 @@ final class CustomRoleManagementService {
         int $actor_wp_user_id,
         ?int $requested_clinic_id,
         string $role_key,
-        array $capabilities
+        array $capabilities,
+        ?int $expected_version = null
     ): array {
         $clinic_id = $this->require_management_authority( $actor_wp_user_id, $requested_clinic_id );
-        $existing  = $this->require_owned_definition( $actor_wp_user_id, $clinic_id, $role_key );
 
         $clean_capabilities = $this->require_delegable_capabilities( $actor_wp_user_id, $clinic_id, $capabilities );
 
         // Atomicidade (F2-1): جایگزینی capability و رویداد Audit اجباری آن در
         // یک مرز — شکست Audit، مجموعهٔ قبلی و version را دست‌نخورده نگه می‌دارد.
         return $this->db->transactional(
-            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_capabilities, $existing ): array {
+            function () use ( $actor_wp_user_id, $clinic_id, $role_key, $clean_capabilities, $expected_version ): array {
+                $existing = $this->require_mutable_definition_for_update( $actor_wp_user_id, $clinic_id, $role_key, $expected_version );
+                $this->require_delegable_capabilities( $actor_wp_user_id, $clinic_id, $clean_capabilities, true );
                 $replaced = $this->roles->replace_capabilities( $clinic_id, $role_key, $clean_capabilities );
                 if ( ! $replaced ) {
                     throw CustomRoleManagementException::not_found( $role_key );
@@ -351,6 +354,28 @@ final class CustomRoleManagementService {
     }
 
     /**
+     * Terminal archival; zero references of any membership status are required.
+     * A current-version repeat is a no-op, never another mutation or audit.
+     *
+     * @return array{clinic_id:int,id:int,role_key:string,status:string,version:int,changed:bool}
+     */
+    public function archive(
+        int $actor_wp_user_id,
+        ?int $requested_clinic_id,
+        string $role_key,
+        int $expected_version
+    ): array {
+        return $this->transition_status(
+            $actor_wp_user_id,
+            $requested_clinic_id,
+            $role_key,
+            $expected_version,
+            CustomRoleRepository::STATUS_ARCHIVED,
+            self::AUDIT_ARCHIVED
+        );
+    }
+
+    /**
      * Serialize lifecycle changes on the exact definition row. The versioned
      * status write and required append-only audit event share one transaction;
      * callers never delete a definition or its capability/assignment metadata.
@@ -381,12 +406,13 @@ final class CustomRoleManagementService {
                 // transaction. Repeat it after acquiring the row lock so a
                 // manager whose membership/authority changed while waiting is
                 // not allowed to mutate the definition.
-                $this->require_management_authority( $actor_wp_user_id, $clinic_id );
+                $this->require_management_authority( $actor_wp_user_id, $clinic_id, true );
                 $this->authorization->authorizeForObject(
                     $actor_wp_user_id,
                     $clinic_id,
                     RolesAndCapabilities::CONFIG,
-                    (int) $existing['clinic_id']
+                    (int) $existing['clinic_id'],
+                    true
                 );
 
                 $current_version = (int) $existing['version'];
@@ -406,13 +432,26 @@ final class CustomRoleManagementService {
                     return $result;
                 }
 
+                $current_status = (string) $existing['status'];
+                if ( $current_status === CustomRoleRepository::STATUS_ARCHIVED ) {
+                    throw CustomRoleManagementException::terminal_state();
+                }
+                if ( ! CustomRoleRepository::is_mutable_status( $current_status ) ) {
+                    throw CustomRoleManagementException::invalid_state();
+                }
+                if ( $new_status === CustomRoleRepository::STATUS_ARCHIVED
+                    && $this->roles->has_membership_references_for_update( $clinic_id, $role_key ) ) {
+                    throw CustomRoleManagementException::membership_references();
+                }
+
                 if ( $new_status === CustomRoleRepository::STATUS_ACTIVE ) {
                     // Restoring role-derived authority is a fresh delegation:
                     // the manager must still hold each stored capability now.
                     $this->require_delegable_capabilities(
                         $actor_wp_user_id,
                         $clinic_id,
-                        $existing['capabilities']
+                        $existing['capabilities'],
+                        true
                     );
                 }
 
@@ -470,16 +509,16 @@ final class CustomRoleManagementService {
      * @throws ScopeRequiredException unauthenticated / no durable membership / unknown Clinic / inactive Organization
      * @throws \ClinicCore\Application\Authorization\AuthorizationException suspended membership or denied permission
      */
-    private function require_management_authority( int $actor_wp_user_id, ?int $requested_clinic_id ): int {
+    private function require_management_authority( int $actor_wp_user_id, ?int $requested_clinic_id, bool $for_update = false ): int {
         if ( $actor_wp_user_id <= 0 ) {
             throw new ScopeRequiredException( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'reason' => 'unauthenticated' ], 403 );
         }
 
         // The selector is validated against durable persistence; it is never
         // trusted by itself, and a forged value cannot conjure a membership.
-        $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id );
+        $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id, null, $for_update );
 
-        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+        $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 
         return $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
     }
@@ -493,12 +532,12 @@ final class CustomRoleManagementService {
      *
      * @return array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>}
      */
-    private function require_owned_definition( int $actor_wp_user_id, int $clinic_id, string $role_key ): array {
+    private function require_mutable_definition_for_update( int $actor_wp_user_id, int $clinic_id, string $role_key, ?int $expected_version ): array {
         if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             throw CustomRoleManagementException::invalid_role_key();
         }
 
-        $definition = $this->roles->definition_for( $clinic_id, $role_key );
+        $definition = $this->roles->definition_for_update( $clinic_id, $role_key );
         if ( $definition === null ) {
             // Either the key does not exist at all, or it belongs to another
             // Clinic — both are non-addressable here (no cross-Clinic lookup).
@@ -511,8 +550,19 @@ final class CustomRoleManagementService {
             $actor_wp_user_id,
             $clinic_id,
             RolesAndCapabilities::CONFIG,
-            (int) $definition['clinic_id']
+            (int) $definition['clinic_id'],
+            true
         );
+        $this->require_management_authority( $actor_wp_user_id, $clinic_id, true );
+        if ( $expected_version !== null && ( $expected_version <= 0 || $expected_version !== (int) $definition['version'] ) ) {
+            throw CustomRoleManagementException::stale_version();
+        }
+        if ( (string) $definition['status'] === CustomRoleRepository::STATUS_ARCHIVED ) {
+            throw CustomRoleManagementException::terminal_state();
+        }
+        if ( ! CustomRoleRepository::is_mutable_status( (string) $definition['status'] ) ) {
+            throw CustomRoleManagementException::invalid_state();
+        }
 
         return $definition;
     }
@@ -542,7 +592,7 @@ final class CustomRoleManagementService {
      *
      * @return list<string> unique, sorted, validated
      */
-    private function require_delegable_capabilities( int $actor_wp_user_id, int $clinic_id, array $capabilities ): array {
+    private function require_delegable_capabilities( int $actor_wp_user_id, int $clinic_id, array $capabilities, bool $for_update = false ): array {
         $not_allowed   = [];
         $not_delegable = [];
         $clean         = [];
@@ -553,7 +603,7 @@ final class CustomRoleManagementService {
 
                 continue;
             }
-            if ( ! $this->authorization->can( $actor_wp_user_id, $clinic_id, $capability ) ) {
+            if ( ! $this->authorization->can( $actor_wp_user_id, $clinic_id, $capability, $for_update ) ) {
                 $not_delegable[] = $capability;
 
                 continue;
