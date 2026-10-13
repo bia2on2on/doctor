@@ -532,7 +532,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
             foreach ($faultInjection as $faultMarker) {
                 self::assertStringNotContainsString(
                     $faultMarker,
-                    $evidence . $queryLine,
+                    $evidence . $childQuery . $outcome,
                     'controlled fault identifiers must not leak into the protocol or the evidence record'
                 );
             }
