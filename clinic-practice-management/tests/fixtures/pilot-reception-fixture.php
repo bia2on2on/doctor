@@ -486,7 +486,7 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
 // seeds booked appointments; both transitions themselves run through the real
 // Reception UI/service, never by changing the source status in the fixture.
 $upcomingProof = [];
-$upcomingDestToday = ReceptionFixtureClockPolicy::upcomingSameDayDestination($nowTehran);
+$upcomingDestToday = \ClinicCore\Tests\Support\ReceptionFixtureClockPolicy::upcomingSameDayDestination($nowTehran);
 if ($upcomingDestToday === null) {
     rp_fail('no valid same-day upcoming destination has the required three-minute browser runway');
 }
