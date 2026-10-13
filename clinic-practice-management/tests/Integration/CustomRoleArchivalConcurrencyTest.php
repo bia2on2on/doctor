@@ -103,6 +103,14 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 wp_delete_user($userId);
             }
         }
+        global $wpdb;
+        // The fixtures were committed on purpose, so the removal must be
+        // committed as well: the test framework opens its own transaction around
+        // every test, and rows deleted inside it would be rolled back by
+        // parent::tearDown() while a count read in the same transaction still
+        // looked clean (run 38427517780: four cases, four Clinic rows left
+        // behind, clinic_count 1 -> 5).
+        self::assertNotFalse($wpdb->query('COMMIT'), 'fixture removal must be durable, not rolled back with the test');
         $remaining = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics'));
         self::assertSame(
             $this->clinicCountBefore,
