@@ -24,10 +24,12 @@ declare(strict_types=1);
  *   ERROR:<class>:<message>                   fatal, exit 1
  *
  * Parameters arrive through the environment, never argv — no credentials or
- * identifiers appear in the process list. The WordPress test bootstrap is loaded
- * for its wpdb/utility layer only; the plugin and its migrations are NOT loaded
- * (services are constructed explicitly, exactly as the test does), so the worker
- * cannot run migrations against the database the parent is locking.
+ * identifiers appear in the process list. WordPress core is loaded through the
+ * existing configuration file plus wp-settings.php (the same file a real
+ * wp-config.php loads); the WordPress *test* bootstrap is never used, because it
+ * shells out to install.php and drops every core table. The plugin and its
+ * migrations are NOT loaded (services are constructed explicitly, exactly as the
+ * test does), so the worker cannot migrate the database the parent is locking.
  */
 
 $pluginRoot = dirname(__DIR__, 2);
@@ -49,21 +51,15 @@ function cpms_race_emit(string $line): void
     fflush(STDOUT);
 }
 
-$testsDir = rtrim(cpms_race_env('WP_TESTS_DIR', '/tmp/wordpress-tests-lib'), '/');
+$testsDir = rtrim(cpms_race_env('WP_TESTS_DIR', '/tmp/wordpress-test-lib'), '/');
 $configPath = cpms_race_env('WP_TESTS_CONFIG_FILE_PATH');
 if ($configPath === '' && is_file($testsDir . '/wp-tests-config.php')) {
     $configPath = $testsDir . '/wp-tests-config.php';
-}
-
-if (!is_file($testsDir . '/includes/functions.php')) {
-    cpms_race_emit('ERROR:RuntimeException:wp test suite not found');
-    exit(1);
 }
 if ($configPath === '' || !is_file($configPath)) {
     cpms_race_emit('ERROR:RuntimeException:wp tests config not found');
     exit(1);
 }
-putenv('WP_TESTS_CONFIG_FILE_PATH=' . $configPath);
 
 $autoload = $pluginRoot . '/vendor/autoload.php';
 if (!is_file($autoload)) {
@@ -71,25 +67,38 @@ if (!is_file($autoload)) {
     exit(1);
 }
 
+/*
+ * WordPress core is loaded the way a real installation loads it: the
+ * configuration file defines ABSPATH, the database constants and $table_prefix;
+ * wp-settings.php is then required once. The WordPress *test* bootstrap is deliberately NOT used —
+ * tests/phpunit/includes/bootstrap.php shells out to install.php (line 266),
+ * which drops every core table via $wpdb->tables() and reinstalls WordPress
+ * (install.php lines 66-85). That destroyed the WordPress test users of the
+ * parent suite's shared database (run 38419079529: CPMS fixtures intact, WP users
+ * gone). No installer, no test framework, no migrations run here.
+ */
 try {
-    // Buffer the bootstrap output: only protocol lines may reach stdout.
     ob_start();
-    /*
-     * The composer autoloader must be loaded BEFORE the WordPress test
-     * bootstrap: that bootstrap refuses to run when it cannot see PHPUnit
-     * ("Looks like you're using PHPUnit 0. WordPress requires at least PHPUnit
-     * 5.7.21.") and it is the autoloader that makes PHPUnit\Runner\Version
-     * visible. The repository's own standalone probe loads it in this order.
-     */
-    require_once $autoload;
-    $polyfills = $pluginRoot . '/vendor/yoast/phpunit-polyfills/phpunitpolyfills-autoload.php';
-    if (is_file($polyfills)) {
-        require_once $polyfills;
-    } elseif (!defined('WP_TESTS_PHPUNIT_POLYFILLS_PATH')) {
-        define('WP_TESTS_PHPUNIT_POLYFILLS_PATH', $pluginRoot . '/vendor/yoast/phpunit-polyfills');
+    require $configPath;
+    $coreDir = defined('ABSPATH') ? rtrim((string) ABSPATH, '/') : '';
+    if ($coreDir === '' || !is_file($coreDir . '/wp-settings.php')) {
+        $envCore = rtrim(cpms_race_env('WP_CORE_DIR'), '/');
+        if ($envCore !== '' && is_file($envCore . '/wp-settings.php')) {
+            $coreDir = $envCore;
+            define('ABSPATH', $envCore . '/');
+        }
     }
-    require_once $testsDir . '/includes/functions.php';
-    require_once $testsDir . '/includes/bootstrap.php';
+    if ($coreDir === '' || !is_file($coreDir . '/wp-settings.php')) {
+        throw new \RuntimeException('WordPress core directory with wp-settings.php is unavailable');
+    }
+    if (!defined('WP_USE_THEMES')) {
+        define('WP_USE_THEMES', false);
+    }
+    if (!defined('DISABLE_WP_CRON')) {
+        define('DISABLE_WP_CRON', true); // no cron spawn from a short-lived worker
+    }
+    require_once $coreDir . '/wp-settings.php';
+    require_once $autoload;
     ob_end_clean();
 } catch (\Throwable $bootstrapFailure) {
     while (ob_get_level() > 0) {

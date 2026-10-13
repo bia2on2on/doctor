@@ -119,6 +119,21 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 $lockBefore = $this->customRoleDefinitionLockForConnection($observer, $parentConnectionId, $definitionId);
                 self::assertIsArray($lockBefore, 'winner must own the exact definition PRIMARY X record lock');
 
+                // Startup must be non-destructive: probe the exact synthetic fixture
+                // rows before the worker starts and again once it is ready.
+                $startupProbeBefore = ArchivalRaceWorker::fixtureProbe(
+                    $observer,
+                    $tablePrefix,
+                    $this->target,
+                    $this->clinicId,
+                    $definitionId
+                );
+                self::assertSame(
+                    ['wp_user_rows' => 1, 'membership_rows' => 1, 'definition_rows' => 1],
+                    $startupProbeBefore,
+                    'fixture precondition: the exact synthetic rows must exist before the worker starts'
+                );
+
                 $worker = ArchivalRaceWorker::launch([
                     'WP_TESTS_DIR' => getenv('WP_TESTS_DIR') ?: '/tmp/wp-tests',
                     'CPMS_RACE_DB_NAME' => DB_NAME,
@@ -142,6 +157,18 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertMatchesRegularExpression('/^READY:[1-9][0-9]*$/', $ready);
                 $childConnectionId = (int) substr($ready, strlen('READY:'));
                 self::assertNotSame($parentConnectionId, $childConnectionId);
+                $startupProbeAfter = ArchivalRaceWorker::fixtureProbe(
+                    $observer,
+                    $tablePrefix,
+                    $this->target,
+                    $this->clinicId,
+                    $definitionId
+                );
+                self::assertSame(
+                    $startupProbeBefore,
+                    $startupProbeAfter,
+                    'worker startup must not alter the WordPress user, its membership or the definition row'
+                );
                 $queryLine = $worker->nextLine(20.0);
                 self::assertIsString($queryLine, 'waiter must signal its actual production locking query, not only method entry: ' . $worker->diagnostics());
                 self::assertMatchesRegularExpression('/^LOCK_QUERY:[1-9][0-9]*:[a-f0-9]{64}:[A-Za-z0-9+\/=]+$/', $queryLine);
@@ -240,6 +267,8 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'mysql_schema' => DB_NAME,
                 'definition_id' => $definitionId,
                 'worker_mechanism' => 'proc_open-independent-process',
+                'worker_bootstrap' => 'wp-config constants + wp-settings.php (no test installer)',
+                'startup_fixture_probe' => $startupProbeAfter,
                 'worker_pid' => $workerPid,
                 'worker_exit_code' => $workerExit,
                 'parent_connection_id' => $parentConnectionId,

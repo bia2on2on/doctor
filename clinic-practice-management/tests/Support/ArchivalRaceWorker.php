@@ -51,6 +51,48 @@ final class ArchivalRaceWorker
     }
 
     /**
+     * Existence-only probe for the exact synthetic fixture rows a worker start
+     * must never disturb: the target WordPress user, its Clinic membership and
+     * the custom-role definition. Counts and a positive-key flag only — no row
+     * values, no credentials, no identifiers beyond those the test already owns.
+     *
+     * @return array<string, int>
+     */
+    public static function fixtureProbe(
+        \mysqli $conn,
+        string $prefix,
+        int $userId,
+        int $clinicId,
+        int $definitionId
+    ): array {
+        $probe = ['wp_user_rows' => -1, 'membership_rows' => -1, 'definition_rows' => -1];
+
+        $checks = [
+            'wp_user_rows' => ['SELECT COUNT(*) FROM `' . $prefix . 'users` WHERE `ID` = ?', 'i', $userId],
+            'membership_rows' => ['SELECT COUNT(*) FROM `' . $prefix . 'cpms_clinic_memberships` WHERE `clinic_id` = ? AND `wp_user_id` = ?', 'ii', [$clinicId, $userId]],
+            'definition_rows' => ['SELECT COUNT(*) FROM `' . $prefix . 'cpms_custom_role_defs` WHERE `id` = ? AND `clinic_id` = ?', 'ii', [$definitionId, $clinicId]],
+        ];
+
+        foreach ($checks as $key => [$sql, $types, $values]) {
+            $stmt = $conn->prepare($sql);
+            if (!$stmt instanceof \mysqli_stmt) {
+                continue;
+            }
+            $args = is_array($values) ? array_values($values) : [$values];
+            $stmt->bind_param($types, ...$args);
+            $stmt->execute();
+            $value = null;
+            $stmt->bind_result($value);
+            if ($stmt->fetch()) {
+                $probe[$key] = (int) $value;
+            }
+            $stmt->close();
+        }
+
+        return $probe;
+    }
+
+    /**
      * Concurrency is mandatory in this suite: never SKIPPED.
      */
     public static function available(): bool
