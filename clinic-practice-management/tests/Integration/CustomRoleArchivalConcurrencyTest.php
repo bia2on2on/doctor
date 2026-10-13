@@ -368,19 +368,19 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 // Environment: exactly the allowlist, and none of the pinned
                 // names — a forwarded name would be visible here even though its
                 // value never leaves this process.
-                $expectedEnvironment = [];
-                foreach (ArchivalRaceWorker::ENVIRONMENT_ALLOWLIST as $envName) {
-                    $envValue = getenv($envName);
-                    if (is_string($envValue) && $envValue !== '') {
-                        $expectedEnvironment[] = $envName;
-                    }
-                }
-                sort($expectedEnvironment);
+                self::assertNotEmpty($isolationProbe['launch_environment_keys'], 'the launcher must send a non-empty environment');
                 self::assertSame(
-                    $expectedEnvironment,
+                    $isolationProbe['launch_environment_keys'],
                     $isolationProbe['worker_env_keys'],
-                    'the worker environment must be exactly the allowlist, never the launcher environment'
+                    'the worker environment must be exactly what the launcher sent, never the launcher environment'
                 );
+                foreach ($isolationProbe['worker_env_keys'] as $envName) {
+                    self::assertContains(
+                        $envName,
+                        ArchivalRaceWorker::ENVIRONMENT_ALLOWLIST,
+                        'a non-allowlisted name reached the worker: ' . $envName
+                    );
+                }
                 foreach (array_keys($privacyPins) as $pinnedName) {
                     self::assertNotContains(
                         $pinnedName,

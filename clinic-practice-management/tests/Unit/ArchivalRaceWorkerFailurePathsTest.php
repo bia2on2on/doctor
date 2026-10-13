@@ -165,15 +165,15 @@ final class ArchivalRaceWorkerFailurePathsTest extends TestCase
             foreach (array_keys($pins) as $name) {
                 self::assertNotContains($name, $probe['worker_env_keys'], 'name reached the worker: ' . $name);
             }
-            $expected = [];
-            foreach (ArchivalRaceWorker::ENVIRONMENT_ALLOWLIST as $name) {
-                $value = getenv($name);
-                if (is_string($value) && $value !== '') {
-                    $expected[] = $name;
-                }
+            self::assertNotEmpty($probe['launch_environment_keys'], 'the launcher must have sent a non-empty environment');
+            self::assertSame(
+                $probe['launch_environment_keys'],
+                $probe['worker_env_keys'],
+                'the child sees exactly what the launcher sent through the allowlist, and nothing else'
+            );
+            foreach ($probe['worker_env_keys'] as $name) {
+                self::assertContains($name, ArchivalRaceWorker::ENVIRONMENT_ALLOWLIST, 'a non-allowlisted name reached the worker: ' . $name);
             }
-            sort($expected);
-            self::assertSame($expected, $probe['worker_env_keys'], 'the child sees the allowlist and nothing else');
             self::assertStringNotContainsString($canary, $worker->diagnostics());
             self::assertStringNotContainsString($canary, json_encode($probe));
             $worker->terminate();

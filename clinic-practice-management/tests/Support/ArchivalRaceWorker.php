@@ -101,6 +101,16 @@ final class ArchivalRaceWorker
     private ?array $fdProbe = null;
 
     /**
+     * The environment names this launcher actually sent to the worker — the
+     * authoritative expectation for the worker's own inventory. Computed from
+     * what was sent, not from this process's environment, because task
+     * parameters normally exist only in the task array.
+     *
+     * @var list<string>
+     */
+    private array $launchEnvironmentKeys = [];
+
+    /**
      * Pins for the names every worker needs. Process-global because the
      * environment is, and restored in close().
      *
@@ -272,6 +282,8 @@ final class ArchivalRaceWorker
         stream_set_blocking($pipes[2], false);
 
         $worker = new self($process, [1 => $pipes[1], 2 => $pipes[2]]);
+        $worker->launchEnvironmentKeys = array_keys($environment);
+        sort($worker->launchEnvironmentKeys);
         $worker->assertPinnedDescriptorsPresent();
 
         return $worker;
@@ -387,6 +399,7 @@ final class ArchivalRaceWorker
             'worker_fds_beyond_stdio' => $fds,
             'worker_socket_count' => $socketCount,
             'worker_env_keys' => is_array($probe) && is_array($probe['env_keys'] ?? null) ? $probe['env_keys'] : [],
+            'launch_environment_keys' => $this->launchEnvironmentKeys,
             'parent_observed_fd_count' => count($this->observedFds),
         ];
     }
