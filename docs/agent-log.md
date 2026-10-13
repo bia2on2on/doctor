@@ -390,3 +390,33 @@
 - **Observability.** Cleanup failures are collected, written to STDERR as `CPMS_FIXTURE_CLEANUP_FAILED {…}` (CI mirrors STDERR) and raised as an assertion whose message states the test body's result is unaffected and reported separately — so a cleanup defect can never be silent and never hides the body's own failure.
 - **Regression coverage:** the lookalike is proven real (visible to a second session, listed in the data dictionary, `SHOW CREATE TABLE` starts with `CREATE TABLE`) *and* the `$wpdb`-created table is proven temporary (the idiom `TempTableIsolationTest` establishes); a surviving real table is proven to fail verification; the reporting path is proven to name the cause and the body-result context; synthetic-user removal is proven from an independent session.
 - **Scope:** test-only; no production code, no archival/authorization/migration behaviour, no CI acceptance policy touched. No other test creates real tables on a raw session, so this defect class has no second instance in the suite.
+
+## 2026-10-13 — Reception fixture: same-day row pinned onto the Slice-8 destination minute
+
+**Symptom.** Pilot/Staging Readiness run `38452716400` (job `115488302327`, sha `24f41a5`) failed at
+"Reception fixture" with exit=1, `env_bytes=MISSING`, `php_error_kinds=none`; the browser step was
+skipped and the published evidence contained neither `RECEPTION_PUBLIC` nor a fixture error line.
+The green Pilot run `38444965665` at `2e8f672` used the same reception code, so the difference had to
+come from the clock: 21:56:47 Teh vs 22:53:39 Teh.
+
+**Root cause (deterministic, no product code involved).** `cpms_schedule_slots` carries
+`UNIQUE KEY u_slot (clinician_id, slot_date, slot_time)`. In the late-day branch the fixture pinned the
+partial-arrival row to `23:59:00` while `ReceptionFixtureClockPolicy::upcomingSameDayDestination()`
+returns exactly `23:59:00` (its documented last same-day fallback) for the Slice-8 "today" proof on the
+same clinician and date — so the proof `INSERT` duplicated `u_slot`, `rp_insert()` called `rp_fail()`
+with `wpdb::last_error`, and the fixture exited 1 *before* `/tmp/reception.env` was written (hence
+`env_bytes=MISSING`), which is also why no `RECEPTION_PUBLIC` line ever reached the PR evidence.
+A second, narrower instance of the same class: the +70 minute row equalled the `23:59:00` fallback at
+the exact second `22:49:00`. Exhaustive wall-clock enumeration (Tehran is a fixed +03:30 offset, no DST)
+puts the old collision window at **22:49:00–23:55:59 local — 3961 s of every day**; 22:53:39 falls
+inside it and 21:56:47 does not. The DB error text is not a PHP error kind, which is why
+`php_error_kinds=none` and why nothing appeared in the Apache/PHP logs.
+
+**Change.** The late-day row times now come from the shared clock policy
+(`ReceptionFixtureClockPolicy::sameDaySlotTimes()`, new `LATE_DAY_SLOT_TIMES = 23:55:00…
+23:58:00`), which switches to the late-day strategy on the *same* +90 minute horizon that can push
+the destination onto its `23:59:00` fallback and stops the pins one minute short of it. The same-day
+date guard in the fixture is unchanged, the destination policy is unchanged, browser assertions are
+untouched, and no production scheduling behaviour changes. Unit coverage: per-clock expectations plus
+a minute-by-minute sweep of a full Tehran day asserting the destination minute is never among the
+seeded same-day row times.
