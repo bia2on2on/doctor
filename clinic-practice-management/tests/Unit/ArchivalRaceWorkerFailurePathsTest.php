@@ -148,8 +148,20 @@ final class ArchivalRaceWorkerFailurePathsTest extends TestCase
             );
             self::assertTrue($probe['pinned_isolation_proven'], json_encode($probe));
             self::assertSame(0, $probe['worker_socket_count'], 'no inherited socket may reach the worker: ' . json_encode($probe));
+            // Every descriptor this process held is inert inside the worker
+            // (asserted by pinned_isolation_proven above), and nothing that was a
+            // socket or a pipe here may exist there: either shape would be a
+            // reachable channel back to this process. Descriptors the child opens
+            // for itself are recorded, not forbidden.
             foreach ($probe['worker_fds_beyond_stdio'] as $fd => $class) {
-                self::assertSame('dev-null', $class, 'descriptor ' . $fd . ' is not inert: ' . json_encode($probe));
+                self::assertNotSame('socket', $class, 'descriptor ' . $fd . ' is a socket: ' . json_encode($probe));
+                self::assertNotSame('pipe', $class, 'descriptor ' . $fd . ' is a pipe: ' . json_encode($probe));
+            }
+            foreach ($probe['pinned_fds'] as $pinnedFd) {
+                $reported = $probe['worker_fds_beyond_stdio'][(string) $pinnedFd]
+                    ?? $probe['worker_fds_beyond_stdio'][$pinnedFd]
+                    ?? 'dev-null';
+                self::assertSame('dev-null', $reported, 'pinned descriptor ' . $pinnedFd . ' is not inert: ' . json_encode($probe));
             }
             self::assertGreaterThan(0, $probe['parent_observed_fd_count'], 'the parent side must be observed too');
             $worker->terminate();

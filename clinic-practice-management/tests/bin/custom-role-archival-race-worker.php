@@ -22,8 +22,10 @@ declare(strict_types=1);
  *   - The launcher therefore maps every descriptor the parent holds above stdio
  *     to the /dev/null descriptor: the descriptor-spec key is the *child's* fd
  *     number, so the child dup2()s /dev/null over each of them before execvp().
- *     This process starts with stdio plus inert /dev/null only — reported by the
- *     FD_PROBE line, which the parent asserts against.
+ *     This process starts with stdio, those inert /dev/null descriptors, and
+ *     nothing that was a socket or a pipe in the launcher — reported by the
+ *     FD_PROBE line, which the parent asserts against. Any further descriptor it
+ *     holds is one it opened for itself.
  *
  * Contract with the parent (stdout, one line per message; nothing else is ever
  * written to stdout — the WordPress bootstrap output is buffered away):

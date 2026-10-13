@@ -396,6 +396,7 @@ final class ArchivalRaceWorker
         return [
             'proc_fd' => is_array($probe) ? (bool) ($probe['proc_fd'] ?? false) : false,
             'pinned_fd_count' => count(self::$pinnedDescriptors),
+            'pinned_fds' => array_map('intval', array_keys(self::$pinnedDescriptors)),
             'pinned_isolation_proven' => self::$pinnedDescriptors !== [] && $targetsAreNull,
             'worker_fds_beyond_stdio' => $fds,
             'worker_socket_count' => $socketCount,
