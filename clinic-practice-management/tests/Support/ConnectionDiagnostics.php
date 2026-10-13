@@ -329,4 +329,54 @@ final class ConnectionDiagnostics
 
         return $facts;
     }
+
+    /**
+     * Counts-only proof of persisted identity for one synthetic patient row,
+     * scoped by Clinic + the caller's own test MRN. The MRN value and every row
+     * value are never emitted — only counts and a positive-key flag.
+     *
+     * @return array<string, mixed>
+     */
+    public static function identityFacts(\mysqli $conn, string $fullTable, string $scopeColumn, int $scopeId, string $naturalKey, string $keyColumn): array
+    {
+        $facts = ['rows_for_scope_and_key' => -1, 'positive_key_rows' => -1, 'key_is_positive' => -1];
+
+        $stmt = $conn->prepare('SELECT COUNT(*) FROM `' . $fullTable . '` WHERE `' . $scopeColumn . '` = ? AND `' . $naturalKey . '` = ?');
+        if ($stmt instanceof \mysqli_stmt) {
+            $stmt->bind_param('is', $scopeId, $naturalKey);
+            $stmt->execute();
+            $val = null;
+            $stmt->bind_result($val);
+            if ($stmt->fetch()) {
+                $facts['rows_for_scope_and_key'] = (int) $val;
+            }
+            $stmt->close();
+        }
+
+        $stmt = $conn->prepare('SELECT COUNT(*) FROM `' . $fullTable . '` WHERE `' . $scopeColumn . '` = ? AND `' . $naturalKey . '` = ? AND `' . $keyColumn . '` > 0');
+        if ($stmt instanceof \mysqli_stmt) {
+            $stmt->bind_param('is', $scopeId, $naturalKey);
+            $stmt->execute();
+            $val = null;
+            $stmt->bind_result($val);
+            if ($stmt->fetch()) {
+                $facts['positive_key_rows'] = (int) $val;
+            }
+            $stmt->close();
+        }
+
+        $stmt = $conn->prepare('SELECT MAX(`' . $keyColumn . '`) > 0 FROM `' . $fullTable . '` WHERE `' . $scopeColumn . '` = ? AND `' . $naturalKey . '` = ?');
+        if ($stmt instanceof \mysqli_stmt) {
+            $stmt->bind_param('is', $scopeId, $naturalKey);
+            $stmt->execute();
+            $val = null;
+            $stmt->bind_result($val);
+            if ($stmt->fetch()) {
+                $facts['key_is_positive'] = (int) $val;
+            }
+            $stmt->close();
+        }
+
+        return $facts;
+    }
 }

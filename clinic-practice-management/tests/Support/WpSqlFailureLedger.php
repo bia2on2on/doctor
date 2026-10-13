@@ -60,6 +60,15 @@ final class WpSqlFailureLedger
 
     private static bool $registered = false;
 
+    /**
+     * PID that owns this diagnostic state — the process that called register()
+     * (the PHPUnit parent). Forked children inherit the shutdown callback; they
+     * must never run the flush, because its table_facts() queries would be issued
+     * on the inherited WordPress mysqli handle (the parent's session) and corrupt
+     * the parent's in-flight responses / connection state.
+     */
+    private static ?int $ownerPid = null;
+
     private static bool $inside = false;
 
     public static function register(): void
@@ -68,6 +77,7 @@ final class WpSqlFailureLedger
             return;
         }
         self::$registered = true;
+        self::$ownerPid   = (int) getmypid();
 
         // اولویت بسیار بالا: پیش از اجرای کوئریِ بعدی، نتیجهٔ کوئریِ قبلی را می‌بیند
         // (wpdb::query() مقدار last_error را برای هر دستور، بعد از اجرا، بازنویسی می‌کند).
@@ -173,6 +183,21 @@ final class WpSqlFailureLedger
      */
     public static function flush(): void
     {
+        /*
+         * Parent-process-only. Every pcntl_fork() child inherits this shutdown
+         * callback; running it there would execute table_facts() queries on the
+         * inherited WordPress connection, i.e. a child process writing statements
+         * to and reading responses from a session owned by the parent. Two
+         * independently observed consequences of that shape are exactly the two
+         * long-standing failures: the parent turning an OK packet of a child
+         * statement into its own `insert_id = 0` (patient identity lost) and the
+         * parent reading a child's COUNT(*) result as its own scalar value ("1").
+         * The owning process needs no database failure ledger of a child's making.
+         */
+        if (null !== self::$ownerPid && getmypid() !== self::$ownerPid) {
+            return;
+        }
+
         try {
             global $wpdb;
 

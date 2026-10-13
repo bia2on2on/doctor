@@ -1298,6 +1298,14 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
                     'test' => 'Phase7Fr55NoShow::testConcurrentCheckInAndNoShow',
                     'phase' => 'anomaly_independent',
                     'facts' => \ClinicCore\Tests\Support\ConnectionDiagnostics::tableFacts($diagConn, 'cpms_patients', 'id', $diagId),
+                    'identity' => \ClinicCore\Tests\Support\ConnectionDiagnostics::identityFacts(
+                        $diagConn,
+                        $wpdb->prefix . 'cpms_patients',
+                        'clinic_id',
+                        $clinicId,
+                        $mrn,
+                        'id'
+                    ),
                 ]);
                 $diagConn->close();
             }
