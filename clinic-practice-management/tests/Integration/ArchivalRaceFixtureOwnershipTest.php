@@ -181,7 +181,7 @@ final class ArchivalRaceFixtureOwnershipTest extends WP_UnitTestCase
             }
         }
         $conn = new \mysqli($host, (string) DB_USER, (string) DB_PASSWORD, (string) DB_NAME, $port);
-        self::assertFalse($conn->connect_errno, 'the ownership probe needs its own connection');
+        self::assertSame(0, $conn->connect_errno, 'the ownership probe needs its own connection: ' . (string) $conn->connect_error);
 
         return $conn;
     }
