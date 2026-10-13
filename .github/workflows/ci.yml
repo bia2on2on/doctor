@@ -623,6 +623,8 @@ jobs:
             else
               echo '(junit xml missing — run may have terminated prematurely)'
             fi
+            echo '--- CPMS_CONN_DIAG (bounded connection diagnostics; sanitized, no SQL values) ---'
+            grep -m 60 'CPMS_CONN_DIAG ' /tmp/phpunit-int.log || echo '(no CPMS_CONN_DIAG lines: diagnostics did not run)'
             echo '```'
           } > /tmp/pr-evidence.md
           if [ -n "$PR_NUMBER" ]; then

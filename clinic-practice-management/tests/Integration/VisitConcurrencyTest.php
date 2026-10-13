@@ -100,6 +100,8 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
      */
     public function testParallelCompleteExactlyOneSucceeds(): void
     {
+        $diag = ['test' => 'VisitConcurrency::testParallelCompleteExactlyOneSucceeds'];
+
         $visitId = $this->committedVisitInConsultation();
 
         if (!function_exists('pcntl_fork')) {
@@ -109,14 +111,41 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
         $sql = 'UPDATE ' . App::db()->table('cpms_visits') .
             ' SET status = "consultation_completed", consultation_completed_at = ? WHERE id = ? AND status = "in_consultation"';
 
+        \ClinicCore\Tests\Support\ConnectionDiagnostics::emit($diag + [
+            'phase' => 'pre_fork',
+            'wpdb' => \ClinicCore\Tests\Support\ConnectionDiagnostics::wpdbState(App::db()->wpdb()),
+            'filters' => \ClinicCore\Tests\Support\ConnectionDiagnostics::queryFilters(),
+        ]);
+
         $successes = $this->forkWorkers(2, $sql, $visitId);
 
         $this->assertSame(1, $successes, 'از دو complete هم‌زمان دقیقاً یکی باید موفق شود');
+
+        $independent = \ClinicCore\Tests\Support\ConnectionDiagnostics::independent();
+        $persisted = ['probe' => 'unavailable'];
+        if ($independent instanceof \mysqli) {
+            $persisted = \ClinicCore\Tests\Support\ConnectionDiagnostics::visitStatusFacts($independent, App::db()->table('cpms_visits'), $visitId);
+            $persisted += \ClinicCore\Tests\Support\ConnectionDiagnostics::tableFacts($independent, 'cpms_visits', 'id', $visitId);
+            $independent->close();
+        }
+        \ClinicCore\Tests\Support\ConnectionDiagnostics::emit($diag + [
+            'phase' => 'post_race_pre_read',
+            'persisted_independent' => $persisted,
+            'wpdb' => \ClinicCore\Tests\Support\ConnectionDiagnostics::wpdbState(App::db()->wpdb()),
+        ]);
 
         $status = (string) App::db()->fetchValue(
             'SELECT status FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d',
             [$visitId]
         );
+        \ClinicCore\Tests\Support\ConnectionDiagnostics::emit($diag + [
+            'phase' => 'post_read',
+            'observed_read_scalar_class' => $status === 'consultation_completed'
+                ? 'consultation_completed'
+                : ($status === '1' ? 'literal_one' : ($status === '' ? 'empty' : 'other')),
+            'wpdb' => \ClinicCore\Tests\Support\ConnectionDiagnostics::wpdbState(App::db()->wpdb()),
+        ]);
+
         $this->assertSame('consultation_completed', $status);
     }
 
@@ -248,6 +277,15 @@ final class VisitConcurrencyTest extends WP_UnitTestCase
                 $mysqli = null;
                 try {
                     $mysqli = $this->freshMysqli();
+                    \ClinicCore\Tests\Support\ConnectionDiagnostics::emit([
+                        'test' => 'VisitConcurrency::testParallelCompleteExactlyOneSucceeds',
+                        'phase' => 'child_own_connection',
+                        'worker' => $i,
+                        'own_thread_id' => \ClinicCore\Tests\Support\ConnectionDiagnostics::threadId($mysqli),
+                        'inherited_wpdb_thread_id' => \ClinicCore\Tests\Support\ConnectionDiagnostics::threadId(App::db()->wpdb()->dbh ?? null),
+                        'inherited_wpdb_ready' => (bool) (App::db()->wpdb()->ready ?? false),
+                        'filters' => \ClinicCore\Tests\Support\ConnectionDiagnostics::queryFilters()['count'],
+                    ]);
                     $stmt = $mysqli->prepare($sql);
                     if ($stmt !== false) {
                         $ts = gmdate('Y-m-d H:i:s') . '.000';
