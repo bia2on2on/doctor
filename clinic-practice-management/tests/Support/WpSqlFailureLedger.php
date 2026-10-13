@@ -62,12 +62,19 @@ final class WpSqlFailureLedger
 
     private static bool $inside = false;
 
+    /** @var int|null فرایندی که مالکِ اتصالِ مشترکِ wpdb است (برای گاردِ فرزندِ fork) */
+    private static ?int $ownerPid = null;
+
     public static function register(): void
     {
         if (self::$registered) {
             return;
         }
         self::$registered = true;
+
+        // مالکیتِ اتصال را به همین فرایند گره میزنیم؛ فرزندِ pcntl_fork مالک نیست.
+        $pid = getmypid();
+        self::$ownerPid = $pid === false ? null : $pid;
 
         // اولویت بسیار بالا: پیش از اجرای کوئریِ بعدی، نتیجهٔ کوئریِ قبلی را می‌بیند
         // (wpdb::query() مقدار last_error را برای هر دستور، بعد از اجرا، بازنویسی می‌کند).
@@ -173,6 +180,19 @@ final class WpSqlFailureLedger
      */
     public static function flush(): void
     {
+        /*
+         * فقط فرایندی که ledger را ثبت کرده، مالکِ اتصالِ مشترکِ wpdb است.
+         * فرزندِ pcntl_fork هم اتصالِ mysqli و هم این shutdown handler را به ارث
+         * میبرد، و table_facts() روی همان سوکتِ والد کوئری خام میزند — یعنی دو
+         * فرایند روی یک اتصالِ MySQL (php.net/pcntl_fork: منابع ارث میرسند و
+         * فرزند باید اتصالِ مستقل بگیرد). بر همین اساس در فرزند چیزی چاپ/کوئری
+         * نمیشود؛ مشاهدهپذیریِ کامل در فرایندِ والد حفظ میشود.
+         */
+        $pid = getmypid();
+        if (self::$ownerPid !== null && $pid !== false && $pid !== self::$ownerPid) {
+            return;
+        }
+
         try {
             global $wpdb;
 
