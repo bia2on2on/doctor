@@ -17,14 +17,24 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Tests\Support\ArchivalRaceWorker;
 use ClinicCore\Tests\Support\CustomRoleLockWaitFixture;
 use RuntimeException;
 use Throwable;
 use WP_UnitTestCase;
 
 require_once dirname(__DIR__) . '/Support/CustomRoleLockWaitFixture.php';
+require_once dirname(__DIR__) . '/Support/ArchivalRaceWorker.php';
 
-/** Genuine independent MySQL sessions: both winner orders and both edit paths. */
+/**
+ * Genuine independent MySQL sessions: both winner orders and both edit paths.
+ *
+ * The blocked waiter runs as its own PHP process launched with proc_open()
+ * (tests/bin/custom-role-archival-race-worker.php). A pcntl_fork() child would
+ * inherit the parent's live MySQL socket, so it could either query the parent's
+ * session or destroy it on exit (COM_QUIT) — proven in CI runs 38382945515 and
+ * 38402296436. A separately launched process inherits nothing.
+ */
 final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
 {
     use CustomRoleLockWaitFixture;
@@ -68,8 +78,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
     /** @dataProvider winnerCases */
     public function testActualDefinitionWaitSerializesTerminalOperations(string $winner, string $waiter, string $expectedReason): void
     {
-        self::assertTrue(function_exists('pcntl_fork'), 'real concurrency is mandatory, never SKIPPED');
-        self::assertTrue(function_exists('stream_socket_pair'));
+        self::assertTrue(ArchivalRaceWorker::available(), 'real concurrency is mandatory, never SKIPPED');
         self::assertTrue(class_exists('mysqli'));
         $db = App::db();
         $key = 'arc_race_' . bin2hex(random_bytes(3));
@@ -82,10 +91,9 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         self::assertNotFalse($wpdb->query('COMMIT'), 'independent sessions require committed fixtures');
         $parentConnectionId = (int) $wpdb->get_var('SELECT CONNECTION_ID()');
         $hooks = isset($GLOBALS['wp_filter']['query']) ? clone $GLOBALS['wp_filter']['query'] : null;
-        $pid = 0;
-        $reaped = false;
-        $childStatus = 0;
-        $pipe = null;
+        $worker = null;
+        $workerPid = 0;
+        $workerExit = -1;
         $observer = null;
         $childConnectionId = 0;
         $childQuery = '';
@@ -100,7 +108,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
         remove_all_filters('query');
         try {
             $db->transactional(function () use ($db, $key, $definitionId, $winner, $waiter, $parentConnectionId,
-                &$pid, &$reaped, &$childStatus, &$pipe, &$observer, &$childConnectionId, &$childQuery,
+                &$worker, &$workerPid, &$workerExit, &$observer, &$childConnectionId, &$childQuery,
                 &$waitEdge, &$waitAfterMutation, &$lockBefore, &$parentTransaction, &$childTransaction,
                 &$liveConnectionId, &$selfTransaction): void {
                 $locked = (new CustomRoleRepository($db))->definition_for_update($this->clinicId, $key);
@@ -110,86 +118,31 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 $lockBefore = $this->customRoleDefinitionLockForConnection($observer, $parentConnectionId, $definitionId);
                 self::assertIsArray($lockBefore, 'winner must own the exact definition PRIMARY X record lock');
 
-                $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
-                if ($pipes === false) {
-                    throw new RuntimeException('Could not create independent race synchronization pipes.');
-                }
-                $pid = pcntl_fork();
-                if ($pid < 0) {
-                    fclose($pipes[0]);
-                    fclose($pipes[1]);
-                    throw new RuntimeException('Could not fork the independent MySQL waiter.');
-                }
-                if ($pid === 0) {
-                    fclose($pipes[0]);
-                    $childPipe = $pipes[1];
-                    $connection = null;
-                    try {
-                        $connection = $this->freshWpdb();
-                        remove_all_filters('query');
-                        self::assertNotFalse($connection->query('SET SESSION innodb_lock_wait_timeout = 20'));
-                        $db2 = new CpmsDb($connection);
-                        $id2 = (int) $connection->get_var('SELECT CONNECTION_ID()');
-                        self::assertGreaterThan(0, $id2);
-                        $signalSent = false;
-                        $definitionsTable = strtolower($db2->table('cpms_custom_role_defs'));
-                        $predicate = 'where id = ' . $definitionId . ' and clinic_id = ' . $this->clinicId;
-                        add_filter('query', static function ($query) use ($childPipe, $id2, $definitionsTable, $predicate, &$signalSent) {
-                            $sql = strtolower(trim((string) preg_replace('/\s+/', ' ', (string) $query)));
-                            if (!$signalSent && str_contains($sql, 'from ' . $definitionsTable . ' ')
-                                && str_contains($sql, $predicate) && preg_match('/\bfor\s+update\s*$/', $sql) === 1) {
-                                $signalSent = true;
-                                fwrite($childPipe, 'LOCK_QUERY:' . $id2 . ':' . hash('sha256', $sql) . ':' . base64_encode($sql) . "\n");
-                                fflush($childPipe);
-                            }
-                            return $query;
-                        }, 0);
-                        fwrite($childPipe, 'READY:' . $id2 . "\n");
-                        fflush($childPipe);
-                        $childOutcome = 'unexpected-success';
-                        try {
-                            $db2->transactional(function () use ($db2, $waiter, $key, &$childOutcome): void {
-                                try {
-                                    $this->operation($db2, $waiter, $key);
-                                } catch (CustomRoleAssignmentException | CustomRoleManagementException $exception) {
-                                    $childOutcome = 'denied:' . $exception->reason_code();
-                                }
-                                // An unexpected success is reported as failure and
-                                // remains reversible, never contaminating other tests.
-                                throw new RuntimeException('intentional archival race rollback');
-                            });
-                        } catch (RuntimeException $exception) {
-                            if ($exception->getMessage() !== 'intentional archival race rollback') {
-                                throw $exception;
-                            }
-                        }
-                        if (!$signalSent) {
-                            throw new RuntimeException('waiter never executed the real target definition locking query');
-                        }
-                        fwrite($childPipe, 'RESULT:' . $childOutcome . "\n");
-                        fflush($childPipe);
-                        $connection->close();
-                        fclose($childPipe);
-                        exit(0);
-                    } catch (Throwable $exception) {
-                        fwrite($childPipe, 'ERROR:' . get_class($exception) . ':' . $exception->getMessage() . "\n");
-                        fflush($childPipe);
-                        if ($connection instanceof \wpdb) {
-                            $connection->close();
-                        }
-                        fclose($childPipe);
-                        exit(1);
-                    }
-                }
-                fclose($pipes[1]);
-                $pipe = $pipes[0];
-                $ready = $this->readRaceLine($pipe, 10);
-                self::assertIsString($ready);
+                $worker = ArchivalRaceWorker::launch([
+                    'WP_TESTS_DIR' => getenv('WP_TESTS_DIR') ?: '/tmp/wp-tests',
+                    'CPMS_RACE_DB_NAME' => DB_NAME,
+                    'CPMS_RACE_DB_USER' => DB_USER,
+                    'CPMS_RACE_DB_PASSWORD' => DB_PASSWORD,
+                    'CPMS_RACE_DB_HOST' => DB_HOST,
+                    'CPMS_RACE_TABLE_PREFIX' => $wpdb->prefix,
+                    'CPMS_RACE_CLINIC_ID' => $this->clinicId,
+                    'CPMS_RACE_ROLE_KEY' => $key,
+                    'CPMS_RACE_DEFINITION_ID' => $definitionId,
+                    'CPMS_RACE_MANAGER_USER_ID' => $this->manager,
+                    'CPMS_RACE_TARGET_USER_ID' => $this->target,
+                    'CPMS_RACE_OPERATION' => $waiter,
+                    'CPMS_RACE_LOCK_WAIT_TIMEOUT' => 20,
+                ]);
+                $workerPid = $worker->pid();
+                self::assertGreaterThan(0, $workerPid, 'the independent waiter must be a real process');
+                self::assertNotSame(getmypid(), $workerPid, 'the waiter must never be this process');
+                $ready = $worker->nextLine(40.0);
+                self::assertIsString($ready, 'independent waiter never became ready: ' . $worker->diagnostics());
                 self::assertMatchesRegularExpression('/^READY:[1-9][0-9]*$/', $ready);
                 $childConnectionId = (int) substr($ready, strlen('READY:'));
                 self::assertNotSame($parentConnectionId, $childConnectionId);
-                $queryLine = $this->readRaceLine($pipe, 10);
-                self::assertIsString($queryLine, 'waiter must signal its actual production locking query, not only method entry');
+                $queryLine = $worker->nextLine(20.0);
+                self::assertIsString($queryLine, 'waiter must signal its actual production locking query, not only method entry: ' . $worker->diagnostics());
                 self::assertMatchesRegularExpression('/^LOCK_QUERY:[1-9][0-9]*:[a-f0-9]{64}:[A-Za-z0-9+\/=]+$/', $queryLine);
                 $parts = explode(':', $queryLine, 4);
                 self::assertSame($childConnectionId, (int) $parts[1]);
@@ -202,13 +155,8 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                     if ($waitEdge !== null) {
                         break;
                     }
-                    $waited = pcntl_waitpid($pid, $childStatus, WNOHANG);
-                    if ($waited === $pid) {
-                        $reaped = true;
-                        break;
-                    }
-                    if ($waited < 0) {
-                        throw new RuntimeException('Could not inspect the independent waiter process.');
+                    if (!$worker->isRunning()) {
+                        self::fail('the independent waiter exited before the performance_schema wait edge was observed: ' . $worker->diagnostics());
                     }
                     usleep(20000);
                 } while (microtime(true) < $deadline);
@@ -233,23 +181,11 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 $selfTransaction = $db->fetchRow(
                     'SELECT trx_id, trx_state FROM information_schema.innodb_trx WHERE trx_mysql_thread_id = CONNECTION_ID() LIMIT 1'
                 );
-                /*
-                 * Recorded, deliberately not asserted. Both reads above happen on the
-                 * winner's own session, and a fork child's graceful exit destroys that
-                 * session: PHP closes the inherited mysqli handle, which sends COM_QUIT
-                 * on the socket the parent also holds, so the parent's session can be
-                 * replaced (wpdb reconnects transparently) at any instant — including
-                 * between the two reads, which is exactly how this test failed in
-                 * run 38402296436 (connection id still matched, the immediately
-                 * following innodb_trx read then found no transaction for the new
-                 * session). Both facts are still printed as
-                 * CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE for every case, so nothing
-                 * is hidden; they are diagnostics, never contract gates. The contract
-                 * assertions — the performance_schema lock-wait edge, the blocking
-                 * holder identity, the LOCK WAIT/RUNNING states read through the
-                 * independent observer connection (which no child can close), and the
-                 * post-commit status/audit state below — are unchanged.
-                 */
+                // The waiter is a separately launched process: it owns no descriptor
+                // of this session, so the winner's session and its transaction must
+                // survive the whole contention window — asserted, not merely recorded.
+                self::assertSame($parentConnectionId, $liveConnectionId, 'the winner session must not be replaced during the race');
+                self::assertIsArray($selfTransaction, 'the winner transaction must still exist when read on its own session');
                 self::assertIsArray($parentTransaction);
                 self::assertIsArray($childTransaction);
                 self::assertSame('RUNNING', $parentTransaction['trx_state']);
@@ -266,26 +202,11 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
             });
             // Winner status/membership and its audit are now committed. The
             // waiter must read current status/references, not its old snapshot.
-            if (!$reaped) {
-                self::assertSame($pid, pcntl_waitpid($pid, $childStatus));
-                $reaped = true;
-            }
-            $lines = [];
-            if (is_resource($pipe)) {
-                stream_set_timeout($pipe, 10);
-                while (($line = fgets($pipe)) !== false) {
-                    $lines[] = trim($line);
-                }
-            }
-            foreach ($lines as $line) {
-                if (str_starts_with($line, 'RESULT:')) {
-                    $outcome = substr($line, strlen('RESULT:'));
-                } elseif (str_starts_with($line, 'ERROR:')) {
-                    $outcome = $line;
-                }
-            }
-            self::assertTrue(pcntl_wifexited($childStatus), $outcome);
-            self::assertSame(0, pcntl_wexitstatus($childStatus), $outcome);
+            $workerExit = $worker instanceof ArchivalRaceWorker ? $worker->waitForExit(30.0) : -1;
+            $waiterDiagnostics = $worker instanceof ArchivalRaceWorker ? $worker->diagnostics() : '';
+            self::assertSame(0, $workerExit, 'independent waiter must exit cleanly (rc=' . $workerExit . '): ' . $waiterDiagnostics);
+            $outcome = (string) ($worker instanceof ArchivalRaceWorker ? $worker->outcome() : '');
+            self::assertNotSame('', $outcome, 'independent waiter reported no outcome (missing evidence is never success): ' . $waiterDiagnostics);
             self::assertSame('denied:' . $expectedReason, $outcome);
             $roleAfter = (new CustomRoleRepository($db))->definition_for($this->clinicId, $key);
             $memberAfter = (new MembershipRepository($db))->find($this->clinicId, $this->target);
@@ -317,6 +238,9 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'case' => $winner . '_before_' . $waiter,
                 'mysql_schema' => DB_NAME,
                 'definition_id' => $definitionId,
+                'worker_mechanism' => 'proc_open-independent-process',
+                'worker_pid' => $workerPid,
+                'worker_exit_code' => $workerExit,
                 'parent_connection_id' => $parentConnectionId,
                 'child_connection_id' => $childConnectionId,
                 'parent_connection_id_live_on_own_session' => $liveConnectionId,
@@ -335,14 +259,11 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'assignment_audit_count' => $assignmentAudits,
             ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR) . PHP_EOL);
         } finally {
-            if ($observer instanceof \mysqli && $childConnectionId > 0 && !$reaped) {
+            if ($observer instanceof \mysqli && $childConnectionId > 0) {
                 $observer->query('KILL ' . $childConnectionId);
             }
-            if ($pid > 0 && !$reaped) {
-                pcntl_waitpid($pid, $childStatus);
-            }
-            if (is_resource($pipe)) {
-                fclose($pipe);
+            if ($worker instanceof ArchivalRaceWorker) {
+                $worker->terminate(); // bounded SIGTERM→SIGKILL + reap: no orphaned waiter
             }
             if ($observer instanceof \mysqli) {
                 $observer->close();
