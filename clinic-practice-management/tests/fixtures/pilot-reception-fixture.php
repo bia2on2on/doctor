@@ -6,8 +6,9 @@
  * real-browser journey proves the STRICT Location policy (N>1 => explicit
  * selection REQUIRED before any reception data). Location 1 carries exactly two
  * of TODAY's booked appointments (one express); Location 2 carries none (empty
- * state). Appointment dates are each Location's LOCAL operational day — the
- * browser does not freeze time and no timezone is hardcoded.
+ * state). Appointment dates are each Location's LOCAL operational day. The Pilot Gate
+ * runs this fixture, Apache, and the browser on the environment's ordinary wall clock.
+ * The fixture fails closed if TODAY has no valid same-day browser runway.
  *
  * Phase 11 Slice 5 adds the appointment-booking stage: already-generated FREE /
  * FULL / CLOSED slots for today plus one FREE slot on the next Tehran-local day,
@@ -18,7 +19,20 @@
  * Stdout is redacted. Passwords go only to /tmp/reception.env.
  */
 
+fwrite(
+    STDERR,
+    'RECEPTION_FIXTURE_CLOCK_BEFORE_WP_LOAD='
+    . (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d H:i:s')
+    . "\n"
+);
 require getenv('WP_HOME') . '/wp-load.php';
+fwrite(
+    STDERR,
+    'RECEPTION_FIXTURE_CLOCK_AFTER_WP_LOAD='
+    . (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format('Y-m-d H:i:s')
+    . "\n"
+);
+require_once __DIR__ . '/../Support/ReceptionFixtureClockPolicy.php';
 
 global $wpdb;
 
@@ -472,9 +486,9 @@ foreach (['MOBILE', 'TABLET', 'DESKTOP'] as $resIndex => $resTag) {
 // seeds booked appointments; both transitions themselves run through the real
 // Reception UI/service, never by changing the source status in the fixture.
 $upcomingProof = [];
-$upcomingDestToday = $nowTehran->add(new DateInterval('PT90M'));
-if ($upcomingDestToday->format('Y-m-d') !== $todayTehran) {
-    $upcomingDestToday = $nowTehran->setTime(23, 54);
+$upcomingDestToday = \ClinicCore\Tests\Support\ReceptionFixtureClockPolicy::upcomingSameDayDestination($nowTehran);
+if ($upcomingDestToday === null) {
+    rp_fail('no valid same-day upcoming destination has the required three-minute browser runway');
 }
 foreach (['future' => [$tomorrowTehran, '13:00:00', $nowTehran->add(new DateInterval('P2D'))->format('Y-m-d'), '15:00:00'],
           'today' => [$tomorrowTehran, '14:00:00', $todayTehran, $upcomingDestToday->format('H:i:s')]] as $kind => $spec) {

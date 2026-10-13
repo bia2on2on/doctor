@@ -149,7 +149,7 @@ final class CustomRoleAssignmentService {
         $clinic_id = $this->require_management_authority( $actor_wp_user_id, $requested_clinic_id );
 
         // Built-in keys, numeric/malformed keys and unknown vocabulary are not
-        // assignable here: the built-in staff flows own those.
+        // assignable here; the built-in staff flows own those.
         if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             throw CustomRoleAssignmentException::invalid_role_key();
         }
@@ -157,62 +157,72 @@ final class CustomRoleAssignmentService {
             throw CustomRoleAssignmentException::target_membership_required();
         }
 
-        // The target's Clinic owner is read from durable storage, not from the
-        // request; a non-member (or a member of another Clinic only) is refused.
-        $target        = $this->memberships->find_active( $clinic_id, $target_wp_user_id );
-        $membership_id = $target === null ? 0 : (int) ( $target['id'] ?? 0 );
-        if ( $target === null || $membership_id <= 0 || (int) ( $target['clinic_id'] ?? 0 ) !== $clinic_id ) {
-            throw CustomRoleAssignmentException::target_membership_required();
-        }
-        $this->authorization->authorizeForObject( $actor_wp_user_id, $clinic_id, RolesAndCapabilities::CONFIG, (int) $target['clinic_id'] );
-
-        // Durable object ownership of the definition, in the exact trusted Clinic.
-        $definition = $this->roles->definition_for( $clinic_id, $role_key );
-        if ( $definition === null ) {
-            throw CustomRoleAssignmentException::definition_not_found( $role_key );
-        }
-        if ( (string) $definition['status'] !== CustomRoleRepository::STATUS_ACTIVE ) {
-            throw CustomRoleAssignmentException::definition_not_active( $role_key );
-        }
-        $this->authorization->authorizeForObject( $actor_wp_user_id, $clinic_id, RolesAndCapabilities::CONFIG, (int) $definition['clinic_id'] );
-
-        // Bounded delegation (decision 4). The capability set was already
-        // re-filtered by the read path; every remaining capability still has to
-        // be one the assigner effectively holds in this Clinic.
-        $capabilities  = $definition['capabilities'];
-        $not_delegable = $this->not_delegable( $actor_wp_user_id, $clinic_id, $capabilities );
-        if ( $not_delegable !== [] ) {
-            throw CustomRoleAssignmentException::capability_not_delegable( $not_delegable );
-        }
-
-        $previous_role_key = (string) ( $target['role_key'] ?? '' );
-        $result            = [
-            'clinic_id'         => $clinic_id,
-            'membership_id'     => $membership_id,
-            'wp_user_id'        => $target_wp_user_id,
-            'role_key'          => $role_key,
-            'display_name'      => $definition['display_name'],
-            'capabilities'      => $capabilities,
-            'previous_role_key' => $previous_role_key,
-            'changed'           => true,
-        ];
-
-        if ( $previous_role_key === $role_key ) {
-            // No change to persist and therefore nothing to audit: report the
-            // no-op honestly instead of writing a change event that never happened.
-            $result['changed'] = false;
-
-            return $result;
-        }
-
-        $now = $this->db->nowUtcSql();
-
-        // One boundary: membership role update + mandatory audit event. A failed
-        // audit insert rolls the role update back (no partial assignment).
+        // Hold the definition row lock from the current-status check through
+        // membership mutation and audit. Lifecycle transitions take the same
+        // lock, so whichever request wins is revalidated by the one that waits.
         return $this->db->transactional(
-            function () use ( $actor_wp_user_id, $clinic_id, $membership_id, $target_wp_user_id, $role_key, $capabilities, $previous_role_key, $result, $now ): array {
+            function () use ( $actor_wp_user_id, $clinic_id, $target_wp_user_id, $role_key ): array {
+                $definition = $this->roles->definition_for_update( $clinic_id, $role_key );
+                if ( $definition === null ) {
+                    throw CustomRoleAssignmentException::definition_not_found( $role_key );
+                }
+
+                // Revalidate trusted Clinic management authority after any wait
+                // on the definition row, then check object ownership for both
+                // the persisted definition and target membership.
+                $this->require_management_authority( $actor_wp_user_id, $clinic_id );
+                $this->authorization->authorizeForObject(
+                    $actor_wp_user_id,
+                    $clinic_id,
+                    RolesAndCapabilities::CONFIG,
+                    (int) $definition['clinic_id']
+                );
+
+                if ( (string) $definition['status'] !== CustomRoleRepository::STATUS_ACTIVE ) {
+                    throw CustomRoleAssignmentException::definition_not_active( $role_key );
+                }
+
+                $target        = $this->memberships->find_active( $clinic_id, $target_wp_user_id );
+                $membership_id = $target === null ? 0 : (int) ( $target['id'] ?? 0 );
+                if ( $target === null || $membership_id <= 0 || (int) ( $target['clinic_id'] ?? 0 ) !== $clinic_id ) {
+                    throw CustomRoleAssignmentException::target_membership_required();
+                }
+                $this->authorization->authorizeForObject(
+                    $actor_wp_user_id,
+                    $clinic_id,
+                    RolesAndCapabilities::CONFIG,
+                    (int) $target['clinic_id']
+                );
+
+                // Bounded delegation is checked while the definition remains
+                // locked. A changed manager capability set cannot race a role
+                // status transition into an unauthorized membership write.
+                $capabilities  = $definition['capabilities'];
+                $not_delegable = $this->not_delegable( $actor_wp_user_id, $clinic_id, $capabilities );
+                if ( $not_delegable !== [] ) {
+                    throw CustomRoleAssignmentException::capability_not_delegable( $not_delegable );
+                }
+
+                $previous_role_key = (string) ( $target['role_key'] ?? '' );
+                $result            = [
+                    'clinic_id'         => $clinic_id,
+                    'membership_id'     => $membership_id,
+                    'wp_user_id'        => $target_wp_user_id,
+                    'role_key'          => $role_key,
+                    'display_name'      => $definition['display_name'],
+                    'capabilities'      => $capabilities,
+                    'previous_role_key' => $previous_role_key,
+                    'changed'           => true,
+                ];
+
+                if ( $previous_role_key === $role_key ) {
+                    $result['changed'] = false;
+
+                    return $result;
+                }
+
                 $updated = $this->memberships->update(
-                    [ 'role_key' => $role_key, 'updated_at' => $now ],
+                    [ 'role_key' => $role_key, 'updated_at' => $this->db->nowUtcSql() ],
                     [ 'id' => $membership_id ]
                 );
                 if ( $updated !== 1 ) {

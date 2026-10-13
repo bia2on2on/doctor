@@ -1518,7 +1518,7 @@ jobs:
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
       - name: Tooling (wp-cli + apache + playwright)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl faketime > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
@@ -2031,21 +2031,35 @@ jobs:
           fi
           test "${BROWSER_EXIT}" -eq 0
 
-      # Phase 11 Slice 1 — همان Chromium و همان وردپرس. تختهٔ پذیرش پورتال کارکنان:
-      # انتخاب الزامی Location (N>1)، نوبت‌های امروزِ همان Location، یک اقدام حضور
-      # با سرویس‌ها/گذارهای موجود، صف فقط‌خواندنی و حالت‌های خالی/خطا. بدون فریم‌ورک
-      # جدید و بدون توقف زمان.
+      # Phase 11 Slice 1 — keep PHP, Apache, and Chromium on the runner's ordinary
+      # wall clock. The fixture policy chooses a real future slot on the Location's
+      # TODAY and fails closed if the day no longer has the required browser runway;
+      # it never changes the day to make the acceptance pass.
       - name: Reception fixture — two Locations + today's booked rows + empty Location
         run: |
-          WP_HOME="$WP_DIR" php tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
+          # Keep the PHP CLI fatal/stack log because WordPress renders a generic error page.
+          : > /tmp/reception-php-error.log
+          WP_HOME="$WP_DIR" php -d log_errors=1 -d error_log=/tmp/reception-php-error.log tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
+          fixture_clocks="$(grep -E '^RECEPTION_FIXTURE_CLOCK_(BEFORE|AFTER)_WP_LOAD=' /tmp/reception-fixture.log 2>/dev/null | tr '\n' ';')"
+          echo "${fixture_clocks:-RECEPTION_FIXTURE_CLOCK_MARKERS=MISSING}"
+          php_error_kinds="$(grep -Eo 'PHP (Fatal error|Parse error|Warning|Notice)' /tmp/reception-php-error.log 2>/dev/null | sort -u | paste -sd ',' -)"
+          if [ -s /tmp/reception.env ]; then
+            env_bytes="$(wc -c < /tmp/reception.env)"
+          else
+            env_bytes=MISSING
+          fi
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
-            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reception.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reception-fixture.log 2>/dev/null | tr '\n' '~')"
+            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=${env_bytes} php_error_kinds=${php_error_kinds:-none}; raw fixture/PHP logs are not posted"
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/reception.env
           cat /tmp/reception.env >> "$GITHUB_ENV"
           grep '^RECEPTION_PUBLIC=' /tmp/reception.env
+
+      - name: Reception Apache/PHP preflight — normal wall clock
+        run: |
+          bash tests/bin/reception-http-probe.sh http://localhost:8080 before-browser "$WP_DIR" | tee /tmp/reception-http-before.log
 
       - name: Staff Portal Reception — real browser (390×844, 768×1024, 1366×768)
         env:
@@ -2062,6 +2076,22 @@ jobs:
             echo "::error::reception-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
           fi
           test "${BROWSER_EXIT}" -eq 0
+
+      - name: Reception Apache/PHP postflight — always
+        if: always()
+        run: |
+          bash tests/bin/reception-http-probe.sh http://localhost:8080 after-browser "$WP_DIR" | tee /tmp/reception-http-after.log
+
+      - name: Restore Apache wall clock after Reception acceptance
+        if: always()
+        run: |
+          if [ -s /tmp/reception-apache-envvars.original ]; then
+            sudo cp /tmp/reception-apache-envvars.original /etc/apache2/envvars
+            sudo service apache2 restart
+            echo 'Apache wall clock restored after Reception acceptance.'
+          else
+            echo 'Reception clock override was not installed; nothing to restore.'
+          fi
 
       # Phase 14 Slice 1 (multi-Clinic repair) — همان Chromium و همان وردپرس. ماژول
       # گزارش‌ها: یک Clinic مجاز (خودکار) / دو Clinic مجاز (انتخاب صریح، بدون پیش‌فرض)
@@ -2254,6 +2284,10 @@ jobs:
           {
             echo "### Phase 11 Slice 1 Reception Arrival Board browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
             echo '```'
+            echo '--- PHP fixture clock around WordPress bootstrap ---'
+            grep '^RECEPTION_FIXTURE_CLOCK_' /tmp/reception-fixture.log 2>/dev/null || echo '(fixture clock markers missing)'
+            echo '--- bounded Apache/PHP probes (route/status/latency/process state only) ---'
+            cat /tmp/reception-http-before.log /tmp/reception-http-after.log 2>/dev/null || echo '(HTTP probe output missing)'
             echo '--- fixture public ids only ---'
             grep '^RECEPTION_PUBLIC=' /tmp/reception.env 2>/dev/null || echo '(RECEPTION_PUBLIC not produced — reception NOT exercised)'
             echo '--- PASS/FAIL/INFO/SHOT ---'
@@ -2278,18 +2312,22 @@ jobs:
                      /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
                      /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
                      /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log /tmp/reception.log /tmp/reception-fixture.log; do
+                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log; do
               if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
             done
             echo '--- apache diagnostics ---'
             sudo apache2ctl configtest 2>&1 | tail -5
             sudo service apache2 status 2>&1 | tail -3
             sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
+            for apache_log in /var/log/apache2/pilot-error.log /var/log/apache2/error.log; do
+              if [ -r "$apache_log" ]; then
+                for error_kind in 'PHP Fatal error' 'PHP Parse error' 'PHP Warning' 'PHP Notice' 'AH[0-9]{5}:'; do
+                  error_count="$(grep -Ec "$error_kind" "$apache_log" 2>/dev/null || true)"
+                  echo "apache_log=$(basename "$apache_log") category=$error_kind count=$error_count"
+                done
+              fi
+            done
             ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
-            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
-            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
             sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'

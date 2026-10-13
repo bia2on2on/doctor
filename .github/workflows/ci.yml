@@ -185,6 +185,52 @@ jobs:
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
 
+      # Run the repaired race alone first so a suite-level green cannot hide
+      # skipped execution or missing lock evidence. The full Integration suite
+      # runs immediately afterward against the same real MySQL service.
+      - name: Run focused custom-role lock-wait race
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --filter 'testAssignmentWaitsForLockedDefinitionAndRevalidatesAfterDeactivation' \
+            --log-junit /tmp/custom-role-race-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleLifecycleTest.php 2>&1 | tee /tmp/custom-role-race.log
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          root = ET.parse('/tmp/custom-role-race-junit.xml').getroot()
+          cases = root.findall('.//testcase')
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          failures = sum(case.find('failure') is not None for case in cases)
+          errors = sum(case.find('error') is not None for case in cases)
+          print(f'Focused concurrency JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) != 1 or skipped or failures or errors:
+              sys.exit('Focused concurrency test must execute exactly once without skip/failure/error.')
+          PY
+          if ! grep -qE '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)' /tmp/custom-role-race.log; then
+            echo '::error::Focused PHPUnit run ended without a terminal summary.'
+            exit 1
+          fi
+          if ! grep -q '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log; then
+            echo '::error::Focused race completed without its required exact-connection/lock-edge evidence.'
+            exit 1
+          fi
+          grep -m1 '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log > /tmp/custom-role-race-evidence.txt
+          {
+            echo "### Slice 4A exact MySQL concurrency evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            echo '```'
+            cat /tmp/custom-role-race-evidence.txt
+            echo '```'
+          } > /tmp/custom-role-race-pr.md
+          cat /tmp/custom-role-race-pr.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-race-pr.md \
+              || { echo '::error::Could not mirror the focused race evidence to the PR.'; exit 1; }
+          fi
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests
@@ -211,6 +257,8 @@ jobs:
         with:
           name: integration-phpunit-log-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            /tmp/custom-role-race.log
+            /tmp/custom-role-race-junit.xml
             /tmp/phpunit-int.log
             /tmp/phpunit-int-junit.xml
           if-no-files-found: warn

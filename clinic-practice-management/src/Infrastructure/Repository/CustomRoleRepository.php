@@ -158,6 +158,57 @@ final class CustomRoleRepository {
     }
 
     /**
+     * Current definition and permitted capabilities under an InnoDB row lock.
+     * Callers must hold this read inside a transaction and retain the lock
+     * through the lifecycle or assignment decision and write.
+     *
+     * @return array{clinic_id:int, id:int, role_key:string, display_name:string|null, status:string, version:int, capabilities:list<string>}|null
+     */
+    public function definition_for_update( int $clinic_id, string $role_key ): ?array {
+        if ( $clinic_id <= 0 || ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            return null;
+        }
+
+        $definition_id = (int) $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' WHERE clinic_id = %d AND role_key = %s LIMIT 1',
+            [ $clinic_id, $role_key ]
+        );
+        if ( $definition_id <= 0 ) {
+            return null;
+        }
+
+        // Resolve the immutable key first, then take the locking read by primary
+        // key. A waiting transaction reads the current committed status/version
+        // after the lock is granted, not the earlier consistent-read snapshot.
+        $row = $this->db->fetchRowForUpdate(
+            'SELECT id, clinic_id, role_key, display_name, status, version FROM ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [ $definition_id, $clinic_id ]
+        );
+        if ( $row === null ) {
+            return null;
+        }
+
+        $id           = (int) ( $row['id'] ?? 0 );
+        $owner_clinic = (int) ( $row['clinic_id'] ?? 0 );
+        if ( $id <= 0 || $id !== $definition_id || $owner_clinic !== $clinic_id
+            || (string) ( $row['role_key'] ?? '' ) !== $role_key ) {
+            return null;
+        }
+
+        return [
+            'clinic_id'    => $owner_clinic,
+            'id'           => $id,
+            'role_key'     => (string) ( $row['role_key'] ?? '' ),
+            'display_name' => self::normalize_stored_display_name( $row['display_name'] ?? null ),
+            'status'       => self::STATUS_INACTIVE === (string) ( $row['status'] ?? '' ) ? self::STATUS_INACTIVE : self::STATUS_ACTIVE,
+            'version'      => (int) ( $row['version'] ?? 0 ),
+            'capabilities' => CustomRolePolicy::sanitize_capability_set( $this->stored_capabilities( $id ) ),
+        ];
+    }
+
+    /**
      * Set/refresh the human-facing display name of an existing definition.
      *
      * The technical `role_key` and the capability set are untouched: a rename
@@ -309,12 +360,45 @@ final class CustomRoleRepository {
     }
 
     /**
-     * Activate/deactivate a definition (lifecycle primitive for future
-     * management slices; NOT an archive operation). Inactive definitions supply
-     * no permissions. Versioned, forward-only.
+     * Version-checked status transition. The authorized application service
+     * owns the surrounding transaction, row lock, revalidation and audit event.
+     * This repository primitive never deletes definitions or capability rows.
      *
-     * @throws \InvalidArgumentException invalid Clinic, role key, or status
+     * @throws \InvalidArgumentException invalid Clinic, key, or status
+     */
+    public function transition_status(
+        int $clinic_id,
+        string $role_key,
+        string $expected_status,
+        string $status,
+        int $expected_version
+    ): bool {
+        if ( $clinic_id <= 0 || ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
+            throw new \InvalidArgumentException( 'invalid Clinic or custom role key for status transition' );
+        }
+        if ( ! in_array( $expected_status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true )
+            || ! in_array( $status, [ self::STATUS_ACTIVE, self::STATUS_INACTIVE ], true ) ) {
+            throw new \InvalidArgumentException( 'status must be active or inactive' );
+        }
+        if ( $expected_version <= 0 ) {
+            return false;
+        }
+
+        $updated = $this->db->execute(
+            'UPDATE ' . $this->db->table( 'cpms_custom_role_defs' ) .
+            ' SET status = %s, version = version + 1, updated_at = %s' .
+            ' WHERE clinic_id = %d AND role_key = %s AND status = %s AND version = %d',
+            [ $status, $this->db->nowUtcSql(), $clinic_id, $role_key, $expected_status, $expected_version ]
+        );
+
+        return $updated === 1;
+    }
+
+    /**
+     * Legacy repository primitive retained for existing internal fixtures.
+     * Production management transitions use the version-checked service path.
      *
+     * @throws \InvalidArgumentException invalid Clinic, key, or status
      * @return bool false when no such definition exists
      */
     public function set_status( int $clinic_id, string $role_key, string $status ): bool {
