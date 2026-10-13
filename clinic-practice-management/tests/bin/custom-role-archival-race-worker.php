@@ -74,9 +74,22 @@ if (!is_file($autoload)) {
 try {
     // Buffer the bootstrap output: only protocol lines may reach stdout.
     ob_start();
+    /*
+     * The composer autoloader must be loaded BEFORE the WordPress test
+     * bootstrap: that bootstrap refuses to run when it cannot see PHPUnit
+     * ("Looks like you're using PHPUnit 0. WordPress requires at least PHPUnit
+     * 5.7.21.") and it is the autoloader that makes PHPUnit\Runner\Version
+     * visible. The repository's own standalone probe loads it in this order.
+     */
+    require_once $autoload;
+    $polyfills = $pluginRoot . '/vendor/yoast/phpunit-polyfills/phpunitpolyfills-autoload.php';
+    if (is_file($polyfills)) {
+        require_once $polyfills;
+    } elseif (!defined('WP_TESTS_PHPUNIT_POLYFILLS_PATH')) {
+        define('WP_TESTS_PHPUNIT_POLYFILLS_PATH', $pluginRoot . '/vendor/yoast/phpunit-polyfills');
+    }
     require_once $testsDir . '/includes/functions.php';
     require_once $testsDir . '/includes/bootstrap.php';
-    require_once $autoload;
     ob_end_clean();
 } catch (\Throwable $bootstrapFailure) {
     while (ob_get_level() > 0) {
