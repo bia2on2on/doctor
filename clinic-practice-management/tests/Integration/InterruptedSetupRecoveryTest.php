@@ -559,6 +559,154 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Actor continuity (cross-administrator takeover regression).
+    // ------------------------------------------------------------------
+
+    public function testCrossAdminRecoveryDeniedAndOriginalAdminStillSucceeds(): void
+    {
+        $this->resetClinicActivityFixture();
+        $admin_a = $this->makeUser('rec_a_', 'administrator');
+        $admin_b = $this->makeUser('rec_b_', 'administrator');
+        $this->seedSetupOnlyHistory($admin_a);
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        // Admin B did not start this setup: recovery is a takeover and is denied.
+        $this->assertRecoveryDenied($service, $admin_b);
+        self::assertSame(0, $this->membershipCount(), 'cross-admin attempt must not mutate memberships');
+
+        // The historical actor can still complete their own interrupted setup.
+        $result = $service->recover($admin_a, $this->clinic_id, 'مطب مدیر اول');
+        self::assertGreaterThan(0, $result['membership_id']);
+        $membership = App::membership_service()->membership_for($this->clinic_id, $admin_a);
+        self::assertIsArray($membership);
+        self::assertSame('cpms_manager', (string) $membership['role_key']);
+        self::assertNull(App::membership_service()->membership_for($this->clinic_id, $admin_b), 'Admin B must never gain membership');
+    }
+
+    public function testMixedAdminHistoryDeniedForBothAdmins(): void
+    {
+        $admin_a = $this->makeUser('rec_mix_a_', 'administrator');
+        $admin_b = $this->makeUser('rec_mix_b_', 'administrator');
+        $this->seedSetupOnlyHistory($admin_a);
+        // A second administrator also wrote a recognized setup key: ownership is ambiguous.
+        App::audit()->log(
+            'SETTING_UPDATE',
+            ['wp_user_id' => $admin_b, 'role' => 'administrator'],
+            'setting',
+            null,
+            null,
+            ['setting' => 'setup.current_step', 'value' => 'booking'],
+            ['setting' => 'setup.current_step', 'value' => 'sms'],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'mixed A/B history must fail closed');
+        $this->assertRecoveryDenied($service, $admin_a);
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    public function testRecoveryDeniedWhenHistoricalActorAccountDeleted(): void
+    {
+        $admin_a = $this->makeUser('rec_del_a_', 'administrator');
+        $admin_b = $this->makeUser('rec_del_b_', 'administrator');
+        $this->seedSetupOnlyHistory($admin_a);
+        $this->markClaimed();
+
+        require_once ABSPATH . 'wp-admin/includes/user.php';
+        self::assertTrue((bool) wp_delete_user($admin_a));
+        self::assertFalse(get_userdata($admin_a));
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'deleted historical actor must fail closed');
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    public function testRecoveryDeniedWithInvalidHistoricalActorId(): void
+    {
+        $admin_b = $this->makeUser('rec_inv_b_', 'administrator');
+        // Structurally valid setup rows attributed to a non-existent user id.
+        App::audit()->log(
+            'SETTING_UPDATE',
+            ['wp_user_id' => 999999, 'role' => 'administrator'],
+            'setting',
+            null,
+            null,
+            ['setting' => 'setup.started_at', 'value' => ''],
+            ['setting' => 'setup.started_at', 'value' => '2026-10-01T00:00:00+00:00'],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'invalid historical actor id must fail closed');
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    public function testRecoveryDeniedWithSystemOnlyHistory(): void
+    {
+        $admin_b = $this->makeUser('rec_sys_b_', 'administrator');
+        // Unattributed/system setup rows establish no ownership at all.
+        App::audit()->log(
+            'SETTING_UPDATE',
+            null,
+            'setting',
+            null,
+            null,
+            ['setting' => 'setup.started_at', 'value' => ''],
+            ['setting' => 'setup.started_at', 'value' => '2026-10-01T00:00:00+00:00'],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'system-only history must fail closed');
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    public function testRecoveryDeniedWhenHistoricalActorNoLongerAdmin(): void
+    {
+        $admin_a = $this->makeUser('rec_dem_a_', 'administrator');
+        $admin_b = $this->makeUser('rec_dem_b_', 'administrator');
+        $this->seedSetupOnlyHistory($admin_a);
+        $this->markClaimed();
+
+        $user_a = get_userdata($admin_a);
+        self::assertNotFalse($user_a);
+        $user_a->set_role('subscriber');
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'historical actor without manage_options must fail closed');
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    public function testRecoveryDeniedWhenPersistedSettingActorContradictsAuditActor(): void
+    {
+        $this->resetClinicActivityFixture();
+        $admin_a = $this->makeUser('rec_set_a_', 'administrator');
+        $admin_b = $this->makeUser('rec_set_b_', 'administrator');
+        $this->seedSetupOnlyHistory($admin_a);
+        // Persisted setup setting last written by a different administrator:
+        // ownership evidence contradicts the audit actor.
+        $now = App::db()->nowUtcSql();
+        App::db()->query(
+            'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, created_at, updated_at) VALUES (%d, %s, %s, %d, %s, %s)',
+            [$this->clinic_id, 'setup.current_step', '"booking"', $admin_b, $now, $now]
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'contradictory setting actor must fail closed');
+        $this->assertRecoveryDenied($service, $admin_a);
+        $this->assertRecoveryDenied($service, $admin_b);
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
