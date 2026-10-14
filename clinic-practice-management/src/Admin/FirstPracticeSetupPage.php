@@ -44,17 +44,16 @@ final class FirstPracticeSetupPage {
 
     public static function menu(): void {
         // The CPMS wizard is the single VISIBLE setup entry point. This page
-        // stays registered so legacy direct URLs keep resolving safely, but
-        // it is immediately removed from the visible submenu.
+        // stays registered under an empty parent (hidden page) so legacy
+        // direct URLs keep resolving safely without a second visible menu.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            '',
             __( 'راه‌اندازی مطب من', 'cpms' ),
             __( 'راه‌اندازی مطب من', 'cpms' ),
             'manage_options',
             self::PAGE_SLUG,
             [self::class, 'render']
         );
-        remove_submenu_page( CpmsAdminMenu::parentSlug(), self::PAGE_SLUG );
     }
 
     public static function render(): void {
