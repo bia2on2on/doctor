@@ -286,7 +286,7 @@ jobs:
           failures = sum(case.find('failure') is not None for case in cases)
           errors = sum(case.find('error') is not None for case in cases)
           print(f'MariaDB first-practice onboarding JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
-          if len(cases) < 19 or skipped or failures or errors:
+          if len(cases) < 22 or skipped or failures or errors:
               sys.exit('All first-practice onboarding tests must execute on MariaDB 11.4.13 without skips or failures.')
           PY
 

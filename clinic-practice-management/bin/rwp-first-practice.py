@@ -186,6 +186,29 @@ def wp_eval(code, extra_env=None):
     return result.stdout
 
 
+def debug_log_path():
+    if not WP_DIR:
+        return ""
+    return os.path.join(WP_DIR, "wp-content", "debug.log")
+
+
+def uncaught_debug_excerpt(max_chars=800):
+    """Return redacted fatal/uncaught lines from WP debug.log (empty if none)."""
+    path = debug_log_path()
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    lines = [
+        ln for ln in text.splitlines()
+        if re.search(r"PHP Fatal error|Uncaught|There has been a critical error", ln)
+    ]
+    return redact_evidence("\n".join(lines[-12:]))[:max_chars]
+
+
 def db_snapshot():
     code = r'''
 $db = \ClinicCore\Bootstrap\App::db();
@@ -721,31 +744,50 @@ with sync_playwright() as p:
         check("suspended.takeover_denied", False, type(exc).__name__)
 
     # --- Multi-Clinic takeover (isolated fixture) ---
+    # A WordPress recovery/critical-error screen is NOT fail-closed authorization.
     try:
         apply_fixture("reset_unclaimed")
         apply_fixture("multiclinic")
         multi_ctx = new_persona_context(browser)
         multi_page = multi_ctx.new_page()
         if login(multi_page, ADMIN_USER, ADMIN_PASS, "admin-multiclinic"):
-            resp = multi_page.goto(
-                f"{BASE}/wp-admin/admin.php?page=cpms-first-practice-setup",
-                wait_until="domcontentloaded",
+            for path, shot_name in (
+                ("index.php", "multiclinic-wp-admin"),
+                ("plugins.php", "multiclinic-plugins"),
+                ("admin.php?page=cpms-dashboard", "multiclinic-dashboard"),
+                ("admin.php?page=cpms-wizard&step=clinic", "multiclinic-wizard-clinic"),
+                ("admin.php?page=cpms-first-practice-setup", "multiclinic-first-practice"),
+            ):
+                status, body = goto_admin(multi_page, "admin-multiclinic", path, shot_name)
+                excerpt = uncaught_debug_excerpt()
+                check(
+                    f"admin-multiclinic.{shot_name}.no_uncaught_php",
+                    excerpt == "",
+                    excerpt or "debug.log has no uncaught/fatal lines",
+                )
+                check(
+                    f"admin-multiclinic.{shot_name}.no_recovery_screen",
+                    "There has been a critical error" not in (body or "")
+                    and "خطای بحرانی" not in (body or ""),
+                    f"HTTP {status}",
+                )
+            status, body = goto_admin(
+                multi_page, "admin-multiclinic",
+                "admin.php?page=cpms-first-practice-setup",
+                "multiclinic-first-practice-feedback",
             )
-            multi_page.wait_for_timeout(800)
-            status = resp.status if resp else 0
-            body = multi_page.content()
-            shot(multi_page, "multiclinic-first-practice")
-            recovery = "There has been a critical error" in (body or "") or "خطای بحرانی" in (body or "")
-            check("admin-multiclinic.multiclinic-first-practice.reachable_or_fail_closed",
-                  status in (200, 403, 500) and (
-                      recovery
-                      or query_page(multi_page.url) == "cpms-first-practice-setup"
-                      or "wp-login.php" in multi_page.url
-                  ),
-                  "HTTP {0}; recovery={1}".format(status, recovery))
             check("multiclinic.form_absent",
-                  recovery or multi_page.locator('input[name="confirm_identity"]').count() == 0,
+                  multi_page.locator('input[name="confirm_identity"]').count() == 0,
                   "multi-clinic installation is never bootstrap-claimable")
+            check("multiclinic.no_clinic_save_form",
+                  multi_page.locator('input[name="clinic_name"]').count() == 0,
+                  "no Clinic save form on the bootstrap page")
+            check(
+                "multiclinic.actionable_authorization_feedback",
+                body_has(body, "راه‌اندازی اولیه در دسترس نیست")
+                or multi_page.locator('[data-cpms-scope-required="1"]').count() >= 1,
+                "clear authorization feedback, not a crash",
+            )
             nonce, _uid = create_nonce_for(ADMIN_USER)
             before = db_snapshot()
             post_admin_first_practice(multi_page, nonce, clinic_id, True, "مطب چندکلینیکی")
