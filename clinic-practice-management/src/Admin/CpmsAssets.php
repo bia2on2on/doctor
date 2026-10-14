@@ -21,6 +21,7 @@ final class CpmsAssets
     private const PAGES = [
         'cpms-dashboard',
         'cpms-wizard',
+        'cpms-first-practice-setup',
         'cpms-staff',
         'cpms-clinicians',
         'cpms-roles',

@@ -76,7 +76,9 @@ final class FirstPracticeSetupPage {
             echo '<div class="notice notice-warning inline"><p>';
             echo esc_html__( 'راه‌اندازی اولیه در دسترس نیست. این مطب قبلاً راه‌اندازی شده است یا نصب در حالت تک‌مطبِ اولیه نیست. برای مدیریت پرسنل از صفحهٔ «کاربران و دسترسی‌ها» استفاده کنید.', 'cpms' );
             echo '</p><p><a class="button button-primary" href="' . esc_url( admin_url( 'admin.php?page=cpms-staff' ) ) . '">';
-            echo esc_html__( 'ادامه به کاربران و دسترسی‌ها', 'cpms' ) . '</a></p></div>';
+            echo esc_html__( 'ادامه به کاربران و دسترسی‌ها', 'cpms' ) . '</a> ';
+            echo '<a class="button" href="' . esc_url( admin_url( 'admin.php?page=' . CpmsSetupWizard::PAGE_SLUG ) ) . '">';
+            echo esc_html__( 'ادامه در ویزارد راه‌اندازی', 'cpms' ) . '</a></p></div>';
             echo '</div>';
 
             return;

@@ -265,6 +265,31 @@ jobs:
               sys.exit('All migration tests must execute on MariaDB 11.4.13 without skips or failures.')
           PY
 
+      - name: Run focused first-practice onboarding on MariaDB 11.4.13
+        env:
+          WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/first-practice-mariadb-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/FirstPracticeSetupTest.php 2>&1 | tee /tmp/first-practice-mariadb.log
+          if ! grep -qE '^(OK \(|OK, but)' /tmp/first-practice-mariadb.log; then
+            echo '::error::MariaDB first-practice onboarding suite did not finish with a passing PHPUnit summary.'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse('/tmp/first-practice-mariadb-junit.xml').getroot().findall('.//testcase')
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          failures = sum(case.find('failure') is not None for case in cases)
+          errors = sum(case.find('error') is not None for case in cases)
+          print(f'MariaDB first-practice onboarding JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) < 19 or skipped or failures or errors:
+              sys.exit('All first-practice onboarding tests must execute on MariaDB 11.4.13 without skips or failures.')
+          PY
+
       - name: Preserve MariaDB migration evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -273,6 +298,8 @@ jobs:
           path: |
             /tmp/custom-role-mariadb.log
             /tmp/custom-role-mariadb-junit.xml
+            /tmp/first-practice-mariadb.log
+            /tmp/first-practice-mariadb-junit.xml
           if-no-files-found: warn
 
       # Run the repaired race alone first so a suite-level green cannot hide
@@ -709,9 +736,18 @@ jobs:
               grep '^testsuite ' "$SPLIT" | grep 'StandaloneShellProofTest' || echo '(StandaloneShellProofTest suite missing from junit)'
               echo '--- Standalone Shell proof testcases ---'
               grep '^testcase ' "$SPLIT" | grep 'StandaloneShellProofTest' || true
+              echo '--- First-Practice Onboarding suites on MySQL 8.0 (selection + execution proof) ---'
+              grep '^testsuite ' "$SPLIT" | grep -E 'FirstPracticeSetupTest|AdminMenuTest|SetupWizardTest' || true
+              echo '--- First-Practice Onboarding testcases on MySQL 8.0 ---'
+              grep '^testcase ' "$SPLIT" | grep 'FirstPracticeSetupTest' || true
               rm -f "$SPLIT"
             else
               echo '(junit xml missing — run may have terminated prematurely)'
+            fi
+            if [ -f /tmp/first-practice-mariadb.log ]; then
+              echo '--- First-Practice Onboarding on MariaDB 11.4.13 ---'
+              grep -E '^(OK \(|Tests: |FAILURES!)' /tmp/first-practice-mariadb.log || true
+              tail -n 20 /tmp/first-practice-mariadb.log
             fi
             echo '--- CPMS_CONN_DIAG (bounded connection diagnostics; sanitized, no SQL values) ---'
             grep -m 60 'CPMS_CONN_DIAG ' /tmp/phpunit-int.log || echo '(no CPMS_CONN_DIAG lines: diagnostics did not run)'
@@ -732,15 +768,21 @@ jobs:
           {
             echo "### Integration test failures (run ${{ github.run_id }})"
             echo '```'
-            echo "--- SUMMARY ---"
-            grep -E "^(Tests:|OK \()" /tmp/phpunit-int.log | tail -n 2
-            echo "--- FAILURE/ERROR DETAILS (test + message + location) ---"
-            awk '/^There (were|was)/{flag=1;next}/^--$/{}flag' /tmp/phpunit-int.log \
-              | grep -B 1 -A 8 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 300
-            echo "--- TAIL (last 40 lines) ---"
-            tail -n 40 /tmp/phpunit-int.log
-            echo "--- FK EVIDENCE: verbose wpdb SQL errors ---"
-            grep -B 1 -A 3 -iE "foreign key constraint" /tmp/phpunit-int.log | grep -vE '^--$' | head -n 100 || true
+            if [ -f /tmp/first-practice-mariadb.log ]; then
+              echo "--- MARIADB 11.4.13 FIRST-PRACTICE ONBOARDING LOG ---"
+              tail -n 80 /tmp/first-practice-mariadb.log
+            fi
+            if [ -f /tmp/phpunit-int.log ]; then
+              echo "--- SUMMARY ---"
+              grep -E "^(Tests:|OK \()" /tmp/phpunit-int.log | tail -n 2 || true
+              echo "--- FAILURE/ERROR DETAILS (test + message + location) ---"
+              awk '/^There (were|was)/{flag=1;next}/^--$/{}flag' /tmp/phpunit-int.log \
+                | grep -B 1 -A 8 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 300 || true
+              echo "--- TAIL (last 40 lines) ---"
+              tail -n 40 /tmp/phpunit-int.log || true
+              echo "--- FK EVIDENCE: verbose wpdb SQL errors ---"
+              grep -B 1 -A 3 -iE "foreign key constraint" /tmp/phpunit-int.log | grep -vE '^--$' | head -n 100 || true
+            fi
             echo "--- FK EVIDENCE: InnoDB LATEST FOREIGN KEY ERROR ---"
             php -r '$m=@mysqli_connect("127.0.0.1","root","root","wordpress_test"); if(!$m){echo "(no mysqli connection)\n"; exit(0);} $r=@mysqli_query($m,"SHOW ENGINE INNODB STATUS"); if(!$r){echo "(innodb status query failed)\n"); exit(0);} $row=mysqli_fetch_assoc($r); $t=(string)($row["Status"] ?? ""); if(preg_match("/LATEST FOREIGN KEY ERROR:.*?(?=\n-----)/s",$t,$mm)){echo $mm[0]."\n";}else{echo "(no FK section in InnoDB status)\n";}' || true
             echo '```'

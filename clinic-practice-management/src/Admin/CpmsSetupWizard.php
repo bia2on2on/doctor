@@ -129,6 +129,16 @@ final class CpmsSetupWizard
                 <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — کلینیک برای شروع عملیات آماده است.</p></div>
             <?php endif; ?>
 
+            <?php if ( CpmsAdminMenu::is_first_practice_setup_pending() ) : ?>
+                <div class="notice notice-info">
+                    <p>
+                        <strong>راه‌اندازی اولین مطب:</strong>
+                        پیش از ویرایش مشخصات کلینیک در این ویزارد، ابتدا هویت مطب اولیه و عضویت مدیریتی خود را در صفحهٔ اختصاصی تأیید کنید.
+                        <a class="button button-primary" data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">راه‌اندازی مطب من</a>
+                    </p>
+                </div>
+            <?php endif; ?>
+
             <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
                 <?php foreach ($steps as $i => $s) : ?>
                     <?php
@@ -311,6 +321,27 @@ final class CpmsSetupWizard
 
     private static function renderClinic(Settings $settings): void
     {
+        if ( CpmsAdminMenu::is_first_practice_setup_pending() ) {
+            ?>
+            <div class="card">
+                <h2>مشخصات کلینیک — نیازمند راه‌اندازی اولین مطب</h2>
+                <p>در نصب تازه، پیش از ویرایش مشخصات کلینیک باید هویت مطب اولیه را تأیید کنید تا عضویت مدیریتی شما در کلینیک به صورت رسمی ثبت شود.</p>
+                <p>
+                    <a class="button button-primary" data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">رفتن به «راه‌اندازی مطب من»</a>
+                </p>
+            </div>
+            <?php
+            return;
+        }
+
+        if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
+            ?>
+            <div class="notice notice-warning">
+                <p>برای ذخیرهٔ مشخصات کلینیک، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</p>
+            </div>
+            <?php
+        }
+
         // Canonical source: cpms_clinics — no longer setup.clinic.* as second writable canonical.
         // Historical setup.clinic.* rows are not deleted, but we do not read them for display as primary;
         // we show canonical values. Fallback to old settings only if canonical unavailable (e.g. pre-migration).
@@ -553,6 +584,7 @@ final class CpmsSetupWizard
         }
 
         $can_manage_scoped_clinic = ClinicianAdminPage::can_current_user_access_page();
+        $first_practice_pending   = CpmsAdminMenu::is_first_practice_setup_pending();
         ?>
         <ul class="cpms-wizard-prerequisite-actions">
             <?php if ( $clinic_missing ) : ?>
@@ -560,6 +592,8 @@ final class CpmsSetupWizard
                     اطلاعات کلینیک ثبت نشده است.
                     <?php if ( $can_manage_scoped_clinic ) : ?>
                         <a data-cpms-wizard-action="clinic" href="<?php echo esc_url( self::step_url( 'clinic' ) ); ?>">اصلاح مشخصات کلینیک</a>
+                    <?php elseif ( $first_practice_pending ) : ?>
+                        <a data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">راه‌اندازی اولین مطب</a>
                     <?php else : ?>
                         <span>برای اصلاح، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
@@ -570,6 +604,8 @@ final class CpmsSetupWizard
                     پزشک فعالی ثبت نشده است.
                     <?php if ( $can_manage_scoped_clinic ) : ?>
                         <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">افزودن/مدیریت پزشک</a>
+                    <?php elseif ( $first_practice_pending ) : ?>
+                        <a data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">ابتدا اولین مطب را راه‌اندازی کنید</a>
                     <?php else : ?>
                         <span>برای مدیریت پزشکان، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
@@ -642,6 +678,11 @@ final class CpmsSetupWizard
             || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['_wpnonce'])), 'cpms_wizard_save')
         ) {
             wp_die('اعتبارسنجی ناموفق', 403);
+        }
+
+        if ( CpmsAdminMenu::is_first_practice_setup_pending() ) {
+            wp_safe_redirect( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) );
+            return;
         }
 
         $settings = App::settings();
