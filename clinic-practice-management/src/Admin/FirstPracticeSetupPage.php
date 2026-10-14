@@ -73,7 +73,7 @@ final class FirstPracticeSetupPage {
         echo '</p></div>';
 
         if ( $candidate === null ) {
-            echo '<div class="notice notice-warning inline"><p>';
+            echo '<div class="notice notice-warning inline" data-cpms-scope-required="1"><p>';
             echo esc_html__( 'راه‌اندازی اولیه در دسترس نیست. این مطب قبلاً راه‌اندازی شده است یا نصب در حالت تک‌مطبِ اولیه نیست. برای مدیریت پرسنل از صفحهٔ «کاربران و دسترسی‌ها» استفاده کنید.', 'cpms' );
             echo '</p><p><a class="button button-primary" href="' . esc_url( admin_url( 'admin.php?page=cpms-staff' ) ) . '">';
             echo esc_html__( 'ادامه به کاربران و دسترسی‌ها', 'cpms' ) . '</a> ';

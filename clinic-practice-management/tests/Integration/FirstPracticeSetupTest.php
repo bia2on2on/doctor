@@ -1028,6 +1028,75 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // 22 — multi-Clinic wp-admin chrome must not throw. A crash is not
+    //      fail-closed authorization (WordPress recovery screen).
+    // ------------------------------------------------------------------
+
+    public function testTwoClinicsWithNoMembershipsDoNotCrashAdminChrome(): void
+    {
+        $actor = $this->makeUser('fp_mc0_', 'administrator');
+        $clinicId = (int) $this->seed_baseline['clinic_id'];
+        $this->makeSecondClinic('fp-mc0');
+        App::resetScope();
+
+        $this->assertAdminChromeDoesNotThrow($actor, 'two-clinics-no-memberships');
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships')
+        ));
+        self::assertNull(App::db()->fetchValue(
+            'SELECT first_setup_claimed_at FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$clinicId]
+        ));
+    }
+
+    public function testTwoClinicsWithMembershipInOneDoNotCrashAdminChrome(): void
+    {
+        $actor = $this->makeUser('fp_mc1_', 'administrator');
+        $clinicId = (int) $this->seed_baseline['clinic_id'];
+        $secondId = $this->makeSecondClinic('fp-mc1');
+        App::membership_service()->create_membership(
+            $clinicId,
+            $actor,
+            RolesAndCapabilities::ROLE_MANAGER
+        );
+        App::resetScope();
+
+        $this->assertAdminChromeDoesNotThrow($actor, 'two-clinics-membership-in-one');
+        self::assertNotNull(App::membership_service()->membership_for($clinicId, $actor));
+        self::assertNull(App::membership_service()->membership_for($secondId, $actor));
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships')
+        ));
+    }
+
+    public function testTwoClinicsWithMembershipsInBothDoNotCrashAdminChrome(): void
+    {
+        $actor = $this->makeUser('fp_mc2_', 'administrator');
+        $clinicId = (int) $this->seed_baseline['clinic_id'];
+        $secondId = $this->makeSecondClinic('fp-mc2');
+        App::membership_service()->create_membership(
+            $clinicId,
+            $actor,
+            RolesAndCapabilities::ROLE_MANAGER
+        );
+        App::membership_service()->create_membership(
+            $secondId,
+            $actor,
+            RolesAndCapabilities::ROLE_MANAGER
+        );
+        App::resetScope();
+
+        $this->assertAdminChromeDoesNotThrow($actor, 'two-clinics-memberships-in-both');
+        self::assertSame(2, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships')
+        ));
+        self::assertNull(App::db()->fetchValue(
+            'SELECT first_setup_claimed_at FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$clinicId]
+        ));
+    }
+
+    // ------------------------------------------------------------------
     // Helpers.
     // ------------------------------------------------------------------
 
@@ -1129,6 +1198,89 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
                 ob_end_clean();
             }
         }
+    }
+
+    /**
+     * Ordinary wp-admin surfaces must render without an uncaught exception.
+     * A crash (WordPress recovery) is not fail-closed authorization.
+     */
+    private function assertAdminChromeDoesNotThrow(int $actor, string $scenario): void
+    {
+        wp_set_current_user($actor);
+        delete_transient('cpms_onboarding_seen');
+        App::resetScope();
+
+        $noticeHtml = $this->renderAdminSurface(
+            $scenario . '.onboardingNotice',
+            static function (): void {
+                CpmsAdminMenu::onboardingNotice();
+            }
+        );
+        $links = null;
+        try {
+            $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        } catch (\Throwable $e) {
+            self::fail($scenario . '.actionLinks threw ' . $e::class . ': ' . $e->getMessage());
+        }
+        self::assertIsArray($links);
+        $joinedLinks = implode(' ', $links);
+        self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $joinedLinks);
+
+        $dashboardHtml = $this->renderAdminSurface(
+            $scenario . '.dashboard',
+            static function (): void {
+                CpmsDashboard::render();
+            }
+        );
+        $_GET['step'] = 'clinic';
+        $wizardHtml = $this->renderAdminSurface(
+            $scenario . '.wizard',
+            static function (): void {
+                CpmsSetupWizard::render();
+            }
+        );
+        $setupHtml = $this->renderAdminSurface(
+            $scenario . '.firstPractice',
+            static function (): void {
+                FirstPracticeSetupPage::render();
+            }
+        );
+
+        foreach (
+            [
+                'notice'    => $noticeHtml,
+                'dashboard' => $dashboardHtml,
+                'wizard'    => $wizardHtml,
+                'setup'     => $setupHtml,
+            ] as $label => $html
+        ) {
+            self::assertStringNotContainsString(
+                'There has been a critical error',
+                $html,
+                $scenario . '.' . $label . ' must not render a WordPress recovery screen'
+            );
+            self::assertStringNotContainsString('name="confirm_identity"', $html);
+            self::assertStringNotContainsString('name="clinic_name"', $html);
+        }
+        self::assertTrue(
+            str_contains($setupHtml, 'راه‌اندازی اولیه در دسترس نیست')
+            || str_contains($setupHtml, 'data-cpms-scope-required="1"')
+            || str_contains($dashboardHtml, 'data-cpms-scope-required="1"')
+            || str_contains($wizardHtml, 'data-cpms-scope-required="1"')
+            || str_contains($noticeHtml, 'data-cpms-scope-required="1"'),
+            $scenario . ' must present actionable authorization feedback rather than crash'
+        );
+    }
+
+    private function renderAdminSurface(string $label, callable $fn): string
+    {
+        try {
+            return $this->renderOutput($fn);
+        } catch (\Throwable $e) {
+            self::fail($label . ' threw ' . $e::class . ': ' . $e->getMessage());
+        }
+
+        return '';
     }
 
     private function captureRedirect(callable $fn): string

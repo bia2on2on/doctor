@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 
@@ -125,6 +126,22 @@ final class CpmsAdminMenu
     }
 
     /**
+     * setup.completed for admin chrome. null means Clinic scope is missing or
+     * ambiguous — callers must not guess a Clinic and must not throw.
+     */
+    public static function setup_completed_flag(): ?bool {
+        try {
+            return (bool) App::settings()->get( 'setup.completed', false );
+        } catch ( ScopeRequiredException ) {
+            return null;
+        }
+    }
+
+    public static function ambiguous_clinic_guidance(): string {
+        return 'امکان تعیین مطب فعال وجود ندارد. نصب چندمطب است و انتخاب صریح مطب لازم است. راه‌اندازی اولیه در این حالت در دسترس نیست.';
+    }
+
+    /**
      * Canonical onboarding/setup URL: routes eligible first-run WordPress
      * administrators to the dedicated first-practice bootstrap before the
      * established Clinic-management wizard.
@@ -147,12 +164,13 @@ final class CpmsAdminMenu
     public static function actionLinks(array $links): array
     {
         if (current_user_can(RolesAndCapabilities::CONFIG)) {
-            $setupPending = !(bool) App::settings()->get('setup.completed', false);
-            $primaryLabel = $setupPending ? 'راه‌اندازی' : 'داشبورد CPMS';
-            $primaryUrl = $setupPending
+            $setup_flag    = self::setup_completed_flag();
+            $setup_pending = $setup_flag === false;
+            $primary_label = $setup_pending ? 'راه‌اندازی' : 'داشبورد CPMS';
+            $primary_url   = $setup_pending
                 ? self::setup_url()
                 : admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG);
-            array_unshift($links, '<a href="' . esc_url($primaryUrl) . '">' . esc_html($primaryLabel) . '</a>');
+            array_unshift( $links, '<a href="' . esc_url( $primary_url ) . '">' . esc_html( $primary_label ) . '</a>' );
             $links[] = '<a href="' . esc_url(admin_url('admin.php?page=cpms-settings')) . '">تنظیمات</a>';
         }
 
@@ -171,13 +189,21 @@ final class CpmsAdminMenu
         if ($screen !== null && $screen instanceof \WP_Screen && $screen->id === 'plugins') {
             return;
         }
-        if ((bool) App::settings()->get('setup.completed', false)) {
+        $setup_flag = self::setup_completed_flag();
+        if ( $setup_flag === true ) {
             return;
         }
         if (get_transient('cpms_onboarding_seen')) {
             return;
         }
         set_transient('cpms_onboarding_seen', 1, DAY_IN_SECONDS);
+        if ( $setup_flag === null ) {
+            printf(
+                '<div class="notice notice-warning is-dismissible" data-cpms-scope-required="1"><p>%s</p></div>',
+                esc_html( self::ambiguous_clinic_guidance() )
+            );
+            return;
+        }
         printf(
             '<div class="notice notice-info is-dismissible"><p><strong>CPMS نصب شد</strong> — برای شروع، راه‌اندازی اولیه را تکمیل کنید. <a class="button button-primary" href="%s">شروع راه‌اندازی</a> <a class="button" href="%s">سلامت سیستم</a> <a class="button" href="%s">راهنما</a></p></div>',
             esc_url( self::setup_url() ),
