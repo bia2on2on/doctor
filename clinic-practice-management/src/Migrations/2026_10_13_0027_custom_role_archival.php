@@ -55,7 +55,10 @@ $cpms_archival_normalize_enum_keyword = static function ( mixed $type ): ?string
 };
 
 
-$cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ) use (
+$cpms_archival_status_sql = static function (
+    CpmsDb $db,
+    bool $archival
+) use (
     $cpms_archival_normalize_enum_keyword
 ): string {
     $column   = $db->fetchRow(
