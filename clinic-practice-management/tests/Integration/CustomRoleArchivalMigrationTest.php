@@ -509,8 +509,9 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                 if ( isset( $metadata[0]['CHECK_TABLE_NAME'] ) ) {
                     self::assertSame( $defs, (string) $metadata[0]['CHECK_TABLE_NAME'] );
                 }
-                self::assertStringContainsString( "'active'", (string) $metadata[0]['CHECK_CLAUSE'] );
-                self::assertStringContainsString( "'inactive'", (string) $metadata[0]['CHECK_CLAUSE'] );
+                $check_clause = str_replace( "\\'", "'", (string) $metadata[0]['CHECK_CLAUSE'] );
+                self::assertStringContainsString( "'active'", $check_clause );
+                self::assertStringContainsString( "'inactive'", $check_clause );
 
                 $decoy = $guard . '_decoy';
                 $db->query( "ALTER TABLE {$defs} ADD CONSTRAINT `{$decoy}` CHECK (`status` IN ('active','inactive'))" );
