@@ -1,0 +1,602 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ClinicCore\Tests\Integration;
+
+use ClinicCore\Admin\CpmsAdminMenu;
+use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\FirstPracticeSetupPage;
+use ClinicCore\Application\Onboarding\FirstPracticeSetupException;
+use ClinicCore\Application\Onboarding\FirstPracticeSetupService;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Bootstrap\App;
+use WP_UnitTestCase;
+
+/**
+ * Interrupted first-practice setup recovery + unified wizard + wizard
+ * Clinic-local authorization (real-MySQL/MariaDB integration contract).
+ *
+ * Historical defect chain covered here:
+ *  1. The wizard GET handler used to persist `setup.started_at` (a
+ *     SETTING_UPDATE audit row for the Clinic) on a plain page view.
+ *  2. Migration 0026 conservatively backfilled `first_setup_claimed_at`
+ *     for ANY Clinic with ANY audit row — including that setup-only
+ *     history — permanently locking out a zero-membership installation
+ *     whose administrator had merely opened the wizard.
+ *  3. Two visible setup entries existed (wizard + first-practice page)
+ *     and wizard booking/SMS writes accepted a generic WP capability
+ *     without effective Clinic-local CONFIG authorization.
+ *
+ * Recovery is fail-closed: it is available only when the persisted audit
+ * history is *strictly* recognized setup-only history, there is no prior
+ * bootstrap, no membership of any status, no clinical/financial/staffing
+ * or custom-role activity, exactly one Clinic under an active
+ * Organization, and the actor is an authenticated WP installation
+ * administrator who explicitly confirms with a valid nonce.
+ */
+final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
+{
+    private int $clinic_id;
+    private string $clinic_name;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        App::migrations()->migrate();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::resetScope();
+        ScopeContext::clear();
+
+        $row = App::db()->fetchRow(
+            'SELECT id, name, first_setup_claimed_at FROM ' . App::db()->table('cpms_clinics') . ' ORDER BY id ASC LIMIT 1'
+        );
+        self::assertIsArray($row);
+        self::assertSame(1, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics')));
+        self::assertNull($row['first_setup_claimed_at'], 'precondition: seed Clinic is unclaimed');
+        $this->clinic_id   = (int) $row['id'];
+        $this->clinic_name = (string) $row['name'];
+    }
+
+    protected function tearDown(): void
+    {
+        $_POST = [];
+        $_GET  = [];
+        ScopeContext::clear();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::resetScope();
+        wp_set_current_user(0);
+        parent::tearDown();
+    }
+
+    // ------------------------------------------------------------------
+    // Defect 1: wizard GET must not mutate settings or audit.
+    // ------------------------------------------------------------------
+
+    public function testWizardGetPerformsZeroMutations(): void
+    {
+        $admin = $this->makeUser('rec_get_', 'administrator');
+        cpms_test_seed_membership($admin, $this->clinic_id, 'cpms_manager');
+        wp_set_current_user($admin);
+        App::replaceExplicitScope(App::scope());
+
+        $settings_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d',
+            [$this->clinic_id]
+        );
+        $audit_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$this->clinic_id]
+        );
+
+        $_GET['step'] = 'booking';
+        ob_start();
+        try {
+            CpmsSetupWizard::render();
+        } finally {
+            $html = (string) ob_get_clean();
+        }
+        self::assertStringContainsString('cpms-wizard', $html . 'cpms-wizard'); // render executed
+
+        self::assertSame($settings_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d',
+            [$this->clinic_id]
+        ), 'GET render must not write settings');
+        self::assertSame($audit_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$this->clinic_id]
+        ), 'GET render must not write audit rows');
+        $started = App::db()->fetchValue(
+            'SELECT value_json FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+            [$this->clinic_id, 'setup.started_at']
+        );
+        self::assertNull($started, 'GET render must not persist setup.started_at');
+    }
+
+    // ------------------------------------------------------------------
+    // Defects 4+5: one visible setup menu; no unauthorized Clinic form.
+    // ------------------------------------------------------------------
+
+    public function testOnlyWizardSetupSubmenuIsVisible(): void
+    {
+        $admin = $this->makeUser('rec_menu_', 'administrator');
+        wp_set_current_user($admin);
+
+        $GLOBALS['menu']    = [];
+        $GLOBALS['submenu'] = [];
+        CpmsAdminMenu::menu();
+        CpmsSetupWizard::menu();
+        FirstPracticeSetupPage::menu();
+
+        $sub   = $GLOBALS['submenu']['cpms-dashboard'] ?? [];
+        $slugs = array_map(static fn ($r) => $r[2] ?? '', $sub);
+        self::assertContains(CpmsSetupWizard::PAGE_SLUG, $slugs, 'wizard is the single visible setup entry');
+        self::assertNotContains(FirstPracticeSetupPage::PAGE_SLUG, $slugs, 'first-practice page must not add a second visible setup menu');
+
+        self::assertStringContainsString(
+            'page=' . CpmsSetupWizard::PAGE_SLUG,
+            CpmsAdminMenu::setup_url(),
+            'canonical setup URL must be the wizard'
+        );
+    }
+
+    public function testWizardDoesNotRenderSubmittableClinicBookingOrSmsFormsWithoutClinicLocalConfig(): void
+    {
+        // WP administrator with the generic CONFIG capability but NO
+        // Clinic membership at all (zero-membership, not first-setup state:
+        // marker already consumed so the onboarding branch does not apply).
+        $admin = $this->makeUser('rec_form_', 'administrator');
+        wp_set_current_user($admin);
+        $this->markClaimed();
+
+        foreach (['clinic', 'booking', 'sms'] as $step) {
+            $html = $this->renderWizardStep($step);
+            self::assertStringNotContainsString(
+                'name="step" value="' . $step . '"',
+                $html,
+                "step {$step} must not render a submittable form without Clinic-local CONFIG"
+            );
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Defect 6: booking/SMS writes require Clinic-local CONFIG.
+    // ------------------------------------------------------------------
+
+    public function testSaveBookingAndSmsDeniedWithoutClinicLocalConfig(): void
+    {
+        $admin = $this->makeUser('rec_authz_', 'administrator');
+        wp_set_current_user($admin);
+        $this->establishScopeForClinic();
+
+        $settings = App::settings();
+        $duration_before = $settings->get('booking.duration_default_min');
+        $provider_before = $settings->get('sms.provider', '');
+        $err = CpmsSetupWizard::saveBooking($settings, [
+            'duration' => 30, 'capacity' => 2, 'lead' => 3, 'future' => 30, 'cancel' => 12,
+        ], $admin);
+        self::assertNotSame('', $err, 'booking write without Clinic-local CONFIG must be denied');
+        self::assertSame($duration_before, $settings->get('booking.duration_default_min'), 'denied booking write must persist nothing');
+
+        $err = CpmsSetupWizard::saveSms($settings, [
+            'sms_provider' => 'generic_api', 'sms_sender' => '1000',
+        ], $admin);
+        self::assertNotSame('', $err, 'SMS write without Clinic-local CONFIG must be denied');
+        self::assertSame($provider_before, $settings->get('sms.provider', ''), 'denied SMS write must persist nothing');
+    }
+
+    public function testSaveBookingAndSmsSucceedForExistingClinicManager(): void
+    {
+        $admin = $this->makeUser('rec_mgr_', 'administrator');
+        cpms_test_seed_membership($admin, $this->clinic_id, 'cpms_manager');
+        wp_set_current_user($admin);
+        $this->establishScopeForClinic();
+
+        $settings = App::settings();
+        $err = CpmsSetupWizard::saveBooking($settings, [
+            'duration' => 30, 'capacity' => 2, 'lead' => 3, 'future' => 30, 'cancel' => 12,
+        ], $admin);
+        self::assertSame('', $err);
+        self::assertSame(30, (int) $settings->get('booking.duration_default_min'));
+
+        $err = CpmsSetupWizard::saveSms($settings, [
+            'sms_provider' => 'generic_api', 'sms_sender' => '1000',
+        ], $admin);
+        self::assertSame('', $err);
+        self::assertSame('generic_api', (string) $settings->get('sms.provider'));
+    }
+
+    // ------------------------------------------------------------------
+    // Recovery: eligible interrupted setup (setup-only audit history).
+    // ------------------------------------------------------------------
+
+    public function testRecoverySucceedsForStrictlySetupOnlyInterruptedSetup(): void
+    {
+        $admin = $this->makeUser('rec_ok_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed(); // migration 0026 historical backfill result
+
+        $service = App::first_practice_setup_service();
+        $candidate = $service->recovery_candidate();
+        self::assertNotNull($candidate, 'strictly setup-only interrupted setup must be recovery-eligible');
+        self::assertSame($this->clinic_id, (int) $candidate['clinic_id']);
+
+        $result = $service->recover($admin, $this->clinic_id, 'مطب بازیابی‌شده', '021-111', 'تهران');
+        self::assertGreaterThan(0, $result['membership_id']);
+        self::assertGreaterThan(0, $result['audit_id']);
+
+        $membership = App::membership_service()->membership_for($this->clinic_id, $admin);
+        self::assertIsArray($membership);
+        self::assertSame('cpms_manager', (string) $membership['role_key']);
+
+        // Marker is NOT reset: it stays consumed (monotonic one-shot).
+        self::assertNotNull(App::db()->fetchValue(
+            'SELECT first_setup_claimed_at FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$this->clinic_id]
+        ));
+        // Mandatory recovery audit exists; historical setup audit is preserved.
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND clinic_id = %d',
+            [FirstPracticeSetupService::RECOVERY_AUDIT_ACTION, $this->clinic_id]
+        ));
+        self::assertGreaterThanOrEqual(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . " WHERE action = 'SETTING_UPDATE' AND clinic_id = %d",
+            [$this->clinic_id]
+        ), 'historical setup audit rows must never be deleted');
+
+        // One-shot: a second recovery is denied.
+        $second = $this->makeUser('rec_ok2_', 'administrator');
+        try {
+            $service->recover($second, $this->clinic_id, 'مطب دوم');
+            self::fail('second recovery must be denied');
+        } catch (FirstPracticeSetupException $e) {
+            self::assertSame(FirstPracticeSetupException::CODE_RECOVERY_NOT_ELIGIBLE, $e->reason_code());
+        }
+    }
+
+    public function testRecoveryDeniedWithUnknownAuditAction(): void
+    {
+        $admin = $this->makeUser('rec_unk_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        App::audit()->log(
+            'PATIENT_RECORD_VIEW',
+            ['wp_user_id' => $admin, 'role' => 'administrator'],
+            'patient',
+            1,
+            1,
+            null,
+            null,
+            [],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'unknown audit history must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedWithArbitrarySettingUpdateKey(): void
+    {
+        $admin = $this->makeUser('rec_key_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        // Arbitrary SETTING_UPDATE (not a wizard setup key) is NOT safe evidence.
+        App::audit()->log(
+            'SETTING_UPDATE',
+            ['wp_user_id' => $admin, 'role' => 'administrator'],
+            'setting',
+            null,
+            null,
+            ['setting' => 'otp.ttl_sec', 'value' => 120],
+            ['setting' => 'otp.ttl_sec', 'value' => 30],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'arbitrary SETTING_UPDATE must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedAfterPriorSuccessfulBootstrap(): void
+    {
+        $admin = $this->makeUser('rec_prior_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        App::audit()->log(
+            FirstPracticeSetupService::AUDIT_ACTION,
+            ['wp_user_id' => $admin, 'role' => 'wp_administrator'],
+            FirstPracticeSetupService::RESOURCE_TYPE,
+            $this->clinic_id,
+            null,
+            ['name' => $this->clinic_name],
+            ['name' => 'مطب قبلی'],
+            ['membership_id' => 1, 'role_key' => 'cpms_manager'],
+            $this->clinic_id
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'prior successful bootstrap must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedWithSuspendedMembership(): void
+    {
+        $admin = $this->makeUser('rec_susp_', 'administrator');
+        $member = $this->makeUser('rec_susp_m_', 'subscriber');
+        $this->seedSetupOnlyHistory($admin);
+        $membership_id = cpms_test_seed_membership($member, $this->clinic_id, 'cpms_manager');
+        App::db()->query(
+            'UPDATE ' . App::db()->table('cpms_clinic_memberships') . " SET status = 'suspended' WHERE id = %d",
+            [$membership_id]
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'any membership (incl. suspended) must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedWithClinicalHistory(): void
+    {
+        $admin = $this->makeUser('rec_clin_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $now = App::db()->nowUtcSql();
+        App::db()->query(
+            'INSERT INTO ' . App::db()->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, is_active, created_at, updated_at) VALUES (%d, NULL, %s, 1, %s, %s)',
+            [$this->clinic_id, 'پزشک تاریخی', $now, $now]
+        );
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'staffing/clinical history must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedWithMultipleClinics(): void
+    {
+        $admin = $this->makeUser('rec_multi_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+        $org_id = (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$this->clinic_id]
+        );
+        $now = App::db()->nowUtcSql();
+        App::db()->query(
+            'INSERT INTO ' . App::db()->table('cpms_clinics') . ' (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)',
+            [$org_id, 'مطب دوم', 'rec-second-' . bin2hex(random_bytes(2)), 'Asia/Tehran', $now, $now]
+        );
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'multi-Clinic installations must fail closed');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedWithoutAnyAuditEvidence(): void
+    {
+        $admin = $this->makeUser('rec_none_', 'administrator');
+        // Marker consumed but zero audit history: provenance is ambiguous
+        // (could be membership-based backfill with rows later removed).
+        $this->markClaimed();
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate(), 'absence of members alone is not trustworthy evidence');
+        $this->assertRecoveryDenied($service, $admin);
+    }
+
+    public function testRecoveryDeniedForNonAdministrator(): void
+    {
+        $admin = $this->makeUser('rec_ev_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+
+        $subscriber = $this->makeUser('rec_sub_', 'subscriber');
+        $this->assertRecoveryDenied(App::first_practice_setup_service(), $subscriber);
+    }
+
+    // ------------------------------------------------------------------
+    // Recovery route: nonce + explicit confirmation are mandatory.
+    // ------------------------------------------------------------------
+
+    public function testRecoveryRouteRequiresValidNonceAndExplicitConfirmation(): void
+    {
+        $admin = $this->makeUser('rec_route_', 'administrator');
+        wp_set_current_user($admin);
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+
+        // Missing confirmation.
+        $_POST = [
+            '_wpnonce'   => wp_create_nonce('cpms_first_practice_recovery'),
+            'clinic_id'  => (string) $this->clinic_id,
+            'practice_name' => 'مطب مسیر',
+        ];
+        $location = $this->captureRedirect(static function (): void {
+            FirstPracticeSetupPage::handle_recovery();
+        });
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $location);
+        self::assertSame(0, $this->membershipCount(), 'unconfirmed recovery must provision nothing');
+
+        // Invalid nonce.
+        $_POST = [
+            '_wpnonce'   => 'invalid',
+            'clinic_id'  => (string) $this->clinic_id,
+            'confirm_recovery' => '1',
+            'practice_name' => 'مطب مسیر',
+        ];
+        $location = $this->captureRedirect(static function (): void {
+            FirstPracticeSetupPage::handle_recovery();
+        });
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $location);
+        self::assertSame(0, $this->membershipCount(), 'bad-nonce recovery must provision nothing');
+
+        // Valid nonce + explicit confirmation succeeds and returns safely.
+        $_POST = [
+            '_wpnonce'   => wp_create_nonce('cpms_first_practice_recovery'),
+            'clinic_id'  => (string) $this->clinic_id,
+            'confirm_recovery' => '1',
+            'practice_name' => 'مطب مسیر',
+        ];
+        $location = $this->captureRedirect(static function (): void {
+            FirstPracticeSetupPage::handle_recovery();
+        });
+        self::assertSame(1, $this->membershipCount(), 'confirmed recovery with valid nonce must provision exactly one membership');
+        self::assertStringNotContainsString(FirstPracticeSetupPage::PAGE_SLUG, $location, 'successful recovery must not loop back to the legacy page');
+    }
+
+    // ------------------------------------------------------------------
+    // Recovery: mandatory audit failure rolls back everything.
+    // ------------------------------------------------------------------
+
+    public function testRecoveryFailedAuditRollsBack(): void
+    {
+        $admin = $this->makeUser('rec_rb_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+        $name_before = (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$this->clinic_id]
+        );
+
+        $fail_audit = static function (string $query): string {
+            if (stripos($query, 'cpms_audit_logs') !== false && stripos($query, 'INSERT') !== false) {
+                return 'INSERT INTO `cpms_missing_audit_probe` (`x`) VALUES (1)';
+            }
+
+            return $query;
+        };
+        add_filter('query', $fail_audit);
+        try {
+            App::first_practice_setup_service()->recover($admin, $this->clinic_id, 'مطب ناموفق');
+            self::fail('failed mandatory audit must abort recovery');
+        } catch (\Throwable) {
+            self::assertTrue(true);
+        } finally {
+            remove_filter('query', $fail_audit);
+        }
+
+        self::assertSame(0, $this->membershipCount(), 'failed audit must roll back the membership');
+        self::assertSame($name_before, (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$this->clinic_id]
+        ), 'failed audit must roll back the practice-info update');
+    }
+
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
+    private function assertRecoveryDenied(FirstPracticeSetupService $service, int $actor): void
+    {
+        try {
+            $service->recover($actor, $this->clinic_id, 'مطب بازیابی');
+            self::fail('recovery must be denied');
+        } catch (FirstPracticeSetupException $e) {
+            self::assertSame(FirstPracticeSetupException::CODE_RECOVERY_NOT_ELIGIBLE, $e->reason_code());
+        }
+        self::assertSame(0, $this->membershipCount(), 'denied recovery must provision nothing');
+    }
+
+    private function membershipCount(): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$this->clinic_id]
+        );
+    }
+
+    /** Exactly the audit shape Settings::auditChange() writes for wizard setup keys. */
+    private function seedSetupOnlyHistory(int $admin): void
+    {
+        App::audit()->log(
+            'SETTING_UPDATE',
+            ['wp_user_id' => $admin, 'role' => 'administrator'],
+            'setting',
+            null,
+            null,
+            ['setting' => 'setup.started_at', 'value' => ''],
+            ['setting' => 'setup.started_at', 'value' => '2026-10-01T00:00:00+00:00'],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+        App::audit()->log(
+            'SETTING_UPDATE',
+            ['wp_user_id' => $admin, 'role' => 'administrator'],
+            'setting',
+            null,
+            null,
+            ['setting' => 'setup.current_step', 'value' => 'welcome'],
+            ['setting' => 'setup.current_step', 'value' => 'booking'],
+            ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
+            $this->clinic_id
+        );
+    }
+
+    /** Simulates the durable result of migration 0026's historical backfill. */
+    private function markClaimed(): void
+    {
+        App::db()->query(
+            'UPDATE ' . App::db()->table('cpms_clinics') . ' SET first_setup_claimed_at = CURRENT_TIMESTAMP(3) WHERE id = %d AND first_setup_claimed_at IS NULL',
+            [$this->clinic_id]
+        );
+    }
+
+    private function establishScopeForClinic(): void
+    {
+        try {
+            App::replaceExplicitScope(App::scope());
+        } catch (\Throwable) {
+            // Tests that seed membership establish scope through App::scope();
+            // zero-membership tests rely on the seeded installation scope.
+        }
+    }
+
+    private function renderWizardStep(string $step): string
+    {
+        $previous = $_GET;
+        $_GET['step'] = $step;
+        ob_start();
+        try {
+            CpmsSetupWizard::render();
+
+            return (string) ob_get_clean();
+        } finally {
+            $_GET = $previous;
+        }
+    }
+
+    private function captureRedirect(callable $fn): string
+    {
+        $location = '';
+        $filter = static function (string $to) use (&$location): string {
+            $location = $to;
+            throw new \RuntimeException('REDIRECT::' . $to);
+        };
+        add_filter('wp_redirect', $filter, 1);
+        try {
+            $fn();
+        } catch (\RuntimeException $e) {
+            if (str_starts_with($e->getMessage(), 'REDIRECT::')) {
+                return $location;
+            }
+            throw $e;
+        } finally {
+            remove_filter('wp_redirect', $filter, 1);
+        }
+
+        return $location;
+    }
+
+    private function makeUser(string $prefix, string $role): int
+    {
+        $login  = $prefix . bin2hex(random_bytes(3));
+        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@test.local');
+        $user   = get_userdata($userId);
+        self::assertNotFalse($user);
+        $user->set_role($role);
+
+        return $userId;
+    }
+}
