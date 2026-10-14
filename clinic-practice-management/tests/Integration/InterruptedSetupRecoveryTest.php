@@ -490,9 +490,98 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         ), 'failed audit must roll back the practice-info update');
     }
 
+    public function testConcurrentRecoverySecondActorCannotEnterCriticalSection(): void
+    {
+        $admin = $this->makeUser('rec_conc_', 'administrator');
+        $audit_ids = $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+        $clinic_id = $this->clinic_id;
+
+        // Same two-connection protocol as the established claim concurrency
+        // test: commit the parent test transaction so an independent
+        // connection can hold the durable Clinic row lock.
+        global $wpdb;
+        $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        $conn = $this->freshMysqli();
+        try {
+            self::assertTrue($conn->query('START TRANSACTION'));
+            $res = $conn->query(
+                'SELECT first_setup_claimed_at FROM ' . $this->table('cpms_clinics') .
+                ' WHERE id = ' . $clinic_id . ' FOR UPDATE'
+            );
+            self::assertNotFalse($res, 'external lock acquisition failed: ' . $conn->error);
+
+            // The service transaction takes the same Clinic row lock first;
+            // with a short lock-wait timeout it must fail and write nothing.
+            $wpdb->query('SET SESSION innodb_lock_wait_timeout = 2'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $threw = false;
+            try {
+                App::first_practice_setup_service()->recover($admin, $clinic_id, 'مطب هم‌زمان');
+            } catch (\Throwable) {
+                $threw = true;
+            } finally {
+                $wpdb->query('SET SESSION innodb_lock_wait_timeout = DEFAULT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            }
+            self::assertTrue($threw, 'recovery must not enter the critical section while the Clinic row is locked');
+            self::assertSame(0, $this->membershipCount(), 'blocked recovery must provision nothing');
+
+            self::assertTrue($conn->query('ROLLBACK'));
+
+            // After the lock is released, exactly one recovery succeeds.
+            $result = App::first_practice_setup_service()->recover($admin, $clinic_id, 'مطب هم‌زمان');
+            self::assertGreaterThan(0, $result['membership_id']);
+            self::assertSame(1, $this->membershipCount());
+        } finally {
+            $conn->query('ROLLBACK');
+            $conn->close();
+            // Manual committed-fixture cleanup (parent transaction was
+            // committed above): remove only rows this test created and
+            // restore the unclaimed seed shape for later tests.
+            $wpdb->query('DELETE FROM ' . $this->table('cpms_clinic_memberships') . ' WHERE clinic_id = ' . $clinic_id); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'DELETE FROM ' . $this->table('cpms_audit_logs') . ' WHERE clinic_id = ' . $clinic_id .
+                " AND action = '" . FirstPracticeSetupService::RECOVERY_AUDIT_ACTION . "'"
+            );
+            foreach ($audit_ids as $audit_id) {
+                $wpdb->query('DELETE FROM ' . $this->table('cpms_audit_logs') . ' WHERE id = ' . (int) $audit_id); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            }
+            $wpdb->query( // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'UPDATE ' . $this->table('cpms_clinics') .
+                ' SET first_setup_claimed_at = NULL, name = ' . $wpdb->prepare('%s', $this->clinic_name) . // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                ' WHERE id = ' . $clinic_id
+            );
+            $wpdb->query('START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        }
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    private function freshMysqli(): \mysqli
+    {
+        $host = defined('DB_HOST') ? (string) DB_HOST : '127.0.0.1';
+        $port = null;
+        if (str_contains($host, ':')) {
+            [$host, $portPart] = explode(':', $host, 2);
+            if (ctype_digit($portPart)) {
+                $port = (int) $portPart;
+            }
+        }
+        $user = defined('DB_USER') ? (string) DB_USER : 'root';
+        $pass = defined('DB_PASSWORD') ? (string) DB_PASSWORD : '';
+        $name = defined('DB_NAME') ? (string) DB_NAME : 'wordpress_test';
+
+        return new \mysqli($host, $user, $pass, $name, $port);
+    }
+
+    private function table(string $short): string
+    {
+        global $table_prefix;
+
+        return $table_prefix . $short;
+    }
 
     private function assertRecoveryDenied(FirstPracticeSetupService $service, int $actor): void
     {
@@ -513,10 +602,15 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         );
     }
 
-    /** Exactly the audit shape Settings::auditChange() writes for wizard setup keys. */
-    private function seedSetupOnlyHistory(int $admin): void
+    /**
+     * Exactly the audit shape Settings::auditChange() writes for wizard setup keys.
+     *
+     * @return list<int> created audit row ids
+     */
+    private function seedSetupOnlyHistory(int $admin): array
     {
-        App::audit()->log(
+        $ids   = [];
+        $ids[] = (int) App::audit()->log(
             'SETTING_UPDATE',
             ['wp_user_id' => $admin, 'role' => 'administrator'],
             'setting',
@@ -527,7 +621,7 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
             $this->clinic_id
         );
-        App::audit()->log(
+        $ids[] = (int) App::audit()->log(
             'SETTING_UPDATE',
             ['wp_user_id' => $admin, 'role' => 'administrator'],
             'setting',
@@ -538,6 +632,8 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             ['op' => 'config_update', 'clinic_id' => $this->clinic_id],
             $this->clinic_id
         );
+
+        return $ids;
     }
 
     /** Simulates the durable result of migration 0026's historical backfill. */
