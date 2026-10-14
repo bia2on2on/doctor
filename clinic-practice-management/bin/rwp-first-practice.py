@@ -193,7 +193,7 @@ $clinic = $db->fetchRow(
     "SELECT id, name, phone, address, first_setup_claimed_at FROM " . $db->table("cpms_clinics") . " ORDER BY id ASC LIMIT 1"
 );
 $memberships = $db->fetchAll(
-    "SELECT user_id, role_key, status, scope_mode FROM " . $db->table("cpms_clinic_memberships") . " ORDER BY id ASC"
+    "SELECT wp_user_id, role_key, status, scope_mode FROM " . $db->table("cpms_clinic_memberships") . " ORDER BY id ASC"
 );
 $audit = (int) $db->fetchValue(
     "SELECT COUNT(*) FROM " . $db->table("cpms_audit_logs") . " WHERE action = %s",
@@ -576,7 +576,7 @@ with sync_playwright() as p:
         check("admin.claim.db.clinic_scope",
               str(mem.get("scope_mode") or "") == "clinic", "clinic scope")
         check("admin.claim.db.actor_is_admin",
-              int(mem.get("user_id") or 0) == int(claimed.get("admin_id") or -1),
+              int(mem.get("wp_user_id") or 0) == int(claimed.get("admin_id") or -1),
               "membership belongs to the installing administrator")
         check("admin.claim.db.practice_name",
               claimed.get("clinic_name") == PRACTICE_NAME, "synthetic name persisted")
@@ -727,11 +727,19 @@ with sync_playwright() as p:
         multi_ctx = new_persona_context(browser)
         multi_page = multi_ctx.new_page()
         if login(multi_page, ADMIN_USER, ADMIN_PASS, "admin-multiclinic"):
-            status, body = goto_admin(
-                multi_page, "admin-multiclinic",
-                "admin.php?page=cpms-first-practice-setup",
-                "multiclinic-first-practice",
+            resp = multi_page.goto(
+                f"{BASE}/wp-admin/admin.php?page=cpms-first-practice-setup",
+                wait_until="domcontentloaded",
             )
+            multi_page.wait_for_timeout(800)
+            status = resp.status if resp else 0
+            body = multi_page.content()
+            shot(multi_page, "multiclinic-first-practice")
+            check("admin-multiclinic.multiclinic-first-practice.http200", status == 200, f"HTTP {status}")
+            check("admin-multiclinic.multiclinic-first-practice.no_wp_recovery",
+                  "There has been a critical error" not in (body or "")
+                  and "خطای بحرانی" not in (body or ""),
+                  "multi-clinic first-practice page must not be the WP recovery screen")
             check("multiclinic.form_absent",
                   multi_page.locator('input[name="confirm_identity"]').count() == 0,
                   "multi-clinic installation is never bootstrap-claimable")
