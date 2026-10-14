@@ -212,17 +212,13 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
     public function testRecoverySucceedsForStrictlySetupOnlyInterruptedSetup(): void
     {
+        $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_ok_', 'administrator');
         $this->seedSetupOnlyHistory($admin);
         $this->markClaimed(); // migration 0026 historical backfill result
 
         $service = App::first_practice_setup_service();
         $candidate = $service->recovery_candidate();
-        if ($candidate === null) {
-            $method = new \ReflectionMethod($service, 'evaluate_recovery');
-            $method->setAccessible(true);
-            self::fail('recovery ineligible, reason=' . (string) $method->invoke($service, $this->clinic_id));
-        }
         self::assertNotNull($candidate, 'strictly setup-only interrupted setup must be recovery-eligible');
         self::assertSame($this->clinic_id, (int) $candidate['clinic_id']);
 
@@ -413,6 +409,7 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
     public function testRecoveryRouteRequiresValidNonceAndExplicitConfirmation(): void
     {
+        $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_route_', 'administrator');
         wp_set_current_user($admin);
         $this->seedSetupOnlyHistory($admin);
@@ -463,6 +460,7 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
     public function testRecoveryFailedAuditRollsBack(): void
     {
+        $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_rb_', 'administrator');
         $this->seedSetupOnlyHistory($admin);
         $this->markClaimed();
@@ -497,6 +495,7 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
     public function testConcurrentRecoverySecondActorCannotEnterCriticalSection(): void
     {
+        $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_conc_', 'administrator');
         $audit_ids = $this->seedSetupOnlyHistory($admin);
         $this->markClaimed();
@@ -597,6 +596,20 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             self::assertSame(FirstPracticeSetupException::CODE_RECOVERY_NOT_ELIGIBLE, $e->reason_code());
         }
         self::assertSame($memberships_before, $this->membershipCount(), 'denied recovery must provision nothing');
+    }
+
+
+    /**
+     * Other suites' two-connection protocols COMMIT synthetic fixtures that
+     * can leak activity rows for the seed Clinic into this test's view.
+     * Clear them inside this test's transaction (rolled back afterwards)
+     * so the interrupted-setup fixture is deterministic. Test-only.
+     */
+    private function resetClinicActivityFixture(): void
+    {
+        foreach (['cpms_patients', 'cpms_clinicians', 'cpms_appointments', 'cpms_visits', 'cpms_invoices', 'cpms_payments', 'cpms_services', 'cpms_custom_role_defs'] as $table) {
+            App::db()->query('DELETE FROM ' . App::db()->table($table) . ' WHERE clinic_id = %d', [$this->clinic_id]);
+        }
     }
 
     private function membershipCount(): int
