@@ -393,7 +393,13 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         $this->markClaimed();
 
         $subscriber = $this->makeUser('rec_sub_', 'subscriber');
-        $this->assertRecoveryDenied(App::first_practice_setup_service(), $subscriber);
+        try {
+            App::first_practice_setup_service()->recover($subscriber, $this->clinic_id, 'مطب بازیابی');
+            self::fail('non-administrator recovery must be denied');
+        } catch (FirstPracticeSetupException $e) {
+            self::assertSame(FirstPracticeSetupException::CODE_NOT_ADMINISTRATOR, $e->reason_code());
+        }
+        self::assertSame(0, $this->membershipCount());
     }
 
     // ------------------------------------------------------------------

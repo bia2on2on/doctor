@@ -286,6 +286,416 @@ final class FirstPracticeSetupService {
         );
     }
 
+
+    // ==================================================================
+    // Interrupted-setup recovery (migration 0026 historical backfill).
+    //
+    // Trust model: eligibility is NEVER inferred from timestamps or from
+    // the mere absence of members. It requires positive, persisted,
+    // strictly-recognized setup-only evidence:
+    //  - exactly one Clinic under an ACTIVE Organization;
+    //  - the durable marker is consumed (first_setup_claimed_at NOT NULL);
+    //  - zero membership rows of ANY status (active or suspended);
+    //  - no PRACTICE_FIRST_SETUP / recovery audit (no prior bootstrap);
+    //  - at least one audit row, and EVERY audit row for the Clinic is a
+    //    strictly-shaped wizard setup SETTING_UPDATE (resource_type
+    //    'setting', NULL resource/patient, WP-administrator actor, exact
+    //    {setting,value} before/after shape, allowlisted wizard key,
+    //    config_update meta bound to this Clinic);
+    //  - no persisted Clinic setting outside the wizard setup allowlist;
+    //  - no clinical, patient, financial, staffing or custom-role rows.
+    // Any unknown or ambiguous history fails closed. The marker is never
+    // reset, no audit/setting row is ever deleted, and recovery itself is
+    // one-shot (afterwards a membership exists and the marker stays
+    // consumed, so eligibility can never re-open).
+    // ==================================================================
+
+    public const RECOVERY_AUDIT_ACTION = 'PRACTICE_FIRST_SETUP_RECOVERY';
+
+    /**
+     * Setting keys the setup wizard could legitimately have written before
+     * the bootstrap completed (GET progress marker, step progress,
+     * restart/finish flags, booking defaults, SMS basics). Any other key —
+     * in audit history or in persisted settings — is unknown history.
+     *
+     * @var list<string>
+     */
+    private const SETUP_ONLY_SETTING_KEYS = [
+        'setup.started_at',
+        'setup.current_step',
+        'setup.completed',
+        'booking.duration_default_min',
+        'booking.slot_capacity_default',
+        'booking.min_lead_hours',
+        'booking.max_future_days',
+        'booking.cancel_deadline_hours',
+        'sms.provider',
+        'sms.sender',
+    ];
+
+    /** Tables whose rows prove prior clinical/financial/staffing activity. */
+    private const ACTIVITY_TABLES = [
+        'cpms_patients',
+        'cpms_clinicians',
+        'cpms_appointments',
+        'cpms_visits',
+        'cpms_invoices',
+        'cpms_payments',
+        'cpms_services',
+        'cpms_custom_role_defs',
+    ];
+
+    /**
+     * Display candidate for interrupted-setup recovery (read-only).
+     *
+     * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
+     */
+    public function recovery_candidate(): ?array {
+        $row = $this->single_clinic_display_row( true );
+        if ( $row === null ) {
+            return null;
+        }
+        if ( $this->evaluate_recovery( (int) $row['clinic_id'] ) !== '' ) {
+            return null;
+        }
+
+        return $row;
+    }
+
+    /**
+     * Non-null when the installation looks like an interrupted setup
+     * (single Clinic, active Organization, zero memberships, consumed
+     * marker) but recovery eligibility cannot be established from
+     * trustworthy persisted evidence — the caller must show a blocked
+     * message and NO recovery form.
+     *
+     * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
+     */
+    public function interrupted_setup_blocked(): ?array {
+        $row = $this->single_clinic_display_row( true );
+        if ( $row === null ) {
+            return null;
+        }
+        if ( $this->evaluate_recovery( (int) $row['clinic_id'] ) === '' ) {
+            return null; // eligible: recovery path, not blocked
+        }
+
+        return $row;
+    }
+
+    /**
+     * Recover an interrupted first setup: same one-shot provisioning as
+     * claim() (manager membership + practice information + mandatory
+     * audit, atomically under the Clinic row lock), but the historical
+     * consumption marker is left untouched — it is never reset.
+     *
+     * @return array{clinic_id:int, membership_id:int, audit_id:int}
+     *
+     * @throws FirstPracticeSetupException
+     */
+    public function recover(
+        int $actor_wp_user_id,
+        int $clinic_id,
+        string $practice_name,
+        ?string $phone = null,
+        ?string $address = null
+    ): array {
+        if ( $actor_wp_user_id <= 0 ) {
+            throw FirstPracticeSetupException::not_administrator();
+        }
+        $actor = get_userdata( $actor_wp_user_id );
+        if ( $actor === false || ! user_can( $actor, 'manage_options' ) ) {
+            throw FirstPracticeSetupException::not_administrator();
+        }
+        if ( $clinic_id <= 0 ) {
+            throw FirstPracticeSetupException::recovery_not_eligible();
+        }
+
+        $clean_name    = $this->normalize_name( $practice_name );
+        $clean_phone   = $this->bounded_optional( $phone, 32, 'phone' );
+        $clean_address = $this->bounded_optional( $address, 255, 'address' );
+
+        return $this->db->transactional(
+            function () use ( $actor_wp_user_id, $clinic_id, $clean_name, $clean_phone, $clean_address ): array {
+                $clinic = $this->db->fetchRowForUpdate(
+                    'SELECT id, name, organization_id, first_setup_claimed_at
+                       FROM ' . $this->db->table( 'cpms_clinics' ) . '
+                      WHERE id = %d
+                      LIMIT 1',
+                    [$clinic_id]
+                );
+                if ( $clinic === null ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
+
+                // Full eligibility re-evaluated against locked state.
+                if ( $this->evaluate_recovery( $clinic_id ) !== '' ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
+
+                $now    = $this->db->nowUtcSql();
+                $wpdb   = $this->db->wpdb();
+                $sql    = 'UPDATE ' . $this->db->table( 'cpms_clinics' ) . ' SET name = %s, updated_at = %s';
+                $params = [$clean_name, $now];
+                if ( $clean_phone !== null ) {
+                    $sql     .= ', phone = %s';
+                    $params[] = $clean_phone;
+                }
+                if ( $clean_address !== null ) {
+                    $sql     .= ', address = %s';
+                    $params[] = $clean_address;
+                }
+                // Guarded on the consumed marker: recovery can never run on
+                // an unclaimed Clinic (that is the normal claim path) and
+                // the marker itself is never modified here.
+                $sql     .= ' WHERE id = %d AND first_setup_claimed_at IS NOT NULL';
+                $params[] = $clinic_id;
+                $affected = $wpdb->query( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery -- guarded recovery UPDATE; affected-row gate below is authoritative
+                if ( (int) $affected !== 1 ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
+
+                $membership_ok = $this->memberships->insert(
+                    [
+                        'clinic_id'             => $clinic_id,
+                        'wp_user_id'            => $actor_wp_user_id,
+                        'role_key'              => self::MANAGER_ROLE_KEY,
+                        'scope_mode'            => 'clinic',
+                        'status'                => 'active',
+                        'is_primary'            => 1,
+                        'invited_by_wp_user_id' => $actor_wp_user_id,
+                        'created_at'            => $now,
+                        'updated_at'            => $now,
+                    ]
+                );
+                $membership_id = $membership_ok ? (int) $this->db->wpdb_last_insert_id() : 0;
+                if ( $membership_id <= 0 ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
+
+                // Mandatory audit in the SAME transaction; failure rolls
+                // back the membership and the practice-info update.
+                $audit_id = $this->audit->log(
+                    self::RECOVERY_AUDIT_ACTION,
+                    ['wp_user_id' => $actor_wp_user_id, 'role' => 'wp_administrator'],
+                    self::RESOURCE_TYPE,
+                    $clinic_id,
+                    null,
+                    ['name' => (string) ( $clinic['name'] ?? '' )],
+                    [
+                        'name'    => $clean_name,
+                        'phone'   => $clean_phone,
+                        'address' => $clean_address,
+                    ],
+                    [
+                        'membership_id'               => $membership_id,
+                        'role_key'                    => self::MANAGER_ROLE_KEY,
+                        'recovered_interrupted_setup' => true,
+                    ],
+                    $clinic_id
+                );
+                if ( (int) $audit_id <= 0 ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
+
+                return [
+                    'clinic_id'     => $clinic_id,
+                    'membership_id' => $membership_id,
+                    'audit_id'      => (int) $audit_id,
+                ];
+            }
+        );
+    }
+
+    /**
+     * Strict recovery eligibility. Returns '' when eligible, otherwise a
+     * narrow internal reason code (never exposed to end users verbatim).
+     */
+    private function evaluate_recovery( int $clinic_id ): string {
+        $clinic_count = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinics' )
+        ) ?? 0 );
+        if ( $clinic_count !== 1 ) {
+            return 'multiple_clinics';
+        }
+
+        $clinic = $this->db->fetchRow(
+            'SELECT organization_id, first_setup_claimed_at FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            [$clinic_id]
+        );
+        if ( $clinic === null ) {
+            return 'clinic_missing';
+        }
+        if ( $clinic['first_setup_claimed_at'] === null ) {
+            return 'not_claimed'; // normal claim() path, not recovery
+        }
+
+        $org_status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d',
+            [ (int) ( $clinic['organization_id'] ?? 0 )]
+        );
+        if ( (string) $org_status !== 'active' ) {
+            return 'organization_inactive';
+        }
+
+        // Zero membership references, including suspended.
+        $member_count = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        ) ?? 0 );
+        if ( $member_count !== 0 ) {
+            return 'membership_exists';
+        }
+
+        // Audit history: at least one row, every row strictly recognized.
+        $audit_rows = $this->db->fetchAll(
+            'SELECT action, actor_wp_user_id, actor_role, resource_type, resource_id, patient_id, before_json, after_json, meta_json
+               FROM ' . $this->db->table( 'cpms_audit_logs' ) . '
+              WHERE clinic_id = %d
+              ORDER BY id ASC',
+            [$clinic_id]
+        );
+        if ( ! is_array( $audit_rows ) || $audit_rows === [] ) {
+            return 'no_setup_evidence';
+        }
+        foreach ( $audit_rows as $row ) {
+            $action = (string) ( $row['action'] ?? '' );
+            if ( $action === self::AUDIT_ACTION || $action === self::RECOVERY_AUDIT_ACTION ) {
+                return 'prior_bootstrap';
+            }
+            if ( ! $this->is_recognized_setup_audit( $row, $clinic_id ) ) {
+                return 'unknown_audit_history';
+            }
+        }
+
+        // Persisted settings: nothing outside the wizard setup allowlist.
+        $setting_keys = $this->db->fetchAll(
+            'SELECT `key` FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        );
+        foreach ( is_array( $setting_keys ) ? $setting_keys : [] as $row ) {
+            if ( ! in_array( (string) ( $row['key'] ?? '' ), self::SETUP_ONLY_SETTING_KEYS, true ) ) {
+                return 'unknown_setting_history';
+            }
+        }
+
+        // No clinical, patient, financial, staffing or custom-role activity.
+        foreach ( self::ACTIVITY_TABLES as $table ) {
+            $count = (int) ( $this->db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db->table( $table ) . ' WHERE clinic_id = %d',
+                [$clinic_id]
+            ) ?? 0 );
+            if ( $count !== 0 ) {
+                return 'prior_activity';
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * Exact shape written by Settings::auditChange() for a wizard setup
+     * write. Arbitrary SETTING_UPDATE rows are deliberately NOT accepted.
+     *
+     * @param array<string, mixed> $row
+     */
+    private function is_recognized_setup_audit( array $row, int $clinic_id ): bool {
+        if ( (string) ( $row['action'] ?? '' ) !== 'SETTING_UPDATE' ) {
+            return false;
+        }
+        if ( (string) ( $row['resource_type'] ?? '' ) !== 'setting' ) {
+            return false;
+        }
+        if ( $row['resource_id'] !== null || $row['patient_id'] !== null ) {
+            return false;
+        }
+        if ( (int) ( $row['actor_wp_user_id'] ?? 0 ) <= 0 ) {
+            return false;
+        }
+        if ( (string) ( $row['actor_role'] ?? '' ) !== 'administrator' ) {
+            return false;
+        }
+
+        $before = json_decode( (string) ( $row['before_json'] ?? '' ), true );
+        $after  = json_decode( (string) ( $row['after_json'] ?? '' ), true );
+        $meta   = json_decode( (string) ( $row['meta_json'] ?? '' ), true );
+        if ( ! is_array( $before ) || ! is_array( $after ) || ! is_array( $meta ) ) {
+            return false;
+        }
+        foreach ( [$before, $after] as $payload ) {
+            $keys = array_keys( $payload );
+            sort( $keys );
+            if ( $keys !== ['setting', 'value'] ) {
+                return false;
+            }
+            if ( ! in_array( (string) $payload['setting'], self::SETUP_ONLY_SETTING_KEYS, true ) ) {
+                return false;
+            }
+        }
+        if ( (string) $before['setting'] !== (string) $after['setting'] ) {
+            return false;
+        }
+        if ( (string) ( $meta['op'] ?? '' ) !== 'config_update' ) {
+            return false;
+        }
+        if ( (int) ( $meta['clinic_id'] ?? 0 ) !== $clinic_id ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Single-Clinic display row shared by recovery display paths.
+     *
+     * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
+     */
+    private function single_clinic_display_row( bool $require_claimed ): ?array {
+        $clinic_count = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinics' )
+        ) ?? 0 );
+        if ( $clinic_count !== 1 ) {
+            return null;
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT c.id, c.name, c.slug, c.first_setup_claimed_at, o.name AS organization_name
+               FROM ' . $this->db->table( 'cpms_clinics' ) . ' c
+               INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
+              WHERE o.status = %s
+              ORDER BY c.id ASC',
+            ['active']
+        );
+        if ( ! is_array( $rows ) || count( $rows ) !== 1 ) {
+            return null;
+        }
+
+        $row       = $rows[0];
+        $clinic_id = (int) ( $row['id'] ?? 0 );
+        if ( $clinic_id <= 0 ) {
+            return null;
+        }
+        $claimed = ( $row['first_setup_claimed_at'] ?? null ) !== null;
+        if ( $claimed !== $require_claimed ) {
+            return null;
+        }
+
+        $member_count = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        ) ?? 0 );
+        if ( $member_count !== 0 ) {
+            return null;
+        }
+
+        return [
+            'clinic_id'         => $clinic_id,
+            'clinic_name'       => (string) ( $row['name'] ?? '' ),
+            'clinic_slug'       => (string) ( $row['slug'] ?? '' ),
+            'organization_name' => (string) ( $row['organization_name'] ?? '' ),
+        ];
+    }
+
     /**
      * Unicode-general practice naming: valid UTF-8 required (fail closed),
      * control characters stripped (ZWNJ and other format characters preserved),

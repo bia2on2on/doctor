@@ -419,36 +419,36 @@ with sync_playwright() as p:
         check("admin.onboarding_notice.visible",
               notice.count() >= 1 and body_has(body, "شروع راه‌اندازی"),
               "install notice rendered on first admin landing")
-        check("admin.onboarding_notice.points_to_first_practice",
-              notice.locator('a[href*="page=cpms-first-practice-setup"]').count() >= 1,
-              "notice must not skip the dedicated bootstrap")
-        check("admin.onboarding_notice.not_generic_wizard",
-              notice.locator('a[href*="page=cpms-wizard"]').count() == 0,
-              "notice CTA is not the generic wizard (sidebar wizard menu is out of scope)")
+        check("admin.onboarding_notice.points_to_unified_wizard",
+              notice.locator('a[href*="page=cpms-wizard"]').count() >= 1,
+              "notice routes to the single visible setup wizard (bootstrap is embedded there)")
+        check("admin.onboarding_notice.no_duplicate_setup_entry",
+              notice.locator('a[href*="page=cpms-first-practice-setup"]').count() == 0,
+              "notice must not advertise a second setup entry point")
         check("admin.after_login.no_critical_error",
               CRITICAL_RE.search(body or "") is None, "admin remains accessible")
 
         status, body = goto_admin(admin_page, "admin", "admin.php?page=cpms-dashboard", "cpms-dashboard")
         check("admin.dashboard.heading", body_has(body, "مدیریت مطب"), "dashboard rendered")
-        dash_cta = admin_page.locator('.wrap a[href*="page=cpms-first-practice-setup"]')
-        dash_wizard = admin_page.locator('.wrap a[href*="page=cpms-wizard"]')
-        check("admin.dashboard.setup_points_to_first_practice",
+        dash_cta = admin_page.locator('.wrap a[href*="page=cpms-wizard"]')
+        dash_fp = admin_page.locator('.wrap a[href*="page=cpms-first-practice-setup"]')
+        check("admin.dashboard.setup_points_to_unified_wizard",
               dash_cta.count() >= 1,
-              "dashboard setup CTA routes to dedicated bootstrap")
-        check("admin.dashboard.no_generic_wizard_cta",
-              dash_wizard.count() == 0,
-              "eligible first-run dashboard body must not advertise cpms-wizard")
+              "dashboard setup CTA routes to the single visible setup wizard")
+        check("admin.dashboard.no_duplicate_setup_entry",
+              dash_fp.count() == 0,
+              "dashboard body must not advertise a second setup entry point")
 
         status, body = goto_admin(admin_page, "admin", "plugins.php", "plugins")
         plugin_row = admin_page.locator("#the-list tr").filter(has_text="Clinic Practice Management")
         check("admin.plugin_action.setup_link",
               plugin_row.count() >= 1
-              and plugin_row.locator('a[href*="page=cpms-first-practice-setup"]').count() >= 1,
-              "plugin action link routes to dedicated bootstrap")
-        check("admin.plugin_action.not_generic_wizard",
+              and plugin_row.locator('a[href*="page=cpms-wizard"]').count() >= 1,
+              "plugin action link routes to the single visible setup wizard")
+        check("admin.plugin_action.no_duplicate_setup_entry",
               plugin_row.count() >= 1
-              and plugin_row.locator('a[href*="page=cpms-wizard"]').count() == 0,
-              "plugin action must not point at the generic wizard while eligible")
+              and plugin_row.locator('a[href*="page=cpms-first-practice-setup"]').count() == 0,
+              "plugin action must not advertise a second setup entry point")
 
         status, body = goto_admin(
             admin_page, "admin",
@@ -467,9 +467,9 @@ with sync_playwright() as p:
         check("admin.wizard_clinic.before.no_permission_dead_end",
               "دسترسی لازم را ندارید" not in (body or "") and "اعتبارسنجی ناموفق" not in (body or ""),
               "no authorization dead end")
-        fp_from_wizard = admin_page.locator('[data-cpms-first-practice-link="1"]')
-        check("admin.wizard_clinic.before.bootstrap_link",
-              fp_from_wizard.count() >= 1, "dedicated bootstrap link present")
+        check("admin.wizard_clinic.before.bootstrap_form_embedded",
+              admin_page.locator('input[name="confirm_identity"]').count() == 1,
+              "first-practice bootstrap form is embedded in the wizard (single journey)")
 
         status, body = goto_admin(
             admin_page, "admin",
@@ -540,8 +540,8 @@ with sync_playwright() as p:
                   body_has(after, "تأیید هویت مطب الزامی است"),
                   "server rejected missing confirmation")
             check("admin.missing_confirmation.stayed_on_setup",
-                  query_page(admin_page.url) == "cpms-first-practice-setup",
-                  "redirected back to dedicated page")
+                  query_page(admin_page.url) == "cpms-wizard",
+                  "redirected back to the unified wizard")
             assert_unclaimed("admin.missing_confirmation")
 
             goto_admin(admin_page, "admin", "admin.php?page=cpms-first-practice-setup", "cpms-first-practice-before-bad-nonce")
@@ -557,8 +557,8 @@ with sync_playwright() as p:
                   body_has(after, "درخواست نامعتبر است"),
                   "server rejected invalid nonce")
             check("admin.invalid_nonce.stayed_on_setup",
-                  query_page(admin_page.url) == "cpms-first-practice-setup",
-                  "redirected back to dedicated page")
+                  query_page(admin_page.url) == "cpms-wizard",
+                  "redirected back to the unified wizard")
             assert_unclaimed("admin.invalid_nonce")
 
         # --- Real successful admin-post submit ---

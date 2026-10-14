@@ -585,23 +585,23 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         // 3a. Plugin action links point to cpms-first-practice-setup, not cpms-wizard.
         $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
         $joinedLinks = implode(' ', $links);
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $joinedLinks);
-        self::assertStringNotContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $joinedLinks);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $joinedLinks);
+        self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $joinedLinks);
 
         // 3b. Initial onboarding notice points to cpms-first-practice-setup, not cpms-wizard.
         delete_transient('cpms_onboarding_seen');
         $noticeHtml = $this->renderOutput(static function (): void {
             CpmsAdminMenu::onboardingNotice();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $noticeHtml);
-        self::assertStringNotContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $noticeHtml);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $noticeHtml);
+        self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $noticeHtml);
 
         // 3c. Dashboard setup banner and setup status card point to cpms-first-practice-setup.
         $dashboardHtml = $this->renderOutput(static function (): void {
             CpmsDashboard::render();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $dashboardHtml);
-        self::assertStringNotContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $dashboardHtml);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $dashboardHtml);
+        self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $dashboardHtml);
 
         // 5. Dedicated page renders correctly and is registered in CPMS assets.
         $_GET['page'] = FirstPracticeSetupPage::PAGE_SLUG;
@@ -646,13 +646,13 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $welcomeHtml = $this->renderOutput(static function (): void {
             CpmsSetupWizard::render();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $welcomeHtml);
+        self::assertStringContainsString('name="action" value="cpms_first_practice_setup"', $welcomeHtml);
 
         $_GET['step'] = 'clinic';
         $clinicStepHtml = $this->renderOutput(static function (): void {
             CpmsSetupWizard::render();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $clinicStepHtml);
+        self::assertStringContainsString('name="action" value="cpms_first_practice_setup"', $clinicStepHtml);
         self::assertStringNotContainsString('name="clinic_name"', $clinicStepHtml);
 
         // Submitting cpms_wizard_save as the eligible first-run administrator
@@ -671,7 +671,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             $redirectUrl = $this->captureRedirect(static function (): void {
                 CpmsSetupWizard::save();
             });
-            self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $redirectUrl);
+            self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $redirectUrl);
             $wizardNotice = (string) (get_transient('cpms_wizard_notice') ?: '');
             self::assertStringNotContainsString('دسترسی لازم را ندارید', $wizardNotice);
         }
@@ -838,7 +838,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $redirectBadNonce = $this->captureRedirect(static function (): void {
             FirstPracticeSetupPage::handle();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $redirectBadNonce);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $redirectBadNonce);
         $htmlAfterBadNonce = $this->renderOutput(static function (): void {
             FirstPracticeSetupPage::render();
         });
@@ -854,7 +854,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $redirectUnconfirmed = $this->captureRedirect(static function (): void {
             FirstPracticeSetupPage::handle();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $redirectUnconfirmed);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $redirectUnconfirmed);
         $htmlAfterUnconfirmed = $this->renderOutput(static function (): void {
             FirstPracticeSetupPage::render();
         });
@@ -912,7 +912,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $replayRedirect = $this->captureRedirect(static function (): void {
             FirstPracticeSetupPage::handle();
         });
-        self::assertStringContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $replayRedirect);
+        self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $replayRedirect);
         $replayHtml = $this->renderOutput(static function (): void {
             FirstPracticeSetupPage::render();
         });

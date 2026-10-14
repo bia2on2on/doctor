@@ -97,6 +97,30 @@ final class CpmsSetupWizard
             delete_transient(self::NOTICE_KEY);
         }
 
+        // Single visible onboarding journey: an eligible first run (fresh
+        // bootstrap, strictly-eligible interrupted-setup recovery, or a
+        // blocked interrupted setup) is handled by the embedded
+        // first-practice panel, reusing FirstPracticeSetupService. This is
+        // checked before any Clinic-scoped Settings access because the
+        // actor has zero memberships in that state. Rendering only — no
+        // writes happen on GET.
+        if (current_user_can('manage_options')) {
+            try {
+                $setup_service = App::first_practice_setup_service();
+                if (
+                    $setup_service->first_setup_candidate() !== null
+                    || $setup_service->recovery_candidate() !== null
+                    || $setup_service->interrupted_setup_blocked() !== null
+                ) {
+                    FirstPracticeSetupPage::render();
+                    return;
+                }
+            } catch ( \Throwable ) {
+                // Fall through to the normal wizard; the panel state is
+                // re-derived there and nothing was written.
+            }
+        }
+
         try {
             $settings = App::settings();
         } catch ( ScopeRequiredException ) {
@@ -393,7 +417,7 @@ final class CpmsSetupWizard
                     <td><input type="text" id="cphone" name="clinic_phone" class="regular-text" value="<?php echo esc_attr($phone); ?>"></td>
                 </tr>
             </table>
-            <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست. منبع canonical: cpms_clinics — timezone عملیاتی از Location است و اینجا ویرایش نمی‌شود.</p>
+            <p class="description">این اطلاعات فقط برای شناسایی مطب است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری مطب از برنامهٔ کاری پزشکان مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
             <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -402,6 +426,15 @@ final class CpmsSetupWizard
 
     private static function renderBooking(Settings $settings): void
     {
+        if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
+            ?>
+            <div class="notice notice-warning">
+                <p>برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
+            </div>
+            <?php
+            return;
+        }
+
         $duration = (int) $settings->get('booking.duration_default_min', 20);
         $capacity = (int) $settings->get('booking.slot_capacity_default', 1);
         $lead = (int) $settings->get('booking.min_lead_hours', 2);
@@ -750,6 +783,10 @@ final class CpmsSetupWizard
             wp_die('اعتبارسنجی ناموفق', 403);
         }
 
+        if (!self::hasClinicLocalConfig((int) get_current_user_id())) {
+            wp_die('برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
+        }
+
         $settings = App::settings();
         $settings->set('setup.current_step', 'welcome', (int) get_current_user_id());
         $settings->set(self::COMPLETE_KEY, false, (int) get_current_user_id());
@@ -925,4 +962,36 @@ final class CpmsSetupWizard
 
         return $clinic_name !== '' && $doctors > 0;
     }
+}
+}
+ivate static function saveFinish(Settings $settings, int $updatedBy): string
+    {
+        if (!self::isReadyToOperate($settings)) {
+            return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
+        }
+
+        $settings->set(self::COMPLETE_KEY, true, $updatedBy);
+
+        return '';
+    }
+
+    /**
+     * شرط «آمادهٔ شروع عملیات»: اطلاعات کلینیک + حداقل یک پزشک فعال؛
+     * بدون نیاز به مجوز فعال یا بکاپ/پیامک (گام‌های اختیاری هستند).
+     * اکنون نام کلینیک از canonical cpms_clinics خوانده می‌شود.
+     */
+    private static function isReadyToOperate(Settings $settings): bool
+    {
+        $clinic_name = self::canonical_clinic_name( $settings );
+        $doctors = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
+
+        return $clinic_name !== '' && $doctors > 0;
+    }
+}
+}
+>clinicId, false));
+
+        return $clinic_name !== '' && $doctors > 0;
+    }
+}
 }
