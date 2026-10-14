@@ -121,16 +121,19 @@ jobs:
           sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
           sudo a2dissite 000-default >/dev/null && sudo a2ensite fp >/dev/null
           sudo a2enmod rewrite >/dev/null
+          sudo mkdir -p "$WP_DIR/wp-content"
+          sudo touch "$WP_DIR/wp-content/debug.log"
+          sudo chmod 777 "$WP_DIR/wp-content"
+          sudo chmod 666 "$WP_DIR/wp-content/debug.log"
           for INI in /etc/php/*/apache2/php.ini; do
             sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
+            # Persist fatals even before WordPress sets WP_DEBUG_LOG.
+            sudo sed -i "s#^error_log = .*#error_log = $WP_DIR/wp-content/debug.log#" "$INI"
+            grep -q "^error_log = $WP_DIR/wp-content/debug.log" "$INI" \
+              || echo "error_log = $WP_DIR/wp-content/debug.log" | sudo tee -a "$INI" >/dev/null
           done
           sudo chmod a+rx /home/runner
           sudo chmod -R a+rX "$WP_DIR"
-          # Apache (www-data) must be able to write WP_DEBUG_LOG inside this
-          # disposable tree. Read-only wp-content silently drops fatals, which
-          # previously hid the multi-Clinic exception behind a recovery screen.
-          sudo mkdir -p "$WP_DIR/wp-content"
-          sudo touch "$WP_DIR/wp-content/debug.log"
           sudo chmod 777 "$WP_DIR/wp-content"
           sudo chmod 666 "$WP_DIR/wp-content/debug.log"
           sudo apache2ctl configtest && sudo service apache2 start
@@ -139,12 +142,13 @@ jobs:
           curl -sS "$WP_URL/fp-phpver.php" | tee /tmp/fp/apache-php-version.txt
           rm -f "$WP_DIR/fp-phpver.php"
           php -r 'echo PHP_VERSION, PHP_EOL;' | tee /tmp/fp/cli-php-version.txt
-          # Prove Apache/PHP can persist diagnostics before browser acceptance.
-          printf '%s\n' '<?php throw new Exception("CPMS_DIAG_PROBE");' > "$WP_DIR/cpms-diag-probe.php"
+          # Prove Apache/PHP can persist diagnostics (wp-load so WP_DEBUG_LOG applies).
+          printf '%s\n' '<?php require __DIR__ . "/wp-load.php"; throw new Exception("CPMS_DIAG_PROBE");' > "$WP_DIR/cpms-diag-probe.php"
           curl -sS "$WP_URL/cpms-diag-probe.php" >/dev/null || true
           rm -f "$WP_DIR/cpms-diag-probe.php"
           if ! grep -q 'CPMS_DIAG_PROBE' "$WP_DIR/wp-content/debug.log"; then
-            echo 'DIAG: Apache/PHP cannot write wp-content/debug.log' >&2
+            echo 'DIAG: wp-content/debug.log missing probe; apache error log follows' >&2
+            sudo tail -30 /var/log/apache2/fp-error.log >&2 || true
             ls -la "$WP_DIR/wp-content" >&2 || true
             cat "$WP_DIR/wp-content/debug.log" >&2 || true
             exit 1
