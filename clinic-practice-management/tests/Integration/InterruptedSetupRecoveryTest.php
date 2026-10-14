@@ -555,6 +555,11 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
                 ' SET first_setup_claimed_at = NULL, name = ' . $wpdb->prepare('%s', $this->clinic_name) . // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 ' WHERE id = ' . $clinic_id
             );
+            // The cleanup above runs in a fresh transaction opened after
+            // the explicit COMMIT (autocommit stays off under the WP test
+            // harness); commit it explicitly or tearDown's ROLLBACK would
+            // resurrect the claimed marker and membership for later tests.
+            $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
     }
 
