@@ -11,7 +11,7 @@ use WP_UnitTestCase;
 
 require_once __DIR__ . '/RealTableMigrations.php';
 
-/** Real MySQL enum evolution and fail-closed downgrade, including non-strict SQL. */
+/** Real MySQL/MariaDB enum evolution and fail-closed downgrade, including non-strict SQL. */
 final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
 {
     use RealTableMigrations;
@@ -99,13 +99,20 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $extra['EXTRA'] = 'DEFAULT_GENERATED';
         $cases[] = $extra;
 
-        $missing_default = $this->validStatusMetadata( 'active' );
-        unset( $missing_default['COLUMN_DEFAULT'] );
-        $cases[] = $missing_default;
-
-        $missing_extra = $this->validStatusMetadata( 'active' );
-        unset( $missing_extra['EXTRA'] );
-        $cases[] = $missing_extra;
+        $required_fields = [
+            'COLUMN_TYPE',
+            'IS_NULLABLE',
+            'COLUMN_DEFAULT',
+            'CHARACTER_SET_NAME',
+            'COLLATION_NAME',
+            'COLUMN_COMMENT',
+            'EXTRA',
+        ];
+        foreach ( $required_fields as $field ) {
+            $missing = $this->validStatusMetadata( 'active' );
+            unset( $missing[ $field ] );
+            $cases[] = $missing;
+        }
 
         foreach ( $cases as $column ) {
             $queries = [];
@@ -128,7 +135,17 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $this->assertMigrationUpRejects( $db );
         self::assertSame( [], $queries );
 
-        foreach ( [ 'CONSTRAINT_SCHEMA', 'TABLE_SCHEMA', 'TABLE_NAME', 'CONSTRAINT_NAME', 'CHECK_CONSTRAINT_SCHEMA', 'CHECK_CONSTRAINT_NAME', 'CHECK_CLAUSE' ] as $field ) {
+        $ownership_fields = [
+            'CONSTRAINT_SCHEMA',
+            'TABLE_SCHEMA',
+            'TABLE_NAME',
+            'CONSTRAINT_NAME',
+            'CONSTRAINT_TYPE',
+            'CHECK_CONSTRAINT_SCHEMA',
+            'CHECK_CONSTRAINT_NAME',
+            'CHECK_CLAUSE',
+        ];
+        foreach ( $ownership_fields as $field ) {
             $invalid = $this->guardMetadata( $defs, $guard, 'mysql' );
             $invalid[ $field ] = 'unexpected';
             $queries = [];
@@ -151,11 +168,11 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $migration = $this->archivalMigration();
         ( $migration['up'] )( $db );
         $drop_statements = array_values(
-            array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'DROP CONSTRAINT' ) !== false )
+            array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'DROP CHECK' ) !== false )
         );
         self::assertCount( 1, $drop_statements );
         self::assertStringContainsString( '`' . $guard . '`', $drop_statements[0] );
-        self::assertStringNotContainsString( 'DROP CHECK', $drop_statements[0] );
+        self::assertStringNotContainsString( 'DROP CONSTRAINT', $drop_statements[0] );
     }
 
     public function test_mariadb_check_metadata_and_disabled_session_are_fail_closed(): void
@@ -164,6 +181,20 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $guard  = $this->guardName( $defs );
         $server = [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ];
         $valid  = $this->guardMetadata( $defs, $guard, 'mariadb' );
+        $invalid = $valid;
+        $invalid['CHECK_TABLE_NAME'] = 'unexpected';
+        $queries = [];
+        $db = $this->mockedMigrationDb(
+            $this->validStatusMetadata( "'active'" ),
+            $server,
+            [ $invalid ],
+            '1',
+            $queries,
+            "enum('active','inactive','archived')"
+        );
+        $this->assertMigrationUpRejects( $db );
+        self::assertSame( [], $queries, 'MariaDB guard ownership must be exact before any DDL' );
+
         $queries = [];
         $db = $this->mockedMigrationDb(
             $this->validStatusMetadata( "'active'" ),
@@ -227,19 +258,26 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         self::assertNotNull( $server );
         self::assertNotSame( '', (string) ( $server['SERVER_VERSION'] ?? '' ) );
         $column = App::db()->fetchRow(
-            'SELECT COLUMN_DEFAULT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
+            'SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA FROM information_schema.COLUMNS' .
+            ' WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
             [ App::db()->table( 'cpms_custom_role_defs' ), 'status' ]
         );
         self::assertNotNull( $column );
 
         if ( stripos( (string) $server['SERVER_VERSION'], 'MariaDB' ) === false ) {
             self::assertStringStartsWith( '8.', (string) $server['SERVER_VERSION'] );
+            self::assertSame( "enum('active','inactive','archived')", strtolower( (string) $column['COLUMN_TYPE'] ) );
+            self::assertSame( 'NO', (string) $column['IS_NULLABLE'] );
             self::assertSame( 'active', (string) $column['COLUMN_DEFAULT'] );
+            self::assertSame( '', (string) $column['EXTRA'] );
             return;
         }
 
         self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', (string) $server['SERVER_VERSION'] );
+        self::assertSame( "enum('active','inactive','archived')", strtolower( (string) $column['COLUMN_TYPE'] ) );
+        self::assertSame( 'NO', (string) $column['IS_NULLABLE'] );
         self::assertSame( "'active'", (string) $column['COLUMN_DEFAULT'] );
+        self::assertSame( '', (string) $column['EXTRA'] );
         self::assertContains( strtoupper( (string) App::db()->fetchValue( 'SELECT @@SESSION.check_constraint_checks' ) ), [ '1', 'ON' ] );
     }
 
@@ -248,8 +286,10 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $db    = App::db();
         $defs  = $db->table( 'cpms_custom_role_defs' );
         $guard = $this->guardName( $defs );
+        $server_for_drop = (string) $db->fetchValue( 'SELECT VERSION()' );
+        $drop_type = stripos( $server_for_drop, 'MariaDB' ) !== false ? 'DROP CONSTRAINT' : 'DROP CHECK';
 
-        $this->withRealTables( function () use ( $db, $defs, $guard ): void {
+        $this->withRealTables( function () use ( $db, $defs, $guard, $drop_type ): void {
             try {
                 self::assertSame( self::VERSION, App::migrations()->currentVersion() );
                 self::assertSame( self::VERSION, App::migrations()->rollbackOne() );
@@ -305,7 +345,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                 );
                 self::assertContains( [ 'CONSTRAINT_NAME' => $decoy ], $remaining );
                 self::assertNotContains( [ 'CONSTRAINT_NAME' => $guard ], $remaining );
-                $db->query( "ALTER TABLE {$defs} DROP CONSTRAINT `{$decoy}`" );
+                $db->query( "ALTER TABLE {$defs} {$drop_type} `{$decoy}`" );
             } finally {
                 if ( App::migrations()->currentVersion() !== self::VERSION ) {
                     App::migrations()->migrate();
@@ -315,7 +355,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                     [ $defs, $guard . '_decoy', 'CHECK' ]
                 ) > 0;
                 if ( $decoy_exists ) {
-                    $db->query( "ALTER TABLE {$defs} DROP CONSTRAINT `{$guard}_decoy`" );
+                    $db->query( "ALTER TABLE {$defs} {$drop_type} `{$guard}_decoy`" );
                 }
             }
         } );
@@ -551,6 +591,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
     ): CpmsDb {
         $queries = [];
         $ddl_issued = false;
+        $guard_removed = false;
         $wpdb = $this->getMockBuilder( \wpdb::class )
             ->disableOriginalConstructor()
             ->onlyMethods( [ 'prepare', 'get_row', 'get_results', 'get_var', 'query' ] )
@@ -591,8 +632,12 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             }
         );
         $wpdb->method( 'get_results' )->willReturnCallback(
-            static function ( $query ) use ( $constraint_rows ): array {
-                return false !== stripos( (string) $query, 'information_schema.table_constraints' ) ? $constraint_rows : [];
+            static function ( $query ) use ( $constraint_rows, &$guard_removed ): array {
+                if ( false === stripos( (string) $query, 'information_schema.table_constraints' ) || $guard_removed ) {
+                    return [];
+                }
+
+                return $constraint_rows;
             }
         );
         $wpdb->method( 'get_var' )->willReturnCallback(
@@ -601,9 +646,13 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             }
         );
         $wpdb->method( 'query' )->willReturnCallback(
-            static function ( $query ) use ( &$queries, &$ddl_issued ): int {
-                $queries[] = (string) $query;
+            static function ( $query ) use ( &$queries, &$ddl_issued, &$guard_removed ): int {
+                $query = (string) $query;
+                $queries[] = $query;
                 $ddl_issued = true;
+                if ( false !== stripos( $query, 'DROP CHECK' ) || false !== stripos( $query, 'DROP CONSTRAINT' ) ) {
+                    $guard_removed = true;
+                }
 
                 return 1;
             }
