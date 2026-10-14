@@ -607,8 +607,15 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
      */
     private function resetClinicActivityFixture(): void
     {
-        foreach (['cpms_patients', 'cpms_clinicians', 'cpms_appointments', 'cpms_visits', 'cpms_invoices', 'cpms_payments', 'cpms_services', 'cpms_custom_role_defs'] as $table) {
-            App::db()->query('DELETE FROM ' . App::db()->table($table) . ' WHERE clinic_id = %d', [$this->clinic_id]);
+        // Leaked rows may be FK-referenced by other leaked child rows
+        // (e.g. schedule slots); test-fixture cleanup only.
+        App::db()->query('SET FOREIGN_KEY_CHECKS = 0');
+        try {
+            foreach (['cpms_patients', 'cpms_clinicians', 'cpms_appointments', 'cpms_visits', 'cpms_invoices', 'cpms_payments', 'cpms_services', 'cpms_custom_role_defs'] as $table) {
+                App::db()->query('DELETE FROM ' . App::db()->table($table) . ' WHERE clinic_id = %d', [$this->clinic_id]);
+            }
+        } finally {
+            App::db()->query('SET FOREIGN_KEY_CHECKS = 1');
         }
     }
 
