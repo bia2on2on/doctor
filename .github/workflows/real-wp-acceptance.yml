@@ -80,6 +80,8 @@ env:
   ACCOUNTANT_PASS: Acceptance-2026!
   SHELLPROOF_USER: acc_shellproof
   SHELLPROOF_PASS: Acceptance-2026!
+  PORTAL_DENIED_USER: acc_unassigned
+  PORTAL_DENIED_PASS: Acceptance-2026!
 
 jobs:
   acceptance:
@@ -334,6 +336,40 @@ jobs:
           echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
           mkdir -p /tmp/acc
 
+      - name: Measure official ZIP delta against current main
+        if: matrix.prefix == 'wp_' && !inputs.persian_coexistence
+        run: |
+          set -Eeuo pipefail
+          git fetch --no-tags --depth=1 origin main
+          BASE_SHA="$(git rev-parse FETCH_HEAD)"
+          SIZE_WORK="$(mktemp -d /tmp/cpms-release-size.XXXXXX)"
+          trap 'rm -rf "$SIZE_WORK"' EXIT
+          mkdir -p "$SIZE_WORK/main"
+          git archive "$BASE_SHA" clinic-practice-management | tar -x -C "$SIZE_WORK/main"
+          if ! bash "$SIZE_WORK/main/clinic-practice-management/bin/build-release.sh" > /tmp/acc/main-release-build.log 2>&1; then
+            tail -60 /tmp/acc/main-release-build.log
+            echo '::error::Current-main baseline release ZIP build failed; size delta is unavailable.'
+            exit 1
+          fi
+          CURRENT_ZIP="$(find clinic-practice-management/dist -maxdepth 1 -type f -name 'clinic-practice-management-*.zip' -print -quit)"
+          MAIN_ZIP="$(find "$SIZE_WORK/main/clinic-practice-management/dist" -maxdepth 1 -type f -name 'clinic-practice-management-*.zip' -print -quit)"
+          [ -n "$CURRENT_ZIP" ] && [ -n "$MAIN_ZIP" ] || { echo '::error::Current/main official release ZIP missing.'; exit 1; }
+          BASE_BYTES="$(stat -c '%s' "$MAIN_ZIP")"
+          CURRENT_BYTES="$(stat -c '%s' "$CURRENT_ZIP")"
+          python3 - "$BASE_SHA" "$BASE_BYTES" "$CURRENT_BYTES" > /tmp/acc/release-size-delta.txt <<'PY'
+          import sys
+          base_sha, base_raw, current_raw = sys.argv[1:]
+          base, current = int(base_raw), int(current_raw)
+          delta = current - base
+          pct = (delta / base * 100.0) if base else 0.0
+          print(f'baseline_main_sha={base_sha}')
+          print(f'baseline_release_zip_bytes={base}')
+          print(f'current_release_zip_bytes={current}')
+          print(f'delta_bytes={delta:+d}')
+          print(f'delta_percent={pct:+.4f}%')
+          PY
+          cat /tmp/acc/release-size-delta.txt
+
       - name: Stage B boundary — preserve logs before CPMS installation/activation
         if: inputs.persian_coexistence && inputs.coexistence_stage_b
         run: python3 .github/persian-coexistence/run.py begin-b
@@ -454,6 +490,7 @@ jobs:
           wp user create "$SECRETARY_USER" 'sec@acc.local' --user_pass="$SECRETARY_PASS" --role=cpms_secretary --path="$WP_DIR" --allow-root
           wp user create "$MANAGER_USER" 'mgr@acc.local' --user_pass="$MANAGER_PASS" --role=cpms_manager --path="$WP_DIR" --allow-root
           wp user create "$ACCOUNTANT_USER" 'acc@acc.local' --user_pass="$ACCOUNTANT_PASS" --role=cpms_accountant --path="$WP_DIR" --allow-root
+          wp user create "$PORTAL_DENIED_USER" 'unassigned@acc.local' --user_pass="$PORTAL_DENIED_PASS" --role=subscriber --path="$WP_DIR" --allow-root
           STORAGE=/home/runner/rwp-storage
           mkdir -p "$STORAGE" && sudo chmod -R 777 "$STORAGE"
           cat > /tmp/acc/setup-roles.php <<'PHPEOF'
@@ -548,9 +585,10 @@ jobs:
                   ? (int) $existing['id']
                   : $svc->create_membership($accClinicId, $userId, $roleKey);
           }
-          // administrator (technical owner) عمداً عضویت staff نمی‌گیرد؛ کاربر
-          // patient هم در این مرحله ساخته نمی‌شود و در صورت افزودن، نباید
-          // عضویت staff بگیرد.
+          // administrator در این fixture اولیه عضویت staff خودکار نمی‌گیرد؛
+          // fixture جداگانهٔ shortcode فقط یک membership صریحِ Clinic-local برای
+          // آزمون manage_options/CONFIG می‌سازد. Patient هم در این مرحله ساخته
+          // نمی‌شود و در صورت افزودن نباید عضویت staff بگیرد.
           \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
           echo 'memberships seeded on clinic ' . $accClinicId . ': '
               . implode(', ', array_map(
@@ -596,6 +634,14 @@ jobs:
           // 'default' حل شده) — هیچ literal id و هیچ «اولین Clinic» در کار نیست.
           $accClinicId = (int) trim((string) file_get_contents('/tmp/acc/manager_clinic_id.txt'));
           if ($accClinicId <= 0) { fwrite(STDERR, "FAIL: explicit Clinic fixture id is invalid\n"); exit(1); }
+          // The WP Administrator used by this isolated browser job also gets one explicit
+          // Clinic-local manager membership so the manage_options shortcode helper can prove
+          // its authorized selector; no capability or production-role grant is added here.
+          $admin = get_user_by('login', getenv('ADMIN_USER'));
+          if ($admin === false || !user_can($admin, 'manage_options')) { fwrite(STDERR, "FAIL: administrator fixture user unavailable\n"); exit(1); }
+          if (\ClinicCore\Bootstrap\App::membership_service()->membership_for($accClinicId, (int) $admin->ID) === null) {
+              \ClinicCore\Bootstrap\App::membership_service()->create_membership($accClinicId, (int) $admin->ID, 'cpms_manager');
+          }
           $doc = get_user_by('login', getenv('DOCTOR_USER'));
           if ($doc === false) { fwrite(STDERR, "FAIL: doctor fixture user not found\n"); exit(1); }
           $row = $wpdb->get_row($wpdb->prepare(
@@ -612,6 +658,8 @@ jobs:
           ), ARRAY_A);
           if (!is_array($loc)) { fwrite(STDERR, "FAIL: no active Location for clinic {$accClinicId}\n"); exit(1); }
           $locationId = (int) $loc['id'];
+          // Give the public-browser contract a deterministic non-empty address to prove A1 rendering.
+          $wpdb->update($db->table('cpms_locations'), ['address' => 'Acceptance Street 12'], ['id' => $locationId, 'clinic_id' => $accClinicId], ['%s'], ['%d', '%d']);
           $tzName = (is_string($loc['timezone']) && $loc['timezone'] !== '') ? $loc['timezone'] : 'UTC';
           $tz = new DateTimeZone($tzName);
           // برنامهٔ فعال — A1 پنجرهٔ پیش‌فرضِ مرور را فقط از Locationِ دارای
@@ -690,6 +738,7 @@ jobs:
           MANAGER_USER="$MANAGER_USER" MANAGER_PASS="$MANAGER_PASS" \
           MANAGER_CLINIC_ID="$MANAGER_CLINIC_ID" \
           ACCOUNTANT_USER="$ACCOUNTANT_USER" ACCOUNTANT_PASS="$ACCOUNTANT_PASS" \
+          PORTAL_DENIED_USER="$PORTAL_DENIED_USER" PORTAL_DENIED_PASS="$PORTAL_DENIED_PASS" \
           ACTUAL_COUNT_FILE=/tmp/acc/actual_count.txt \
           OUT=/tmp/acc \
           python3 clinic-practice-management/bin/rwp-acceptance.py > /tmp/acc/acceptance.log 2>&1
@@ -1052,6 +1101,10 @@ jobs:
             echo '## Real WordPress Acceptance — prefix `${{ matrix.prefix }}`'
             echo
             echo '- ZIP: `bin/build-release.sh` (official artifact)، نصب با `wp plugin install --activate`'
+            echo '- Official release ZIP size vs current main:'
+            echo '```'
+            cat /tmp/acc/release-size-delta.txt 2>/dev/null || echo '(measured on the wp_ matrix job only)'
+            echo '```'
             echo "- DB prefix: \`${{ matrix.prefix }}\` — شمارش واقعی جداول: $(cat /tmp/acc/actual_count.txt 2>/dev/null || echo '?') — شمارش UI: $(cat /tmp/acc/ui_count.txt 2>/dev/null || echo '?')"
             echo '- Migration failure probe: `(fail-loud + not-recorded)` در لاگ Step «D3»'
             echo
@@ -1074,6 +1127,10 @@ jobs:
             echo "- migration failure probe:"
             echo '```'
             cat /tmp/acc/migration-failure-probe.txt 2>/dev/null || echo '(probe اجرا نشد)'
+            echo '```'
+            echo '- official release ZIP size vs current main:'
+            echo '```'
+            cat /tmp/acc/release-size-delta.txt 2>/dev/null || echo '(measured on the wp_ matrix job only or this stage did not run)'
             echo '```'
             echo '- browser acceptance:'
             echo '```'

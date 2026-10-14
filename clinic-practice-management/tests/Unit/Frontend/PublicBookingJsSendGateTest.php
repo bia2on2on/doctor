@@ -129,4 +129,11 @@ final class PublicBookingJsSendGateTest extends TestCase
         self::assertStringContainsString('body.location_id = toInt(selection.location_id)', $this->js, 'B1 must preserve the selected Location selector.');
         self::assertStringContainsString('location-picker', $this->js, 'Location selection must bind to the server-rendered picker.');
     }
+
+    public function testNearbyAlternativesKeepTheirPersistedLocationId(): void
+    {
+        self::assertStringContainsString("node.setAttribute('data-location-id', String(entryLocationId))", $this->js, 'A nearby slot must carry the server-provided Location id into the A4 selector.');
+        self::assertStringContainsString("location_id: toInt(slotButton.getAttribute('data-location-id'))", $this->js, 'A nearby alternative must quote against its own rendered Location.');
+        self::assertStringContainsString('entryLocationId !== selectedLocationId', $this->js, 'Nearby alternatives from another Location must remain hidden.');
+    }
 }

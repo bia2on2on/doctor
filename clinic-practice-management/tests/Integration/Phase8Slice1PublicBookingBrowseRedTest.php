@@ -743,6 +743,22 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         );
     }
 
+    public function testAnonymousA4RejectsMismatchedLocationSelectorForPersistedSlot(): void
+    {
+        $this->assertAnonymous();
+
+        $res = $this->a4(
+            $this->clinicianA,
+            $this->freeSlot['date'],
+            $this->freeSlot['time'],
+            $this->freeSlot['slot_id'],
+            $this->locationA2
+        );
+
+        self::assertSame(404, $res->get_status(), 'A4 must reject a browser Location that differs from the persisted slot. Got: ' . $this->describe($res));
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($res), 'A4 mismatch remains fail-closed without revealing slot/tenant details.');
+    }
+
     public function testAnonymousA4QuoteInsideMinLeadIsPolicyRejected(): void
     {
         $this->assertAnonymous();
@@ -1176,12 +1192,15 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         return rest_do_request($request);
     }
 
-    private function a4(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId): WP_REST_Response
+    private function a4(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId, ?int $locationId = null): WP_REST_Response
     {
         $request = new WP_REST_Request('POST', self::NS . '/booking/quote');
         $request->set_param('clinician_id', $clinicianId);
         $request->set_param('slot_date', $slotDate);
         $request->set_param('slot_time', $slotTime);
+        if ($locationId !== null && $locationId > 0) {
+            $request->set_param('location_id', $locationId);
+        }
         if ($slotId !== null && $slotId > 0) {
             // Exact slot identity — avoids the documented CLINIC_SLOT_AMBIGUOUS
             // fail-closed branch when two Locations share a date/time tuple.

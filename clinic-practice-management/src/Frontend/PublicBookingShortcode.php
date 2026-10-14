@@ -110,6 +110,7 @@ final class PublicBookingShortcode
         'idle',
         'loading',
         'selectable',
+        'location_required',
         'bookable',
         'policy_rejected',
         'unavailable',
@@ -156,6 +157,7 @@ final class PublicBookingShortcode
         'idle' => 'برای دیدن نوبت‌های آزاد، ابتدا پزشک موردنظر را انتخاب کنید.',
         'loading' => 'در حال دریافت نوبت‌های آزاد…',
         'selectable' => 'روز و ساعت موردنظر خود را انتخاب کنید.',
+        'location_required' => 'برای دیدن نوبت‌ها، محل مراجعه را انتخاب کنید.',
         'bookable' => 'این نوبت آزاد است و برای رزرو در دسترس می‌باشد.',
         'policy_rejected' => 'این نوبت به دلیل سیاست زمان‌بندی مرکز قابل رزرو نیست.',
         'unavailable' => 'ظرفیت این نوبت تکمیل شده است.',
@@ -171,7 +173,8 @@ final class PublicBookingShortcode
 
     private const TITLE = 'رزرو نوبت';
     private const STEP_CLINICIAN = '۱. انتخاب پزشک';
-    private const STEP_SLOT = '۲. انتخاب روز و ساعت';
+    private const STEP_LOCATION = '۲. انتخاب محل مراجعه';
+    private const STEP_SLOT = '۳. انتخاب روز و ساعت';
     private const CAPACITY_LABEL = 'ظرفیت باقی‌مانده';
     private const DURATION_LABEL = 'دقیقه';
     private const CLINICIAN_HINT = 'پزشک موردنظر را انتخاب کنید';
@@ -493,8 +496,9 @@ final class PublicBookingShortcode
         }
         $lines[] = '</ul>';
         $lines[] = '</div>';
+        $lines[] = self::renderLocationPicker($surfaceId);
 
-        // ---- گام ۲: مرورِ نوبت‌ها (با A1 موجود) ----
+        // ---- گام ۳: مرورِ نوبت‌ها (با A1 موجود) ----
         $panelLegendId = $surfaceId . '-calendar';
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__calendar'));
         $lines[] = sprintf(
@@ -817,6 +821,39 @@ final class PublicBookingShortcode
     }
 
     /**
+     * Accessible Location chooser; its options are populated from Location
+     * metadata carried by the existing A1 availability response.
+     */
+    private static function renderLocationPicker(string $surfaceId): string
+    {
+        $labelId = $surfaceId . '-locations';
+        $base = self::ROOT_CLASS;
+
+        return sprintf(
+            '<section class="%1$s" data-role="location-picker" role="group" aria-labelledby="%2$s" hidden>'
+            . '<p class="%3$s" id="%2$s">%4$s</p>'
+            . '<ul class="%5$s" data-role="location-options" role="list" aria-labelledby="%2$s"></ul>'
+            . '<div class="%6$s" data-role="location-details" aria-live="polite" hidden>'
+            . '<p class="%7$s"><b data-role="location-name"></b></p>'
+            . '<p class="%8$s" data-role="location-address-row" hidden>%9$s <span data-role="location-address" data-fill="address"></span></p>'
+            . '</div>'
+            . '<p class="%10$s" data-role="location-hint" role="status" hidden>%11$s</p>'
+            . '</section>',
+            esc_attr($base . '__location-picker'),
+            esc_attr($labelId),
+            esc_attr($base . '__legend'),
+            esc_html(self::STEP_LOCATION),
+            esc_attr($base . '__location-list'),
+            esc_attr($base . '__location-details'),
+            esc_attr($base . '__location-name'),
+            esc_attr($base . '__location-address'),
+            esc_html('نشانی:'),
+            esc_attr($base . '__location-hint'),
+            esc_html('برای مشاهدهٔ نوبت‌ها، محل مراجعه را انتخاب کنید.')
+        );
+    }
+
+    /**
      * سرتیتر سطح: عنوان + نامِ همان Clinicِ پیوندشده (تنها دادهٔ غیرپزشکیِ
      * نمایشی که از ردیفِ پایدارِ Clinic می‌آید).
      */
@@ -896,6 +933,18 @@ final class PublicBookingShortcode
         $lines[] = sprintf(
             '<template data-template="detail-server">'
             . '<span class="%1$s__detail-text" data-fill="message"></span>'
+            . '</template>',
+            esc_attr($b)
+        );
+
+        $lines[] = sprintf(
+            '<template data-template="location-option">'
+            . '<li class="%1$s__location-item">'
+            . '<button type="button" class="%1$s__location-option" data-role="location-option" aria-pressed="false">'
+            . '<span class="%1$s__location-option-name" data-fill="name"></span>'
+            . '<span class="%1$s__location-option-address" data-fill="address"></span>'
+            . '</button>'
+            . '</li>'
             . '</template>',
             esc_attr($b)
         );

@@ -138,6 +138,126 @@
 		button.textContent = busy ? (busyLabel || TEXT_BUSY) : idleLabel;
 	}
 
+	function readOtpConfig() {
+		var element = document.querySelector('script.cpms-patient-portal__auth-config');
+		if (!element) { return null; }
+		var parsed;
+		try { parsed = JSON.parse(element.textContent || ''); }
+		catch (e) { return null; }
+		if (!parsed || typeof parsed !== 'object') { return null; }
+		if (!isNonEmptyString(parsed.rest_root) || parsed.otp_request_path !== '/otp/request' || parsed.otp_verify_path !== '/otp/verify') { return null; }
+		return parsed;
+	}
+
+	function otpDigits(value) {
+		return String(value || '')
+			.replace(/[\u06F0-\u06F9]/g, function (digit) { return String(digit.charCodeAt(0) - 0x06F0); })
+			.replace(/[\u0660-\u0669]/g, function (digit) { return String(digit.charCodeAt(0) - 0x0660); })
+			.replace(/[^0-9]/g, '');
+	}
+
+	function bindPatientOtpLogin() {
+		var form = document.querySelector('[data-role="patient-otp-login"]');
+		var config = readOtpConfig();
+		if (!form || !config || typeof window.fetch !== 'function') { return; }
+
+		var mobileInput = form.querySelector('[data-role="patient-otp-mobile"]');
+		var codeStep = form.querySelector('[data-role="patient-otp-code-step"]');
+		var codeInput = form.querySelector('[data-role="patient-otp-code"]');
+		var requestButton = form.querySelector('[data-role="patient-otp-request"]');
+		var verifyButton = form.querySelector('[data-role="patient-otp-verify"]');
+		var status = form.querySelector('[data-role="patient-otp-status"]');
+		if (!mobileInput || !codeStep || !codeInput || !requestButton || !verifyButton || !status) { return; }
+
+		var busy = false;
+		var codeRequested = false;
+		function setStatus(message, state) {
+			status.textContent = message || '';
+			status.hidden = !message;
+			if (state) { status.setAttribute('data-state', state); }
+			else { status.removeAttribute('data-state'); }
+		}
+		function setOtpBusy(value) {
+			busy = !!value;
+			requestButton.disabled = busy;
+			verifyButton.disabled = busy;
+			form.setAttribute('aria-busy', busy ? 'true' : 'false');
+		}
+		function fail(result, fallback) {
+			setStatus(serverMessage(result) || fallback, 'error');
+		}
+		function requestCode() {
+			if (busy) { return; }
+			var mobile = otpDigits(mobileInput.value);
+			if (!mobile) {
+				setStatus('شمارهٔ موبایل را وارد کنید.', 'error');
+				mobileInput.focus();
+				return;
+			}
+			setOtpBusy(true);
+			setStatus('در حال ثبت درخواست کد…', 'busy');
+			requestJson(apiUrl(config.rest_root, config.otp_request_path), {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mobile: mobile, purpose: 'login' })
+			}).then(function (result) {
+				setOtpBusy(false);
+				if (!result.ok) {
+					fail(result, 'درخواست کد انجام نشد. کمی بعد دوباره تلاش کنید.');
+					return;
+				}
+				codeRequested = true;
+				codeStep.hidden = false;
+				requestButton.hidden = true;
+				verifyButton.hidden = false;
+				setStatus('درخواست کد ثبت شد. اگر پیامک دریافت نشد، کمی بعد دوباره تلاش کنید.', 'success');
+				codeInput.focus();
+			}, function () {
+				setOtpBusy(false);
+				setStatus('ارتباط برقرار نشد. اتصال خود را بررسی و دوباره تلاش کنید.', 'error');
+			});
+		}
+		function verifyCode() {
+			if (busy || !codeRequested) { return; }
+			var mobile = otpDigits(mobileInput.value);
+			var code = otpDigits(codeInput.value);
+			if (!mobile || !/^\d{6}$/.test(code)) {
+				setStatus('شمارهٔ موبایل و کد ۶ رقمی را بررسی کنید.', 'error');
+				(!mobile ? mobileInput : codeInput).focus();
+				return;
+			}
+			setOtpBusy(true);
+			setStatus('در حال بررسی کد…', 'busy');
+			requestJson(apiUrl(config.rest_root, config.otp_verify_path), {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+				body: JSON.stringify({ mobile: mobile, code: code })
+			}).then(function (result) {
+				setOtpBusy(false);
+				var payload = result.body && result.body.data ? result.body.data : null;
+				if (result.ok && payload && payload.session_issued === true) {
+					window.location.reload();
+					return;
+				}
+				fail(result, 'کد معتبر نیست یا ورود برای این حساب مجاز نیست. دوباره تلاش کنید.');
+				codeInput.focus();
+			}, function () {
+				setOtpBusy(false);
+				setStatus('ارتباط برقرار نشد. اتصال خود را بررسی و دوباره تلاش کنید.', 'error');
+			});
+		}
+
+		requestButton.addEventListener('click', requestCode);
+		verifyButton.addEventListener('click', verifyCode);
+		form.addEventListener('submit', function (event) {
+			event.preventDefault();
+			if (codeRequested) { verifyCode(); }
+			else { requestCode(); }
+		});
+	}
+
 	function cancelAppointment(config, button) {
 		var appointmentId = parseInt(button.getAttribute('data-appointment-id') || '', 10);
 		if (!(appointmentId > 0) || button.disabled) {
@@ -1053,6 +1173,7 @@
 	}
 
 	function init() {
+		bindPatientOtpLogin();
 		var config = readConfig();
 		if (!config) {
 			return;
