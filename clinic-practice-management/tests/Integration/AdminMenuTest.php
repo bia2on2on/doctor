@@ -134,14 +134,14 @@ final class AdminMenuTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->admin);
         // پیش‌فرض تازه‌نصب: setup.completed = false → لینک اصلی «راه‌اندازی» به
-        // بوت‌استرپ اختصاصی اولین مطب (cpms-first-practice-setup) اشاره می‌کند.
+        // ویزارد واحد راه‌اندازی (cpms-wizard) اشاره می‌کند؛ بوت‌استرپ اولین مطب داخل همان ویزارد است.
         App::settings()->set('setup.completed', false);
 
         $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
         $joined = implode(' ', $links);
 
         $this->assertStringContainsString('راه‌اندازی', $joined, 'قبل از تکمیل راه‌اندازی، لینک اصلی باید «راه‌اندازی» باشد');
-        $this->assertStringContainsString('page=cpms-first-practice-setup', $joined, 'در نصب تازهٔ واجد شرایط، لینک راه‌اندازی باید به بوت‌استرپ اولین مطب برود');
+        $this->assertStringContainsString('page=cpms-wizard', $joined, 'در نصب تازهٔ واجد شرایط، لینک راه‌اندازی باید به ویزارد واحد راه‌اندازی برود');
         $this->assertStringContainsString('تنظیمات', $joined, 'مدیر باید لینک «تنظیمات» را ببیند');
 
         // پس از مطالبهٔ اولین مطب ولی پیش از تکمیل ویزارد، لینک راه‌اندازی به cpms-wizard می‌رود.

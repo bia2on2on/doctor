@@ -147,9 +147,10 @@ final class CpmsAdminMenu
      * established Clinic-management wizard.
      */
     public static function setup_url(): string {
-        $slug = self::is_first_practice_setup_pending()
-            ? FirstPracticeSetupPage::PAGE_SLUG
-            : CpmsSetupWizard::PAGE_SLUG;
+        // Single visible onboarding entry point: the CPMS wizard. The
+        // wizard embeds the first-practice bootstrap/recovery panel (via
+        // FirstPracticeSetupService) when the installation is eligible.
+        $slug = CpmsSetupWizard::PAGE_SLUG;
 
         return admin_url( 'admin.php?page=' . $slug );
     }

@@ -7,8 +7,10 @@ namespace ClinicCore\Admin;
 use ClinicCore\Application\Clinic\ClinicProfileException;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -97,6 +99,17 @@ final class CpmsSetupWizard
             delete_transient(self::NOTICE_KEY);
         }
 
+        // Single visible onboarding journey: an eligible first run (fresh
+        // bootstrap, strictly-eligible interrupted-setup recovery, or a
+        // blocked interrupted setup) is handled by the embedded
+        // first-practice panel, reusing FirstPracticeSetupService. This is
+        // checked before any Clinic-scoped Settings access because the
+        // actor has zero memberships in that state. Rendering only.
+        if ( current_user_can( 'manage_options' ) && self::onboarding_panel_applies() ) {
+            FirstPracticeSetupPage::render();
+            return;
+        }
+
         try {
             $settings = App::settings();
         } catch ( ScopeRequiredException ) {
@@ -120,10 +133,10 @@ final class CpmsSetupWizard
         $step = $steps[$index];
         $isComplete = (bool) $settings->get(self::COMPLETE_KEY, false);
 
-        $startedAt = (string) ($settings->get('setup.started_at', '') ?? '');
-        if ($startedAt === '') {
-            $settings->set('setup.started_at', gmdate('c'), (int) get_current_user_id());
-        }
+        // GET is strictly read-only: rendering must never persist settings
+        // or audit rows (a former setup.started_at write here is what made
+        // migration 0026's conservative backfill consume the first-setup
+        // marker for merely-viewed, zero-membership installations).
         ?>
         <div class="wrap" dir="rtl">
             <h1>راه‌اندازی کلینیک — قدم <?php echo esc_html((string) ($index + 1)); ?> از <?php echo esc_html((string) count($steps)); ?></h1>
@@ -150,7 +163,7 @@ final class CpmsSetupWizard
                 </div>
             <?php endif; ?>
 
-            <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
+            <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;max-width:100%;">
                 <?php foreach ($steps as $i => $s) : ?>
                     <?php
                     $current    = $i === $index;
@@ -163,7 +176,7 @@ final class CpmsSetupWizard
                         href="<?php echo esc_url( self::step_url( $s['id'] ) ); ?>"
                         aria-current="<?php echo $current ? 'step' : 'false'; ?>"
                         class="dashicons-before <?php echo esc_attr( $icon_class ); ?>"
-                        style="display:inline-block;text-decoration:none;<?php echo esc_attr( $icon_style ); ?>">
+                        style="display:inline-block;text-decoration:none;box-sizing:border-box;max-width:100%;padding:6px 8px;min-height:36px;line-height:1.8;<?php echo esc_attr( $icon_style ); ?>">
                         <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] ); ?>
                     </a>
                 <?php endforeach; ?>
@@ -348,9 +361,10 @@ final class CpmsSetupWizard
         if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
             ?>
             <div class="notice notice-warning">
-                <p>برای ذخیرهٔ مشخصات کلینیک، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</p>
+                <p>برای ذخیرهٔ مشخصات کلینیک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
             </div>
             <?php
+            return;
         }
 
         // Canonical source: cpms_clinics — no longer setup.clinic.* as second writable canonical.
@@ -393,7 +407,7 @@ final class CpmsSetupWizard
                     <td><input type="text" id="cphone" name="clinic_phone" class="regular-text" value="<?php echo esc_attr($phone); ?>"></td>
                 </tr>
             </table>
-            <p class="description">این اطلاعات فقط برای شناسایی کلینیک است و هیچ دادهٔ پزشکی در آن نیست. منبع canonical: cpms_clinics — timezone عملیاتی از Location است و اینجا ویرایش نمی‌شود.</p>
+            <p class="description">این اطلاعات فقط برای شناسایی مطب است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری مطب از برنامهٔ کاری پزشکان مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
             <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -402,6 +416,15 @@ final class CpmsSetupWizard
 
     private static function renderBooking(Settings $settings): void
     {
+        if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
+            ?>
+            <div class="notice notice-warning">
+                <p>برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
+            </div>
+            <?php
+            return;
+        }
+
         $duration = (int) $settings->get('booking.duration_default_min', 20);
         $capacity = (int) $settings->get('booking.slot_capacity_default', 1);
         $lead = (int) $settings->get('booking.min_lead_hours', 2);
@@ -488,6 +511,15 @@ final class CpmsSetupWizard
 
     private static function renderSms(Settings $settings): void
     {
+        if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
+            ?>
+            <div class="notice notice-warning">
+                <p>برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
+            </div>
+            <?php
+            return;
+        }
+
         $provider = (string) ($settings->get('sms.provider', '') ?? '');
         $sender = (string) ($settings->get('sms.sender', '') ?? '');
         ?>
@@ -692,7 +724,9 @@ final class CpmsSetupWizard
         }
 
         if ( CpmsAdminMenu::is_first_practice_setup_pending() ) {
-            wp_safe_redirect( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) );
+            // Stay inside the single visible wizard; its render embeds the
+            // first-practice bootstrap panel for this state.
+            wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
             return;
         }
 
@@ -701,6 +735,12 @@ final class CpmsSetupWizard
         $valid = array_column(self::steps(), 'id');
         if (!in_array($step, $valid, true)) {
             wp_die('گام نامعتبر', 400);
+        }
+
+        // Every wizard write (including mere progress) requires effective
+        // Clinic-local CONFIG — a generic capability is never enough.
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+            wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
         $error = '';
@@ -748,6 +788,10 @@ final class CpmsSetupWizard
             || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['_wpnonce'])), 'cpms_wizard_restart')
         ) {
             wp_die('اعتبارسنجی ناموفق', 403);
+        }
+
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+            wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
         $settings = App::settings();
@@ -851,8 +895,57 @@ final class CpmsSetupWizard
      *
      * @return string '' = ok
      */
+    /**
+     * Effective Clinic-local CONFIG authorization for wizard writes.
+     *
+     * The generic WordPress capability alone is NOT Clinic authority: the
+     * actor must hold an active membership in exactly one trusted Clinic
+     * and pass AuthorizationService for CONFIG in that Clinic (the same
+     * engine every other Clinic write path uses). No clinic_id is ever
+     * taken from the request.
+     */
+    private static function has_clinic_local_config( int $actor_user_id ): bool {
+        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+            return false;
+        }
+
+        try {
+            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
+            $scope       = $establisher->establish( $actor_user_id, null );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
+            App::authorization_service()->authorize( $actor_user_id, (int) $scope->clinicId, RolesAndCapabilities::CONFIG );
+
+            return true;
+        } catch ( \Throwable ) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether the embedded first-practice panel (fresh bootstrap,
+     * interrupted-setup recovery, or blocked interrupted setup) applies to
+     * the current installation state. Read-only.
+     */
+    private static function onboarding_panel_applies(): bool {
+        try {
+            $setup_service = App::first_practice_setup_service();
+
+            $actor_id = (int) get_current_user_id();
+
+            return $setup_service->first_setup_candidate() !== null
+                || $setup_service->recovery_candidate( $actor_id ) !== null
+                || $setup_service->interrupted_setup_blocked( $actor_id ) !== null;
+        } catch ( \Throwable ) {
+            return false;
+        }
+    }
+
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         foreach ( [ 'duration', 'capacity', 'lead', 'future', 'cancel' ] as $required_key ) {
             if ( ! array_key_exists( $required_key, $post )
                 || ! is_scalar( $post[ $required_key ] )
@@ -886,6 +979,10 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         $provider = trim((string) ($post['sms_provider'] ?? ''));
         $sender = trim((string) ($post['sms_sender'] ?? ''));
 
@@ -904,6 +1001,10 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         if (!self::isReadyToOperate($settings)) {
             return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
         }

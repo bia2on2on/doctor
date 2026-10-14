@@ -16,11 +16,12 @@ namespace ClinicCore\Application\Onboarding;
  */
 final class FirstPracticeSetupException extends \RuntimeException {
 
-    public const CODE_INVALID_CLINIC    = 'FIRST_SETUP_INVALID_CLINIC';
-    public const CODE_ALREADY_CLAIMED   = 'FIRST_SETUP_ALREADY_CLAIMED';
-    public const CODE_NOT_AVAILABLE     = 'FIRST_SETUP_NOT_AVAILABLE';
-    public const CODE_NOT_ADMINISTRATOR = 'FIRST_SETUP_NOT_ADMINISTRATOR';
-    public const CODE_INVALID_INPUT     = 'FIRST_SETUP_INVALID_INPUT';
+    public const CODE_INVALID_CLINIC        = 'FIRST_SETUP_INVALID_CLINIC';
+    public const CODE_ALREADY_CLAIMED       = 'FIRST_SETUP_ALREADY_CLAIMED';
+    public const CODE_NOT_AVAILABLE         = 'FIRST_SETUP_NOT_AVAILABLE';
+    public const CODE_NOT_ADMINISTRATOR     = 'FIRST_SETUP_NOT_ADMINISTRATOR';
+    public const CODE_INVALID_INPUT         = 'FIRST_SETUP_INVALID_INPUT';
+    public const CODE_RECOVERY_NOT_ELIGIBLE = 'FIRST_SETUP_RECOVERY_NOT_ELIGIBLE';
 
     /** Narrow, non-sensitive reason code (never a raw request value). */
     private string $reason_code = self::CODE_NOT_AVAILABLE;
@@ -48,6 +49,10 @@ final class FirstPracticeSetupException extends \RuntimeException {
 
     public static function not_administrator(): self {
         return new self( self::CODE_NOT_ADMINISTRATOR, '' );
+    }
+
+    public static function recovery_not_eligible(): self {
+        return new self( self::CODE_RECOVERY_NOT_ELIGIBLE, '' );
     }
 
     public static function invalid_input( string $field ): self {
