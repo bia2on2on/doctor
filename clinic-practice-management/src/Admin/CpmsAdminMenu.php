@@ -166,11 +166,11 @@ final class CpmsAdminMenu
         if (current_user_can(RolesAndCapabilities::CONFIG)) {
             $setup_flag    = self::setup_completed_flag();
             $setup_pending = $setup_flag === false;
-            $primaryLabel = $setup_pending ? 'راه‌اندازی' : 'داشبورد CPMS';
-            $primaryUrl = $setup_pending
+            $primary_label = $setup_pending ? 'راه‌اندازی' : 'داشبورد CPMS';
+            $primary_url   = $setup_pending
                 ? self::setup_url()
                 : admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG);
-            array_unshift($links, '<a href="' . esc_url($primaryUrl) . '">' . esc_html($primaryLabel) . '</a>');
+            array_unshift($links, '<a href="' . esc_url($primary_url) . '">' . esc_html($primary_label) . '</a>');
             $links[] = '<a href="' . esc_url(admin_url('admin.php?page=cpms-settings')) . '">تنظیمات</a>';
         }
 
