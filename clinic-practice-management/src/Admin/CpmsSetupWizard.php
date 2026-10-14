@@ -740,7 +740,7 @@ final class CpmsSetupWizard
         // Every wizard write (including mere progress) requires effective
         // Clinic-local CONFIG — a generic capability is never enough.
         if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
-            wp_die('برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
+            wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
         $error = '';
@@ -791,7 +791,7 @@ final class CpmsSetupWizard
         }
 
         if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
-            wp_die('برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
+            wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
         $settings = App::settings();
@@ -940,7 +940,7 @@ final class CpmsSetupWizard
 
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -977,7 +977,7 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -999,7 +999,7 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 

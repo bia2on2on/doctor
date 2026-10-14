@@ -551,7 +551,6 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
                 ' SET first_setup_claimed_at = NULL, name = ' . $wpdb->prepare('%s', $this->clinic_name) . // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 ' WHERE id = ' . $clinic_id
             );
-            $wpdb->query('START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
     }
 

@@ -295,6 +295,8 @@ final class FirstPracticeSetupPage {
                 __( 'این مطب قبلاً راه‌اندازی شده است؛ راه‌اندازی اولیه فقط یک بار مجاز است.', 'cpms' ),
             FirstPracticeSetupException::CODE_NOT_AVAILABLE =>
                 __( 'راه‌اندازی اولیه برای این مطب در دسترس نیست (مطب قبلاً مدیریت شده است یا نصب چندمطبی است).', 'cpms' ),
+            FirstPracticeSetupException::CODE_RECOVERY_NOT_ELIGIBLE =>
+                __( 'کامل‌کردن راه‌اندازی متوقف‌شده برای این مطب ممکن نیست؛ سوابق موجود این اطمینان را نمی‌دهد که مطب هنوز راه‌اندازی نشده است. هیچ تغییری ثبت نشد.', 'cpms' ),
             FirstPracticeSetupException::CODE_INVALID_CLINIC =>
                 __( 'انتخاب مطب نامعتبر است؛ لطفاً از صفحهٔ راه‌اندازی دوباره اقدام کنید.', 'cpms' ),
             FirstPracticeSetupException::CODE_NOT_ADMINISTRATOR =>
@@ -307,7 +309,10 @@ final class FirstPracticeSetupPage {
     }
 
     private static function redirect(): void {
-        wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
+        // Single visible onboarding journey: always return to the wizard,
+        // which embeds this same setup panel. Never a redirect loop — the
+        // wizard itself never redirects back here.
+        wp_safe_redirect( admin_url( 'admin.php?page=' . CpmsSetupWizard::PAGE_SLUG ) );
         exit;
     }
 
