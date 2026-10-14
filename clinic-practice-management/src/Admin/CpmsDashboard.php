@@ -38,7 +38,9 @@ final class CpmsDashboard
             wp_die('دسترسی ندارید');
         }
 
-        $setupComplete = (bool) App::settings()->get('setup.completed', false);
+        $setupFlag = CpmsAdminMenu::setup_completed_flag();
+        $setupComplete = $setupFlag === true;
+        $scopeRequired = $setupFlag === null;
         $health = self::safe(fn () => App::systemHealthService()->run());
         $queue = self::safe(fn () => App::queueHealth());
         $license = self::safe(fn () => App::licenseService()->statusMeta());
@@ -52,7 +54,11 @@ final class CpmsDashboard
             <h1>مدیریت مطب</h1>
             <p class="cpms-desc">نمای کلی وضعیت مطب. هر کارت فقط برای کاربرانی نمایش داده می‌شود که مجوز آن بخش را دارند.</p>
 
-            <?php if (!$setupComplete) : ?>
+            <?php if ($scopeRequired) : ?>
+                <div class="notice notice-warning" data-cpms-scope-required="1"><p>
+                    <?php echo esc_html( CpmsAdminMenu::ambiguous_clinic_guidance() ); ?>
+                </p></div>
+            <?php elseif (!$setupComplete) : ?>
                 <div class="notice notice-info"><p>
                     🚀 <strong>CPMS نصب شد</strong> — برای شروع، راه‌اندازی اولیه را تکمیل کنید.
                 </p>
@@ -69,7 +75,9 @@ final class CpmsDashboard
                     <div class="cpms-card">
                         <h2>وضعیت راه‌اندازی</h2>
                         <p>
-                            <?php if ($setupComplete) : ?>
+                            <?php if ($scopeRequired) : ?>
+                                <span class="cpms-badge cpms-warn">انتخاب مطب لازم است</span>
+                            <?php elseif ($setupComplete) : ?>
                                 <span class="cpms-badge cpms-ok">تکمیل شده</span>
                             <?php else : ?>
                                 <span class="cpms-badge cpms-warn">در انتظار راه‌اندازی</span>

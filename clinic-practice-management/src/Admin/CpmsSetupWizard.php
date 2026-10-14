@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Application\Clinic\ClinicProfileException;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Settings\Settings;
@@ -96,7 +97,16 @@ final class CpmsSetupWizard
             delete_transient(self::NOTICE_KEY);
         }
 
-        $settings = App::settings();
+        try {
+            $settings = App::settings();
+        } catch (ScopeRequiredException) {
+            echo '<div class="wrap" dir="rtl">';
+            echo '<h1>' . esc_html__('راه‌اندازی کلینیک', 'cpms') . '</h1>';
+            echo '<div class="notice notice-warning" data-cpms-scope-required="1"><p>';
+            echo esc_html( CpmsAdminMenu::ambiguous_clinic_guidance() );
+            echo '</p></div></div>';
+            return;
+        }
         $steps = self::steps();
         $index = self::currentStepIndex();
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.
