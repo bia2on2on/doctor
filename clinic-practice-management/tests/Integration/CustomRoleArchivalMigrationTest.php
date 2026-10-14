@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use WP_UnitTestCase;
 
@@ -41,6 +42,309 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         self::assertSame('active', $column['Default']);
         self::assertNull(App::db()->fetchRow('SHOW COLUMNS FROM ' . App::db()->table('cpms_custom_role_defs') . " LIKE 'archived_at'"));
         self::assertSame([], App::migrations()->migrate());
+    }
+
+    public function test_mysql_raw_and_mariadb_quoted_active_defaults_share_semantic_ddl(): void
+    {
+        $cases = [
+            [ 'active', [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ] ],
+            [ "'active'", [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ] ],
+        ];
+
+        foreach ( $cases as [ $default, $server ] ) {
+            $queries = [];
+            $column  = $this->validStatusMetadata( $default );
+            $db      = $this->mockedMigrationDb( $column, $server, [], '1', $queries );
+            $migration = $this->archivalMigration();
+            ( $migration['up'] )( $db );
+
+            $alter_statements = array_values(
+                array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'ALTER TABLE' ) === 0 )
+            );
+            self::assertCount( 1, $alter_statements );
+            self::assertStringContainsString( "DEFAULT 'active'", $alter_statements[0] );
+            self::assertStringNotContainsString( "DEFAULT '''active'''", $alter_statements[0] );
+        }
+    }
+
+    public function test_all_noncanonical_status_defaults_are_rejected_before_ddl(): void
+    {
+        foreach ( [ 'inactive', "'inactive'", 'archived', null, '', 'active ', "'active' ", '"active"', '(active)' ] as $default ) {
+            $queries = [];
+            $server  = [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ];
+            $db      = $this->mockedMigrationDb( $this->validStatusMetadata( $default ), $server, [], '1', $queries );
+            $this->assertMigrationUpRejects( $db );
+            self::assertSame( [], $queries, 'invalid defaults must fail before any DDL' );
+        }
+    }
+
+    public function test_status_enum_nullability_extra_and_unknown_metadata_fail_closed(): void
+    {
+        $server = [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ];
+        $cases  = [];
+
+        $reordered = $this->validStatusMetadata( 'active' );
+        $reordered['COLUMN_TYPE'] = "enum('inactive','active')";
+        $cases[] = $reordered;
+
+        $unexpected = $this->validStatusMetadata( 'active' );
+        $unexpected['COLUMN_TYPE'] = "enum('active','inactive','suspended')";
+        $cases[] = $unexpected;
+
+        $nullable = $this->validStatusMetadata( 'active' );
+        $nullable['IS_NULLABLE'] = 'YES';
+        $cases[] = $nullable;
+
+        $extra = $this->validStatusMetadata( 'active' );
+        $extra['EXTRA'] = 'DEFAULT_GENERATED';
+        $cases[] = $extra;
+
+        $missing_default = $this->validStatusMetadata( 'active' );
+        unset( $missing_default['COLUMN_DEFAULT'] );
+        $cases[] = $missing_default;
+
+        $missing_extra = $this->validStatusMetadata( 'active' );
+        unset( $missing_extra['EXTRA'] );
+        $cases[] = $missing_extra;
+
+        foreach ( $cases as $column ) {
+            $queries = [];
+            $db      = $this->mockedMigrationDb( $column, $server, [], '1', $queries );
+            $this->assertMigrationUpRejects( $db );
+            self::assertSame( [], $queries );
+        }
+    }
+
+    public function test_mysql_guard_requires_enforced_yes_and_exact_metadata_ownership(): void
+    {
+        $defs  = 'wp_cpms_custom_role_defs';
+        $guard = $this->guardName( $defs );
+        $server = [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ];
+        $valid = $this->guardMetadata( $defs, $guard, 'mysql' );
+
+        $valid['ENFORCED'] = 'NO';
+        $queries = [];
+        $db = $this->mockedMigrationDb( $this->validStatusMetadata( 'active' ), $server, [ $valid ], '1', $queries );
+        $this->assertMigrationUpRejects( $db );
+        self::assertSame( [], $queries );
+
+        foreach ( [ 'CONSTRAINT_SCHEMA', 'TABLE_SCHEMA', 'TABLE_NAME', 'CONSTRAINT_NAME', 'CHECK_CONSTRAINT_SCHEMA', 'CHECK_CONSTRAINT_NAME', 'CHECK_CLAUSE' ] as $field ) {
+            $invalid = $this->guardMetadata( $defs, $guard, 'mysql' );
+            $invalid[ $field ] = 'unexpected';
+            $queries = [];
+            $db = $this->mockedMigrationDb( $this->validStatusMetadata( 'active' ), $server, [ $invalid ], '1', $queries );
+            $this->assertMigrationUpRejects( $db );
+            self::assertSame( [], $queries, 'a guard with unexpected metadata must not be reused or removed' );
+        }
+
+        $valid = $this->guardMetadata( $defs, $guard, 'mysql' );
+        $valid['ENFORCED'] = 'YES';
+        $queries = [];
+        $db = $this->mockedMigrationDb(
+            $this->validStatusMetadata( 'active' ),
+            $server,
+            [ $valid ],
+            '1',
+            $queries,
+            "enum('active','inactive','archived')"
+        );
+        $migration = $this->archivalMigration();
+        ( $migration['up'] )( $db );
+        $drop_statements = array_values(
+            array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'DROP CONSTRAINT' ) !== false )
+        );
+        self::assertCount( 1, $drop_statements );
+        self::assertStringContainsString( '`' . $guard . '`', $drop_statements[0] );
+        self::assertStringNotContainsString( 'DROP CHECK', $drop_statements[0] );
+    }
+
+    public function test_mariadb_check_metadata_and_disabled_session_are_fail_closed(): void
+    {
+        $defs   = 'wp_cpms_custom_role_defs';
+        $guard  = $this->guardName( $defs );
+        $server = [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ];
+        $valid  = $this->guardMetadata( $defs, $guard, 'mariadb' );
+        $queries = [];
+        $db = $this->mockedMigrationDb(
+            $this->validStatusMetadata( "'active'" ),
+            $server,
+            [ $valid ],
+            '1',
+            $queries,
+            "enum('active','inactive','archived')"
+        );
+        $migration = $this->archivalMigration();
+        ( $migration['up'] )( $db );
+        $drop_statements = array_values(
+            array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'DROP CONSTRAINT' ) !== false )
+        );
+        self::assertCount( 1, $drop_statements );
+        self::assertStringContainsString( '`' . $guard . '`', $drop_statements[0] );
+        self::assertStringNotContainsString( 'ENFORCED', implode( "\n", $queries ) );
+
+        $queries = [];
+        $db = $this->mockedMigrationDb( $this->validStatusMetadata( "'active'" ), $server, [], 'OFF', $queries );
+        try {
+            ( $migration['down'] )( $db );
+            self::fail( 'a MariaDB session with check_constraint_checks=OFF must refuse downgrade' );
+        } catch ( \RuntimeException $exception ) {
+            self::assertStringContainsString( '0027', $exception->getMessage() );
+        }
+        self::assertSame( [], $queries );
+    }
+
+    public function test_unsupported_server_identity_fails_closed(): void
+    {
+        $queries = [];
+        $server  = [ 'SERVER_VERSION' => '11.4.12-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ];
+        $db      = $this->mockedMigrationDb( $this->validStatusMetadata( 'active' ), $server, [], '1', $queries );
+        $this->assertMigrationUpRejects( $db );
+        self::assertSame( [], $queries );
+    }
+
+    public function test_expanded_enum_without_marker_retries_without_changing_rows_or_indexes(): void
+    {
+        $db      = App::db();
+        $defs    = $db->table( 'cpms_custom_role_defs' );
+        $indexes = $this->indexes();
+        $column  = $this->statusColumn();
+
+        try {
+            $db->query( 'DELETE FROM ' . $db->table( 'cpms_schema_migrations' ) . ' WHERE version = %s', [ self::VERSION ] );
+            self::assertSame( '2026_10_11_0026', App::migrations()->currentVersion() );
+            self::assertSame( [ self::VERSION ], App::migrations()->migrate() );
+            self::assertSame( $column, $this->statusColumn(), 'an already-expanded enum is verified, not rewritten' );
+            self::assertSame( $indexes, $this->indexes() );
+            self::assertNull( $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'archived_at'" ) );
+        } finally {
+            App::migrations()->migrate();
+        }
+    }
+
+    public function test_mariadb_runtime_version_and_real_check_metadata_are_visible(): void
+    {
+        $server = App::db()->fetchRow( 'SELECT VERSION() AS SERVER_VERSION, @@version_comment AS VERSION_COMMENT' );
+        self::assertNotNull( $server );
+        self::assertNotSame( '', (string) ( $server['SERVER_VERSION'] ?? '' ) );
+        $column = App::db()->fetchRow(
+            'SELECT COLUMN_DEFAULT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
+            [ App::db()->table( 'cpms_custom_role_defs' ), 'status' ]
+        );
+        self::assertNotNull( $column );
+
+        if ( stripos( (string) $server['SERVER_VERSION'], 'MariaDB' ) === false ) {
+            self::assertStringStartsWith( '8.', (string) $server['SERVER_VERSION'] );
+            self::assertSame( 'active', (string) $column['COLUMN_DEFAULT'] );
+            return;
+        }
+
+        self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', (string) $server['SERVER_VERSION'] );
+        self::assertSame( "'active'", (string) $column['COLUMN_DEFAULT'] );
+        self::assertContains( strtoupper( (string) App::db()->fetchValue( 'SELECT @@SESSION.check_constraint_checks' ) ), [ '1', 'ON' ] );
+    }
+
+    public function test_real_guard_metadata_recovers_with_portable_drop_constraint(): void
+    {
+        $db    = App::db();
+        $defs  = $db->table( 'cpms_custom_role_defs' );
+        $guard = $this->guardName( $defs );
+
+        $this->withRealTables( function () use ( $db, $defs, $guard ): void {
+            try {
+                self::assertSame( self::VERSION, App::migrations()->currentVersion() );
+                self::assertSame( self::VERSION, App::migrations()->rollbackOne() );
+                self::assertSame( '2026_10_11_0026', App::migrations()->currentVersion() );
+
+                $server = (string) $db->fetchValue( 'SELECT VERSION()' );
+                if ( stripos( $server, 'MariaDB' ) !== false ) {
+                    $metadata = $db->fetchAll(
+                        'SELECT tc.CONSTRAINT_SCHEMA, tc.TABLE_SCHEMA, tc.TABLE_NAME, tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE,' .
+                        ' cc.CONSTRAINT_SCHEMA AS CHECK_CONSTRAINT_SCHEMA, cc.CONSTRAINT_NAME AS CHECK_CONSTRAINT_NAME,' .
+                        ' cc.TABLE_NAME AS CHECK_TABLE_NAME, cc.CHECK_CLAUSE' .
+                        ' FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc' .
+                        ' ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME AND cc.TABLE_NAME = tc.TABLE_NAME' .
+                        ' WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.TABLE_SCHEMA = DATABASE() AND tc.TABLE_NAME = %s' .
+                        ' AND tc.CONSTRAINT_NAME = %s AND tc.CONSTRAINT_TYPE = %s',
+                        [ $defs, $guard, 'CHECK' ]
+                    );
+                } else {
+                    $metadata = $db->fetchAll(
+                        'SELECT tc.CONSTRAINT_SCHEMA, tc.TABLE_SCHEMA, tc.TABLE_NAME, tc.CONSTRAINT_NAME, tc.CONSTRAINT_TYPE, tc.ENFORCED,' .
+                        ' cc.CONSTRAINT_SCHEMA AS CHECK_CONSTRAINT_SCHEMA, cc.CONSTRAINT_NAME AS CHECK_CONSTRAINT_NAME,' .
+                        ' cc.CHECK_CLAUSE' .
+                        ' FROM information_schema.TABLE_CONSTRAINTS tc JOIN information_schema.CHECK_CONSTRAINTS cc' .
+                        ' ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME' .
+                        ' WHERE tc.CONSTRAINT_SCHEMA = DATABASE() AND tc.TABLE_SCHEMA = DATABASE() AND tc.TABLE_NAME = %s' .
+                        ' AND tc.CONSTRAINT_NAME = %s AND tc.CONSTRAINT_TYPE = %s',
+                        [ $defs, $guard, 'CHECK' ]
+                    );
+                    self::assertSame( 'YES', (string) ( $metadata[0]['ENFORCED'] ?? '' ) );
+                }
+
+                self::assertCount( 1, $metadata );
+                self::assertSame( $defs, (string) $metadata[0]['TABLE_NAME'] );
+                self::assertSame( $guard, (string) $metadata[0]['CONSTRAINT_NAME'] );
+                self::assertSame( 'CHECK', (string) $metadata[0]['CONSTRAINT_TYPE'] );
+                self::assertSame( $metadata[0]['CONSTRAINT_SCHEMA'], $metadata[0]['CHECK_CONSTRAINT_SCHEMA'] );
+                self::assertSame( $guard, (string) $metadata[0]['CHECK_CONSTRAINT_NAME'] );
+                if ( isset( $metadata[0]['CHECK_TABLE_NAME'] ) ) {
+                    self::assertSame( $defs, (string) $metadata[0]['CHECK_TABLE_NAME'] );
+                }
+                self::assertStringContainsString( 'active', strtolower( (string) $metadata[0]['CHECK_CLAUSE'] ) );
+                self::assertStringContainsString( 'inactive', strtolower( (string) $metadata[0]['CHECK_CLAUSE'] ) );
+
+                $decoy = $guard . '_decoy';
+                $db->query( "ALTER TABLE {$defs} ADD CONSTRAINT `{$decoy}` CHECK (`status` IN ('active','inactive'))" );
+                self::assertSame( [ self::VERSION ], App::migrations()->migrate() );
+                self::assertSame( self::VERSION, App::migrations()->currentVersion() );
+
+                $remaining = $db->fetchAll(
+                    'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS' .
+                    ' WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND CONSTRAINT_TYPE = %s',
+                    [ $defs, 'CHECK' ]
+                );
+                self::assertContains( [ 'CONSTRAINT_NAME' => $decoy ], $remaining );
+                self::assertNotContains( [ 'CONSTRAINT_NAME' => $guard ], $remaining );
+                $db->query( "ALTER TABLE {$defs} DROP CONSTRAINT `{$decoy}`" );
+            } finally {
+                if ( App::migrations()->currentVersion() !== self::VERSION ) {
+                    App::migrations()->migrate();
+                }
+                $decoy_exists = (int) $db->fetchValue(
+                    'SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND CONSTRAINT_NAME = %s AND CONSTRAINT_TYPE = %s',
+                    [ $defs, $guard . '_decoy', 'CHECK' ]
+                ) > 0;
+                if ( $decoy_exists ) {
+                    $db->query( "ALTER TABLE {$defs} DROP CONSTRAINT `{$guard}_decoy`" );
+                }
+            }
+        } );
+    }
+
+    public function test_real_mariadb_check_disabled_session_refuses_downgrade(): void
+    {
+        $db     = App::db();
+        $server = (string) $db->fetchValue( 'SELECT VERSION()' );
+        if ( stripos( $server, 'MariaDB' ) === false ) {
+            self::assertStringStartsWith( '8.', $server );
+            return;
+        }
+
+        self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', $server );
+        $before = $this->statusColumn();
+        $db->query( 'SET SESSION check_constraint_checks = OFF' );
+        try {
+            try {
+                App::migrations()->rollbackOne();
+                self::fail( 'MariaDB with session CHECK checks disabled must refuse migration 0027 downgrade' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertStringContainsString( '0027', $exception->getMessage() );
+            }
+            self::assertSame( self::VERSION, App::migrations()->currentVersion() );
+            self::assertSame( $before, $this->statusColumn() );
+        } finally {
+            $db->query( 'SET SESSION check_constraint_checks = ON' );
+        }
     }
 
     public function testUpgradeFrom0026PreservesRowsColumnAttributesAndEveryIndex(): void
@@ -182,6 +486,141 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $db->query('DELETE FROM ' . $defs . ' WHERE ' . $ownedKey);
 
         $db->query('COMMIT'); // persist the removal: tearDown() only rolls back
+    }
+
+    /** @return array<string, mixed> */
+    private function validStatusMetadata( mixed $default ): array
+    {
+        return [
+            'COLUMN_TYPE' => "enum('active','inactive')",
+            'IS_NULLABLE' => 'NO',
+            'COLUMN_DEFAULT' => $default,
+            'CHARACTER_SET_NAME' => 'utf8mb4',
+            'COLLATION_NAME' => 'utf8mb4_unicode_ci',
+            'COLUMN_COMMENT' => '',
+            'EXTRA' => '',
+        ];
+    }
+
+    /** @return array<string, mixed> */
+    private function guardMetadata( string $defs, string $guard, string $engine ): array
+    {
+        $row = [
+            'CONSTRAINT_SCHEMA' => 'wordpress',
+            'TABLE_SCHEMA' => 'wordpress',
+            'TABLE_NAME' => $defs,
+            'CONSTRAINT_NAME' => $guard,
+            'CONSTRAINT_TYPE' => 'CHECK',
+            'CHECK_CONSTRAINT_SCHEMA' => 'wordpress',
+            'CHECK_CONSTRAINT_NAME' => $guard,
+            'CHECK_CLAUSE' => "`status` in ('active','inactive')",
+        ];
+
+        if ( 'mariadb' === $engine ) {
+            $row['CHECK_TABLE_NAME'] = $defs;
+        } else {
+            $row['ENFORCED'] = 'YES';
+        }
+
+        return $row;
+    }
+
+    private function guardName( string $defs ): string
+    {
+        return 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
+    }
+
+    private function archivalMigration(): array
+    {
+        return require dirname( __DIR__, 2 ) . '/src/Migrations/2026_10_13_0027_custom_role_archival.php';
+    }
+
+    /**
+     * @param array<string, mixed> $column
+     * @param array<string, mixed> $server
+     * @param list<array<string, mixed>> $constraint_rows
+     * @param list<string> $queries
+     */
+    private function mockedMigrationDb(
+        array $column,
+        array $server,
+        array $constraint_rows,
+        string $check_value,
+        array &$queries,
+        string $initial_status_type = "enum('active','inactive')"
+    ): CpmsDb {
+        $queries = [];
+        $ddl_issued = false;
+        $wpdb = $this->getMockBuilder( \wpdb::class )
+            ->disableOriginalConstructor()
+            ->onlyMethods( [ 'prepare', 'get_row', 'get_results', 'get_var', 'query' ] )
+            ->getMock();
+        $wpdb->prefix = 'wp_';
+        $wpdb->last_error = '';
+
+        $wpdb->method( 'prepare' )->willReturnCallback(
+            static function ( $query, ...$args ): string {
+                foreach ( $args as $arg ) {
+                    $quoted = "'" . addslashes( (string) $arg ) . "'";
+                    $query = preg_replace( '/%s/', $quoted, $query, 1 );
+                }
+
+                return (string) $query;
+            }
+        );
+        $wpdb->method( 'get_row' )->willReturnCallback(
+            function ( $query ) use ( &$ddl_issued, $column, $server, $constraint_rows, $initial_status_type, $check_value ): ?array {
+                $query = strtolower( (string) $query );
+                if ( false !== strpos( $query, 'information_schema.columns' ) ) {
+                    return $column;
+                }
+                if ( false !== strpos( $query, 'select version()' ) ) {
+                    return $server;
+                }
+                if ( false !== strpos( $query, 'information_schema.table_constraints' ) ) {
+                    return $constraint_rows[0] ?? null;
+                }
+                if ( false !== strpos( $query, 'check_constraint_checks' ) ) {
+                    return [ 'enabled' => $check_value ];
+                }
+                if ( false !== strpos( $query, 'show columns' ) ) {
+                    return [ 'Type' => $ddl_issued ? "enum('active','inactive','archived')" : $initial_status_type ];
+                }
+
+                return null;
+            }
+        );
+        $wpdb->method( 'get_results' )->willReturnCallback(
+            static function ( $query ) use ( $constraint_rows ): array {
+                return false !== stripos( (string) $query, 'information_schema.table_constraints' ) ? $constraint_rows : [];
+            }
+        );
+        $wpdb->method( 'get_var' )->willReturnCallback(
+            static function ( $query ) use ( $check_value ) {
+                return false !== stripos( (string) $query, 'check_constraint_checks' ) ? $check_value : null;
+            }
+        );
+        $wpdb->method( 'query' )->willReturnCallback(
+            static function ( $query ) use ( &$queries, &$ddl_issued ): int {
+                $queries[] = (string) $query;
+                $ddl_issued = true;
+
+                return 1;
+            }
+        );
+
+        return new CpmsDb( $wpdb );
+    }
+
+    private function assertMigrationUpRejects( CpmsDb $db ): void
+    {
+        try {
+            $migration = $this->archivalMigration();
+            ( $migration['up'] )( $db );
+            self::fail( 'unexpected migration metadata must fail closed' );
+        } catch ( \RuntimeException $exception ) {
+            self::assertStringContainsString( 'migration 0027', strtolower( $exception->getMessage() ) );
+        }
     }
 
     private function statusColumn(): array

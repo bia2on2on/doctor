@@ -9,14 +9,14 @@
 # PHPUnit 10/11 نیز پشتیبانی می‌شود.
 #
 # Usage:
-#   bash tests/bin/install-wp-tests.sh <db-name> <db-user> <db-pass> [db-host] [wp-version]
+#   bash tests/bin/install-wp-tests.sh <db-name> <db-user> <db-pass> [db-host] [wp-version] [db-port]
 #
 # Env overrides: WP_TESTS_DIR, WP_CORE_DIR (پیش‌فرض /tmp/wordpress-test-lib, /tmp/wordpress)
 
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
-    echo "usage: $0 <db-name> <db-user> <db-pass> [db-host] [wp-version]" >&2
+    echo "usage: $0 <db-name> <db-user> <db-pass> [db-host] [wp-version] [db-port]" >&2
     exit 1
 fi
 
@@ -25,6 +25,7 @@ DB_USER="$2"
 DB_PASS="$3"
 DB_HOST="${4:-127.0.0.1}"
 WP_VERSION="${5:-6.7.2}"
+DB_PORT="${6:-}"
 
 WP_TESTS_DIR="${WP_TESTS_DIR:-/tmp/wordpress-test-lib}"
 WP_CORE_DIR="${WP_CORE_DIR:-/tmp/wordpress}"
@@ -80,8 +81,12 @@ install_test_suite() {
 install_db() {
     # plugin tests: جداول اختصاصی cpms_* — بدون نصب WP در DB
     echo "Creating database ${DB_NAME} (if not exists) ..."
-    mysql -h "$DB_HOST" -u "$DB_USER" "-p${DB_PASS}" \
-        -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
+    local -a mysql_args
+    mysql_args=(-h "$DB_HOST" -u "$DB_USER" "-p${DB_PASS}")
+    if [ -n "$DB_PORT" ]; then
+        mysql_args+=(--port="$DB_PORT")
+    fi
+    mysql "${mysql_args[@]}" -e "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\`"
 }
 
 write_config() {
@@ -90,11 +95,15 @@ write_config() {
     # مقدار جایگزین باید داخل quotes بماند و با «/» ختم شود (ABSPATH قرارداد WP)
     # وگرنه parse-error یا چسبیدن مسیرها رخ می‌دهد
     local core_dir="${WP_CORE_DIR%/}/"
+    local db_host_config="$DB_HOST"
+    if [ -n "$DB_PORT" ]; then
+        db_host_config="${DB_HOST}:${DB_PORT}"
+    fi
     sed -i.bak "s:dirname( __FILE__ ) . '/src/':'$core_dir':" wp-tests-config.php
     sed -i.bak "s/youremptytestdbnamehere/$DB_NAME/" wp-tests-config.php
     sed -i.bak "s/yourusernamehere/$DB_USER/" wp-tests-config.php
     sed -i.bak "s/yourpasswordhere/$DB_PASS/" wp-tests-config.php
-    sed -i.bak "s|localhost|${DB_HOST}|" wp-tests-config.php
+    sed -i.bak "s|localhost|${db_host_config}|" wp-tests-config.php
     rm -f wp-tests-config.php.bak
     echo "wp-tests-config.php written at $WP_TESTS_DIR"
 }
