@@ -37,7 +37,10 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
     {
         self::assertSame(self::VERSION, App::migrations()->currentVersion());
         $column = $this->statusColumn();
-        self::assertSame("enum('active','inactive','archived')", strtolower($column['Type']));
+        self::assertMatchesRegularExpression(
+            "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
+            $column['Type']
+        );
         self::assertSame('NO', $column['Null']);
         self::assertSame('active', $column['Default']);
         self::assertNull(App::db()->fetchRow('SHOW COLUMNS FROM ' . App::db()->table('cpms_custom_role_defs') . " LIKE 'archived_at'"));
@@ -91,6 +94,18 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $unexpected['COLUMN_TYPE'] = "enum('active','inactive','suspended')";
         $cases[] = $unexpected;
 
+        foreach (
+            [
+                "ENUM('ACTIVE','INACTIVE')",
+                "enum('active','InAcTiVe')",
+                "enum('active','inactive','Archived')",
+            ] as $case_variant
+        ) {
+            $case_variant_column = $this->validStatusMetadata( 'active' );
+            $case_variant_column['COLUMN_TYPE'] = $case_variant;
+            $cases[] = $case_variant_column;
+        }
+
         $nullable = $this->validStatusMetadata( 'active' );
         $nullable['IS_NULLABLE'] = 'YES';
         $cases[] = $nullable;
@@ -120,6 +135,54 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             $this->assertMigrationUpRejects( $db );
             self::assertSame( [], $queries );
         }
+    }
+
+    public function test_show_column_type_rejects_case_variants_of_status_values(): void
+    {
+        $server = [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ];
+        $types  = [
+            "enum('ACTIVE','INACTIVE')",
+            "enum('active','InAcTiVe')",
+            "enum('active','inactive','Archived')",
+        ];
+
+        foreach ( $types as $type ) {
+            $queries = [];
+            $db      = $this->mockedMigrationDb(
+                $this->validStatusMetadata( 'active' ),
+                $server,
+                [],
+                '1',
+                $queries,
+                $type
+            );
+            $this->assertMigrationUpRejects( $db );
+            self::assertSame( [], $queries, 'case-variant ENUM literals must fail before DDL' );
+        }
+    }
+
+    public function test_enum_keyword_case_is_accepted_without_folding_status_literals(): void
+    {
+        $column = $this->validStatusMetadata( 'active' );
+        $column['COLUMN_TYPE'] = "ENUM('active','inactive')";
+        $queries = [];
+        $server  = [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ];
+        $db      = $this->mockedMigrationDb(
+            $column,
+            $server,
+            [],
+            '1',
+            $queries,
+            "ENUM('active','inactive')"
+        );
+
+        $migration = $this->archivalMigration();
+        ( $migration['up'] )( $db );
+
+        self::assertCount(
+            1,
+            array_filter( $queries, static fn ( string $query ): bool => stripos( $query, 'ALTER TABLE' ) === 0 )
+        );
     }
 
     public function test_mysql_guard_requires_enforced_yes_and_exact_metadata_ownership(): void
@@ -173,6 +236,116 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         self::assertCount( 1, $drop_statements );
         self::assertStringContainsString( '`' . $guard . '`', $drop_statements[0] );
         self::assertStringNotContainsString( 'DROP CONSTRAINT', $drop_statements[0] );
+    }
+
+    public function test_case_different_check_literals_are_rejected_on_both_engines(): void
+    {
+        $engines = [
+            [ 'mysql', [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ], 'active' ],
+            [ 'mariadb', [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ], "'active'" ],
+        ];
+        $clauses = [
+            "`status` IN ('ACTIVE','INACTIVE')",
+            "status iN ('active','InAcTiVe')",
+        ];
+
+        foreach ( $engines as [ $engine, $server, $default ] ) {
+            $defs  = 'wp_cpms_custom_role_defs';
+            $guard = $this->guardName( $defs );
+            foreach ( $clauses as $clause ) {
+                $invalid = $this->guardMetadata( $defs, $guard, $engine );
+                $invalid['CHECK_CLAUSE'] = $clause;
+                $queries = [];
+                $db = $this->mockedMigrationDb(
+                    $this->validStatusMetadata( $default ),
+                    $server,
+                    [ $invalid ],
+                    '1',
+                    $queries,
+                    "enum('active','inactive','archived')"
+                );
+                $this->assertMigrationUpRejects( $db );
+                self::assertSame( [], $queries, 'case-variant CHECK literals must not be reused or dropped' );
+            }
+        }
+    }
+
+    public function test_unexpected_check_expressions_are_rejected_on_both_engines(): void
+    {
+        $engines = [
+            [ 'mysql', [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ], 'active' ],
+            [ 'mariadb', [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ], "'active'" ],
+        ];
+        $clauses = [
+            "status IN ('active','inactive') OR 1 = 1",
+            "status IN ('active','inactive','archived')",
+            "status = 'active' OR status = 'inactive'",
+        ];
+
+        foreach ( $engines as [ $engine, $server, $default ] ) {
+            $defs  = 'wp_cpms_custom_role_defs';
+            $guard = $this->guardName( $defs );
+            foreach ( $clauses as $clause ) {
+                $invalid = $this->guardMetadata( $defs, $guard, $engine );
+                $invalid['CHECK_CLAUSE'] = $clause;
+                $queries = [];
+                $db = $this->mockedMigrationDb(
+                    $this->validStatusMetadata( $default ),
+                    $server,
+                    [ $invalid ],
+                    '1',
+                    $queries,
+                    "enum('active','inactive','archived')"
+                );
+                $this->assertMigrationUpRejects( $db );
+                self::assertSame( [], $queries, 'an unexpected CHECK expression must not be reused or dropped' );
+            }
+        }
+    }
+
+    public function test_check_sql_presentation_and_exact_guard_identity_are_preserved(): void
+    {
+        $engines = [
+            [
+                'mysql',
+                [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ],
+                'active',
+                'DROP CHECK',
+            ],
+            [
+                'mariadb',
+                [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ],
+                "'active'",
+                'DROP CONSTRAINT',
+            ],
+        ];
+
+        foreach ( $engines as [ $engine, $server, $default, $drop_type ] ) {
+            $defs  = 'wp_cpms_custom_role_defs';
+            $guard = $this->guardName( $defs );
+            $valid = $this->guardMetadata( $defs, $guard, $engine );
+            $valid['CHECK_CLAUSE'] = " (( `status` In ( _utf8mb4'active' , _utf8mb4'inactive' ) )) ";
+            $column = $this->validStatusMetadata( $default );
+            $column['COLUMN_TYPE'] = "ENUM('active','inactive','archived')";
+            $queries = [];
+            $db = $this->mockedMigrationDb(
+                $column,
+                $server,
+                [ $valid ],
+                '1',
+                $queries,
+                "ENUM('active','inactive','archived')"
+            );
+
+            $migration = $this->archivalMigration();
+            ( $migration['up'] )( $db );
+
+            $drop_statements = array_values(
+                array_filter( $queries, static fn ( string $query ): bool => stripos( $query, $drop_type ) !== false )
+            );
+            self::assertCount( 1, $drop_statements );
+            self::assertStringContainsString( '`' . $guard . '`', $drop_statements[0] );
+        }
     }
 
     public function test_mariadb_check_metadata_and_disabled_session_are_fail_closed(): void
@@ -266,7 +439,10 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
 
         if ( stripos( (string) $server['SERVER_VERSION'], 'MariaDB' ) === false ) {
             self::assertStringStartsWith( '8.', (string) $server['SERVER_VERSION'] );
-            self::assertSame( "enum('active','inactive','archived')", strtolower( (string) $column['COLUMN_TYPE'] ) );
+            self::assertMatchesRegularExpression(
+                "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
+                (string) $column['COLUMN_TYPE']
+            );
             self::assertSame( 'NO', (string) $column['IS_NULLABLE'] );
             self::assertSame( 'active', (string) $column['COLUMN_DEFAULT'] );
             self::assertSame( '', (string) $column['EXTRA'] );
@@ -274,7 +450,10 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         }
 
         self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', (string) $server['SERVER_VERSION'] );
-        self::assertSame( "enum('active','inactive','archived')", strtolower( (string) $column['COLUMN_TYPE'] ) );
+        self::assertMatchesRegularExpression(
+            "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
+            (string) $column['COLUMN_TYPE']
+        );
         self::assertSame( 'NO', (string) $column['IS_NULLABLE'] );
         self::assertSame( "'active'", (string) $column['COLUMN_DEFAULT'] );
         self::assertSame( '', (string) $column['EXTRA'] );
@@ -330,8 +509,8 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                 if ( isset( $metadata[0]['CHECK_TABLE_NAME'] ) ) {
                     self::assertSame( $defs, (string) $metadata[0]['CHECK_TABLE_NAME'] );
                 }
-                self::assertStringContainsString( 'active', strtolower( (string) $metadata[0]['CHECK_CLAUSE'] ) );
-                self::assertStringContainsString( 'inactive', strtolower( (string) $metadata[0]['CHECK_CLAUSE'] ) );
+                self::assertStringContainsString( "'active'", (string) $metadata[0]['CHECK_CLAUSE'] );
+                self::assertStringContainsString( "'inactive'", (string) $metadata[0]['CHECK_CLAUSE'] );
 
                 $decoy = $guard . '_decoy';
                 $db->query( "ALTER TABLE {$defs} ADD CONSTRAINT `{$decoy}` CHECK (`status` IN ('active','inactive'))" );
@@ -422,7 +601,10 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                     $beforeCaps = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_custom_role_capabilities') . ' WHERE role_def_id IN (%d, %d) ORDER BY role_def_id, capability', $ids);
                     self::assertSame([self::VERSION], App::migrations()->migrate());
                     $afterColumn = $this->statusColumn();
-                    self::assertSame("enum('active','inactive','archived')", strtolower($afterColumn['Type']));
+                    self::assertMatchesRegularExpression(
+                        "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
+                        $afterColumn['Type']
+                    );
                     unset($beforeColumn['Type'], $afterColumn['Type']);
                     self::assertSame($beforeColumn, $afterColumn, 'all other status attributes must survive MODIFY');
                     self::assertSame($beforeIndexes, $this->indexes(), 'indexes and uniqueness must be untouched');
