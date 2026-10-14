@@ -105,20 +105,9 @@ final class CpmsSetupWizard
         // first-practice panel, reusing FirstPracticeSetupService. This is
         // checked before any Clinic-scoped Settings access because the
         // actor has zero memberships in that state. Rendering only.
-        if (current_user_can('manage_options')) {
-            try {
-                $setup_service = App::first_practice_setup_service();
-                if (
-                    $setup_service->first_setup_candidate() !== null
-                    || $setup_service->recovery_candidate() !== null
-                    || $setup_service->interrupted_setup_blocked() !== null
-                ) {
-                    FirstPracticeSetupPage::render();
-                    return;
-                }
-            } catch ( \Throwable ) {
-                // Fall through to the normal wizard; nothing was written.
-            }
+        if ( current_user_can( 'manage_options' ) && self::onboarding_panel_applies() ) {
+            FirstPracticeSetupPage::render();
+            return;
         }
 
         try {
@@ -750,7 +739,7 @@ final class CpmsSetupWizard
 
         // Every wizard write (including mere progress) requires effective
         // Clinic-local CONFIG — a generic capability is never enough.
-        if (!self::hasClinicLocalConfig((int) get_current_user_id())) {
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
             wp_die('برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
         }
 
@@ -801,7 +790,7 @@ final class CpmsSetupWizard
             wp_die('اعتبارسنجی ناموفق', 403);
         }
 
-        if (!self::hasClinicLocalConfig((int) get_current_user_id())) {
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
             wp_die('برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
         }
 
@@ -915,16 +904,16 @@ final class CpmsSetupWizard
      * engine every other Clinic write path uses). No clinic_id is ever
      * taken from the request.
      */
-    private static function hasClinicLocalConfig(int $actorUserId): bool
-    {
-        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
+    private static function has_clinic_local_config( int $actor_user_id ): bool {
+        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
             return false;
         }
 
         try {
-            $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
-            $scope = $establisher->establish($actorUserId, null);
-            App::authorization_service()->authorize($actorUserId, (int) $scope->clinicId, RolesAndCapabilities::CONFIG);
+            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
+            $scope       = $establisher->establish( $actor_user_id, null );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
+            App::authorization_service()->authorize( $actor_user_id, (int) $scope->clinicId, RolesAndCapabilities::CONFIG );
 
             return true;
         } catch ( \Throwable ) {
@@ -932,9 +921,26 @@ final class CpmsSetupWizard
         }
     }
 
+    /**
+     * Whether the embedded first-practice panel (fresh bootstrap,
+     * interrupted-setup recovery, or blocked interrupted setup) applies to
+     * the current installation state. Read-only.
+     */
+    private static function onboarding_panel_applies(): bool {
+        try {
+            $setup_service = App::first_practice_setup_service();
+
+            return $setup_service->first_setup_candidate() !== null
+                || $setup_service->recovery_candidate() !== null
+                || $setup_service->interrupted_setup_blocked() !== null;
+        } catch ( \Throwable ) {
+            return false;
+        }
+    }
+
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
-        if (!self::hasClinicLocalConfig($updatedBy)) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
             return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -971,7 +977,7 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
-        if (!self::hasClinicLocalConfig($updatedBy)) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
             return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -993,7 +999,7 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
-        if (!self::hasClinicLocalConfig($updatedBy)) {
+        if ( ! self::has_clinic_local_config( $updatedBy ) ) {
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
