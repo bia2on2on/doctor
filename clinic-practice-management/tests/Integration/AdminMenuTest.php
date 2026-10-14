@@ -133,14 +133,25 @@ final class AdminMenuTest extends WP_UnitTestCase
     public function testActionLinksShowSetupWhenPending(): void
     {
         wp_set_current_user($this->admin);
-        // پیش‌فرض تازه‌نصب: setup.completed = false → لینک اصلی «راه‌اندازی».
+        // پیش‌فرض تازه‌نصب: setup.completed = false → لینک اصلی «راه‌اندازی» به
+        // بوت‌استرپ اختصاصی اولین مطب (cpms-first-practice-setup) اشاره می‌کند.
         App::settings()->set('setup.completed', false);
 
         $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
         $joined = implode(' ', $links);
 
         $this->assertStringContainsString('راه‌اندازی', $joined, 'قبل از تکمیل راه‌اندازی، لینک اصلی باید «راه‌اندازی» باشد');
+        $this->assertStringContainsString('page=cpms-first-practice-setup', $joined, 'در نصب تازهٔ واجد شرایط، لینک راه‌اندازی باید به بوت‌استرپ اولین مطب برود');
         $this->assertStringContainsString('تنظیمات', $joined, 'مدیر باید لینک «تنظیمات» را ببیند');
+
+        // پس از مطالبهٔ اولین مطب ولی پیش از تکمیل ویزارد، لینک راه‌اندازی به cpms-wizard می‌رود.
+        $candidate = App::first_practice_setup_service()->first_setup_candidate();
+        $this->assertIsArray($candidate);
+        App::first_practice_setup_service()->claim($this->admin, (int) $candidate['clinic_id'], 'مطب تست منو');
+
+        $linksAfterClaim = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $joinedAfterClaim = implode(' ', $linksAfterClaim);
+        $this->assertStringContainsString('page=cpms-wizard', $joinedAfterClaim, 'پس از بوت‌استرپ اولین مطب، لینک راه‌اندازی باید به ویزارد استاندارد برود');
     }
 
     public function testActionLinksShowDashboardWhenSetupComplete(): void
