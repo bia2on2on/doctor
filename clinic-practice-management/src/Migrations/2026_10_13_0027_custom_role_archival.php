@@ -45,7 +45,19 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
 };
 
 
-$cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ): string {
+/** Normalize only the case-insensitive SQL type token; retain ENUM literal spelling. */
+$cpms_archival_normalize_enum_keyword = static function ( mixed $type ): ?string {
+    if ( ! is_string( $type ) || preg_match( '/\A[eE][nN][uU][mM]\(/', $type ) !== 1 ) {
+        return null;
+    }
+
+    return 'enum' . substr( $type, 4 );
+};
+
+
+$cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ) use (
+    $cpms_archival_normalize_enum_keyword
+): string {
     $column   = $db->fetchRow(
         'SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, CHARACTER_SET_NAME, COLLATION_NAME, COLUMN_COMMENT, EXTRA' .
         ' FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
@@ -73,9 +85,9 @@ $cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ): stri
         }
     }
 
-    $column_type    = strtolower( (string) $column['COLUMN_TYPE'] );
+    $column_type    = $cpms_archival_normalize_enum_keyword( $column['COLUMN_TYPE'] );
     $column_default = (string) $column['COLUMN_DEFAULT'];
-    if ( ! in_array(
+    if ( $column_type === null || ! in_array(
         $column_type,
         [ "enum('active','inactive')", "enum('active','inactive','archived')" ],
         true
@@ -169,16 +181,21 @@ $cpms_archival_guard_exists = static function ( CpmsDb $db, string $defs, string
         throw new \RuntimeException( 'migration 0027: unexpected rollback guard ownership or enforcement metadata' );
     }
 
-    // CHECK_CLAUSE differs in harmless quoting, whitespace and charset
-    // introducers. Remove only those presentation details; keep the expression
-    // itself exact so no broader predicate can authorize narrowing the ENUM.
+    // CHECK_CLAUSE differs in harmless quoting, whitespace, charset
+    // introducers and SQL keyword case. Preserve literal case and the exact
+    // predicate so no broader expression can authorize narrowing the ENUM.
     $clause = str_replace( "\\'", "'", (string) $constraint['CHECK_CLAUSE'] );
     $clause = preg_replace( "/_[a-zA-Z0-9]+(?=')/", '', $clause );
     if ( ! is_string( $clause ) ) {
         throw new \RuntimeException( 'migration 0027: rollback guard expression could not be normalized' );
     }
-    $clause = strtolower( str_replace( [ '`', '(', ')', ' ', "\n", "\r", "\t", "\f", "\v" ], '', $clause ) );
-    if ( $clause !== "statusin'active','inactive'" ) {
+    $clause = trim( $clause );
+    while ( $clause !== '' && $clause[0] === '(' && substr( $clause, -1 ) === ')' ) {
+        $clause = trim( substr( $clause, 1, -1 ) );
+    }
+    $expected_clause = '/\A(?i:(?:`status`|status))\s+(?i:IN)\s*\(' .
+        '\s*\'active\'\s*,\s*\'inactive\'\s*\)\z/';
+    if ( preg_match( $expected_clause, $clause ) !== 1 ) {
         throw new \RuntimeException(
             'migration 0027: unexpected rollback guard expression; no constraint may be silently reused or removed'
         );
@@ -204,6 +221,7 @@ return [
     'description' => 'Slice 4B: terminal archived custom-role status, durable definitions and fail-closed downgrade',
     'up'          => static function ( CpmsDb $db ) use (
         $cpms_archival_database_engine,
+        $cpms_archival_normalize_enum_keyword,
         $cpms_archival_status_sql,
         $cpms_archival_guard_exists
     ): void {
@@ -217,9 +235,9 @@ return [
             throw new \RuntimeException( 'migration 0027: missing or unknown status column metadata' );
         }
 
-        $status_type   = strtolower( $column['Type'] );
+        $status_type   = $cpms_archival_normalize_enum_keyword( $column['Type'] );
         $allowed_types = [ "enum('active','inactive')", "enum('active','inactive','archived')" ];
-        if ( ! in_array( $status_type, $allowed_types, true ) ) {
+        if ( $status_type === null || ! in_array( $status_type, $allowed_types, true ) ) {
             throw new \RuntimeException( 'migration 0027: unexpected status column type; no normalization is allowed' );
         }
         if ( $status_type !== "enum('active','inactive','archived')" || $guard_exists ) {
@@ -234,7 +252,7 @@ return [
 
         $verified = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
         if ( $verified === null || ! isset( $verified['Type'] ) || ! is_string( $verified['Type'] )
-            || strtolower( $verified['Type'] ) !== "enum('active','inactive','archived')" ) {
+            || $cpms_archival_normalize_enum_keyword( $verified['Type'] ) !== "enum('active','inactive','archived')" ) {
             throw new \RuntimeException( 'migration 0027: refusing to record an unverified archival enum' );
         }
         if ( $guard_exists && $cpms_archival_guard_exists( $db, $defs, $guard, $engine ) ) {
@@ -243,6 +261,7 @@ return [
     },
     'down'        => static function ( CpmsDb $db ) use (
         $cpms_archival_database_engine,
+        $cpms_archival_normalize_enum_keyword,
         $cpms_archival_status_sql,
         $cpms_archival_guard_exists,
         $cpms_archival_mariadb_checks_enabled
@@ -277,7 +296,7 @@ return [
             }
             $verified = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
             if ( $verified === null || ! isset( $verified['Type'] ) || ! is_string( $verified['Type'] )
-                || strtolower( $verified['Type'] ) !== "enum('active','inactive')" ) {
+                || $cpms_archival_normalize_enum_keyword( $verified['Type'] ) !== "enum('active','inactive')" ) {
                 throw new \RuntimeException( 'narrowed enum is not verified; rollback marker must remain' );
             }
             $cpms_archival_status_sql( $db, false );
