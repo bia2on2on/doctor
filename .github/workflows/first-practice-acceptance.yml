@@ -21,6 +21,7 @@ concurrency:
 permissions:
   contents: read
   actions: read
+  pull-requests: write
 
 env:
   WP_VERSION: '6.7.2'
@@ -251,3 +252,23 @@ jobs:
             tail -80 /tmp/fp/first-practice.log 2>/dev/null || echo '(browser step did not run)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish first-practice log to PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### First-practice browser (MariaDB 11.4.13) — job ${{ job.status }}"
+            echo
+            echo "- producing SHA: \`${GITHUB_SHA}\`"
+            echo "- versions:"
+            echo '```'
+            cat /tmp/fp/versions.txt 2>/dev/null || echo '(versions not captured)'
+            echo '```'
+            echo "- browser log (secrets redacted by the harness; passwords are not copied here):"
+            echo '```'
+            cat /tmp/fp/first-practice.log 2>/dev/null || echo '(browser step did not produce a log)'
+            echo '```'
+          } > /tmp/fp/pr-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/fp/pr-comment.md

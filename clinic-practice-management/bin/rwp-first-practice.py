@@ -166,16 +166,20 @@ def wp_eval(code, extra_env=None):
     env = os.environ.copy()
     if extra_env:
         env.update(extra_env)
+    eval_path = os.path.join(OUT, "logs", "wp-eval-snippet.php")
+    os.makedirs(os.path.dirname(eval_path), exist_ok=True)
+    with open(eval_path, "w", encoding="utf-8") as handle:
+        handle.write("<?php\ndeclare(strict_types=1);\n" + code + "\n")
     try:
         result = subprocess.run(
-            ["wp", "eval", code, f"--path={WP_DIR}", "--allow-root"],
+            ["wp", "eval-file", eval_path, f"--path={WP_DIR}", "--allow-root"],
             capture_output=True,
             text=True,
             timeout=45,
             env=env,
         )
-    except Exception as exc:
-        raise RuntimeError("wp_cli_" + type(exc).__name__) from None
+    except Exception as cop:
+        raise RuntimeError("wp_cli_" + type(cop).__name__) from None
     if result.returncode != 0:
         err = redact_evidence((result.stderr or result.stdout or "")[:400])
         raise RuntimeError("wp_cli_failed:" + err)
