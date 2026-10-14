@@ -695,8 +695,8 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         // ownership evidence contradicts the audit actor.
         $now = App::db()->nowUtcSql();
         App::db()->query(
-            'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, created_at, updated_at) VALUES (%d, %s, %s, %d, %s, %s)',
-            [$this->clinic_id, 'setup.current_step', '"booking"', $admin_b, $now, $now]
+            'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at) VALUES (%d, %s, %s, %d, %s)',
+            [$this->clinic_id, 'setup.current_step', '"booking"', $admin_b, $now]
         );
         $this->markClaimed();
 
