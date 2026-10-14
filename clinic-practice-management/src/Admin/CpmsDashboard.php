@@ -57,7 +57,7 @@ final class CpmsDashboard
                     🚀 <strong>CPMS نصب شد</strong> — برای شروع، راه‌اندازی اولیه را تکمیل کنید.
                 </p>
                 <p>
-                    <a class="button button-primary" href="<?php echo esc_url(admin_url('admin.php?page=cpms-wizard')); ?>">شروع راه‌اندازی</a>
+                    <a class="button button-primary" href="<?php echo esc_url( CpmsAdminMenu::setup_url() ); ?>">شروع راه‌اندازی</a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">سلامت سیستم</a>
                     <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">راهنما</a>
                 </p>
@@ -73,7 +73,7 @@ final class CpmsDashboard
                                 <span class="cpms-badge cpms-ok">تکمیل شده</span>
                             <?php else : ?>
                                 <span class="cpms-badge cpms-warn">در انتظار راه‌اندازی</span>
-                                <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-wizard')); ?>">ادامه راه‌اندازی</a>
+                                <a class="button" href="<?php echo esc_url( CpmsAdminMenu::setup_url() ); ?>">ادامه راه‌اندازی</a>
                             <?php endif; ?>
                         </p>
                         <p class="description">نسخه دیتابیس: <code><?php echo esc_html((string) ($schemaVersion ?? '—')); ?></code>؛ نسخه افزونه: <code><?php echo esc_html(defined('CPMS_VERSION') ? CPMS_VERSION : 'dev'); ?></code></p>

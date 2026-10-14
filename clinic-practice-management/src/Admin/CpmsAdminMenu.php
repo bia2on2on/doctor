@@ -108,6 +108,36 @@ final class CpmsAdminMenu
     }
 
     /**
+     * True when the current user is a WordPress administrator (`manage_options`)
+     * and the installation has a single eligible, unclaimed initial Clinic
+     * awaiting the one-shot first-practice bootstrap.
+     */
+    public static function is_first_practice_setup_pending(): bool {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            return false;
+        }
+
+        try {
+            return App::first_practice_setup_service()->first_setup_candidate() !== null;
+        } catch ( \Throwable $e ) {
+            return false;
+        }
+    }
+
+    /**
+     * Canonical onboarding/setup URL: routes eligible first-run WordPress
+     * administrators to the dedicated first-practice bootstrap before the
+     * established Clinic-management wizard.
+     */
+    public static function setup_url(): string {
+        $slug = self::is_first_practice_setup_pending()
+            ? FirstPracticeSetupPage::PAGE_SLUG
+            : CpmsSetupWizard::PAGE_SLUG;
+
+        return admin_url( 'admin.php?page=' . $slug );
+    }
+
+    /**
      * Plugin action links — فقط لینک‌های مجاز (capability-driven).
      *
      * @param array<int, string> $links
@@ -120,7 +150,7 @@ final class CpmsAdminMenu
             $setupPending = !(bool) App::settings()->get('setup.completed', false);
             $primaryLabel = $setupPending ? 'راه‌اندازی' : 'داشبورد CPMS';
             $primaryUrl = $setupPending
-                ? admin_url('admin.php?page=cpms-wizard')
+                ? self::setup_url()
                 : admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG);
             array_unshift($links, '<a href="' . esc_url($primaryUrl) . '">' . esc_html($primaryLabel) . '</a>');
             $links[] = '<a href="' . esc_url(admin_url('admin.php?page=cpms-settings')) . '">تنظیمات</a>';
@@ -150,7 +180,7 @@ final class CpmsAdminMenu
         set_transient('cpms_onboarding_seen', 1, DAY_IN_SECONDS);
         printf(
             '<div class="notice notice-info is-dismissible"><p><strong>CPMS نصب شد</strong> — برای شروع، راه‌اندازی اولیه را تکمیل کنید. <a class="button button-primary" href="%s">شروع راه‌اندازی</a> <a class="button" href="%s">سلامت سیستم</a> <a class="button" href="%s">راهنما</a></p></div>',
-            esc_url(admin_url('admin.php?page=cpms-wizard')),
+            esc_url( self::setup_url() ),
             esc_url(admin_url('admin.php?page=cpms-system')),
             esc_url(admin_url('admin.php?page=cpms-system'))
         );

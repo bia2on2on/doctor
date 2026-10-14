@@ -66,6 +66,13 @@ final class FirstPracticeSetupService {
      * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
      */
     public function first_setup_candidate(): ?array {
+        $clinic_count = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinics' )
+        ) ?? 0 );
+        if ( $clinic_count !== 1 ) {
+            return null;
+        }
+
         $rows = $this->db->fetchAll(
             'SELECT c.id, c.name, c.slug, o.name AS organization_name
                FROM ' . $this->db->table( 'cpms_clinics' ) . ' c
