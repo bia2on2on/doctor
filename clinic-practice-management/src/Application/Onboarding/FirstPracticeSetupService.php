@@ -350,12 +350,12 @@ final class FirstPracticeSetupService {
      *
      * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
      */
-    public function recovery_candidate(): ?array {
+    public function recovery_candidate( ?int $actor_wp_user_id = null ): ?array {
         $row = $this->single_clinic_display_row( true );
         if ( $row === null ) {
             return null;
         }
-        if ( $this->evaluate_recovery( (int) $row['clinic_id'] ) !== '' ) {
+        if ( $this->evaluate_recovery( (int) $row['clinic_id'], $actor_wp_user_id ) !== '' ) {
             return null;
         }
 
@@ -371,13 +371,13 @@ final class FirstPracticeSetupService {
      *
      * @return array{clinic_id:int, clinic_name:string, clinic_slug:string, organization_name:string}|null
      */
-    public function interrupted_setup_blocked(): ?array {
+    public function interrupted_setup_blocked( ?int $actor_wp_user_id = null ): ?array {
         $row = $this->single_clinic_display_row( true );
         if ( $row === null ) {
             return null;
         }
-        if ( $this->evaluate_recovery( (int) $row['clinic_id'] ) === '' ) {
-            return null; // eligible: recovery path, not blocked
+        if ( $this->evaluate_recovery( (int) $row['clinic_id'], $actor_wp_user_id ) === '' ) {
+            return null; // eligible for this actor: recovery path, not blocked
         }
 
         return $row;
@@ -428,8 +428,10 @@ final class FirstPracticeSetupService {
                     throw FirstPracticeSetupException::recovery_not_eligible();
                 }
 
-                // Full eligibility re-evaluated against locked state.
-                if ( $this->evaluate_recovery( $clinic_id ) !== '' ) {
+                // Full eligibility re-evaluated against locked state,
+                // including actor continuity: the recovering administrator
+                // must be the same administrator who started the setup.
+                if ( $this->evaluate_recovery( $clinic_id, $actor_wp_user_id ) !== '' ) {
                     throw FirstPracticeSetupException::recovery_not_eligible();
                 }
 
@@ -511,7 +513,7 @@ final class FirstPracticeSetupService {
      * Strict recovery eligibility. Returns '' when eligible, otherwise a
      * narrow internal reason code (never exposed to end users verbatim).
      */
-    private function evaluate_recovery( int $clinic_id ): string {
+    private function evaluate_recovery( int $clinic_id, ?int $expected_actor_id = null ): string {
         $clinic_count = (int) ( $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_clinics' )
         ) ?? 0 );
@@ -558,6 +560,10 @@ final class FirstPracticeSetupService {
         if ( ! is_array( $audit_rows ) || $audit_rows === [] ) {
             return 'no_setup_evidence';
         }
+        // Actor continuity: every recognized setup row must be attributed
+        // to ONE historical administrator. Mixed, unattributed or invalid
+        // ownership is ambiguous and fails closed.
+        $history_actor_id = null;
         foreach ( $audit_rows as $row ) {
             $action = (string) ( $row['action'] ?? '' );
             if ( $action === self::AUDIT_ACTION || $action === self::RECOVERY_AUDIT_ACTION ) {
@@ -566,16 +572,42 @@ final class FirstPracticeSetupService {
             if ( ! $this->is_recognized_setup_audit( $row, $clinic_id ) ) {
                 return 'unknown_audit_history';
             }
+            $row_actor_id = (int) ( $row['actor_wp_user_id'] ?? 0 );
+            if ( $history_actor_id === null ) {
+                $history_actor_id = $row_actor_id;
+            } elseif ( $row_actor_id !== $history_actor_id ) {
+                return 'mixed_historical_actors';
+            }
+        }
+        if ( $history_actor_id === null || $history_actor_id <= 0 ) {
+            return 'no_setup_evidence';
         }
 
-        // Persisted settings: nothing outside the wizard setup allowlist.
+        // The historical actor must still be a real account that currently
+        // holds installation-administrator authority. Deleted accounts,
+        // invalid ids and demoted administrators cannot be "continued",
+        // and nobody else may take over their interrupted setup.
+        $history_actor = get_userdata( $history_actor_id );
+        if ( $history_actor === false || ! user_can( $history_actor, 'manage_options' ) ) {
+            return 'historical_actor_invalid';
+        }
+        if ( $expected_actor_id !== null && $expected_actor_id !== $history_actor_id ) {
+            return 'actor_continuity';
+        }
+
+        // Persisted settings: nothing outside the wizard setup allowlist,
+        // and the recorded writer of every persisted setup setting must be
+        // the same historical administrator as the audit history.
         $setting_keys = $this->db->fetchAll(
-            'SELECT `key` FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+            'SELECT `key`, updated_by_wp_user_id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
             [$clinic_id]
         );
         foreach ( is_array( $setting_keys ) ? $setting_keys : [] as $row ) {
             if ( ! in_array( (string) ( $row['key'] ?? '' ), self::SETUP_ONLY_SETTING_KEYS, true ) ) {
                 return 'unknown_setting_history';
+            }
+            if ( (int) ( $row['updated_by_wp_user_id'] ?? 0 ) !== $history_actor_id ) {
+                return 'setting_actor_contradiction';
             }
         }
 
