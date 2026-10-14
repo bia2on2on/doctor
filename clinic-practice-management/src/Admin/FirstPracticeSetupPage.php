@@ -78,7 +78,7 @@ final class FirstPracticeSetupPage {
         echo '</p></div>';
 
         if ( $candidate === null ) {
-            $recovery = $service->recovery_candidate( (int) get_current_user_id() );
+            $recovery = $service->recovery_candidate();
             if ( $recovery !== null ) {
                 self::render_recovery_form( $recovery );
                 echo '</div>';
@@ -86,9 +86,9 @@ final class FirstPracticeSetupPage {
                 return;
             }
 
-            if ( $service->interrupted_setup_blocked( (int) get_current_user_id() ) !== null ) {
+            if ( $service->interrupted_setup_blocked() !== null ) {
                 echo '<div class="notice notice-warning inline" data-cpms-setup-blocked="1"><p>';
-                echo esc_html__( 'راه‌اندازی اولیهٔ این مطب قبلاً آغاز شده اما کامل نشده است و از روی سوابق موجود نمی‌توان با اطمینان مشخص کرد ادامهٔ آن باید توسط چه کسی انجام شود؛ برای حفظ امنیت، ادامهٔ خودکار ممکن نیست و راه‌اندازی دوباره از صفر نیز انجام نمی‌شود. هیچ اطلاعاتی حذف نشده است. لطفاً برای بررسی دستی با پشتیبانی تماس بگیرید.', 'cpms' );
+                echo esc_html__( 'راه‌اندازی اولیهٔ این مطب قبلاً آغاز شده اما کامل نشده است و از روی سوابق موجود نمی‌توان با اطمینان آن را ادامه داد؛ برای حفظ امنیت، ادامهٔ خودکار ممکن نیست. هیچ اطلاعاتی حذف نشده است. لطفاً برای بررسی دستی با پشتیبانی تماس بگیرید.', 'cpms' );
                 echo '</p><p><a class="button" href="' . esc_url( admin_url( 'admin.php?page=' . CpmsSetupWizard::PAGE_SLUG ) ) . '">';
                 echo esc_html__( 'بازگشت به راه‌اندازی', 'cpms' ) . '</a></p></div>';
                 echo '</div>';
