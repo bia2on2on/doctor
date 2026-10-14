@@ -169,7 +169,7 @@ def wp_eval(code, extra_env=None):
     eval_path = os.path.join(OUT, "logs", "wp-eval-snippet.php")
     os.makedirs(os.path.dirname(eval_path), exist_ok=True)
     with open(eval_path, "w", encoding="utf-8") as handle:
-        handle.write("<?php\ndeclare(strict_types=1);\n" + code + "\n")
+        handle.write("<?php\n" + code.strip() + "\n")
     try:
         result = subprocess.run(
             ["wp", "eval-file", eval_path, f"--path={WP_DIR}", "--allow-root"],

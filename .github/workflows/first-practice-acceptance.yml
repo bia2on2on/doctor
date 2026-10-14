@@ -134,9 +134,12 @@ jobs:
           php -r 'echo PHP_VERSION, PHP_EOL;' | tee /tmp/fp/cli-php-version.txt
 
       - name: Build official release ZIP from this SHA
+        env:
+          PRODUCING_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
-          echo "PRODUCING_SHA=${GITHUB_SHA}" | tee /tmp/fp/producing-sha.txt
+          echo "PRODUCING_SHA=${PRODUCING_SHA}" | tee /tmp/fp/producing-sha.txt
+          echo "PRODUCING_SHA=${PRODUCING_SHA}" >> "$GITHUB_ENV"
           bash clinic-practice-management/bin/build-release.sh
           ZIP=$(ls clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
           [ -f "$ZIP" ] || { echo 'ZIP NOT BUILT'; exit 1; }
@@ -150,7 +153,7 @@ jobs:
           set -euo pipefail
           wp plugin install "$GITHUB_WORKSPACE/$ZIP_PATH" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/fp/plugin-install.log
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root || { echo 'PLUGIN NOT ACTIVE'; exit 1; }
-          echo 'installed from official ZIP built at '"$GITHUB_SHA"' (not a source mount)'
+          echo "installed from official ZIP built at ${PRODUCING_SHA:-$GITHUB_SHA} (not a source mount)"
 
       - name: Verify migration 0027 + no PHP fatal + admin reachable
         id: migrations
@@ -205,7 +208,7 @@ jobs:
         run: |
           mkdir -p /tmp/fp/logs
           {
-            echo "producing_sha=${GITHUB_SHA}"
+            echo "producing_sha=${PRODUCING_SHA:-$GITHUB_SHA}"
             echo "wordpress=$(cat /tmp/fp/wp-version.txt 2>/dev/null || echo unknown)"
             echo "php_cli=$(cat /tmp/fp/cli-php-version.txt 2>/dev/null || echo unknown)"
             echo "php_apache=$(cat /tmp/fp/apache-php-version.txt 2>/dev/null || echo unknown)"
