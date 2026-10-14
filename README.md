@@ -26,6 +26,14 @@
 
 برای نقشهٔ مستندات، به [`docs/README.md`](docs/README.md) و برای اطلاعات فنی نصب/CLI به [`clinic-practice-management/README.md`](clinic-practice-management/README.md) مراجعه کنید.
 
+> **وضعیتِ جاری (راستی‌آزماییِ مستندات ۲۰۲۶-۱۰-۱۳):** مرجعِ واحدِ «وضعیت فعلی»، چک‌پوینتِ
+> [`docs/project-current-state.md` — Custom Role current state](docs/project-current-state.md#custom-role-current-state-2026-10-13) است
+> (`main = 8f8ca4bfc8e4cbc828f9689833392a1482a35d1a`؛ آخرین migration `2026_10_13_0027`).
+> کار **نقش‌ها و مجوزهای سفارشی** در چهار برشِ مصوب تکمیل و ادغام شده است (PRهای #213، #214، #215، #216/#217/#219، #220، #221)؛
+> مدلِ مجاز و مرزهای امنیتی در [`docs/decisions/2026-10-10-custom-role-permission-management-model.md`](docs/decisions/2026-10-10-custom-role-permission-management-model.md)
+> و رویهٔ کاربری در [`docs/user-guide.md` §7](docs/user-guide.md) آمده است.
+> **Phase 19 بسته و Phase 20 آغازنشده باقی می‌ماند، پوستهٔ کنونی همان Classic است، و هیچ‌یک از این‌ها ادعای آمادگیِ تجاری/انتشار نیست.**
+
 ## شروع توسعه
 
 ```bash
