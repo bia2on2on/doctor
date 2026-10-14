@@ -930,9 +930,11 @@ final class CpmsSetupWizard
         try {
             $setup_service = App::first_practice_setup_service();
 
+            $actor_id = (int) get_current_user_id();
+
             return $setup_service->first_setup_candidate() !== null
-                || $setup_service->recovery_candidate() !== null
-                || $setup_service->interrupted_setup_blocked() !== null;
+                || $setup_service->recovery_candidate( $actor_id ) !== null
+                || $setup_service->interrupted_setup_blocked( $actor_id ) !== null;
         } catch ( \Throwable ) {
             return false;
         }
