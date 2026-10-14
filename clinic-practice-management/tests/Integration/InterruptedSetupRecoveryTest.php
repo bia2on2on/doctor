@@ -218,6 +218,11 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
         $service = App::first_practice_setup_service();
         $candidate = $service->recovery_candidate();
+        if ($candidate === null) {
+            $method = new \ReflectionMethod($service, 'evaluate_recovery');
+            $method->setAccessible(true);
+            self::fail('recovery ineligible, reason=' . (string) $method->invoke($service, $this->clinic_id));
+        }
         self::assertNotNull($candidate, 'strictly setup-only interrupted setup must be recovery-eligible');
         self::assertSame($this->clinic_id, (int) $candidate['clinic_id']);
 
@@ -584,13 +589,14 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
 
     private function assertRecoveryDenied(FirstPracticeSetupService $service, int $actor): void
     {
+        $memberships_before = $this->membershipCount();
         try {
             $service->recover($actor, $this->clinic_id, 'مطب بازیابی');
             self::fail('recovery must be denied');
         } catch (FirstPracticeSetupException $e) {
             self::assertSame(FirstPracticeSetupException::CODE_RECOVERY_NOT_ELIGIBLE, $e->reason_code());
         }
-        self::assertSame(0, $this->membershipCount(), 'denied recovery must provision nothing');
+        self::assertSame($memberships_before, $this->membershipCount(), 'denied recovery must provision nothing');
     }
 
     private function membershipCount(): int
