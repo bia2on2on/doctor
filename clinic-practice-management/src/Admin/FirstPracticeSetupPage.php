@@ -32,9 +32,9 @@ final class FirstPracticeSetupPage {
 
     public const PAGE_SLUG = 'cpms-first-practice-setup';
 
-    private const NONCE_ACTION = 'cpms_first_practice_setup';
+    private const NONCE_ACTION          = 'cpms_first_practice_setup';
     private const RECOVERY_NONCE_ACTION = 'cpms_first_practice_recovery';
-    private const NOTICE_KEY   = 'cpms_first_practice_setup_notice';
+    private const NOTICE_KEY            = 'cpms_first_practice_setup_notice';
 
     public static function register(): void {
         add_action( 'admin_menu', [self::class, 'menu'] );

@@ -7,8 +7,10 @@ namespace ClinicCore\Admin;
 use ClinicCore\Application\Clinic\ClinicProfileException;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 
 /**
@@ -102,8 +104,7 @@ final class CpmsSetupWizard
         // blocked interrupted setup) is handled by the embedded
         // first-practice panel, reusing FirstPracticeSetupService. This is
         // checked before any Clinic-scoped Settings access because the
-        // actor has zero memberships in that state. Rendering only — no
-        // writes happen on GET.
+        // actor has zero memberships in that state. Rendering only.
         if (current_user_can('manage_options')) {
             try {
                 $setup_service = App::first_practice_setup_service();
@@ -116,8 +117,7 @@ final class CpmsSetupWizard
                     return;
                 }
             } catch ( \Throwable ) {
-                // Fall through to the normal wizard; the panel state is
-                // re-derived there and nothing was written.
+                // Fall through to the normal wizard; nothing was written.
             }
         }
 
@@ -144,10 +144,10 @@ final class CpmsSetupWizard
         $step = $steps[$index];
         $isComplete = (bool) $settings->get(self::COMPLETE_KEY, false);
 
-        $startedAt = (string) ($settings->get('setup.started_at', '') ?? '');
-        if ($startedAt === '') {
-            $settings->set('setup.started_at', gmdate('c'), (int) get_current_user_id());
-        }
+        // GET is strictly read-only: rendering must never persist settings
+        // or audit rows (a former setup.started_at write here is what made
+        // migration 0026's conservative backfill consume the first-setup
+        // marker for merely-viewed, zero-membership installations).
         ?>
         <div class="wrap" dir="rtl">
             <h1>راه‌اندازی کلینیک — قدم <?php echo esc_html((string) ($index + 1)); ?> از <?php echo esc_html((string) count($steps)); ?></h1>
@@ -174,7 +174,7 @@ final class CpmsSetupWizard
                 </div>
             <?php endif; ?>
 
-            <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;">
+            <nav aria-label="گام‌های راه‌اندازی" style="display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;max-width:100%;">
                 <?php foreach ($steps as $i => $s) : ?>
                     <?php
                     $current    = $i === $index;
@@ -187,7 +187,7 @@ final class CpmsSetupWizard
                         href="<?php echo esc_url( self::step_url( $s['id'] ) ); ?>"
                         aria-current="<?php echo $current ? 'step' : 'false'; ?>"
                         class="dashicons-before <?php echo esc_attr( $icon_class ); ?>"
-                        style="display:inline-block;text-decoration:none;<?php echo esc_attr( $icon_style ); ?>">
+                        style="display:inline-block;text-decoration:none;box-sizing:border-box;max-width:100%;padding:6px 8px;min-height:36px;line-height:1.8;<?php echo esc_attr( $icon_style ); ?>">
                         <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] ); ?>
                     </a>
                 <?php endforeach; ?>
@@ -372,9 +372,10 @@ final class CpmsSetupWizard
         if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
             ?>
             <div class="notice notice-warning">
-                <p>برای ذخیرهٔ مشخصات کلینیک، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</p>
+                <p>برای ذخیرهٔ مشخصات کلینیک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
             </div>
             <?php
+            return;
         }
 
         // Canonical source: cpms_clinics — no longer setup.clinic.* as second writable canonical.
@@ -521,6 +522,15 @@ final class CpmsSetupWizard
 
     private static function renderSms(Settings $settings): void
     {
+        if ( ! ClinicianAdminPage::can_current_user_access_page() ) {
+            ?>
+            <div class="notice notice-warning">
+                <p>برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است. به همین دلیل فرم ویرایش نمایش داده نمی‌شود.</p>
+            </div>
+            <?php
+            return;
+        }
+
         $provider = (string) ($settings->get('sms.provider', '') ?? '');
         $sender = (string) ($settings->get('sms.sender', '') ?? '');
         ?>
@@ -725,7 +735,9 @@ final class CpmsSetupWizard
         }
 
         if ( CpmsAdminMenu::is_first_practice_setup_pending() ) {
-            wp_safe_redirect( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) );
+            // Stay inside the single visible wizard; its render embeds the
+            // first-practice bootstrap panel for this state.
+            wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
             return;
         }
 
@@ -734,6 +746,12 @@ final class CpmsSetupWizard
         $valid = array_column(self::steps(), 'id');
         if (!in_array($step, $valid, true)) {
             wp_die('گام نامعتبر', 400);
+        }
+
+        // Every wizard write (including mere progress) requires effective
+        // Clinic-local CONFIG — a generic capability is never enough.
+        if (!self::hasClinicLocalConfig((int) get_current_user_id())) {
+            wp_die('برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403);
         }
 
         $error = '';
@@ -888,8 +906,38 @@ final class CpmsSetupWizard
      *
      * @return string '' = ok
      */
+    /**
+     * Effective Clinic-local CONFIG authorization for wizard writes.
+     *
+     * The generic WordPress capability alone is NOT Clinic authority: the
+     * actor must hold an active membership in exactly one trusted Clinic
+     * and pass AuthorizationService for CONFIG in that Clinic (the same
+     * engine every other Clinic write path uses). No clinic_id is ever
+     * taken from the request.
+     */
+    private static function hasClinicLocalConfig(int $actorUserId): bool
+    {
+        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
+            return false;
+        }
+
+        try {
+            $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
+            $scope = $establisher->establish($actorUserId, null);
+            App::authorization_service()->authorize($actorUserId, (int) $scope->clinicId, RolesAndCapabilities::CONFIG);
+
+            return true;
+        } catch ( \Throwable ) {
+            return false;
+        }
+    }
+
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
+        if (!self::hasClinicLocalConfig($updatedBy)) {
+            return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         foreach ( [ 'duration', 'capacity', 'lead', 'future', 'cancel' ] as $required_key ) {
             if ( ! array_key_exists( $required_key, $post )
                 || ! is_scalar( $post[ $required_key ] )
@@ -923,6 +971,10 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
+        if (!self::hasClinicLocalConfig($updatedBy)) {
+            return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         $provider = trim((string) ($post['sms_provider'] ?? ''));
         $sender = trim((string) ($post['sms_sender'] ?? ''));
 
@@ -941,6 +993,10 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
+        if (!self::hasClinicLocalConfig($updatedBy)) {
+            return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         if (!self::isReadyToOperate($settings)) {
             return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
         }
@@ -962,36 +1018,4 @@ final class CpmsSetupWizard
 
         return $clinic_name !== '' && $doctors > 0;
     }
-}
-}
-ivate static function saveFinish(Settings $settings, int $updatedBy): string
-    {
-        if (!self::isReadyToOperate($settings)) {
-            return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
-        }
-
-        $settings->set(self::COMPLETE_KEY, true, $updatedBy);
-
-        return '';
-    }
-
-    /**
-     * شرط «آمادهٔ شروع عملیات»: اطلاعات کلینیک + حداقل یک پزشک فعال؛
-     * بدون نیاز به مجوز فعال یا بکاپ/پیامک (گام‌های اختیاری هستند).
-     * اکنون نام کلینیک از canonical cpms_clinics خوانده می‌شود.
-     */
-    private static function isReadyToOperate(Settings $settings): bool
-    {
-        $clinic_name = self::canonical_clinic_name( $settings );
-        $doctors = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
-
-        return $clinic_name !== '' && $doctors > 0;
-    }
-}
-}
->clinicId, false));
-
-        return $clinic_name !== '' && $doctors > 0;
-    }
-}
 }
