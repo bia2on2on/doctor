@@ -99,11 +99,12 @@ final class CpmsSetupWizard
 
         try {
             $settings = App::settings();
-        } catch (ScopeRequiredException) {
+        } catch ( ScopeRequiredException ) {
+            $guidance = CpmsAdminMenu::ambiguous_clinic_guidance();
             echo '<div class="wrap" dir="rtl">';
-            echo '<h1>' . esc_html__('راه‌اندازی کلینیک', 'cpms') . '</h1>';
+            echo '<h1>' . esc_html__( 'راه‌اندازی کلینیک', 'cpms' ) . '</h1>';
             echo '<div class="notice notice-warning" data-cpms-scope-required="1"><p>';
-            echo esc_html( CpmsAdminMenu::ambiguous_clinic_guidance() );
+            echo esc_html( $guidance );
             echo '</p></div></div>';
             return;
         }

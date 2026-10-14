@@ -164,10 +164,10 @@ final class CpmsAdminMenu
     public static function actionLinks(array $links): array
     {
         if (current_user_can(RolesAndCapabilities::CONFIG)) {
-            $setupFlag = self::setup_completed_flag();
-            $setupPending = $setupFlag === false;
-            $primaryLabel = $setupPending ? 'راه‌اندازی' : 'داشبورد CPMS';
-            $primaryUrl = $setupPending
+            $setup_flag    = self::setup_completed_flag();
+            $setup_pending = $setup_flag === false;
+            $primaryLabel = $setup_pending ? 'راه‌اندازی' : 'داشبورد CPMS';
+            $primaryUrl = $setup_pending
                 ? self::setup_url()
                 : admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG);
             array_unshift($links, '<a href="' . esc_url($primaryUrl) . '">' . esc_html($primaryLabel) . '</a>');
@@ -189,15 +189,15 @@ final class CpmsAdminMenu
         if ($screen !== null && $screen instanceof \WP_Screen && $screen->id === 'plugins') {
             return;
         }
-        $setupFlag = self::setup_completed_flag();
-        if ($setupFlag === true) {
+        $setup_flag = self::setup_completed_flag();
+        if ( $setup_flag === true ) {
             return;
         }
         if (get_transient('cpms_onboarding_seen')) {
             return;
         }
         set_transient('cpms_onboarding_seen', 1, DAY_IN_SECONDS);
-        if ($setupFlag === null) {
+        if ( $setup_flag === null ) {
             printf(
                 '<div class="notice notice-warning is-dismissible" data-cpms-scope-required="1"><p>%s</p></div>',
                 esc_html( self::ambiguous_clinic_guidance() )
