@@ -170,7 +170,7 @@ final class CpmsAdminMenu
             $primary_url   = $setup_pending
                 ? self::setup_url()
                 : admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG);
-            array_unshift($links, '<a href="' . esc_url($primary_url) . '">' . esc_html($primary_label) . '</a>');
+            array_unshift( $links, '<a href="' . esc_url( $primary_url ) . '">' . esc_html( $primary_label ) . '</a>' );
             $links[] = '<a href="' . esc_url(admin_url('admin.php?page=cpms-settings')) . '">تنظیمات</a>';
         }
 
