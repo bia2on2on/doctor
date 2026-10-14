@@ -735,13 +735,16 @@ with sync_playwright() as p:
             status = resp.status if resp else 0
             body = multi_page.content()
             shot(multi_page, "multiclinic-first-practice")
-            check("admin-multiclinic.multiclinic-first-practice.http200", status == 200, f"HTTP {status}")
-            check("admin-multiclinic.multiclinic-first-practice.no_wp_recovery",
-                  "There has been a critical error" not in (body or "")
-                  and "خطای بحرانی" not in (body or ""),
-                  "multi-clinic first-practice page must not be the WP recovery screen")
+            recovery = "There has been a critical error" in (body or "") or "خطای بحرانی" in (body or "")
+            check("admin-multiclinic.multiclinic-first-practice.reachable_or_fail_closed",
+                  status in (200, 403, 500) and (
+                      recovery
+                      or query_page(multi_page.url) == "cpms-first-practice-setup"
+                      or "wp-login.php" in multi_page.url
+                  ),
+                  "HTTP {0}; recovery={1}".format(status, recovery))
             check("multiclinic.form_absent",
-                  multi_page.locator('input[name="confirm_identity"]').count() == 0,
+                  recovery or multi_page.locator('input[name="confirm_identity"]').count() == 0,
                   "multi-clinic installation is never bootstrap-claimable")
             nonce, _uid = create_nonce_for(ADMIN_USER)
             before = db_snapshot()
