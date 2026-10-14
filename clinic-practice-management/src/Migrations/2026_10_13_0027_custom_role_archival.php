@@ -46,7 +46,7 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
 
 
 $cpms_archival_status_sql = static function ( CpmsDb $db, bool $archival ): string {
-    $column = $db->fetchRow(
+    $column   = $db->fetchRow(
         'SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, CHARACTER_SET_NAME, COLLATION_NAME, COLUMN_COMMENT, EXTRA' .
         ' FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s',
         [ $db->table( 'cpms_custom_role_defs' ), 'status' ]
@@ -114,7 +114,7 @@ $cpms_archival_guard_exists = static function ( CpmsDb $db, string $defs, string
         $select .= ', cc.TABLE_NAME AS CHECK_TABLE_NAME';
     }
 
-    $join = ' LEFT JOIN information_schema.CHECK_CONSTRAINTS cc'.
+    $join = ' LEFT JOIN information_schema.CHECK_CONSTRAINTS cc' .
         ' ON cc.CONSTRAINT_SCHEMA = tc.CONSTRAINT_SCHEMA AND cc.CONSTRAINT_NAME = tc.CONSTRAINT_NAME';
     if ( 'mariadb' === $engine ) {
         $join .= ' AND cc.TABLE_NAME = tc.TABLE_NAME';
@@ -207,17 +207,17 @@ return [
         $cpms_archival_status_sql,
         $cpms_archival_guard_exists
     ): void {
-        $engine = $cpms_archival_database_engine( $db );
-        $defs   = $db->table( 'cpms_custom_role_defs' );
-        $column_sql = $cpms_archival_status_sql( $db, true );
-        $guard      = 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
+        $engine       = $cpms_archival_database_engine( $db );
+        $defs         = $db->table( 'cpms_custom_role_defs' );
+        $column_sql   = $cpms_archival_status_sql( $db, true );
+        $guard        = 'cpms_archive_rollback_' . substr( hash( 'sha256', $defs ), 0, 12 );
         $guard_exists = $cpms_archival_guard_exists( $db, $defs, $guard, $engine );
         $column       = $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'status'" );
         if ( $column === null || ! isset( $column['Type'] ) || ! is_string( $column['Type'] ) ) {
             throw new \RuntimeException( 'migration 0027: missing or unknown status column metadata' );
         }
 
-        $status_type = strtolower( $column['Type'] );
+        $status_type   = strtolower( $column['Type'] );
         $allowed_types = [ "enum('active','inactive')", "enum('active','inactive','archived')" ];
         if ( ! in_array( $status_type, $allowed_types, true ) ) {
             throw new \RuntimeException( 'migration 0027: unexpected status column type; no normalization is allowed' );
