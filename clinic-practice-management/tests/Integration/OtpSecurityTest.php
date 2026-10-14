@@ -424,4 +424,53 @@ final class OtpSecurityTest extends WP_UnitTestCase
             'نباید لینک تازه‌ای ساخته شود.'
         );
     }
+
+    /**
+     * OTP possession must never turn a durable Patient↔Staff link into Staff
+     * authentication. The failure is intentionally indistinguishable from an
+     * invalid code and must not change the staff role, account count, or links.
+     */
+    public function testLoginOtpCannotAuthenticateStaffLinkedToPatientRecord(): void
+    {
+        $mobile = '09121110007';
+        $db = $this->dbh();
+        $now = $db->nowUtcSql();
+        $staffId = self::factory()->user->create(['role' => 'cpms_secretary']);
+        $db->insert('cpms_patients', [
+            'clinic_id' => 1,
+            'mrn' => 'OTP-STAFF-' . substr((string) $staffId, -6),
+            'first_name' => 'Linked',
+            'last_name' => 'Staff',
+            'mobile' => MobileValidator::normalize($mobile),
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $patientId = (int) $db->wpdb_last_insert_id();
+        $db->insert('cpms_patient_user_links', [
+            'clinic_id' => 1,
+            'patient_id' => $patientId,
+            'wp_user_id' => $staffId,
+            'mobile_at_link' => MobileValidator::normalize($mobile),
+            'is_primary' => 1,
+            'linked_at' => $now,
+        ]);
+        $this->seedFor($mobile, '111007', OtpService::PURPOSE_LOGIN);
+        $usersBefore = $this->userCount();
+        $linksBefore = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links'));
+        wp_set_current_user(0);
+
+        try {
+            $this->service()->verify($mobile, '111007', OtpService::PURPOSE_LOGIN);
+            self::fail('A linked staff account must not receive a Patient OTP session.');
+        } catch (OtpException $exception) {
+            self::assertSame('CLINIC_OTP_INVALID', $exception->apiCode());
+            self::assertSame(400, $exception->httpStatus());
+        }
+
+        self::assertSame($usersBefore, $this->userCount(), 'OTP denial must not create another account.');
+        self::assertSame($linksBefore, (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')));
+        self::assertSame(['cpms_secretary'], (array) get_userdata($staffId)->roles, 'Staff role must remain unchanged.');
+        self::assertSame(0, get_current_user_id(), 'A denied OTP must not authenticate the current request.');
+    }
 }

@@ -118,4 +118,15 @@ final class PublicBookingJsSendGateTest extends TestCase
         self::assertStringNotContainsString("clearStoredSelection()", $segment, 'patient init must not clear booking selection prematurely');
         self::assertStringNotContainsString("SELECT_KEY", $segment, 'patient init must not touch booking selection');
     }
+
+    public function testLocationChoiceIsRequiredForMultipleAndBoundToQuoteAndHold(): void
+    {
+        self::assertStringContainsString('function collectLocations', $this->js, 'A1 must build the choice set from persisted slot Location metadata.');
+        self::assertStringContainsString('availableLocations.length === 1', $this->js, 'A single available Location must be selected automatically.');
+        self::assertStringContainsString('availableLocations.length > 1', $this->js, 'Multiple Locations must remain unselected until the visitor chooses.');
+        self::assertStringContainsString('function renderLocationOptions', $this->js, 'The UI must present an explicit accessible selector for multiple Locations.');
+        self::assertStringContainsString('payload.location_id = selectedLocationId', $this->js, 'A4 must send the selected Location only as a selector.');
+        self::assertStringContainsString('body.location_id = toInt(selection.location_id)', $this->js, 'B1 must preserve the selected Location selector.');
+        self::assertStringContainsString('location-picker', $this->js, 'Location selection must bind to the server-rendered picker.');
+    }
 }

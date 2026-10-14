@@ -498,3 +498,10 @@ extracted `run:` blocks.
 - **Confirmed defect:** `evaluate_recovery()` validated setup audit rows structurally but never bound `actor_wp_user_id` to the recovering actor — Admin B could recover Admin A's interrupted setup and gain `cpms_manager`; mixed A/B history stayed eligible.
 - **RED:** tests-only heads `5745916`/`7f9451c`-era successor — Integration `Tests: 1908, Failures: 7` (the seven new actor-continuity tests) on run `38620143355`.
 - **Fix:** one historical actor across all recognized rows; actor must still exist and hold `manage_options`; recovering actor must match inside the locked transaction; persisted `cpms_settings.updated_by_wp_user_id` must not contradict the audit actor. Display paths pass the current user (only the historical actor sees the recovery form; others get the nontechnical Persian blocked message). No marker reset, no audit deletion, no new capabilities.
+
+### [2026-10-14 20:29 UTC] — Classic CPMS improvement: focused regression tests first (fixed branch `arena/a1eefe48-doctor`)
+
+- **مبنای شروع:** از HEAD `35f3336a20dbee80a2833f693cf4fd23f3e66730`، درختِ تمیز، روی شاخهٔ ثابت جلسه. زمان دریافتِ درخواستِ اولیه در یادداشت جلسه `20:15:54Z` ثبت شده است.
+- **دامنه و تغییرات:** فقط تست اضافه شد: OTP ورودِ patient روی حساب Staff متصل باید generic-deny بماند؛ A1 باید نام/نشانی Location پایدار را برگرداند؛ فرم رزرو باید چند-Location را صریح انتخاب کند؛ A4/B1 باید Location ارسالی را با Location پایدارِ slot تطبیق دهند. هیچ runtime، migration، role، endpoint یا workflow تغییر نکرد.
+- **اعتبارسنجی:** `git diff --check` PASS؛ Python acceptance harness syntax compile PASS. PHPUnit/WordPress integration اجرا نشد چون این sandbox در PATH فاقد PHP است (`php: command not found`؛ vendor هم موجود نیست). RED از CI هنوز اجرا/اثبات نشده؛ نباید به‌عنوان نتیجهٔ اجراشده ادعا شود.
+- **تحویل و موارد باز:** test-only تغییرات روی branch ثابت نگه‌داری می‌شود؛ گام بعدی اجرای آن‌ها روی CI/WordPress واقعی و ثبتِ شواهد واقعی پیش از پیاده‌سازی است. هنوز PR ساخته یا merge نشده است.
