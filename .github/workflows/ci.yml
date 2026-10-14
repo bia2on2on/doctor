@@ -182,6 +182,17 @@ jobs:
           --health-interval=10s
           --health-timeout=5s
           --health-retries=20
+      mariadb:
+        image: mariadb:11.4.13
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3307:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
 
     env:
       WP_TESTS_DIR: /tmp/wordpress-test-lib
@@ -211,6 +222,58 @@ jobs:
 
       - name: Prepare WordPress test suite
         run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+
+      # Add a separate real MariaDB runtime within this existing Integration
+      # check: the historical MySQL 8 database and full suite remain unchanged.
+      # Keeping the MariaDB lane in this job preserves the established 47-check
+      # contract while testing migration 0027 against the pinned server release.
+      - name: Prepare MariaDB 11.4.13 WordPress test suite
+        env:
+          WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
+        run: |
+          set -euo pipefail
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
+          echo "MariaDB server VERSION(): ${server_version}"
+          case "$server_version" in
+            11.4.13-MariaDB*) ;;
+            *) echo "Expected MariaDB 11.4.13, received: ${server_version}" >&2; exit 1 ;;
+          esac
+          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 6.7.2 3307
+
+      - name: Run focused custom-role migrations on MariaDB 11.4.13
+        env:
+          WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/custom-role-mariadb-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-mariadb.log
+          if ! grep -qE '^(OK \(|OK, but)' /tmp/custom-role-mariadb.log; then
+            echo '::error::MariaDB migration suite did not finish with a passing PHPUnit summary.'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse('/tmp/custom-role-mariadb-junit.xml').getroot().findall('.//testcase')
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          failures = sum(case.find('failure') is not None for case in cases)
+          errors = sum(case.find('error') is not None for case in cases)
+          print(f'MariaDB archival migration JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) < 14 or skipped or failures or errors:
+              sys.exit('All migration tests must execute on MariaDB 11.4.13 without skips or failures.')
+          PY
+
+      - name: Preserve MariaDB migration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: custom-role-mariadb-migrations-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/custom-role-mariadb.log
+            /tmp/custom-role-mariadb-junit.xml
+          if-no-files-found: warn
 
       # Run the repaired race alone first so a suite-level green cannot hide
       # skipped execution or missing lock evidence. The full Integration suite
