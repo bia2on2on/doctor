@@ -87,7 +87,10 @@ if ($kind === 'legacy_writer') {
     $db->wpdb()->update($db->table('cpms_settings'), ['updated_by_wp_user_id' => $b], ['clinic_id' => $c, 'key' => 'setup.clinic.name']);
 }
 $db->query('UPDATE ' . $db->table('cpms_clinics') . ' SET first_setup_claimed_at = CURRENT_TIMESTAMP(3) WHERE id = %d', [$c]);
-echo 'REC_DB=' . wp_json_encode(['clinic' => $c, 'actor' => $a]);
+$method = new ReflectionMethod(\ClinicCore\Application\Onboarding\FirstPracticeSetupService::class, 'evaluate_recovery');
+$method->setAccessible(true);
+$reason = $method->invoke(\ClinicCore\Bootstrap\App::first_practice_setup_service(), $c, $a);
+echo 'REC_DB=' . wp_json_encode(['clinic' => $c, 'actor' => $a, 'reason' => $reason]);
 ''', {'REC_KIND': kind})
 
 
@@ -140,6 +143,7 @@ def run_case(browser, kind, second, allowed):
     tag = kind + ('_other_admin' if second else '_same_admin')
     wp('db', 'import', '/tmp/fp/pristine.sql')
     data = fixture(kind)
+    print('FIXTURE ' + tag + ' eligibility_reason=' + (data['reason'] or 'eligible'), flush=True)
     before = snapshot()
     context = browser.new_context(viewport={'width': 390, 'height': 844}, locale='fa-IR')
     page = context.new_page()
@@ -185,6 +189,11 @@ def run_case(browser, kind, second, allowed):
             crafted_post(page, context, data['clinic'], second)
             check(tag + '.replay_no_writes', snapshot() == replay_before)
         else:
+            if kind in ('membership', 'suspended'):
+                # The unified wizard intentionally does not embed onboarding
+                # when a membership exists. Its legacy page consumes the
+                # per-user handler notice, proving the same valid-nonce denial.
+                page.goto(BASE + '/wp-admin/admin.php?page=cpms-first-practice-setup')
             check(tag + '.valid_nonce_denial_not_csrf', 'کامل‌کردن راه‌اندازی متوقف‌شده برای این مطب ممکن نیست' in page.inner_text('body'))
             check(tag + '.denial_zero_writes', before == after)
         text = page.inner_text('body')

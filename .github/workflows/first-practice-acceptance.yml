@@ -112,6 +112,9 @@ jobs:
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
           wp config set FS_METHOD direct --allow-root
+          # Freeze background jobs while constructing/comparing synthetic
+          # interrupted history. Cron is exercised by the existing other lanes.
+          wp config set DISABLE_WP_CRON true --raw --allow-root
           wp core install --url="$WP_URL" --title="CPMS First-Practice Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
           wp core version --allow-root | tee /tmp/fp/wp-version.txt
 

@@ -657,9 +657,9 @@ with sync_playwright() as p:
             check("admin.wizard_clinic.after.no_permission_on_save",
                   "دسترسی لازم را ندارید" not in after_save, "no permission error on save")
             check("admin.wizard_clinic.after.progressed",
-                  admin_page.locator('[data-cpms-wizard-step="booking"][aria-current="step"]').count() == 1
-                  or query_step(admin_page.url) == "booking",
-                  "wizard progressed")
+                  admin_page.locator('[data-cpms-wizard-step="locations"][aria-current="step"]').count() == 1
+                  or query_step(admin_page.url) == "locations",
+                  "personal-practice Clinic step progresses to Locations")
             check("admin.wizard_clinic.after.no_redirect_loop",
                   query_page(admin_page.url) == "cpms-wizard",
                   "stayed on wizard after POST")
