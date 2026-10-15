@@ -287,17 +287,105 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         self::assertSame($before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]), 'legacy settings are historical evidence, not rewritten canonical data');
     }
 
-    public function testSystemHeartbeatIsInertAndDoesNotBlockOriginalAdministrator(): void
+    public function testRealRecordTickInsertThenUpdatePersistsNullThenZero(): void
+    {
+        $this->resetClinicActivityFixture();
+        App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic($this->clinic_id));
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+            [$this->clinic_id, 'jobs.last_tick_at']
+        ));
+        App::recordTick();
+        $inserted = $this->heartbeatRow();
+        self::assertNotNull($inserted);
+        self::assertNull($inserted['updated_by_wp_user_id'], 'wpdb::insert preserves the omitted system writer as NULL');
+        self::assertSame('INTEGER', $inserted['value_type']);
+        self::assertGreaterThan(0, json_decode($inserted['value_json'], true));
+
+        // Exercise the real App -> Settings -> wpdb -> numeric column path,
+        // not a handcrafted zero-writer INSERT or a mocked wpdb conversion.
+        App::recordTick();
+        $updated = $this->heartbeatRow();
+        self::assertNotNull($updated);
+        self::assertSame('0', (string) $updated['updated_by_wp_user_id'], 'Settings UPDATE binds NULL through %s; WordPress SQL mode stores zero in BIGINT');
+        self::assertSame('INTEGER', $updated['value_type']);
+        self::assertGreaterThan(0, json_decode($updated['value_json'], true));
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d', [$this->clinic_id]
+        ), 'runtime ticks must not fabricate human ownership evidence');
+        fwrite(STDOUT, 'HEARTBEAT_PERSISTENCE=' . wp_json_encode([
+            'server' => App::db()->fetchValue('SELECT VERSION()'),
+            'sql_mode' => App::db()->fetchValue('SELECT @@SESSION.sql_mode'),
+            'insert_writer' => $inserted['updated_by_wp_user_id'],
+            'insert_php_type' => gettype($inserted['updated_by_wp_user_id']),
+            'update_writer' => $updated['updated_by_wp_user_id'],
+            'update_php_type' => gettype($updated['updated_by_wp_user_id']),
+            'json_type' => $updated['value_type'],
+        ]) . PHP_EOL);
+    }
+
+    public function testOwnerShapedSixEventHistoryWithNaturalZeroWriterHeartbeatRecovers(): void
+    {
+        $this->resetClinicActivityFixture();
+        $admin = $this->makeUser('rec_host_', 'administrator');
+        $other = $this->makeUser('rec_host_other_', 'administrator');
+        $settings = new \ClinicCore\Settings\Settings(App::db(), $this->clinic_id, App::audit());
+        foreach ([
+            ['setup.started_at', '2026-10-01T00:00:00+00:00'],
+            ['setup.started_at', '2026-10-01T00:01:00+00:00'],
+            ['setup.current_step', 'welcome'], ['setup.current_step', 'booking'],
+            ['setup.completed', true], ['setup.completed', false],
+        ] as [$key, $value]) {
+            $settings->set($key, $value, $admin);
+        }
+        $settings->set('jobs.last_tick_at', 1790841600);
+        self::assertNull($this->heartbeatRow()['updated_by_wp_user_id']);
+        $settings->set('jobs.last_tick_at', 1790841601);
+        self::assertSame('0', (string) $this->heartbeatRow()['updated_by_wp_user_id']);
+        self::assertSame('INTEGER', $this->heartbeatRow()['value_type']);
+        $metadata = App::db()->fetchAll(
+            'SELECT `key`, JSON_TYPE(value_json) AS value_type, updated_by_wp_user_id FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY `key`',
+            [$this->clinic_id]
+        );
+        self::assertSame(['jobs.last_tick_at', 'setup.completed', 'setup.current_step', 'setup.started_at'], array_column($metadata, 'key'));
+        self::assertSame(['INTEGER', 'BOOLEAN', 'STRING', 'STRING'], array_column($metadata, 'value_type'));
+        self::assertSame([0, $admin, $admin, $admin], array_map('intval', array_column($metadata, 'updated_by_wp_user_id')));
+        self::assertSame(6, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d AND actor_wp_user_id = %d AND action = %s',
+            [$this->clinic_id, $admin, 'SETTING_UPDATE']
+        ));
+        $this->markClaimed();
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate($other));
+        $this->assertRecoveryDenied($service, $other);
+        self::assertNotNull($service->recovery_candidate($admin), 'Owner-shaped six-event history plus a naturally zero-written INTEGER heartbeat must remain recoverable by its sole historical administrator');
+        $before = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]);
+        $service->recover($admin, $this->clinic_id, 'مطب مطابق شاهد میزبان');
+        self::assertSame(1, $this->membershipCount());
+        self::assertSame($before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]));
+        $this->assertRecoveryDenied($service, $admin);
+        self::assertSame(1, $this->membershipCount(), 'replay must never provision another membership');
+    }
+
+    /** @return array<string, array{0: int|null}> */
+    public static function systemHeartbeatWriters(): array
+    {
+        return ['insert-null' => [null], 'update-zero' => [0]];
+    }
+
+    /** @dataProvider systemHeartbeatWriters */
+    public function testSystemHeartbeatIsInertAndDoesNotBlockOriginalAdministrator(?int $writer): void
     {
         $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_tick_', 'administrator');
         $other = $this->makeUser('rec_tick_other_', 'administrator');
         $this->seedSetupOnlyHistory($admin);
         $this->markClaimed();
-        App::db()->query(
-            'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at) VALUES (%d, %s, %s, NULL, %s)',
-            [$this->clinic_id, 'jobs.last_tick_at', '1790841600', App::db()->nowUtcSql()]
-        );
+        App::db()->wpdb()->insert(App::db()->table('cpms_settings'), [
+            'clinic_id' => $this->clinic_id, 'key' => 'jobs.last_tick_at',
+            'value_json' => '1790841600', 'updated_by_wp_user_id' => $writer,
+            'updated_at' => App::db()->nowUtcSql(),
+        ]);
         $service = App::first_practice_setup_service();
         self::assertNotNull($service->recovery_candidate($admin));
         self::assertNull($service->recovery_candidate($other));
@@ -307,15 +395,17 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         self::assertSame($before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]), 'heartbeat is preserved, never deleted or rewritten');
     }
 
-    public function testHeartbeatAloneCannotEstablishOwnership(): void
+    /** @dataProvider systemHeartbeatWriters */
+    public function testHeartbeatAloneCannotEstablishOwnership(?int $writer): void
     {
         $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_tick_only_', 'administrator');
         $this->markClaimed();
-        App::db()->query(
-            'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at) VALUES (%d, %s, %s, NULL, %s)',
-            [$this->clinic_id, 'jobs.last_tick_at', '1790841600', App::db()->nowUtcSql()]
-        );
+        App::db()->wpdb()->insert(App::db()->table('cpms_settings'), [
+            'clinic_id' => $this->clinic_id, 'key' => 'jobs.last_tick_at',
+            'value_json' => '1790841600', 'updated_by_wp_user_id' => $writer,
+            'updated_at' => App::db()->nowUtcSql(),
+        ]);
         $service = App::first_practice_setup_service();
         self::assertNull($service->recovery_candidate($admin));
         $this->assertRecoveryDenied($service, $admin);
@@ -331,12 +421,34 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at) VALUES (%d, %s, %s, NULL, %s)',
             [$this->clinic_id, 'jobs.last_tick_at', '1790841600', App::db()->nowUtcSql()]
         );
-        foreach ([[null, '"1790841600"'], [null, '{}'], [null, '0'], [null, '-1'], [$admin, '1790841600']] as [$writer, $json]) {
+        $cases = [[$admin, '1790841600']];
+        foreach ([null, 0] as $writer) {
+            foreach (['"1790841600"', '{}', '[]', 'null', 'true', 'false', '0', '-1', '1790841600.5', '1.7908416e9'] as $json) {
+                $cases[] = [$writer, $json];
+            }
+        }
+        foreach ($cases as [$writer, $json]) {
             App::db()->wpdb()->update(App::db()->table('cpms_settings'), ['value_json' => $json, 'updated_by_wp_user_id' => $writer], ['clinic_id' => $this->clinic_id, 'key' => 'jobs.last_tick_at']);
             $service = App::first_practice_setup_service();
             self::assertNull($service->recovery_candidate($admin));
             $this->assertRecoveryDenied($service, $admin);
         }
+    }
+
+    public function testZeroWriterCannotExemptArbitraryRuntimeSetting(): void
+    {
+        $this->resetClinicActivityFixture();
+        $admin = $this->makeUser('rec_zero_key_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        $this->markClaimed();
+        App::db()->wpdb()->insert(App::db()->table('cpms_settings'), [
+            'clinic_id' => $this->clinic_id, 'key' => 'jobs.last_tick_at.extra',
+            'value_json' => '1790841600', 'updated_by_wp_user_id' => 0,
+            'updated_at' => App::db()->nowUtcSql(),
+        ]);
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate($admin));
+        $this->assertRecoveryDenied($service, $admin);
     }
 
     public function testRecoveryDeniedWithUnknownAuditAction(): void
@@ -542,12 +654,19 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
     // Recovery: mandatory audit failure rolls back everything.
     // ------------------------------------------------------------------
 
-    public function testRecoveryFailedAuditRollsBack(): void
+    /** @dataProvider systemHeartbeatWriters */
+    public function testRecoveryFailedAuditRollsBack(?int $writer): void
     {
         $this->resetClinicActivityFixture();
         $admin = $this->makeUser('rec_rb_', 'administrator');
         $this->seedSetupOnlyHistory($admin);
         $this->markClaimed();
+        App::db()->wpdb()->insert(App::db()->table('cpms_settings'), [
+            'clinic_id' => $this->clinic_id, 'key' => 'jobs.last_tick_at',
+            'value_json' => '1790841600', 'updated_by_wp_user_id' => $writer,
+            'updated_at' => App::db()->nowUtcSql(),
+        ]);
+        self::assertNotNull(App::first_practice_setup_service()->recovery_candidate($admin), 'fault injection must reach an otherwise eligible recovery');
         $name_before = (string) App::db()->fetchValue(
             'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
             [$this->clinic_id]
@@ -904,6 +1023,15 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         App::db()->query(
             'UPDATE ' . App::db()->table('cpms_clinics') . ' SET first_setup_claimed_at = CURRENT_TIMESTAMP(3) WHERE id = %d AND first_setup_claimed_at IS NULL',
             [$this->clinic_id]
+        );
+    }
+
+    /** @return array<string, mixed>|null */
+    private function heartbeatRow(): ?array
+    {
+        return App::db()->fetchRow(
+            'SELECT updated_by_wp_user_id, value_json, JSON_TYPE(value_json) AS value_type FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+            [$this->clinic_id, 'jobs.last_tick_at']
         );
     }
 
