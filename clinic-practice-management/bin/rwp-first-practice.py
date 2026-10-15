@@ -668,6 +668,83 @@ with sync_playwright() as p:
             ) if admin_page.locator('input[name="clinic_name"]').count() else False
             check("admin.wizard_clinic.revisit.persisted", persisted, "canonical profile persisted")
 
+        # --- Adaptive onboarding: facility choice drives doctors step ---
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-after")
+        check("admin.adaptive.facility_options",
+              admin_page.locator('input[name="facility_type"]').count() == 12,
+              "all twelve facility types are real radio choices")
+        fac_form = admin_page.locator('form:has(input[name="facility_type"])')
+        if fac_form.count() >= 1:
+            fac_form.locator('input[name="facility_type"][value="doctor_practice"]').check()
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                fac_form.locator('button[type="submit"]').first.click()
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=doctors", "cpms-wizard-doctors-after")
+            check("admin.adaptive.doctors_intended_field",
+                  admin_page.locator('input[name="intended_clinicians"]').count() == 1,
+                  "intended clinician count is asked in the doctors step")
+            doc_form = admin_page.locator('form:has(input[name="intended_clinicians"])')
+            if doc_form.count() >= 1:
+                doc_form.locator('input[name="intended_clinicians"]').fill("1")
+                with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                    doc_form.locator('button[type="submit"]').first.click()
+                # No clinician registered yet: verified progression must
+                # keep the user on the doctors step with a Persian error.
+                check("admin.adaptive.incomplete_doctors_blocks",
+                      query_step(admin_page.url) == "doctors" and "هنوز کامل نیست" in admin_page.content(),
+                      "declaring a number alone does not complete the doctors step")
+            # Interruption/resume: revisiting the wizard keeps the facility choice.
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-resume")
+            check("admin.adaptive.facility_resumes",
+                  admin_page.locator('input[name="facility_type"][value="doctor_practice"]:checked').count() == 1,
+                  "facility selection resumes after interruption")
+
+            # --- Journey B: multi-doctor Clinic with real clinicians ---
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-multi")
+            fac2 = admin_page.locator('form:has(input[name="facility_type"])')
+            if fac2.count() >= 1:
+                fac2.locator('input[name="facility_type"][value="general_clinic"]').check()
+                fac2.locator('select[name="structure"]').select_option("multi_doctor")
+                with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                    fac2.locator('button[type="submit"]').first.click()
+                goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=doctors", "cpms-wizard-doctors-multi")
+                doc2 = admin_page.locator('form:has(input[name="intended_clinicians"])')
+                check("admin.multi.doctors_field", doc2.count() >= 1, "intended count field present for multi-doctor flow")
+                if doc2.count() >= 1:
+                    doc2.locator('input[name="intended_clinicians"]').fill("2")
+                    with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                        doc2.locator('button[type="submit"]').first.click()
+                    check("admin.multi.incomplete_blocks",
+                          query_step(admin_page.url) == "doctors" and "هنوز کامل نیست" in admin_page.content(),
+                          "zero actual clinicians cannot satisfy intended count of two")
+                # Register two real clinicians via the established page.
+                for idx, cname in enumerate(["پزشک آزمون یک", "پزشک آزمون دو"], start=1):
+                    goto_admin(admin_page, "admin", "admin.php?page=cpms-clinicians", f"cpms-clinicians-create-{idx}")
+                    cform = admin_page.locator('form:has(input[name="full_name"])')
+                    if cform.count() >= 1:
+                        cform.first.locator('input[name="full_name"]').first.fill(cname)
+                        with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                            cform.first.locator('button[type="submit"], input[type="submit"]').first.click()
+                snap = db_snapshot()
+                check("admin.multi.clinicians_persisted", int(snap.get("clinician_count") or 0) >= 2,
+                      f"clinician_count={snap.get('clinician_count')}")
+                goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=doctors", "cpms-wizard-doctors-multi-done")
+                doc3 = admin_page.locator('form:has(input[name="intended_clinicians"])')
+                if doc3.count() >= 1:
+                    check("admin.multi.intended_resumes",
+                          doc3.locator('input[name="intended_clinicians"]').input_value() == "2",
+                          "intended count restored after interruption")
+                    doc3.locator('input[name="intended_clinicians"]').fill("2")
+                    with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                        doc3.locator('button[type="submit"]').first.click()
+                    check("admin.multi.complete_progresses",
+                          "هنوز کامل نیست" not in admin_page.content(),
+                          "verified clinician count lets the doctors step complete")
+                goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-multi-resume")
+                check("admin.multi.facility_resumes",
+                      admin_page.locator('input[name="facility_type"][value="general_clinic"]:checked').count() == 1,
+                      "multi-doctor facility selection resumes")
+
+
         # Replay via UI: form must be gone for the claiming admin.
         status, body = goto_admin(
             admin_page, "admin",
