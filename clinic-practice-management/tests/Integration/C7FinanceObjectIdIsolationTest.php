@@ -493,12 +493,28 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
 
         // کد ماشین‌خوان استانداردِ نبودِ Scope (قرارداد SystemClinicResolver/
         // ScopeRequiredException — C7-S3) و وضعیت HTTP مرسوم آن.
-        $this->assertSame(
-            'CLINIC_SCOPE_REQUIRED',
-            $thrown->errorCode,
-            'کد استثنا باید قرارداد کانونی CLINIC_SCOPE_REQUIRED باشد، نه کد دیگری.'
-        );
-        $this->assertSame(400, $thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
+        // 2026-10-15 — سیاست مجوز مالی: اختیار ابطال/بازپرداخت این Fixture از «گرنت صریح عضویت»
+        // می‌آید (مدل‌سازیِ نصب موجود) و لایهٔ خشنِ سراسریِ WordPress آن را نمی‌بیند. پس بدون
+        // Scopeِ مورد اعتماد، عملیات همچنان fail-closed رد می‌شود — با کدِ همان لایهٔ خشن.
+        $this->assertSame('CLINIC_PERMISSION_DENIED', $thrown->errorCode, 'مقامِ عضویت‌محور بدون Scope مورد اعتماد باید fail-closed باشد');
+        $this->assertSame(403, $thrown->httpStatus, 'وضعیت HTTP استانداردِ انکار مجوز در مرز خشن');
+
+        // اثباتِ حفظِ قراردادِ کانونی: با اختیارِ سراسری (نصب موجود) کد باید دقیقاً
+        // CLINIC_SCOPE_REQUIRED بماند و هرگز Clinic از ردیفِ هدف وام گرفته نشود.
+        $legacy_user = get_userdata($this->secretaryA);
+        $this->assertNotFalse($legacy_user, 'fixture: کاربر منشی A موجود است');
+        $legacy_user->add_cap(\ClinicCore\Auth\RolesAndCapabilities::PAYMENT_VOID);
+        App::resetScope();
+        $legacy_thrown = null;
+        try {
+            $this->finance()->voidPayment($this->secretaryA, $paymentId, 'c7 legacy no-scope characterization');
+        } catch (FinanceException $e) {
+            $legacy_thrown = $e;
+        }
+        $this->assertNotNull($legacy_thrown, 'C7-NO-SCOPE (legacy): بدون Scope باید fail-closed باشد');
+        $this->assertSame('CLINIC_SCOPE_REQUIRED', $legacy_thrown->errorCode, 'قرارداد کانونیِ نبودِ Scope برای اختیار سراسری حفظ شده است');
+        $this->assertSame(400, $legacy_thrown->httpStatus, 'وضعیت HTTP استانداردِ CLINIC_SCOPE_REQUIRED');
+        $legacy_user->remove_cap(\ClinicCore\Auth\RolesAndCapabilities::PAYMENT_VOID);
 
         // حتی در حالت fail-closed هم DB باید دست‌نخورده بماند (استثنای فریبنده ننویسد).
         $this->assertSame('captured', (string) $pay['status'], 'وضعیت پرداخت قربانی نباید تغییر کند');

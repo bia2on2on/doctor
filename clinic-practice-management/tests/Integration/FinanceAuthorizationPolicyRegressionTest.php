@@ -225,23 +225,26 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertSame(0, $this->auditCount('PAYMENT_VOID'));
         self::assertSame(0, $this->auditCount('PAYMENT_REFUND'));
 
+        // An ownership fact supplied by the caller is never evidence. The target is a REAL, existing
+        // payment of the same Clinic (never a fabricated id): the denial must come from the ownership
+        // conjunct, not from an absent row.
+        $claimed = $this->dispatch(
+            'POST',
+            sprintf(self::PAY_VOID, $paymentId),
+            ['clinician_id' => $other, 'authorized_by_ownership' => 1],
+            $this->scopeHeaders($clinic),
+            ['reason' => 'payload ownership claim', 'clinician_id' => $other]
+        );
+        self::assertSame(403, $claimed->get_status(), 'payload ownership claims must never be trusted — ' . $this->errorCode($claimed));
+        self::assertSame('AUTH_OWNERSHIP_REQUIRED', (string) ($this->payload($claimed)['reason'] ?? ''), 'the denial must be the ownership rule, not the menu gate');
+        self::assertSame('captured', (string) $this->paymentRow($paymentId)['status'], 'nothing may be written for a payload ownership claim');
+
         // The genuine owner keeps authority: the ownership rule is not a blanket doctor denial.
         wp_set_current_user($owner);
         $owned = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'owner correction']);
         self::assertSame(200, $owned->get_status(), 'the real owner must still be able to correct the transaction — ' . $this->errorCode($owned));
-
-        // An ownership fact supplied by the caller is never evidence.
-        self::assertSame(
-            403,
-            $this->dispatch(
-                'POST',
-                sprintf(self::PAY_VOID, $paymentId + 1000),
-                ['clinician_id' => $other, 'authorized_by_ownership' => 1],
-                $this->scopeHeaders($clinic),
-                ['reason' => 'payload ownership claim', 'clinician_id' => $other]
-            )->get_status(),
-            'payload ownership claims must never be trusted'
-        );
+        self::assertSame('voided', (string) $this->paymentRow($paymentId)['status'], 'the owner correction must take effect');
+        self::assertSame(1, $this->auditCount('PAYMENT_VOID'), 'exactly one void audit row');
     }
 
     // ================= 5 — Cross-Clinic denial =================
@@ -358,20 +361,19 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertSame(201, $capture->get_status(), 'premise capture — ' . $this->errorCode($capture));
         $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
 
-        // KNOWN PRE-EXISTING BOUNDARY (not introduced or widened by the 2026-10-15 correction):
-        // the authoritative scoped engine authorizes the delegated capability (asserted above via
-        // can()), but the REST route's permission_callback still applies the legacy WordPress-GLOBAL
-        // menu gate (RestBase::requireCap -> get_userdata()->has_cap()). A membership-scoped
-        // delegation cannot satisfy a WP-global menu capability, so the request is refused at that
-        // boundary before FinanceService is reached. Closing that boundary is a separate,
-        // larger decision (it changes the menu gate for every route); it is NOT part of the
-        // doctor-ownership correction. Asserted as-is so the boundary can never regress silently.
+        // Premise proving WHICH layer authorizes this request: the delegated member holds no
+        // WordPress-GLOBAL void capability (the secretary preset no longer carries it), so the legacy
+        // menu gate could never authorize them. A 200 below is therefore evidence that the
+        // Clinic-scoped boundary plus the delegation itself authorized the operation.
+        self::assertNotContains(RolesAndCapabilities::PAYMENT_VOID, RolesAndCapabilities::SECRETARY_CAPS, 'premise: the secretary preset carries no void');
+        $secretary_user = get_userdata($secretary);
+        self::assertNotFalse($secretary_user, 'premise: the delegated member is a real user');
+        self::assertFalse($secretary_user->has_cap(RolesAndCapabilities::PAYMENT_VOID), 'premise: the WP-global menu gate cannot authorize the delegated member');
+
         $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'delegated void']);
-        self::assertSame(403, $void->get_status(), 'REST boundary answer for a WP-global menu gate — ' . $this->errorCode($void));
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($void));
-        self::assertSame('captured', (string) $this->paymentRow($paymentId)['status'], 'zero mutation at the boundary refusal');
-        self::assertSame(0, $this->auditCount('PAYMENT_VOID'), 'no void audit row may be written when the request is refused');
-        self::assertSame('grant', (string) $this->delegation()->explicit_effect($membershipId, RolesAndCapabilities::PAYMENT_VOID), 'the delegation itself must remain stored and unaffected');
+        self::assertSame(200, $void->get_status(), 'a delegated member must be able to void — ' . $this->errorCode($void));
+        self::assertSame('voided', (string) $this->paymentRow($paymentId)['status'], 'the delegated void must take effect');
+        self::assertSame(1, $this->auditCount('PAYMENT_VOID'), 'the delegated void must be audited');
 
         // No side effects: no medical-record access, no other capability, no WordPress-global change.
         self::assertFalse(CustomRolePolicy::is_editable_capability(RolesAndCapabilities::PAYMENT_VOID), 'sensitive capabilities stay non-delegable through custom roles');
@@ -626,14 +628,17 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertTrue(App::authorization_service()->can($secretary, $clinic, RolesAndCapabilities::PAYMENT_VOID));
         self::assertTrue(App::authorization_service()->can($secretary, $clinic, RolesAndCapabilities::PAYMENT_REFUND));
 
-        // The grant is preserved and effective in the authoritative scoped engine (asserted above).
-        // Reaching it end-to-end additionally requires the WP-global menu capability, which is the
-        // pre-existing RestBase::requireCap boundary — see the note in the delegation test. The
-        // boundary answer is asserted as-is (no mutation), not treated as success.
+        // Same premise as the delegation test: the actor holds the grant ONLY as a membership override,
+        // so the legacy WP-global menu gate cannot authorize this request.
+        $secretary_user = get_userdata($secretary);
+        self::assertNotFalse($secretary_user, 'premise: the granted member is a real user');
+        self::assertFalse($secretary_user->has_cap(RolesAndCapabilities::PAYMENT_VOID), 'premise: the WP-global menu gate cannot authorize the granted member');
+
+        // A pre-existing explicit grant must keep working end-to-end after the upgrade.
         $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'pre-existing grant']);
-        self::assertSame(403, $void->get_status(), 'REST boundary answer for a WP-global menu gate — ' . $this->errorCode($void));
-        self::assertSame('captured', (string) $this->paymentRow($paymentId)['status'], 'zero mutation at the boundary refusal');
-        self::assertSame(0, $this->auditCount('PAYMENT_VOID'), 'no void audit row may be written when the request is refused');
+        self::assertSame(200, $void->get_status(), 'a pre-existing explicit grant must keep working — ' . $this->errorCode($void));
+        self::assertSame('voided', (string) $this->paymentRow($paymentId)['status'], 'the granted void must take effect');
+        self::assertSame(1, $this->auditCount('PAYMENT_VOID'), 'the granted void must be audited');
 
         // A secretary WITHOUT an explicit grant on the same upgraded installation is denied.
         $plain = $this->staff($clinic, RolesAndCapabilities::ROLE_SECRETARY, 'sec_plain');
@@ -734,6 +739,7 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         wp_set_current_user($other);
         $refund = $this->dispatch('POST', sprintf(self::PAY_REFUND, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'delegated but unrelated']);
         self::assertSame(403, $refund->get_status(), 'a delegated doctor must stay bounded by transaction ownership — ' . $this->errorCode($refund));
+        self::assertSame('AUTH_OWNERSHIP_REQUIRED', (string) ($this->payload($refund)['reason'] ?? ''), 'the denial must be the ownership conjunct, not a capability gate');
         self::assertSame('captured', (string) $this->paymentRow($paymentId)['status']);
         self::assertSame(0, $this->auditCount('PAYMENT_REFUND'));
 
@@ -838,7 +844,7 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
             }
             self::assertNotNull($rejected, $capability . ' must never be delegable');
             self::assertSame(422, $rejected->httpStatus, $capability . ' must be refused as out of bounds');
-            self::assertFalse(App::authorization_service()->can($target, $clinic, $capability), $capability . ' must not become effective');
+            self::assertNull($this->delegation()->explicit_effect($targetMembership, $capability), $capability . ' must not gain any override row');
         }
 
         self::assertSame([], (new MembershipRepository(App::db()))->capabilities_for($targetMembership), 'no out-of-bounds row may be written');

@@ -6,6 +6,7 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Finance\FinanceException;
 use ClinicCore\Application\Finance\FinanceService;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Visits\VisitException;
@@ -116,6 +117,9 @@ final class FinanceController extends RestBase
         ]);
 
         // ================= D14 — ابطال پرداخت (همان روز) =================
+        // مجوزِ مرزِ این دو مسیر مالی حساس، Clinic-scoped است (نه Capability سراسریِ وردپرس):
+        // گرنت/واگذاریِ عضویت باید کار کند؛ DENY صریح و تعلیق همان‌طور رد می‌شوند.
+        $void_cap = RolesAndCapabilities::PAYMENT_VOID;
         register_rest_route(self::NS, '/payments/(?P<id>\d+)/void', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
@@ -124,8 +128,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_VOID,
                     fn () => $this->finance->voidPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'))
                 ),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::PAYMENT_VOID),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->perm_clinic_cap($r, $void_cap),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                 ],
@@ -133,6 +136,8 @@ final class FinanceController extends RestBase
         ]);
 
         // ================= P3 — بازپرداخت =================
+        // بازپرداخت — همان مرزِ Clinic-scoped (مالکیتِ تراکنش در سرویس enforce می‌شود).
+        $refund_cap = RolesAndCapabilities::PAYMENT_REFUND;
         register_rest_route(self::NS, '/payments/(?P<id>\d+)/refund', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
@@ -141,8 +146,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_REFUND,
                     fn () => $this->finance->refundPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'), $this->body($r))
                 ),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::PAYMENT_REFUND),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->perm_clinic_cap($r, $refund_cap),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                     'amount' => ['required' => false, 'type' => 'number'],
@@ -347,5 +351,52 @@ final class FinanceController extends RestBase
         $params = $r->get_params();
 
         return is_array($params) ? $params : [];
+    }
+
+    /**
+     * Nonce + مجوزِ Clinic-scoped برای مسیرهای حساس مالی (void/refund).
+     *
+     *  - نخست موتور مجوزِ Clinic-scoped روی Scopeِ مورد اعتماد تصمیم می‌گیرد
+     *    (`AuthorizationService::can`): عضویتِ فعال، DENY صریح > Grant صریح > Preset.
+     *    بدون این لایه، گرنت/واگذاریِ عضویت‌محور هرگز به سرویس نمی‌رسید.
+     *  - اگر آن لایه مجاز نکند، لایهٔ خشنِ سراسریِ WordPress عیناً مثل قبل
+     *    ارزیابی می‌شود (سازگاریِ عقب‌رو با نصب‌های موجود و پاسخِ 403 پیشین).
+     *  - Clinic از هدر خوانده نمی‌شود: Scopeِ مورد اعتماد پیش از
+     *    permission_callback در `RestClinicContext` مستقر شده است. نبودِ آن ⇒
+     *    همان gating رد می‌کند و مسیرِ کانونیِ سرویس پاسخ می‌دهد
+     *    (CLINIC_SCOPE_REQUIRED) — هرگز Clinic از شیءِ هدف وام گرفته نمی‌شود.
+     */
+    private function perm_clinic_cap( WP_REST_Request $r, string $capability ): bool|WP_Error {
+        $nonce = $this->requireNonce( $r );
+        if ( $nonce instanceof WP_Error ) {
+            return $nonce;
+        }
+
+        if ( $this->has_effective_clinic_capability( $capability ) ) {
+            return true;
+        }
+
+        $global_check = $this->requireCap( $capability );
+
+        return $global_check instanceof WP_Error
+            ? $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' )
+            : true;
+    }
+
+    /**
+     * آیا Capability در Clinicِ Scopeِ مورد اعتماد برای کاربر جاری مؤثر است؟
+     */
+    private function has_effective_clinic_capability( string $capability ): bool {
+        $user_id = (int) get_current_user_id();
+        if ( $user_id <= 0 ) {
+            return false;
+        }
+
+        $scope_context = ScopeContext::tryGet();
+        if ( $scope_context === null || (int) $scope_context->clinicId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+            return false;
+        }
+
+        return App::authorization_service()->can( $user_id, (int) $scope_context->clinicId, $capability );
     }
 }
