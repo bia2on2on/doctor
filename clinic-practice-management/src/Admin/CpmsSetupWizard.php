@@ -111,7 +111,12 @@ final class CpmsSetupWizard
         // actor has zero memberships in that state. Rendering only.
         if ( current_user_can( 'manage_options' ) && self::onboarding_panel_applies() ) {
             if ( self::selected_facility_type() === '' ) {
+                // First screen = facility question, with the embedded
+                // first-practice bootstrap panel below it (single journey;
+                // the existing browser acceptance requires the bootstrap
+                // form to stay embedded in the wizard).
                 self::renderFacilityFirstScreen();
+                FirstPracticeSetupPage::render();
                 return;
             }
             self::renderFlowSummary();
