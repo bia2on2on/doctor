@@ -156,10 +156,10 @@ final class BookingService
 
             $date = (string) $row['slot_date'];
             $grouped[$date][] = [
-                'time'             => substr((string) $row['slot_time'], 0, 5),
+                'time'             => substr( (string) $row['slot_time'], 0, 5 ),
                 'capacity_left'    => (int) $row['capacity_left'],
                 'duration_min'     => (int) $row['duration_min'],
-                'slot_id'          => (int) ($row['id'] ?? 0),
+                'slot_id'          => (int) ( $row['id'] ?? 0 ),
                 'location_id'      => $location_id,
                 'location_name'    => $location['name'],
                 'location_address' => $location['address'],

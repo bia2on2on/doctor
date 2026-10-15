@@ -46,7 +46,7 @@ final class PublicShortcodeAdminPage {
 			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; never authority
 			? absint( wp_unslash( (string) $_GET['clinic_id'] ) )
 			: 0;
-		$clinic_id           = 0;
+		$clinic_id = 0;
 		foreach ( $clinic_choices as $choice ) {
 			if ( (int) $choice['clinic_id'] === $requested_clinic_id ) {
 				$clinic_id = $requested_clinic_id;
