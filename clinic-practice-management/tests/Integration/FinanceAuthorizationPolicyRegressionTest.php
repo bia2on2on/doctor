@@ -392,15 +392,20 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertNotContains(RolesAndCapabilities::PAYMENT_VOID, RolesAndCapabilities::SECRETARY_CAPS, 'delegation must not mutate the preset');
 
         // The other delegable finance capability on a REST route: invoice adjustment.
-        // Baseline first — without the delegation the scoped engine still denies the actor, so the
-        // delegated success below cannot be explained by a pre-existing allowance.
-        wp_set_current_user($secretary);
-        $adjust_denied = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 100, 'reason' => 'undelegated baseline']);
-        self::assertSame(403, $adjust_denied->get_status(), 'an undelegated member must not be able to adjust an invoice — ' . $this->errorCode($adjust_denied));
+        // The baseline actor is the MANAGER, whose preset deliberately holds no invoice_adjust
+        // (the secretary preset does, by design), so a 200 below cannot come from a preset.
+        $manager_user = get_userdata($manager);
+        self::assertNotFalse($manager_user, 'premise: the manager is a real user');
+        self::assertFalse($manager_user->has_cap(RolesAndCapabilities::INVOICE_ADJUST), 'premise: the WP-global gate cannot authorize the manager');
+        $managerMembership = $this->membershipId($clinic, $manager);
 
-        $adjust_delegation = $this->delegation()->delegate($manager, $clinic, $membershipId, RolesAndCapabilities::INVOICE_ADJUST);
+        wp_set_current_user($manager);
+        $adjust_denied = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 100, 'reason' => 'undelegated baseline']);
+        self::assertSame(403, $adjust_denied->get_status(), 'a manager without a delegation must not be able to adjust an invoice — ' . $this->errorCode($adjust_denied));
+
+        $adjust_delegation = $this->delegation()->delegate($manager, $clinic, $managerMembership, RolesAndCapabilities::INVOICE_ADJUST);
         self::assertSame('grant', (string) ($adjust_delegation['effect'] ?? ''), 'invoice_adjust must be delegable');
-        self::assertTrue(App::authorization_service()->can($secretary, $clinic, RolesAndCapabilities::INVOICE_ADJUST), 'the delegation must be effective in the scoped engine');
+        self::assertTrue(App::authorization_service()->can($manager, $clinic, RolesAndCapabilities::INVOICE_ADJUST), 'the delegation must be effective in the scoped engine');
 
         $adjust = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 100, 'reason' => 'delegated adjustment']);
         self::assertSame(200, $adjust->get_status(), 'a delegated invoice_adjust must reach the service — ' . $this->errorCode($adjust));
