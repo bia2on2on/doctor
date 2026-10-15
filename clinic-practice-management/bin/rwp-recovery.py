@@ -304,6 +304,8 @@ def run_case(browser, kind, second, allowed):
         check(tag + '.no_page_error', page_errors == [])
         check(tag + '.no_redirect_loop', 'wp-login.php' not in page.url)
         page.screenshot(path=str(OUT / (tag + '-after.png')), full_page=True)
+        if tag in ('host_zero_same_admin', 'host_null_same_admin'):
+            page.screenshot(path=str(OUT / (tag + '-after-viewport.jpg')), type='jpeg', quality=65)
         # Do not persist cookies, nonces or auth tokens in browser evidence.
         (OUT / (tag + '-db.json')).write_text(json.dumps({'before': before, 'after': after}, ensure_ascii=False, indent=2))
     finally:

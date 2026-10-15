@@ -615,8 +615,10 @@ final class FirstPracticeSetupService {
             // before setup. It is not administrative/ownership evidence.
             // Only the exact system-written integer shape is inert; it can
             // never replace the positive, single-actor audit evidence above.
+            // Settings inserts NULL, but its %s UPDATE stores numeric zero;
+            // wpdb can return that system-writer sentinel as the string '0'.
             if ( (string) ( $row['key'] ?? '' ) === 'jobs.last_tick_at'
-                && $row['updated_by_wp_user_id'] === null
+                && in_array( $row['updated_by_wp_user_id'], [ null, 0, '0' ], true )
             ) {
                 $heartbeat = json_decode( (string) ( $row['value_json'] ?? '' ), true );
                 if ( is_int( $heartbeat ) && $heartbeat > 0 ) {

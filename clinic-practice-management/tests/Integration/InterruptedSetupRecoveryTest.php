@@ -672,8 +672,12 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             [$this->clinic_id]
         );
 
-        $fail_audit = static function (string $query): string {
+        $history_before = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]);
+        $settings_before = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]);
+        $audit_attempts = 0;
+        $fail_audit = static function (string $query) use (&$audit_attempts): string {
             if (stripos($query, 'cpms_audit_logs') !== false && stripos($query, 'INSERT') !== false) {
+                ++$audit_attempts;
                 return 'INSERT INTO `cpms_missing_audit_probe` (`x`) VALUES (1)';
             }
 
@@ -689,6 +693,9 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
             remove_filter('query', $fail_audit);
         }
 
+        self::assertSame(1, $audit_attempts, 'both system-writer cases must actually reach the mandatory audit insert');
+        self::assertSame($history_before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]), 'failed audit must preserve all prior history');
+        self::assertSame($settings_before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]), 'failed recovery must preserve NULL/zero heartbeat evidence');
         self::assertSame(0, $this->membershipCount(), 'failed audit must roll back the membership');
         self::assertSame($name_before, (string) App::db()->fetchValue(
             'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',

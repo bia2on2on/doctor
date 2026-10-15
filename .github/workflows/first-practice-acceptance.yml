@@ -337,7 +337,11 @@ jobs:
         run: |
           python3 - <<'PYCODE'
           import base64, os, pathlib, subprocess
-          for image in [pathlib.Path('/tmp/fp/personal-mobile-viewport.jpg'), pathlib.Path('/tmp/fp/recovery/legacy_same_admin-viewport.jpg')]:
+          images = [pathlib.Path('/tmp/fp/personal-mobile-viewport.jpg'), pathlib.Path('/tmp/fp/recovery/legacy_same_admin-viewport.jpg')]
+          for kind in ('host_zero', 'host_null'):
+              for suffix in ('viewport', 'after-viewport'):
+                  images.append(pathlib.Path(f'/tmp/fp/recovery/{kind}_same_admin-{suffix}.jpg'))
+          for image in images:
               if not image.exists() or image.stat().st_size > 40000:
                   print('Visual mirror unavailable or exceeds bound: ' + image.name)
                   continue
