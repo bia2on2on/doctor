@@ -125,7 +125,11 @@ final class FinanceController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->staff(
                     $r,
-                    RolesAndCapabilities::PAYMENT_VOID,
+                    // مجوزِ این Route دو بار enforce می‌شود: در همین مرز (perm_clinic_cap،
+                    // Clinic-scoped) و در سرویس (requireCap + authorizeScoped). دروازهٔ
+                    // Capability سراسریِ این wrapper نمی‌تواند گرنت/واگذاریِ عضویت را ببیند،
+                    // پس اینجا حذف می‌شود؛ هیچ لایهٔ مجوزی بدون جانشین حذف نشده است.
+                    null,
                     fn () => $this->finance->voidPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'))
                 ),
                 'permission_callback' => fn ( WP_REST_Request $r ) => $this->perm_clinic_cap( $r, $void_cap ),
@@ -143,7 +147,11 @@ final class FinanceController extends RestBase
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->staff(
                     $r,
-                    RolesAndCapabilities::PAYMENT_REFUND,
+                    // مجوزِ این Route دو بار enforce می‌شود: در همین مرز (perm_clinic_cap،
+                    // Clinic-scoped) و در سرویس (requireCap + authorizeScoped). دروازهٔ
+                    // Capability سراسریِ این wrapper نمی‌تواند گرنت/واگذاریِ عضویت را ببیند،
+                    // پس اینجا حذف می‌شود؛ هیچ لایهٔ مجوزی بدون جانشین حذف نشده است.
+                    null,
                     fn () => $this->finance->refundPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'), $this->body($r))
                 ),
                 'permission_callback' => fn ( WP_REST_Request $r ) => $this->perm_clinic_cap( $r, $refund_cap ),
