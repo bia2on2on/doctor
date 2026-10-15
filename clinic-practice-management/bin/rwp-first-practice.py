@@ -561,8 +561,19 @@ with sync_playwright() as p:
                   "redirected back to the unified wizard")
             assert_unclaimed("admin.invalid_nonce")
 
-        # --- Real successful admin-post submit ---
-        goto_admin(admin_page, "admin", "admin.php?page=cpms-first-practice-setup", "cpms-first-practice-before-claim")
+        # --- Real successful admin-post submit, in unified-wizard order ---
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard", "cpms-wizard-before-facility")
+        initial_facility = admin_page.locator('form:has(input[name="action"][value="cpms_wizard_facility"])')
+        check("admin.fresh.facility_before_bootstrap", initial_facility.count() == 1,
+              "choose personal practice before establishing the manager membership")
+        if initial_facility.count() == 1:
+            initial_facility.locator('input[name="facility_type"][value="doctor_practice"]').check()
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                initial_facility.locator('button[type="submit"]').first.click()
+        check("admin.fresh.unified_bootstrap_form",
+              admin_page.locator('input[name="confirm_identity"]').count() == 1
+              and query_page(admin_page.url) == "cpms-wizard",
+              "secure bootstrap submitted from the unified wizard, not the legacy hidden URL")
         form = admin_page.locator('form[method="post"][action*="admin-post.php"]')
         check("admin.claim.form_ready", form.count() == 1, f"forms={form.count()}")
         if form.count() == 1:

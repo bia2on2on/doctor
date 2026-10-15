@@ -122,7 +122,8 @@ def crafted_post(page, context, clinic, second):
     nonce = php(r'''
 $user = get_user_by('login', getenv('REC_LOGIN'));
 wp_set_current_user((int) $user->ID);
-$_COOKIE[LOGGED_IN_COOKIE] = getenv('REC_COOKIE');
+// PHP normally URL-decodes incoming cookies before populating $_COOKIE.
+$_COOKIE[LOGGED_IN_COOKIE] = urldecode(getenv('REC_COOKIE'));
 echo 'REC_DB=' . wp_json_encode(wp_create_nonce('cpms_first_practice_recovery'));
 ''', {'REC_LOGIN': os.environ['SECOND_ADMIN_USER' if second else 'ADMIN_USER'], 'REC_COOKIE': cookie})
     with page.expect_navigation(wait_until='domcontentloaded', timeout=20000):
