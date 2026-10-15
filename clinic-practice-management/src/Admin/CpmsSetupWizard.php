@@ -700,10 +700,12 @@ final class CpmsSetupWizard
                 <tr><th>تعداد پزشکان موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
                 <tr><th>مکان‌های فعال</th><td><?php echo esc_html( (string) count( array_filter( App::locationRepository()->listForClinic( (int) App::scope()->clinicId ), static fn ( $loc ) => (int) ( $loc['is_active'] ?? 0 ) === 1 ) ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase ?></td></tr>
                 <tr><th>مدت پیش‌فرض نوبت (دقیقه)</th><td><?php echo esc_html( (string) (int) $settings->get( 'booking.duration_default_min', 20 ) ); ?></td></tr>
-                <tr><th>گام‌های الزامیِ باقی‌مانده</th><td><?php
+                <tr><th>گام‌های الزامیِ باقی‌مانده</th><td>
+                <?php
                 $missing_steps = self::missing_required_steps( $settings );
                 echo esc_html( $missing_steps === [] ? 'هیچ‌کدام' : implode( '، ', $missing_steps ) );
-                ?></td></tr>
+                ?>
+                </td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
             <p>برای تکمیل، اطلاعات کلینیک و دست‌کم یک پزشک فعال لازم است.</p>
