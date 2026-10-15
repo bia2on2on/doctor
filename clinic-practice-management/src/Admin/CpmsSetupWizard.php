@@ -208,7 +208,7 @@ final class CpmsSetupWizard
     {
         $settings = App::settings();
         $store = (string) ($settings->get('setup.current_step', 'welcome') ?? 'welcome');
-        foreach (self::active_steps() as $i => $s) {
+        foreach ( self::active_steps() as $i => $s ) {
             if ($s['id'] === $store) {
                 return $i;
             }
@@ -219,7 +219,7 @@ final class CpmsSetupWizard
 
     private static function stepIndexById(string $id): int
     {
-        foreach (self::active_steps() as $i => $s) {
+        foreach ( self::active_steps() as $i => $s ) {
             if ($s['id'] === $id) {
                 return $i;
             }
@@ -520,7 +520,8 @@ final class CpmsSetupWizard
             <p class="description">این گام فقط وقتی کامل است که دست‌کم به همین تعداد پزشک فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.</p>
             <?php self::submit_step_form( 'doctors', 'ذخیره و ادامه' ); ?>
         </div>
-        <?php self::close_step_form(); ?>
+        <?php
+        self::close_step_form();
     }
 
     private static function renderSchedules(): void
@@ -699,7 +700,10 @@ final class CpmsSetupWizard
                 <tr><th>تعداد پزشکان موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
                 <tr><th>مکان‌های فعال</th><td><?php echo esc_html( (string) count( array_filter( App::locationRepository()->listForClinic( (int) App::scope()->clinicId ), static fn ( $loc ) => (int) ( $loc['is_active'] ?? 0 ) === 1 ) ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase ?></td></tr>
                 <tr><th>مدت پیش‌فرض نوبت (دقیقه)</th><td><?php echo esc_html( (string) (int) $settings->get( 'booking.duration_default_min', 20 ) ); ?></td></tr>
-                <tr><th>گام‌های الزامیِ باقی‌مانده</th><td><?php $missing_steps = self::missing_required_steps( $settings ); echo esc_html( $missing_steps === [] ? 'هیچ‌کدام' : implode( '، ', $missing_steps ) ); ?></td></tr>
+                <tr><th>گام‌های الزامیِ باقی‌مانده</th><td><?php
+                $missing_steps = self::missing_required_steps( $settings );
+                echo esc_html( $missing_steps === [] ? 'هیچ‌کدام' : implode( '، ', $missing_steps ) );
+                ?></td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
             <p>برای تکمیل، اطلاعات کلینیک و دست‌کم یک پزشک فعال لازم است.</p>
@@ -1413,7 +1417,7 @@ final class CpmsSetupWizard
             if ( $missing !== [] ) {
                 return 'پیش‌نیازهای الزامی برآورده نشده است: ' . implode( '، ', $missing );
             }
-        } elseif (!self::isReadyToOperate($settings)) {
+        } elseif ( ! self::isReadyToOperate( $settings ) ) {
             return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
         }
 
