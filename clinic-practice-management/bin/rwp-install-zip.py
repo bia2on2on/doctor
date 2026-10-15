@@ -45,7 +45,9 @@ try:
         with page.expect_navigation(wait_until='domcontentloaded'):
             activate.click()
         page.goto(base + '/wp-admin/plugins.php')
-        check('install.browser_activated', page.locator('tr[data-slug="clinic-practice-management"].active').count() == 1)
+        # WordPress derives data-slug from the human plugin Name for an
+        # uploaded ZIP. data-plugin is the authoritative installed basename.
+        check('install.browser_activated', page.locator('tr[data-plugin="clinic-practice-management/clinic-practice-management.php"].active').count() == 1)
         page.screenshot(path=str(out / 'zip-active.png'), full_page=True)
         browser.close()
 except Exception as exc:
