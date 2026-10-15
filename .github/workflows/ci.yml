@@ -290,6 +290,63 @@ jobs:
               sys.exit('All first-practice onboarding tests must execute on MariaDB 11.4.13 without skips or failures.')
           PY
 
+      # Owner-confirmed heartbeat metadata: execute the full recovery contract
+      # on both real engines. Always finish BOTH focused runs, then preserve
+      # their genuine verdict (including the test-first RED) and JUnit cases.
+      - name: Focused interrupted-setup recovery on MySQL and MariaDB
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -uo pipefail
+          result=0
+          for engine in mysql mariadb; do
+            export WP_TESTS_DIR=/tmp/wordpress-test-lib
+            if [ "$engine" = mariadb ]; then export WP_TESTS_DIR=/tmp/wordpress-test-lib-mariadb; fi
+            if ! php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+              --log-junit "/tmp/heartbeat-recovery-${engine}-junit.xml" \
+              --bootstrap tests/integration-bootstrap.php tests/Integration/InterruptedSetupRecoveryTest.php \
+              2>&1 | tee "/tmp/heartbeat-recovery-${engine}.log"; then
+              result=1
+            fi
+          done
+          if ! python3 - <<'PYFOCUS' | tee /tmp/heartbeat-recovery-junit-summary.txt
+          import sys
+          import xml.etree.ElementTree as ET
+          ok = True
+          for engine in ('mysql', 'mariadb'):
+              cases = ET.parse(f'/tmp/heartbeat-recovery-{engine}-junit.xml').getroot().findall('.//testcase')
+              counts = {tag: sum(case.find(tag) is not None for case in cases) for tag in ('skipped', 'failure', 'error')}
+              print(f'{engine} heartbeat recovery JUnit: tests={len(cases)} ' + ' '.join(f'{key}={value}' for key, value in counts.items()))
+              for case in cases:
+                  print(engine + ' testcase ' + case.attrib.get('name', 'MISSING'))
+                  for tag in ('failure', 'error'):
+                      node = case.find(tag)
+                      if node is not None:
+                          print((node.text or '')[:6000])
+              names = [case.attrib.get('name', '') for case in cases]
+              required = ('testRealRecordTickInsertThenUpdatePersistsNullThenZero', 'testOwnerShapedSixEventHistoryWithNaturalZeroWriterHeartbeatRecovers')
+              ok = ok and len(cases) >= 34 and not any(counts.values()) and all(any(name.startswith(needed) for name in names) for needed in required)
+          sys.exit(0 if ok else 1)
+          PYFOCUS
+          then result=1; fi
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo "### Heartbeat recovery persistence — focused MySQL + MariaDB (run ${{ github.run_id }}, rc=$result)"
+              echo 'PR head: `${{ github.event.pull_request.head.sha }}`; actual checkout: '"$(git rev-parse HEAD)"
+              echo '```text'
+              cat /tmp/heartbeat-recovery-junit-summary.txt
+              for engine in mysql mariadb; do
+                echo "--- ${engine}: actual App::recordTick persistence + suite verdict ---"
+                grep 'HEARTBEAT_PERSISTENCE=' "/tmp/heartbeat-recovery-${engine}.log" || true
+                tail -n 100 "/tmp/heartbeat-recovery-${engine}.log"
+              done
+              echo '```'
+            } > /tmp/heartbeat-recovery-pr.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/heartbeat-recovery-pr.md || echo '::warning::focused evidence comment could not be mirrored'
+          fi
+          exit "$result"
+
       - name: Preserve MariaDB migration evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -300,6 +357,9 @@ jobs:
             /tmp/custom-role-mariadb-junit.xml
             /tmp/first-practice-mariadb.log
             /tmp/first-practice-mariadb-junit.xml
+            /tmp/heartbeat-recovery-*.log
+            /tmp/heartbeat-recovery-*-junit.xml
+            /tmp/heartbeat-recovery-junit-summary.txt
           if-no-files-found: warn
 
       # Run the repaired race alone first so a suite-level green cannot hide
