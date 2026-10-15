@@ -516,7 +516,7 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
+        $this->authorizeSensitivePayment($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
@@ -600,7 +600,7 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
+        $this->authorizeSensitivePayment($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل بازپرداخت الزامی است', 422);
@@ -1198,6 +1198,42 @@ final class FinanceService
             };
 
             throw FinanceException::of('CLINIC_PERMISSION_DENIED', $message, $http, ['scope' => $scope, 'reason' => $code, 'permission' => $cap]);
+        }
+    }
+
+    /**
+     * 2026-10-15 — مجوز عملیات حساس پرداخت: Capability مؤثر + مالکیت تأییدشدهٔ تراکنش.
+     *
+     *  - مالکیت فقط از دادهٔ پایدار خوانده می‌شود (`PaymentRepository::owning_clinician_wp_user_id`
+     *    روی زنجیرهٔ payment → invoice → visit → clinician) و هرگز از payload/نقش سراسری.
+     *  - تقدم موتور مجوز تغییر نمی‌کند؛ شرط مالکیت فقط بر انشعابِ Preset نقش پزشک
+     *    اعمال می‌شود (Deny > Grant صریح > Preset > رد پیش‌فرض). یک Grant صریح
+     *    عضویت — از جمله واگذاری صریح مدیر کلینیک — مالکیت‌محور نیست.
+     *  - نبود/ابهام مالکیت ⇒ fail-closed (owns=false).
+     *
+     * سند: docs/decisions/2026-10-15-financial-authorization-policy.md
+     */
+    private function authorizeSensitivePayment( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
+        if ( $actor_user_id <= 0 || $clinic_id <= 0 ) {
+            throw FinanceException::of( 'CLINIC_SCOPE_REQUIRED', 'زمینهٔ کلینیک معتبر برای عملیات مالی لازم است', 400, [ 'scope' => $scope ] );
+        }
+
+        $owns_transaction = $this->payments->owning_clinician_wp_user_id( $payment_id, $clinic_id ) === $actor_user_id;
+
+        try {
+            App::authorization_service()->authorizeWithOwnership( $actor_user_id, $clinic_id, $cap, $owns_transaction );
+        } catch ( AuthorizationException $e ) {
+            $code    = $e->getErrorCode();
+            $http    = $e->getCode() > 0 ? (int) $e->getCode() : 403;
+            $message = match ( $code ) {
+                'AUTH_SUSPENDED' => 'عضویت شما در این Clinic معلق است.',
+                'AUTH_NO_MEMBERSHIP' => 'عضویت فعال در این Clinic ندارید.',
+                'AUTH_OWNERSHIP_REQUIRED' => 'این تراکنش به سرویس شما تعلق ندارد؛ عملیات حساس مالی فقط روی تراکنش‌های خودتان مجاز است.',
+                'AUTH_DENIED' => 'دسترسی لازم برای این عملیات مالی را در این Clinic ندارید.',
+                default => 'دسترسی لازم را ندارید',
+            };
+
+            throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', $message, $http, [ 'scope' => $scope, 'reason' => $code, 'permission' => $cap ] );
         }
     }
 

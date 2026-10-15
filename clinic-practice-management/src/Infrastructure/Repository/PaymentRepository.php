@@ -149,6 +149,38 @@ final class PaymentRepository
     }
 
     /**
+     * 2026-10-15 — مالکیت پایدار تراکنش (سیاست مجوز مالی).
+     *
+     * پزشکِ مسئولِ سرویسِ همین پرداخت، از زنجیرهٔ پایدار
+     * payment → invoice → visit → clinician و پروفایل بالینیِ متصل به کاربر
+     * (`clinicians.wp_user_id`، یکتا با u_clinician_user).
+     *
+     *  - همهٔ ردیف‌های زنجیره باید به همان Clinic تعلق داشته باشند؛
+     *  - پزشکِ غیرفعال یا بدون کاربرِ متصل ⇒ null (fail-closed)؛
+     *  - هرگز از payload/درخواست/نقش سراسری WordPress خوانده نمی‌شود.
+     *
+     * @return int|null wp_user_id پزشکِ مسئول، یا null وقتی مالکیت اثبات‌پذیر نیست.
+     */
+    public function owning_clinician_wp_user_id( int $payment_id, int $clinic_id ): ?int
+    {
+        if ( $payment_id <= 0 || $clinic_id <= 0 ) {
+            return null;
+        }
+
+        $value = $this->db->fetchValue(
+            'SELECT cli.wp_user_id FROM ' . $this->db->table( 'cpms_payments' ) . ' pay' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_invoices' ) . ' inv ON inv.id = pay.invoice_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_visits' ) . ' vis ON vis.id = inv.visit_id' .
+            ' INNER JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' cli ON cli.id = vis.clinician_id' .
+            ' WHERE pay.id = %d AND pay.clinic_id = %d AND inv.clinic_id = %d AND vis.clinic_id = %d' .
+            ' AND cli.is_active = 1 AND cli.wp_user_id IS NOT NULL LIMIT 1',
+            [ $payment_id, $clinic_id, $clinic_id, $clinic_id ]
+        );
+
+        return $value === null ? null : (int) $value;
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     public function forRange(int $clinicId, string $fromDate, string $toDate, int $limit = 200): array

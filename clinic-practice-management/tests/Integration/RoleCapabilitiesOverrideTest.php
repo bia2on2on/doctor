@@ -76,11 +76,14 @@ final class RoleCapabilitiesOverrideTest extends WP_UnitTestCase
 
     public function testSettingDefaultsRemovesOverrideAndRevokedCapIsEnforced(): void
     {
-        $revoked = array_values(array_diff(RolesAndCapabilities::SECRETARY_CAPS, [RolesAndCapabilities::PAYMENT_REFUND]));
+        // 2026-10-15 — PAYMENT_REFUND از پیش‌فرض منشی حذف شده است (سیاست مجوز مالی)، پس
+        // سناریوی «حذف عمدی یک Cap از Preset» با Capability دیگری که واقعاً در Preset هست
+        // سنجیده می‌شود؛ خودِ حذف پیش‌فرضِ ابطال/بازپرداخت در سوئیت سیاست مالی پوشش دارد.
+        $revoked = array_values(array_diff(RolesAndCapabilities::SECRETARY_CAPS, [RolesAndCapabilities::PAYMENT_CREATE]));
         $this->assertTrue(RolesAndCapabilities::setRoleCaps(RolesAndCapabilities::ROLE_SECRETARY, $revoked));
 
         $secretary = get_role(RolesAndCapabilities::ROLE_SECRETARY);
-        $this->assertFalse($secretary->has_cap(RolesAndCapabilities::PAYMENT_REFUND), 'حذف عمدی باید اعمال شود');
+        $this->assertFalse($secretary->has_cap(RolesAndCapabilities::PAYMENT_CREATE), 'حذف عمدی باید اعمال شود');
 
         // بازگرداندن کامل به پیش‌فرض → Override حذف می‌شود (Semantics «پیش‌فرض»)
         $this->assertTrue(RolesAndCapabilities::setRoleCaps(
@@ -90,7 +93,7 @@ final class RoleCapabilitiesOverrideTest extends WP_UnitTestCase
         $stored = get_option(RolesAndCapabilities::OPTION_OVERRIDE);
         $this->assertIsArray($stored);
         $this->assertArrayNotHasKey(RolesAndCapabilities::ROLE_SECRETARY, $stored);
-        $this->assertTrue($secretary->has_cap(RolesAndCapabilities::PAYMENT_REFUND));
+        $this->assertTrue($secretary->has_cap(RolesAndCapabilities::PAYMENT_CREATE));
     }
 
     public function testPatientRoleAndUnknownRoleAreRejected(): void

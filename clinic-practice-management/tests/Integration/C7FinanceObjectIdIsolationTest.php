@@ -112,14 +112,23 @@ final class C7FinanceObjectIdIsolationTest extends WP_UnitTestCase
 
         // Clinic A — کاربران مشروعِ مالکِ اشیای قربانی.
         $this->secretaryA = $this->makeUser('c7fin_sec_a', 'cpms_secretary');
-        cpms_test_seed_membership($this->secretaryA, self::CLINIC_A, 'cpms_secretary');
+        $c7_membership_a = cpms_test_seed_membership($this->secretaryA, self::CLINIC_A, 'cpms_secretary');
+        // 2026-10-15 — سیاست مجوز مالی: ابطال/بازپرداخت برای منشی پیش‌فرض رد شد. سوژهٔ این
+        // کلاس «جداسازی شیء میان Clinicها» است (قرارداد 404-parity)، نه پیش‌فرض نقش؛ اختیار
+        // قبلی همان‌طور که یک نصب موجود می‌تواند داشته باشد، به‌صورت گرنت صریح عضویت برقرار
+        // می‌شود تا پیش‌شرطِ سناریو دقیقاً حفظ شود.
+        $c7_memberships = new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db());
+        $c7_memberships->set_capability($c7_membership_a, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_VOID, 'grant');
+        $c7_memberships->set_capability($c7_membership_a, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_REFUND, 'grant');
         $this->doctorA = $this->makeUser('c7fin_doc_a', 'cpms_doctor');
         cpms_test_seed_membership($this->doctorA, self::CLINIC_A, 'cpms_doctor');
         $this->clinicianA = $this->insertClinician(self::CLINIC_A, $this->doctorA, 'Dr C7 Finance Victim');
 
         // Clinic B — مهاجم: عضویت فعال فقط روی B (Scope مورد اعتماد مستقل از قربانی).
         $this->secretaryB = $this->makeUser('c7fin_sec_b', 'cpms_secretary');
-        cpms_test_seed_membership($this->secretaryB, self::CLINIC_B, 'cpms_secretary');
+        $c7_membership_b = cpms_test_seed_membership($this->secretaryB, self::CLINIC_B, 'cpms_secretary');
+        $c7_memberships->set_capability($c7_membership_b, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_VOID, 'grant');
+        $c7_memberships->set_capability($c7_membership_b, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_REFUND, 'grant');
 
         $patient = $this->insertPatient(self::CLINIC_A);
         $this->patientA = $patient['id'];
