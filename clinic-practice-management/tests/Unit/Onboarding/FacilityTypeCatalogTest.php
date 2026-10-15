@@ -18,7 +18,7 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertSame('simple_practice', FacilityTypeCatalog::find('doctor_practice')['flow'] ?? null);
   self::assertSame('hospital_network', FacilityTypeCatalog::find('hospital')['flow'] ?? null);
   self::assertNull(FacilityTypeCatalog::find('unknown'));
-  self::assertFalse(FacilityTypeCatalog::isValid('unknown'));
+  self::assertFalse(FacilityTypeCatalog::is_valid('unknown'));
  }
  public function testHospitalDisclosesInpatientUnsupportedAndBuildingBlocked(): void {
   self::assertFalse(FacilityTypeCatalog::flow_supports_inpatient('hospital_network'));
