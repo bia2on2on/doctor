@@ -104,7 +104,8 @@ final class FacilityTypeCatalog {
     }
 
     public static function flow_supports_inpatient( string $flow ): bool {
-        return false;
+        // Inpatient/HIS workflows are unsupported for every known flow.
+        return $flow !== '' && false;
     }
 
     public static function supports_multi_clinic_provisioning(): bool {
