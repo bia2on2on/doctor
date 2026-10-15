@@ -158,6 +158,7 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         $capture = $this->pay($invoice, $clinic, $location, ['amount' => 40000, 'method' => 'cash']);
         self::assertSame(201, $capture->get_status(), 'premise capture — ' . $this->errorCode($capture));
         $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
+        self::assertGreaterThan(0, $paymentId, 'premise: the capture returned a real payment id');
 
         wp_set_current_user($doctor);
         $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'owned correction']);
@@ -171,9 +172,18 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         $capture2 = $this->pay($invoice, $clinic, $location, ['amount' => 15000, 'method' => 'cash']);
         self::assertSame(201, $capture2->get_status(), 'premise capture 2 — ' . $this->errorCode($capture2));
         $payment2 = (int) ($this->payload($capture2)['payment']['id'] ?? 0);
+        self::assertGreaterThan(0, $payment2, 'premise: the second capture returned a real payment id');
 
+        // The refund must be attempted by the OWNER: the capture above was performed as the
+        // secretary (ordinary capture is a secretary operation), so the actor has to switch back.
+        wp_set_current_user($doctor);
         $refund = $this->dispatch('POST', sprintf(self::PAY_REFUND, $payment2), [], $this->scopeHeaders($clinic), ['reason' => 'owned refund']);
-        self::assertSame(200, $refund->get_status(), 'the owning doctor must be able to refund their own transaction — ' . $this->errorCode($refund));
+        self::assertSame(
+            200,
+            $refund->get_status(),
+            'the owning doctor must be able to refund their own transaction — '
+            . $this->errorCode($refund) . ' reason=' . (string) ($this->payload($refund)['reason'] ?? '')
+        );
         self::assertSame(15000.0, (float) $this->paymentRow($payment2)['refunded_amount']);
         self::assertSame(1, $this->auditCount('PAYMENT_REFUND'));
     }
@@ -380,6 +390,20 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertFalse(App::authorization_service()->can($secretary, $clinic, 'cpms_medical_read'), 'no default medical-record access may be created');
         self::assertFalse(App::authorization_service()->can($secretary, $clinic, RolesAndCapabilities::PAYMENT_REFUND), 'an unrelated sensitive capability must stay denied');
         self::assertNotContains(RolesAndCapabilities::PAYMENT_VOID, RolesAndCapabilities::SECRETARY_CAPS, 'delegation must not mutate the preset');
+
+        // The other delegable finance capability on a REST route: invoice adjustment.
+        // Baseline first — without the delegation the scoped engine still denies the actor, so the
+        // delegated success below cannot be explained by a pre-existing allowance.
+        wp_set_current_user($secretary);
+        $adjust_denied = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 100, 'reason' => 'undelegated baseline']);
+        self::assertSame(403, $adjust_denied->get_status(), 'an undelegated member must not be able to adjust an invoice — ' . $this->errorCode($adjust_denied));
+
+        $adjust_delegation = $this->delegation()->delegate($manager, $clinic, $membershipId, RolesAndCapabilities::INVOICE_ADJUST);
+        self::assertSame('grant', (string) ($adjust_delegation['effect'] ?? ''), 'invoice_adjust must be delegable');
+        self::assertTrue(App::authorization_service()->can($secretary, $clinic, RolesAndCapabilities::INVOICE_ADJUST), 'the delegation must be effective in the scoped engine');
+
+        $adjust = $this->dispatch('POST', sprintf(self::INVOICE_ADJUST, $invoice), [], $this->scopeHeaders($clinic), ['type' => 'credit', 'amount' => 100, 'reason' => 'delegated adjustment']);
+        self::assertSame(200, $adjust->get_status(), 'a delegated invoice_adjust must reach the service — ' . $this->errorCode($adjust));
     }
 
     // ================= 8 — Delegation revocation =================
@@ -657,9 +681,18 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertSame($invoiceBefore['total'], $this->invoiceRow($invoice)['total'], 'the invoice total must be untouched by the upgrade');
         self::assertSame('voided', (string) $this->paymentRow($paymentId)['status'], 'only the authorized operation may change the payment');
 
-        $migrations = glob(dirname(__DIR__, 2) . '/src/Migrations/*.php');
-        self::assertIsArray($migrations);
-        $names = array_map('basename', $migrations);
+        // Only timestamped migration files count as migrations: the directory also holds the
+        // runner/helper classes (e.g. MigrationRunner.php), which are not migrations.
+        $migration_files = glob(dirname(__DIR__, 2) . '/src/Migrations/*.php');
+        self::assertIsArray($migration_files);
+        $names = [];
+        foreach ($migration_files as $migration_file) {
+            $base = basename($migration_file);
+            if (preg_match('/^\d{4}_\d{2}_\d{2}_\d{4}_/', $base) === 1) {
+                $names[] = $base;
+            }
+        }
+        self::assertNotEmpty($names, 'premise: the timestamped migration set is discoverable');
         sort($names);
         self::assertSame('2026_10_13_0027_custom_role_archival.php', end($names), 'this policy must not introduce a new migration');
 

@@ -163,16 +163,21 @@ final class FinanceController extends RestBase
         ]);
 
         // ================= D15 — اصلاح (Credit/Debit) =================
+        // اصلاح فاکتور نیز مثل void/refund یک عملیات مالی حساسِ قابل واگذاری است:
+        // مجوز در همین مرز Clinic-scoped است، نه Capability سراسریِ وردپرس.
+        $adjust_cap = RolesAndCapabilities::INVOICE_ADJUST;
         register_rest_route(self::NS, '/invoices/(?P<id>\d+)/adjustments', [
             [
                 'methods' => WP_REST_Server::CREATABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->staff(
                     $r,
-                    RolesAndCapabilities::INVOICE_ADJUST,
+                    // مجوز دو بار enforce می‌شود: مرزِ perm_clinic_cap و سرویس
+                    // (requireCap + authorizeScoped). دروازهٔ سراسریِ این wrapper
+                    // گرنت/واگذاریِ عضویت را نمی‌بیند؛ بدون جانشین حذف نشده است.
+                    null,
                     fn () => $this->finance->addAdjustment($this->userId($r), (int) $r['id'], (string) $r['type'], $this->body($r))
                 ),
-                'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::INVOICE_ADJUST),
+                'permission_callback' => fn ( WP_REST_Request $r ) => $this->perm_clinic_cap( $r, $adjust_cap ),
                 'args' => [
                     'type' => ['required' => true, 'type' => 'string', 'enum' => ['credit', 'debit']],
                     'amount' => ['required' => true, 'type' => 'number'],
