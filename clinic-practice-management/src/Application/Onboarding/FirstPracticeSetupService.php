@@ -315,8 +315,9 @@ final class FirstPracticeSetupService {
     /**
      * Setting keys the setup wizard could legitimately have written before
      * the bootstrap completed (GET progress marker, step progress,
-     * restart/finish flags, booking defaults, SMS basics). Any other key —
-     * in audit history or in persisted settings — is unknown history.
+     * restart/finish flags, booking defaults, SMS basics, legacy profile).
+     * Other audit keys are unknown history. The persisted system heartbeat
+     * is handled separately and never counts as ownership evidence.
      *
      * @var list<string>
      */
@@ -602,14 +603,26 @@ final class FirstPracticeSetupService {
             return 'actor_continuity';
         }
 
-        // Persisted settings: nothing outside the wizard setup allowlist,
-        // and the recorded writer of every persisted setup setting must be
+        // Persisted settings: only wizard history or the exact inert system
+        // heartbeat; the recorded writer of every setup setting must be
         // the same historical administrator as the audit history.
         $setting_keys = $this->db->fetchAll(
-            'SELECT `key`, updated_by_wp_user_id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+            'SELECT `key`, value_json, updated_by_wp_user_id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
             [$clinic_id]
         );
         foreach ( is_array( $setting_keys ) ? $setting_keys : [] as $row ) {
+            // App::recordTick() writes this unaudited runtime heartbeat even
+            // before setup. It is not administrative/ownership evidence.
+            // Only the exact system-written integer shape is inert; it can
+            // never replace the positive, single-actor audit evidence above.
+            if ( (string) ( $row['key'] ?? '' ) === 'jobs.last_tick_at'
+                && $row['updated_by_wp_user_id'] === null
+            ) {
+                $heartbeat = json_decode( (string) ( $row['value_json'] ?? '' ), true );
+                if ( is_int( $heartbeat ) && $heartbeat > 0 ) {
+                    continue;
+                }
+            }
             if ( ! in_array( (string) ( $row['key'] ?? '' ), self::SETUP_ONLY_SETTING_KEYS, true ) ) {
                 return 'unknown_setting_history';
             }

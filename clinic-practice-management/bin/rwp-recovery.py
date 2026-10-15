@@ -49,12 +49,11 @@ $a = (int) get_user_by('login', getenv('ADMIN_USER'))->ID;
 $b = (int) get_user_by('login', getenv('SECOND_ADMIN_USER'))->ID;
 $c = (int) $db->fetchValue('SELECT id FROM ' . $db->table('cpms_clinics') . ' ORDER BY id LIMIT 1');
 // Activation can arm JobWake's explicit spawn even with DISABLE_WP_CRON.
-// Capture its synthetic runtime seed, then construct the promised setup-only
-// fixture. This is fixture construction, NEVER a recovery/product operation.
+// Retain the real activation heartbeat while constructing setup-only history.
+// Freeze future ticks only to make persistence comparisons deterministic.
 $baseline_keys = $db->fetchAll('SELECT `key`, updated_by_wp_user_id FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', [$c]);
 wp_clear_scheduled_hook('cpms_jobs_wake');
 wp_clear_scheduled_hook('cpms_jobs_tick');
-$db->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s AND updated_by_wp_user_id IS NULL', [$c, 'jobs.last_tick_at']);
 $writer = $a;
 if ($kind === 'deleted') {
     $writer = wp_create_user('deleted_history', 'Synthetic-Only-2026!', 'deleted@acc.local');
@@ -63,6 +62,7 @@ if ($kind === 'deleted') {
 $keys = $kind === 'legacy' || str_starts_with($kind, 'legacy_')
     ? ['setup.started_at', 'setup.clinic.name', 'setup.clinic.address', 'setup.clinic.phone', 'setup.clinic.timezone']
     : ['setup.started_at', 'setup.current_step'];
+if ($kind === 'heartbeat_only') { $keys = []; }
 $values = ['setup.started_at' => '2026-10-01T00:00:00+00:00', 'setup.current_step' => 'booking',
     'setup.clinic.name' => 'مطب تاریخی', 'setup.clinic.address' => 'نشانی تاریخی',
     'setup.clinic.phone' => '021-11111111', 'setup.clinic.timezone' => 'Asia/Tehran'];
@@ -105,9 +105,15 @@ if ($kind === 'clinical') {
         throw new RuntimeException('synthetic clinical visit fixture failed');
     }
 }
-if ($kind === 'system_history') {
+if (!(int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s', [$c, 'jobs.last_tick_at'])) {
     $db->wpdb()->insert($db->table('cpms_settings'), ['clinic_id' => $c, 'key' => 'jobs.last_tick_at',
         'value_json' => '1790841600', 'updated_by_wp_user_id' => null, 'updated_at' => $db->nowUtcSql()]);
+}
+if ($kind === 'heartbeat_writer') {
+    $db->wpdb()->update($db->table('cpms_settings'), ['updated_by_wp_user_id' => $b], ['clinic_id' => $c, 'key' => 'jobs.last_tick_at']);
+}
+if ($kind === 'heartbeat_malformed') {
+    $db->wpdb()->update($db->table('cpms_settings'), ['value_json' => '{"not":"a heartbeat"}'], ['clinic_id' => $c, 'key' => 'jobs.last_tick_at']);
 }
 if ($kind === 'legacy_unknown') {
     $db->wpdb()->insert($db->table('cpms_settings'), ['clinic_id' => $c, 'key' => 'setup.clinic.owner',
@@ -251,7 +257,8 @@ try:
             ('same', False, True), ('same', True, False),
             ('mixed', False, False), ('mixed', True, False), ('deleted', False, False),
             ('legacy', False, True), ('legacy', True, False), ('membership', False, False),
-            ('suspended', False, False), ('clinical', False, False), ('system_history', False, False),
+            ('suspended', False, False), ('clinical', False, False), ('heartbeat_only', False, False),
+            ('heartbeat_writer', False, False), ('heartbeat_malformed', False, False),
             ('legacy_mixed', False, False), ('legacy_unknown', False, False), ('legacy_writer', False, False),
         ]:
             try:
