@@ -39,7 +39,7 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 final class FinanceDelegationService {
 
 	public const AUDIT_DELEGATED = 'FINANCE_DELEGATION_GRANTED';
-	public const AUDIT_REVOKED  = 'FINANCE_DELEGATION_REVOKED';
+	public const AUDIT_REVOKED   = 'FINANCE_DELEGATION_REVOKED';
 
 	/**
 	 * مجموعهٔ محدود و صریح Capabilityهای مالیِ حساس قابل واگذاری.

@@ -231,10 +231,7 @@ final class AuthorizationService
         throw new AuthorizationException(
             'AUTH_OWNERSHIP_REQUIRED',
             'AUTH_OWNERSHIP_REQUIRED',
-            [
-                'clinic_id' => $clinic_id,
-                'permission' => $permission,
-            ],
+            [ 'clinic_id' => $clinic_id, 'permission' => $permission ],
             403
         );
     }

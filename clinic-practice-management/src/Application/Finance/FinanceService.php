@@ -1213,7 +1213,7 @@ final class FinanceService
      *
      * سند: docs/decisions/2026-10-15-financial-authorization-policy.md
      */
-    private function authorizeSensitivePayment( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
+    private function authorize_sensitive_payment( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
         if ( $actor_user_id <= 0 || $clinic_id <= 0 ) {
             throw FinanceException::of( 'CLINIC_SCOPE_REQUIRED', 'زمینهٔ کلینیک معتبر برای عملیات مالی لازم است', 400, [ 'scope' => $scope ] );
         }
