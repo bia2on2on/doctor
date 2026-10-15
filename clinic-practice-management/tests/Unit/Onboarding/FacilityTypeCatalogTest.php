@@ -13,7 +13,7 @@ final class FacilityTypeCatalogTest extends TestCase {
  public function testEachFacilityTypeMapsToKnownFlow(): void {
   foreach (FacilityTypeCatalog::all() as $t) {
    self::assertContains($t['flow'], ['simple_practice','multi_doctor_clinic','hospital_network'], $t['id']);
-   self::assertNotSame([], FacilityTypeCatalog::flowSteps($t['flow']));
+   self::assertNotSame([], FacilityTypeCatalog::flow_steps($t['flow']));
   }
   self::assertSame('simple_practice', FacilityTypeCatalog::find('doctor_practice')['flow'] ?? null);
   self::assertSame('hospital_network', FacilityTypeCatalog::find('hospital')['flow'] ?? null);
@@ -21,12 +21,12 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertFalse(FacilityTypeCatalog::isValid('unknown'));
  }
  public function testHospitalDisclosesInpatientUnsupportedAndBuildingBlocked(): void {
-  self::assertFalse(FacilityTypeCatalog::flowSupportsInpatient('hospital_network'));
-  self::assertFalse(FacilityTypeCatalog::supportsMultiClinicProvisioning());
-  $b = FacilityTypeCatalog::flowSteps('medical_building');
+  self::assertFalse(FacilityTypeCatalog::flow_supports_inpatient('hospital_network'));
+  self::assertFalse(FacilityTypeCatalog::supports_multi_clinic_provisioning());
+  $b = FacilityTypeCatalog::flow_steps('medical_building');
   self::assertNotSame([], $b);
-  self::assertFalse(FacilityTypeCatalog::flowSupportsProvisioning('medical_building'));
-  self::assertTrue(FacilityTypeCatalog::flowSupportsProvisioning('simple_practice'));
+  self::assertFalse(FacilityTypeCatalog::flow_supports_provisioning('medical_building'));
+  self::assertTrue(FacilityTypeCatalog::flow_supports_provisioning('simple_practice'));
  }
  public function testWizardSourceContracts(): void {
   $s = (string) file_get_contents(dirname(__DIR__,3).'/src/Admin/CpmsSetupWizard.php');

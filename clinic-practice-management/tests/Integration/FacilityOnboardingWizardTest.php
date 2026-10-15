@@ -21,14 +21,14 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
  public function testFacilityIsFirstWizardStepAndPersists(): void {
   $uid=$this->authorize();
   self::assertSame('facility', CpmsSetupWizard::steps()[0]['id']);
-  $err=CpmsSetupWizard::saveFacility(App::settings(),['facility_type'=>'doctor_practice','structure'=>'single'],$uid);
+  $err=CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'doctor_practice','structure'=>'single'],$uid);
   self::assertSame('',$err);
   self::assertSame('doctor_practice',(string)App::settings()->get('setup.facility_type'));
   self::assertSame('doctor_practice', CpmsSetupWizard::selected_facility_type(), 'selection must be resumable');
  }
  public function testInvalidFacilityRejectedWithoutWrite(): void {
   $uid=$this->authorize();
-  $err=CpmsSetupWizard::saveFacility(App::settings(),['facility_type'=>'forged'],$uid);
+  $err=CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'forged'],$uid);
   self::assertNotSame('',$err);
   self::assertSame('',(string)(App::settings()->get('setup.facility_type','')??''));
  }
@@ -44,7 +44,7 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
   self::assertSame('',(string)(App::settings()->get('setup.facility_type','')??''),'GET render must not persist facility choice');
  }
  public function testHospitalFlowDisclosesInpatientUnsupported(): void {
-  self::assertFalse(FacilityTypeCatalog::flowSupportsInpatient('hospital_network'));
-  self::assertContains('درمانگاه‌های سرپایی', FacilityTypeCatalog::flowSteps('hospital_network'));
+  self::assertFalse(FacilityTypeCatalog::flow_supports_inpatient('hospital_network'));
+  self::assertContains('درمانگاه‌های سرپایی', FacilityTypeCatalog::flow_steps('hospital_network'));
  }
 }

@@ -75,7 +75,7 @@ final class CpmsSetupWizard
         add_action('admin_menu', [self::class, 'menu']);
         add_action('admin_post_cpms_wizard_save', [self::class, 'save']);
         add_action('admin_post_cpms_wizard_restart', [self::class, 'restart']);
-        add_action('admin_post_cpms_wizard_facility', [self::class, 'saveFacilitySelection']);
+        add_action( 'admin_post_cpms_wizard_facility', [self::class, 'save_facility_selection'] );
     }
 
     public static function menu(): void
@@ -115,11 +115,11 @@ final class CpmsSetupWizard
                 // first-practice bootstrap panel below it (single journey;
                 // the existing browser acceptance requires the bootstrap
                 // form to stay embedded in the wizard).
-                self::renderFacilityFirstScreen();
+                self::render_facility_first_screen();
                 FirstPracticeSetupPage::render();
                 return;
             }
-            self::renderFlowSummary();
+            self::render_flow_summary();
             FirstPracticeSetupPage::render();
             return;
         }
@@ -196,7 +196,7 @@ final class CpmsSetupWizard
                 <?php endforeach; ?>
             </nav>
 
-            <?php self::renderFlowSummary(); ?>
+            <?php self::render_flow_summary(); ?>
             <?php self::renderStep($step, $settings); ?>
         </div>
         <?php
@@ -272,7 +272,7 @@ final class CpmsSetupWizard
     {
         switch ($step['id']) {
             case 'facility':
-                self::renderFacility($settings);
+                self::render_facility( $settings );
                 break;
             case 'welcome':
                 self::renderWelcome();
@@ -293,7 +293,7 @@ final class CpmsSetupWizard
                 self::renderSchedules();
                 break;
             case 'locations':
-                self::renderLocations();
+                self::render_locations();
                 break;
             case 'sms':
                 self::renderSms($settings);
@@ -740,7 +740,9 @@ final class CpmsSetupWizard
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_facility_type', true );
-            if ( FacilityTypeCatalog::isValid( $v ) ) { return $v; }
+            if ( FacilityTypeCatalog::is_valid( $v ) ) {
+                return $v;
+            }
         }
         return '';
     }
@@ -749,25 +751,33 @@ final class CpmsSetupWizard
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_structure', true );
-            if ( isset( FacilityTypeCatalog::structures()[ $v ] ) ) { return $v; }
+            if ( isset( FacilityTypeCatalog::structures()[ $v ] ) ) {
+                return $v;
+            }
         }
         return '';
     }
 
     private static function current_flow(): string {
-        return FacilityTypeCatalog::resolveFlow( self::selected_facility_type(), self::selected_structure() );
+        return FacilityTypeCatalog::resolve_flow( self::selected_facility_type(), self::selected_structure() );
     }
 
     /** Pre-bootstrap first screen: facility question only; POST-only, nonce + manage_options, user-meta presentation state (no Clinic write). */
-    public static function saveFacilitySelection(): void {
+    public static function save_facility_selection(): void {
         if ( ! current_user_can( 'manage_options' )
             || ! isset( $_POST['_wpnonce'] )
             || ! wp_verify_nonce( sanitize_text_field( wp_unslash( $_POST['_wpnonce'] ) ), 'cpms_wizard_facility' ) // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        ) { wp_die( 'اعتبارسنجی ناموفق', 403 ); }
+        ) {
+            wp_die( 'اعتبارسنجی ناموفق', 403 );
+        }
         $facility = isset( $_POST['facility_type'] ) ? sanitize_key( wp_unslash( $_POST['facility_type'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        if ( ! FacilityTypeCatalog::isValid( $facility ) ) { wp_die( 'نوع مرکز نامعتبر است', 400 ); }
+        if ( ! FacilityTypeCatalog::is_valid( $facility ) ) {
+            wp_die( 'نوع مرکز نامعتبر است', 400 );
+        }
         $structure = isset( $_POST['structure'] ) ? sanitize_key( wp_unslash( $_POST['structure'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) { wp_die( 'ساختار نامعتبر است', 400 ); }
+        if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
+            wp_die( 'ساختار نامعتبر است', 400 );
+        }
         $uid = (int) get_current_user_id();
         update_user_meta( $uid, 'cpms_onboarding_facility_type', $facility );
         update_user_meta( $uid, 'cpms_onboarding_structure', $structure );
@@ -775,23 +785,28 @@ final class CpmsSetupWizard
         exit;
     }
 
-    private static function renderFacilityFirstScreen(): void {
+    private static function render_facility_first_screen(): void {
         ?>
         <div class="wrap" dir="rtl">
             <h1>راه‌اندازی</h1>
-            <?php self::renderFacilityPickerForm( admin_url( 'admin-post.php' ), 'cpms_wizard_facility', 'cpms_wizard_facility', 'ادامه' ); ?>
+            <?php self::render_facility_picker_form( admin_url( 'admin-post.php' ), 'cpms_wizard_facility', 'cpms_wizard_facility', 'ادامه' ); ?>
         </div>
         <?php
     }
 
-    private static function renderFacilityPickerForm( string $actionUrl, string $action, string $nonceAction, string $submit ): void {
+    private static function render_facility_picker_form( string $action_url, string $action, string $nonce_action, string $submit ): void {
         ?>
         <div class="card" style="max-width:900px;">
             <h2>چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟</h2>
             <p class="description">نوع مرکز فقط شیوهٔ نمایش و پیکربندی راه‌اندازی را مشخص می‌کند و به‌تنهایی هیچ مجوزی ایجاد نمی‌کند. نام واقعی مرکز با مرز داخلی مجموعه یکسان نیست.</p>
-            <form method="post" action="<?php echo esc_url( $actionUrl ); ?>">
-                <?php wp_nonce_field( $nonceAction, '_wpnonce' ); ?>
-                <input type="hidden" name="action" value="<?php echo esc_attr( $action ); ?>"><?php if ( $action === 'cpms_wizard_save' ) : ?><input type="hidden" name="step" value="facility"><?php endif; ?>
+            <form method="post" action="<?php echo esc_url( $action_url ); ?>">
+                <?php wp_nonce_field( $nonce_action, '_wpnonce' ); ?>
+                <input type="hidden" name="action" value="<?php echo esc_attr( $action ); ?>">
+                <?php
+                if ( $action === 'cpms_wizard_save' ) {
+                    echo '<input type="hidden" name="step" value="facility">';
+                }
+                ?>
                 <fieldset>
                     <legend class="screen-reader-text">چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟</legend>
                     <?php foreach ( FacilityTypeCatalog::all() as $t ) : ?>
@@ -814,16 +829,22 @@ final class CpmsSetupWizard
         <?php
     }
 
-    private static function renderFlowSummary(): void {
+    private static function render_flow_summary(): void {
         $facility = self::selected_facility_type();
-        if ( $facility === '' ) { return; }
+        if ( $facility === '' ) {
+            return;
+        }
         $flow = self::current_flow();
         $type = FacilityTypeCatalog::find( $facility );
         ?>
         <div class="card" data-cpms-onboarding-flow="<?php echo esc_attr( $flow ); ?>" style="max-width:900px;">
             <h2><?php echo esc_html( $type['label'] ?? '' ); ?></h2>
             <ol>
-                <?php foreach ( FacilityTypeCatalog::flowSteps( $flow ) as $st ) : ?><li><?php echo esc_html( $st ); ?></li><?php endforeach; ?>
+                <?php
+                foreach ( FacilityTypeCatalog::flow_steps( $flow ) as $st ) {
+                    echo '<li>' . esc_html( $st ) . '</li>';
+                }
+                ?>
             </ol>
             <?php if ( $flow === 'hospital_network' ) : ?>
                 <div class="notice notice-warning inline" data-cpms-inpatient-unsupported="1"><p>بخش بستری و سامانهٔ جامع بیمارستانی پشتیبانی نمی‌شود؛ این راه‌اندازی فقط درمانگاه‌ها و فرایندهای سرپایی را پوشش می‌دهد.</p></div>
@@ -835,32 +856,37 @@ final class CpmsSetupWizard
         <?php
     }
 
-    private static function renderFacility( Settings $settings ): void {
+    private static function render_facility( Settings $settings ): void {
+        // The stored Clinic-scoped choice is only read here; GET never writes.
         $stored = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
-        if ( $stored !== '' && FacilityTypeCatalog::isValid( $stored ) && self::selected_facility_type() === '' ) {
-            // Display stored Clinic-scoped choice without writing on GET.
+        if ( FacilityTypeCatalog::is_valid( $stored ) && self::selected_facility_type() === '' ) {
+            echo '<p class="description" data-cpms-stored-facility="' . esc_attr( $stored ) . '"></p>';
         }
-        self::renderFacilityPickerForm( admin_url( 'admin-post.php' ), 'cpms_wizard_save', 'cpms_wizard_save', 'ذخیره و ادامه' );
+        self::render_facility_picker_form( admin_url( 'admin-post.php' ), 'cpms_wizard_save', 'cpms_wizard_save', 'ذخیره و ادامه' );
         // The picker posts hidden action cpms_wizard_save only when used inside the wizard step:
         ?>
         <p class="description">پس از انتخاب، گام‌های راه‌اندازی متناسب با نوع مرکز نمایش داده می‌شوند و پیشرفت ذخیره‌شده قابل ادامه است.</p>
         <?php
     }
 
-    public static function saveFacility( Settings $settings, array $post, int $updatedBy ): string {
+    public static function save_facility( Settings $settings, array $post, int $updated_by ): string {
         $facility = isset( $post['facility_type'] ) && is_string( $post['facility_type'] ) ? sanitize_key( $post['facility_type'] ) : '';
-        if ( ! FacilityTypeCatalog::isValid( $facility ) ) { return 'نوع مرکز نامعتبر است.'; }
+        if ( ! FacilityTypeCatalog::is_valid( $facility ) ) {
+            return 'نوع مرکز نامعتبر است.';
+        }
         $structure = isset( $post['structure'] ) && is_string( $post['structure'] ) ? sanitize_key( $post['structure'] ) : '';
-        if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) { return 'ساختار مجموعه نامعتبر است.'; }
-        $settings->set( 'setup.facility_type', $facility, $updatedBy );
-        if ( $updatedBy > 0 ) {
-            update_user_meta( $updatedBy, 'cpms_onboarding_facility_type', $facility );
-            update_user_meta( $updatedBy, 'cpms_onboarding_structure', $structure );
+        if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
+            return 'ساختار مجموعه نامعتبر است.';
+        }
+        $settings->set( 'setup.facility_type', $facility, $updated_by );
+        if ( $updated_by > 0 ) {
+            update_user_meta( $updated_by, 'cpms_onboarding_facility_type', $facility );
+            update_user_meta( $updated_by, 'cpms_onboarding_structure', $structure );
         }
         return '';
     }
 
-    private static function renderLocations(): void {
+    private static function render_locations(): void {
         $can = ClinicianAdminPage::can_current_user_access_page();
         ?>
         <div class="card">
@@ -911,7 +937,7 @@ final class CpmsSetupWizard
 
         switch ($step) {
             case 'facility':
-                $error = self::saveFacility($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
                 break;
             case 'clinic':
                 $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());

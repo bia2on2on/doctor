@@ -12,13 +12,12 @@ namespace ClinicCore\Application\Onboarding;
  * Clinics. Multi-Clinic provisioning has no approved Organization-level
  * authority model, so that flow is explicitly blocked (not silently faked).
  */
-final class FacilityTypeCatalog
-{
+final class FacilityTypeCatalog {
+
     /**
      * @return list<array{id:string,label:string,flow:string}>
      */
-    public static function all(): array
-    {
+    public static function all(): array {
         return [
             ['id' => 'doctor_practice', 'label' => 'مطب پزشک — انفرادی یا مشترک', 'flow' => 'simple_practice'],
             ['id' => 'general_clinic', 'label' => 'درمانگاه عمومی', 'flow' => 'multi_doctor_clinic'],
@@ -38,10 +37,9 @@ final class FacilityTypeCatalog
     /**
      * @return array{id:string,label:string,flow:string}|null
      */
-    public static function find(string $id): ?array
-    {
-        foreach (self::all() as $type) {
-            if ($type['id'] === $id) {
+    public static function find( string $id ): ?array {
+        foreach ( self::all() as $type ) {
+            if ( $type['id'] === $id ) {
                 return $type;
             }
         }
@@ -49,9 +47,8 @@ final class FacilityTypeCatalog
         return null;
     }
 
-    public static function isValid(string $id): bool
-    {
-        return self::find($id) !== null;
+    public static function is_valid( string $id ): bool {
+        return self::find( $id ) !== null;
     }
 
     /**
@@ -59,31 +56,29 @@ final class FacilityTypeCatalog
      *
      * @return array<string,string>
      */
-    public static function structures(): array
-    {
+    public static function structures(): array {
         return [
-            'single' => 'مطب یا مرکز تک‌واحدی',
-            'multi_doctor' => 'درمانگاه چندپزشکه',
+            'single'           => 'مطب یا مرکز تک‌واحدی',
+            'multi_doctor'     => 'درمانگاه چندپزشکه',
             'medical_building' => 'ساختمان یا مجتمع پزشکی با چند مطب مستقل',
             'hospital_network' => 'بیمارستان یا شبکهٔ درمانی',
         ];
     }
 
-    public static function resolveFlow(string $facilityId, string $structure = ''): string
-    {
-        if ($structure === 'medical_building') {
+    public static function resolve_flow( string $facility_id, string $structure = '' ): string {
+        if ( $structure === 'medical_building' ) {
             return 'medical_building';
         }
-        if ($structure === 'hospital_network') {
+        if ( $structure === 'hospital_network' ) {
             return 'hospital_network';
         }
-        if ($structure === 'multi_doctor') {
+        if ( $structure === 'multi_doctor' ) {
             return 'multi_doctor_clinic';
         }
-        if ($structure === 'single') {
+        if ( $structure === 'single' ) {
             return 'simple_practice';
         }
-        $type = self::find($facilityId);
+        $type = self::find( $facility_id );
 
         return $type['flow'] ?? 'multi_doctor_clinic';
     }
@@ -93,9 +88,8 @@ final class FacilityTypeCatalog
      *
      * @return list<string>
      */
-    public static function flowSteps(string $flow): array
-    {
-        return match ($flow) {
+    public static function flow_steps( string $flow ): array {
+        return match ( $flow ) {
             'simple_practice' => ['نوع مرکز', 'نام مطب', 'مکان اصلی و مکان‌های بیشتر در صورت نیاز', 'تنظیم پزشک', 'منشی (اختیاری)', 'برنامهٔ کاری', 'تنظیم رزرو نوبت', 'بازبینی آمادگی'],
             'medical_building' => ['نوع مرکز', 'هویت ساختمان یا سازمان', 'تعداد مطب‌های مستقل', 'مدیریت مستقل هر مطب', 'مرز مستقل هر درمانگاه', 'انتساب صریح کارکنان', 'مکان‌ها', 'محدودهٔ بالینی و مالی جداگانه'],
             'hospital_network' => ['نوع مرکز', 'ساختار سازمان', 'درمانگاه‌های سرپایی', 'مدیران مجاز', 'مکان‌ها', 'فرایندهای سرپایی پشتیبانی‌شده', 'بازبینی آمادگی'],
@@ -103,20 +97,17 @@ final class FacilityTypeCatalog
         };
     }
 
-    public static function flowSupportsProvisioning(string $flow): bool
-    {
+    public static function flow_supports_provisioning( string $flow ): bool {
         // No approved Organization-level authority model exists for creating
         // multiple independent Clinics; never fake it with WP admin authority.
         return $flow !== 'medical_building';
     }
 
-    public static function flowSupportsInpatient(string $flow): bool
-    {
+    public static function flow_supports_inpatient( string $flow ): bool {
         return false;
     }
 
-    public static function supportsMultiClinicProvisioning(): bool
-    {
+    public static function supports_multi_clinic_provisioning(): bool {
         return false;
     }
 }
