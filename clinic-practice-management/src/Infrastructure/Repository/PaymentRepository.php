@@ -161,8 +161,7 @@ final class PaymentRepository
      *
      * @return int|null wp_user_id پزشکِ مسئول، یا null وقتی مالکیت اثبات‌پذیر نیست.
      */
-    public function owning_clinician_wp_user_id( int $payment_id, int $clinic_id ): ?int
-    {
+    public function owning_clinician_wp_user_id( int $payment_id, int $clinic_id ): ?int {
         if ( $payment_id <= 0 || $clinic_id <= 0 ) {
             return null;
         }

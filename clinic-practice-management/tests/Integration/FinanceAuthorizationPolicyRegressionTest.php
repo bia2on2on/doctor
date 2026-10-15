@@ -646,6 +646,184 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertContains($foreign->get_status(), [400, 403, 404], 'explicit grants are Clinic-scoped');
     }
 
+    // ================= 13 — explicit GRANT cannot bypass doctor ownership =================
+
+    public function testExplicitMembershipGrantDoesNotBypassDoctorOwnership(): void
+    {
+        [$clinic, $location, , $invoiceA, $visitA] = $this->financeFixture();
+        $visitB = $this->secondVisit($clinic, $location);
+
+        $owner = $this->doctor($clinic, $visitA, 'dr_grant_owner');
+        $other = $this->doctor($clinic, $visitB, 'dr_grant_other');
+
+        // A deliberate, pre-existing explicit GRANT for the unrelated doctor — the strongest
+        // non-role authority this installation can hold. Ownership must still be mandatory.
+        $otherMembership = $this->membershipId($clinic, $other);
+        (new MembershipRepository(App::db()))->set_capability($otherMembership, RolesAndCapabilities::PAYMENT_VOID, 'grant');
+        self::assertTrue(
+            App::authorization_service()->can($other, $clinic, RolesAndCapabilities::PAYMENT_VOID),
+            'premise: the explicit grant is effective for the capability itself'
+        );
+
+        $secretary = $this->staff($clinic, RolesAndCapabilities::ROLE_SECRETARY, 'sec_grant_probe');
+        wp_set_current_user($secretary);
+        $capture = $this->pay($invoiceA, $clinic, $location, ['amount' => 9000, 'method' => 'cash']);
+        self::assertSame(201, $capture->get_status(), 'premise capture — ' . $this->errorCode($capture));
+        $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
+        $before = $this->paymentRow($paymentId);
+
+        wp_set_current_user($other);
+        $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'grant bypass attempt']);
+        self::assertSame(403, $void->get_status(), 'an explicit grant must NOT bypass doctor ownership — ' . $this->errorCode($void));
+        self::assertSame($before, $this->paymentRow($paymentId), 'the granted-but-unrelated doctor must not mutate the payment');
+        self::assertSame(0, $this->auditCount('PAYMENT_VOID'));
+
+        // The owner is unaffected, and the owner's own grant-free path still works.
+        wp_set_current_user($owner);
+        self::assertSame(
+            200,
+            $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'owner correction'])->get_status()
+        );
+    }
+
+    // ================= 14 — delegation to a doctor keeps ownership mandatory =================
+
+    public function testDelegationToDoctorDoesNotGrantUnrestrictedFinancialAuthority(): void
+    {
+        [$clinic, $location, , $invoiceA, $visitA] = $this->financeFixture();
+        $visitB = $this->secondVisit($clinic, $location);
+
+        $manager = $this->staff($clinic, RolesAndCapabilities::ROLE_MANAGER, 'mgr_to_doctor');
+        $owner = $this->doctor($clinic, $visitA, 'dr_deleg_owner');
+        $other = $this->doctor($clinic, $visitB, 'dr_deleg_other');
+        $otherMembership = $this->membershipId($clinic, $other);
+
+        // The manager explicitly delegates the sensitive capability to the unrelated doctor's
+        // membership: an authorized delegation, revoked-able and audited.
+        $result = $this->delegation()->delegate($manager, $clinic, $otherMembership, RolesAndCapabilities::PAYMENT_REFUND);
+        self::assertSame('grant', (string) ($result['effect'] ?? ''));
+        self::assertSame(1, $this->auditCount(FinanceDelegationService::AUDIT_DELEGATED));
+        self::assertTrue(App::authorization_service()->can($other, $clinic, RolesAndCapabilities::PAYMENT_REFUND));
+
+        $secretary = $this->staff($clinic, RolesAndCapabilities::ROLE_SECRETARY, 'sec_deleg_probe');
+        wp_set_current_user($secretary);
+        $capture = $this->pay($invoiceA, $clinic, $location, ['amount' => 11000, 'method' => 'cash']);
+        self::assertSame(201, $capture->get_status(), 'premise capture — ' . $this->errorCode($capture));
+        $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
+
+        // Delegation grants the CAPABILITY, never ownership of somebody else's transaction.
+        wp_set_current_user($other);
+        $refund = $this->dispatch('POST', sprintf(self::PAY_REFUND, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'delegated but unrelated']);
+        self::assertSame(403, $refund->get_status(), 'a delegated doctor must stay bounded by transaction ownership — ' . $this->errorCode($refund));
+        self::assertSame('captured', (string) $this->paymentRow($paymentId)['status']);
+        self::assertSame(0, $this->auditCount('PAYMENT_REFUND'));
+
+        // The owner keeps working authority; revocation returns the delegate to default deny.
+        wp_set_current_user($owner);
+        self::assertSame(
+            200,
+            $this->dispatch('POST', sprintf(self::PAY_REFUND, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'owner refund'])->get_status()
+        );
+        $this->delegation()->revoke($manager, $clinic, $otherMembership, RolesAndCapabilities::PAYMENT_REFUND);
+        self::assertFalse(App::authorization_service()->can($other, $clinic, RolesAndCapabilities::PAYMENT_REFUND));
+    }
+
+    // ================= 15 — manager self-delegation is bounded, audited, revocable =================
+
+    public function testManagerSelfDelegationIsBoundedAuditedAndRevocable(): void
+    {
+        [$clinic, , , , ] = $this->financeFixture();
+        $manager = $this->staff($clinic, RolesAndCapabilities::ROLE_MANAGER, 'mgr_self');
+        $managerMembership = $this->membershipId($clinic, $manager);
+
+        self::assertFalse(App::authorization_service()->can($manager, $clinic, RolesAndCapabilities::PAYMENT_VOID), 'premise: managers hold no default sensitive finance authority');
+
+        $result = $this->delegation()->delegate($manager, $clinic, $managerMembership, RolesAndCapabilities::PAYMENT_VOID);
+        self::assertSame(RolesAndCapabilities::PAYMENT_VOID, (string) ($result['capability'] ?? ''));
+        self::assertSame(1, $this->auditCount(FinanceDelegationService::AUDIT_DELEGATED));
+        self::assertTrue(App::authorization_service()->can($manager, $clinic, RolesAndCapabilities::PAYMENT_VOID));
+
+        // Bounded: exactly one capability row was added, and nothing outside the finance set.
+        $rows = (new MembershipRepository(App::db()))->capabilities_for($managerMembership);
+        self::assertCount(1, $rows, 'self-delegation must add exactly one bounded capability row');
+        self::assertSame(RolesAndCapabilities::PAYMENT_VOID, (string) $rows[0]['capability']);
+        foreach ([RolesAndCapabilities::MEDICAL_READ, RolesAndCapabilities::PRIVATE_NOTE_READ, RolesAndCapabilities::EXPORT, RolesAndCapabilities::AUDIT_READ, RolesAndCapabilities::PAYMENT_REFUND] as $notDelegated) {
+            self::assertFalse(App::authorization_service()->can($manager, $clinic, $notDelegated), $notDelegated . ' must stay denied for the self-delegated manager');
+        }
+
+        // Revocable: back to default deny (the manager keeps only its preset authority).
+        $this->delegation()->revoke($manager, $clinic, $managerMembership, RolesAndCapabilities::PAYMENT_VOID);
+        self::assertFalse(App::authorization_service()->can($manager, $clinic, RolesAndCapabilities::PAYMENT_VOID));
+        self::assertTrue(App::authorization_service()->can($manager, $clinic, RolesAndCapabilities::CONFIG), 'the manager keeps its management authority');
+        self::assertSame(1, $this->auditCount(FinanceDelegationService::AUDIT_REVOKED));
+    }
+
+    // ================= 16 — DENY still beats grant and ownership =================
+
+    public function testExplicitDenyBeatsOwnershipAndGrant(): void
+    {
+        [$clinic, $location, , $invoice, $visit] = $this->financeFixture();
+        $owner = $this->doctor($clinic, $visit, 'dr_denied_owner');
+        $ownerMembership = $this->membershipId($clinic, $owner);
+
+        (new MembershipRepository(App::db()))->set_capability($ownerMembership, RolesAndCapabilities::PAYMENT_VOID, 'deny');
+
+        $secretary = $this->staff($clinic, RolesAndCapabilities::ROLE_SECRETARY, 'sec_deny_owner');
+        wp_set_current_user($secretary);
+        $capture = $this->pay($invoice, $clinic, $location, ['amount' => 6000, 'method' => 'cash']);
+        self::assertSame(201, $capture->get_status(), 'premise capture — ' . $this->errorCode($capture));
+        $paymentId = (int) ($this->payload($capture)['payment']['id'] ?? 0);
+
+        // The actor owns the transaction AND holds the role, but an explicit DENY still wins.
+        self::assertFalse(App::authorization_service()->can($owner, $clinic, RolesAndCapabilities::PAYMENT_VOID));
+        wp_set_current_user($owner);
+        $void = $this->dispatch('POST', sprintf(self::PAY_VOID, $paymentId), [], $this->scopeHeaders($clinic), ['reason' => 'denied owner']);
+        self::assertSame(403, $void->get_status(), 'an explicit DENY must beat ownership — ' . $this->errorCode($void));
+        self::assertSame('captured', (string) $this->paymentRow($paymentId)['status']);
+        self::assertSame(0, $this->auditCount('PAYMENT_VOID'));
+    }
+
+    // ================= 17 — delegation cannot widen authority through overrides =================
+
+    public function testDelegationCannotWriteCapabilitiesOutsideTheBoundedSet(): void
+    {
+        [$clinic, , , , ] = $this->financeFixture();
+        $manager = $this->staff($clinic, RolesAndCapabilities::ROLE_MANAGER, 'mgr_bounds');
+        $target = $this->staff($clinic, RolesAndCapabilities::ROLE_SECRETARY, 'sec_bounds');
+        $targetMembership = $this->membershipId($clinic, $target);
+
+        $outOfBounds = [
+            RolesAndCapabilities::MEDICAL_READ,
+            RolesAndCapabilities::PRIVATE_NOTE_READ,
+            RolesAndCapabilities::NOTE_CREATE,
+            RolesAndCapabilities::EXPORT,
+            RolesAndCapabilities::AUDIT_READ,
+            RolesAndCapabilities::CONFIG,
+            RolesAndCapabilities::SMS_CONFIG,
+            RolesAndCapabilities::PATIENT_READ,
+            RolesAndCapabilities::PAYMENT_CREATE,
+            'cpms_role_manage',
+            'manage_options',
+        ];
+
+        foreach ($outOfBounds as $capability) {
+            $rejected = null;
+            try {
+                $this->delegation()->delegate($manager, $clinic, $targetMembership, $capability);
+            } catch (FinanceException $e) {
+                $rejected = $e;
+            }
+            self::assertNotNull($rejected, $capability . ' must never be delegable');
+            self::assertSame(422, $rejected->httpStatus, $capability . ' must be refused as out of bounds');
+            self::assertFalse(App::authorization_service()->can($target, $clinic, $capability), $capability . ' must not become effective');
+        }
+
+        self::assertSame([], (new MembershipRepository(App::db()))->capabilities_for($targetMembership), 'no out-of-bounds row may be written');
+        self::assertSame(0, $this->auditCount(FinanceDelegationService::AUDIT_DELEGATED));
+        self::assertTrue(App::authorization_service()->can($target, $clinic, RolesAndCapabilities::PAYMENT_CREATE), 'ordinary capture authority is unchanged for the secretary');
+        self::assertFalse(App::authorization_service()->can($target, $clinic, RolesAndCapabilities::MEDICAL_READ), 'no medical-record access may be created by delegation');
+    }
+
     // ================= product wiring / non-claims =================
 
     public function testPolicyDoesNotIntroduceNewCapabilitiesOrMedicalAccess(): void
@@ -715,6 +893,16 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         );
 
         return $userId;
+    }
+
+    /** A second service (Visit + invoice) in the SAME Clinic, owned by another clinician. */
+    private function secondVisit(int $clinicId, int $locationId): int
+    {
+        $patient = $this->insertPatient($clinicId, 'FinPolicyOther');
+        $clinician = $this->insertClinician($clinicId, 'Dr Fixture Other', 0);
+        $date = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->format('Y-m-d');
+
+        return $this->insertVisit($clinicId, $locationId, $patient, $clinician, $date, App::db()->nowUtcSql(), 'awaiting_payment');
     }
 
     private function delegation(): FinanceDelegationService

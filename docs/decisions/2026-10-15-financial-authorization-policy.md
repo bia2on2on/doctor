@@ -64,13 +64,14 @@ explicit membership DENY  >  explicit membership GRANT  >  role capabilities  > 
 **[inference] — the ownership conjunct.** Decision 2 is implemented as an *additional conjunct on the
 role-preset branch only*, for the two sensitive payment capabilities:
 
-* if the effective authority for `cpms_payment_void` / `cpms_payment_refund` comes from an **explicit
-  membership GRANT**, the actor is authorized by deliberate Clinic-scoped grant (a pre-existing explicit
-  grant of an existing installation, or a Clinic-manager delegation made under decision 4). No ownership
-  requirement is added — this is exactly "preserve established legitimate authority" and "evaluate existing
-  explicit grants before changing effective default permissions".
-* if the effective authority comes from the **built-in `cpms_doctor` role preset**, the actor must
-  *additionally* be the verified owner of the transaction. This is decision 2.
+* **an actor whose ACTIVE membership of that Clinic carries the built-in `cpms_doctor` role must own the
+  transaction — unconditionally.** This is decision 2, and it holds independently of where the capability
+  came from: the doctor role preset, a pre-existing explicit GRANT, or an explicit Clinic-manager
+  delegation. Ownership can therefore never be bypassed by writing a membership override.
+* every other actor (accountant, manager, custom-role staff) keeps the unchanged behaviour: an explicit
+  membership GRANT is deliberate Clinic-scoped authority and is not ownership-bound — this is "preserve
+  established legitimate authority" and "evaluate existing explicit grants before changing effective
+  default permissions".
 * the ownership requirement never applies to the Accountant preset (decision 3), to the Manager preset
   (which holds no payment capability), or to any custom role (which cannot contain a sensitive capability
   at all — `CustomRolePolicy::SENSITIVE_CAPS`).
@@ -137,3 +138,35 @@ Reverting this policy is a code-only revert of the preset change and the added e
 delegation rows live in existing storage and are visible/removable through the same UI, so no data migration
 or repair is required in either direction. Historical decisions and this record stay in the repository
 append-only.
+
+---
+
+## 7. Correction record — 2026-10-15 (same day, before acceptance)
+
+**Defect found by security review, and corrected.** The first implementation of §3 resolved ownership only
+when the effective authority came from the doctor *role preset*; an explicit membership GRANT (`cpms_payment_void`
+/ `cpms_payment_refund`) therefore switched the ownership conjunct off. Because decision 4 lets a Clinic
+manager write exactly those GRANT rows to any authorized member, a doctor who received such a delegation —
+or an installation that already carried such a grant — could have voided or refunded **another clinician's**
+payments inside the same Clinic. That contradicts decision 2 and would have let a delegation widen authority
+beyond its approved scope.
+
+**Correction (now the governing rule, and what §3 above records):** the ownership conjunct is bound to the
+actor's durable ACTIVE membership role, not to the source of the capability. Any actor whose membership
+carries the built-in doctor role is authorized for `cpms_payment_void` / `cpms_payment_refund` **only** for a
+transaction they verifiably own; DENY precedence is untouched and still wins over ownership and over any
+grant. Accountant, manager and custom-role semantics are unchanged.
+
+**Scope of the correction:** role-key-driven ownership; no new capability, no new table, no migration, no
+change to the delegation bound, no financial-record change.
+
+**Regression coverage (added in the same window):** `FinanceAuthorizationPolicyRegressionTest` groups 13–17 —
+explicit GRANT cannot bypass doctor ownership; delegation to a doctor keeps ownership mandatory; manager
+self-delegation is bounded, audited and revocable; explicit DENY beats ownership and grant; delegation
+cannot write any capability outside the bounded financial set (including `cpms_config`, `cpms_medical_read`,
+`cpms_private_note_read`, `cpms_export`, `cpms_audit_read`, `manage_options`).
+
+**Disclosed boundary (not a defect, reviewer may still choose to tighten):** a Clinic manager may delegate to
+*itself*. It stays inside the bounded four-capability financial set, is explicit, audited and revocable, and
+is never a default — but a manager does acquire financial authority that its preset does not carry. This is
+recorded as an accepted **[inference]**, not silently.

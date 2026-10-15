@@ -23,8 +23,7 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *  - فقط چهار Capability مالیِ حساس نمایش داده می‌شود (مجموعهٔ محدود).
  *  - هر تغییر در Audit زنجیره‌ای ثبت می‌شود و فوراً قابل بازگردانی است.
  */
-final class FinanceDelegationPage
-{
+final class FinanceDelegationPage {
 	public const PAGE_SLUG = 'cpms-finance-delegation';
 
 	private const NONCE = 'cpms_finance_delegation';

@@ -516,7 +516,7 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeSensitivePayment($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void');
+        $this->authorize_sensitive_payment( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
@@ -600,7 +600,7 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeSensitivePayment($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund');
+        $this->authorize_sensitive_payment( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل بازپرداخت الزامی است', 422);
@@ -1221,7 +1221,7 @@ final class FinanceService
         $owns_transaction = $this->payments->owning_clinician_wp_user_id( $payment_id, $clinic_id ) === $actor_user_id;
 
         try {
-            App::authorization_service()->authorizeWithOwnership( $actor_user_id, $clinic_id, $cap, $owns_transaction );
+            App::authorization_service()->authorize_with_ownership( $actor_user_id, $clinic_id, $cap, $owns_transaction );
         } catch ( AuthorizationException $e ) {
             $code    = $e->getErrorCode();
             $http    = $e->getCode() > 0 ? (int) $e->getCode() : 403;

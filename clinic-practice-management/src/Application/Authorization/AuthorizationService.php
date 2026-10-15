@@ -184,31 +184,33 @@ final class AuthorizationService
      *
      * Precedence is unchanged and remains the ONLY resolution order
      * (explicit membership DENY > explicit membership GRANT > role capabilities >
-     * deny by default). This method adds exactly one conjunct on the role-preset
-     * branch: when — and only when — the actor's effective authority for
-     * $permission comes from the built-in Doctor role preset, they must also own
-     * the transaction.
+     * deny by default). This method adds exactly one conjunct:
      *
-     *  - explicit membership GRANT => deliberate Clinic-scoped authority
-     *    (pre-existing explicit grant, or an explicit Clinic-manager delegation);
-     *    not ownership-bound, so established legitimate authority is preserved;
-     *  - explicit membership DENY => denied (unchanged);
-     *  - ownership must be a durable server-side fact obtained by the caller
-     *    (e.g. PaymentRepository::owning_clinician_wp_user_id()) — never a
-     *    payload/context claim, and never a patient relationship;
-     *  - when ownership cannot be established the caller must pass false
-     *    (fail closed).
+     *   - an actor whose ACTIVE membership carries the built-in DOCTOR role must
+     *     own the transaction — unconditionally, and independently of where the
+     *     capability came from (role preset, pre-existing explicit GRANT, or an
+     *     explicit Clinic-manager delegation). Ownership can therefore never be
+     *     bypassed by writing a membership override;
+     *   - every other actor (accountant, manager, custom-role staff) keeps the
+     *     unchanged behaviour: an explicit membership GRANT is deliberate
+     *     Clinic-scoped authority and is not ownership-bound;
+     *   - explicit membership DENY is evaluated first inside can() and still wins
+     *     over ownership and over any grant.
+     *
+     * Ownership must be a durable server-side fact obtained by the caller
+     * (e.g. PaymentRepository::owning_clinician_wp_user_id()) — never a
+     * payload/context claim, and never a patient relationship. When ownership
+     * cannot be established the caller must pass false (fail closed).
      */
-    public function canWithOwnership( int $actorWpUserId, int $clinicId, string $permission, bool $ownsTransaction, bool $for_update = false ): bool
-    {
-        if ( ! $this->can( $actorWpUserId, $clinicId, $permission, $for_update ) ) {
+    public function can_with_ownership( int $actor_wp_user_id, int $clinic_id, string $permission, bool $owns_transaction, bool $for_update = false ): bool {
+        if ( ! $this->can( $actor_wp_user_id, $clinic_id, $permission, $for_update ) ) {
             return false;
         }
-        if ( $ownsTransaction ) {
+        if ( $owns_transaction ) {
             return true;
         }
 
-        return ! $this->authorityIsDoctorPresetOnly( $actorWpUserId, $clinicId, $permission, $for_update );
+        return ! $this->actor_is_doctor( $actor_wp_user_id, $clinic_id, $for_update );
     }
 
     /**
@@ -216,50 +218,37 @@ final class AuthorizationService
      *
      * @throws AuthorizationException AUTH_DENIED (capability) or AUTH_OWNERSHIP_REQUIRED (ownership conjunct)
      */
-    public function authorizeWithOwnership( int $actorWpUserId, int $clinicId, string $permission, bool $ownsTransaction, bool $for_update = false ): void
-    {
-        if ( ! $this->can( $actorWpUserId, $clinicId, $permission, $for_update ) ) {
-            $this->authorize( $actorWpUserId, $clinicId, $permission, $for_update ); // throws the typed denial
+    public function authorize_with_ownership( int $actor_wp_user_id, int $clinic_id, string $permission, bool $owns_transaction, bool $for_update = false ): void {
+        if ( ! $this->can( $actor_wp_user_id, $clinic_id, $permission, $for_update ) ) {
+            $this->authorize( $actor_wp_user_id, $clinic_id, $permission, $for_update ); // throws the typed denial
 
             return;
         }
-        if ( $this->canWithOwnership( $actorWpUserId, $clinicId, $permission, $ownsTransaction, $for_update ) ) {
+        if ( $this->can_with_ownership( $actor_wp_user_id, $clinic_id, $permission, $owns_transaction, $for_update ) ) {
             return;
         }
 
         throw new AuthorizationException(
             'AUTH_OWNERSHIP_REQUIRED',
             'AUTH_OWNERSHIP_REQUIRED',
-            [ 'clinic_id' => $clinicId, 'permission' => $permission ],
+            [
+                'clinic_id' => $clinic_id,
+                'permission' => $permission,
+            ],
             403
         );
     }
 
     /**
-     * True only when the effective authority for $permission is the built-in
-     * Doctor role preset: an ACTIVE membership whose role_key is the doctor role
-     * and whose explicit capability rows contain no GRANT for it. A GRANT row
-     * (deliberate Clinic-scoped authority) makes the authority deliberate rather
-     * than preset-derived, so the ownership conjunct does not apply.
+     * True when the actor's durable ACTIVE membership of this exact Clinic carries
+     * the built-in doctor role key. Deliberately independent of capability rows:
+     * ownership is a property of the clinical role, so no membership override can
+     * lift it (2026-10-15 security correction).
      */
-    private function authorityIsDoctorPresetOnly( int $actorWpUserId, int $clinicId, string $permission, bool $for_update ): bool
-    {
-        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the published named-argument API and legacy variable names.
+    private function actor_is_doctor( int $actor_wp_user_id, int $clinic_id, bool $for_update ): bool {
+        $membership = $this->memberships->find_active( $clinic_id, $actor_wp_user_id, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the published named-argument API and legacy variable names.
         if ( $membership === null ) {
             return false;
-        }
-        $membershipId = (int) ( $membership['id'] ?? 0 );
-        if ( $membershipId <= 0 ) {
-            return false;
-        }
-
-        foreach ( $this->memberships->capabilities_for( $membershipId, $for_update ) as $row ) {
-            if ( ! is_array( $row ) ) {
-                continue;
-            }
-            if ( (string) ( $row['capability'] ?? '' ) === $permission && (string) ( $row['effect'] ?? '' ) === 'grant' ) {
-                return false;
-            }
         }
 
         return (string) ( $membership['role_key'] ?? '' ) === RolesAndCapabilities::ROLE_DOCTOR;
