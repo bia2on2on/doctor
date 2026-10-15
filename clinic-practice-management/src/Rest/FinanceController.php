@@ -128,7 +128,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_VOID,
                     fn () => $this->finance->voidPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'))
                 ),
-                'permission_callback' => fn (WP_REST_Request $r) => $this->perm_clinic_cap($r, $void_cap),
+                'permission_callback' => fn ( WP_REST_Request $r ) => $this->perm_clinic_cap( $r, $void_cap ),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                 ],
@@ -146,7 +146,7 @@ final class FinanceController extends RestBase
                     RolesAndCapabilities::PAYMENT_REFUND,
                     fn () => $this->finance->refundPayment($this->userId($r), (int) $r['id'], (string) $r->get_param('reason'), $this->body($r))
                 ),
-                'permission_callback' => fn (WP_REST_Request $r) => $this->perm_clinic_cap($r, $refund_cap),
+                'permission_callback' => fn ( WP_REST_Request $r ) => $this->perm_clinic_cap( $r, $refund_cap ),
                 'args' => [
                     'reason' => ['required' => true, 'type' => 'string'],
                     'amount' => ['required' => false, 'type' => 'number'],
@@ -393,10 +393,15 @@ final class FinanceController extends RestBase
         }
 
         $scope_context = ScopeContext::tryGet();
-        if ( $scope_context === null || (int) $scope_context->clinicId <= 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+        if ( $scope_context === null ) {
             return false;
         }
 
-        return App::authorization_service()->can( $user_id, (int) $scope_context->clinicId, $capability );
+        $clinic_id = (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
+        if ( $clinic_id <= 0 ) {
+            return false;
+        }
+
+        return App::authorization_service()->can( $user_id, $clinic_id, $capability );
     }
 }
