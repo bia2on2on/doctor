@@ -324,6 +324,13 @@ final class FirstPracticeSetupService {
         'setup.started_at',
         'setup.current_step',
         'setup.completed',
+        // Exact keys written by the pre-Phase4 wizard's saveClinic().
+        // Historical evidence only: never restore a second writable profile,
+        // accept a wildcard, or relax the single-administrator continuity gate.
+        'setup.clinic.name',
+        'setup.clinic.address',
+        'setup.clinic.phone',
+        'setup.clinic.timezone',
         'booking.duration_default_min',
         'booking.slot_capacity_default',
         'booking.min_lead_hours',

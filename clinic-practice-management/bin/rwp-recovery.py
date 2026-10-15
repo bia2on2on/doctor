@@ -48,6 +48,13 @@ $kind = getenv('REC_KIND');
 $a = (int) get_user_by('login', getenv('ADMIN_USER'))->ID;
 $b = (int) get_user_by('login', getenv('SECOND_ADMIN_USER'))->ID;
 $c = (int) $db->fetchValue('SELECT id FROM ' . $db->table('cpms_clinics') . ' ORDER BY id LIMIT 1');
+// Activation can arm JobWake's explicit spawn even with DISABLE_WP_CRON.
+// Capture its synthetic runtime seed, then construct the promised setup-only
+// fixture. This is fixture construction, NEVER a recovery/product operation.
+$baseline_keys = $db->fetchAll('SELECT `key`, updated_by_wp_user_id FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d', [$c]);
+wp_clear_scheduled_hook('cpms_jobs_wake');
+wp_clear_scheduled_hook('cpms_jobs_tick');
+$db->query('DELETE FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s AND updated_by_wp_user_id IS NULL', [$c, 'jobs.last_tick_at']);
 $writer = $a;
 if ($kind === 'deleted') {
     $writer = wp_create_user('deleted_history', 'Synthetic-Only-2026!', 'deleted@acc.local');
@@ -90,7 +97,7 @@ $db->query('UPDATE ' . $db->table('cpms_clinics') . ' SET first_setup_claimed_at
 $method = new ReflectionMethod(\ClinicCore\Application\Onboarding\FirstPracticeSetupService::class, 'evaluate_recovery');
 $method->setAccessible(true);
 $reason = $method->invoke(\ClinicCore\Bootstrap\App::first_practice_setup_service(), $c, $a);
-echo 'REC_DB=' . wp_json_encode(['clinic' => $c, 'actor' => $a, 'reason' => $reason]);
+echo 'REC_DB=' . wp_json_encode(['clinic' => $c, 'actor' => $a, 'reason' => $reason, 'baseline_keys' => $baseline_keys]);
 ''', {'REC_KIND': kind})
 
 
@@ -143,6 +150,7 @@ def run_case(browser, kind, second, allowed):
     tag = kind + ('_other_admin' if second else '_same_admin')
     wp('db', 'import', '/tmp/fp/pristine.sql')
     data = fixture(kind)
+    print('FIXTURE ' + tag + ' baseline_setting_keys=' + json.dumps(data['baseline_keys']), flush=True)
     print('FIXTURE ' + tag + ' eligibility_reason=' + (data['reason'] or 'eligible'), flush=True)
     before = snapshot()
     context = browser.new_context(viewport={'width': 390, 'height': 844}, locale='fa-IR')
