@@ -61,7 +61,7 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
   $err=CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'2'],$uid);
   self::assertSame('',$err);
   global $wpdb; $clinicId=App::scope()->clinicId;
-  $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_clinicians WHERE clinic_id='.(int)$clinicId);
+  $wpdb->query('SET FOREIGN_KEY_CHECKS=0'); $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_clinicians WHERE clinic_id='.(int)$clinicId); $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
   App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک یک']);
   self::assertFalse(CpmsSetupWizard::step_is_complete('doctors', App::settings()), 'one actual clinician must not satisfy an intended count of two');
   App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک دو']);
@@ -69,7 +69,7 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
  }
  public function testLocationsStepVerifiesActualLocationWithTimezone(): void {
   $this->authorize(); $clinicId=App::scope()->clinicId;
-  global $wpdb; $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_locations WHERE clinic_id='.(int)$clinicId);
+  global $wpdb; $wpdb->query('SET FOREIGN_KEY_CHECKS=0'); $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_locations WHERE clinic_id='.(int)$clinicId); $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
   self::assertFalse(CpmsSetupWizard::step_is_complete('locations', App::settings()));
   App::locationRepository()->create($clinicId,'مکان اصلی','main-'.wp_generate_password(6,false,false),'Asia/Tehran', gmdate('Y-m-d H:i:s'));
   self::assertTrue(CpmsSetupWizard::step_is_complete('locations', App::settings()));
@@ -77,6 +77,7 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
  public function testFinishBlockedForMedicalBuildingAndMissingRequiredReported(): void {
   $uid=$this->authorize();
   update_user_meta($uid,'cpms_onboarding_facility_type','other'); update_user_meta($uid,'cpms_onboarding_structure','medical_building');
+  global $wpdb; $wpdb->query($wpdb->prepare('UPDATE '.$wpdb->prefix.'cpms_clinics SET name = "" WHERE id = %d', App::scope()->clinicId));
   $missing=CpmsSetupWizard::missing_required_steps(App::settings());
   self::assertNotSame([], $missing);
   $ref=new \ReflectionMethod(CpmsSetupWizard::class,'saveFinish'); $ref->setAccessible(true);
@@ -92,7 +93,7 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
   $locs=App::locationRepository()->listForClinic($clinicId);
   if ($locs===[]) { App::locationRepository()->create($clinicId,'مکان اصلی','main-'.wp_generate_password(6,false,false),'Asia/Tehran', gmdate('Y-m-d H:i:s')); $locs=App::locationRepository()->listForClinic($clinicId); }
   $locationId=(int)$locs[0]['id'];
-  $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_clinicians WHERE clinic_id='.(int)$clinicId);
+  $wpdb->query('SET FOREIGN_KEY_CHECKS=0'); $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_clinicians WHERE clinic_id='.(int)$clinicId); $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
   App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک کامل']);
   $clinicians=App::clinicianRepository()->listAll($clinicId,false); $clinicianId=(int)$clinicians[0]['id'];
   $wpdb->query($wpdb->prepare('INSERT IGNORE INTO '.$wpdb->prefix.'cpms_schedule (clinic_id,clinician_id,location_id,day_of_week,start_time,end_time,is_active,created_at,updated_at) VALUES (%d,%d,%d,1,%s,%s,1,NOW(),NOW())',$clinicId,$clinicianId,$locationId,'09:00:00','12:00:00'));
