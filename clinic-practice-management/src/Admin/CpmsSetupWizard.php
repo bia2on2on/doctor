@@ -135,7 +135,7 @@ final class CpmsSetupWizard
             echo '</p></div></div>';
             return;
         }
-        $steps = self::steps();
+        $steps = self::active_steps();
         $index = self::currentStepIndex();
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.
         if ( isset( $_GET['step'] ) && is_string( $_GET['step'] ) ) {
@@ -181,7 +181,7 @@ final class CpmsSetupWizard
                 <?php foreach ($steps as $i => $s) : ?>
                     <?php
                     $current    = $i === $index;
-                    $done       = $i < $index;
+                    $done       = self::step_is_complete( $s['id'], $settings );
                     $icon_class = $current ? 'dashicons-star-filled' : ( $done ? 'dashicons-yes' : 'dashicons-marker' );
                     $icon_style = $current ? 'background:#2271b1;color:#fff;padding:2px 8px;border-radius:3px;' : ( $done ? 'color:#00a32a;' : 'color:#787c82;' );
                     ?>
@@ -191,7 +191,7 @@ final class CpmsSetupWizard
                         aria-current="<?php echo $current ? 'step' : 'false'; ?>"
                         class="dashicons-before <?php echo esc_attr( $icon_class ); ?>"
                         style="display:inline-block;text-decoration:none;box-sizing:border-box;max-width:100%;padding:6px 8px;min-height:36px;line-height:1.8;<?php echo esc_attr( $icon_style ); ?>">
-                        <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] ); ?>
+                        <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] . ( $s['required'] ? ' (الزامی)' : ' (اختیاری)' ) ); ?>
                     </a>
                 <?php endforeach; ?>
             </nav>
@@ -208,7 +208,7 @@ final class CpmsSetupWizard
     {
         $settings = App::settings();
         $store = (string) ($settings->get('setup.current_step', 'welcome') ?? 'welcome');
-        foreach (self::steps() as $i => $s) {
+        foreach (self::active_steps() as $i => $s) {
             if ($s['id'] === $store) {
                 return $i;
             }
@@ -219,7 +219,7 @@ final class CpmsSetupWizard
 
     private static function stepIndexById(string $id): int
     {
-        foreach (self::steps() as $i => $s) {
+        foreach (self::active_steps() as $i => $s) {
             if ($s['id'] === $id) {
                 return $i;
             }
@@ -252,7 +252,7 @@ final class CpmsSetupWizard
      */
     private static function nextStepId(string $id): string
     {
-        $steps = self::steps();
+        $steps = self::active_steps();
         $found = false;
         foreach ($steps as $s) {
             if ($found) {
@@ -511,8 +511,16 @@ final class CpmsSetupWizard
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
         </div>
-        <?php
-        self::form_tag( 'doctors', 'ادامه' );
+        <?php self::open_step_form( 'doctors' ); ?>
+        <div class="card">
+            <p>
+                <label for="cpms_intended_clinicians">تعداد پزشکان موردنظر</label>
+                <input type="number" id="cpms_intended_clinicians" name="intended_clinicians" min="1" max="200" style="max-width:100%;" value="<?php echo esc_attr( (string) max( 1, self::intended_clinicians( App::settings() ) ) ); ?>">
+            </p>
+            <p class="description">این گام فقط وقتی کامل است که دست‌کم به همین تعداد پزشک فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.</p>
+            <?php self::submit_step_form( 'doctors', 'ذخیره و ادامه' ); ?>
+        </div>
+        <?php self::close_step_form(); ?>
     }
 
     private static function renderSchedules(): void
@@ -688,6 +696,10 @@ final class CpmsSetupWizard
             <table class="form-table" role="presentation">
                 <tr><th>نام کلینیک</th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
                 <tr><th>پزشکان فعال</th><td><?php echo esc_html( (string) $doctor_count ); ?></td></tr>
+                <tr><th>تعداد پزشکان موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
+                <tr><th>مکان‌های فعال</th><td><?php echo esc_html( (string) count( array_filter( App::locationRepository()->listForClinic( (int) App::scope()->clinicId ), static fn ( $loc ) => (int) ( $loc['is_active'] ?? 0 ) === 1 ) ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase ?></td></tr>
+                <tr><th>مدت پیش‌فرض نوبت (دقیقه)</th><td><?php echo esc_html( (string) (int) $settings->get( 'booking.duration_default_min', 20 ) ); ?></td></tr>
+                <tr><th>گام‌های الزامیِ باقی‌مانده</th><td><?php $missing_steps = self::missing_required_steps( $settings ); echo esc_html( $missing_steps === [] ? 'هیچ‌کدام' : implode( '، ', $missing_steps ) ); ?></td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
             <p>برای تکمیل، اطلاعات کلینیک و دست‌کم یک پزشک فعال لازم است.</p>
@@ -759,7 +771,185 @@ final class CpmsSetupWizard
     }
 
     private static function current_flow(): string {
-        return FacilityTypeCatalog::resolve_flow( self::selected_facility_type(), self::selected_structure() );
+        $facility = self::selected_facility_type();
+        if ( $facility === '' ) {
+            try {
+                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+                if ( FacilityTypeCatalog::is_valid( $stored ) ) {
+                    $facility = $stored;
+                }
+            } catch ( \Throwable ) {
+                $facility = '';
+            }
+        }
+
+        return FacilityTypeCatalog::resolve_flow( $facility, self::selected_structure() );
+    }
+
+    /**
+     * Wizard steps actually shown for the selected facility flow.
+     * Without any facility selection the full legacy registry is shown.
+     *
+     * @return list<array{id:string,title:string,icon:string,required:bool}>
+     */
+    public static function active_steps(): array {
+        if ( self::selected_facility_type() === '' ) {
+            try {
+                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+                if ( ! FacilityTypeCatalog::is_valid( $stored ) ) {
+                    return self::steps();
+                }
+            } catch ( \Throwable ) {
+                return self::steps();
+            }
+        }
+        $flow     = self::current_flow();
+        $ids      = FacilityTypeCatalog::flow_step_ids( $flow );
+        $required = FacilityTypeCatalog::flow_required_step_ids( $flow );
+        $by_id    = [];
+        foreach ( self::steps() as $step ) {
+            $by_id[ $step['id'] ] = $step;
+        }
+        $active = [];
+        foreach ( $ids as $id ) {
+            if ( isset( $by_id[ $id ] ) ) {
+                $step             = $by_id[ $id ];
+                $step['required'] = in_array( $id, $required, true );
+                $active[]         = $step;
+            }
+        }
+
+        return $active !== [] ? $active : self::steps();
+    }
+
+    public static function intended_clinicians( Settings $settings ): int {
+        return max( 0, (int) ( $settings->get( 'setup.intended_clinicians', 0 ) ?? 0 ) );
+    }
+
+    /**
+     * @return list<string>
+     */
+    public static function completed_step_ids( Settings $settings ): array {
+        $raw = (string) ( $settings->get( 'setup.completed_steps', '' ) ?? '' );
+        $ids = array_filter( array_map( 'trim', explode( ',', $raw ) ) );
+
+        return array_values( array_intersect( $ids, array_column( self::steps(), 'id' ) ) );
+    }
+
+    public static function mark_step_completed( Settings $settings, string $step_id, int $updated_by ): void {
+        if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
+            return;
+        }
+        $ids = self::completed_step_ids( $settings );
+        if ( ! in_array( $step_id, $ids, true ) ) {
+            $ids[] = $step_id;
+        }
+        $settings->set( 'setup.completed_steps', implode( ',', $ids ), $updated_by );
+    }
+
+    /**
+     * Completion is verified against actually saved configuration
+     * (canonical Clinic name, real Locations, real clinicians/schedules),
+     * never against a numeric declaration alone.
+     */
+    public static function step_is_complete( string $step_id, Settings $settings ): bool {
+        try {
+            switch ( $step_id ) {
+                case 'facility':
+                    return self::selected_facility_type() !== '' || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+                case 'clinic':
+                    return self::canonical_clinic_name( $settings ) !== '';
+                case 'locations':
+                    $clinic_id = (int) App::scope()->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext public property
+                    foreach ( App::locationRepository()->listForClinic( $clinic_id ) as $loc ) {
+                        if ( (int) ( $loc['is_active'] ?? 0 ) === 1 && trim( (string) ( $loc['timezone'] ?? '' ) ) !== '' ) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                case 'doctors':
+                    $clinic_id = (int) App::scope()->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext public property
+                    $actual    = count( App::clinicianRepository()->listAll( $clinic_id, false ) );
+                    $intended  = self::intended_clinicians( $settings );
+                    if ( $intended <= 0 ) {
+                        $intended = self::current_flow() === 'multi_doctor_clinic' ? 2 : 1;
+                    }
+
+                    return $actual >= $intended;
+                case 'schedules':
+                    $clinic_id = (int) App::scope()->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext public property
+                    foreach ( App::clinicianRepository()->listAll( $clinic_id, false ) as $clinician ) {
+                        if ( (int) ( $clinician['schedule_days'] ?? 0 ) > 0 ) {
+                            return true;
+                        }
+                    }
+
+                    return false;
+                case 'review':
+                    return self::missing_required_steps( $settings ) === [];
+                case 'finish':
+                    return (bool) $settings->get( self::COMPLETE_KEY, false );
+                default:
+                    return in_array( $step_id, self::completed_step_ids( $settings ), true );
+            }
+        } catch ( \Throwable ) {
+            return false;
+        }
+    }
+
+    /**
+     * Required steps (excluding facility/review/finish) not yet verified complete.
+     *
+     * @return list<string> Persian step titles
+     */
+    public static function missing_required_steps( Settings $settings ): array {
+        $required = FacilityTypeCatalog::flow_required_step_ids( self::current_flow() );
+        $titles   = [];
+        foreach ( self::steps() as $step ) {
+            $titles[ $step['id'] ] = $step['title'];
+        }
+        $missing = [];
+        foreach ( $required as $id ) {
+            if ( $id === 'facility' || $id === 'review' ) {
+                continue;
+            }
+            if ( ! self::step_is_complete( $id, $settings ) ) {
+                $missing[] = $titles[ $id ] ?? $id;
+            }
+        }
+
+        return $missing;
+    }
+
+    /**
+     * Save the intended clinician count for the doctors step.
+     * Multi-doctor flows require at least two; completion is later
+     * verified against actually registered active clinicians.
+     *
+     * @param array<string, mixed> $post
+     */
+    public static function save_doctors( Settings $settings, array $post, int $updated_by ): string {
+        $flow = self::current_flow();
+        $raw  = $post['intended_clinicians'] ?? null;
+        if ( $raw === null || ! is_scalar( $raw ) || trim( (string) $raw ) === '' ) {
+            if ( $flow === 'multi_doctor_clinic' ) {
+                return 'تعداد پزشکان موردنظر را مشخص کنید.';
+            }
+            $settings->set( 'setup.intended_clinicians', 1, $updated_by );
+
+            return '';
+        }
+        $intended = (int) $raw;
+        if ( $intended < 1 || $intended > 200 ) {
+            return 'تعداد پزشکان باید بین ۱ تا ۲۰۰ باشد.';
+        }
+        if ( $flow === 'multi_doctor_clinic' && $intended < 2 ) {
+            return 'برای درمانگاه چندپزشکه، تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.';
+        }
+        $settings->set( 'setup.intended_clinicians', $intended, $updated_by );
+
+        return '';
     }
 
     /** Pre-bootstrap first screen: facility question only; POST-only, nonce + manage_options, user-meta presentation state (no Clinic write). */
@@ -942,6 +1132,9 @@ final class CpmsSetupWizard
             case 'clinic':
                 $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
                 break;
+            case 'doctors':
+                $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
+                break;
             case 'booking':
                 $error = self::saveBooking($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
                 break;
@@ -968,6 +1161,19 @@ final class CpmsSetupWizard
             exit;
         }
 
+        // Verified progression: entity steps advance only when actually
+        // complete; informational steps are recorded as completed.
+        $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
+        if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
+            self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+        }
+        $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
+            set_transient( self::NOTICE_KEY, 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.', 60 );
+            wp_safe_redirect( self::step_url( $step ) );
+            exit;
+        }
+        self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
         self::setCurrentStep(self::nextStepId($step));
         set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
         wp_safe_redirect(admin_url('admin.php?page=cpms-wizard'));
@@ -1198,7 +1404,16 @@ final class CpmsSetupWizard
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
-        if (!self::isReadyToOperate($settings)) {
+        $facility_selected = self::selected_facility_type() !== '' || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+        if ( $facility_selected ) {
+            if ( ! FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() ) ) {
+                return 'پیش‌نیازهای الزامی برآورده نشده است: ساخت چند درمانگاه مستقل بدون مدل اختیار سازمانیِ مصوب انجام نمی‌شود و راه‌اندازی چنددرمانگاهی در این نصب فعال نیست.';
+            }
+            $missing = self::missing_required_steps( $settings );
+            if ( $missing !== [] ) {
+                return 'پیش‌نیازهای الزامی برآورده نشده است: ' . implode( '، ', $missing );
+            }
+        } elseif (!self::isReadyToOperate($settings)) {
             return 'پیش‌نیازهای الزامی برآورده نشده است (اطلاعات کلینیک + یک پزشک فعال).';
         }
 

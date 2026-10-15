@@ -111,4 +111,32 @@ final class FacilityTypeCatalog {
     public static function supports_multi_clinic_provisioning(): bool {
         return false;
     }
+
+    /**
+     * Wizard step ids actually shown for a flow (real step selection).
+     *
+     * @return list<string>
+     */
+    public static function flow_step_ids( string $flow ): array {
+        return match ( $flow ) {
+            'simple_practice' => ['facility', 'clinic', 'locations', 'doctors', 'users', 'schedules', 'booking', 'review', 'finish'],
+            'medical_building' => ['facility', 'clinic', 'locations', 'review', 'finish'],
+            'hospital_network' => ['facility', 'clinic', 'locations', 'doctors', 'users', 'schedules', 'booking', 'health', 'review', 'finish'],
+            default => ['facility', 'clinic', 'locations', 'doctors', 'users', 'schedules', 'booking', 'review', 'finish'],
+        };
+    }
+
+    /**
+     * Required wizard step ids for a flow; everything else shown is optional.
+     *
+     * @return list<string>
+     */
+    public static function flow_required_step_ids( string $flow ): array {
+        return match ( $flow ) {
+            'simple_practice' => ['facility', 'clinic', 'locations', 'doctors', 'schedules', 'booking', 'review'],
+            'medical_building' => ['facility', 'clinic', 'locations', 'review'],
+            'hospital_network' => ['facility', 'clinic', 'locations', 'doctors', 'schedules', 'booking', 'health', 'review'],
+            default => ['facility', 'clinic', 'locations', 'doctors', 'users', 'schedules', 'booking', 'review'],
+        };
+    }
 }

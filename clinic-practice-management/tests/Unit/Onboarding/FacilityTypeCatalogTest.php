@@ -28,6 +28,20 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertFalse(FacilityTypeCatalog::flow_supports_provisioning('medical_building'));
   self::assertTrue(FacilityTypeCatalog::flow_supports_provisioning('simple_practice'));
  }
+ public function testFlowStepSelectionIsRealAndFlowSpecific(): void {
+  $simple = FacilityTypeCatalog::flow_step_ids('simple_practice');
+  $hospital = FacilityTypeCatalog::flow_step_ids('hospital_network');
+  $building = FacilityTypeCatalog::flow_step_ids('medical_building');
+  self::assertContains('locations', $simple);
+  self::assertContains('schedules', $simple);
+  self::assertContains('health', $hospital);
+  self::assertNotContains('health', $simple);
+  self::assertNotContains('booking', $building);
+  $req = FacilityTypeCatalog::flow_required_step_ids('multi_doctor_clinic');
+  self::assertContains('doctors', $req);
+  self::assertContains('locations', $req);
+  self::assertNotContains('users', FacilityTypeCatalog::flow_required_step_ids('simple_practice'), 'secretary must stay optional for a simple practice');
+ }
  public function testWizardSourceContracts(): void {
   $s = (string) file_get_contents(dirname(__DIR__,3).'/src/Admin/CpmsSetupWizard.php');
   self::assertStringContainsString('چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟', $s);
@@ -36,6 +50,9 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertStringContainsString('wp_verify_nonce', $s);
   self::assertStringContainsString('data-cpms-onboarding-flow', $s);
   self::assertStringContainsString('data-cpms-multi-clinic-blocked', $s);
+  self::assertStringContainsString('function active_steps', $s);
+  self::assertStringContainsString('intended_clinicians', $s);
+  self::assertStringContainsString('missing_required_steps', $s);
   self::assertStringContainsString('data-cpms-inpatient-unsupported', $s);
   // No user-facing technical English labels in facility step markers
   self::assertStringContainsString('dir="rtl"', $s);
