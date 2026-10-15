@@ -15,6 +15,7 @@ use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Admin\PatientAdminPage;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Admin\PrescriptionPrintPage;
+use ClinicCore\Admin\PublicShortcodeAdminPage;
 use ClinicCore\Admin\RoleCapabilitiesPage;
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\StaffManagementPage;
@@ -365,6 +366,7 @@ final class App
         DoctorDashboardPage::register();
         DoctorHandwritingPage::register();
         PatientAdminPage::register(); // Chunk G — Patient Management Entry (operational, capability-driven)
+        PublicShortcodeAdminPage::register(); // Classic shortcode helper (manage_options + authorized Clinic selector)
     }
 
     public static function activate(): void

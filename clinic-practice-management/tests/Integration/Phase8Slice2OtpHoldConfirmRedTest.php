@@ -1065,11 +1065,23 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
 
         $userId = $this->provisionOtpUser(self::MOBILE_T13, '505050');
 
+        $mismatchedLocation = $this->restPost(self::NS . self::HOLD_PATH, [
+            'clinician_id' => $this->clinicianA,
+            'slot_date' => $slot['date'],
+            'slot_time' => $slot['time'],
+            'slot_id' => $slot['slot_id'],
+            'location_id' => $this->locationB,
+        ], asUserId: $userId, withNonce: true);
+        $this->assertClinicError($mismatchedLocation, 'CLINIC_NOT_FOUND', 404, 'B1 must reject a selector for another Clinic Location.');
+        self::assertSame(0, $this->countRows('cpms_slot_holds'), 'A mismatched Location must create no Hold.');
+        self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'A mismatched Location must not consume slot capacity.');
+
         $hold = $this->restPost(self::NS . self::HOLD_PATH, [
             'clinician_id' => $this->clinicianA,
             'slot_date' => $slot['date'],
             'slot_time' => $slot['time'],
             'slot_id' => $slot['slot_id'],
+            'location_id' => $this->locationA,
             // Tampered client claims — none of them has any authority.
             'clinic_id' => $this->clinicB,
             'holder_mobile' => '09000000000',

@@ -201,6 +201,93 @@
 	opacity: 0.65;
 }
 
+/* ============================ انتخاب Location ============================ */
+
+.cpms-public-booking__location-picker {
+	display: grid;
+	gap: 10px;
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__location-picker[hidden],
+.cpms-public-booking__location-details[hidden],
+.cpms-public-booking__location-address[hidden],
+.cpms-public-booking__location-hint[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__location-list {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+	gap: 10px;
+}
+
+.cpms-public-booking__location-item {
+	min-inline-size: 0;
+}
+
+.cpms-public-booking__location-option {
+	display: flex;
+	flex-direction: column;
+	align-items: flex-start;
+	justify-content: center;
+	gap: 3px;
+	inline-size: 100%;
+	min-block-size: 56px;
+	padding: 10px 14px;
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius-sm);
+	background: var(--cpms-pb-bg);
+	color: var(--cpms-pb-text);
+	cursor: pointer;
+	text-align: start;
+	font: inherit;
+}
+
+.cpms-public-booking__location-option:hover,
+.cpms-public-booking__location-option[aria-pressed="true"] {
+	border-color: var(--cpms-pb-accent);
+	background: var(--cpms-pb-accent-soft);
+}
+
+.cpms-public-booking__location-option[aria-pressed="true"] {
+	box-shadow: inset 0 0 0 1px var(--cpms-pb-accent);
+}
+
+.cpms-public-booking__location-option-name,
+.cpms-public-booking__location-name {
+	font-weight: 700;
+	overflow-wrap: anywhere;
+}
+
+.cpms-public-booking__location-option-address,
+.cpms-public-booking__location-address {
+	color: var(--cpms-pb-text-soft);
+	font-size: 0.9rem;
+	unicode-bidi: plaintext;
+	overflow-wrap: anywhere;
+}
+
+.cpms-public-booking__location-details {
+	padding: 10px 12px;
+	border-inline-start: 3px solid var(--cpms-pb-accent);
+	background: var(--cpms-pb-surface);
+}
+
+.cpms-public-booking__location-details p,
+.cpms-public-booking__location-hint {
+	margin: 0;
+}
+
+.cpms-public-booking__location-hint {
+	color: var(--cpms-pb-text-soft);
+}
+
+.cpms-public-booking__location-option:focus-visible {
+	outline: 3px solid var(--cpms-pb-accent);
+	outline-offset: 2px;
+}
+
 /* ============================ panel مرور نوبت ============================ */
 
 .cpms-public-booking__panel {
@@ -223,6 +310,7 @@
 .cpms-public-booking__panel[data-state="idle"] .cpms-public-booking__message[data-message="idle"],
 .cpms-public-booking__panel[data-state="loading"] .cpms-public-booking__message[data-message="loading"],
 .cpms-public-booking__panel[data-state="selectable"] .cpms-public-booking__message[data-message="selectable"],
+.cpms-public-booking__panel[data-state="location_required"] .cpms-public-booking__message[data-message="location_required"],
 .cpms-public-booking__panel[data-state="bookable"] .cpms-public-booking__message[data-message="bookable"],
 .cpms-public-booking__panel[data-state="policy_rejected"] .cpms-public-booking__message[data-message="policy_rejected"],
 .cpms-public-booking__panel[data-state="unavailable"] .cpms-public-booking__message[data-message="unavailable"],

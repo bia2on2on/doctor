@@ -58,6 +58,7 @@ final class BookingController extends RestBase
                     'slot_date' => ['required' => true, 'type' => 'string'],
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
+                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -74,6 +75,7 @@ final class BookingController extends RestBase
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'patient_id' => ['required' => false, 'type' => 'integer'],
+                    'location_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -203,11 +205,13 @@ final class BookingController extends RestBase
     private function quote(WP_REST_Request $request): WP_REST_Response|WP_Error
     {
         $slotId = $request->get_param('slot_id');
+        $locationId = $request->get_param( 'location_id' );
         return $this->wrap(fn () => $this->booking->quote(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
             (string) $request->get_param('slot_time'),
-            $slotId !== null && $slotId !== '' ? (int) $slotId : null
+            $slotId !== null && $slotId !== '' ? (int) $slotId : null,
+            $locationId !== null && $locationId !== '' ? (int) $locationId : null
         ));
     }
 
@@ -221,13 +225,15 @@ final class BookingController extends RestBase
 
         $slotId = $request->get_param('slot_id');
         $patientId = $request->get_param('patient_id');
+        $locationId = $request->get_param( 'location_id' );
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
             (string) $request->get_param('slot_time'),
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
-            $patientId !== null && $patientId !== '' ? (int) $patientId : null
+            $patientId !== null && $patientId !== '' ? (int) $patientId : null,
+            $locationId !== null && $locationId !== '' ? (int) $locationId : null
         ));
     }
 

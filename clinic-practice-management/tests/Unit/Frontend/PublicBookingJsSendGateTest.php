@@ -118,4 +118,22 @@ final class PublicBookingJsSendGateTest extends TestCase
         self::assertStringNotContainsString("clearStoredSelection()", $segment, 'patient init must not clear booking selection prematurely');
         self::assertStringNotContainsString("SELECT_KEY", $segment, 'patient init must not touch booking selection');
     }
+
+    public function testLocationChoiceIsRequiredForMultipleAndBoundToQuoteAndHold(): void
+    {
+        self::assertStringContainsString('function collectLocations', $this->js, 'A1 must build the choice set from persisted slot Location metadata.');
+        self::assertStringContainsString('availableLocations.length === 1', $this->js, 'A single available Location must be selected automatically.');
+        self::assertStringContainsString('availableLocations.length > 1', $this->js, 'Multiple Locations must remain unselected until the visitor chooses.');
+        self::assertStringContainsString('function renderLocationOptions', $this->js, 'The UI must present an explicit accessible selector for multiple Locations.');
+        self::assertStringContainsString('payload.location_id = selectedLocationId', $this->js, 'A4 must send the selected Location only as a selector.');
+        self::assertStringContainsString('body.location_id = toInt(selection.location_id)', $this->js, 'B1 must preserve the selected Location selector.');
+        self::assertStringContainsString('location-picker', $this->js, 'Location selection must bind to the server-rendered picker.');
+    }
+
+    public function testNearbyAlternativesKeepTheirPersistedLocationId(): void
+    {
+        self::assertStringContainsString("node.setAttribute('data-location-id', String(entryLocationId))", $this->js, 'A nearby slot must carry the server-provided Location id into the A4 selector.');
+        self::assertStringContainsString("location_id: toInt(slotButton.getAttribute('data-location-id'))", $this->js, 'A nearby alternative must quote against its own rendered Location.');
+        self::assertStringContainsString('entryLocationId !== selectedLocationId', $this->js, 'Nearby alternatives from another Location must remain hidden.');
+    }
 }

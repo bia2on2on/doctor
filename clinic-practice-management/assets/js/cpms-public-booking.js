@@ -59,11 +59,15 @@
 	var ROLE_PANEL = '[data-role="panel"]';
 	var ROLE_DAYS = '[data-role="days"]';
 	var ROLE_DETAIL = '[data-role="detail"]';
+	var ROLE_LOCATION_PICKER = '[data-role="location-picker"]';
+	var ROLE_LOCATION_OPTIONS = '[data-role="location-options"]';
+	var ROLE_LOCATION_OPTION = '[data-role="location-option"]';
 
 	/* ====================== واژگانِ وضعیت (منتشرشده توسط سرور) ====================== */
 
 	var STATE_LOADING = 'loading';
 	var STATE_SELECTABLE = 'selectable';
+	var STATE_LOCATION_REQUIRED = 'location_required';
 	var STATE_BOOKABLE = 'bookable';
 	var STATE_POLICY_REJECTED = 'policy_rejected';
 	var STATE_UNAVAILABLE = 'unavailable';
@@ -310,6 +314,13 @@
 		var daysHost = root.querySelector(ROLE_DAYS);
 		var detailHost = root.querySelector(ROLE_DETAIL);
 		var clinicianButtons = root.querySelectorAll(CLINICIAN_SELECTOR);
+		var locationPicker = root.querySelector(ROLE_LOCATION_PICKER);
+		var locationList = locationPicker ? locationPicker.querySelector(ROLE_LOCATION_OPTIONS) : null;
+		var locationDetails = locationPicker ? locationPicker.querySelector('[data-role="location-details"]') : null;
+		var locationName = locationPicker ? locationPicker.querySelector('[data-role="location-name"]') : null;
+		var locationAddress = locationPicker ? locationPicker.querySelector('[data-role="location-address"]') : null;
+		var locationAddressRow = locationPicker ? locationPicker.querySelector('[data-role="location-address-row"]') : null;
+		var locationHint = locationPicker ? locationPicker.querySelector('[data-role="location-hint"]') : null;
 
 		if (!panel || !daysHost) {
 			return;
@@ -317,6 +328,9 @@
 
 		var busy = false;
 		var selectedClinicianId = 0;
+		var selectedLocationId = 0;
+		var availableDays = [];
+		var availableLocations = [];
 
 		/* -------------- Phase 8 Slice 2 — وضعیت continuation -------------- */
 		/* فقط از قراردادِ منتشرشدهٔ سرور خوانده می‌شود؛ هیچ حدسی در کار نیست:
@@ -501,11 +515,13 @@
 		function freeze() {
 			setDisabled(clinicianButtons, true);
 			setDisabled(slotButtons(), true);
+			setDisabled(locationOptionButtons(), true);
 		}
 
 		function unfreeze() {
 			setDisabled(clinicianButtons, false);
 			setDisabled(slotButtons(), false);
+			setDisabled(locationOptionButtons(), holdToken !== '');
 		}
 
 		function clearDetail() {
@@ -551,6 +567,116 @@
 			showDetail('detail-server', { message: message });
 		}
 
+		function collectLocations(days) {
+			var locationsById = Object.create(null);
+			for (var i = 0; i < days.length; i++) {
+				var slots = days[i] && Array.isArray(days[i].slots) ? days[i].slots : [];
+				for (var j = 0; j < slots.length; j++) {
+					var slot = slots[j];
+					var id = toInt(slot && slot.location_id);
+					var name = slot && isNonEmptyString(slot.location_name) ? slot.location_name : '';
+					if (id <= 0 || name === '') { continue; }
+					if (!locationsById[id]) {
+						locationsById[id] = {
+							id: id,
+							name: name,
+							address: slot && isNonEmptyString(slot.location_address) ? slot.location_address : ''
+						};
+					}
+				}
+			}
+			return Object.keys(locationsById).map(function (id) { return locationsById[id]; });
+		}
+
+		function locationOptionButtons() {
+			return locationList ? locationList.querySelectorAll(ROLE_LOCATION_OPTION) : [];
+		}
+
+		function findAvailableLocation(locationId) {
+			for (var i = 0; i < availableLocations.length; i++) {
+				if (toInt(availableLocations[i].id) === toInt(locationId)) { return availableLocations[i]; }
+			}
+			return null;
+		}
+
+		function renderLocationOptions(locations) {
+			if (!locationList) { return; }
+			while (locationList.firstChild) { locationList.removeChild(locationList.firstChild); }
+			for (var i = 0; i < locations.length; i++) {
+				var location = locations[i];
+				var node = templateNode(root, 'location-option');
+				if (!node || !location || toInt(location.id) <= 0) { continue; }
+				var button = node.querySelector(ROLE_LOCATION_OPTION);
+				if (!button) { continue; }
+				button.setAttribute('data-location-id', String(toInt(location.id)));
+				fill(node, 'name', location.name);
+				fill(node, 'address', location.address || '');
+				var addressNode = node.querySelector('[data-fill="address"]');
+				if (addressNode) { addressNode.hidden = !isNonEmptyString(location.address); }
+				locationList.appendChild(node);
+			}
+		}
+
+		function showLocationDetails(location) {
+			if (!locationDetails) { return; }
+			if (!location) {
+				locationDetails.hidden = true;
+				return;
+			}
+			if (locationName) { locationName.textContent = String(location.name || ''); }
+			if (locationAddress) { locationAddress.textContent = String(location.address || ''); }
+			if (locationAddressRow) { locationAddressRow.hidden = !isNonEmptyString(location.address); }
+			locationDetails.hidden = false;
+		}
+
+		function filterDaysForLocation(days, locationId) {
+			var filtered = [];
+			for (var i = 0; i < days.length; i++) {
+				var day = days[i];
+				var slots = day && Array.isArray(day.slots) ? day.slots : [];
+				var matching = slots.filter(function (slot) {
+					return toInt(slot && slot.location_id) === toInt(locationId);
+				});
+				if (matching.length > 0) {
+					filtered.push({ date: day.date, jalali: day.jalali, slots: matching });
+				}
+			}
+			return filtered;
+		}
+
+		function setLocationChoice(locationId, invalidateSelection) {
+			var location = findAvailableLocation(locationId);
+			if (!location || !locationList || !locationPicker) { return false; }
+			selectedLocationId = toInt(location.id);
+			var buttons = locationOptionButtons();
+			for (var i = 0; i < buttons.length; i++) {
+				buttons[i].setAttribute('aria-pressed', toInt(buttons[i].getAttribute('data-location-id')) === selectedLocationId ? 'true' : 'false');
+			}
+			showLocationDetails(location);
+			if (locationHint) { locationHint.hidden = true; }
+
+			if (invalidateSelection !== false) {
+				lastSelection = null;
+				clearStoredSelection();
+				holdToken = '';
+				stopCountdown();
+				if (continueBox) { continueBox.hidden = true; }
+				var confirmButton = root.querySelector('[data-role="confirm-btn"]');
+				var namesForm = root.querySelector('[data-role="names-form"]');
+				var receipt = root.querySelector('[data-role="receipt"]');
+				if (confirmButton) { confirmButton.hidden = true; }
+				if (namesForm) { namesForm.hidden = true; }
+				if (receipt) { receipt.hidden = true; }
+				hideNearby();
+			}
+
+			setText(daysHost, '');
+			clearDetail();
+			var count = renderDays(filterDaysForLocation(availableDays, selectedLocationId));
+			panelState(count > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+			return true;
+		}
+
 		/* ---------------- A1: مرورِ نوبت‌های آزاد (مسیرِ موجود) ---------------- */
 
 		function buildDay(day) {
@@ -593,7 +719,8 @@
 
 			var slotDate = isNonEmptyString(day.date) ? day.date : '';
 			var slotTime = isNonEmptyString(slot.time) ? slot.time : '';
-			if (slotDate === '' || slotTime === '') {
+			var locationId = toInt(slot.location_id);
+			if (slotDate === '' || slotTime === '' || locationId <= 0 || !findAvailableLocation(locationId)) {
 				return null;
 			}
 
@@ -604,6 +731,7 @@
 
 			// هویتِ دقیقِ اسلات از A1 — همان مقداری که عیناً به A4 برمی‌گردد.
 			node.setAttribute('data-slot-id', String(toInt(slot.slot_id)));
+			node.setAttribute('data-location-id', String(locationId));
 			node.setAttribute('data-slot-date', slotDate);
 			node.setAttribute('data-slot-time', slotTime);
 			node.setAttribute('aria-pressed', 'false');
@@ -631,9 +759,20 @@
 			return slotCount;
 		}
 
-		function loadAvailability(clinicianId) {
+		function loadAvailability(clinicianId, restoreSelection) {
 			clearDetail();
 			setText(daysHost, '');
+			availableDays = [];
+			availableLocations = [];
+			selectedLocationId = 0;
+			if (locationPicker) { locationPicker.hidden = true; }
+			if (locationList) { setText(locationList, ''); }
+			showLocationDetails(null);
+			if (locationHint) { locationHint.hidden = true; }
+			if (!restoreSelection) {
+				lastSelection = null;
+				clearStoredSelection();
+			}
 			panelState(STATE_LOADING);
 			setBusy(true);
 			setDisabled(clinicianButtons, true);
@@ -662,15 +801,72 @@
 					return;
 				}
 
-				// `{days: []}` یعنی همین پزشک در بازهٔ پیش‌فرضِ سرور نوبتِ
-				// آزادی ندارد ⇒ وضعیتِ روشنِ `empty` (نه خطا).
-				if (days.length === 0) {
+				availableDays = days;
+				availableLocations = collectLocations(days);
+				renderLocationOptions(availableLocations);
+				if (availableLocations.length === 0) {
 					panelState(STATE_EMPTY);
 					clearDetail();
 					return;
 				}
+				if (locationPicker) { locationPicker.hidden = false; }
 
-				panelState(renderDays(days) > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+				if (restoreSelection) {
+					var matches = [];
+					for (var dayIndex = 0; dayIndex < days.length; dayIndex++) {
+						var slotRows = Array.isArray(days[dayIndex].slots) ? days[dayIndex].slots : [];
+						for (var slotIndex = 0; slotIndex < slotRows.length; slotIndex++) {
+							var candidate = slotRows[slotIndex];
+							var exactId = toInt(restoreSelection.slot_id);
+							var sameTime = days[dayIndex].date === restoreSelection.slot_date && candidate.time === restoreSelection.slot_time;
+							var sameId = exactId > 0 && toInt(candidate.slot_id) === exactId;
+							if ((sameId && sameTime) || (exactId <= 0 && sameTime)) { matches.push(candidate); }
+						}
+					}
+					if (matches.length !== 1) {
+						clearStoredSelection();
+						panelState(STATE_EMPTY);
+						return;
+					}
+					var restoredLocationId = toInt(matches[0].location_id);
+					if (toInt(restoreSelection.location_id) > 0 && toInt(restoreSelection.location_id) !== restoredLocationId) {
+						clearStoredSelection();
+						panelState(STATE_ERROR);
+						return;
+					}
+					if (!setLocationChoice(restoredLocationId, false)) {
+						clearStoredSelection();
+						panelState(STATE_ERROR);
+						return;
+					}
+					var buttons = slotButtons();
+					for (var buttonIndex = 0; buttonIndex < buttons.length; buttonIndex++) {
+						if (
+							toInt(buttons[buttonIndex].getAttribute('data-slot-id')) === toInt(matches[0].slot_id)
+							&& buttons[buttonIndex].getAttribute('data-slot-date') === restoreSelection.slot_date
+							&& buttons[buttonIndex].getAttribute('data-slot-time') === restoreSelection.slot_time
+						) {
+							quoteSlot(buttons[buttonIndex]);
+							return;
+						}
+					}
+					clearStoredSelection();
+					panelState(STATE_EMPTY);
+					return;
+				}
+
+				if (availableLocations.length === 1) {
+					setLocationChoice(availableLocations[0].id, false);
+					return;
+				}
+				if (availableLocations.length > 1) {
+					if (locationHint) { locationHint.hidden = false; }
+					panelState(STATE_LOCATION_REQUIRED);
+					clearDetail();
+					return;
+				}
+
+				panelState(STATE_EMPTY);
 				clearDetail();
 			}, function () {
 				setBusy(false);
@@ -686,6 +882,13 @@
 			var payload = result.body && result.body.data ? result.body.data : null;
 
 			if (result.ok && payload && payload.available === true) {
+				var quotedLocationId = toInt(payload.location_id);
+				if (quotedLocationId <= 0 || quotedLocationId !== selectedLocationId) {
+					panelState(STATE_ERROR);
+					clearDetail();
+					return;
+				}
+				if (lastSelection) { lastSelection.location_id = quotedLocationId; }
 				panelState(STATE_BOOKABLE);
 				showDetail('detail-capacity', { capacity: toInt(payload.capacity_left) });
 				// Phase 8 Slice 2 — انتخابِ غیر-PHI برای عبور از مرز login.
@@ -723,8 +926,9 @@
 			var slotDate = button.getAttribute('data-slot-date') || '';
 			var slotTime = button.getAttribute('data-slot-time') || '';
 			var slotId = toInt(button.getAttribute('data-slot-id'));
+			var locationId = toInt(button.getAttribute('data-location-id'));
 
-			if (selectedClinicianId <= 0 || slotDate === '' || slotTime === '') {
+			if (selectedClinicianId <= 0 || selectedLocationId <= 0 || locationId !== selectedLocationId || slotDate === '' || slotTime === '') {
 				return;
 			}
 
@@ -742,11 +946,13 @@
 			if (slotId > 0) {
 				payload.slot_id = slotId;
 			}
+			payload.location_id = selectedLocationId;
 
 			// Phase 8 Slice 2 — انتخابِ جاری (غیر-PHI) برای ادامهٔ احراز/رزرو.
 			lastSelection = {
 				clinician_id: selectedClinicianId,
 				slot_id: slotId > 0 ? slotId : 0,
+				location_id: selectedLocationId,
 				slot_date: slotDate,
 				slot_time: slotTime
 			};
@@ -973,11 +1179,16 @@
 				if (!entry || typeof entry !== 'object') {
 					continue;
 				}
+				var entryLocationId = toInt(entry.location_id);
+				if (entryLocationId <= 0 || entryLocationId !== selectedLocationId || !findAvailableLocation(entryLocationId)) {
+					continue;
+				}
 				var node = templateNode(root, 'slot');
 				if (!node) {
 					continue;
 				}
 				node.setAttribute('data-slot-id', String(toInt(entry.slot_id)));
+				node.setAttribute('data-location-id', String(entryLocationId));
 				node.setAttribute('data-slot-date', isNonEmptyString(entry.date) ? entry.date : '');
 				node.setAttribute('data-slot-time', isNonEmptyString(entry.time) ? entry.time : '');
 				fill(node, 'time', isNonEmptyString(entry.time) ? entry.time : '');
@@ -990,7 +1201,7 @@
 		}
 
 		function beginHold(selection) {
-			if (!continueBox || busy || !validSelection(selection)) {
+			if (!continueBox || busy || !validSelection(selection) || toInt(selection.location_id) <= 0 || toInt(selection.location_id) !== selectedLocationId) {
 				return;
 			}
 			continueBox.hidden = false;
@@ -1006,6 +1217,7 @@
 			if (toInt(selection.slot_id) > 0) {
 				body.slot_id = toInt(selection.slot_id);
 			}
+			body.location_id = toInt(selection.location_id);
 			// Phase 8 Slice 3 — B1 only: strict send gate. patient_id may be sent ONLY IF N>1 chooser exists,
 			// has options, and id is exactly among current rendered data-patient-id values. Otherwise clear stale and send nothing.
 			var pidToSend = getPatientIdForB1();
@@ -1024,6 +1236,9 @@
 				var payload = result.body && result.body.data ? result.body.data : null;
 				if (result.ok && payload && isNonEmptyString(payload.hold_token)) {
 					holdToken = payload.hold_token;
+					setDisabled(clinicianButtons, true);
+					setDisabled(slotButtons(), true);
+					setDisabled(locationOptionButtons(), true);
 					startCountdown(isNonEmptyString(payload.expires_at) ? payload.expires_at : '');
 					var confirmBtn = root.querySelector('[data-role="confirm-btn"]');
 					if (confirmBtn) {
@@ -1141,32 +1356,37 @@
 		 * resume (B6) عمداً استفاده نمی‌شود.
 		 */
 		function quoteSelection(selection, autoHold) {
-			if (busy || !validSelection(selection)) {
-				return;
-			}
+			if (busy || !validSelection(selection)) { return; }
+			var locationId = toInt(selection.location_id);
+			var clinicianId = toInt(selection.clinician_id);
+			var clinicianButton = null;
 			for (var i = 0; i < clinicianButtons.length; i++) {
-				if (toInt(clinicianButtons[i].getAttribute('data-clinician-id')) === toInt(selection.clinician_id)) {
-					setPressed(clinicianButtons, clinicianButtons[i]);
-					selectedClinicianId = toInt(selection.clinician_id);
+				if (toInt(clinicianButtons[i].getAttribute('data-clinician-id')) === clinicianId) {
+					clinicianButton = clinicianButtons[i];
 					break;
 				}
 			}
+			if (locationId <= 0 || !clinicianButton || !findAvailableLocation(locationId)) { return; }
+			if (locationId !== selectedLocationId && !setLocationChoice(locationId, false)) { return; }
+			if (selectedLocationId !== locationId) { return; }
+			setPressed(clinicianButtons, clinicianButton);
+			selectedClinicianId = clinicianId;
 
 			lastSelection = {
-				clinician_id: toInt(selection.clinician_id),
+				clinician_id: clinicianId,
 				slot_id: toInt(selection.slot_id),
+				location_id: locationId,
 				slot_date: selection.slot_date,
 				slot_time: selection.slot_time
 			};
 
 			var payload = {
-				clinician_id: toInt(selection.clinician_id),
+				clinician_id: clinicianId,
 				slot_date: selection.slot_date,
-				slot_time: selection.slot_time
+				slot_time: selection.slot_time,
+				location_id: locationId
 			};
-			if (toInt(selection.slot_id) > 0) {
-				payload.slot_id = toInt(selection.slot_id);
-			}
+			if (toInt(selection.slot_id) > 0) { payload.slot_id = toInt(selection.slot_id); }
 
 			panelState(STATE_LOADING);
 			setBusy(true);
@@ -1180,12 +1400,11 @@
 				setBusy(false);
 				unfreeze();
 				var p = result.body && result.body.data ? result.body.data : null;
-				if (result.ok && p && p.available === true) {
+				if (result.ok && p && p.available === true && toInt(p.location_id) === locationId) {
 					panelState(STATE_BOOKABLE);
 					showDetail('detail-capacity', { capacity: toInt(p.capacity_left) });
-					if (autoHold) {
-						beginHold(lastSelection);
-					}
+					storeSelection(lastSelection);
+					if (autoHold) { beginHold(lastSelection); }
 					return;
 				}
 				applyVerdict(result);
@@ -1202,7 +1421,14 @@
 		if (authMode === 'patient') {
 			var restored = readStoredSelection();
 			if (restored && toInt(restored.clinician_id) > 0) {
-				quoteSelection(restored, true);
+				selectedClinicianId = toInt(restored.clinician_id);
+				for (var restoreIndex = 0; restoreIndex < clinicianButtons.length; restoreIndex++) {
+					if (toInt(clinicianButtons[restoreIndex].getAttribute('data-clinician-id')) === selectedClinicianId) {
+						setPressed(clinicianButtons, clinicianButtons[restoreIndex]);
+						break;
+					}
+				}
+				loadAvailability(selectedClinicianId, restored);
 			}
 		}
 
@@ -1227,6 +1453,12 @@
 				setPressed(clinicianButtons, clinicianButton);
 				selectedClinicianId = clinicianId;
 				loadAvailability(clinicianId);
+				return;
+			}
+
+			var locationOption = target.closest(ROLE_LOCATION_OPTION);
+			if (locationOption && locationList && locationList.contains(locationOption) && !locationOption.disabled) {
+				setLocationChoice(toInt(locationOption.getAttribute('data-location-id')), true);
 				return;
 			}
 
@@ -1283,6 +1515,7 @@
 				quoteSelection({
 					clinician_id: selectedClinicianId,
 					slot_id: toInt(slotButton.getAttribute('data-slot-id')),
+					location_id: toInt(slotButton.getAttribute('data-location-id')),
 					slot_date: slotButton.getAttribute('data-slot-date') || '',
 					slot_time: slotButton.getAttribute('data-slot-time') || ''
 				}, true);

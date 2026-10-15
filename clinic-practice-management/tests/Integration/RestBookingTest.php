@@ -212,6 +212,52 @@ final class RestBookingTest extends WP_UnitTestCase
         $this->assertClinicError($response, 'CLINIC_PERMISSION_DENIED');
     }
 
+    public function testQuoteAndHoldRejectLocationIdThatDiffersFromPersistedSlot(): void
+    {
+        global $wpdb;
+        $slot = $this->makeSlot(3, '10:00');
+        $now = App::db()->nowUtcSql();
+        $wpdb->insert($wpdb->prefix . 'cpms_locations', [
+            'clinic_id' => 1,
+            'name' => 'REST mismatch Location',
+            'slug' => 'rest-mismatch-' . wp_generate_password(8, false),
+            'address' => 'not the slot address',
+            'timezone' => 'Asia/Tehran',
+            'is_primary' => 0,
+            'is_active' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $otherLocationId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan(0, $otherLocationId);
+
+        $quote = $this->dispatch('POST', self::NS . '/booking/quote', [
+            'clinician_id' => $this->clinicianId,
+            'slot_date' => $slot['date'],
+            'slot_time' => $slot['time'],
+            'slot_id' => $slot['id'],
+            'location_id' => $otherLocationId,
+        ]);
+        $this->assertSame(404, $quote->get_status());
+        $this->assertClinicError($quote, 'CLINIC_NOT_FOUND');
+
+        wp_set_current_user($this->patientUserId);
+        $hold = $this->dispatch('POST', self::NS . '/booking/hold', [
+            'clinician_id' => $this->clinicianId,
+            'slot_date' => $slot['date'],
+            'slot_time' => $slot['time'],
+            'slot_id' => $slot['id'],
+            'location_id' => $otherLocationId,
+        ]);
+        $this->assertSame(404, $hold->get_status());
+        $this->assertClinicError($hold, 'CLINIC_NOT_FOUND');
+        $activeHolds = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_slot_holds') . ' WHERE slot_id = %d AND status = %s',
+            [$slot['id'], 'active']
+        );
+        $this->assertSame(0, $activeHolds, 'A mismatched Location selector must not consume capacity.');
+    }
+
     // ---------- Happy path + Envelope ----------
 
     public function testHoldConfirmEnvelopeAndCorrelationHeader(): void
