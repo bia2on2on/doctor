@@ -867,3 +867,51 @@
 .cpms-pp-files__upload { margin-block-start: 16px; display: grid; gap: 8px; justify-items: start; }
 .cpms-pp-files__upload input[type="file"] { max-width: 100%; }
 .cpms-pp-files__notice { width: 100%; box-sizing: border-box; }
+
+/* Guest OTP login — portal-scoped, RTL-first, mobile/touch friendly. */
+.cpms-patient-portal-shell .cpms-pp-login__form {
+	display: grid;
+	gap: 12px;
+	max-width: 34rem;
+	margin-block: 16px;
+}
+.cpms-patient-portal-shell .cpms-pp-login__field {
+	display: grid;
+	gap: 6px;
+}
+.cpms-patient-portal-shell .cpms-pp-login__field label {
+	font-weight: 600;
+}
+.cpms-patient-portal-shell .cpms-pp-login__field input {
+	width: 100%;
+	min-height: var(--cpms-pp-touch);
+	padding: 10px 12px;
+	border: 1px solid var(--cpms-pp-border);
+	border-radius: var(--cpms-pp-radius-sm);
+	background: var(--cpms-pp-surface);
+	color: var(--cpms-pp-text);
+	font: inherit;
+}
+.cpms-patient-portal-shell .cpms-pp-login__field input:focus-visible {
+	outline: 3px solid var(--cpms-pp-primary);
+	outline-offset: 2px;
+}
+.cpms-patient-portal-shell .cpms-pp-login__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.cpms-patient-portal-shell .cpms-pp-login__status[data-state="error"] {
+	color: var(--cpms-pp-danger);
+}
+.cpms-patient-portal-shell .cpms-pp-login__status[data-state="success"] {
+	color: var(--cpms-pp-ok);
+}
+.cpms-patient-portal-shell .cpms-pp-login__status[data-state="busy"] {
+	color: var(--cpms-pp-muted);
+}
+.cpms-patient-portal-shell .cpms-pp-login__scope-hint {
+	padding-block-start: 8px;
+	border-block-start: 1px solid var(--cpms-pp-border);
+	font-size: 0.9rem;
+}

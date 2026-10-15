@@ -18,6 +18,7 @@ declare(strict_types=1);
 defined( 'ABSPATH' ) || exit;
 
 use ClinicCore\Admin\PatientPortalPage;
+use ClinicCore\Frontend\PatientOtpLogin;
 use ClinicCore\Frontend\PatientPortalShell;
 
 // Fail-safe: if loaded outside the normal request lifecycle, exit quietly.
@@ -39,7 +40,6 @@ if ( $cpms_login_name === '' && $cpms_logged_in ) {
 }
 
 $cpms_portal_url = PatientPortalShell::portal_url();
-$cpms_login_url  = wp_login_url( $cpms_portal_url );
 $cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
 
 $cpms_charset = (string) get_bloginfo( 'charset' );
@@ -61,12 +61,8 @@ if ( $cpms_is_patient ) {
 	echo '<p><a class="cpms-pp-btn cpms-pp-btn--primary" href="' . esc_url( admin_url() ) . '">بازگشت به پیشخوان</a></p>';
 	echo '</section>';
 } else {
-	// Unauthenticated: no Patient queries/PHI — safe Persian login state.
-	echo '<section class="cpms-patient-portal-shell__notice" role="status" data-role="portal-login">';
-	echo '<h2>ورود به پورتال بیمار</h2>';
-	echo '<p>برای مشاهده نوبت‌ها و اعلان‌ها وارد شوید. پس از ورود به همین پورتال بازمی‌گردید.</p>';
-	echo '<p><a class="cpms-pp-btn cpms-pp-btn--primary" href="' . esc_url( $cpms_login_url ) . '">ورود</a></p>';
-	echo '</section>';
+	// Unauthenticated: no Patient queries/PHI; use the existing OTP login routes.
+	PatientOtpLogin::render();
 }
 $cpms_body_html = (string) ob_get_clean();
 

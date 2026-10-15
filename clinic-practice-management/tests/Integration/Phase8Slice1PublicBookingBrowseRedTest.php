@@ -649,6 +649,8 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             (int) ($slot['location_id'] ?? 0),
             'A1 must expose `location_id` so the surface can label Location-local slot times.'
         );
+        self::assertSame('Main Tehran P8S1', (string) ($slot['location_name'] ?? ''), 'A1 must expose the persisted Location name for selection.');
+        self::assertSame('Address Main Tehran P8S1', (string) ($slot['location_address'] ?? ''), 'A1 must expose the persisted Location address for patients.');
     }
 
     public function testAnonymousA1KeepsLocationLocalWallClockAcrossDistinctTimezones(): void
@@ -739,6 +741,22 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             (int) ($quote['location_id'] ?? 0),
             'A4 must echo the Location of the selected slot.'
         );
+    }
+
+    public function testAnonymousA4RejectsMismatchedLocationSelectorForPersistedSlot(): void
+    {
+        $this->assertAnonymous();
+
+        $res = $this->a4(
+            $this->clinicianA,
+            $this->freeSlot['date'],
+            $this->freeSlot['time'],
+            $this->freeSlot['slot_id'],
+            $this->locationA2
+        );
+
+        self::assertSame(404, $res->get_status(), 'A4 must reject a browser Location that differs from the persisted slot. Got: ' . $this->describe($res));
+        self::assertSame('CLINIC_NOT_FOUND', $this->errorCode($res), 'A4 mismatch remains fail-closed without revealing slot/tenant details.');
     }
 
     public function testAnonymousA4QuoteInsideMinLeadIsPolicyRejected(): void
@@ -839,6 +857,17 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             'The published vocabulary must cover all five required states. Published: '
             . implode(', ', $vocabulary)
         );
+    }
+
+    public function testSurfaceRequiresLocationChoiceWhenAvailabilityContainsMultipleLocations(): void
+    {
+        $html = $this->renderSurface([self::CLINIC_ATTR => (string) $this->clinicA]);
+        $this->assertSurfaceRendered($html, 'Clinic A multi-Location selection');
+
+        self::assertStringContainsString('data-role="location-picker"', $html, 'The browse surface needs a Location selector populated only from A1 availability.');
+        self::assertStringContainsString('data-role="location-details"', $html, 'The selected Location name and address need a dedicated accessible display.');
+        self::assertStringContainsString('data-template="location-option"', $html, 'Dynamic Location option labels must use an escaped server-owned template.');
+        self::assertStringContainsString('data-fill="address"', $html, 'The Location card must display its address from A1.');
     }
 
     // ================= T19 — anonymous, read-only: no login/OTP/hold/confirm =================
@@ -1163,12 +1192,15 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         return rest_do_request($request);
     }
 
-    private function a4(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId): WP_REST_Response
+    private function a4(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId, ?int $locationId = null): WP_REST_Response
     {
         $request = new WP_REST_Request('POST', self::NS . '/booking/quote');
         $request->set_param('clinician_id', $clinicianId);
         $request->set_param('slot_date', $slotDate);
         $request->set_param('slot_time', $slotTime);
+        if ($locationId !== null && $locationId > 0) {
+            $request->set_param('location_id', $locationId);
+        }
         if ($slotId !== null && $slotId > 0) {
             // Exact slot identity — avoids the documented CLINIC_SLOT_AMBIGUOUS
             // fail-closed branch when two Locations share a date/time tuple.
@@ -1474,12 +1506,13 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             'clinic_id' => $clinicId,
             'name' => $name,
             'slug' => $slug,
+            'address' => 'Address ' . $name,
             'timezone' => $tz,
             'is_primary' => $primary,
             'is_active' => 1,
             'created_at' => $now,
             'updated_at' => $now,
-        ], ['%d', '%s', '%s', '%s', '%d', '%d', '%s', '%s'], 'location');
+        ], ['%d', '%s', '%s', '%s', '%s', '%d', '%d', '%s', '%s'], 'location');
     }
 
     private function insertClinician(int $clinicId, string $name, int $isActive, string $now): int

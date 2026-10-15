@@ -461,6 +461,12 @@ final class OtpService
         }
 
         if ($userId !== null) {
+            // OTP authenticates a Patient identity only. A legacy Patient link
+            // must never turn possession of that mobile into a Doctor/Staff or
+            // Administrator session; keep the public failure generic.
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            $this->assert_patient_otp_user( (int) $userId );
+
             // هویت موجود: هیچ ردیف کاربر جدیدی ساخته نمی‌شود؛ لینکِ Clinic-scoped
             // فقط وقتی Patient در Clinicِ همین verify موجود است.
             $isNewUser = false;
@@ -504,13 +510,33 @@ final class OtpService
         }
 
         $userId = (int) $user['ID'];
-        $wpUser = function_exists('get_userdata') ? get_userdata($userId) : false;
-        $roles = $wpUser instanceof \WP_User ? (array) $wpUser->roles : [];
-        if (!in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true)) {
-            throw new OtpException('CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست');
-        }
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_patient_otp_user( (int) $userId );
 
         return $userId;
+    }
+
+    /**
+     * Only Patient accounts may receive OTP login sessions. A legacy Patient
+     * link or deterministic OTP identity carrying a staff/admin role fails
+     * closed with the same public envelope as an invalid code.
+     */
+    private function assert_patient_otp_user( int $user_id ): void {
+        $wp_user     = function_exists( 'get_userdata' ) ? get_userdata( $user_id ) : false;
+        $roles       = $wp_user instanceof \WP_User ? (array) $wp_user->roles : [];
+        $staff_roles = [
+            RolesAndCapabilities::ROLE_DOCTOR,
+            RolesAndCapabilities::ROLE_SECRETARY,
+            RolesAndCapabilities::ROLE_MANAGER,
+            RolesAndCapabilities::ROLE_ACCOUNTANT,
+            'administrator',
+        ];
+        if (
+            ! in_array( RolesAndCapabilities::ROLE_PATIENT, $roles, true )
+            || array_intersect( $staff_roles, $roles ) !== []
+        ) {
+            throw new OtpException( 'CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست' );
+        }
     }
 
     /**

@@ -145,6 +145,7 @@ final class StaffPortalShell {
 	 * Register WordPress hooks.
 	 */
 	public static function register(): void {
+		PortalLogin::register();
 		add_action( 'init', array( self::class, 'ensure_portal_page' ), 21 );
 		add_filter( 'template_include', array( self::class, 'filter_template_include' ), 99 );
 		add_filter( 'show_admin_bar', array( self::class, 'hide_admin_bar_on_portal' ), 20 );

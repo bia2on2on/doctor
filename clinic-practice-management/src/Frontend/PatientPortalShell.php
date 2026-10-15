@@ -17,7 +17,6 @@ declare(strict_types=1);
 
 namespace ClinicCore\Frontend;
 
-use ClinicCore\Admin\PatientPortalPage;
 use WP_Post;
 
 /**
@@ -191,10 +190,9 @@ final class PatientPortalShell {
 		}
 		self::register_handles();
 		wp_enqueue_style( self::CSS_HANDLE );
-		// JS only for pure patients (cancel + mark-all). Guest/staff shells need no portal script.
-		if ( is_user_logged_in() && PatientPortalPage::isPatientOnly( wp_get_current_user() ) ) {
-			wp_enqueue_script( self::JS_HANDLE );
-		}
+		// The same portal-scoped script binds guest OTP login and authenticated
+		// Patient actions; each branch requires its own server-published config.
+		wp_enqueue_script( self::JS_HANDLE );
 	}
 
 	private static function plugin_url_base(): string {

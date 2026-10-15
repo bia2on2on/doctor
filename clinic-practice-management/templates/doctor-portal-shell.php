@@ -20,6 +20,7 @@ declare(strict_types=1);
 defined('ABSPATH') || exit; // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
 use ClinicCore\Frontend\DoctorPortalShell;
+use ClinicCore\Frontend\PortalLogin;
 use ClinicCore\Auth\RolesAndCapabilities;
 
 if ( !function_exists('wp_get_current_user' )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
@@ -47,7 +48,6 @@ if ( '' === $cpms_login_name && $cpms_logged_in ) {
 
 if ( ! $cpms_staff_embed ) {
     $cpms_portal_url = DoctorPortalShell::portal_url();
-    $cpms_login_url = wp_login_url( $cpms_portal_url ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
     $cpms_logout_url = $cpms_logged_in ? wp_logout_url( $cpms_portal_url ) : '';
 }
 
@@ -96,6 +96,17 @@ if ( !is_string($config_json ) || '' === $config_json) { // phpcs:ignore PEAR.Fu
 body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, sans-serif; background: var(--cpms-bg); color: var(--cpms-text); line-height: 1.45; direction: rtl; }
 .cpms-doc-selectors:not(:has(.cpms-doc-selector:not([hidden]))) { display: none; }
 .cpms-doctor-portal-shell { max-width: 1320px; margin: 0 auto; padding: 10px; }
+.cpms-doctor-portal-shell .cpms-portal-login { background: #fff; border: 1px solid var(--cpms-border); border-radius: 8px; padding: clamp(16px, 4vw, 28px); }
+.cpms-portal-login__form { display: grid; gap: 12px; max-width: 34rem; margin-block: 16px; }
+.cpms-portal-login__field { display: grid; gap: 6px; margin: 0; }
+.cpms-portal-login__field label, .cpms-portal-login__remember { font-weight: 600; }
+.cpms-portal-login__field input { width: 100%; min-height: 44px; padding: 10px 12px; border: 1px solid var(--cpms-border); border-radius: 6px; background: #fff; color: var(--cpms-text); font: inherit; }
+.cpms-portal-login__field input:focus-visible { outline: 3px solid var(--cpms-primary); outline-offset: 2px; }
+.cpms-portal-login__actions { margin: 0; }
+.cpms-portal-login__remember { margin: 0; }
+.cpms-portal-login__remember input { min-width: 18px; min-height: 18px; vertical-align: middle; }
+.cpms-portal-login__error { color: #a61b1b; border-inline-start: 3px solid #a61b1b; padding-inline-start: 10px; }
+.cpms-portal-login__password-reset { margin-block-start: 12px; }
 </style>
     <?php
     // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
@@ -135,11 +146,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
 <?php endif; ?>
     <main class="cpms-doctor-portal-shell__main" role="main" data-role="portal-main" id="cpms-doctor-portal-main">
         <?php if ( ! $cpms_logged_in ) : ?>
-            <section class="cpms-doctor-portal-shell__notice" role="status" data-role="portal-login">
-                <h2>ورود به پورتال پزشک</h2>
-                <p>برای مشاهده صف امروز و بیماران، وارد حساب پزشک خود شوید.</p>
-                <p><a class="cpms-doc-btn cpms-doc-btn--primary" href="<?php echo esc_url( $cpms_login_url ); ?>">ورود</a></p>
-            </section>
+            <?php PortalLogin::render( 'doctor' ); ?>
         <?php elseif ( ! $cpms_is_doctor ) : ?>
             <section class="cpms-doctor-portal-shell__notice" role="alert" data-role="portal-access-denied">
                 <h2>دسترسی پورتال پزشک</h2>

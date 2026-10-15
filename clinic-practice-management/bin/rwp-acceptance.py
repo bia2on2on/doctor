@@ -16,6 +16,8 @@
 """
 
 import base64
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -29,6 +31,7 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
+WP_DIR = os.environ.get("WP_DIR", "")
 ADMIN_USER = os.environ["ADMIN_USER"]
 ADMIN_PASS = os.environ["ADMIN_PASS"]
 DOCTOR_USER = os.environ["DOCTOR_USER"]
@@ -40,6 +43,8 @@ MANAGER_PASS = os.environ.get("MANAGER_PASS", "")
 MANAGER_CLINIC_ID = os.environ.get("MANAGER_CLINIC_ID", "")
 ACCOUNTANT_USER = os.environ.get("ACCOUNTANT_USER", "")
 ACCOUNTANT_PASS = os.environ.get("ACCOUNTANT_PASS", "")
+PORTAL_DENIED_USER = os.environ.get("PORTAL_DENIED_USER", "")
+PORTAL_DENIED_PASS = os.environ.get("PORTAL_DENIED_PASS", "")
 OUT = os.environ.get("OUT", "rwp-acceptance-out")
 ACTUAL_COUNT_FILE = os.environ.get("ACTUAL_COUNT_FILE", "")
 # صفحهٔ عمومیِ shortcode (fixture) — شاهدِ Plain-permalink برای A1.
@@ -860,7 +865,17 @@ def public_booking_permalink(browser):
 
     rest_requests = []
     rest_responses = []
+    quote_payloads = []
     pub_page.on("request", lambda r: rest_requests.append((r.method, r.url)))
+
+    def capture_quote_payload(request):
+        if request.method == "POST" and "booking/quote" in request.url:
+            try:
+                quote_payloads.append(json.loads(request.post_data or "{}"))
+            except ValueError:
+                quote_payloads.append({})
+
+    pub_page.on("request", capture_quote_payload)
     pub_page.on("response", lambda r: rest_responses.append((r.url, r.status)))
 
     resp = pub_page.goto(page_url, wait_until="domcontentloaded")
@@ -936,10 +951,27 @@ def public_booking_permalink(browser):
           f"panel data-state={state1} — rest_route آلوده هرگز selectable نمی‌دهد")
     slots = pub_page.query_selector_all(".cpms-public-booking__slot")
     check(f"{tag}.slots_rendered", len(slots) >= 1, f"slot buttons={len(slots)}")
+    location_picker = pub_page.locator('[data-role="location-picker"]')
+    location_details = pub_page.locator('[data-role="location-details"]')
+    location_name = pub_page.locator('[data-role="location-name"]')
+    location_address = pub_page.locator('[data-role="location-address"]')
+    location_ids = {int(button.get_attribute("data-location-id") or "0") for button in slots}
+    check(f"{tag}.a1_location_bound", bool(slots) and len(location_ids) == 1 and next(iter(location_ids), 0) > 0,
+          f"slot Location ids={sorted(location_ids)}")
+    check(f"{tag}.single_location_auto_selected",
+          location_picker.is_visible() and location_details.is_visible()
+          and pub_page.locator('[data-role="location-option"][aria-pressed="true"]').count() == 1,
+          "the single persisted Location is shown and selected without extra clicks")
+    check(f"{tag}.location_name_address_shown",
+          bool((location_name.inner_text() or "").strip()) and location_address.is_visible()
+          and bool((location_address.inner_text() or "").strip()),
+          "A1 Location name and address are visible to the visitor")
 
     if slots:
         rest_requests.clear()
         rest_responses.clear()
+        quote_payloads.clear()
+        clicked_location_id = int(slots[0].get_attribute("data-location-id") or "0")
         slots[0].click()
         pub_page.wait_for_timeout(2500)
         a4 = [(m, u) for m, u in rest_requests if m == "POST" and "booking/quote" in u]
@@ -951,6 +983,10 @@ def public_booking_permalink(browser):
             check(f"{tag}.a4_route_is_existing_a4", route4 == "/clinic/v1/booking/quote", f"route={route4}")
             a4_status = next((st for u, st in rest_responses if "booking/quote" in u), None)
             check(f"{tag}.a4_http200", a4_status == 200, f"A4 HTTP {a4_status}")
+            sent_location_id = int(quote_payloads[0].get("location_id", 0)) if quote_payloads else 0
+            check(f"{tag}.a4_location_selector_matches_slot",
+                  sent_location_id == clicked_location_id and sent_location_id > 0,
+                  f"A4 location_id={sent_location_id} selected slot location_id={clicked_location_id}")
             state2 = panel.get_attribute("data-state") if panel else None
             check(f"{tag}.state_transition_visible",
                   state2 in ("bookable", "policy_rejected", "unavailable"),
@@ -961,8 +997,228 @@ def public_booking_permalink(browser):
     pub_ctx.close()
 
 
+def patch_otp_code_for_browser_acceptance(mobile, tag):
+    """Patch only the ephemeral WP test token to a known code; never print the code/pepper."""
+    if not WP_DIR:
+        check(f"{tag}.otp_test_fixture", False, "WP_DIR is unavailable for the isolated DB-only known-code patch")
+        return False
+
+    def wp_cli(*args):
+        return subprocess.run(
+            ["wp", *args, f"--path={WP_DIR}", "--allow-root"],
+            check=False, capture_output=True, text=True, timeout=20,
+        )
+
+    try:
+        prefix = wp_cli("db", "prefix").stdout.strip()
+        if not prefix or not re.fullmatch(r"[A-Za-z0-9_]+", prefix):
+            raise RuntimeError("table prefix unavailable")
+        pepper_result = wp_cli("option", "get", "cpms_otp_pepper")
+        pepper = pepper_result.stdout.strip()
+        if pepper_result.returncode != 0 or not pepper:
+            raise RuntimeError("OTP pepper unavailable")
+        token_result = wp_cli(
+            "db", "query",
+            f"SELECT id FROM {prefix}cpms_otp_tokens WHERE mobile='{mobile}' AND purpose='login' ORDER BY id DESC LIMIT 1",
+            "--skip-column-names",
+        )
+        lines = [line.strip() for line in token_result.stdout.splitlines() if line.strip()]
+        if token_result.returncode != 0 or not lines or not lines[-1].isdigit():
+            raise RuntimeError("OTP token row unavailable")
+        token_id = int(lines[-1])
+        known_code = "246802"
+        code_hash = hmac.new(pepper.encode(), known_code.encode(), hashlib.sha256).hexdigest()
+        update = wp_cli(
+            "db", "query",
+            f"UPDATE {prefix}cpms_otp_tokens SET code_hash='{code_hash}' WHERE id={token_id}",
+        )
+        if update.returncode != 0:
+            raise RuntimeError("OTP token hash update failed")
+        check(f"{tag}.otp_test_fixture", True, "isolated DB-only known-code patch applied; no production endpoint added")
+        return known_code
+    except Exception as exc:
+        check(f"{tag}.otp_test_fixture", False, f"{type(exc).__name__}: isolated token patch unavailable")
+        return False
+
+
+def resolve_portal_url(page_slug):
+    """
+    Resolve the canonical or plain-permalink URL for a CPMS portal page.
+    Under Plain Permalinks (empty permalink_structure), WordPress routes pages
+    by ?page_id=N rather than ?pagename=slug.
+    """
+    wp_dir = os.environ.get("WP_DIR", "/home/runner/rwp")
+    if wp_dir and os.path.exists(wp_dir):
+        try:
+            php = (
+                f"if ('cpms-doctor-portal' === '{page_slug}') {{ echo \\ClinicCore\\Frontend\\DoctorPortalShell::portal_url(); }} "
+                f"elseif ('cpms-staff-portal' === '{page_slug}') {{ echo \\ClinicCore\\Frontend\\StaffPortalShell::portal_url(); }} "
+                f"elseif ('cpms-patient-portal' === '{page_slug}') {{ echo \\ClinicCore\\Frontend\\PatientPortalShell::portal_url(); }} "
+                f"else {{ $p = get_page_by_path('{page_slug}'); echo $p ? get_permalink($p) : ''; }}"
+            )
+            res = subprocess.run(
+                ["wp", "eval", php, f"--path={wp_dir}", "--allow-root"],
+                capture_output=True, text=True, timeout=15
+            )
+            url = res.stdout.strip()
+            if url:
+                return url
+        except Exception:
+            pass
+    return f"{BASE}/?pagename={page_slug}"
+
+
+def patient_portal_otp_login_surface(browser):
+    """Exercise the Patient Portal's native OTP form against the existing A2 route."""
+    tag = "native-patient-otp"
+    ctx = new_persona_context(browser, width=390, height=844)
+    page = ctx.new_page()
+    attach_watchers(page, tag)
+    target_url = resolve_portal_url("cpms-patient-portal")
+    response = page.goto(target_url, wait_until="domcontentloaded")
+    check(f"{tag}.guest_page", response is not None and response.status == 200, f"HTTP {response.status if response else 0}")
+    form = page.locator('[data-role="patient-otp-login"]')
+    config_el = page.locator('script.cpms-patient-portal__auth-config')
+    check(f"{tag}.native_form_and_config", form.count() == 1 and config_el.count() == 1,
+          "guest portal publishes the existing OTP client contract")
+    if form.count() != 1 or config_el.count() != 1:
+        ctx.close()
+        return
+
+    config = json.loads(config_el.evaluate("el => el.textContent") or "{}")
+    check(f"{tag}.existing_routes_only",
+          config.get("otp_request_path") == "/otp/request" and config.get("otp_verify_path") == "/otp/verify",
+          f"configured routes={config.get('otp_request_path')},{config.get('otp_verify_path')}")
+    mobile = "0912" + str(int(time.time()))[-7:]
+    page.locator('[data-role="patient-otp-mobile"]').fill(mobile)
+    request_payloads = []
+
+    def capture_otp_request(request):
+        route, _ = wp_route_and_params(request.url)
+        if request.method == "POST" and route == "/clinic/v1/otp/request":
+            try:
+                request_payloads.append(json.loads(request.post_data or "{}"))
+            except ValueError:
+                request_payloads.append({})
+
+    page.on("request", capture_otp_request)
+    with page.expect_response(
+        lambda r: r.request.method == "POST" and wp_route_and_params(r.url)[0] == "/clinic/v1/otp/request",
+        timeout=25000,
+    ) as a2_info:
+        page.locator('[data-role="patient-otp-request"]').click()
+    a2 = a2_info.value
+    payload = request_payloads[0] if request_payloads else {}
+    check(f"{tag}.a2_uses_existing_route", a2.status in (200, 400), f"A2 HTTP {a2.status}")
+    check(f"{tag}.a2_no_client_clinic_authority", "clinic_id" not in payload,
+          "no client-supplied Clinic id is accepted by the in-portal form")
+    try:
+        body = a2.json()
+    except Exception:
+        body = {}
+    allowed_denial = a2.status == 400 and body.get("code") == "CLINIC_SCOPE_REQUIRED"
+    check(f"{tag}.a2_success_or_fail_closed_scope",
+          (a2.status == 200 and page.locator('[data-role="patient-otp-code-step"]').is_visible())
+          or (allowed_denial and not page.locator('[data-role="patient-otp-code-step"]').is_visible()),
+          "single-Clinic request advances to code entry; ambiguous Clinic scope remains fail-closed")
+    check(f"{tag}.no_session_before_verification",
+          not any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE)),
+          "OTP request alone never authenticates the Patient")
+
+    if a2.status == 200:
+        known_code = patch_otp_code_for_browser_acceptance(mobile, tag)
+        if known_code:
+            verify_responses = []
+
+            def capture_otp_verify(resp):
+                route, _ = wp_route_and_params(resp.url)
+                if resp.request.method == "POST" and route == "/clinic/v1/otp/verify":
+                    verify_responses.append(resp)
+
+            page.on("response", capture_otp_verify)
+            page.locator('[data-role="patient-otp-code"]').fill(known_code)
+            page.locator('[data-role="patient-otp-verify"]').click()
+            try:
+                page.wait_for_function(
+                    "document.querySelector('#cpms-patient-portal-shell')?.getAttribute('data-shell-user') === 'patient'",
+                    timeout=25000,
+                )
+            except PlaywrightTimeoutError:
+                pass
+            finally:
+                page.remove_listener("response", capture_otp_verify)
+            verify_status = verify_responses[-1].status if verify_responses else 0
+            patient_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE))
+            check(f"{tag}.a3_existing_route_success", verify_status == 200, f"A3 HTTP {verify_status}")
+            check(f"{tag}.a3_wp_session_and_patient_shell",
+                  patient_cookie and page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 1
+                  and page.locator('[data-role="patient-nav"]').count() == 1,
+                  "real OTP verify reloads into the Patient shell with a WordPress session")
+    page.screenshot(path=f"{OUT}/screenshots/{tag}.png", full_page=True)
+    ctx.close()
+
+
+def portal_password_sign_in(browser, page_slug, user, password, tag, expected_success):
+    """Exercise the native portal form through WordPress admin-post + real cookies."""
+    ctx = new_persona_context(browser, width=390, height=844)
+    page = ctx.new_page()
+    attach_watchers(page, tag)
+    target_url = resolve_portal_url(page_slug)
+    response = page.goto(target_url, wait_until="domcontentloaded")
+    check(f"{tag}.guest_page", response is not None and response.status == 200, f"HTTP {response.status if response else 0}")
+    form = page.locator("form.cpms-portal-login__form")
+    check(f"{tag}.native_form_visible", form.count() == 1, "portal-owned username/password form")
+    if form.count() != 1:
+        ctx.close()
+        return
+
+    check(f"{tag}.csrf_nonce_present", form.locator('input[name="_cpms_portal_nonce"]').count() == 1, "WordPress nonce is present")
+    page.locator('input[name="log"]').fill(user)
+    page.locator('input[name="pwd"]').fill(password)
+    post_status = {}
+
+    def on_portal_post(resp):
+        if resp.request.method == "POST" and "admin-post.php" in resp.url:
+            post_status["status"] = resp.status
+
+    page.on("response", on_portal_post)
+    page.locator('button[type="submit"]').click()
+    try:
+        page.wait_for_url(lambda url: "admin-post.php" not in url, wait_until="domcontentloaded", timeout=20000)
+    except PlaywrightTimeoutError:
+        pass
+    finally:
+        page.remove_listener("response", on_portal_post)
+
+    cookies = ctx.cookies(BASE)
+    has_login_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in cookies)
+    login_form_remains = page.locator("form.cpms-portal-login__form").count() > 0
+    error_visible = page.locator(".cpms-portal-login__error[role='alert']").count() > 0
+    if expected_success:
+        check(f"{tag}.post_dispatched", post_status.get("status") in (200, 302), f"HTTP {post_status.get('status')}")
+        check(f"{tag}.wp_session_issued", has_login_cookie, "WordPress logged-in cookie after native sign-in")
+        check(f"{tag}.portal_access_after_login", not login_form_remains and not error_visible and "wp-login.php" not in page.url,
+              "authorized user reaches the canonical CPMS portal rather than wp-login")
+        assert_no_overflow(page, tag, "native-login-390")
+    else:
+        check(f"{tag}.generic_denial", error_visible and login_form_remains, "same generic message for credential/portal denial")
+        check(f"{tag}.no_session_on_denial", not has_login_cookie, "no WordPress login cookie issued to an ineligible role")
+    page.screenshot(path=f"{OUT}/screenshots/{tag}.png", full_page=True)
+    ctx.close()
+
+
 with sync_playwright() as p:
     browser = p.chromium.launch()
+
+    # Native WordPress sign-in for the Doctor/Staff portal surfaces. Successful
+    # authentication is exercised through the portal form, while wp-admin role
+    # acceptance below remains on its existing independent sessions.
+    patient_portal_otp_login_surface(browser)
+    portal_password_sign_in(browser, "cpms-doctor-portal", DOCTOR_USER, DOCTOR_PASS, "native-doctor-login", True)
+    portal_password_sign_in(browser, "cpms-staff-portal", SECRETARY_USER, SECRETARY_PASS, "native-staff-login", True)
+    portal_password_sign_in(browser, "cpms-doctor-portal", ADMIN_USER, ADMIN_PASS, "native-doctor-login-admin-denied", False)
+    if PORTAL_DENIED_USER and PORTAL_DENIED_PASS:
+        portal_password_sign_in(browser, "cpms-staff-portal", PORTAL_DENIED_USER, PORTAL_DENIED_PASS, "native-staff-login-unassigned-denied", False)
 
     # ---------- Admin (Administrator فنی — P-3) ----------
     # ایزولاسیون: هر پرسونا کانتکست مستقل خودش را دارد؛ هیچ کوکی/نشستی به پرسونای
@@ -974,6 +1230,44 @@ with sync_playwright() as p:
         # CPMS (سیستم) — مجوز/بکاپ/Health
         status, body = goto_admin(page, "admin", "tools.php?page=cpms-system", "cpms-system")
         check("admin.cpms-system.health_rendered", "وضعیت Health" in (body or ""), "بخش Health باید رندر شود")
+
+        # CPMS Classic shortcode helper — manage_options plus Clinic-local CONFIG membership.
+        status, body = goto_admin(page, "admin", "tools.php?page=cpms-shortcodes", "cpms-shortcodes")
+        check("admin.cpms-shortcodes.page_title", "کدهای کوتاه و نمایش در سایت" in (body or ""), "Persian shortcode administration page")
+        shortcode_select = page.locator('#cpms_shortcode_clinic')
+        clinic_options = shortcode_select.locator('option').evaluate_all("els => els.map(el => el.value).filter(Boolean)") if shortcode_select.count() else []
+        fixture_clinic_id = (ACC_PUBLIC_PAGE.split('|') + ['', '', ''])[1]
+        check("admin.cpms-shortcodes.only_authorized_clinic",
+              fixture_clinic_id in clinic_options and all(value.isdigit() for value in clinic_options),
+              f"authorized Clinic options={clinic_options}")
+        if shortcode_select.count() and fixture_clinic_id in clinic_options:
+            shortcode_select.select_option(fixture_clinic_id)
+            with page.expect_navigation(wait_until='domcontentloaded'):
+                page.locator('#cpms_shortcode_clinic').evaluate("el => el.form.submit()")
+            shortcode_field = page.locator('[data-cpms-shortcode]')
+            shortcode_value = shortcode_field.input_value() if shortcode_field.count() else ''
+            check("admin.cpms-shortcodes.generated_registered_tag",
+                  shortcode_value == f'[cpms_public_booking clinic_id="{fixture_clinic_id}"]',
+                  "generated value uses only the registered CPMS shortcode and selected Clinic")
+            check("admin.cpms-shortcodes.no_auto_page_creation_guidance",
+                  "به‌صورت خودکار ایجاد نمی‌کند" in (page.content() or ""), "guidance requires user-chosen page placement")
+            copy_button = page.locator('[data-cpms-copy]')
+            check("admin.cpms-shortcodes.copy_fallback_available", copy_button.count() == 1, "copy control rendered")
+            if copy_button.count():
+                copy_button.click()
+                selected = shortcode_field.evaluate("el => el.selectionStart === 0 && el.selectionEnd === el.value.length")
+                check("admin.cpms-shortcodes.manual_copy_fallback", selected, "textarea selected for keyboard fallback")
+
+        # Tampered selectors never become authority or trigger Clinic enumeration.
+        status, tampered_body = goto_admin(
+            page, "admin", "tools.php?page=cpms-shortcodes&clinic_id=2147483647", "cpms-shortcodes-tampered-id"
+        )
+        tampered_field = page.locator('[data-cpms-shortcode]')
+        tampered_value = tampered_field.input_value() if tampered_field.count() else ''
+        check("admin.cpms-shortcodes.tampered_id_not_used",
+              status == 200 and tampered_value == f'[cpms_public_booking clinic_id="{fixture_clinic_id}"]'
+              and 'clinic_id="2147483647"' not in (tampered_body or ""),
+              "arbitrary Clinic id in the URL cannot select or generate an unauthorized shortcode")
 
         # CPMS (فنی و لاگ) — شمارش جداول
         status, body = goto_admin(page, "admin", "tools.php?page=cpms-settings", "cpms-settings")
@@ -1029,6 +1323,39 @@ with sync_playwright() as p:
         deny_page.close()
     page.close()
     actx.close()
+
+    # Revoke the temporary Administrator manager membership so subsequent
+    # admin-ui / tablet / mobile personas exercise the membership-less installation
+    # administrator invariants as intended.
+    wp_path = WP_DIR or "/home/runner/rwp"
+    eval_code = (
+        f"$u = get_user_by('login', '{ADMIN_USER}'); "
+        "if ($u) { "
+        "\\ClinicCore\\Bootstrap\\App::db()->query("
+        "'DELETE FROM ' . \\ClinicCore\\Bootstrap\\App::db()->table('cpms_clinic_memberships') . "
+        "' WHERE wp_user_id = ' . (int) $u->ID"
+        "); "
+        "if (function_exists('wp_cache_flush')) { wp_cache_flush(); } "
+        "}"
+    )
+    cmd = ["wp", "eval", eval_code]
+    if wp_path:
+        cmd.append(f"--path={wp_path}")
+    cmd.append("--allow-root")
+    try:
+        proc = subprocess.run(
+            cmd,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if proc.returncode == 0:
+            print("[acceptance] info: revoked temporary admin membership successfully")
+        else:
+            print(f"[acceptance] WARNING: admin membership cleanup failed (rc={proc.returncode}): {proc.stderr}", file=sys.stderr)
+    except Exception as e:
+        print(f"[acceptance] WARNING: admin membership cleanup exception: {e}", file=sys.stderr)
 
     # ---------- Admin UI — دسکتاپ (1440×900) ----------
     auictx = new_persona_context(browser)
