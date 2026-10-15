@@ -138,15 +138,16 @@ final class BookingService
             $clinicId,
             $nowUtc
         );
-        $locationDetails = $this->locationDetailsMap(
+        $location_details = $this->location_details_map(
             array_map( 'intval', array_column( $rows, 'location_id' ) ),
-            $clinicId
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            (int) $clinicId
         );
 
         $grouped = [];
         foreach ($rows as $row) {
-            $locationId = (int) ( $row['location_id'] ?? 0 );
-            $location = $locationDetails[$locationId] ?? null;
+            $location_id = (int) ( $row['location_id'] ?? 0 );
+            $location    = $location_details[ $location_id ] ?? null;
             if ( $location === null ) {
                 // The public A1 contract exposes only active Locations owned by
                 // this Clinic; a stale/malformed slot is not a selectable offer.
@@ -155,12 +156,12 @@ final class BookingService
 
             $date = (string) $row['slot_date'];
             $grouped[$date][] = [
-                'time' => substr((string) $row['slot_time'], 0, 5),
-                'capacity_left' => (int) $row['capacity_left'],
-                'duration_min' => (int) $row['duration_min'],
-                'slot_id' => (int) ($row['id'] ?? 0),
-                'location_id' => $locationId,
-                'location_name' => $location['name'],
+                'time'             => substr((string) $row['slot_time'], 0, 5),
+                'capacity_left'    => (int) $row['capacity_left'],
+                'duration_min'     => (int) $row['duration_min'],
+                'slot_id'          => (int) ($row['id'] ?? 0),
+                'location_id'      => $location_id,
+                'location_name'    => $location['name'],
                 'location_address' => $location['address'],
             ];
         }
@@ -254,7 +255,7 @@ final class BookingService
         $ids = array_values(array_unique($locationIds));
         $placeholders = implode(',', array_fill(0, count($ids), '%d'));
         $rows = $this->db->fetchAll(
-            'SELECT id, clinic_id, timezone FROM ' . $this->db->table('cpms_locations') . " WHERE id IN ({$placeholders}) AND is_active = 1",
+            'SELECT id, clinic_id, timezone FROM ' . $this->db->table( 'cpms_locations' ) . " WHERE id IN ({$placeholders}) AND is_active = 1",
             $ids
         );
         $byId = [];
@@ -264,18 +265,18 @@ final class BookingService
         foreach ($ids as $id) {
             $row = $byId[$id] ?? null;
             if ($row === null || (int) $row['clinic_id'] !== $clinicId) {
-                $map[$id] = null;
+                $map[ $id ] = null;
                 continue;
             }
             $timezone = trim( (string) ( $row['timezone'] ?? '' ) );
             if ( '' === $timezone || ! in_array( $timezone, timezone_identifiers_list(), true ) ) {
-                $map[$id] = null;
+                $map[ $id ] = null;
                 continue;
             }
             try {
-                $map[$id] = new \DateTimeZone( $timezone );
+                $map[ $id ] = new \DateTimeZone( $timezone );
             } catch (\Throwable) {
-                $map[$id] = null;
+                $map[ $id ] = null;
             }
         }
 
@@ -287,30 +288,29 @@ final class BookingService
      * availability and Location-local time filters. Inactive or foreign rows
      * never become Location options on the public surface.
      *
-     * @param list<int> $locationIds
+     * @param list<int> $location_ids
      * @return array<int, array{name:string, address:string}>
      */
-    private function locationDetailsMap(array $locationIds, int $clinicId): array
-    {
-        $ids = array_values( array_unique( array_filter( $locationIds, static fn ( int $id ): bool => $id > 0 ) ) );
+    private function location_details_map( array $location_ids, int $clinic_id ): array {
+        $ids = array_values( array_unique( array_filter( $location_ids, static fn ( int $id ): bool => $id > 0 ) ) );
         if ( $ids === [] ) {
             return [];
         }
 
         $placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-        $rows = $this->db->fetchAll(
+        $rows         = $this->db->fetchAll(
             'SELECT id, clinic_id, name, address FROM ' . $this->db->table( 'cpms_locations' )
             . " WHERE clinic_id = %d AND is_active = 1 AND id IN ({$placeholders})",
-            array_merge( [ $clinicId ], $ids )
+            array_merge( [ $clinic_id ], $ids )
         );
 
         $details = [];
         foreach ( $rows as $row ) {
-            $locationId = (int) ( $row['id'] ?? 0 );
-            if ( $locationId <= 0 || (int) ( $row['clinic_id'] ?? 0 ) !== $clinicId ) {
+            $location_id = (int) ( $row['id'] ?? 0 );
+            if ( $location_id <= 0 || (int) ( $row['clinic_id'] ?? 0 ) !== $clinic_id ) {
                 continue;
             }
-            $details[$locationId] = [
+            $details[ $location_id ] = [
                 'name'    => trim( (string) ( $row['name'] ?? '' ) ),
                 'address' => trim( (string) ( $row['address'] ?? '' ) ),
             ];
@@ -373,6 +373,7 @@ final class BookingService
     /**
      * @return array{available: bool, capacity_left: int, slot_id?: int, location_id?: int}
      */
+    // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
     {
         $clinicId = $this->requireClinician($clinicianId);
@@ -384,7 +385,8 @@ final class BookingService
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
-        $this->assertRequestedLocationMatchesSlot( $slot, $locationId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_requested_location_matches_slot( $slot, $locationId );
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             // پیش‌چک legacy-UTC فقط وقتی اسلاتی وجود ندارد (fail-fast برای ورودی
             // نامعتبر + حفظ رفتار تاریخی read-only quote روی تاریخ گذشتهٔ بدون
@@ -395,7 +397,8 @@ final class BookingService
 
         // The selected slot must still belong to an active Location in this
         // Clinic; the browser-supplied Location id is only a checked selector.
-        $this->assertActiveLocationForBooking( (int) $slot['location_id'], $clinicId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_active_location_for_booking( (int) $slot['location_id'], (int) $clinicId );
 
         // Two-Clock: obtain Location timezone and evaluate lead policy precisely
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
@@ -416,6 +419,7 @@ final class BookingService
     /**
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
+    // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
@@ -433,7 +437,8 @@ final class BookingService
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
         $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
-        $this->assertRequestedLocationMatchesSlot( $slot, $locationId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_requested_location_matches_slot( $slot, $locationId );
 
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
@@ -445,7 +450,8 @@ final class BookingService
 
         // A public hold is accepted only for the same active, Clinic-owned
         // Location that was selected from A1's persisted slot identity.
-        $this->assertActiveLocationForBooking( (int) $slot['location_id'], $clinicId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_active_location_for_booking( (int) $slot['location_id'], (int) $clinicId );
 
         // Two-Clock: Location timezone -> UTC instant before lead check (precise)
         $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
@@ -1555,15 +1561,14 @@ final class BookingService
      *
      * @param array<string, mixed>|null $slot Resolved persisted slot.
      */
-    private function assertRequestedLocationMatchesSlot(?array $slot, ?int $locationId): void
-    {
-        if ( $locationId === null ) {
+    private function assert_requested_location_matches_slot( ?array $slot, ?int $location_id ): void {
+        if ( $location_id === null ) {
             return; // Legacy callers may omit the redundant selector.
         }
         if (
             $slot === null
-            || $locationId <= 0
-            || $locationId !== (int) ( $slot['location_id'] ?? 0 )
+            || $location_id <= 0
+            || $location_id !== (int) ( $slot['location_id'] ?? 0 )
         ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
         }
@@ -1574,17 +1579,16 @@ final class BookingService
      * slot's persisted Clinic. Inactive historical appointment operations keep
      * using resolveLocationTimezone() unchanged.
      */
-    private function assertActiveLocationForBooking(int $locationId, int $clinicId): void
-    {
-        if ( $locationId <= 0 || $clinicId <= 0 ) {
+    private function assert_active_location_for_booking( int $location_id, int $clinic_id ): void {
+        if ( $location_id <= 0 || $clinic_id <= 0 ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل نوبت یافت نشد', 404 );
         }
         $location = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table( 'cpms_locations' )
             . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
-            [ $locationId, $clinicId ]
+            [ $location_id, $clinic_id ]
         );
-        if ( $location === null || (int) ( $location['id'] ?? 0 ) !== $locationId ) {
+        if ( $location === null || (int) ( $location['id'] ?? 0 ) !== $location_id ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل نوبت یافت نشد', 404 );
         }
     }

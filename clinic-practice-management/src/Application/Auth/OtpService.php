@@ -464,7 +464,8 @@ final class OtpService
             // OTP authenticates a Patient identity only. A legacy Patient link
             // must never turn possession of that mobile into a Doctor/Staff or
             // Administrator session; keep the public failure generic.
-            $this->assertPatientOtpUser( $userId );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            $this->assert_patient_otp_user( (int) $userId );
 
             // هویت موجود: هیچ ردیف کاربر جدیدی ساخته نمی‌شود؛ لینکِ Clinic-scoped
             // فقط وقتی Patient در Clinicِ همین verify موجود است.
@@ -509,7 +510,8 @@ final class OtpService
         }
 
         $userId = (int) $user['ID'];
-        $this->assertPatientOtpUser( $userId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->assert_patient_otp_user( (int) $userId );
 
         return $userId;
     }
@@ -519,11 +521,10 @@ final class OtpService
      * link or deterministic OTP identity carrying a staff/admin role fails
      * closed with the same public envelope as an invalid code.
      */
-    private function assertPatientOtpUser( int $userId ): void
-    {
-        $wpUser = function_exists( 'get_userdata' ) ? get_userdata( $userId ) : false;
-        $roles  = $wpUser instanceof \WP_User ? (array) $wpUser->roles : [];
-        $staffRoles = [
+    private function assert_patient_otp_user( int $user_id ): void {
+        $wp_user     = function_exists( 'get_userdata' ) ? get_userdata( $user_id ) : false;
+        $roles       = $wp_user instanceof \WP_User ? (array) $wp_user->roles : [];
+        $staff_roles = [
             RolesAndCapabilities::ROLE_DOCTOR,
             RolesAndCapabilities::ROLE_SECRETARY,
             RolesAndCapabilities::ROLE_MANAGER,
@@ -532,7 +533,7 @@ final class OtpService
         ];
         if (
             ! in_array( RolesAndCapabilities::ROLE_PATIENT, $roles, true )
-            || array_intersect( $staffRoles, $roles ) !== []
+            || array_intersect( $staff_roles, $roles ) !== []
         ) {
             throw new OtpException( 'CLINIC_OTP_INVALID', 'کد واردشده معتبر نیست' );
         }

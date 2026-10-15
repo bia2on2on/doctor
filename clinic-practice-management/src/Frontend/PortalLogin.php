@@ -39,12 +39,13 @@ final class PortalLogin {
 			return;
 		}
 
-		$title = 'doctor' === $portal ? 'ورود پزشک' : 'ورود کارکنان';
+		$title  = 'doctor' === $portal ? 'ورود پزشک' : 'ورود کارکنان';
 		$target = self::portal_url( $portal );
-		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Nonce cannot be present on plain return navigation.
+		// phpcs:disable WordPress.Security.NonceVerification.Recommended -- Nonce cannot be present on plain return navigation.
 		$failed = isset( $_GET['cpms-login'] )
 			&& is_string( $_GET['cpms-login'] )
 			&& 'failed' === sanitize_key( wp_unslash( $_GET['cpms-login'] ) );
+		// phpcs:enable WordPress.Security.NonceVerification.Recommended
 		?>
 		<section class="cpms-portal-login cpms-portal-login--<?php echo esc_attr( $portal ); ?>" data-role="portal-login" aria-labelledby="cpms-portal-login-title">
 			<h2 id="cpms-portal-login-title"><?php echo esc_html( $title ); ?></h2>
@@ -127,12 +128,12 @@ final class PortalLogin {
 		$remember_value = isset( $_POST['rememberme'] ) && is_string( $_POST['rememberme'] )
 			? wp_unslash( $_POST['rememberme'] )
 			: '';
-		$credentials = array(
+		$credentials    = array(
 			'user_login'    => $username,
 			'user_password' => $password,
 			'remember'      => '1' === $remember_value,
 		);
-		$authenticated = wp_signon( $credentials, is_ssl() );
+		$authenticated  = wp_signon( $credentials, is_ssl() );
 		if ( $authenticated instanceof WP_User && self::is_authorized( (int) $authenticated->ID, $portal ) ) {
 			self::redirect_success( $portal );
 		}

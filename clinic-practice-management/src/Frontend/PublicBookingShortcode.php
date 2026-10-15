@@ -173,8 +173,8 @@ final class PublicBookingShortcode
 
     private const TITLE = 'رزرو نوبت';
     private const STEP_CLINICIAN = '۱. انتخاب پزشک';
-    private const STEP_LOCATION = '۲. انتخاب محل مراجعه';
-    private const STEP_SLOT = '۳. انتخاب روز و ساعت';
+    private const STEP_LOCATION  = '۲. انتخاب محل مراجعه';
+    private const STEP_SLOT      = '۳. انتخاب روز و ساعت';
     private const CAPACITY_LABEL = 'ظرفیت باقی‌مانده';
     private const DURATION_LABEL = 'دقیقه';
     private const CLINICIAN_HINT = 'پزشک موردنظر را انتخاب کنید';
@@ -496,7 +496,8 @@ final class PublicBookingShortcode
         }
         $lines[] = '</ul>';
         $lines[] = '</div>';
-        $lines[] = self::renderLocationPicker( $surfaceId );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $lines[] = self::render_location_picker( (string) $surfaceId );
 
         // ---- گام ۳: مرورِ نوبت‌ها (با A1 موجود) ----
         $panelLegendId = $surfaceId . '-calendar';
@@ -824,10 +825,9 @@ final class PublicBookingShortcode
      * Accessible Location chooser; its options are populated from Location
      * metadata carried by the existing A1 availability response.
      */
-    private static function renderLocationPicker( string $surfaceId ): string
-    {
-        $labelId = $surfaceId . '-locations';
-        $base = self::ROOT_CLASS;
+    private static function render_location_picker( string $surface_id ): string {
+        $label_id = $surface_id . '-locations';
+        $base     = self::ROOT_CLASS;
 
         return sprintf(
             '<section class="%1$s" data-role="location-picker" role="group" aria-labelledby="%2$s" hidden>'
@@ -840,7 +840,7 @@ final class PublicBookingShortcode
             . '<p class="%10$s" data-role="location-hint" role="status" hidden>%11$s</p>'
             . '</section>',
             esc_attr( $base . '__location-picker' ),
-            esc_attr( $labelId ),
+            esc_attr( $label_id ),
             esc_attr( $base . '__legend' ),
             esc_html( self::STEP_LOCATION ),
             esc_attr( $base . '__location-list' ),
