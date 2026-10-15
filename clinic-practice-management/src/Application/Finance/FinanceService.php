@@ -522,7 +522,7 @@ final class FinanceService
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $clinicId, $paymentId, $reason): array {
+        return $this->db->transactional(function () use ($actorUserId, $clinicId, $paymentId, $reason): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase, PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- legacy camelCase service API (published signature unchanged); closure style carried over unchanged from the pre-existing method.
             $payment = $this->payments->findForUpdate($paymentId);
             if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);

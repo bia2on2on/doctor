@@ -95,10 +95,8 @@ final class FinanceDelegationService {
 		}
 
 		$target_user_id = (int) ( $membership['wp_user_id'] ?? 0 );
-		$target_role    = (string) ( $membership['role_key'] ?? '' );
-
 		$this->db->transactional(
-			function () use ( $actor_user_id, $clinic_id, $target_membership_id, $capability, $before, $target_user_id, $target_role ): void {
+			function () use ( $actor_user_id, $clinic_id, $target_membership_id, $capability, $before, $target_user_id ): void {
 				$this->membership_service->set_capability( $target_membership_id, $capability, 'grant' );
 
 				$meta = [ 'clinic_id' => $clinic_id, 'target_wp_user_id' => $target_user_id ];
@@ -144,10 +142,8 @@ final class FinanceDelegationService {
 		}
 
 		$target_user_id = (int) ( $membership['wp_user_id'] ?? 0 );
-		$target_role    = (string) ( $membership['role_key'] ?? '' );
-
 		$this->db->transactional(
-			function () use ( $actor_user_id, $clinic_id, $target_membership_id, $capability, $current, $target_user_id, $target_role ): void {
+			function () use ( $actor_user_id, $clinic_id, $target_membership_id, $capability, $current, $target_user_id ): void {
 				$this->membership_service->remove_capability( $target_membership_id, $capability );
 
 				$meta = [ 'clinic_id' => $clinic_id, 'target_wp_user_id' => $target_user_id ];
