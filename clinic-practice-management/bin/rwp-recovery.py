@@ -83,8 +83,31 @@ if ($kind === 'membership' || $kind === 'suspended') {
     if ($kind === 'suspended') { \ClinicCore\Bootstrap\App::membership_service()->suspend_membership($id); }
 }
 if ($kind === 'clinical') {
-    $db->wpdb()->insert($db->table('cpms_clinicians'), ['clinic_id' => $c, 'wp_user_id' => null,
-        'full_name' => 'پزشک تاریخی', 'is_active' => 1, 'created_at' => $db->nowUtcSql(), 'updated_at' => $db->nowUtcSql()]);
+    $wpdb = $db->wpdb();
+    $now = $db->nowUtcSql();
+    if (!$wpdb->insert($db->table('cpms_clinicians'), ['clinic_id' => $c, 'wp_user_id' => null,
+        'full_name' => 'پزشک تاریخی', 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now])) {
+        throw new RuntimeException('synthetic clinician fixture failed');
+    }
+    $clinician = (int) $wpdb->insert_id;
+    if (!$wpdb->insert($db->table('cpms_patients'), ['clinic_id' => $c, 'mrn' => 'QA-HISTORY',
+        'first_name' => 'Synthetic', 'last_name' => 'Fixture', 'mobile' => '00000000000',
+        'created_at' => $now, 'updated_at' => $now])) {
+        throw new RuntimeException('synthetic patient fixture failed');
+    }
+    $patient = (int) $wpdb->insert_id;
+    $location = (int) $db->fetchValue('SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d ORDER BY id LIMIT 1', [$c]);
+    if (!$wpdb->insert($db->table('cpms_visits'), ['clinic_id' => $c, 'location_id' => $location,
+        'clinician_id' => $clinician, 'patient_id' => $patient, 'source' => 'walk_in',
+        'status' => 'consultation_completed', 'visit_date' => '2026-10-01',
+        'check_in_at' => '2026-10-01 08:00:00', 'consultation_completed_at' => '2026-10-01 08:30:00',
+        'created_at' => $now, 'updated_at' => $now])) {
+        throw new RuntimeException('synthetic clinical visit fixture failed');
+    }
+}
+if ($kind === 'system_history') {
+    $db->wpdb()->insert($db->table('cpms_settings'), ['clinic_id' => $c, 'key' => 'jobs.last_tick_at',
+        'value_json' => '1790841600', 'updated_by_wp_user_id' => null, 'updated_at' => $db->nowUtcSql()]);
 }
 if ($kind === 'legacy_unknown') {
     $db->wpdb()->insert($db->table('cpms_settings'), ['clinic_id' => $c, 'key' => 'setup.clinic.owner',
@@ -105,7 +128,7 @@ def snapshot():
     return php(r'''
 $db = \ClinicCore\Bootstrap\App::db();
 $out = [];
-foreach (['cpms_clinics', 'cpms_clinic_memberships', 'cpms_settings', 'cpms_audit_logs', 'cpms_clinicians'] as $table) {
+foreach (['cpms_clinics', 'cpms_clinic_memberships', 'cpms_settings', 'cpms_audit_logs', 'cpms_clinicians', 'cpms_patients', 'cpms_visits'] as $table) {
     $out[$table] = $db->fetchAll('SELECT * FROM ' . $db->table($table) . ' ORDER BY id');
 }
 echo 'REC_DB=' . wp_json_encode($out);
@@ -151,8 +174,12 @@ def run_case(browser, kind, second, allowed):
     wp('db', 'import', '/tmp/fp/pristine.sql')
     data = fixture(kind)
     print('FIXTURE ' + tag + ' baseline_setting_keys=' + json.dumps(data['baseline_keys']), flush=True)
-    print('FIXTURE ' + tag + ' eligibility_reason=' + (data['reason'] or 'eligible'), flush=True)
+    print('FIXTURE ' + tag + ' history_actor_eligibility_reason=' + (data['reason'] or 'eligible'), flush=True)
     before = snapshot()
+    if kind == 'clinical':
+        check(tag + '.actual_patient_and_completed_visit_fixture', len(before['cpms_patients']) == 1
+              and len(before['cpms_visits']) == 1 and before['cpms_visits'][0]['status'] == 'consultation_completed')
+        check(tag + '.denied_for_prior_activity', data['reason'] == 'prior_activity')
     context = browser.new_context(viewport={'width': 390, 'height': 844}, locale='fa-IR')
     page = context.new_page()
     page_errors = []
@@ -224,7 +251,7 @@ try:
             ('same', False, True), ('same', True, False),
             ('mixed', False, False), ('mixed', True, False), ('deleted', False, False),
             ('legacy', False, True), ('legacy', True, False), ('membership', False, False),
-            ('suspended', False, False), ('clinical', False, False),
+            ('suspended', False, False), ('clinical', False, False), ('system_history', False, False),
             ('legacy_mixed', False, False), ('legacy_unknown', False, False), ('legacy_writer', False, False),
         ]:
             try:
