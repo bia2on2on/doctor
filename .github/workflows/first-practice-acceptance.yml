@@ -1,8 +1,8 @@
 name: First-Practice Browser Acceptance (MariaDB 11.4.13)
 
-# Focused real-browser acceptance of first-practice onboarding.
-# Isolated from the existing Real WP Acceptance matrix (MySQL 8 + third-party
-# coexistence) so that family and the 47-check contract stay unchanged.
+# Real administrator ZIP installation, personal-practice completion and
+# interrupted-setup recovery on both MySQL 8 and exact MariaDB 11.4.13.
+# The existing Real WP Acceptance / 47-check contract stays unchanged.
 # This lane provisions WordPress + PHP + MariaDB 11.4.13 and drives the
 # repository-native Playwright harness (bin/rwp-first-practice.py).
 # Synthetic data only. Official ZIP built from the exact tested SHA.
@@ -38,18 +38,27 @@ env:
 
 jobs:
   first-practice:
-    name: First-practice browser (MariaDB 11.4.13)
+    name: First-practice browser (${{ matrix.database }})
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: mariadb
+            image: mariadb:11.4.13
+          - database: mysql
+            image: mysql:8
 
     services:
-      mariadb:
-        image: mariadb:11.4.13
+      database:
+        image: ${{ matrix.image }}
         env:
           MARIADB_ROOT_PASSWORD: root
+          MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot || mariadb-admin ping -h 127.0.0.1 -proot"
           --health-interval=10s --health-timeout=5s --health-retries=20
 
     steps:
@@ -74,20 +83,20 @@ jobs:
 
       - name: Lint first-practice harness
         run: |
-          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py clinic-practice-management/bin/rwp-install-zip.py clinic-practice-management/bin/rwp-recovery.py clinic-practice-management/bin/rwp_personal.py
           python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-first-practice.py
           bash -n clinic-practice-management/bin/build-release.sh
 
-      - name: Pin and record MariaDB 11.4.13
+      - name: Pin and record database server
         run: |
           set -euo pipefail
           server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
-          echo "MariaDB server VERSION(): ${server_version}"
-          case "$server_version" in
-            11.4.13-MariaDB*) ;;
-            *) echo "Expected MariaDB 11.4.13, received: ${server_version}" >&2; exit 1 ;;
+          echo "${{ matrix.database }} server VERSION(): ${server_version}"
+          case "${{ matrix.database }}:$server_version" in
+            mariadb:11.4.13-MariaDB*|mysql:8.*) ;;
+            *) echo "Unexpected database server: ${server_version}" >&2; exit 1 ;;
           esac
-          printf '%s\n' "$server_version" > /tmp/fp/mariadb-version.txt
+          printf '%s\n' "$server_version" > /tmp/fp/database-version.txt
 
       - name: Clean WordPress (isolated DB)
         run: |
@@ -102,6 +111,7 @@ jobs:
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp config set FS_METHOD direct --allow-root
           wp core install --url="$WP_URL" --title="CPMS First-Practice Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
           wp core version --allow-root | tee /tmp/fp/wp-version.txt
 
@@ -170,11 +180,13 @@ jobs:
           sha256sum "$ZIP" | tee /tmp/fp/zip.sha256
           ls -la clinic-practice-management/dist/
 
-      - name: Install ZIP → activate (migration runs in activation hook)
+      - name: Administrator browser uploads ZIP and activates plugin
         id: cpms_install
         run: |
           set -euo pipefail
-          wp plugin install "$GITHUB_WORKSPACE/$ZIP_PATH" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/fp/plugin-install.log
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          set -o pipefail
+          ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_PATH" OUT=/tmp/fp python3 clinic-practice-management/bin/rwp-install-zip.py | tee /tmp/fp/plugin-install.log
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root || { echo 'PLUGIN NOT ACTIVE'; exit 1; }
           echo "installed from official ZIP built at ${PRODUCING_SHA:-$GITHUB_SHA} (not a source mount)"
 
@@ -210,6 +222,7 @@ jobs:
           wp user create "$SECOND_ADMIN_USER" 'admin2@acc.local' --user_pass="$SECOND_ADMIN_PASS" --role=administrator --path="$WP_DIR" --allow-root
           MEMBERS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_clinic_memberships;")
           echo "pre-browser membership rows: $MEMBERS"
+          wp db export /tmp/fp/pristine.sql --path="$WP_DIR" --allow-root
           [ "$MEMBERS" = "0" ] || { echo 'FAIL: memberships must be zero before first-practice browser'; exit 1; }
 
       - name: Browser first-practice onboarding
@@ -226,6 +239,12 @@ jobs:
           cat /tmp/fp/first-practice.log
           if [ "$RC" -ne 0 ]; then echo "FIRST-PRACTICE BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
 
+      - name: Interrupted installation browser fixtures A–G
+        if: always() && steps.cpms_install.outcome == 'success' && steps.migrations.outcome == 'success'
+        run: |
+          set -o pipefail
+          OUT=/tmp/fp python3 clinic-practice-management/bin/rwp-recovery.py | tee /tmp/fp/recovery.log
+
       - name: Capture debug log + versions
         if: always()
         run: |
@@ -235,7 +254,7 @@ jobs:
             echo "wordpress=$(cat /tmp/fp/wp-version.txt 2>/dev/null || echo unknown)"
             echo "php_cli=$(cat /tmp/fp/cli-php-version.txt 2>/dev/null || echo unknown)"
             echo "php_apache=$(cat /tmp/fp/apache-php-version.txt 2>/dev/null || echo unknown)"
-            echo "mariadb=$(cat /tmp/fp/mariadb-version.txt 2>/dev/null || echo unknown)"
+            echo "database=${{ matrix.database }} $(cat /tmp/fp/database-version.txt 2>/dev/null || echo unknown)"
             echo "zip_sha256=$(cut -d' ' -f1 /tmp/fp/zip.sha256 2>/dev/null || echo unknown)"
           } | tee /tmp/fp/versions.txt
           if [ -f "$WP_DIR/wp-content/debug.log" ]; then
@@ -255,26 +274,28 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: rwp-first-practice-mariadb-${{ github.run_id }}-${{ github.run_attempt }}
+          name: rwp-first-practice-${{ matrix.database }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             /tmp/fp/
             !/tmp/fp/**/*.zip
+            !/tmp/fp/**/*.sql
           retention-days: 14
 
       - name: Summary
         if: always()
         run: |
           {
-            echo '## First-practice browser acceptance — MariaDB 11.4.13'
+            echo '## First-practice browser acceptance — ${{ matrix.database }}'
             echo
             echo "- producing SHA: \`${GITHUB_SHA}\`"
             echo "- WordPress: \`$(cat /tmp/fp/wp-version.txt 2>/dev/null || echo unknown)\`"
             echo "- PHP CLI: \`$(cat /tmp/fp/cli-php-version.txt 2>/dev/null || echo unknown)\`"
             echo "- PHP Apache: \`$(cat /tmp/fp/apache-php-version.txt 2>/dev/null || echo unknown)\`"
-            echo "- MariaDB: \`$(cat /tmp/fp/mariadb-version.txt 2>/dev/null || echo unknown)\`"
+            echo "- Database: \`$(cat /tmp/fp/database-version.txt 2>/dev/null || echo unknown)\`"
             echo "- ZIP sha256: \`$(cat /tmp/fp/zip.sha256 2>/dev/null || echo unknown)\`"
             echo
             echo '```'
+            cat /tmp/fp/plugin-install.log /tmp/fp/recovery.log 2>/dev/null || true
             tail -80 /tmp/fp/first-practice.log 2>/dev/null || echo '(browser step did not run)'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
@@ -285,7 +306,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "### First-practice browser (MariaDB 11.4.13) — job ${{ job.status }}"
+            echo "### First-practice browser (${{ matrix.database }}) — job ${{ job.status }}"
             echo
             echo "- producing SHA: \`${GITHUB_SHA}\`"
             echo "- versions:"
@@ -294,7 +315,9 @@ jobs:
             echo '```'
             echo "- browser log (secrets redacted by the harness; passwords are not copied here):"
             echo '```'
+            cat /tmp/fp/plugin-install.log 2>/dev/null || true
             cat /tmp/fp/first-practice.log 2>/dev/null || echo '(browser step did not produce a log)'
+            cat /tmp/fp/recovery.log 2>/dev/null || echo '(recovery browser did not produce a log)'
             echo '```'
           } > /tmp/fp/pr-comment.md
           gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/fp/pr-comment.md

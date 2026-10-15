@@ -698,6 +698,11 @@ with sync_playwright() as p:
                   admin_page.locator('input[name="facility_type"][value="doctor_practice"]:checked').count() == 1,
                   "facility selection resumes after interruption")
 
+            # Complete the personal-practice journey before changing facility
+            # type for the existing multi-doctor regression journey.
+            from rwp_personal import run_personal
+            run_personal(admin_page, check, goto_admin, wp_eval, shot)
+
             # --- Journey B: multi-doctor Clinic with real clinicians ---
             goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-multi")
             fac2 = admin_page.locator('form:has(input[name="facility_type"])')
@@ -715,7 +720,7 @@ with sync_playwright() as p:
                         doc2.locator('button[type="submit"]').first.click()
                     check("admin.multi.incomplete_blocks",
                           query_step(admin_page.url) == "doctors" and "هنوز کامل نیست" in admin_page.content(),
-                          "zero actual clinicians cannot satisfy intended count of two")
+                          "fewer than two actual clinicians cannot satisfy intended count of two")
                 # Register two real clinicians via the established page.
                 for idx, cname in enumerate(["پزشک آزمون یک", "پزشک آزمون دو"], start=1):
                     goto_admin(admin_page, "admin", "admin.php?page=cpms-clinicians", f"cpms-clinicians-create-{idx}")

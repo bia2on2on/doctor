@@ -255,6 +255,38 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         }
     }
 
+    /** Legacy wizard saveClinic wrote exactly these four keys before Phase 4.
+     * Keep the same strict audit shape, actor continuity and no-activity gates.
+     */
+    public function testLegacyClinicSetupHistoryCanBeContinuedOnlyByOriginalAdmin(): void
+    {
+        $this->resetClinicActivityFixture();
+        $admin = $this->makeUser('rec_legacy_', 'administrator');
+        $other = $this->makeUser('rec_legacy_other_', 'administrator');
+        $this->seedSetupOnlyHistory($admin);
+        foreach (['name' => 'مطب قدیمی', 'address' => 'تهران', 'phone' => '021-111', 'timezone' => 'Asia/Tehran'] as $suffix => $value) {
+            $key = 'setup.clinic.' . $suffix;
+            App::audit()->log(
+                'SETTING_UPDATE', ['wp_user_id' => $admin, 'role' => 'administrator'], 'setting', null, null,
+                ['setting' => $key, 'value' => ''], ['setting' => $key, 'value' => $value],
+                ['op' => 'config_update', 'clinic_id' => $this->clinic_id], $this->clinic_id
+            );
+            App::db()->query(
+                'INSERT INTO ' . App::db()->table('cpms_settings') . ' (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at) VALUES (%d, %s, %s, %d, %s)',
+                [$this->clinic_id, $key, wp_json_encode($value), $admin, App::db()->nowUtcSql()]
+            );
+        }
+        $this->markClaimed();
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->recovery_candidate($other));
+        $this->assertRecoveryDenied($service, $other);
+        self::assertNotNull($service->recovery_candidate($admin), 'recognized legacy clinic profile history is setup-only, not unknown clinical activity');
+        $before = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]);
+        $result = $service->recover($admin, $this->clinic_id, 'مطب بازیابی قدیمی');
+        self::assertGreaterThan(0, $result['membership_id']);
+        self::assertSame($before, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d ORDER BY id', [$this->clinic_id]), 'legacy settings are historical evidence, not rewritten canonical data');
+    }
+
     public function testRecoveryDeniedWithUnknownAuditAction(): void
     {
         $admin = $this->makeUser('rec_unk_', 'administrator');
