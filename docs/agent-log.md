@@ -538,3 +538,8 @@ extracted `run:` blocks.
 
 
 
+
+## 2026-10-15 — Unified facility-type onboarding wizard (arena/eae72291-doctor)
+- Receipt 2026-10-15T07:22:10Z; base 08c64134a8547b967ba889d59d5e0eca0981f5b5; open PRs at start: 0.
+- Added FacilityTypeCatalog (12 Persian facility types, adaptive flows), facility-first wizard screen (pre-bootstrap user-meta only, nonce+manage_options), wizard facility/locations steps, hospital inpatient + multi-Clinic provisioning explicit blockers. No migration, no parallel service, no multi-Clinic creation (no approved Organization-level authority model found).
+- Tests added: Unit FacilityTypeCatalogTest, Integration FacilityOnboardingWizardTest. Local PHP runtime unavailable in sandbox; execution evidence deferred to PR CI (not claimed locally).
