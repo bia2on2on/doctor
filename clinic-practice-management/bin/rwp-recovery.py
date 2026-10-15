@@ -159,6 +159,8 @@ def run_case(browser, kind, second, allowed):
         check(tag + '.persian_guidance', 'راه‌اندازی' in page.inner_text('body'))
         check(tag + '.rtl', page.locator('[dir="rtl"]').count() > 0)
         page.screenshot(path=str(OUT / (tag + '-before.png')), full_page=True)
+        if tag == 'legacy_same_admin':
+            page.screenshot(path=str(OUT / (tag + '-viewport.jpg')), type='jpeg', quality=65)
         if allowed and form.count() == 1:
             form.locator('input[name="confirm_recovery"]').check()
             form.locator('input[name="practice_name"]').fill('مطب بازیابی آزمایشی')

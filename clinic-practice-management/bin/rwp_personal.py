@@ -108,4 +108,5 @@ echo 'PERSONAL_DB=' . wp_json_encode($data) . PHP_EOL;
     # WP chrome can overflow independently; measure the actual wizard wrapper.
     check('personal.mobile.wizard_fits', page.locator('.wrap[dir="rtl"]').first.evaluate('(e) => e.scrollWidth <= e.clientWidth + 2'))
     shot(page, 'personal-mobile-review')
+    page.screenshot(path=__import__('os').environ.get('OUT', '/tmp/fp') + '/personal-mobile-viewport.jpg', type='jpeg', quality=65)
     page.set_viewport_size({'width': 1440, 'height': 900})
