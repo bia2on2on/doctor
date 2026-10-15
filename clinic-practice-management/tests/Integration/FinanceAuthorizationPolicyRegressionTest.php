@@ -165,7 +165,9 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         self::assertSame('voided', (string) $this->paymentRow($paymentId)['status']);
         self::assertSame(1, $this->auditCount('PAYMENT_VOID'));
 
-        // Second payment → refund by the same owner.
+        // Second payment → refund by the same owner. Ordinary capture is again a
+        // secretary operation (the doctor preset has no PAYMENT_CREATE by design).
+        wp_set_current_user($secretary);
         $capture2 = $this->pay($invoice, $clinic, $location, ['amount' => 15000, 'method' => 'cash']);
         self::assertSame(201, $capture2->get_status(), 'premise capture 2 — ' . $this->errorCode($capture2));
         $payment2 = (int) ($this->payload($capture2)['payment']['id'] ?? 0);

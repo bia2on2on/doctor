@@ -516,17 +516,18 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorize_sensitive_payment( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, 'payment.void');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason): array {
+        return $this->db->transactional(function () use ($actorUserId, $clinicId, $paymentId, $reason): array {
             $payment = $this->payments->findForUpdate($paymentId);
             if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
             }
+            $this->authorize_payment_ownership( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
             if ((string) $payment['status'] !== 'captured') {
                 throw FinanceException::of(
                     'CLINIC_INVALID_TRANSITION',
@@ -600,7 +601,7 @@ final class FinanceService
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $clinicId = $this->requireTrustedClinicId();
-        $this->authorize_sensitive_payment( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, 'payment.refund');
         $reason = trim($reason);
         if ($reason === '') {
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل بازپرداخت الزامی است', 422);
@@ -610,6 +611,7 @@ final class FinanceService
         if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
         }
+        $this->authorize_payment_ownership( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
 
         $paidAmount = $this->toMinor((string) $payment['amount']) ?? 0;
         $alreadyRefunded = $this->toMinor((string) $payment['refunded_amount']) ?? 0;
@@ -1202,7 +1204,13 @@ final class FinanceService
     }
 
     /**
-     * 2026-10-15 — مجوز عملیات حساس پرداخت: Capability مؤثر + مالکیت تأییدشدهٔ تراکنش.
+     * 2026-10-15 — شرطِ مالکیتِ تراکنش برای عملیات حساس پرداخت (اصلاح امنیتی).
+     *
+     * فقط به‌عنوان «شرط افزوده» روی مسیری اجرا می‌شود که موتور مجوزِ کانونی
+     * (`requireCap` + `authorizeScoped`) و بررسی‌های کانونیِ scope/404 قبلاً آن را
+     * مجاز کرده‌اند؛ بنابراین تقدمِ خطاهای موجود (CLINIC_SCOPE_REQUIRED،
+     * CLINIC_NOT_FOUND 404-parity، CLINIC_INVALID_TRANSITION، DENY صریح) دقیقاً
+     * بدون تغییر می‌ماند و هیچ ردیف خارج از Clinic در دامنهٔ این بررسی نیست.
      *
      *  - مالکیت فقط از دادهٔ پایدار خوانده می‌شود (`PaymentRepository::owning_clinician_wp_user_id`
      *    روی زنجیرهٔ payment → invoice → visit → clinician) و هرگز از payload/نقش سراسری.
@@ -1213,9 +1221,9 @@ final class FinanceService
      *
      * سند: docs/decisions/2026-10-15-financial-authorization-policy.md
      */
-    private function authorize_sensitive_payment( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
+    private function authorize_payment_ownership( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
         if ( $actor_user_id <= 0 || $clinic_id <= 0 ) {
-            throw FinanceException::of( 'CLINIC_SCOPE_REQUIRED', 'زمینهٔ کلینیک معتبر برای عملیات مالی لازم است', 400, [ 'scope' => $scope ] );
+            return;
         }
 
         $owns_transaction = $this->payments->owning_clinician_wp_user_id( $payment_id, $clinic_id ) === $actor_user_id;
