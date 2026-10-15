@@ -1324,6 +1324,26 @@ with sync_playwright() as p:
     page.close()
     actx.close()
 
+    # Revoke the temporary Administrator manager membership so subsequent
+    # admin-ui / tablet / mobile personas exercise the membership-less installation
+    # administrator invariants as intended.
+    fixture_clinic_id = (ACC_PUBLIC_PAGE.split('|') + ['', '', ''])[1]
+    if fixture_clinic_id and WP_DIR:
+        try:
+            subprocess.run(
+                [
+                    "wp", "eval",
+                    f"$u = get_user_by('login', '{ADMIN_USER}'); if ($u) {{ \\ClinicCore\\Bootstrap\\App::db()->query('DELETE FROM ' . \\ClinicCore\\Bootstrap\\App::db()->table('cpms_clinic_memberships') . ' WHERE user_id = ' . (int) $u->ID . ' AND clinic_id = {int(fixture_clinic_id)}'); }}",
+                    f"--path={WP_DIR}",
+                    "--allow-root",
+                ],
+                check=False,
+                capture_output=True,
+                timeout=20,
+            )
+        except Exception:
+            pass
+
     # ---------- Admin UI — دسکتاپ (1440×900) ----------
     auictx = new_persona_context(browser)
     ui = auictx.new_page()
