@@ -694,6 +694,10 @@ with sync_playwright() as p:
                       "declaring a number alone does not complete the doctors step")
             # Interruption/resume: revisiting the wizard keeps the facility choice.
             goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-resume")
+            check("admin.adaptive.facility_resumes",
+                  admin_page.locator('input[name="facility_type"][value="doctor_practice"]:checked').count() == 1,
+                  "facility selection resumes after interruption")
+
             # --- Journey B: multi-doctor Clinic with real clinicians ---
             goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-multi")
             fac2 = admin_page.locator('form:has(input[name="facility_type"])')
@@ -740,9 +744,6 @@ with sync_playwright() as p:
                       admin_page.locator('input[name="facility_type"][value="general_clinic"]:checked').count() == 1,
                       "multi-doctor facility selection resumes")
 
-            check("admin.adaptive.facility_resumes",
-                  admin_page.locator('input[name="facility_type"][value="doctor_practice"]:checked').count() == 1,
-                  "facility selection resumes after interruption")
 
         # Replay via UI: form must be gone for the claiming admin.
         status, body = goto_admin(
