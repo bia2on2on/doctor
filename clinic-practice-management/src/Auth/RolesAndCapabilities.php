@@ -126,7 +126,12 @@ final class RolesAndCapabilities
         self::VISIT_READ, self::QUEUE_READ, self::QUEUE_CHECKIN, self::QUEUE_ADVANCE, self::QUEUE_CHECKOUT,
         self::FILE_UPLOAD, self::FILE_READ,
         self::INVOICE_READ, self::INVOICE_CREATE, self::INVOICE_ADJUST, self::INVOICE_VOID,
-        self::PAYMENT_CREATE, self::PAYMENT_VOID, self::PAYMENT_REFUND,
+        self::PAYMENT_CREATE,
+        // 2026-10-15 — سیاست مجوز مالی (تصمیم مالک): ثبت عادی پرداخت برای منشی مجاز است،
+        // اما ابطال/بازپرداخت (cpms_payment_void / cpms_payment_refund) برای منشی
+        // «پیش‌فرض رد» شد. سند: docs/decisions/2026-10-15-financial-authorization-policy.md
+        // و docs/permissions/permission-matrix.md §7. گرنت صریح عضویت (نصب موجود یا
+        // واگذاری صریح مدیر کلینیک) همچنان و پیش از پیش‌فرض ارزیابی می‌شود.
         self::FINANCE_READ,
         self::SEARCH,
     ];
