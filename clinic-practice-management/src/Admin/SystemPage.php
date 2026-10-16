@@ -125,8 +125,8 @@ final class SystemPage
 
             <?php if ($faults !== []) : ?>
                 <h3>⚠️ موارد نیازمند توجه</h3>
-                <?php foreach ( $faults as $c ) : ?>
-                    <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
+                    <?php foreach ( $faults as $c ) : ?>
+                        <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
                     <div class="notice notice-warning inline" style="max-width:1000px">
                         <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
                         <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
@@ -451,7 +451,7 @@ final class SystemPage
      *
      * @return array{what:string, impact:string, action:string}
      */
-    public static function guide(string $key, string $status, string $detail = ''): array
+    public static function guide( string $key, string $status, string $detail = '' ): array
     {
         if ( $key === 'db.mysql_version' ) {
             if ( $status === SystemHealthService::FAIL ) {

@@ -1032,7 +1032,6 @@ jobs:
           if [ -s /tmp/wpcs-new.txt ]; then
             echo "::error::$(wc -l < /tmp/wpcs-new.txt) WPCS violation(s) on added lines:"
             cat /tmp/wpcs-new.txt
-            while IFS= read -r line; do echo "::error::$line"; done < /tmp/wpcs-new.txt
             PR_NUM="${{ github.event.pull_request.number }}"
             if [ -n "$PR_NUM" ]; then
               {
