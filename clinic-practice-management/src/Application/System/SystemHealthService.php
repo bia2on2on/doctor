@@ -45,6 +45,11 @@ final class SystemHealthService
     public const HOST_SUPPORTED_WITH_WARNINGS = 'SUPPORTED_WITH_WARNINGS';
     public const HOST_UNSUPPORTED = 'UNSUPPORTED';
 
+    /** سه وضعیتِ کاربرپسند (فارسی) برای ارائهٔ سلامت سیستم */
+    public const USER_STATUS_READY       = 'آماده استفاده';
+    public const USER_STATUS_NEEDS_SETUP = 'نیازمند تنظیم';
+    public const USER_STATUS_CRITICAL    = 'مشکل ضروری';
+
     /**
      * کفِ اعلام‌شدهٔ وردپرس — برگرفته از هدرِ افزونه (`Requires at least: 6.9`)؛
      * عددِ جدیدی اعلام نمی‌شود.
@@ -198,7 +203,7 @@ final class SystemHealthService
 
         // ---------- License (ADR-0023) ----------
         $state = $this->licenses->currentState();
-        $licenseStatus = match ($state['status']) {
+        $license_status = match ( $state['status'] ) {
             LicenseStatus::ACTIVE => self::PASS,
             LicenseStatus::EXPIRING, LicenseStatus::GRACE => self::WARNING,
             LicenseStatus::ACTIVATION_PENDING, LicenseStatus::ACTIVATION_GRACE => self::WARNING,
@@ -206,11 +211,11 @@ final class SystemHealthService
             LicenseStatus::NOT_CONFIGURED => self::NOT_CONFIGURED,
             default => self::FAIL, // RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE
         };
-        $licenseDetail = $state['status'] . ($state['reason'] !== '' ? ' (' . $state['reason'] . ')' : '');
+        $license_detail = $state['reason'] !== '' ? $state['reason'] : '';
         if ($state['expires_at'] !== null && $state['status'] !== LicenseStatus::NOT_CONFIGURED) {
-            $licenseDetail .= ' | مهلت/انقضا ' . gmdate('Y-m-d', (int) $state['expires_at']);
+            $license_detail = ( $license_detail !== '' ? $license_detail . ' | ' : '' ) . 'مهلت/انقضا ' . gmdate( 'Y-m-d', (int) $state['expires_at'] );
         }
-        $add('license.state', 'مجوز', $licenseStatus, $licenseDetail);
+        $add( 'license.state', 'مجوز', $license_status, $license_detail );
         $add(
             'license.gateway',
             'سرور مجوز',
@@ -314,7 +319,7 @@ final class SystemHealthService
                 'key'    => 'db.mysql_version',
                 'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
                 'status' => self::UNKNOWN,
-                'detail' => 'MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL '
+                'detail' => 'mariadb:detected | MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL '
                     . self::MIN_MYSQL_VERSION . ' است و سیاستِ MariaDB اعلام نشده است',
             ];
         }
@@ -346,6 +351,22 @@ final class SystemHealthService
      *
      * @return array{status:string, issues:list<string>}
      */
+    /**
+     * شناساییِ ساختاریافتهٔ MariaDB در مدرکِ سازگاریِ دیتابیس.
+     *
+     * مدرکِ MariaDB مدرکِ «MySQL ≥ 8.0» نیست، اما نبودِ مدرکِ MySQL-اختصاصی
+     * نباید به‌تنهایی کلِ میزبان را UNSUPPORTED کند. شناسایی بر پایهٔ شناسهٔ
+     * ساختاریافتهٔ `mariadb:` یا نشانگرِ انگلیسیِ MariaDB انجام می‌شود، نه
+     * متنِ فارسیِ تشخیص.
+     */
+    public static function isMariaDbCompatibilityDetail(string $detail): bool
+    {
+        $normalized = strtolower( trim( $detail ) );
+
+        return str_starts_with( $normalized, 'mariadb:' )
+            || str_contains( $normalized, 'mariadb' );
+    }
+
     public static function classifyHost(array $checks): array
     {
         $issues = [];
@@ -354,9 +375,18 @@ final class SystemHealthService
             if (!in_array($c['key'], self::CRITICAL_KEYS, true)) {
                 continue;
             }
-            if ($c['status'] === self::FAIL || $c['status'] === self::UNKNOWN) {
+            // MariaDB: سرورِ تشخیص‌داده‌شده MariaDB مدرکِ «MySQL ≥ 8.0» نیست،
+            // پس ردیفِ db.mysql_version صادقانه UNKNOWN می‌ماند؛ اما این نبودِ
+            // مدرکِ MySQL-اختصاصی به‌تنهایی نباید کلِ میزبان را UNSUPPORTED کند.
+            // در عین حال ادعایِ سازگاریِ کامل هم نمی‌شود: به‌عنوان «نیازمند
+            // تنظیم» (warning) گزارش می‌شود تا مدرکِ نامشخص حفظ شود.
+            $maria_db_uncertified = $c['key'] === 'db.mysql_version'
+                && $c['status'] === self::UNKNOWN
+                && self::isMariaDbCompatibilityDetail( (string) ( $c['detail'] ?? '' ) );
+
+            if ( $c['status'] === self::FAIL || ( $c['status'] === self::UNKNOWN && ! $maria_db_uncertified ) ) {
                 $issues[] = $c['key'] . ': ' . $c['detail'];
-            } elseif ($c['status'] === self::WARNING) {
+            } elseif ( $c['status'] === self::WARNING || $maria_db_uncertified ) {
                 $warnings[] = $c['key'];
             }
         }
@@ -368,6 +398,83 @@ final class SystemHealthService
             'status' => $warnings !== [] ? self::HOST_SUPPORTED_WITH_WARNINGS : self::HOST_SUPPORTED,
             'issues' => $warnings !== [] ? $warnings : [],
         ];
+    }
+
+    /**
+     * نگاشتِ وضعیتِ داخلی به یکی از سه وضعیتِ کاربرپسند (فارسی).
+     */
+    /**
+     * @param mixed ...$args status یا (key, status, detail) به‌صورت انعطاف‌پذیر
+     */
+    public static function user_facing_status( ...$args ): string
+    {
+        $status = '';
+        $key = '';
+        $detail = '';
+
+        foreach ( $args as $arg ) {
+            if ( ! is_string( $arg ) ) {
+                continue;
+            }
+
+            if ( in_array( $arg, [self::PASS, self::WARNING, self::FAIL, self::NOT_CONFIGURED, self::UNKNOWN], true ) ) {
+                if ( '' === $status ) {
+                    $status = $arg;
+                }
+            } elseif ( str_contains( $arg, '.' ) || self::isMariaDbCompatibilityDetail( $arg ) ) {
+                if ( '' === $key ) {
+                    $key = $arg;
+                } else {
+                    $detail .= ' ' . $arg;
+                }
+            } else {
+                if ( '' === $detail ) {
+                    $detail = $arg;
+                } else {
+                    $detail .= ' ' . $arg;
+                }
+            }
+        }
+
+        if ( '' === $status && isset( $args[0] ) && is_string( $args[0] ) ) {
+            $status = $args[0];
+        }
+
+        $isMaria = 'db.mysql_version' === $key
+            && self::UNKNOWN === $status
+            && self::isMariaDbCompatibilityDetail( $detail );
+
+        if ( $isMaria ) {
+            return self::USER_STATUS_NEEDS_SETUP;
+        }
+
+        return match ( $status ) {
+            self::PASS => self::USER_STATUS_READY,
+            self::FAIL, self::UNKNOWN => self::USER_STATUS_CRITICAL,
+            default => self::USER_STATUS_NEEDS_SETUP,
+        };
+    }
+
+    /**
+     * نگاشتِ وضعیتِ میزبان به یکی از سه وضعیتِ کاربرپسند (فارسی).
+     */
+    public static function user_facing_host_status( string $status ): string {
+        return match ( $status ) {
+            self::HOST_SUPPORTED => self::USER_STATUS_READY,
+            self::HOST_SUPPORTED_WITH_WARNINGS => self::USER_STATUS_NEEDS_SETUP,
+            default => self::USER_STATUS_CRITICAL,
+        };
+    }
+
+    // Aliases for compatibility with callers/tests that use shorter names.
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    public static function statusLabel( string $status ): string {
+        return self::user_facing_status( $status );
+    }
+
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    public static function hostStatusLabel( string $status ): string {
+        return self::user_facing_host_status( $status );
     }
 
     // ================= private =================

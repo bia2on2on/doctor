@@ -75,4 +75,85 @@ final class SystemHealthHostClassificationTest extends TestCase
         $host = SystemHealthService::classifyHost($checks);
         $this->assertSame(SystemHealthService::HOST_SUPPORTED, $host['status']);
     }
+
+    public function testMariaDbUncertifiedDatabaseDoesNotMakeHostUnsupported(): void
+    {
+        $checks = [
+            $this->row('php.version', SystemHealthService::PASS),
+            $this->row('wp.version', SystemHealthService::PASS),
+            $this->row('db.reachable', SystemHealthService::PASS),
+            $this->row('db.migrated', SystemHealthService::PASS),
+            ['key' => 'db.mysql_version', 'label' => 'db.mysql_version', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL 8.0 است و سیاستِ MariaDB اعلام نشده است'],
+            $this->row('storage.files', SystemHealthService::PASS),
+            $this->row('storage.backups', SystemHealthService::PASS),
+            $this->row('cron.jobs', SystemHealthService::PASS),
+        ];
+        $host = SystemHealthService::classifyHost($checks);
+        $this->assertSame(SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, $host['status']);
+        $this->assertContains('db.mysql_version', $host['issues']);
+    }
+
+    public function testGenuineUnknownNonMariaDbDatabaseStillMakesHostUnsupported(): void
+    {
+        $checks = [
+            $this->row('php.version', SystemHealthService::PASS),
+            $this->row('wp.version', SystemHealthService::PASS),
+            $this->row('db.reachable', SystemHealthService::PASS),
+            $this->row('db.migrated', SystemHealthService::PASS),
+            ['key' => 'db.mysql_version', 'label' => 'db.mysql_version', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست'],
+            $this->row('storage.files', SystemHealthService::PASS),
+            $this->row('storage.backups', SystemHealthService::PASS),
+            $this->row('cron.jobs', SystemHealthService::PASS),
+        ];
+        $host = SystemHealthService::classifyHost($checks);
+        $this->assertSame(SystemHealthService::HOST_UNSUPPORTED, $host['status']);
+    }
+
+    public function testGenuineCriticalFailuresRemainUnsupported(): void
+    {
+        foreach (['php.version', 'wp.version', 'db.reachable', 'db.migrated', 'storage.files', 'storage.backups', 'cron.jobs'] as $key) {
+            $checks = [
+                $this->row('php.version', SystemHealthService::PASS),
+                $this->row('wp.version', SystemHealthService::PASS),
+                $this->row('db.reachable', SystemHealthService::PASS),
+                $this->row('db.migrated', SystemHealthService::PASS),
+                $this->row('storage.files', SystemHealthService::PASS),
+                $this->row('storage.backups', SystemHealthService::PASS),
+                $this->row('cron.jobs', SystemHealthService::PASS),
+            ];
+            foreach ($checks as $i => $c) {
+                if ($c['key'] === $key) {
+                    $checks[$i]['status'] = SystemHealthService::FAIL;
+                }
+            }
+            $host = SystemHealthService::classifyHost($checks);
+            $this->assertSame(SystemHealthService::HOST_UNSUPPORTED, $host['status'], $key);
+        }
+    }
+
+
+    public function testMariaDbUncertifiedCoexistsWithGenuineCriticalFailure(): void
+    {
+        $checks = [
+            $this->row('php.version', SystemHealthService::FAIL),
+            $this->row('wp.version', SystemHealthService::PASS),
+            $this->row('db.reachable', SystemHealthService::PASS),
+            $this->row('db.migrated', SystemHealthService::PASS),
+            ['key' => 'db.mysql_version', 'label' => 'db.mysql_version', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'mariadb:detected | MariaDB شناسایی شد'],
+            $this->row('storage.files', SystemHealthService::PASS),
+            $this->row('storage.backups', SystemHealthService::PASS),
+            $this->row('cron.jobs', SystemHealthService::PASS),
+        ];
+        $host = SystemHealthService::classifyHost($checks);
+        $this->assertSame(SystemHealthService::HOST_UNSUPPORTED, $host['status']);
+        $this->assertContains('php.version', implode(' | ', $host['issues']));
+        $this->assertNotContains('db.mysql_version', implode(' | ', $host['issues']));
+    }
+
+    public function testStructuredMariaDbIdentifierIsDetected(): void
+    {
+        $this->assertTrue(SystemHealthService::isMariaDbCompatibilityDetail('mariadb:detected | MariaDB شناسایی شد'));
+        $this->assertFalse(SystemHealthService::isMariaDbCompatibilityDetail('نسخهٔ سرور دیتابیس در دسترس نیست'));
+    }
+
 }

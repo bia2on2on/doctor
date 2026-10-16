@@ -102,9 +102,9 @@ final class SystemPage
                 <strong>
                 <?php
                 echo esc_html(match ($health['host']['status']) {
-                    SystemHealthService::HOST_SUPPORTED => '✅ SUPPORTED',
-                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ SUPPORTED_WITH_WARNINGS',
-                    default => '⛔ UNSUPPORTED',
+                    SystemHealthService::HOST_SUPPORTED => '✅ ' . SystemHealthService::USER_STATUS_READY,
+                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
+                    default => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
                 });
                 ?>
                 </strong>
@@ -142,7 +142,7 @@ final class SystemPage
                 <?php foreach ($okRows as $c) : ?>
                     <tr>
                         <td><?php echo esc_html($c['label']); ?></td>
-                        <td><?php echo esc_html(self::statusBadge($c['status'])); ?></td>
+                        <td><?php echo esc_html(self::statusBadge($c['status'], $c['key'], $c['detail'])); ?></td>
                         <td><?php echo esc_html($c['detail']); ?></td>
                     </tr>
                 <?php endforeach; ?>
@@ -445,6 +445,22 @@ final class SystemPage
      */
     public static function guide(string $key, string $status): array
     {
+        if ($key === 'db.mysql_version') {
+            if ($status === SystemHealthService::FAIL) {
+                return [
+                    'what' => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
+                    'impact' => 'عملیات‌های وابسته به MySQL 8 ممکن است شکست بخورند یا پشتیبانی نشوند.',
+                    'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB 11.4.13 پشتیبانی‌شده استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
+                ];
+            }
+
+            return [
+                'what' => 'سرور دیتابیس MariaDB شناسایی شد و سازگاریِ آن با کفِ MySQL 8.0 گواهی نشده است.',
+                'impact' => 'افزونه ممکن است روی این سرور کار کند، اما سازگاریِ کامل تأیید نشده است و رفتارِ برخی ویژگی‌ها ممکن است متفاوت باشد. دسترسی به داده محدود نمی‌شود.',
+                'action' => 'از MariaDB 11.4.13 یا MySQL 8.x پشتیبانی‌شده استفاده کنید؛ پیش از هر تغییر بکاپ کامل بگیرید؛ در صورت نیاز با پشتیبانی تماس بگیرید. ادعای سازگاریِ کامل نمی‌شود.',
+            ];
+        }
+
         $ok = in_array($status, [SystemHealthService::PASS], true);
         $entries = [
             'wp.version'         => [
@@ -524,7 +540,7 @@ final class SystemPage
             ],
         ];
         $entry = $entries[$key] ?? [
-            'what' => 'بررسی با وضعیت «' . ($status === SystemHealthService::PASS ? 'PASS' : $status) . '» بازگشت.',
+            'what'   => 'بررسی با وضعیت «' . SystemHealthService::user_facing_status( $status ) . '» بازگشت.',
             'impact' => 'این مورد در عملکرد کلینیک ممکن است مؤثر باشد.',
             'action' => 'جزئیات فنی را بررسی و در صورت نیاز با پشتیبانی تماس بگیرید.',
         ];
@@ -536,34 +552,77 @@ final class SystemPage
         ] : $entry;
     }
 
-    private static function statusBadge(string $status): string
+    /**
+     * @param mixed ...$args
+     */
+    private static function statusBadge( ...$args ): string
     {
-        return match ($status) {
-            'pass' => '✅ PASS',
-            'warning' => '⚠️ WARNING',
-            'fail' => '⛔ FAIL',
-            'not_configured' => '➖ NOT_CONFIGURED',
-            default => '❔ UNKNOWN',
+        $status = '';
+        $key = '';
+        $detail = '';
+
+        foreach ( $args as $arg ) {
+            if ( ! is_string( $arg ) ) {
+                continue;
+            }
+
+            if ( in_array( $arg, ['pass', 'warning', 'fail', 'not_configured', 'unknown'], true )
+                || in_array( $arg, [SystemHealthService::PASS, SystemHealthService::WARNING, SystemHealthService::FAIL, SystemHealthService::NOT_CONFIGURED, SystemHealthService::UNKNOWN], true ) ) {
+                if ( '' === $status ) {
+                    $status = $arg;
+                }
+            } elseif ( str_contains( $arg, '.' ) || SystemHealthService::isMariaDbCompatibilityDetail( $arg ) ) {
+                if ( '' === $key ) {
+                    $key = $arg;
+                } else {
+                    $detail .= ' ' . $arg;
+                }
+            } else {
+                if ( '' === $detail ) {
+                    $detail = $arg;
+                } else {
+                    $detail .= ' ' . $arg;
+                }
+            }
+        }
+
+        if ( '' === $status && isset( $args[0] ) && is_string( $args[0] ) ) {
+            $status = $args[0];
+        }
+
+        $isMaria = 'db.mysql_version' === $key
+            && SystemHealthService::UNKNOWN === $status
+            && SystemHealthService::isMariaDbCompatibilityDetail( $detail );
+
+        if ( $isMaria ) {
+            return '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP;
+        }
+
+        return match ( $status ) {
+            'pass', SystemHealthService::PASS => '✅ ' . SystemHealthService::USER_STATUS_READY,
+            'fail', SystemHealthService::FAIL => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
+            'unknown', SystemHealthService::UNKNOWN => '❔ ' . SystemHealthService::USER_STATUS_CRITICAL,
+            default => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
         };
     }
 
     private static function licenseLabel(string $status): string
     {
         return match ($status) {
-            LicenseStatus::ACTIVE => '✅ ACTIVE (فعال)',
-            LicenseStatus::EXPIRING => '⚠️ EXPIRING (نزدیک انقضا)',
-            LicenseStatus::GRACE => '⚠️ GRACE (مهلت تمدید)',
-            LicenseStatus::RESTRICTED => '⛔ RESTRICTED (محدود)',
-            LicenseStatus::ACTIVATION_PENDING => '⏳ ACTIVATION_PENDING (پنجرهٔ فعال‌سازی ۷ روزه)',
-            LicenseStatus::ACTIVATION_GRACE => '⏳ ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه)',
-            LicenseStatus::DEVELOPMENT => '🧪 DEVELOPMENT (حالت توسعه/تست صریح)',
-            LicenseStatus::NOT_CONFIGURED => '➖ NOT_CONFIGURED',
-            LicenseStatus::UNREACHABLE => '📡 UNREACHABLE (سرور مجوز در دسترس نیست)',
-            LicenseStatus::INVALID => '⛔ INVALID (سند نامعتبر)',
-            LicenseStatus::SUSPENDED => '⛔ SUSPENDED',
-            LicenseStatus::REVOKED => '⛔ REVOKED',
-            LicenseStatus::THROTTLED => '⏱ THROTTLED',
-            default => strtoupper((string) $status),
+            LicenseStatus::ACTIVE => '✅ فعال',
+            LicenseStatus::EXPIRING => '⚠️ نزدیک انقضا',
+            LicenseStatus::GRACE => '⚠️ مهلت تمدید',
+            LicenseStatus::RESTRICTED => '⛔ محدود',
+            LicenseStatus::ACTIVATION_PENDING => '⏳ پنجرهٔ فعال‌سازی ۷ روزه',
+            LicenseStatus::ACTIVATION_GRACE => '⏳ مهلت مهاجرت ۳۰ روزه',
+            LicenseStatus::DEVELOPMENT => '🧪 حالت توسعه/تست',
+            LicenseStatus::NOT_CONFIGURED => '➖ پیکربندی نشده',
+            LicenseStatus::UNREACHABLE => '📡 سرور مجوز در دسترس نیست',
+            LicenseStatus::INVALID => '⛔ سند نامعتبر',
+            LicenseStatus::SUSPENDED => '⛔ تعلیق‌شده',
+            LicenseStatus::REVOKED => '⛔ ابطال‌شده',
+            LicenseStatus::THROTTLED => '⏱ تحت محدودیت',
+            default => '❔ نامشخص',
         };
     }
 }
