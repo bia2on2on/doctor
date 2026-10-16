@@ -50,7 +50,15 @@ final class FinanceFlowTest extends WP_UnitTestCase
         // C6 repair — عضویت فعال staff صریح است (نه fixture سراسری).
         // تست‌های patient/non-member عمداً عضویت نمی‌گیرند.
         $this->secretaryUserId = $this->makeUser('ff_secretary', 'cpms_secretary');
-        cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
+        $finance_secretary_membership = cpms_test_seed_membership($this->secretaryUserId, 1, 'cpms_secretary');
+        // 2026-10-15 — سیاست مجوز مالی: ابطال/بازپرداخت برای منشی «پیش‌فرض رد» شد. این
+        // سوئیت خواصِ D14/P3 (پنجرهٔ ابطال، بازگردانی فاکتور، سقف بازپرداخت) را می‌سنجد، نه
+        // پیش‌فرض نقش؛ پس اختیار قبلی همان‌طور که یک نصب موجود ممکن است داشته باشد، اینجا
+        // به‌صورت گرنت صریح عضویت (مسیر ارزیابی‌شدهٔ پیش از پیش‌فرض) برقرار می‌شود. مسیر واگذاری/
+        // رد پیش‌فرض در tests/Integration/FinanceAuthorizationPolicyRegressionTest.php سنجیده می‌شود.
+        $finance_memberships = new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db());
+        $finance_memberships->set_capability($finance_secretary_membership, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_VOID, 'grant');
+        $finance_memberships->set_capability($finance_secretary_membership, \ClinicCore\Auth\RolesAndCapabilities::PAYMENT_REFUND, 'grant');
         $this->doctorUserId = $this->makeUser('ff_doctor', 'cpms_doctor');
         cpms_test_seed_membership($this->doctorUserId, 1, 'cpms_doctor');
         $this->adminUserId = $this->makeUser('ff_admin', 'administrator');

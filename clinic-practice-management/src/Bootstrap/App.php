@@ -10,6 +10,7 @@ use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\Compatibility\WooCommerceAdminAccess;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Admin\FinanceDelegationPage;
 use ClinicCore\Admin\FirstPracticeSetupPage;
 use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Admin\PatientAdminPage;
@@ -32,6 +33,7 @@ use ClinicCore\Application\Booking\ScheduleService;
 use ClinicCore\Application\Clinic\ClinicProfileService;
 use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
+use ClinicCore\Application\Finance\FinanceDelegationService;
 use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Location\LocationService;
@@ -357,6 +359,7 @@ final class App
         SystemPage::register();
         ClinicianAdminPage::register(); // ADR-0031 / Part 2 — Setup UI پزشک + برنامه هفتگی
         RoleCapabilitiesPage::register(); // ADR-0030 / Part 1 — مدیریت دسترسی نقش‌ها
+        FinanceDelegationPage::register(); // 2026-10-15 — واگذاری محدود مالی حساس (Clinic-scoped، قابل بازگردانی، ممیزی‌شده)
         CustomRoleDefinitionsPage::register(); // Custom Role Slice 2 — نقش‌های سفارشی Clinic-local (تعریف/نام/مجوزها)
         PatientPortalPage::register(); // ADR-0030 / Part 1 — مقصد بیمار بعد از OTP
         PrescriptionPrintPage::register(); // ADR-0031 / Part 2 — چاپ نسخه (P12)
@@ -1185,6 +1188,25 @@ final class App
         }
 
         return self::$op;
+    }
+
+    /**
+     * 2026-10-15 — واگذاری صریح و محدود مجوزهای مالی حساس توسط مدیر کلینیک
+     * (Product Decision: docs/decisions/2026-10-15-financial-authorization-policy.md).
+     * از همان ذخیره‌سازی Override عضویت و همان موتور مجوز استفاده می‌کند.
+     */
+    public static function finance_delegation_service(): FinanceDelegationService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new FinanceDelegationService(
+                self::db(),
+                new MembershipRepository( self::db() ),
+                self::membership_service(),
+                self::audit()
+            );
+        }
+
+        return $service;
     }
 
     public static function audit(): AuditLogger

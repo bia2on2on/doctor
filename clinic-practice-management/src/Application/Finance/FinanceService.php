@@ -522,11 +522,12 @@ final class FinanceService
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'دلیل ابطال الزامی است', 422);
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason): array {
+        return $this->db->transactional(function () use ($actorUserId, $clinicId, $paymentId, $reason): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase, PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- legacy camelCase service API (published signature unchanged); closure style carried over unchanged from the pre-existing method.
             $payment = $this->payments->findForUpdate($paymentId);
             if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
             }
+            $this->authorize_payment_ownership( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_VOID, $paymentId, 'payment.void' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
             if ((string) $payment['status'] !== 'captured') {
                 throw FinanceException::of(
                     'CLINIC_INVALID_TRANSITION',
@@ -610,6 +611,7 @@ final class FinanceService
         if ($payment === null || !$this->rowBelongsToTrustedClinic($payment)) {
             throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
         }
+        $this->authorize_payment_ownership( $actorUserId, $clinicId, RolesAndCapabilities::PAYMENT_REFUND, $paymentId, 'payment.refund' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy camelCase service API (published signature unchanged).
 
         $paidAmount = $this->toMinor((string) $payment['amount']) ?? 0;
         $alreadyRefunded = $this->toMinor((string) $payment['refunded_amount']) ?? 0;
@@ -1198,6 +1200,48 @@ final class FinanceService
             };
 
             throw FinanceException::of('CLINIC_PERMISSION_DENIED', $message, $http, ['scope' => $scope, 'reason' => $code, 'permission' => $cap]);
+        }
+    }
+
+    /**
+     * 2026-10-15 — شرطِ مالکیتِ تراکنش برای عملیات حساس پرداخت (اصلاح امنیتی).
+     *
+     * فقط به‌عنوان «شرط افزوده» روی مسیری اجرا می‌شود که موتور مجوزِ کانونی
+     * (`requireCap` + `authorizeScoped`) و بررسی‌های کانونیِ scope/404 قبلاً آن را
+     * مجاز کرده‌اند؛ بنابراین تقدمِ خطاهای موجود (CLINIC_SCOPE_REQUIRED،
+     * CLINIC_NOT_FOUND 404-parity، CLINIC_INVALID_TRANSITION، DENY صریح) دقیقاً
+     * بدون تغییر می‌ماند و هیچ ردیف خارج از Clinic در دامنهٔ این بررسی نیست.
+     *
+     *  - مالکیت فقط از دادهٔ پایدار خوانده می‌شود (`PaymentRepository::owning_clinician_wp_user_id`
+     *    روی زنجیرهٔ payment → invoice → visit → clinician) و هرگز از payload/نقش سراسری.
+     *  - تقدم موتور مجوز تغییر نمی‌کند؛ شرط مالکیت فقط بر انشعابِ Preset نقش پزشک
+     *    اعمال می‌شود (Deny > Grant صریح > Preset > رد پیش‌فرض). یک Grant صریح
+     *    عضویت — از جمله واگذاری صریح مدیر کلینیک — مالکیت‌محور نیست.
+     *  - نبود/ابهام مالکیت ⇒ fail-closed (owns=false).
+     *
+     * سند: docs/decisions/2026-10-15-financial-authorization-policy.md
+     */
+    private function authorize_payment_ownership( int $actor_user_id, int $clinic_id, string $cap, int $payment_id, string $scope ): void {
+        if ( $actor_user_id <= 0 || $clinic_id <= 0 ) {
+            return;
+        }
+
+        $owns_transaction = $this->payments->owning_clinician_wp_user_id( $payment_id, $clinic_id ) === $actor_user_id;
+
+        try {
+            App::authorization_service()->authorize_with_ownership( $actor_user_id, $clinic_id, $cap, $owns_transaction );
+        } catch ( AuthorizationException $e ) {
+            $code    = $e->getErrorCode();
+            $http    = $e->getCode() > 0 ? (int) $e->getCode() : 403;
+            $message = match ( $code ) {
+                'AUTH_SUSPENDED' => 'عضویت شما در این Clinic معلق است.',
+                'AUTH_NO_MEMBERSHIP' => 'عضویت فعال در این Clinic ندارید.',
+                'AUTH_OWNERSHIP_REQUIRED' => 'این تراکنش به سرویس شما تعلق ندارد؛ عملیات حساس مالی فقط روی تراکنش‌های خودتان مجاز است.',
+                'AUTH_DENIED' => 'دسترسی لازم برای این عملیات مالی را در این Clinic ندارید.',
+                default => 'دسترسی لازم را ندارید',
+            };
+
+            throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', $message, $http, [ 'scope' => $scope, 'reason' => $code, 'permission' => $cap ] );
         }
     }
 

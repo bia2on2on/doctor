@@ -179,6 +179,79 @@ final class AuthorizationService
     }
 
     /**
+     * Clinic-scoped sensitive-finance check with verified transaction ownership
+     * (Product Decision 2026-10-15 — docs/decisions/2026-10-15-financial-authorization-policy.md).
+     *
+     * Precedence is unchanged and remains the ONLY resolution order
+     * (explicit membership DENY > explicit membership GRANT > role capabilities >
+     * deny by default). This method adds exactly one conjunct:
+     *
+     *   - an actor whose ACTIVE membership carries the built-in DOCTOR role must
+     *     own the transaction — unconditionally, and independently of where the
+     *     capability came from (role preset, pre-existing explicit GRANT, or an
+     *     explicit Clinic-manager delegation). Ownership can therefore never be
+     *     bypassed by writing a membership override;
+     *   - every other actor (accountant, manager, custom-role staff) keeps the
+     *     unchanged behaviour: an explicit membership GRANT is deliberate
+     *     Clinic-scoped authority and is not ownership-bound;
+     *   - explicit membership DENY is evaluated first inside can() and still wins
+     *     over ownership and over any grant.
+     *
+     * Ownership must be a durable server-side fact obtained by the caller
+     * (e.g. PaymentRepository::owning_clinician_wp_user_id()) — never a
+     * payload/context claim, and never a patient relationship. When ownership
+     * cannot be established the caller must pass false (fail closed).
+     */
+    public function can_with_ownership( int $actor_wp_user_id, int $clinic_id, string $permission, bool $owns_transaction, bool $for_update = false ): bool {
+        if ( ! $this->can( $actor_wp_user_id, $clinic_id, $permission, $for_update ) ) {
+            return false;
+        }
+        if ( $owns_transaction ) {
+            return true;
+        }
+
+        return ! $this->actor_is_doctor( $actor_wp_user_id, $clinic_id, $for_update );
+    }
+
+    /**
+     * Ownership-aware authorization or throw typed exception (fail closed).
+     *
+     * @throws AuthorizationException AUTH_DENIED (capability) or AUTH_OWNERSHIP_REQUIRED (ownership conjunct)
+     */
+    public function authorize_with_ownership( int $actor_wp_user_id, int $clinic_id, string $permission, bool $owns_transaction, bool $for_update = false ): void {
+        if ( ! $this->can( $actor_wp_user_id, $clinic_id, $permission, $for_update ) ) {
+            $this->authorize( $actor_wp_user_id, $clinic_id, $permission, $for_update ); // throws the typed denial
+
+            return;
+        }
+        if ( $this->can_with_ownership( $actor_wp_user_id, $clinic_id, $permission, $owns_transaction, $for_update ) ) {
+            return;
+        }
+
+        throw new AuthorizationException(
+            'AUTH_OWNERSHIP_REQUIRED',
+            'AUTH_OWNERSHIP_REQUIRED',
+            [ 'clinic_id' => $clinic_id, 'permission' => $permission ],
+            403
+        );
+    }
+
+    /**
+     * True when the actor's durable ACTIVE membership of this exact Clinic carries
+     * the built-in doctor role key. Deliberately independent of capability rows:
+     * ownership is a property of the clinical role, so no membership override can
+     * lift it (2026-10-15 security correction).
+     */
+    private function actor_is_doctor( int $actor_wp_user_id, int $clinic_id, bool $for_update ): bool {
+        $membership = $this->memberships->find_active( $clinic_id, $actor_wp_user_id, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the published named-argument API and legacy variable names.
+        if ( $membership === null ) {
+            return false;
+        }
+
+        return (string) ( $membership['role_key'] ?? '' ) === RolesAndCapabilities::ROLE_DOCTOR;
+    }
+
+    /**
      * Authorize or throw typed exception (fail closed).
      *
      * @throws AuthorizationException
