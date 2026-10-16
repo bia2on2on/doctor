@@ -102,9 +102,9 @@ final class SystemPage
                 <strong>
                 <?php
                 echo esc_html(match ($health['host']['status']) {
-                    SystemHealthService::HOST_SUPPORTED => '✅ SUPPORTED',
-                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ SUPPORTED_WITH_WARNINGS',
-                    default => '⛔ UNSUPPORTED',
+                    SystemHealthService::HOST_SUPPORTED => '✅ ' . SystemHealthService::USER_STATUS_READY,
+                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
+                    default => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
                 });
                 ?>
                 </strong>
@@ -524,7 +524,7 @@ final class SystemPage
             ],
         ];
         $entry = $entries[$key] ?? [
-            'what' => 'بررسی با وضعیت «' . ($status === SystemHealthService::PASS ? 'PASS' : $status) . '» بازگشت.',
+            'what' => 'بررسی با وضعیت «' . SystemHealthService::userFacingStatus($status) . '» بازگشت.',
             'impact' => 'این مورد در عملکرد کلینیک ممکن است مؤثر باشد.',
             'action' => 'جزئیات فنی را بررسی و در صورت نیاز با پشتیبانی تماس بگیرید.',
         ];
@@ -539,11 +539,11 @@ final class SystemPage
     private static function statusBadge(string $status): string
     {
         return match ($status) {
-            'pass' => '✅ PASS',
-            'warning' => '⚠️ WARNING',
-            'fail' => '⛔ FAIL',
-            'not_configured' => '➖ NOT_CONFIGURED',
-            default => '❔ UNKNOWN',
+            'pass' => '✅ ' . SystemHealthService::USER_STATUS_READY,
+            'warning' => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
+            'fail' => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
+            'not_configured' => '➖ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
+            default => '❔ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
         };
     }
 
