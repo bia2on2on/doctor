@@ -1064,6 +1064,8 @@ jobs:
           {
             echo "### WPCS collector evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
             echo '```'
+            echo '--- violations ---'
+            cat /tmp/wpcs-new.txt 2>/dev/null || echo '(violations file missing)'
             echo '--- collector self-test (deterministic regression proof) ---'
             cat /tmp/wpcs-selftest.log 2>/dev/null || echo '(self-test log missing)'
             echo '--- collection (scope + added-line metadata) ---'
