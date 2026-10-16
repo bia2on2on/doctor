@@ -47,7 +47,10 @@ final class SystemPage
         );
     }
 
-    public static function render(): void
+    /**
+     * @param array{checks: list<array{key:string,label:string,status:string,detail:string}>, host: array{status:string, issues:list<string>}}|null $healthOverride برای تست رندر با دادهٔ کنترل‌شده (فقط تست)
+     */
+    public static function render(?array $healthOverride = null): void
     {
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
@@ -70,10 +73,14 @@ final class SystemPage
         } catch (\Throwable $e) {
             $licError = $e->getMessage();
         }
-        try {
-            $health = App::systemHealthService()->run();
-        } catch (\Throwable $e) {
-            $healthError = $e->getMessage();
+        if (is_array($healthOverride)) {
+            $health = $healthOverride;
+        } else {
+            try {
+                $health = App::systemHealthService()->run();
+            } catch (\Throwable $e) {
+                $healthError = $e->getMessage();
+            }
         }
         try {
             $backups = App::backupService()->listBackups();
@@ -118,9 +125,9 @@ final class SystemPage
 
             <?php if ($faults !== []) : ?>
                 <h3>⚠️ موارد نیازمند توجه</h3>
-                <?php foreach ($faults as $c) : $g = self::guide((string) $c['key'], (string) $c['status']); ?>
+                <?php foreach ($faults as $c) : $g = self::guide((string) $c['key'], (string) $c['status'], (string) $c['detail']); ?>
                     <div class="notice notice-warning inline" style="max-width:1000px">
-                        <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
+                        <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'], (string) $c['key'], (string) $c['detail'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
                         <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
                         <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
                         <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
@@ -443,7 +450,7 @@ final class SystemPage
      *
      * @return array{what:string, impact:string, action:string}
      */
-    public static function guide(string $key, string $status): array
+    public static function guide(string $key, string $status, string $detail = ''): array
     {
         if ( $key === 'db.mysql_version' ) {
             if ( $status === SystemHealthService::FAIL ) {
@@ -451,6 +458,18 @@ final class SystemPage
                     'what'   => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
                     'impact' => 'عملیات‌های وابسته به MySQL 8 ممکن است شکست بخورند یا پشتیبانی نشوند.',
                     'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB 11.4.13 پشتیبانی‌شده استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
+                ];
+            }
+
+            // فقط وقتی مدرکِ ساختاریافتهٔ MariaDB موجود باشد، ادعا کن که
+            // MariaDB شناسایی شده است. در غیر این صورت (موتورِ ناشناخته) هیچ
+            // ادعایی دربارهٔ MariaDB نکن.
+            $maria = SystemHealthService::is_maria_db_compatibility_detail( $detail );
+            if ( ! $maria ) {
+                return [
+                    'what'   => 'موتورِ سرور دیتابیس قابل شناسایی نیست یا مدرکِ سازگاریِ آن خوانده نشد.',
+                    'impact' => 'تأییدِ سازگاری با کفِ MySQL 8.0 ممکن نیست؛ برخی عملیات ممکن است پشتیبانی نشوند. دسترسی به داده محدود نمی‌شود.',
+                    'action' => 'نسخهٔ سرور دیتابیس را بررسی کنید (SELECT VERSION()) و در صورت نیاز با پشتیبانی تماس بگیرید. پیش از هر تغییر بکاپ کامل بگیرید.',
                 ];
             }
 
