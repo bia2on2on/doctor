@@ -47,7 +47,7 @@ final class SystemPage
         );
     }
 
-    public static function render(): void
+    public static function render( $health_override = null ): void
     {
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
@@ -63,17 +63,21 @@ final class SystemPage
         /** @var list<array<string, mixed>> $backups */
         $backups = [];
         $licError = null;
-        $healthError = null;
+        $health_error = null;
         $backupsError = null;
         try {
             $lic = App::licenseService()->statusMeta();
         } catch (\Throwable $e) {
             $licError = $e->getMessage();
         }
-        try {
-            $health = App::systemHealthService()->run();
-        } catch (\Throwable $e) {
-            $healthError = $e->getMessage();
+        if ( is_array( $health_override ) ) {
+            $health = $health_override;
+        } else {
+            try {
+                $health = App::systemHealthService()->run();
+            } catch ( \Throwable $e ) {
+                $health_error = $e->getMessage();
+            }
         }
         try {
             $backups = App::backupService()->listBackups();
@@ -94,17 +98,17 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
-            <?php if ($healthError !== null || $health === null) : ?>
+            <?php if ( $health_error !== null || $health === null ) : ?>
                 <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
-                    <code><?php echo esc_html($healthError); ?></code></p></div>
+                    <code><?php echo esc_html( $health_error ); ?></code></p></div>
             <?php else : ?>
             <p>Host Capability:
                 <strong>
                 <?php
                 echo esc_html(match ($health['host']['status']) {
-                    SystemHealthService::HOST_SUPPORTED => '✅ SUPPORTED',
-                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ SUPPORTED_WITH_WARNINGS',
-                    default => '⛔ UNSUPPORTED',
+                    SystemHealthService::HOST_SUPPORTED => '✅ ' . SystemHealthService::USER_STATUS_READY,
+                    SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
+                    default => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
                 });
                 ?>
                 </strong>
@@ -118,9 +122,10 @@ final class SystemPage
 
             <?php if ($faults !== []) : ?>
                 <h3>⚠️ موارد نیازمند توجه</h3>
-                <?php foreach ($faults as $c) : $g = self::guide((string) $c['key'], (string) $c['status']); ?>
+                    <?php foreach ( $faults as $c ) : ?>
+                        <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
                     <div class="notice notice-warning inline" style="max-width:1000px">
-                        <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
+                        <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
                         <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
                         <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
                         <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
@@ -142,7 +147,7 @@ final class SystemPage
                 <?php foreach ($okRows as $c) : ?>
                     <tr>
                         <td><?php echo esc_html($c['label']); ?></td>
-                        <td><?php echo esc_html(self::statusBadge($c['status'])); ?></td>
+                        <td><?php echo esc_html( self::statusBadge( $c['status'], $c['key'], $c['detail'] ) ); ?></td>
                         <td><?php echo esc_html($c['detail']); ?></td>
                     </tr>
                 <?php endforeach; ?>
@@ -443,8 +448,36 @@ final class SystemPage
      *
      * @return array{what:string, impact:string, action:string}
      */
-    public static function guide(string $key, string $status): array
+    public static function guide( string $key, string $status, string $detail = '' ): array
     {
+        if ( $key === 'db.mysql_version' ) {
+            if ( $status === SystemHealthService::FAIL ) {
+                return [
+                    'what'   => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
+                    'impact' => 'عملیات‌های وابسته به MySQL 8 ممکن است شکست بخورند یا پشتیبانی نشوند.',
+                    'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB 11.4.13 پشتیبانی‌شده استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
+                ];
+            }
+
+            // فقط وقتی مدرکِ ساختاریافتهٔ MariaDB موجود باشد، ادعا کن که
+            // MariaDB شناسایی شده است. در غیر این صورت (موتورِ ناشناخته) هیچ
+            // ادعایی دربارهٔ MariaDB نکن.
+            $maria = SystemHealthService::is_maria_db_compatibility_detail( $detail );
+            if ( ! $maria ) {
+                return [
+                    'what'   => 'موتورِ سرور دیتابیس قابل شناسایی نیست یا مدرکِ سازگاریِ آن خوانده نشد.',
+                    'impact' => 'تأییدِ سازگاری با کفِ MySQL 8.0 ممکن نیست؛ برخی عملیات ممکن است پشتیبانی نشوند. دسترسی به داده محدود نمی‌شود.',
+                    'action' => 'نسخهٔ سرور دیتابیس را بررسی کنید (SELECT VERSION()) و در صورت نیاز با پشتیبانی تماس بگیرید. پیش از هر تغییر بکاپ کامل بگیرید.',
+                ];
+            }
+
+            return [
+                'what'   => 'سرور دیتابیس MariaDB شناسایی شد و سازگاریِ آن با کفِ MySQL 8.0 گواهی نشده است.',
+                'impact' => 'افزونه ممکن است روی این سرور کار کند، اما سازگاریِ کامل تأیید نشده است و رفتارِ برخی ویژگی‌ها ممکن است متفاوت باشد. دسترسی به داده محدود نمی‌شود.',
+                'action' => 'از MariaDB 11.4.13 یا MySQL 8.x پشتیبانی‌شده استفاده کنید؛ پیش از هر تغییر بکاپ کامل بگیرید؛ در صورت نیاز با پشتیبانی تماس بگیرید. ادعای سازگاریِ کامل نمی‌شود.',
+            ];
+        }
+
         $ok = in_array($status, [SystemHealthService::PASS], true);
         $entries = [
             'wp.version'         => [
@@ -524,7 +557,7 @@ final class SystemPage
             ],
         ];
         $entry = $entries[$key] ?? [
-            'what' => 'بررسی با وضعیت «' . ($status === SystemHealthService::PASS ? 'PASS' : $status) . '» بازگشت.',
+            'what'   => 'بررسی با وضعیت «' . SystemHealthService::user_facing_status( $status ) . '» بازگشت.',
             'impact' => 'این مورد در عملکرد کلینیک ممکن است مؤثر باشد.',
             'action' => 'جزئیات فنی را بررسی و در صورت نیاز با پشتیبانی تماس بگیرید.',
         ];
@@ -536,34 +569,42 @@ final class SystemPage
         ] : $entry;
     }
 
-    private static function statusBadge(string $status): string
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    private static function statusBadge( string $status, string $key = '', string $detail = '' ): string
     {
-        return match ($status) {
-            'pass' => '✅ PASS',
-            'warning' => '⚠️ WARNING',
-            'fail' => '⛔ FAIL',
-            'not_configured' => '➖ NOT_CONFIGURED',
-            default => '❔ UNKNOWN',
+        $is_maria = 'db.mysql_version' === $key
+            && SystemHealthService::UNKNOWN === $status
+            && SystemHealthService::is_maria_db_compatibility_detail( $detail );
+
+        if ( $is_maria ) {
+            return '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP;
+        }
+
+        return match ( $status ) {
+            'pass', SystemHealthService::PASS => '✅ ' . SystemHealthService::USER_STATUS_READY,
+            'fail', SystemHealthService::FAIL => '⛔ ' . SystemHealthService::USER_STATUS_CRITICAL,
+            'unknown', SystemHealthService::UNKNOWN => '❔ ' . SystemHealthService::USER_STATUS_CRITICAL,
+            default => '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP,
         };
     }
 
     private static function licenseLabel(string $status): string
     {
         return match ($status) {
-            LicenseStatus::ACTIVE => '✅ ACTIVE (فعال)',
-            LicenseStatus::EXPIRING => '⚠️ EXPIRING (نزدیک انقضا)',
-            LicenseStatus::GRACE => '⚠️ GRACE (مهلت تمدید)',
-            LicenseStatus::RESTRICTED => '⛔ RESTRICTED (محدود)',
-            LicenseStatus::ACTIVATION_PENDING => '⏳ ACTIVATION_PENDING (پنجرهٔ فعال‌سازی ۷ روزه)',
-            LicenseStatus::ACTIVATION_GRACE => '⏳ ACTIVATION_GRACE (مهلت مهاجرت ۳۰ روزه)',
-            LicenseStatus::DEVELOPMENT => '🧪 DEVELOPMENT (حالت توسعه/تست صریح)',
-            LicenseStatus::NOT_CONFIGURED => '➖ NOT_CONFIGURED',
-            LicenseStatus::UNREACHABLE => '📡 UNREACHABLE (سرور مجوز در دسترس نیست)',
-            LicenseStatus::INVALID => '⛔ INVALID (سند نامعتبر)',
-            LicenseStatus::SUSPENDED => '⛔ SUSPENDED',
-            LicenseStatus::REVOKED => '⛔ REVOKED',
-            LicenseStatus::THROTTLED => '⏱ THROTTLED',
-            default => strtoupper((string) $status),
+            LicenseStatus::ACTIVE => '✅ فعال',
+            LicenseStatus::EXPIRING => '⚠️ نزدیک انقضا',
+            LicenseStatus::GRACE => '⚠️ مهلت تمدید',
+            LicenseStatus::RESTRICTED => '⛔ محدود',
+            LicenseStatus::ACTIVATION_PENDING => '⏳ پنجرهٔ فعال‌سازی ۷ روزه',
+            LicenseStatus::ACTIVATION_GRACE => '⏳ مهلت مهاجرت ۳۰ روزه',
+            LicenseStatus::DEVELOPMENT => '🧪 حالت توسعه/تست',
+            LicenseStatus::NOT_CONFIGURED => '➖ پیکربندی نشده',
+            LicenseStatus::UNREACHABLE => '📡 سرور مجوز در دسترس نیست',
+            LicenseStatus::INVALID => '⛔ سند نامعتبر',
+            LicenseStatus::SUSPENDED => '⛔ تعلیق‌شده',
+            LicenseStatus::REVOKED => '⛔ ابطال‌شده',
+            LicenseStatus::THROTTLED => '⏱ تحت محدودیت',
+            default => '❔ نامشخص',
         };
     }
 }
