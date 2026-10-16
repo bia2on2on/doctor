@@ -78,7 +78,7 @@ final class SystemPage
         } else {
             try {
                 $health = App::systemHealthService()->run();
-            } catch (\Throwable $e) {
+            } catch ( \Throwable $e ) {
                 $health_error = $e->getMessage();
             }
         }
@@ -101,9 +101,9 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
-            <?php if ($health_error !== null || $health === null) : ?>
+            <?php if ( $health_error !== null || $health === null ) : ?>
                 <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
-                    <code><?php echo esc_html($health_error); ?></code></p></div>
+                    <code><?php echo esc_html( $health_error ); ?></code></p></div>
             <?php else : ?>
             <p>Host Capability:
                 <strong>
@@ -125,7 +125,8 @@ final class SystemPage
 
             <?php if ($faults !== []) : ?>
                 <h3>⚠️ موارد نیازمند توجه</h3>
-                <?php foreach ($faults as $c) : $g = self::guide((string) $c['key'], (string) $c['status'], (string) $c['detail']); ?>
+                <?php foreach ( $faults as $c ) : ?>
+                <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
                     <div class="notice notice-warning inline" style="max-width:1000px">
                         <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'], (string) $c['key'], (string) $c['detail'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
                         <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
