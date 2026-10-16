@@ -25,7 +25,7 @@ use ClinicCore\Settings\Settings;
  * warning → SUPPORTED_WITH_WARNINGS.
  *
  * Phase 18 Slice 18-1 — سازگاریِ زمان‌اجرا برای کف‌هایِ اعلام‌شده: دو چکِ
- * `wp.version` (WordPress >= 6.4) و `db.mysql_version` (MySQL >= 8.0) به
+ * `wp.version` (WordPress >= 6.9) و `db.mysql_version` (MySQL >= 8.0) به
  * چک‌هایِ حیاتی اضافه شده‌اند. فقط تشخیص/گزارش است: هیچ قفلِ بالینی، قفلِ
  * داده، محدودیتِ بکاپ/بازیابی یا رفتارِ مخربی اضافه نمی‌شود و نقطهٔ عمومی
  * `/clinic/v1/health` گسترش نمی‌یابد. سیاستِ MariaDB اعلام نمی‌شود.
@@ -46,10 +46,29 @@ final class SystemHealthService
     public const HOST_UNSUPPORTED = 'UNSUPPORTED';
 
     /**
-     * کفِ اعلام‌شدهٔ وردپرس — برگرفته از هدرِ افزونه (`Requires at least: 6.4`)؛
+     * کفِ اعلام‌شدهٔ وردپرس — برگرفته از هدرِ افزونه (`Requires at least: 6.9`)؛
      * عددِ جدیدی اعلام نمی‌شود.
+     *
+     * بازهٔ پشتیبانی‌شده = سه نسخهٔ اصلیِ پایدارِ آخر (۷.۱، ۷.۰، ۶.۹)؛ کهن‌ترینِ
+     * آن‌ها همین کف است. مقدار باید با هدرِ افزونه یکی بماند
+     * (`SystemHealthRuntimeCompatibilityTest::testDeclaredFloorsMatchTheAuthoritativeContract`).
      */
-    public const MIN_WORDPRESS_VERSION = '6.4';
+    public const MIN_WORDPRESS_VERSION = '6.9';
+
+    /**
+     * راهنمایِ فارسیِ ارتقا برای نصب‌های کهنه‌تر از کفِ پشتیبانی‌شده.
+     *
+     * عمداً فقط **متنِ راهنما** است: هیچ قفل/محدودیت/دسترسی‌زدایی‌ای ایجاد
+     * نمی‌کند، هیچ دروازهٔ شبه‌مجوزی (license-like gate) نمی‌سازد و دسترسی به
+     * دادهٔ بالینی/مالیِ تاریخی و بکاپ/بازیابی را محدود نمی‌کند (Spec §40).
+     * در ردیفِ FAIL چکِ `wp.version` گزارش می‌شود و صفحهٔ سیستم آن را زیر
+     * «چه کنم» نشان می‌دهد.
+     */
+    public const WORDPRESS_UPGRADE_GUIDANCE_FA = 'نسخهٔ وردپرس این سایت کهنه‌تر از کهن‌ترین نسخهٔ پشتیبانی‌شده ('
+        . self::MIN_WORDPRESS_VERSION . ') است. '
+        . 'پیش از هر کار یک بکاپ کامل بگیرید، سپس از پیشخوان → «به‌روزرسانی‌ها» وردپرس را به آخرین نسخهٔ پایدار به‌روز کنید؛ '
+        . 'اگر پیشخوان در دسترس نیست، از پنل هاست یا WP-CLI (`wp core update`) استفاده کنید. '
+        . 'تا پیش از ارتقا هیچ دسترسی‌ای گرفته نمی‌شود: پرونده‌های بیماران، نوبت‌ها، سوابق مالی، خروجی‌ها و بکاپ‌ها همچنان قابل مشاهده و بازیابی هستند.';
 
     /**
      * کفِ اعلام‌شدهٔ MySQL — برگرفته از SRS §2.2 (محیط اجرا)؛ عددِ جدیدی
@@ -236,6 +255,10 @@ final class SystemHealthService
      * مدرکِ ناموجود/ناخوانا/ناتجزیه‌پذیر ⇒ `UNKNOWN` (هرگز `PASS` —
      * fail-closed؛ ادعایِ تأییدنشده تولید نمی‌شود).
      *
+     * زیرِ کف ⇒ `FAIL` و متنِ ردیف شاملِ `WORDPRESS_UPGRADE_GUIDANCE_FA` است
+     * (راهنمایِ فارسیِ ارتقا). این راهنما فقط متن است: هیچ قفل/محدودیتِ
+     * دسترسی و هیچ اثرِ بالینی/مالی ندارد.
+     *
      * @return array{key:string,label:string,status:string,detail:string}
      */
     public static function wordpress_version_check( ?string $version ): array {
@@ -251,10 +274,22 @@ final class SystemHealthService
             ];
         }
 
+        // زیرِ کف ⇒ FAIL + راهنمایِ فارسیِ ارتقا. راهنما صرفاً متن است و هیچ اثری
+        // بر دسترسی به داده (بالینی/مالی/بکاپ) ندارد — تشخیص/گزارش، نه دروازه.
+        if ( ! version_compare( $parsed, self::MIN_WORDPRESS_VERSION, '>=' ) ) {
+            return [
+                'key'    => 'wp.version',
+                'label'  => 'نسخهٔ وردپرس',
+                'status' => self::FAIL,
+                'detail' => trim( (string) $version ) . ' — کفِ اعلام‌شده: ' . self::MIN_WORDPRESS_VERSION
+                    . ' | راهنمای ارتقا: ' . self::WORDPRESS_UPGRADE_GUIDANCE_FA,
+            ];
+        }
+
         return [
             'key'    => 'wp.version',
             'label'  => 'نسخهٔ وردپرس',
-            'status' => version_compare( $parsed, self::MIN_WORDPRESS_VERSION, '>=' ) ? self::PASS : self::FAIL,
+            'status' => self::PASS,
             'detail' => trim( (string) $version ) . ' — کفِ اعلام‌شده: ' . self::MIN_WORDPRESS_VERSION,
         ];
     }

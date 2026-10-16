@@ -62,7 +62,7 @@ env:
   PERSIAN_COEXISTENCE: ${{ inputs.persian_coexistence && 'true' || 'false' }}
   COEX_GROUP: ${{ inputs.coexistence_group || 'persian-five' }}
   COEX_STAGE_B: ${{ inputs.coexistence_stage_b && 'true' || 'false' }}
-  WP_VERSION: ${{ inputs.persian_coexistence && '7.1.3' || '6.7.2' }}
+  WP_VERSION: '7.1.3'
   APACHE_PHP_SUFFIX: ${{ inputs.persian_coexistence && '8.3' || '' }}
   PHP_VERSION: ${{ inputs.persian_coexistence && '8.3' || '8.2' }}
   WP_DIR: /home/runner/rwp
@@ -223,7 +223,7 @@ jobs:
       # Phase 18 Slice 18-4 — bounded coexistence, on one clean-WP prefix only.
       # The other prefix remains the existing no-third-party control. All packages
       # come from the WordPress.org directory through WP-CLI with exact versions;
-      # the runner is the supported WP 6.7.2 / PHP 8.2 host used by this workflow.
+      # the runner is the supported WP 7.1.3 / PHP 8.2 host used by this workflow.
       # Set rationale: The SEO Framework (SEO/query filters); Contact Form 7
       # (form shortcode/admin + frontend hooks); Autoptimize (asset/output caching);
       # Wordfence (security/auth hooks); WooCommerce (product/order/customer/checkout

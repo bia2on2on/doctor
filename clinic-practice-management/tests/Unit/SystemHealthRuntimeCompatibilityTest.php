@@ -18,6 +18,8 @@ use PHPUnit\Framework\TestCase;
  *  ۴. FAIL/UNKNOWN هرکدام از این دو کلید ⇒ میزبان UNSUPPORTED.
  *  ۵. نسخه‌هایِ پشتیبانی‌شده ⇒ طبقه‌بندیِ پشتیبانی‌شده حفظ می‌شود.
  *  ۶. رفتارِ طبقه‌بندیِ PHP دست‌نخورده می‌ماند.
+ *  ۷. نصبِ کهنه راهنمایِ فارسیِ ارتقا می‌گیرد و آن راهنما دسترسی به داده را
+ *     محدود نمی‌کند (بدون قفلِ شبه‌مجوز).
  *
  * این کلاس Unit است (بدون WP/DB): منطقِ مقایسه خالص و قابل‌تست است و منابعِ
  * نسخه (WordPress/MySQL) در لایهٔ سرویس جدا می‌مانند. از data provider استفاده
@@ -28,11 +30,14 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     private const WP_KEY = 'wp.version';
     private const DB_KEY = 'db.mysql_version';
 
-    /** نسخه‌هایِ وردپرسِ زیرِ کفِ اعلام‌شدهٔ 6.4 */
-    private const WP_BELOW_FLOOR = ['6.3.2', '6.3', '6.0.9', '5.9.8'];
+    /** نسخه‌هایِ وردپرسِ زیرِ کفِ اعلام‌شدهٔ 6.9 (شاملِ نسخه‌هایِ کنارگذاشته‌شدهٔ 6.4–6.8) */
+    private const WP_BELOW_FLOOR = ['6.8.11', '6.8', '6.7.10', '6.7.2', '6.4.13', '6.3.2', '5.9.8'];
 
-    /** نسخه‌هایِ وردپرسِ روی/بالای کفِ اعلام‌شدهٔ 6.4 */
-    private const WP_SUPPORTED = ['6.4', '6.4.3', '6.7.2', '7.0'];
+    /**
+     * نسخه‌هایِ وردپرسِ روی/بالای کفِ اعلام‌شدهٔ 6.9 — بازهٔ پشتیبانی‌شده همان
+     * سه نسخهٔ اصلیِ پایدارِ آخر است: ۶.۹، ۷.۰، ۷.۱ (با وصله‌هایشان).
+     */
+    private const WP_SUPPORTED = ['6.9', '6.9.10', '7.0', '7.0.7', '7.1', '7.1.3'];
 
     /** نسخه‌هایِ سرورِ MySQLِ زیرِ کفِ اعلام‌شدهٔ 8.0 */
     private const MYSQL_BELOW_FLOOR = ['5.7.44-log', '5.7', '5.6.51', '5.7.99'];
@@ -126,7 +131,7 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
      */
     public function testDeclaredFloorsMatchTheAuthoritativeContract(): void
     {
-        self::assertSame('6.4', SystemHealthService::MIN_WORDPRESS_VERSION, 'کفِ WP طبق هدرِ افزونه.');
+        self::assertSame('6.9', SystemHealthService::MIN_WORDPRESS_VERSION, 'کفِ WP طبق هدرِ افزونه.');
         self::assertSame('8.0', SystemHealthService::MIN_MYSQL_VERSION, 'کفِ MySQL طبق SRS §2.2.');
 
         $pluginFile = dirname(__DIR__, 2) . '/clinic-practice-management.php';
@@ -157,6 +162,47 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
             self::assertSame(SystemHealthService::FAIL, $row['status'], $version . ' باید زیرِ کف باشد.');
             self::assertStringContainsString($version, $row['detail'], $version);
         }
+    }
+
+    /**
+     * نصبِ کهنه باید راهنمایِ فارسیِ ارتقا بگیرد — و همان راهنما باید صریح بگوید
+     * که دسترسی به داده محدود نمی‌شود (بدون قفلِ شبه‌مجوز و بدون محدودیتِ
+     * دادهٔ بالینی/مالیِ تاریخی).
+     */
+    public function testOutdatedWordPressGetsPersianUpgradeGuidanceWithoutGating(): void
+    {
+        $row = SystemHealthService::wordpress_version_check('6.7.2');
+
+        self::assertSame(SystemHealthService::FAIL, $row['status']);
+        self::assertStringContainsString(
+            SystemHealthService::WORDPRESS_UPGRADE_GUIDANCE_FA,
+            $row['detail'],
+            'راهنمایِ ارتقا باید در ردیفِ FAIL باشد.'
+        );
+        self::assertStringContainsString('به‌روزرسانی‌ها', $row['detail'], 'مسیرِ عملیِ ارتقا در راهنما باشد.');
+        self::assertStringContainsString('بکاپ', $row['detail'], 'گرفتن بکاپ پیش از ارتقا توصیه شود.');
+        self::assertStringContainsString(
+            'دسترسی‌ای گرفته نمی‌شود',
+            $row['detail'],
+            'راهنما نباید دسترسی به داده را محدود جلوه دهد.'
+        );
+
+        // راهنما فقط متن است: وضعیتِ روی/بالای کف هیچ راهنماییِ ارتقا نمی‌گیرد.
+        self::assertStringNotContainsString(
+            SystemHealthService::WORDPRESS_UPGRADE_GUIDANCE_FA,
+            SystemHealthService::wordpress_version_check('7.1.3')['detail']
+        );
+    }
+
+    /**
+     * راهنما باید شاملِ کفِ اعلام‌شده باشد تا با تغییرِ بازهٔ پشتیبانی از آن جدا نشود.
+     */
+    public function testUpgradeGuidanceStatesTheDeclaredFloor(): void
+    {
+        self::assertStringContainsString(
+            SystemHealthService::MIN_WORDPRESS_VERSION,
+            SystemHealthService::WORDPRESS_UPGRADE_GUIDANCE_FA
+        );
     }
 
     public function testWordPressAtOrAboveDeclaredFloorPasses(): void

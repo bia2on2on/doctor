@@ -24,7 +24,7 @@ permissions:
   pull-requests: write
 
 env:
-  WP_VERSION: '6.7.2'
+  WP_VERSION: '7.1.3'
   PHP_VERSION: '8.2'
   WP_DIR: /home/runner/rwp-fp
   WP_URL: http://localhost:8080

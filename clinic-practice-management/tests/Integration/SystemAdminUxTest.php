@@ -53,6 +53,21 @@ final class SystemAdminUxTest extends WP_UnitTestCase
         $this->assertStringContainsString('wp-config', $g['action']);
     }
 
+    /**
+     * نصبِ وردپرسِ کهنه: صفحهٔ سیستم باید راهنمایِ فارسیِ ارتقا نشان دهد و
+     * صریح بگوید داده‌ها در دسترس می‌مانند (بدون قفل/دسترسی‌زدایی).
+     */
+    public function testGuideGivesPersianUpgradePathForOutdatedWordPress(): void
+    {
+        $g = SystemPage::guide('wp.version', SystemHealthService::FAIL);
+
+        $this->assertStringContainsString('وردپرس', $g['what']);
+        $this->assertStringContainsString('به‌روزرسانی', $g['action']);
+        $this->assertStringContainsString('بکاپ', $g['action']);
+        $this->assertStringContainsString('wp core update', $g['action']);
+        $this->assertNotSame('', trim($g['impact']));
+    }
+
     public function testGuideReturnsHealthyForPass(): void
     {
         $g = SystemPage::guide('php.version', SystemHealthService::PASS);

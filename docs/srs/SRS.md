@@ -65,7 +65,7 @@ Section 54 Master Prompt → پوشه‌های /docs: SRS(1)، Use Cases(2)، Pe
 | **External** | دروازه SMS، Provider تشخیص دست‌خط، (آینده: POS، بانک) | حداقل‌سازی داده |
 
 ### 2.2 محیط اجرا
-- WordPress ≥ 6.4، PHP ≥ 8.1، MySQL ≥ 8.0 (InnoDB، utf8mb4)، HTTPS اجباری.
+- WordPress ≥ 6.9 (بازهٔ پشتیبانی‌شده = سه نسخهٔ اصلیِ پایدارِ آخر: ۷.۱ / ۷.۰ / ۶.۹)، PHP ≥ 8.1، MySQL ≥ 8.0 (InnoDB، utf8mb4)، HTTPS اجباری.
 - مرورگرهای مدرن (Chrome/Safari/Edge/Firefox) + تبلت (iPad/Samsung) با Pointer Events برای ویرایشگر دست‌خط.
 - زیرساخت V1: تک سرور با PHP-FPM + MySQL + Cron سیستمی (نه فقط WP-Cron).
 

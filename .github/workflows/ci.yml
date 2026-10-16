@@ -166,7 +166,7 @@ jobs:
           fi
 
   integration:
-    name: Integration (WP 6.7 + MySQL 8)
+    name: Integration (WP 7.1 + MySQL 8)
     runs-on: ubuntu-latest
     needs: unit
 
@@ -211,7 +211,7 @@ jobs:
           coverage: pcov
           ini-values: pcov.enabled=0
 
-      # WP 6.7 test lib به PHPUnit\Util\Test::parseTestMethodAnnotations() وابسته است
+      # WP 7.1 test lib به PHPUnit\Util\Test::parseTestMethodAnnotations() وابسته است
       # که در PHPUnit 10/11 حذف شده (polyfills این بخش را پوشش نمی‌دهد) → برای
       # Integration نسخه رسمی پشتیبانی‌شده WP یعنی PHPUnit 9.6 نصب می‌شود؛
       # Unit job ها روی PHPUnit 11/10.5 باقی می‌مانند.
@@ -221,7 +221,7 @@ jobs:
           composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
 
       - name: Prepare WordPress test suite
-        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 6.7.2
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3
 
       # Add a separate real MariaDB runtime within this existing Integration
       # check: the historical MySQL 8 database and full suite remain unchanged.
@@ -238,7 +238,7 @@ jobs:
             11.4.13-MariaDB*) ;;
             *) echo "Expected MariaDB 11.4.13, received: ${server_version}" >&2; exit 1 ;;
           esac
-          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 6.7.2 3307
+          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307
 
       - name: Run focused custom-role migrations on MariaDB 11.4.13
         env:

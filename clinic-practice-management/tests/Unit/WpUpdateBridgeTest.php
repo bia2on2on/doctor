@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Unit;
 
+use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Infrastructure\Update\WpUpdateBridge;
 use PHPUnit\Framework\TestCase;
 
@@ -38,7 +39,12 @@ final class WpUpdateBridgeTest extends TestCase
         $this->assertSame('1.1.0', $e->new_version);
         $this->assertSame('https://updates.cpms.example/packages/cpms-1.1.0.zip', $e->package);
         $this->assertSame('نسخهٔ امن', $e->url);
-        $this->assertNotEmpty($e->requires);
+        // کفِ WP باید همان منبعِ حقیقتِ افزونه باشد، نه یک literalِ جدا که واگرا شود.
+        $this->assertSame(
+            SystemHealthService::MIN_WORDPRESS_VERSION,
+            $e->requires,
+            'ورودی transient باید کفِ WP را از منبعِ حقیقت اعلام کند.'
+        );
         $this->assertNotEmpty($e->requires_php);
     }
 
@@ -52,5 +58,7 @@ final class WpUpdateBridgeTest extends TestCase
         $this->assertSame('https://updates.cpms.example/packages/cpms-1.1.0.zip', $o->download_link);
         $this->assertSame('نسخهٔ امن', $o->sections['description']);
         $this->assertArrayHasKey('last_updated', (array) $o);
+        // جزئیاتِ نسخه نیز همان کفِ اعلام‌شده را منتشر کند (بدون literalِ واگرا).
+        $this->assertSame(SystemHealthService::MIN_WORDPRESS_VERSION, $o->requires);
     }
 }

@@ -4,7 +4,7 @@
  * Plugin URI:        https://example.local/clinic-practice-management
  * Description:       سیستم اختصاصی مدیریت مطب و پرونده الکترونیک بیمار (نوبت‌دهی، ویزیت، مالی، Audit). داده‌های پزشکی در جداول اختصاصی cpms_* — نه wp_posts.
  * Version:           1.0.0
- * Requires at least: 6.4
+ * Requires at least: 6.9
  * Requires PHP:      8.1
  * Author:            CPMS
  * License:           proprietary
