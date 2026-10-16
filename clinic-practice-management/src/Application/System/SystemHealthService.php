@@ -407,38 +407,7 @@ final class SystemHealthService
     /**
      * نگاشتِ وضعیتِ داخلی به یکی از سه وضعیتِ کاربرپسند (فارسی).
      */
-    /**
-     * @param mixed ...$args status یا (key, status, detail) به‌صورت انعطاف‌پذیر
-     */
-    public static function user_facing_status( ...$args ): string {
-        $status = '';
-        $key    = '';
-        $detail = '';
-
-        foreach ( $args as $arg ) {
-            if ( ! is_string( $arg ) ) {
-                continue;
-            }
-
-            if ( in_array( $arg, [self::PASS, self::WARNING, self::FAIL, self::NOT_CONFIGURED, self::UNKNOWN], true ) ) {
-                if ( '' === $status ) {
-                    $status = $arg;
-                }
-            } elseif ( str_contains( $arg, '.' ) || self::is_maria_db_compatibility_detail( $arg ) ) {
-                if ( '' === $key ) {
-                    $key = $arg;
-                } else {
-                    $detail .= ' ' . $arg;
-                }
-            } else {
-                $detail = ( '' === $detail ) ? $arg : $detail . ' ' . $arg;
-            }
-        }
-
-        if ( '' === $status && isset( $args[0] ) && is_string( $args[0] ) ) {
-            $status = $args[0];
-        }
-
+    public static function user_facing_status( string $status, string $key = '', string $detail = '' ): string {
         $is_maria = 'db.mysql_version' === $key
             && self::UNKNOWN === $status
             && self::is_maria_db_compatibility_detail( $detail );

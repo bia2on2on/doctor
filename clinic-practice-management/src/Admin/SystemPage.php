@@ -47,9 +47,8 @@ final class SystemPage
         );
     }
 
-    public static function render( ?array $health_override = null ): void
+    public static function render( $health_override = null ): void
     {
-        unset( $health_override );
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
         }
@@ -71,10 +70,14 @@ final class SystemPage
         } catch (\Throwable $e) {
             $licError = $e->getMessage();
         }
-        try {
-            $health = App::systemHealthService()->run();
-        } catch ( \Throwable $e ) {
-            $health_error = $e->getMessage();
+        if ( is_array( $health_override ) ) {
+            $health = $health_override;
+        } else {
+            try {
+                $health = App::systemHealthService()->run();
+            } catch ( \Throwable $e ) {
+                $health_error = $e->getMessage();
+            }
         }
         try {
             $backups = App::backupService()->listBackups();
@@ -566,41 +569,9 @@ final class SystemPage
         ] : $entry;
     }
 
-    /**
-     * @param mixed ...$args
-     */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
-    private static function statusBadge( ...$args ): string
+    private static function statusBadge( string $status, string $key = '', string $detail = '' ): string
     {
-        $status = '';
-        $key    = '';
-        $detail = '';
-
-        foreach ( $args as $arg ) {
-            if ( ! is_string( $arg ) ) {
-                continue;
-            }
-
-            if ( in_array( $arg, ['pass', 'warning', 'fail', 'not_configured', 'unknown'], true )
-                || in_array( $arg, [SystemHealthService::PASS, SystemHealthService::WARNING, SystemHealthService::FAIL, SystemHealthService::NOT_CONFIGURED, SystemHealthService::UNKNOWN], true ) ) {
-                if ( '' === $status ) {
-                    $status = $arg;
-                }
-            } elseif ( str_contains( $arg, '.' ) || SystemHealthService::is_maria_db_compatibility_detail( $arg ) ) {
-                if ( '' === $key ) {
-                    $key = $arg;
-                } else {
-                    $detail .= ' ' . $arg;
-                }
-            } else {
-                $detail = ( '' === $detail ) ? $arg : $detail . ' ' . $arg;
-            }
-        }
-
-        if ( '' === $status && isset( $args[0] ) && is_string( $args[0] ) ) {
-            $status = $args[0];
-        }
-
         $is_maria = 'db.mysql_version' === $key
             && SystemHealthService::UNKNOWN === $status
             && SystemHealthService::is_maria_db_compatibility_detail( $detail );
