@@ -142,7 +142,7 @@ final class SystemPage
                 <?php foreach ($okRows as $c) : ?>
                     <tr>
                         <td><?php echo esc_html($c['label']); ?></td>
-                        <td><?php echo esc_html(self::statusBadge($c['status'], $c['key'], $c['detail'])); ?></td>
+                        <td><?php echo esc_html( self::statusBadge( $c['status'], $c['key'], $c['detail'] ) ); ?></td>
                         <td><?php echo esc_html($c['detail']); ?></td>
                     </tr>
                 <?php endforeach; ?>
@@ -445,10 +445,10 @@ final class SystemPage
      */
     public static function guide(string $key, string $status): array
     {
-        if ($key === 'db.mysql_version') {
-            if ($status === SystemHealthService::FAIL) {
+        if ( $key === 'db.mysql_version' ) {
+            if ( $status === SystemHealthService::FAIL ) {
                 return [
-                    'what' => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
+                    'what'   => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
                     'impact' => 'عملیات‌های وابسته به MySQL 8 ممکن است شکست بخورند یا پشتیبانی نشوند.',
                     'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB 11.4.13 پشتیبانی‌شده استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
                 ];
