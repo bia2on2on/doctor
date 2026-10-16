@@ -205,7 +205,14 @@ env:
 jobs:
   subject-baseline:
     name: "Baseline ${{ matrix.id }}"
-    runs-on: ubuntu-latest
+    # Pinned image, not `ubuntu-latest`, and deliberately so: this lane's Apache
+    # mod_php comes from the distro archive, PHP 8.3 is that distro's own default
+    # PHP (the image ships 8.3.6), and `ubuntu-latest` starts migrating to Ubuntu
+    # 26.04 — whose distro PHP is not 8.3 — on 2026-10-19
+    # (actions/runner-images#14748, whose own documented mitigation is exactly
+    # this pin). Without the pin the PPA-free path below would silently stop
+    # applying within days and the lane would fall back to Launchpad again.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
 
     strategy:
@@ -548,52 +555,169 @@ jobs:
           # evidence for a pinned lane, and the exact versioned packages are
           # installed by name rather than by metapackage.
           #
-          # The PPA is still added, and deliberately so. On ubuntu-latest (24.04)
-          # 8.3 IS the distro default, so unlike the previous 8.2 lane the PPA is
-          # no longer strictly required to obtain `libapache2-mod-php8.3`. It is
-          # kept anyway because it is what guarantees the *versioned* php8.3-*
-          # packages resolve identically across runner image revisions, instead of
-          # depending on which metapackages the image happens to carry. Adding it
-          # is idempotent and does not change which PHP module is loaded: the
-          # `php${PHP_VERSION}.load` assertion below is what actually enforces the
-          # pin, and it fails closed.
+          # PROVISIONING SOURCE — WHY THE LAUNCHPAD PPA IS NO LONGER ADDED FIRST
+          #
+          # Ubuntu 24.04 is the distro whose own default PHP *is* 8.3: the
+          # `ubuntu-24.04` image this job runs on ships PHP 8.3.6 and the release
+          # archive publishes php8.3 8.3.6-0ubuntu0.24.04.x together with
+          # `libapache2-mod-php8.3`. The lane's exact major/minor is therefore
+          # obtainable without Launchpad at all.
+          #
+          # Adding ppa:ondrej/php first made apt prefer the PPA's build of *every*
+          # php8.3 package, which forces apt to migrate the image's installed
+          # php8.3 family to that build and to download the whole set from
+          # ppa.launchpadcontent.net. When that host answers 503 the installation
+          # dies — even though identically named packages are sitting in the
+          # Ubuntu archive. That is what happened on 2026-10-16: runs 38947090139,
+          # 38948391050, 38949757338 and 38951013048 each failed legs with
+          # "Class C environment failure: PHP 8.3 Apache module is not installable"
+          # and an apt tail full of `503  Service Unavailable` for
+          # https://ppa.launchpadcontent.net/ondrej/php/ubuntu/pool/main/p/php8.3/…
+          # (including libapache2-mod-php8.3_8.3.35-…+deb.sury.org+1_amd64.deb).
+          # Twice more the PPA could not even be added: run 38678215256 failed with
+          # a Launchpad 504 Gateway Timeout and run 38887564219 with a Launchpad
+          # connection error.
+          #
+          # So the archive is tried FIRST and ppa:ondrej/php is now a controlled
+          # fallback, used only when the archive cannot satisfy this lane (a future
+          # runner image whose distro PHP is no longer 8.3, for example). Both
+          # paths end in the same fail-closed verification, and which source
+          # actually provisioned the lane is recorded as a check-run annotation.
+          # A PPA added by something else in this job (setup-php adds
+          # ppa:ondrej/php itself when it has to install an extension as a
+          # package) is neither removed nor trusted: every package on the archive
+          # path is requested at an exact, Launchpad-free version, so it cannot be
+          # substituted silently.
+          #
           # `| tee` keeps the command's own exit status because `set -o pipefail`
           # is active, and avoids redirecting a root command's output as the
           # invoking user.
           apt_diag() { tail -25 "$1" | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1600; }
 
-          if ! command -v add-apt-repository > /dev/null 2>&1; then
-            if ! sudo apt-get install -y -qq software-properties-common 2>&1 \
+          # Exactly the versioned package set the lane needs, by name.
+          PHP_PACKAGES=(
+            "libapache2-mod-php${PHP_VERSION}"
+            "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-mbstring"
+            "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl"
+            "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd"
+            "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache"
+          )
+          PHP_SOURCE=''
+
+          # Highest available version of a package that does NOT come from
+          # Launchpad. `apt-cache madison` lists every candidate with its source
+          # URL, so this is the archive-only candidate even when a PPA has been
+          # added to this runner by something else.
+          archive_candidate() {
+            apt-cache madison "$1" 2>/dev/null \
+              | grep -vi launchpad \
+              | cut -d'|' -f2 | tr -d ' ' | sort -Vr | head -n 1
+          }
+
+          # Fail-closed proof that what actually landed on the runner is the
+          # lane's PHP. It runs after EVERY install attempt, because a partially
+          # applied apt run must never be able to reach the probes and be
+          # reported as a compatibility result: each package has to report dpkg
+          # status `install ok installed` and a version inside the lane's
+          # major/minor, and the exact mod_php module has to be present.
+          assert_lane_php() {
+            local pkg status version
+            for pkg in "${PHP_PACKAGES[@]}"; do
+              status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+              version="$(dpkg-query -W -f='${Version}' "$pkg" 2>/dev/null || true)"
+              if [ "$status" != "install ok installed" ]; then
+                echo "::error::Class C environment failure: ${pkg} is not installed (dpkg status '${status:-absent}') after the install step reported success. Refusing to measure a lane on a partially provisioned PHP."
+                return 1
+              fi
+              case "$version" in
+                "${PHP_VERSION}".*) : ;;
+                *)
+                  echo "::error::Class C environment failure: ${pkg} is installed at version '${version}', which is not the lane's PHP ${PHP_VERSION}. Refusing to measure a lane on the wrong PHP."
+                  return 1 ;;
+              esac
+              echo "php package present: ${pkg}=${version}"
+            done
+            # Prove the exact module is present before Apache is ever configured.
+            test -e "/etc/apache2/mods-available/php${PHP_VERSION}.load" || {
+              echo "::error::Class C environment failure: php${PHP_VERSION}.load is absent after installation, so the lane PHP cannot be served by Apache."
+              return 1; }
+            return 0
+          }
+
+          # ---- Path A: the Ubuntu archive (preferred, no Launchpad) --------- #
+          ARCHIVE_VERSION="$(archive_candidate "libapache2-mod-php${PHP_VERSION}")"
+          case "$ARCHIVE_VERSION" in
+            "${PHP_VERSION}".*) ARCHIVE_OK=yes ;;
+            *) ARCHIVE_OK=no ;;
+          esac
+          if [ "$ARCHIVE_OK" = yes ]; then
+            echo "Ubuntu archive offers libapache2-mod-php${PHP_VERSION} ${ARCHIVE_VERSION}"
+            PHP_PINS=()
+            for PKG in "${PHP_PACKAGES[@]}"; do
+              PHP_PINS+=("${PKG}=${ARCHIVE_VERSION}")
+            done
+            # The explicit `=version` pins are what keep this attempt on the
+            # archive: without them apt would silently take the higher PPA build
+            # when one is configured. `--allow-downgrades` only matters when the
+            # image already carries a higher (PPA) build of the same packages.
+            # `Acquire::Retries` is apt's own bounded mirror retry — there is no
+            # shell retry loop here.
+            if sudo apt-get install -y -qq --allow-downgrades -o Acquire::Retries=3 \
+                 "${PHP_PINS[@]}" apache2 mysql-client 2>&1 \
+                 | tee /tmp/apt-archive.log > /dev/null; then
+              if assert_lane_php; then
+                PHP_SOURCE="ubuntu-archive ${ARCHIVE_VERSION}"
+              else
+                echo "::warning::the Ubuntu archive install reported success but the lane PHP did not verify; falling back to the controlled PPA path."
+              fi
+            else
+              # The apt tail is emitted as an annotation on purpose: raw job-log
+              # blobs live on *.blob.core.windows.net, which is not retrievable
+              # from the review sandbox, whereas check-run annotations are.
+              echo "::warning::the Ubuntu archive install of PHP ${PHP_VERSION} failed; falling back to the controlled PPA path. apt diagnostic: $(apt_diag /tmp/apt-archive.log)"
+            fi
+          else
+            echo "the Ubuntu archive does not offer a PHP ${PHP_VERSION} build for Apache on this runner (archive candidate: '${ARCHIVE_VERSION:-none}'); the PPA path is required for this lane."
+          fi
+
+          # ---- Path B: ppa:ondrej/php (controlled fallback only) ------------ #
+          if [ -z "$PHP_SOURCE" ]; then
+            echo "adding ppa:ondrej/php as the fallback source for PHP ${PHP_VERSION}"
+            if ! command -v add-apt-repository > /dev/null 2>&1; then
+              if ! sudo apt-get install -y -qq software-properties-common 2>&1 \
+                   | tee /tmp/apt-ppa.log > /dev/null; then
+                echo "::error::Class C environment failure: PHP ${PHP_VERSION} is not available from the Ubuntu archive on this runner and software-properties-common is not installable, so ppa:ondrej/php cannot be added. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
+                exit 1
+              fi
+            fi
+            if ! sudo add-apt-repository -y ppa:ondrej/php 2>&1 \
                  | tee /tmp/apt-ppa.log > /dev/null; then
-              echo "::error::Class C environment failure: software-properties-common is not installable. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
+              echo "::error::Class C environment failure: PHP ${PHP_VERSION} is not available from the Ubuntu archive on this runner and ppa:ondrej/php could not be added. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
               exit 1
             fi
+            sudo apt-get update -qq
+            # One bounded attempt: apt's own Acquire::Retries (3) covers a
+            # struggling mirror, and a second failure here is final. No shell
+            # retry loop deliberately — an unbounded retry against a 503-ing
+            # Launchpad would turn an infrastructure outage into a hang.
+            if ! sudo apt-get install -y -qq -o Acquire::Retries=3 \
+                 "${PHP_PACKAGES[@]}" apache2 mysql-client 2>&1 \
+                 | tee /tmp/apt-ppa.log > /dev/null; then
+              echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner from either the Ubuntu archive or ppa:ondrej/php. Refusing to measure a lane on the wrong PHP. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
+              exit 1
+            fi
+            PHP_SOURCE="ppa:ondrej/php"
           fi
-          if ! sudo add-apt-repository -y ppa:ondrej/php 2>&1 \
-               | tee /tmp/apt-ppa.log > /dev/null; then
-            echo "::error::Class C environment failure: ppa:ondrej/php could not be added, so PHP ${PHP_VERSION} cannot be provisioned for Apache. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
-            exit 1
-          fi
-          sudo apt-get update -qq
 
-          if ! sudo apt-get install -y -qq \
-               "libapache2-mod-php${PHP_VERSION}" \
-               "php${PHP_VERSION}-mysql" "php${PHP_VERSION}-mbstring" \
-               "php${PHP_VERSION}-xml" "php${PHP_VERSION}-curl" \
-               "php${PHP_VERSION}-zip" "php${PHP_VERSION}-gd" \
-               "php${PHP_VERSION}-intl" "php${PHP_VERSION}-opcache" \
-               apache2 mysql-client 2>&1 | tee /tmp/apt.log > /dev/null; then
-            # The apt tail is emitted as an annotation on purpose: raw job-log
-            # blobs live on *.blob.core.windows.net, which is not retrievable
-            # from the review sandbox, whereas check-run annotations are. That
-            # keeps the first causal error recoverable without the blob.
-            echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner. Refusing to measure a lane on the wrong PHP. apt diagnostic: $(apt_diag /tmp/apt.log)"
+          if ! assert_lane_php; then
+            echo "::error::Class C environment failure: PHP ${PHP_VERSION} was provisioned from '${PHP_SOURCE}' but the lane's module set did not verify. Refusing to measure this subject on it."
             exit 1
           fi
-          # Prove the exact module is present before Apache is ever configured.
-          test -e "/etc/apache2/mods-available/php${PHP_VERSION}.load" || {
-            echo "::error::Class C environment failure: php${PHP_VERSION}.load is absent after installation, so the lane PHP cannot be served by Apache."
-            exit 1; }
+          # Provenance is part of the lane's evidence, not a log detail: which
+          # source provisioned the PHP that the probes will measure is recorded
+          # as a check-run annotation, which stays retrievable when the raw job
+          # log blob does not.
+          echo "::notice title=PHP ${PHP_VERSION} provenance (subject ${{ matrix.id }})::source=$(printf '%s' "$PHP_SOURCE" | sed 's/%/%25/g')"
           curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
           sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           wp --allow-root --version
