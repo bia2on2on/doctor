@@ -3,12 +3,31 @@ on: pull_request
 permissions:
   pull-requests: write
   contents: read
+  issues: write
 jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml
       - run: |
-          echo "::notice::PR_NUMBER=${{ github.event.pull_request.number }}"
-          gh pr comment "${{ github.event.pull_request.number }}" --body "HELLO_DEBUG_2" && echo "::notice::comment posted" || echo "::error::comment failed"
+          cd clinic-practice-management
+          composer install --prefer-dist --no-progress --no-interaction
+          set +e
+          php -d memory_limit=512M vendor/bin/phpunit --filter 'SystemHealth' --testsuite Unit > /tmp/unit.log 2>&1
+          rc=$?
+          echo "exit code $rc"
+          tail -40 /tmp/unit.log
+          {
+            echo "### Unit test failure (debug)"
+            echo '```'
+            tail -80 /tmp/unit.log
+            echo '```'
+          } > /tmp/unitcomment.md
+          gh pr comment 234 --body-file /tmp/unitcomment.md && echo "COMMENT_POSTED" || echo "COMMENT_FAILED"
+          exit $rc
         env:
           GH_TOKEN: ${{ github.token }}
