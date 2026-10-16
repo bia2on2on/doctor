@@ -24,7 +24,7 @@ final class ReleaseManifestTest extends TestCase
             'channel' => 'stable',
             'package_url' => 'https://updates.example.com/cpms-1.1.0.zip',
             'package_sha256' => str_repeat('a', 64),
-            'min_wp_version' => '6.5',
+            'min_wp_version' => '6.9',
             'min_php_version' => '8.1',
             'min_cpms_version' => '1.0.0',
             'signed_at' => 1893463200,

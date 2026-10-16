@@ -1,0 +1,197 @@
+name: WordPress Compatibility (previous supported majors)
+
+# بازهٔ پشتیبانی‌شده = سه نسخهٔ اصلیِ پایدارِ آخر: ۷.۱ / ۷.۰ / ۶.۹.
+#
+# لِینِ اصلی روی آخرین نسخهٔ پایدار (۷.۱.x) اجرا می‌شود: CI (Integration)،
+# Real WP Acceptance (مرورگر)، First-Practice Acceptance، Pilot/Upgrade و
+# Closure. این workflow فقط دو نسخهٔ اصلیِ *پیشین* (۷.۰ و ۶.۹) را می‌سنجد.
+#
+# چرا زمان‌بندی‌شده و نه per-PR:
+#   افزودنِ این دو نسخه به هر PR تعداد چک‌ها را سه‌برابر می‌کند (هزینه/زمان/نویز)
+#   بدون آن‌که چیزی به شواهدِ دقیقِ همان SHA اضافه شود؛ پس روی `schedule` و
+#   `workflow_dispatch` می‌ماند و **هیچ** چکِ per-PR اضافه نمی‌کند.
+#
+# آنچه سنجیده می‌شود (کفِ اعلام‌شده = ۶.۹):
+#   ۱. آخرین وصلهٔ همان نسخهٔ اصلی از منبعِ رسمی WordPress.org حل می‌شود
+#      (`api.wordpress.org/core/stable-check/1.0/`) — نسخهٔ حدس‌زده pin نمی‌شود.
+#   ۲. وردپرسِ تمیز + MySQL 8 ساخته می‌شود و افزونه از **همان ZIP ریلیزِ رسمی**
+#      (`bin/build-release.sh`) نصب و فعال می‌شود.
+#   ۳. Migration روی همان نسخه اجرا می‌شود.
+#   ۴. probe: افزونه بوت می‌شود، مسیر REST حیات ثبت شده است، هیچ
+#      deprecation/notice از فایل‌های افزونه نیامده، و کفِ اعلام‌شدهٔ WP روی این
+#      نسخه PASS است (یعنی واقعاً داخلِ بازهٔ پشتیبانی است).
+#
+# این workflow هیچ گیتِ مجوزمانند و هیچ محدودیتِ دسترسیِ داده اضافه نمی‌کند؛
+# فقط سازگاریِ زمان‌اجرا را می‌سنجد.
+
+on:
+  schedule:
+    # هفتگی: دوشنبه ۰۳:۱۷ UTC (کم‌ازدحام)
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+jobs:
+  compat:
+    name: WP ${{ matrix.wp_major }} runtime compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # دو نسخهٔ اصلیِ پیشینِ بازهٔ پشتیبانی‌شده (نسخهٔ اصلی روی لِین‌های اصلی سنجیده می‌شود).
+        wp_major: ['7.0', '6.9']
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      WP_DIR: /home/runner/wpcompat
+      STORAGE_OUT: /home/runner/wpcompat-storage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, mbstring, xml, curl, zip
+          coverage: none
+
+      - name: Tooling (mysql-client + wp-cli)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+
+      - name: Build release ZIP (whitelist-only)
+        run: |
+          set -euo pipefail
+          bash bin/build-release.sh
+          cat dist/clinic-practice-management-1.0.0.zip.sha256
+
+      - name: Install WordPress ${{ matrix.wp_major }}.x (latest patch, official source)
+        run: |
+          set -euo pipefail
+          MAJ='${{ matrix.wp_major }}'
+          VER=$(curl -fsSL https://api.wordpress.org/core/stable-check/1.0/ \
+            | python3 -c "import json,sys;d=json.load(sys.stdin);vs=[v for v in d if v.startswith('${MAJ}.') and d[v]!='development'];print(max(vs,key=lambda x:tuple(int(p) for p in x.split('.'))))")
+          test -n "$VER"
+          echo "Resolved WP ${VER} (branch ${MAJ})"
+          echo "WP_VER=${VER}" >> "$GITHUB_ENV"
+          # fail-closed: بدون منبع جانشین و بدون نسخهٔ دیگر
+          curl -fsSL "https://wordpress.org/wordpress-${VER}.tar.gz" -o /tmp/wp.tar.gz
+          rm -rf "$WP_DIR" /home/runner/wordpress
+          tar -xzf /tmp/wp.tar.gz -C /home/runner
+          mv /home/runner/wordpress "$WP_DIR"
+          DB="cpms_compat${MAJ//./}"
+          mysql -h127.0.0.1 -P3306 -uroot -proot \
+            -e "CREATE DATABASE \`$DB\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 \
+            --dbprefix=cpmswp_ --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp core install --url="http://wpcompat.test" --title="CPMS compat ${VER}" \
+            --admin_user=cl_admin --admin_password='Compat-2026!' --admin_email=cl@compat.test \
+            --skip-email --allow-root
+          wp core version --allow-root
+
+      - name: Install + activate plugin from the official release ZIP
+        run: |
+          set -euo pipefail
+          cd "$WP_DIR"
+          wp plugin install "$GITHUB_WORKSPACE/clinic-practice-management/dist/clinic-practice-management-1.0.0.zip" \
+            --activate --path="$WP_DIR" --allow-root
+          wp plugin list --allow-root
+
+      - name: Migrate on WordPress ${{ matrix.wp_major }}.x
+        run: |
+          set -euo pipefail
+          WP_HOME="$WP_DIR" php "$WP_DIR/wp-content/plugins/clinic-practice-management/bin/cpms" migrate
+
+      - name: Runtime compatibility probe
+        run: |
+          set -euo pipefail
+          mkdir -p "$STORAGE_OUT"
+          cat > /tmp/compat-probe.php <<'PHPEOF'
+          <?php
+          error_reporting( E_ALL );
+          $home = (string) getenv( 'WP_HOME' );
+          if ( ! is_file( rtrim( $home, '/' ) . '/wp-load.php' ) ) { fwrite( STDERR, "WP_HOME invalid\n" ); exit( 3 ); }
+          require rtrim( $home, '/' ) . '/wp-load.php';
+
+          use ClinicCore\Application\System\SystemHealthService;
+
+          $errors = array();
+          set_error_handler( static function ( int $sev, string $msg, string $file = '', int $line = 0 ) use ( &$errors ): bool {
+              $errors[] = array( 'sev' => $sev, 'msg' => $msg, 'file' => $file, 'line' => $line );
+              return false;
+          } );
+
+          $pluginDir = defined( 'CPMS_PLUGIN_DIR' ) ? rtrim( (string) CPMS_PLUGIN_DIR, '/' ) : '';
+          $fail      = static function ( string $msg ): void { fwrite( STDERR, "FAIL {$msg}\n" ); exit( 1 ); };
+
+          // ۱. افزونه بوت شده است
+          defined( 'CPMS_VERSION' ) || $fail( 'CPMS_VERSION is not defined — plugin did not boot' );
+          echo 'CPMS_VERSION=' . CPMS_VERSION . "\n";
+
+          // ۲. کفِ اعلام‌شدهٔ WP باید روی این نسخه PASS باشد (یعنی واقعاً پشتیبانی‌شده)
+          $floor = SystemHealthService::MIN_WORDPRESS_VERSION;
+          $wp    = (string) get_bloginfo( 'version' );
+          $row   = SystemHealthService::wordpress_version_check( $wp );
+          echo 'declared_floor=' . $floor . ' running_wp=' . $wp . ' status=' . $row['status'] . "\n";
+          if ( $row['status'] !== SystemHealthService::PASS ) {
+              $fail( 'declared WP floor is NOT satisfied on this release: ' . $row['detail'] );
+          }
+
+          // ۳. مسیر REST حیات ثبت شده است (بدون تماس شبکه‌ای) — همان الگوی probe موجود در Closure Gate
+          if ( ! function_exists( 'rest_get_server' ) ) { require_once ABSPATH . 'wp-includes/rest-api.php'; }
+          if ( ! did_action( 'rest_api_init' ) ) { do_action( 'rest_api_init' ); }
+          $routes = rest_get_server()->get_routes();
+          isset( $routes['/clinic/v1/health'] ) || $fail( 'REST route /clinic/v1/health not registered' );
+          echo "rest_route=/clinic/v1/health OK\n";
+
+          // ۴. هیچ deprecation/notice از فایل‌های افزونه نیامده است
+          $bad = array();
+          foreach ( $errors as $e ) {
+              $sev = (int) $e['sev'];
+              if ( ! in_array( $sev, array( E_DEPRECATED, E_USER_DEPRECATED, E_NOTICE, E_USER_NOTICE, E_WARNING, E_USER_WARNING ), true ) ) {
+                  continue;
+              }
+              if ( $pluginDir !== '' && str_starts_with( (string) $e['file'], $pluginDir ) ) {
+                  $bad[] = $e['msg'] . ' @ ' . basename( (string) $e['file'] ) . ':' . $e['line'];
+              }
+          }
+          if ( $bad !== array() ) {
+              $fail( 'plugin-level PHP diagnostics: ' . implode( ' | ', $bad ) );
+          }
+
+          echo "COMPAT PROBE OK\n";
+          PHPEOF
+          php -l /tmp/compat-probe.php > /dev/null
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/compat-probe.php
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### WordPress Compatibility — ${{ matrix.wp_major }}.x (resolved ${WP_VER:-unknown})"
+            echo ''
+            echo "- artifact: release ZIP from \`bin/build-release.sh\`"
+            echo "- PHP: 8.2 · DB: MySQL 8"
+            echo "- probe outcome: ${{ job.status }}"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [1.0.2] — unreleased
 
+### Changed
+- **بازهٔ پشتیبانیِ WordPress = سه نسخهٔ اصلیِ پایدارِ آخر (۷.۱ / ۷.۰ / ۶.۹):** هدر افزونه به `Requires at least: 6.9` و `SystemHealthService::MIN_WORDPRESS_VERSION` به `6.9` تغییر کرد (منبعِ واحدِ حقیقت؛ `WpUpdateBridge` دیگر literalِ جدا ندارد و همان ثابت را منتشر می‌کند). نسخه‌های ۶.۴–۶.۸ از بازهٔ پشتیبانی خارج شدند و probe قدیمیِ ۶.۴/۶.۵/۶.۶ از Closure Gate حذف شد.
+- **راهنمایِ فارسیِ ارتقا برای نصبِ کهنه:** ردیفِ `wp.version` در گزارش سلامت، هنگام `FAIL` متنِ `WORDPRESS_UPGRADE_GUIDANCE_FA` را نشان می‌دهد و صفحهٔ «سیستم» زیر «چه کنم» مسیرِ عملی (بکاپ → پیشخوان → «به‌روزرسانی‌ها» یا `wp core update`) را به فارسی توضیح می‌دهد. **هیچ دروازهٔ شبه‌مجوزی اضافه نشد** و دسترسی به پروندهٔ بیماران، نوبت‌ها، سوابق مالی، خروجی‌ها و بکاپ/بازیابی محدود نمی‌شود.
+- **لِین‌های CI به آخرین نسخهٔ پایدار منتقل شدند:** Integration (WP Test Suite)، Real WP Acceptance، First-Practice Acceptance، Pilot/Upgrade/Responsive و Closure runtime همگی روی **۷.۱.۳** اجرا می‌شوند؛ سازگاریِ دو نسخهٔ اصلیِ پیشین (۷.۰، ۶.۹) در workflow زمان‌بندی‌شدهٔ `.github/workflows/wp-compat.yml` سنجیده می‌شود تا چک‌های per-PR سه‌برابر نشوند.
+
 ### Fixed
 - **F1-8 — دقت Sanitize Audit (تطبیق دقیق کلید، case-insensitive):** `AuditLogger::FORBIDDEN_KEYS` قبلاً با substring-regex کلیدمی‌کرد (`/(otp|code|…)/i`) → کلیدهای بی‌خطرِ حاوی «code» مثل `http_code`/`status_code`/`failure_code` هم حذف می‌شدند و رکوردهای HTTP/خطا در Audit بی‌معنا می‌شدند. اکنون تطبیق کامل نام کلید (case-insensitive) است و فهرست ممنوعه‌ها گسترده‌تر/صریح‌تر شد (`auth_code`، `verification_code`، `access_token`، `client_secret`، …). Masking و Hash Chain دست‌نخورده. **تست رگرسیون (Integration):** `AuditChainTest::testExactKeyMatchingKeepsNonSensitiveLookalikes`.
 - **F1-10 — توضیح docblock فالبک StateMachine (فقط مستندسازی):** قواعد Fallback در `Domain/Machine/StateMachine` صریح شد — (from,event) نامعلوم → Exception (fail-loud)؛ actor خارج از فهرست‌ها → fallback به Candidate بدون محدودیت (فهرست خالی = همه) اگر موجود باشد؛ نکته امنیتی: این لایه فقط مسیرِ مجازِ عمومی را انتخاب می‌کند و مجوز عملیاتی در Service enforce می‌شود. رفتار بدون تغییر. **تست‌های مستندکننده (Unit):** `StateMachineTest::testActorFallbackToUnrestrictedCandidate`، `testNoFallbackWhenOnlyRestrictedCandidatesExist`.

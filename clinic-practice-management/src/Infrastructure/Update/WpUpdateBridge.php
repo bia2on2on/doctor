@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Infrastructure\Update;
 
+use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Application\Update\UpdateService;
 use WP_Error;
 
@@ -202,7 +203,9 @@ final class WpUpdateBridge
         $entry->new_version = (string) ($result['version'] ?? '');
         $entry->url = (string) ($result['release_notes'] ?? '');
         $entry->package = (string) ($result['package_url'] ?? '');
-        $entry->requires = '6.4';
+        // کفِ WP از تنها منبعِ حقیقت خوانده می‌شود (هدر افزونه ↔ `MIN_WORDPRESS_VERSION`)
+        // تا اعلامِ «Requires at least» در مسیر به‌روزرسانی از کفِ واقعی جدا نشود.
+        $entry->requires = SystemHealthService::MIN_WORDPRESS_VERSION;
         $entry->requires_php = '8.1';
 
         return $entry;
@@ -222,7 +225,8 @@ final class WpUpdateBridge
         $o->version = (string) ($result['version'] ?? '');
         $o->author = 'CPMS';
         $o->download_link = (string) ($result['package_url'] ?? '');
-        $o->requires = '6.4';
+        // همان منبعِ حقیقتِ `updateEntry()` — جزئیاتِ نسخه هم کفِ واقعی را اعلام کند.
+        $o->requires = SystemHealthService::MIN_WORDPRESS_VERSION;
         $o->requires_php = '8.1';
         $o->last_updated = gmdate('Y-m-d H:i:s', (int) ($result['checked_at'] ?? time()));
         $o->sections = [
