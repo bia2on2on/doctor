@@ -46,9 +46,9 @@ final class SystemHealthService
     public const HOST_UNSUPPORTED = 'UNSUPPORTED';
 
     /** سه وضعیتِ کاربرپسند (فارسی) برای ارائهٔ سلامت سیستم */
-    public const USER_STATUS_READY = 'آماده استفاده';
+    public const USER_STATUS_READY       = 'آماده استفاده';
     public const USER_STATUS_NEEDS_SETUP = 'نیازمند تنظیم';
-    public const USER_STATUS_CRITICAL = 'مشکل ضروری';
+    public const USER_STATUS_CRITICAL    = 'مشکل ضروری';
 
     /**
      * کفِ اعلام‌شدهٔ وردپرس — برگرفته از هدرِ افزونه (`Requires at least: 6.9`)؛
@@ -211,11 +211,11 @@ final class SystemHealthService
             LicenseStatus::NOT_CONFIGURED => self::NOT_CONFIGURED,
             default => self::FAIL, // RESTRICTED/SUSPENDED/REVOKED/INVALID/UNREACHABLE
         };
-        $licenseDetail = $state['reason'] !== '' ? $state['reason'] : '';
+        $license_detail = $state['reason'] !== '' ? $state['reason'] : '';
         if ($state['expires_at'] !== null && $state['status'] !== LicenseStatus::NOT_CONFIGURED) {
-            $licenseDetail = ($licenseDetail !== '' ? $licenseDetail . ' | ' : '') . 'مهلت/انقضا ' . gmdate('Y-m-d', (int) $state['expires_at']);
+            $license_detail = ( $license_detail !== '' ? $license_detail . ' | ' : '' ) . 'مهلت/انقضا ' . gmdate( 'Y-m-d', (int) $state['expires_at'] );
         }
-        $add('license.state', 'مجوز', $licenseStatus, $licenseDetail);
+        $add('license.state', 'مجوز', $licenseStatus, $license_detail);
         $add(
             'license.gateway',
             'سرور مجوز',
