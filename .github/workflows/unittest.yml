@@ -16,7 +16,7 @@ jobs:
           cd clinic-practice-management
           composer install --prefer-dist --no-progress --no-interaction
           set +e
-          php -d memory_limit=512M vendor/bin/phpunit --filter 'SystemHealth' --testsuite Unit > /tmp/unit.log 2>&1
+          php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit > /tmp/unit.log 2>&1
           rc=$?
           echo "exit code $rc"
           if [ $rc -ne 0 ]; then
