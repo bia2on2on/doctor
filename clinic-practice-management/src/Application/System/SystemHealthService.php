@@ -411,12 +411,12 @@ final class SystemHealthService
     // Aliases for compatibility with callers/tests that use shorter names.
     public static function statusLabel(string $status): string
     {
-        return self::userFacingStatus($status);
+        return self::userFacingStatus( $status );
     }
 
     public static function hostStatusLabel(string $status): string
     {
-        return self::userFacingHostStatus($status);
+        return self::userFacingHostStatus( $status );
     }
 
     // ================= private =================
