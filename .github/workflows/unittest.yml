@@ -3,7 +3,6 @@ on: pull_request
 permissions:
   pull-requests: write
   contents: read
-  issues: write
 jobs:
   unit:
     runs-on: ubuntu-latest
@@ -20,14 +19,11 @@ jobs:
           php -d memory_limit=512M vendor/bin/phpunit --filter 'SystemHealth' --testsuite Unit > /tmp/unit.log 2>&1
           rc=$?
           echo "exit code $rc"
-          tail -40 /tmp/unit.log
-          {
-            echo "### Unit test failure (debug)"
-            echo '```'
-            tail -80 /tmp/unit.log
-            echo '```'
-          } > /tmp/unitcomment.md
-          gh pr comment 234 --body-file /tmp/unitcomment.md && echo "COMMENT_POSTED" || echo "COMMENT_FAILED"
+          if [ $rc -ne 0 ]; then
+            # emit first 40 lines of log as annotations
+            head -n 40 /tmp/unit.log | while IFS= read -r line; do
+              echo "::error::$line"
+            done
+          fi
+          tail -20 /tmp/unit.log
           exit $rc
-        env:
-          GH_TOKEN: ${{ github.token }}
