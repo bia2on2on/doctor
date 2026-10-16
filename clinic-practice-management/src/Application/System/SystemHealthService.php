@@ -364,13 +364,13 @@ final class SystemHealthService
             // مدرکِ MySQL-اختصاصی به‌تنهایی نباید کلِ میزبان را UNSUPPORTED کند.
             // در عین حال ادعایِ سازگاریِ کامل هم نمی‌شود: به‌عنوان «نیازمند
             // تنظیم» (warning) گزارش می‌شود تا مدرکِ نامشخص حفظ شود.
-            $mariaDbUncertified = $c['key'] === 'db.mysql_version'
+            $maria_db_uncertified = $c['key'] === 'db.mysql_version'
                 && $c['status'] === self::UNKNOWN
-                && stripos((string) ($c['detail'] ?? ''), 'mariadb') !== false;
+                && stripos( (string) ( $c['detail'] ?? '' ), 'mariadb' ) !== false;
 
-            if ($c['status'] === self::FAIL || ($c['status'] === self::UNKNOWN && !$mariaDbUncertified)) {
+            if ( $c['status'] === self::FAIL || ( $c['status'] === self::UNKNOWN && ! $maria_db_uncertified ) ) {
                 $issues[] = $c['key'] . ': ' . $c['detail'];
-            } elseif ($c['status'] === self::WARNING || $mariaDbUncertified) {
+            } elseif ( $c['status'] === self::WARNING || $maria_db_uncertified ) {
                 $warnings[] = $c['key'];
             }
         }
