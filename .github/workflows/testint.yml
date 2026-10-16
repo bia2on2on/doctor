@@ -1,0 +1,22 @@
+name: TestInt
+on: pull_request
+permissions:
+  contents: read
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.3'
+          extensions: mbstring, xml
+      - run: |
+          cd clinic-practice-management
+          composer install --prefer-dist --no-progress --no-interaction
+          set +e
+          php -d memory_limit=512M vendor/bin/phpunit --filter 'SystemAdmin' tests/Integration/SystemAdminPagesTest.php tests/Integration/SystemAdminUxTest.php > /tmp/t.log 2>&1
+          rc=$?
+          echo "exit=$rc"
+          grep -n -i -E "Tests:|FAILURES|ERRORS|Fatal|Error 1|There was" /tmp/t.log | head -20
+          exit 0
