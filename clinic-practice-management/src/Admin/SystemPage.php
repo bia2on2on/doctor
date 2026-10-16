@@ -126,9 +126,9 @@ final class SystemPage
             <?php if ($faults !== []) : ?>
                 <h3>⚠️ موارد نیازمند توجه</h3>
                 <?php foreach ( $faults as $c ) : ?>
-                <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
+                    <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
                     <div class="notice notice-warning inline" style="max-width:1000px">
-                        <p><strong><?php echo esc_html(self::statusBadge((string) $c['status'], (string) $c['key'], (string) $c['detail'])); ?> <?php echo esc_html((string) $c['label']); ?></strong></p>
+                        <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
                         <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
                         <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
                         <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
