@@ -7,7 +7,8 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: echo "hello" && gh pr comment ${{ github.event.pull_request.number }} --body "HELLO_DEBUG" || echo "comment failed"
+      - run: |
+          echo "::notice::PR_NUMBER=${{ github.event.pull_request.number }}"
+          gh pr comment "${{ github.event.pull_request.number }}" --body "HELLO_DEBUG_2" && echo "::notice::comment posted" || echo "::error::comment failed"
         env:
           GH_TOKEN: ${{ github.token }}
