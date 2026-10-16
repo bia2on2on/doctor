@@ -142,7 +142,7 @@ final class SystemAdminUxTest extends WP_UnitTestCase
     {
         ob_start();
         try {
-            SystemPage::render($health);
+            SystemPage::render( $health );
         } finally {
             $out = (string) ob_get_clean();
         }

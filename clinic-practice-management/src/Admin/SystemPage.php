@@ -48,9 +48,9 @@ final class SystemPage
     }
 
     /**
-     * @param array{checks: list<array{key:string,label:string,status:string,detail:string}>, host: array{status:string, issues:list<string>}}|null $healthOverride برای تست رندر با دادهٔ کنترل‌شده (فقط تست)
+     * @param array{checks: list<array{key:string,label:string,status:string,detail:string}>, host: array{status:string, issues:list<string>}}|null $health_override برای تست رندر با دادهٔ کنترل‌شده (فقط تست)
      */
-    public static function render(?array $healthOverride = null): void
+    public static function render( ?array $health_override = null ): void
     {
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
@@ -73,8 +73,8 @@ final class SystemPage
         } catch (\Throwable $e) {
             $licError = $e->getMessage();
         }
-        if (is_array($healthOverride)) {
-            $health = $healthOverride;
+        if ( is_array( $health_override ) ) {
+            $health = $health_override;
         } else {
             try {
                 $health = App::systemHealthService()->run();
