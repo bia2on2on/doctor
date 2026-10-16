@@ -205,7 +205,7 @@ final class WpUpdateBridge
         $entry->package = (string) ($result['package_url'] ?? '');
         // کفِ WP از تنها منبعِ حقیقت خوانده می‌شود (هدر افزونه ↔ `MIN_WORDPRESS_VERSION`)
         // تا اعلامِ «Requires at least» در مسیر به‌روزرسانی از کفِ واقعی جدا نشود.
-        $entry->requires = SystemHealthService::MIN_WORDPRESS_VERSION;
+        $entry->requires     = SystemHealthService::MIN_WORDPRESS_VERSION;
         $entry->requires_php = '8.1';
 
         return $entry;
@@ -226,7 +226,7 @@ final class WpUpdateBridge
         $o->author = 'CPMS';
         $o->download_link = (string) ($result['package_url'] ?? '');
         // همان منبعِ حقیقتِ `updateEntry()` — جزئیاتِ نسخه هم کفِ واقعی را اعلام کند.
-        $o->requires = SystemHealthService::MIN_WORDPRESS_VERSION;
+        $o->requires     = SystemHealthService::MIN_WORDPRESS_VERSION;
         $o->requires_php = '8.1';
         $o->last_updated = gmdate('Y-m-d H:i:s', (int) ($result['checked_at'] ?? time()));
         $o->sections = [

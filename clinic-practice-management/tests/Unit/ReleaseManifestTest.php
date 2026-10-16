@@ -108,12 +108,13 @@ final class ReleaseManifestTest extends TestCase
     public function testApplicableRequiresNewerVersionAndEnvironments(): void
     {
         $m = $this->valid();
-        $this->assertTrue(ReleaseManifest::isApplicable($m, '1.0.0', '6.7', '8.2'));
+        // WP روی کفِ کفِ اعلام‌شده (`min_wp_version` = 6.9) — محیطِ رضایت‌بخش.
+        $this->assertTrue(ReleaseManifest::isApplicable($m, '1.0.0', '6.9', '8.2'));
         // همان نسخه / قدیمی‌تر
-        $this->assertFalse(ReleaseManifest::isApplicable($m, '1.1.0', '6.7', '8.2'));
+        $this->assertFalse(ReleaseManifest::isApplicable($m, '1.1.0', '6.9', '8.2'));
         // WP قدیمی‌تر از min
         $this->assertFalse(ReleaseManifest::isApplicable($m, '1.0.0', '6.0', '8.2'));
-        // PHP قدیمی‌تر از min
-        $this->assertFalse(ReleaseManifest::isApplicable($m, '1.0.0', '6.7', '8.0'));
+        // PHP قدیمی‌تر از min (WP رضایت‌بخش ⇒ علتِ رد فقط PHP است)
+        $this->assertFalse(ReleaseManifest::isApplicable($m, '1.0.0', '6.9', '8.0'));
     }
 }
