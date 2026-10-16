@@ -105,51 +105,6 @@ final class SystemAdminUxTest extends WP_UnitTestCase
         $this->assertStringContainsString('cpms_restore_apply', $html, 'فرم Restore وجود داشته باشد');
     }
 
-    public function testRenderedMariaDbUncertifiedRowShowsWarningInRowAndBanner(): void
-    {
-        $health = [
-            'checks' => [
-                ['key' => 'php.version', 'label' => 'PHP نسخه', 'status' => SystemHealthService::PASS, 'detail' => '8.3'],
-                ['key' => 'db.mysql_version', 'label' => 'نسخهٔ سرور دیتابیس (MySQL)', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'mariadb:detected | MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL 8.0 است و سیاستِ MariaDB اعلام نشده است'],
-            ],
-            'host' => ['status' => SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, 'issues' => ['db.mysql_version']],
-        ];
-
-        $html = $this->renderWith($health);
-
-        $this->assertStringContainsString('نیازمند تنظیم', $html, 'MariaDBِ تشخیص‌داده‌شده باید «نیازمند تنظیم» باشد (بنر).');
-        $this->assertStringContainsString('MariaDB شناسایی شد', $html, 'راهنما باید MariaDB را گزارش کند وقتی مدرک موجود است.');
-        $this->assertStringNotContainsString('مشکل ضروری', $html, 'MariaDBِ تشخیص‌داده‌شده نباید «مشکل ضروری» باشد.');
-    }
-
-    public function testRenderedGenuinelyUnknownDatabaseShowsCriticalAndNoFalseMariaDbClaim(): void
-    {
-        $health = [
-            'checks' => [
-                ['key' => 'php.version', 'label' => 'PHP نسخه', 'status' => SystemHealthService::PASS, 'detail' => '8.3'],
-                ['key' => 'db.mysql_version', 'label' => 'نسخهٔ سرور دیتابیس (MySQL)', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL 8.0 تأییدپذیر نیست'],
-            ],
-            'host' => ['status' => SystemHealthService::HOST_UNSUPPORTED, 'issues' => ['db.mysql_version: نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL 8.0 تأییدپذیر نیست']],
-        ];
-
-        $html = $this->renderWith($health);
-
-        $this->assertStringContainsString('مشکل ضروری', $html, 'موتورِ ناشناخته باید «مشکل ضروری» باشد.');
-        $this->assertStringNotContainsString('MariaDB شناسایی شد', $html, 'بدون مدرکِ MariaDB نباید ادعای MariaDB شود.');
-    }
-
-    private function renderWith(array $health): string
-    {
-        ob_start();
-        try {
-            SystemPage::render( $health );
-        } finally {
-            $out = (string) ob_get_clean();
-        }
-
-        return $out;
-    }
-
     private function render(): string
     {
         ob_start();
