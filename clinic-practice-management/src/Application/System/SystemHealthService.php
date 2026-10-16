@@ -359,8 +359,7 @@ final class SystemHealthService
      * ساختاریافتهٔ `mariadb:` یا نشانگرِ انگلیسیِ MariaDB انجام می‌شود، نه
      * متنِ فارسیِ تشخیص.
      */
-    public static function is_maria_db_compatibility_detail( string $detail ): bool
-    {
+    public static function is_maria_db_compatibility_detail( string $detail ): bool {
         $normalized = strtolower( trim( $detail ) );
 
         return str_starts_with( $normalized, 'mariadb:' )
@@ -411,10 +410,9 @@ final class SystemHealthService
     /**
      * @param mixed ...$args status یا (key, status, detail) به‌صورت انعطاف‌پذیر
      */
-    public static function user_facing_status( ...$args ): string
-    {
+    public static function user_facing_status( ...$args ): string {
         $status = '';
-        $key = '';
+        $key    = '';
         $detail = '';
 
         foreach ( $args as $arg ) {
@@ -433,11 +431,7 @@ final class SystemHealthService
                     $detail .= ' ' . $arg;
                 }
             } else {
-                if ( '' === $detail ) {
-                    $detail = $arg;
-                } else {
-                    $detail .= ' ' . $arg;
-                }
+                $detail = ( '' === $detail ) ? $arg : $detail . ' ' . $arg;
             }
         }
 
@@ -445,11 +439,11 @@ final class SystemHealthService
             $status = $args[0];
         }
 
-        $isMaria = 'db.mysql_version' === $key
+        $is_maria = 'db.mysql_version' === $key
             && self::UNKNOWN === $status
             && self::is_maria_db_compatibility_detail( $detail );
 
-        if ( $isMaria ) {
+        if ( $is_maria ) {
             return self::USER_STATUS_NEEDS_SETUP;
         }
 
