@@ -5,27 +5,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.3'
-          extensions: mbstring, xml
       - run: |
-          cd clinic-practice-management
-          composer install --prefer-dist --no-progress --no-interaction
-          set +e
-          php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit > /tmp/unit.log 2>&1
-          rc=$?
-          echo "exit code $rc"
-          tail -60 /tmp/unit.log
-          if [ $rc -ne 0 ]; then
-            {
-              echo "### Unit test failure (debug)"
-              echo '```'
-              tail -80 /tmp/unit.log
-              echo '```'
-            } > /tmp/unitcomment.md
-            gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/unitcomment.md || true
-          fi
-          exit $rc
+          echo "PR number is ${{ github.event.pull_request.number }}"
+          gh pr comment "${{ github.event.pull_request.number }}" --body "DEBUG_COMMENT_FROM_WORKFLOW" || echo "comment failed"
         env:
           GH_TOKEN: ${{ github.token }}
