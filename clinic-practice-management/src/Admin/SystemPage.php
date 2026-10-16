@@ -524,7 +524,7 @@ final class SystemPage
             ],
         ];
         $entry = $entries[$key] ?? [
-            'what'   => 'بررسی با وضعیت «' . SystemHealthService::userFacingStatus( $status ) . '» بازگشت.',
+            'what'   => 'بررسی با وضعیت «' . SystemHealthService::user_facing_status( $status ) . '» بازگشت.',
             'impact' => 'این مورد در عملکرد کلینیک ممکن است مؤثر باشد.',
             'action' => 'جزئیات فنی را بررسی و در صورت نیاز با پشتیبانی تماس بگیرید.',
         ];

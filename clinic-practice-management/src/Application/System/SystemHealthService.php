@@ -203,7 +203,7 @@ final class SystemHealthService
 
         // ---------- License (ADR-0023) ----------
         $state = $this->licenses->currentState();
-        $licenseStatus = match ($state['status']) {
+        $license_status = match ( $state['status'] ) {
             LicenseStatus::ACTIVE => self::PASS,
             LicenseStatus::EXPIRING, LicenseStatus::GRACE => self::WARNING,
             LicenseStatus::ACTIVATION_PENDING, LicenseStatus::ACTIVATION_GRACE => self::WARNING,
@@ -215,7 +215,7 @@ final class SystemHealthService
         if ($state['expires_at'] !== null && $state['status'] !== LicenseStatus::NOT_CONFIGURED) {
             $license_detail = ( $license_detail !== '' ? $license_detail . ' | ' : '' ) . 'مهلت/انقضا ' . gmdate( 'Y-m-d', (int) $state['expires_at'] );
         }
-        $add('license.state', 'مجوز', $licenseStatus, $license_detail);
+        $add( 'license.state', 'مجوز', $license_status, $license_detail );
         $add(
             'license.gateway',
             'سرور مجوز',
@@ -387,9 +387,8 @@ final class SystemHealthService
     /**
      * نگاشتِ وضعیتِ داخلی به یکی از سه وضعیتِ کاربرپسند (فارسی).
      */
-    public static function userFacingStatus(string $status): string
-    {
-        return match ($status) {
+    public static function user_facing_status( string $status ): string {
+        return match ( $status ) {
             self::PASS => self::USER_STATUS_READY,
             self::FAIL => self::USER_STATUS_CRITICAL,
             default => self::USER_STATUS_NEEDS_SETUP,
@@ -399,9 +398,8 @@ final class SystemHealthService
     /**
      * نگاشتِ وضعیتِ میزبان به یکی از سه وضعیتِ کاربرپسند (فارسی).
      */
-    public static function userFacingHostStatus(string $status): string
-    {
-        return match ($status) {
+    public static function user_facing_host_status( string $status ): string {
+        return match ( $status ) {
             self::HOST_SUPPORTED => self::USER_STATUS_READY,
             self::HOST_SUPPORTED_WITH_WARNINGS => self::USER_STATUS_NEEDS_SETUP,
             default => self::USER_STATUS_CRITICAL,
@@ -409,14 +407,14 @@ final class SystemHealthService
     }
 
     // Aliases for compatibility with callers/tests that use shorter names.
-    public static function statusLabel(string $status): string
-    {
-        return self::userFacingStatus( $status );
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    public static function statusLabel( string $status ): string {
+        return self::user_facing_status( $status );
     }
 
-    public static function hostStatusLabel(string $status): string
-    {
-        return self::userFacingHostStatus( $status );
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    public static function hostStatusLabel( string $status ): string {
+        return self::user_facing_host_status( $status );
     }
 
     // ================= private =================
