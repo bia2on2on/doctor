@@ -359,12 +359,17 @@ final class SystemHealthService
      * ساختاریافتهٔ `mariadb:` یا نشانگرِ انگلیسیِ MariaDB انجام می‌شود، نه
      * متنِ فارسیِ تشخیص.
      */
-    public static function isMariaDbCompatibilityDetail(string $detail): bool
+    public static function is_maria_db_compatibility_detail( string $detail ): bool
     {
         $normalized = strtolower( trim( $detail ) );
 
         return str_starts_with( $normalized, 'mariadb:' )
             || str_contains( $normalized, 'mariadb' );
+    }
+
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
+    public static function isMariaDbCompatibilityDetail( string $detail ): bool {
+        return self::is_maria_db_compatibility_detail( $detail );
     }
 
     public static function classifyHost(array $checks): array
@@ -382,7 +387,7 @@ final class SystemHealthService
             // تنظیم» (warning) گزارش می‌شود تا مدرکِ نامشخص حفظ شود.
             $maria_db_uncertified = $c['key'] === 'db.mysql_version'
                 && $c['status'] === self::UNKNOWN
-                && self::isMariaDbCompatibilityDetail( (string) ( $c['detail'] ?? '' ) );
+                && self::is_maria_db_compatibility_detail( (string) ( $c['detail'] ?? '' ) );
 
             if ( $c['status'] === self::FAIL || ( $c['status'] === self::UNKNOWN && ! $maria_db_uncertified ) ) {
                 $issues[] = $c['key'] . ': ' . $c['detail'];
@@ -421,7 +426,7 @@ final class SystemHealthService
                 if ( '' === $status ) {
                     $status = $arg;
                 }
-            } elseif ( str_contains( $arg, '.' ) || self::isMariaDbCompatibilityDetail( $arg ) ) {
+            } elseif ( str_contains( $arg, '.' ) || self::is_maria_db_compatibility_detail( $arg ) ) {
                 if ( '' === $key ) {
                     $key = $arg;
                 } else {
@@ -442,7 +447,7 @@ final class SystemHealthService
 
         $isMaria = 'db.mysql_version' === $key
             && self::UNKNOWN === $status
-            && self::isMariaDbCompatibilityDetail( $detail );
+            && self::is_maria_db_compatibility_detail( $detail );
 
         if ( $isMaria ) {
             return self::USER_STATUS_NEEDS_SETUP;

@@ -455,7 +455,7 @@ final class SystemPage
             }
 
             return [
-                'what' => 'سرور دیتابیس MariaDB شناسایی شد و سازگاریِ آن با کفِ MySQL 8.0 گواهی نشده است.',
+                'what'   => 'سرور دیتابیس MariaDB شناسایی شد و سازگاریِ آن با کفِ MySQL 8.0 گواهی نشده است.',
                 'impact' => 'افزونه ممکن است روی این سرور کار کند، اما سازگاریِ کامل تأیید نشده است و رفتارِ برخی ویژگی‌ها ممکن است متفاوت باشد. دسترسی به داده محدود نمی‌شود.',
                 'action' => 'از MariaDB 11.4.13 یا MySQL 8.x پشتیبانی‌شده استفاده کنید؛ پیش از هر تغییر بکاپ کامل بگیرید؛ در صورت نیاز با پشتیبانی تماس بگیرید. ادعای سازگاریِ کامل نمی‌شود.',
             ];
@@ -555,10 +555,11 @@ final class SystemPage
     /**
      * @param mixed ...$args
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
     private static function statusBadge( ...$args ): string
     {
         $status = '';
-        $key = '';
+        $key    = '';
         $detail = '';
 
         foreach ( $args as $arg ) {
@@ -571,18 +572,14 @@ final class SystemPage
                 if ( '' === $status ) {
                     $status = $arg;
                 }
-            } elseif ( str_contains( $arg, '.' ) || SystemHealthService::isMariaDbCompatibilityDetail( $arg ) ) {
+            } elseif ( str_contains( $arg, '.' ) || SystemHealthService::is_maria_db_compatibility_detail( $arg ) ) {
                 if ( '' === $key ) {
                     $key = $arg;
                 } else {
                     $detail .= ' ' . $arg;
                 }
             } else {
-                if ( '' === $detail ) {
-                    $detail = $arg;
-                } else {
-                    $detail .= ' ' . $arg;
-                }
+                $detail = ( '' === $detail ) ? $arg : $detail . ' ' . $arg;
             }
         }
 
@@ -590,11 +587,11 @@ final class SystemPage
             $status = $args[0];
         }
 
-        $isMaria = 'db.mysql_version' === $key
+        $is_maria = 'db.mysql_version' === $key
             && SystemHealthService::UNKNOWN === $status
-            && SystemHealthService::isMariaDbCompatibilityDetail( $detail );
+            && SystemHealthService::is_maria_db_compatibility_detail( $detail );
 
-        if ( $isMaria ) {
+        if ( $is_maria ) {
             return '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP;
         }
 
