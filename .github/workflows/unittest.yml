@@ -20,10 +20,8 @@ jobs:
           rc=$?
           echo "exit code $rc"
           if [ $rc -ne 0 ]; then
-            # emit first 40 lines of log as annotations
-            head -n 40 /tmp/unit.log | while IFS= read -r line; do
+            grep -n -i -E "error|fail|exception|1\)|tests:" /tmp/unit.log | head -n 60 | while IFS= read -r line; do
               echo "::error::$line"
             done
           fi
-          tail -20 /tmp/unit.log
           exit $rc
