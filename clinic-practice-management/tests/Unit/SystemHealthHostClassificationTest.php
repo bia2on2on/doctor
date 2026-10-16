@@ -146,8 +146,8 @@ final class SystemHealthHostClassificationTest extends TestCase
         ];
         $host = SystemHealthService::classifyHost($checks);
         $this->assertSame(SystemHealthService::HOST_UNSUPPORTED, $host['status']);
-        $this->assertContains('php.version', implode(' | ', $host['issues']));
-        $this->assertNotContains('db.mysql_version', implode(' | ', $host['issues']));
+        $this->assertStringContainsString('php.version', implode(' | ', $host['issues']));
+        $this->assertStringNotContainsString('db.mysql_version', implode(' | ', $host['issues']));
     }
 
     public function testStructuredMariaDbIdentifierIsDetected(): void
