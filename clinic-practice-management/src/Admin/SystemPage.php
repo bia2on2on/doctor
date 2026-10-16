@@ -47,8 +47,9 @@ final class SystemPage
         );
     }
 
-    public static function render(): void
+    public static function render( ?array $health_override = null ): void
     {
+        unset( $health_override );
         if (!current_user_can('cpms_config')) {
             wp_die('دسترسی ندارید');
         }
