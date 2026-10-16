@@ -31,6 +31,10 @@ jobs:
   tripwire:
     name: Tenant Tripwire (hardcode scan)
     runs-on: ubuntu-latest
+    # Measured 0.1m across 20 completed runs (max 0.1m, median 0.1m). 5m keeps
+    # ~50x headroom on a job whose whole cost is two python3 invocations; the
+    # limit exists only so a hung runner cannot sit on the 360m platform default.
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
 
@@ -47,6 +51,12 @@ jobs:
   unit:
     name: Unit Tests (PHP ${{ matrix.php }})
     runs-on: ubuntu-latest
+    # Measured across 20 completed runs per PHP: max 0.6m, median 0.4m, min 0.3m
+    # (one 3.6m outlier on a cold runner). 10m covers that outlier with room and
+    # still fails a genuinely wedged job long before the 360m platform default.
+    # This is the matrix behind four REQUIRED status checks — the limit must
+    # never fire on a healthy run, so it is set well above worst observed.
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -169,6 +179,12 @@ jobs:
     name: Integration (WP 7.1 + MySQL 8)
     runs-on: ubuntu-latest
     needs: unit
+    # Measured across 20 completed runs: max 5.6m, median 5.0m. 20m is ~3.5x the
+    # worst observed. Deliberately generous because this is a REQUIRED status
+    # check and it is the repository's heaviest CPMS-present job (clean WordPress
+    # + MySQL service + migrations): a timeout here would be a false red on a
+    # protected branch. It bounds a hang; it does not pressure the normal path.
+    timeout-minutes: 20
 
     services:
       mysql:
@@ -874,6 +890,10 @@ jobs:
   phpstan:
     name: Static Analysis (PHPStan)
     runs-on: ubuntu-latest
+    # Measured across 20 completed runs: max 3.6m (cold-runner outlier), median
+    # 0.9m. 10m covers the outlier ~2.8x. Not a required status check, but still
+    # a real gate on this PR's own checks, so the margin stays wide.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -902,6 +922,9 @@ jobs:
   wpcs:
     name: WPCS (changed code)
     runs-on: ubuntu-latest
+    # Measured across 20 completed runs: max 3.6m (cold-runner outlier), median
+    # 0.6m. 10m covers the outlier ~2.8x. Not a required status check.
+    timeout-minutes: 10
     env:
       # Ratchet anchor (manual + documented bump — drift-register §۸-۱-۱).
       WPCS_BASELINE: 2263ed673a8fdf4ab91e6a7fffae6d82252e4324

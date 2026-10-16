@@ -162,13 +162,73 @@ name: Third-Party Compatibility Baseline (Phase 18 Lane A)
 #   used, no commercial package is ever committed, and no credential is ever
 #   printed, logged or uploaded. No credential is required for this workflow to
 #   be valid.
+#
+# ---------------------------------------------------------------------------
+# TRIGGER CONTRACT (changed 2026-10-16 — per-PR execution removed, coverage kept)
+# ---------------------------------------------------------------------------
+# WHAT CHANGED: `pull_request: branches: [main]` was removed from this workflow.
+# `push: branches: [main]` and `workflow_dispatch` are preserved unchanged, and
+# a weekly `schedule` was added. Nothing else changed: the 21 frozen matrix
+# subject ids (same set, same order), the `summary` aggregation, the three-way
+# PASS/PARTIAL/FAIL taxonomy, the fail-closed exit-code contract, the
+# documented persian-woocommerce 10.0.5 diagnostic exception and the
+# two-subject (WP Rocket / Gravity Forms) NOT RUN carve-out above are untouched.
+# `report.py --expect-matrix` still resolves all 21 subjects from this file, and
+# the workflow's own `test_result_propagation.py` self-tests pass 85/85 against
+# this revision.
+#
+# WHY THIS IS NOT A COVERAGE REDUCTION:
+#   * This lane installs NO CPMS code and measures a CPMS-free WordPress. Its
+#     taxonomy categories A and B are unreachable here, so it can never gate a
+#     CPMS change on its own merits — it reports third-party behaviour, not
+#     CPMS behaviour.
+#   * The CPMS-PRESENT coexistence coverage that DOES gate a PR is untouched and
+#     remains PR-triggered in .github/workflows/persian-coexistence.yml: all six
+#     lanes (`coexistence`, `coexistence-security-authentication`,
+#     `coexistence-combined-ten`, `coexistence-persian-woocommerce-diagnosis`,
+#     `coexistence-persian-woocommerce-sms`, `coexistence-combined-nineteen`).
+#   * No check produced by this workflow is a required status check on `main`
+#     (ruleset 22393801 requires exactly nine contexts: the four Unit Tests PHP
+#     jobs, Integration (WP 7.1 + MySQL 8), and the four Closure Gate jobs).
+#     Removing the PR trigger therefore removes ZERO required checks. Verified
+#     against the live ruleset, not assumed.
+#
+# WHY THE CAMPAIGN IS NOT WEAKENED: the subjects are version-pinned against
+# WordPress.org and the lane's PHP/MySQL pins are frozen, so per-PR re-runs
+# re-measured an unchanged universe. MEASURED COST REMOVED (not estimated):
+# on the last two PR-event runs of this workflow (38965311834, 38959514347)
+# the campaign consumed 35.3 and 35.0 billed runner-minutes across 22 jobs
+# (21 subject legs + summary), longest single leg 2.1m — i.e. ~35 runner-minutes
+# of billed capacity per PR, spread over 22 concurrently scheduled jobs. A
+# re-run only carries new information when the pin, the runner image or
+# upstream changes — none of which are PR-scoped. Weekly re-measurement restores
+# the signal; `workflow_dispatch` remains the documented repeat-once path for
+# attributing any material FAIL in a fresh environment; and `push: main`
+# preserves per-merge evidence on the exact same runner image.
+#
+# SCHEDULE PLACEMENT (deliberately outside the other two campaigns): this
+# repository's only other scheduled runs are Pilot/Staging Readiness Gate at
+# `23 3 * * 0` (Sunday 03:23 UTC) and WordPress Compatibility at `17 3 * * 1`
+# (Monday 03:17 UTC). Saturday 02:41 UTC collides with neither, and the :41
+# offset keeps it off the top of the hour — GitHub documents that scheduled
+# runs are delayed during periods of high load, which is concentrated there.
+#
+# CONCURRENCY INTENTIONALLY UNCHANGED: the group expression below still
+# contains its `github.event_name == 'pull_request'` branch. With the trigger
+# gone that branch is inert, but it is left exactly as-is on purpose. Rewriting
+# it would alter the cancellation domain of live push/schedule/main evidence
+# for no proven defect, and this workflow's evidence must never be superseded
+# by a refactor. The expression is correct for every event that can now fire.
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
+  schedule:
+    # Weekly re-measurement of the frozen third-party universe. Saturday
+    # 02:41 UTC — see "SCHEDULE PLACEMENT" above for why neither Sunday's
+    # Pilot Gate nor Monday's WordPress Compatibility run overlaps this one.
+    - cron: '41 2 * * 6'
 
 concurrency:
   # Same shape as the repository's other gates: PR runs keyed by PR number, main
