@@ -66,7 +66,7 @@ final class SystemPage
         /** @var list<array<string, mixed>> $backups */
         $backups = [];
         $licError = null;
-        $healthError = null;
+        $health_error = null;
         $backupsError = null;
         try {
             $lic = App::licenseService()->statusMeta();
@@ -79,7 +79,7 @@ final class SystemPage
             try {
                 $health = App::systemHealthService()->run();
             } catch (\Throwable $e) {
-                $healthError = $e->getMessage();
+                $health_error = $e->getMessage();
             }
         }
         try {
@@ -101,9 +101,9 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
-            <?php if ($healthError !== null || $health === null) : ?>
+            <?php if ($health_error !== null || $health === null) : ?>
                 <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
-                    <code><?php echo esc_html($healthError); ?></code></p></div>
+                    <code><?php echo esc_html($health_error); ?></code></p></div>
             <?php else : ?>
             <p>Host Capability:
                 <strong>
