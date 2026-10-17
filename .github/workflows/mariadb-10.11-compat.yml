@@ -3,13 +3,15 @@ name: MariaDB 10.11 Compatibility (CPMS + WordPress)
 # Weekly, real-server compatibility evidence for the WordPress-recommended
 # MariaDB 10.11 series. This is deliberately separate from the MySQL 8 PR
 # integration check and the MariaDB 11.4.13 browser acceptance lane.
-# No pull_request trigger: preserve the existing PR-check architecture.
+# The temporary pull_request trigger is removed after collecting fresh evidence.
 
 on:
   schedule:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
   workflow_dispatch:
+  pull_request:
+    branches: [main]
 
 concurrency:
   # Unique per execution: never cancel a scheduled/manual compatibility run.
@@ -217,67 +219,37 @@ jobs:
           composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
           bash tests/bin/install-wp-tests.sh "$TEST_DB_NAME" root "$MYSQL_PWD" 127.0.0.1 "$WP_VERSION" 3306
 
+      - name: Validate exact PHPUnit selection and red-result guard
+        run: python3 tests/bin/test_mariadb_compat_report.py
+
       - name: Run focused database-backed CPMS compatibility suites
         id: focused_tests
         run: |
-          set -o pipefail
-          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
-            --bootstrap tests/integration-bootstrap.php \
+          set +e
+          php -d memory_limit=1G vendor/bin/phpunit \
+            --configuration phpunit.mariadb-10.11.xml \
             --log-junit /tmp/mariadb-compat/focused-junit.xml \
-            tests/Compatibility/MariaDb1011CompatibilityTest.php \
-            tests/Integration/MigrationTest.php \
-            tests/Integration/CustomRoleArchivalMigrationTest.php \
-            tests/Integration/CustomRoleDisplayNameMigrationTest.php \
-            tests/Integration/FirstPracticeSetupTest.php \
-            tests/Integration/ClinicTenantIsolationTest.php \
-            tests/Integration/PatientIdentityFoundationTest.php \
-            tests/Integration/ClinicalFilesScopedAuthorizationTest.php \
-            tests/Integration/FinanceAuthorizationPolicyRegressionTest.php \
-            tests/Integration/FinanceClinicIsolationTest.php \
-            tests/Integration/CustomRoleRepositoryTransactionTest.php \
-            tests/Integration/CustomRoleAuditAtomicityTest.php \
-            tests/Integration/ConcurrencyTest.php \
-            tests/Integration/VisitConcurrencyTest.php \
-            tests/Integration/CustomRoleArchivalConcurrencyTest.php \
-            tests/Integration/CustomRoleLifecycleTest.php \
-            tests/Integration/BackupEngineTest.php \
-            tests/Integration/BackupMultiClinicFilesRestoreGreenTest.php \
-            2>&1 | tee /tmp/mariadb-compat/focused-tests.log
-          python3 - <<'PY'
-          import sys
-          import xml.etree.ElementTree as ET
+            --no-progress \
+            > /tmp/mariadb-compat/phpunit-output.private 2>&1
+          phpunit_exit=$?
+          set -e
+          printf '%s\n' "$phpunit_exit" > /tmp/mariadb-compat/phpunit-exit-code.txt
+          if [ "$phpunit_exit" -eq 0 ]; then
+            echo 'PHPUnit completed with exit code 0; raw output is withheld.'
+          else
+            echo "PHPUnit returned exit code $phpunit_exit; raw output is withheld; sanitized JUnit results follow."
+          fi
+          exit "$phpunit_exit"
 
-          junit = '/tmp/mariadb-compat/focused-junit.xml'
-          cases = ET.parse(junit).getroot().findall('.//testcase')
-          skipped = sum(case.find('skipped') is not None for case in cases)
-          failures = sum(case.find('failure') is not None for case in cases)
-          errors = sum(case.find('error') is not None for case in cases)
-          classes = {case.attrib.get('classname', '').split('\\')[-1] for case in cases}
-          expected = {
-              'MariaDb1011CompatibilityTest', 'MigrationTest',
-              'CustomRoleArchivalMigrationTest', 'CustomRoleDisplayNameMigrationTest',
-              'FirstPracticeSetupTest', 'ClinicTenantIsolationTest',
-              'PatientIdentityFoundationTest', 'ClinicalFilesScopedAuthorizationTest',
-              'FinanceAuthorizationPolicyRegressionTest', 'FinanceClinicIsolationTest',
-              'CustomRoleRepositoryTransactionTest', 'CustomRoleAuditAtomicityTest',
-              'ConcurrencyTest', 'VisitConcurrencyTest', 'CustomRoleArchivalConcurrencyTest',
-              'CustomRoleLifecycleTest', 'BackupEngineTest', 'BackupMultiClinicFilesRestoreGreenTest',
-          }
-          missing = sorted(expected - classes)
-          print(f'focused MariaDB JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
-          print('discovered classes=' + ','.join(sorted(classes)))
-          if len(cases) < 120 or skipped or failures or errors or missing:
-              sys.exit(f'focused compatibility suite must discover all expected classes and pass without skips; missing={missing}')
-          PY
-          {
-            echo '## MariaDB 10.11 focused CPMS integration results'
-            echo
-            echo "- server: \`$(cat /tmp/mariadb-compat/database-version.txt)\`"
-            echo "- WP/PHP: \`$WP_VERSION\` / \`$PHP_VERSION\`"
-            echo "- tests: \`$(python3 -c 'import xml.etree.ElementTree as E; print(len(E.parse("/tmp/mariadb-compat/focused-junit.xml").getroot().findall(".//testcase")))')\`"
-            echo '- scope: installation/migrations, JSON/CHECK + utf8mb4, transaction rollback, locking/concurrency, tenant/clinical/financial boundaries, backup/restore compatibility'
-            echo '- MySQL 8 integration and MariaDB 11.4.13 browser acceptance are separate workflows/evidence.'
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish sanitized JUnit summary and enforce completeness
+        if: always()
+        run: |
+          python3 tests/bin/mariadb_compat_report.py \
+            --junit /tmp/mariadb-compat/focused-junit.xml \
+            --selection-config phpunit.mariadb-10.11.xml \
+            --phpunit-exit-file /tmp/mariadb-compat/phpunit-exit-code.txt \
+            --summary-file "$GITHUB_STEP_SUMMARY" \
+            --json-output /tmp/mariadb-compat/focused-results.json
 
       - name: Upload bounded compatibility evidence
         if: always()
@@ -285,18 +257,14 @@ jobs:
         with:
           name: mariadb-10.11-compat-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/mariadb-compat/apt.log
             /tmp/mariadb-compat/database-image.txt
             /tmp/mariadb-compat/database-version.txt
             /tmp/mariadb-compat/wordpress-version.txt
             /tmp/mariadb-compat/plugin-version.txt
             /tmp/mariadb-compat/release-zip.sha256
-            /tmp/mariadb-compat/schema-migrations.txt
-            /tmp/mariadb-compat/migration-repeat.txt
             /tmp/mariadb-compat/backup-clone-summary.txt
-            /tmp/mariadb-compat/focused-tests.log
-            /tmp/mariadb-compat/focused-junit.xml
-            ${{ env.WP_DIR }}/wp-content/debug.log
+            /tmp/mariadb-compat/phpunit-exit-code.txt
+            /tmp/mariadb-compat/focused-results.json
           if-no-files-found: warn
           retention-days: 14
 

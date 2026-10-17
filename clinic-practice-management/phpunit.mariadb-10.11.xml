@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<phpunit xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+         bootstrap="tests/integration-bootstrap.php"
+         colors="false"
+         failOnWarning="true">
+    <testsuites>
+        <testsuite name="MariaDB 10.11 focused CPMS integration">
+            <file>tests/Compatibility/MariaDb1011CompatibilityTest.php</file>
+            <file>tests/Integration/MigrationTest.php</file>
+            <file>tests/Integration/CustomRoleArchivalMigrationTest.php</file>
+            <file>tests/Integration/CustomRoleDisplayNameMigrationTest.php</file>
+            <file>tests/Integration/FirstPracticeSetupTest.php</file>
+            <file>tests/Integration/ClinicTenantIsolationTest.php</file>
+            <file>tests/Integration/PatientIdentityFoundationTest.php</file>
+            <file>tests/Integration/ClinicalFilesScopedAuthorizationTest.php</file>
+            <file>tests/Integration/FinanceAuthorizationPolicyRegressionTest.php</file>
+            <file>tests/Integration/FinanceClinicIsolationTest.php</file>
+            <file>tests/Integration/CustomRoleRepositoryTransactionTest.php</file>
+            <file>tests/Integration/CustomRoleAuditAtomicityTest.php</file>
+            <file>tests/Integration/ConcurrencyTest.php</file>
+            <file>tests/Integration/VisitConcurrencyTest.php</file>
+            <file>tests/Integration/CustomRoleArchivalConcurrencyTest.php</file>
+            <file>tests/Integration/CustomRoleLifecycleTest.php</file>
+            <file>tests/Integration/BackupEngineTest.php</file>
+            <file>tests/Integration/BackupMultiClinicFilesRestoreGreenTest.php</file>
+        </testsuite>
+    </testsuites>
+</phpunit>
