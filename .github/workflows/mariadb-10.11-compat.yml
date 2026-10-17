@@ -3,9 +3,19 @@ name: MariaDB 10.11 Compatibility (CPMS + WordPress)
 # Weekly, real-server compatibility evidence for the WordPress-recommended
 # MariaDB 10.11 series. This is deliberately separate from the MySQL 8 PR
 # integration check and the MariaDB 11.4.13 browser acceptance lane.
-# No pull_request trigger: preserve the existing PR-check architecture.
+# Temporary, path-limited PR trigger for one bounded bootstrap diagnostic run.
+# Restore schedule/dispatch-only triggers immediately after the run.
 
 on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/mariadb-10.11-compat.yml'
+      - 'clinic-practice-management/phpunit.mariadb-10.11.xml'
+      - 'clinic-practice-management/tests/integration-bootstrap.php'
+      - 'clinic-practice-management/tests/bin/mariadb_compat_report.py'
+      - 'clinic-practice-management/tests/bin/test_mariadb_compat_report.py'
   schedule:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
@@ -246,6 +256,11 @@ jobs:
         id: focused_tests
         run: |
           set +e
+          umask 077
+          startup_diagnostics=/tmp/mariadb-compat/phpunit-startup.private
+          printf 'STAGE=PHPUNIT_PROCESS_STARTED\n' > "$startup_diagnostics"
+          CPMS_MARIADB_STARTUP_DIAGNOSTICS=1 \
+          CPMS_MARIADB_STARTUP_DIAGNOSTICS_FILE="$startup_diagnostics" \
           php -d memory_limit=1G vendor/bin/phpunit \
             --configuration phpunit.mariadb-10.11.xml \
             --log-junit /tmp/mariadb-compat/focused-junit.xml \
@@ -268,6 +283,7 @@ jobs:
             --junit /tmp/mariadb-compat/focused-junit.xml \
             --selection-config phpunit.mariadb-10.11.xml \
             --phpunit-exit-file /tmp/mariadb-compat/phpunit-exit-code.txt \
+            --startup-diagnostics-file /tmp/mariadb-compat/phpunit-startup.private \
             --summary-file "$GITHUB_STEP_SUMMARY" \
             --json-output /tmp/mariadb-compat/focused-results.json \
             --check-annotation
@@ -294,7 +310,7 @@ jobs:
         run: |
           {
             echo
-            echo '## MariaDB 10.11 Compatibility (separate, non-PR lane)'
+            echo '## MariaDB 10.11 Compatibility (bounded PR diagnostic; not a required PR check)'
             echo
             echo "- run: \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- checkout: \`${GITHUB_SHA}\`"

@@ -42,6 +42,127 @@ EXPECTED_CLASSES = tuple(Path(path).stem for path in EXPECTED_FILES)
 EXPECTED_CLASS_SET = frozenset(EXPECTED_CLASSES)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SELECTION_CONFIG = PROJECT_ROOT / "phpunit.mariadb-10.11.xml"
+STARTUP_STAGES = frozenset(
+    {
+        "INTEGRATION_BOOTSTRAP_ENTRY",
+        "PHPUNIT_PROCESS_STARTED",
+        "PHPUNIT_CONFIGURATION",
+        "PHPUNIT_BEFORE_BOOTSTRAP",
+        "POST_BOOTSTRAP_BEFORE_JUNIT",
+        "WP_TEST_LIBRARY_CHECK",
+        "WP_TEST_LIBRARY_FUNCTIONS_REQUIRE",
+        "WP_TEST_LIBRARY_FUNCTIONS_READY",
+        "PHPUNIT_POLYFILLS_REQUIRE",
+        "PHPUNIT_POLYFILLS_READY",
+        "WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+        "CPMS_PLUGIN_BOOTSTRAP",
+        "WORDPRESS_TEST_LIBRARY_READY",
+        "SQL_FAILURE_LEDGER_REQUIRE",
+        "SQL_FAILURE_LEDGER_READY",
+        "MIGRATION_BOOTSTRAP",
+        "MIGRATION_BOOTSTRAP_READY",
+        "BOOTSTRAP_SUPPORT_SETUP",
+        "BOOTSTRAP_COMPLETE",
+        "UNKNOWN_BOOTSTRAP_STAGE",
+        "NOT_REPORTED",
+    }
+)
+STARTUP_CATEGORIES = frozenset(
+    {
+        "WP_TEST_LIBRARY_MISSING",
+        "PHPUNIT_CONFIG_INVALID",
+        "BOOTSTRAP_REQUIRE_FAILURE",
+        "WORDPRESS_BOOTSTRAP_FAILURE",
+        "MIGRATION_BOOTSTRAP_FAILURE",
+        "PHP_FATAL_BEFORE_TESTS",
+        "UNKNOWN_STARTUP_FAILURE",
+    }
+)
+
+
+def _read_startup_markers(path: Path | None) -> dict[str, Any]:
+    """Read only exact fixed tokens; never return or echo unrecognized content."""
+    if path is None:
+        return {"status": "not_requested", "stages": [], "categories": [], "failure_stages": []}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return {"status": "missing", "stages": [], "categories": [], "failure_stages": []}
+    except (OSError, UnicodeError):
+        return {"status": "malformed", "stages": [], "categories": [], "failure_stages": []}
+
+    stages: list[str] = []
+    categories: list[str] = []
+    failure_stages: list[str] = []
+    malformed = False
+    for line in text.splitlines():
+        if not line:
+            continue
+        key, separator, value = line.partition("=")
+        if not separator:
+            malformed = True
+        elif key == "STAGE" and value in STARTUP_STAGES:
+            stages.append(value)
+        elif key == "CATEGORY" and value in STARTUP_CATEGORIES:
+            categories.append(value)
+        elif key == "FAILURE_STAGE" and value in STARTUP_STAGES:
+            failure_stages.append(value)
+        else:
+            # Do not preserve or report the line; malformed content is untrusted.
+            malformed = True
+    if len(categories) > 1 or len(failure_stages) > 1:
+        malformed = True
+    if failure_stages and (not categories or not stages or failure_stages[0] != stages[-1]):
+        malformed = True
+    return {
+        "status": "malformed" if malformed else "valid",
+        "stages": stages,
+        "categories": categories,
+        "failure_stages": failure_stages,
+    }
+
+
+def _resolve_startup_diagnosis(
+    markers: dict[str, Any],
+    *,
+    junit_status: str,
+    phpunit_exit_code: int | None,
+    selection_issues: list[str],
+) -> tuple[str, str]:
+    """Resolve to fixed allowlisted stage/category identifiers only."""
+    if selection_issues:
+        return "PHPUNIT_CONFIGURATION", "PHPUNIT_CONFIG_INVALID"
+
+    stages = markers["stages"]
+    categories = markers["categories"]
+    failure_stages = markers["failure_stages"]
+    complete = "BOOTSTRAP_COMPLETE" in stages
+    failed_result = junit_status == "missing" or phpunit_exit_code is None or phpunit_exit_code != 0
+
+    if markers["status"] == "not_requested" and junit_status != "missing":
+        return "NOT_REPORTED", "NONE"
+
+    if markers["status"] == "valid" and (stages or categories or failure_stages):
+        if categories:
+            category = categories[0]
+            stage = failure_stages[0] if failure_stages else (stages[-1] if stages else "UNKNOWN_BOOTSTRAP_STAGE")
+            return stage, category
+        last_stage = stages[-1] if stages else "UNKNOWN_BOOTSTRAP_STAGE"
+        if not complete:
+            if last_stage == "PHPUNIT_PROCESS_STARTED":
+                last_stage = "PHPUNIT_BEFORE_BOOTSTRAP"
+            return last_stage, "UNKNOWN_STARTUP_FAILURE"
+        if last_stage != "BOOTSTRAP_COMPLETE" or failure_stages:
+            return last_stage, "UNKNOWN_STARTUP_FAILURE"
+        if junit_status == "missing":
+            return "POST_BOOTSTRAP_BEFORE_JUNIT", "UNKNOWN_STARTUP_FAILURE"
+        return "BOOTSTRAP_COMPLETE", "NONE"
+
+    if failed_result:
+        return "UNKNOWN_BOOTSTRAP_STAGE", "UNKNOWN_STARTUP_FAILURE"
+    if markers["status"] == "not_requested":
+        return "NOT_REPORTED", "NONE"
+    return "UNKNOWN_BOOTSTRAP_STAGE", "UNKNOWN_STARTUP_FAILURE"
 
 
 def local_name(tag: str) -> str:
@@ -186,9 +307,11 @@ def analyze_junit(
     junit_path: Path,
     config_path: Path = DEFAULT_SELECTION_CONFIG,
     phpunit_exit_code: int | None = None,
+    startup_diagnostics_path: Path | None = None,
 ) -> dict[str, Any]:
     """Return a safe report and gate decision; never include raw JUnit messages."""
     selection_issues, configured_file_count = _selection_inventory(config_path)
+    startup_markers = _read_startup_markers(startup_diagnostics_path)
     issues = list(selection_issues)
     result: dict[str, Any] = {
         "junit_status": "missing",
@@ -210,6 +333,11 @@ def analyze_junit(
         "expected_file_count": len(EXPECTED_FILES),
         "configured_file_count": configured_file_count,
         "phpunit_exit_code": phpunit_exit_code,
+        "startup_diagnostics_required": startup_diagnostics_path is not None,
+        "startup_diagnostics_status": startup_markers["status"],
+        "startup_stage": "UNKNOWN_BOOTSTRAP_STAGE",
+        "startup_category": "UNKNOWN_STARTUP_FAILURE",
+        "startup_markers": startup_markers,
         "issues": issues,
         "gate_pass": False,
     }
@@ -220,11 +348,23 @@ def analyze_junit(
         issues.append("JUnit XML is missing; testcase counts and executed classes are unavailable.")
         result["junit_status"] = "missing"
         result["issues"] = list(dict.fromkeys(issues))
+        result["startup_stage"], result["startup_category"] = _resolve_startup_diagnosis(
+            startup_markers,
+            junit_status=result["junit_status"],
+            phpunit_exit_code=phpunit_exit_code,
+            selection_issues=selection_issues,
+        )
         return _finish_gate(result)
     except (OSError, ET.ParseError):
         issues.append("JUnit XML is malformed or unreadable; testcase counts and executed classes are unavailable.")
         result["junit_status"] = "malformed"
         result["issues"] = list(dict.fromkeys(issues))
+        result["startup_stage"], result["startup_category"] = _resolve_startup_diagnosis(
+            startup_markers,
+            junit_status=result["junit_status"],
+            phpunit_exit_code=phpunit_exit_code,
+            selection_issues=selection_issues,
+        )
         return _finish_gate(result)
 
     cases = [element for element in root.iter() if local_name(element.tag) == "testcase"]
@@ -257,6 +397,12 @@ def analyze_junit(
     if not cases:
         issues.append("JUnit XML contains no testcase records.")
     result["issues"] = list(dict.fromkeys(issues))
+    result["startup_stage"], result["startup_category"] = _resolve_startup_diagnosis(
+        startup_markers,
+        junit_status=result["junit_status"],
+        phpunit_exit_code=phpunit_exit_code,
+        selection_issues=selection_issues,
+    )
     return _finish_gate(result)
 
 
@@ -296,6 +442,14 @@ def _finish_gate(result: dict[str, Any]) -> dict[str, Any]:
         reasons.append("Expected selected test classes are UNKNOWN because JUnit could not be verified.")
     elif result["missing_classes"]:
         reasons.append("One or more expected selected test classes are missing from JUnit.")
+
+    if result["startup_diagnostics_required"]:
+        if result["startup_diagnostics_status"] != "valid":
+            reasons.append("Safe startup diagnostics are missing or malformed.")
+        if result["startup_category"] != "NONE":
+            reasons.append("Safe startup diagnostics report an unresolved or failed startup category.")
+        if "BOOTSTRAP_COMPLETE" not in result["startup_markers"]["stages"]:
+            reasons.append("The safe integration-bootstrap completion marker is missing.")
 
     result["issues"] = list(dict.fromkeys(reasons))
     result["gate_pass"] = not result["issues"] and result["junit_status"] == "valid"
@@ -343,6 +497,12 @@ def _failure_categories(result: dict[str, Any]) -> list[str]:
         categories.append("phpunit_exit_unknown")
     elif result["phpunit_exit_code"] != 0:
         categories.append("phpunit_nonzero_exit")
+    if result.get("startup_diagnostics_required") and result.get("startup_diagnostics_status") != "valid":
+        categories.append("startup_diagnostics_unavailable")
+    if result.get("startup_category") not in (None, "NONE"):
+        categories.append("startup_failure")
+    if result.get("startup_diagnostics_required") and "BOOTSTRAP_COMPLETE" not in result.get("startup_markers", {}).get("stages", []):
+        categories.append("startup_completion_missing")
     if not result["gate_pass"] and not categories:
         categories.append("unknown")
     return list(dict.fromkeys(categories))
@@ -373,6 +533,8 @@ def render_markdown(result: dict[str, Any]) -> str:
         "",
         f"- Completeness gate: **{status}**",
         f"- Failure category: `{'+'.join(result.get('failure_categories', [])) or 'none'}`",
+        f"- Startup stage / category: `{result.get('startup_stage', 'UNKNOWN_BOOTSTRAP_STAGE')}` / `{result.get('startup_category', 'UNKNOWN_STARTUP_FAILURE')}`",
+        f"- Startup diagnostics: `{result.get('startup_diagnostics_status', 'unavailable')}`",
         f"- PHPUnit process exit code: `{_display(result['phpunit_exit_code'])}`",
         f"- JUnit XML: `{result['junit_status']}`",
         f"- Test cases: `{_display(result['test_cases'])}` (minimum {MINIMUM_TEST_CASES})",
@@ -444,7 +606,9 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
         missing_text = "|".join(missing) if missing else "none"
 
     message = (
-        f"category={category}; exit={_display(result['phpunit_exit_code'])}; "
+        f"category={category}; startup_stage={result.get('startup_stage', 'UNKNOWN_BOOTSTRAP_STAGE')}; "
+        f"startup_category={result.get('startup_category', 'UNKNOWN_STARTUP_FAILURE')}; "
+        f"exit={_display(result['phpunit_exit_code'])}; "
         f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
         f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
         f"skips={_display(result['skipped'])}; "
@@ -456,7 +620,9 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
     if len(message) > 1800:
         # Keep check annotations bounded; the complete sanitized class inventory is in the step summary.
         message = _escape_workflow_message(
-            f"category={category}; exit={_display(result['phpunit_exit_code'])}; "
+            f"category={category}; startup_stage={result.get('startup_stage', 'UNKNOWN_BOOTSTRAP_STAGE')}; "
+            f"startup_category={result.get('startup_category', 'UNKNOWN_STARTUP_FAILURE')}; "
+            f"exit={_display(result['phpunit_exit_code'])}; "
             f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
             f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
             f"skips={_display(result['skipped'])}; missing_count={len(missing or []) if missing is not None else 'UNKNOWN'}; "
@@ -480,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--junit", type=Path, required=True)
     parser.add_argument("--selection-config", type=Path, default=DEFAULT_SELECTION_CONFIG)
     parser.add_argument("--phpunit-exit-file", type=Path, required=True)
+    parser.add_argument("--startup-diagnostics-file", type=Path)
     parser.add_argument("--summary-file", type=Path)
     parser.add_argument("--json-output", type=Path)
     parser.add_argument("--check-annotation", action="store_true")
@@ -491,6 +658,7 @@ def main(argv: list[str] | None = None) -> int:
             args.junit,
             config_path=args.selection_config,
             phpunit_exit_code=exit_code,
+            startup_diagnostics_path=args.startup_diagnostics_file,
         )
     except Exception:
         # Never echo an unfiltered parser/exception message into logs or annotations.
@@ -514,9 +682,14 @@ def main(argv: list[str] | None = None) -> int:
             "expected_file_count": len(EXPECTED_FILES),
             "configured_file_count": None,
             "phpunit_exit_code": exit_code,
+            "startup_diagnostics_required": args.startup_diagnostics_file is not None,
+            "startup_diagnostics_status": "unavailable",
+            "startup_stage": "UNKNOWN_BOOTSTRAP_STAGE",
+            "startup_category": "UNKNOWN_STARTUP_FAILURE",
+            "startup_markers": {"stages": [], "categories": [], "failure_stages": []},
             "issues": ["Sanitized reporter failed internally; diagnostic details are withheld."],
             "gate_pass": False,
-            "failure_categories": ["reporter_internal_error"],
+            "failure_categories": ["reporter_internal_error", "startup_failure"],
         }
 
     markdown = render_markdown(result)

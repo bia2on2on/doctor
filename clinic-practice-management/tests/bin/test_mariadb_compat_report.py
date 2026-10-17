@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -18,6 +19,8 @@ from mariadb_compat_report import (  # noqa: E402
     DEFAULT_SELECTION_CONFIG,
     EXPECTED_CLASSES,
     EXPECTED_FILES,
+    STARTUP_CATEGORIES,
+    STARTUP_STAGES,
     analyze_junit,
     build_annotation,
     main,
@@ -32,6 +35,11 @@ class MariaDbCompatReportTest(unittest.TestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.work = Path(self.tempdir.name)
+
+    def write_startup_diagnostics(self, name: str, *lines: str) -> Path:
+        path = self.work / name
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
 
     def write_junit(
         self,
@@ -81,6 +89,28 @@ class MariaDbCompatReportTest(unittest.TestCase):
         ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
         return path
 
+    def test_php_bootstrap_and_workflow_emit_only_allowlisted_startup_tokens(self) -> None:
+        bootstrap = (Path(__file__).resolve().parents[1] / "integration-bootstrap.php").read_text(
+            encoding="utf-8"
+        )
+        workflow = (Path(__file__).resolve().parents[3] / ".github/workflows/mariadb-10.11-compat.yml").read_text(
+            encoding="utf-8"
+        )
+        emitted_stages = set(
+            re.findall(r"cpms_mariadb_startup_diagnostic_mark\('([A-Z_]+)'\)", bootstrap)
+        )
+        emitted_categories = set(
+            re.findall(r"cpms_mariadb_startup_diagnostic_fail\('([A-Z_]+)'\)", bootstrap)
+        )
+
+        self.assertTrue(emitted_stages)
+        self.assertTrue(emitted_stages.issubset(STARTUP_STAGES))
+        self.assertTrue(emitted_categories)
+        self.assertTrue(emitted_categories.issubset(STARTUP_CATEGORIES))
+        self.assertIn("STAGE=PHPUNIT_PROCESS_STARTED", workflow)
+        self.assertIn("--startup-diagnostics-file", workflow)
+        self.assertNotIn("phpunit-output.private --summary-file", workflow)
+
     def test_selected_phpunit_config_contains_exactly_all_18_files(self) -> None:
         root = ET.parse(DEFAULT_SELECTION_CONFIG).getroot()
         selected = [
@@ -107,6 +137,8 @@ class MariaDbCompatReportTest(unittest.TestCase):
 
         self.assertEqual(report["configured_file_count"], 1)
         self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_stage"], "PHPUNIT_CONFIGURATION")
+        self.assertEqual(report["startup_category"], "PHPUNIT_CONFIG_INVALID")
         self.assertTrue(any("approved 18-file selection" in issue for issue in report["issues"]))
 
     def test_dot_and_backslash_classname_formats_normalize_to_expected_class(self) -> None:
@@ -234,17 +266,230 @@ class MariaDbCompatReportTest(unittest.TestCase):
             self.assertIn(field, annotation)
         self.assertTrue(annotation.startswith("::error title="))
 
+    def test_missing_junit_reports_first_allowlisted_bootstrap_category(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "wp-library-missing.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=WP_TEST_LIBRARY_CHECK",
+            "CATEGORY=WP_TEST_LIBRARY_MISSING",
+            "FAILURE_STAGE=WP_TEST_LIBRARY_CHECK",
+        )
+        report = analyze_junit(
+            self.work / "never-written.xml",
+            DEFAULT_SELECTION_CONFIG,
+            1,
+            startup_diagnostics_path=markers,
+        )
+        annotation = build_annotation(report)
+        summary = render_markdown(report)
+
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_stage"], "WP_TEST_LIBRARY_CHECK")
+        self.assertEqual(report["startup_category"], "WP_TEST_LIBRARY_MISSING")
+        self.assertIn("startup_stage=WP_TEST_LIBRARY_CHECK", annotation)
+        self.assertIn("startup_category=WP_TEST_LIBRARY_MISSING", annotation)
+        self.assertIn("WP_TEST_LIBRARY_CHECK", summary)
+
+    def test_early_phpunit_exit_before_bootstrap_is_unknown_and_cannot_pass(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "early-exit.private", "STAGE=PHPUNIT_PROCESS_STARTED"
+        )
+        report = analyze_junit(
+            self.work / "junit-not-created.xml",
+            DEFAULT_SELECTION_CONFIG,
+            255,
+            startup_diagnostics_path=markers,
+        )
+        annotation = build_annotation(report)
+
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["junit_status"], "missing")
+        self.assertEqual(report["startup_stage"], "PHPUNIT_BEFORE_BOOTSTRAP")
+        self.assertEqual(report["startup_category"], "UNKNOWN_STARTUP_FAILURE")
+        self.assertTrue(annotation.startswith("::error title="))
+
+    def test_startup_marker_cannot_override_nonzero_phpunit_exit(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "complete-but-red.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=BOOTSTRAP_COMPLETE",
+        )
+        classnames = [EXPECTED_CLASSES[index % 18] for index in range(120)]
+        junit = self.write_junit(self.work / "all-pass-nonzero.xml", classnames)
+        report = analyze_junit(
+            junit,
+            DEFAULT_SELECTION_CONFIG,
+            1,
+            startup_diagnostics_path=markers,
+        )
+
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_stage"], "BOOTSTRAP_COMPLETE")
+        self.assertEqual(report["startup_category"], "NONE")
+        self.assertIn("phpunit_nonzero_exit", report["failure_categories"])
+
+    def test_untrusted_completion_claim_cannot_create_pass(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "untrusted-completion.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=BOOTSTRAP_COMPLETE",
+            "STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+            "CATEGORY=NONE",
+            "FAILURE_STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+        )
+        classnames = [EXPECTED_CLASSES[index % 18] for index in range(120)]
+        junit = self.write_junit(self.work / "all-pass-untrusted.xml", classnames)
+        report = analyze_junit(
+            junit,
+            DEFAULT_SELECTION_CONFIG,
+            0,
+            startup_diagnostics_path=markers,
+        )
+
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_diagnostics_status"], "malformed")
+        self.assertNotEqual(report["startup_category"], "NONE")
+
+    def test_bootstrap_completion_marker_is_required_for_clean_junit_pass(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "bootstrap-incomplete.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+        )
+        classnames = [EXPECTED_CLASSES[index % 18] for index in range(120)]
+        junit = self.write_junit(self.work / "apparently-complete.xml", classnames)
+        report = analyze_junit(
+            junit,
+            DEFAULT_SELECTION_CONFIG,
+            0,
+            startup_diagnostics_path=markers,
+        )
+
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_category"], "UNKNOWN_STARTUP_FAILURE")
+        self.assertIn("startup_completion_missing", report["failure_categories"])
+        self.assertTrue(any("completion marker is missing" in issue for issue in report["issues"]))
+
+    def test_bootstrap_exception_reports_only_fixed_stage_and_category(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "bootstrap-exception.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=PHPUNIT_POLYFILLS_REQUIRE",
+            "CATEGORY=BOOTSTRAP_REQUIRE_FAILURE",
+            "FAILURE_STAGE=PHPUNIT_POLYFILLS_REQUIRE",
+        )
+        report = analyze_junit(
+            self.work / "no-junit.xml",
+            DEFAULT_SELECTION_CONFIG,
+            255,
+            startup_diagnostics_path=markers,
+        )
+        self.assertFalse(report["gate_pass"])
+        self.assertEqual(report["startup_stage"], "PHPUNIT_POLYFILLS_REQUIRE")
+        self.assertEqual(report["startup_category"], "BOOTSTRAP_REQUIRE_FAILURE")
+        self.assertNotIn("exception", json.dumps(report).lower())
+
+    def test_malicious_raw_phpunit_output_is_never_in_summary_json_or_annotation(self) -> None:
+        raw_output = self.work / "phpunit-output.private"
+        raw_output.write_text(
+            "Bearer secret-token; patient=PHI-731; SELECT password FROM wp_users; "
+            "RuntimeException at /tmp/private/path.php:88",
+            encoding="utf-8",
+        )
+        markers = self.write_startup_diagnostics(
+            "malicious-output.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+            "CATEGORY=WORDPRESS_BOOTSTRAP_FAILURE",
+            "FAILURE_STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+        )
+        report = analyze_junit(
+            self.work / "no-junit.xml",
+            DEFAULT_SELECTION_CONFIG,
+            1,
+            startup_diagnostics_path=markers,
+        )
+        summary = render_markdown(report)
+        annotation = build_annotation(report)
+        serialized = json.dumps(report)
+        for secret in ("secret-token", "PHI-731", "SELECT password", "/tmp/private/path.php", "RuntimeException"):
+            self.assertNotIn(secret, summary + annotation + serialized)
+        self.assertEqual(report["startup_category"], "WORDPRESS_BOOTSTRAP_FAILURE")
+
+    def test_unknown_startup_category_is_replaced_with_unknown_without_leaking_input(self) -> None:
+        malicious_category = "RuntimeException PHI ::error title=leak:: /tmp/secret.php"
+        markers = self.write_startup_diagnostics(
+            "unknown-category.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+            "CATEGORY=" + malicious_category,
+            "FAILURE_STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+        )
+        report = analyze_junit(
+            self.work / "no-junit.xml",
+            DEFAULT_SELECTION_CONFIG,
+            1,
+            startup_diagnostics_path=markers,
+        )
+        summary = render_markdown(report)
+        annotation = build_annotation(report)
+
+        self.assertEqual(report["startup_stage"], "UNKNOWN_BOOTSTRAP_STAGE")
+        self.assertEqual(report["startup_category"], "UNKNOWN_STARTUP_FAILURE")
+        self.assertNotIn(malicious_category, json.dumps(report) + summary + annotation)
+        self.assertNotIn("/tmp/secret.php", summary + annotation)
+        self.assertEqual(annotation.count("::"), 2)
+        self.assertNotIn("\n", annotation)
+
+    def test_sanitized_annotation_includes_only_safe_startup_tokens(self) -> None:
+        markers = self.write_startup_diagnostics(
+            "unsafe-marker.private",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=UNKNOWN::error title=PHI::",
+            "CATEGORY=WORDPRESS_BOOTSTRAP_FAILURE",
+            "FAILURE_STAGE=WORDPRESS_TEST_LIBRARY_BOOTSTRAP",
+        )
+        report = analyze_junit(
+            self.work / "no-junit.xml",
+            DEFAULT_SELECTION_CONFIG,
+            1,
+            startup_diagnostics_path=markers,
+        )
+        annotation = build_annotation(report)
+
+        self.assertEqual(report["startup_diagnostics_status"], "malformed")
+        self.assertEqual(report["startup_stage"], "UNKNOWN_BOOTSTRAP_STAGE")
+        self.assertEqual(report["startup_category"], "UNKNOWN_STARTUP_FAILURE")
+        self.assertTrue(annotation.startswith("::error title="))
+        self.assertEqual(annotation.count("::"), 2)
+        self.assertNotIn("PHI", annotation)
+        self.assertNotIn("\n", annotation)
+
     def test_cli_writes_summary_json_and_exactly_one_failure_annotation(self) -> None:
         exit_path = self.work / "phpunit-exit.txt"
         summary_path = self.work / "summary.md"
         json_path = self.work / "report.json"
         exit_path.write_text("255\n", encoding="utf-8")
+        startup_path = self.write_startup_diagnostics(
+            "cli-startup.private",
+            "STAGE=PHPUNIT_PROCESS_STARTED",
+            "STAGE=INTEGRATION_BOOTSTRAP_ENTRY",
+            "STAGE=WP_TEST_LIBRARY_CHECK",
+            "CATEGORY=WP_TEST_LIBRARY_MISSING",
+            "FAILURE_STAGE=WP_TEST_LIBRARY_CHECK",
+        )
         stdout = StringIO()
         with redirect_stdout(stdout):
             exit_status = main(
                 [
                     "--junit", str(self.work / "not-created.xml"),
                     "--phpunit-exit-file", str(exit_path),
+                    "--startup-diagnostics-file", str(startup_path),
                     "--summary-file", str(summary_path),
                     "--json-output", str(json_path),
                     "--check-annotation",
@@ -258,6 +503,9 @@ class MariaDbCompatReportTest(unittest.TestCase):
         summary = summary_path.read_text(encoding="utf-8")
         self.assertIn("Test cases: `UNKNOWN`", summary)
         self.assertIn("Assertions: `UNKNOWN`", summary)
+        self.assertIn("Startup stage / category", summary)
+        self.assertIn("WP_TEST_LIBRARY_CHECK", summary)
+        self.assertIn("startup_category=WP_TEST_LIBRARY_MISSING", output)
         self.assertIn("Executed expected class names: UNKNOWN", summary)
         self.assertIn("Missing expected class names: UNKNOWN", summary)
         self.assertIn("junit_missing", json.loads(json_path.read_text(encoding="utf-8"))["failure_categories"])
