@@ -52,6 +52,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         $cases = [
             [ 'active', [ 'SERVER_VERSION' => '8.4.6', 'VERSION_COMMENT' => 'MySQL Community Server - GPL' ] ],
             [ "'active'", [ 'SERVER_VERSION' => '11.4.13-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ] ],
+            [ "'active'", [ 'SERVER_VERSION' => '10.11.19-MariaDB-ubu2404', 'VERSION_COMMENT' => 'MariaDB Server' ] ],
         ];
 
         foreach ( $cases as [ $default, $server ] ) {
@@ -399,11 +400,13 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
 
     public function test_unsupported_server_identity_fails_closed(): void
     {
-        $queries = [];
-        $server  = [ 'SERVER_VERSION' => '11.4.12-MariaDB', 'VERSION_COMMENT' => 'MariaDB Server' ];
-        $db      = $this->mockedMigrationDb( $this->validStatusMetadata( 'active' ), $server, [], '1', $queries );
-        $this->assertMigrationUpRejects( $db );
-        self::assertSame( [], $queries );
+        foreach ( [ '11.4.12-MariaDB', '10.10.26-MariaDB', '10.12.1-MariaDB' ] as $version ) {
+            $queries = [];
+            $server  = [ 'SERVER_VERSION' => $version, 'VERSION_COMMENT' => 'MariaDB Server' ];
+            $db      = $this->mockedMigrationDb( $this->validStatusMetadata( 'active' ), $server, [], '1', $queries );
+            $this->assertMigrationUpRejects( $db );
+            self::assertSame( [], $queries, 'unsupported MariaDB version must fail before DDL: ' . $version );
+        }
     }
 
     public function test_expanded_enum_without_marker_retries_without_changing_rows_or_indexes(): void
@@ -449,7 +452,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             return;
         }
 
-        self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', (string) $server['SERVER_VERSION'] );
+        self::assertMatchesRegularExpression( '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13)-MariaDB/i', (string) $server['SERVER_VERSION'] );
         self::assertMatchesRegularExpression(
             "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
             (string) $column['COLUMN_TYPE']
@@ -550,7 +553,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             return;
         }
 
-        self::assertMatchesRegularExpression( '/\\A11\\.4\\.13-MariaDB/i', $server );
+        self::assertMatchesRegularExpression( '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13)-MariaDB/i', $server );
         $before = $this->statusColumn();
         $db->query( 'SET SESSION check_constraint_checks = OFF' );
         try {

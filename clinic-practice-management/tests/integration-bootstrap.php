@@ -8,31 +8,179 @@ declare(strict_types=1);
 
 use ClinicCore\Bootstrap\App;
 
+/**
+ * Optional CI-only startup markers. These write fixed allowlisted tokens only;
+ * exception text, paths, SQL, and PHP output are never copied into this file.
+ */
+if (!function_exists('cpms_mariadb_startup_diagnostic_mark')) {
+    function cpms_mariadb_startup_diagnostic_mark(string $stage): void
+    {
+        if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') !== '1') {
+            return;
+        }
+        static $allowedStages = [
+            'INTEGRATION_BOOTSTRAP_ENTRY',
+            'WP_TEST_LIBRARY_CHECK',
+            'WP_TEST_LIBRARY_FUNCTIONS_REQUIRE',
+            'WP_TEST_LIBRARY_FUNCTIONS_READY',
+            'PHPUNIT_POLYFILLS_REQUIRE',
+            'PHPUNIT_POLYFILLS_READY',
+            'WORDPRESS_TEST_LIBRARY_BOOTSTRAP',
+            'CPMS_PLUGIN_BOOTSTRAP',
+            'WORDPRESS_TEST_LIBRARY_READY',
+            'SQL_FAILURE_LEDGER_REQUIRE',
+            'SQL_FAILURE_LEDGER_READY',
+            'MIGRATION_BOOTSTRAP',
+            'MIGRATION_BOOTSTRAP_READY',
+            'BOOTSTRAP_SUPPORT_SETUP',
+            'BOOTSTRAP_COMPLETE',
+        ];
+        if (!in_array($stage, $allowedStages, true)) {
+            $stage = 'UNKNOWN_BOOTSTRAP_STAGE';
+        }
+        $GLOBALS['__cpms_mariadb_startup_stage'] = $stage;
+        $path = getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS_FILE');
+        if (!is_string($path) || !preg_match('~\A/tmp/mariadb-compat/[A-Za-z0-9._-]+\.private\z~D', $path)) {
+            return;
+        }
+        try {
+            @file_put_contents($path, 'STAGE=' . $stage . PHP_EOL, FILE_APPEND | LOCK_EX);
+        } catch (\Throwable $ignored) {
+            // Diagnostics must never change bootstrap/test behavior.
+        }
+    }
+}
+
+if (!function_exists('cpms_mariadb_startup_diagnostic_fail')) {
+    function cpms_mariadb_startup_diagnostic_fail(string $category): void
+    {
+        if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') !== '1'
+            || isset($GLOBALS['__cpms_mariadb_startup_category'])) {
+            return;
+        }
+        static $allowedCategories = [
+            'WP_TEST_LIBRARY_MISSING',
+            'PHPUNIT_CONFIG_INVALID',
+            'BOOTSTRAP_REQUIRE_FAILURE',
+            'WORDPRESS_BOOTSTRAP_FAILURE',
+            'MIGRATION_BOOTSTRAP_FAILURE',
+            'PHP_FATAL_BEFORE_TESTS',
+            'UNKNOWN_STARTUP_FAILURE',
+        ];
+        if (!in_array($category, $allowedCategories, true)) {
+            $category = 'UNKNOWN_STARTUP_FAILURE';
+        }
+        $stage = $GLOBALS['__cpms_mariadb_startup_stage'] ?? 'UNKNOWN_BOOTSTRAP_STAGE';
+        $GLOBALS['__cpms_mariadb_startup_category'] = $category;
+        $path = getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS_FILE');
+        if (!is_string($path) || !preg_match('~\A/tmp/mariadb-compat/[A-Za-z0-9._-]+\.private\z~D', $path)) {
+            return;
+        }
+        try {
+            @file_put_contents(
+                $path,
+                'CATEGORY=' . $category . PHP_EOL . 'FAILURE_STAGE=' . $stage . PHP_EOL,
+                FILE_APPEND | LOCK_EX
+            );
+        } catch (\Throwable $ignored) {
+            // Diagnostics must never change bootstrap/test behavior.
+        }
+    }
+}
+
+if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') === '1') {
+    $GLOBALS['__cpms_mariadb_bootstrap_complete'] = false;
+}
+cpms_mariadb_startup_diagnostic_mark('INTEGRATION_BOOTSTRAP_ENTRY');
+if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') === '1') {
+    register_shutdown_function(static function (): void {
+        if (!empty($GLOBALS['__cpms_mariadb_startup_category'])) {
+            return;
+        }
+        $stage = $GLOBALS['__cpms_mariadb_startup_stage'] ?? 'INTEGRATION_BOOTSTRAP_ENTRY';
+        $lastError = error_get_last();
+        $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR, E_RECOVERABLE_ERROR];
+        if (!empty($GLOBALS['__cpms_mariadb_bootstrap_complete'])) {
+            if (is_array($lastError) && in_array($lastError['type'] ?? null, $fatalTypes, true)) {
+                cpms_mariadb_startup_diagnostic_fail('UNKNOWN_STARTUP_FAILURE');
+            }
+            return;
+        }
+        if (is_array($lastError) && in_array($lastError['type'] ?? null, $fatalTypes, true)) {
+            cpms_mariadb_startup_diagnostic_fail('PHP_FATAL_BEFORE_TESTS');
+            return;
+        }
+        $categoryByStage = [
+            'WP_TEST_LIBRARY_CHECK' => 'WP_TEST_LIBRARY_MISSING',
+            'WP_TEST_LIBRARY_FUNCTIONS_REQUIRE' => 'BOOTSTRAP_REQUIRE_FAILURE',
+            'PHPUNIT_POLYFILLS_REQUIRE' => 'BOOTSTRAP_REQUIRE_FAILURE',
+            'WORDPRESS_TEST_LIBRARY_BOOTSTRAP' => 'WORDPRESS_BOOTSTRAP_FAILURE',
+            'CPMS_PLUGIN_BOOTSTRAP' => 'BOOTSTRAP_REQUIRE_FAILURE',
+            'SQL_FAILURE_LEDGER_REQUIRE' => 'BOOTSTRAP_REQUIRE_FAILURE',
+            'MIGRATION_BOOTSTRAP' => 'MIGRATION_BOOTSTRAP_FAILURE',
+            'BOOTSTRAP_SUPPORT_SETUP' => 'BOOTSTRAP_REQUIRE_FAILURE',
+        ];
+        cpms_mariadb_startup_diagnostic_fail(
+            $categoryByStage[$stage] ?? 'UNKNOWN_STARTUP_FAILURE'
+        );
+    });
+}
+
 $_tests_dir = getenv('WP_TESTS_DIR') ?: '/tmp/wp-tests';
+cpms_mariadb_startup_diagnostic_mark('WP_TEST_LIBRARY_CHECK');
 
 if (!is_file($_tests_dir . '/includes/functions.php')) {
-    fwrite(STDERR, "WP test suite not found in {$_tests_dir}\n");
+    cpms_mariadb_startup_diagnostic_fail('WP_TEST_LIBRARY_MISSING');
+    fwrite(STDERR, "WP test suite not found.\n");
     exit(1);
 }
 
-require_once $_tests_dir . '/includes/functions.php';
+cpms_mariadb_startup_diagnostic_mark('WP_TEST_LIBRARY_FUNCTIONS_REQUIRE');
+try {
+    require_once $_tests_dir . '/includes/functions.php';
+} catch (\Throwable $error) {
+    cpms_mariadb_startup_diagnostic_fail('BOOTSTRAP_REQUIRE_FAILURE');
+    throw $error;
+}
+cpms_mariadb_startup_diagnostic_mark('WP_TEST_LIBRARY_FUNCTIONS_READY');
 
 // PHPUnit Polyfills — الزام WP Test Library (از 6.7_TestCase از طریق Adapter
 // به polyfills وابسته است و PHPUnit 10/11 را پشتیبانی می‌کند).
-$_polyfills = dirname(__DIR__) . '/vendor/yoast/phpunit-polyfills/phpunitpolyfills-autoload.php';
-if (is_file($_polyfills)) {
-    require_once $_polyfills;
-} elseif (!defined('WP_TESTS_PHPUNIT_POLYFILLS_PATH')) {
-    // مسیر صریح برای وقتی vendor جای دیگری نصب شده است
-    define('WP_TESTS_PHPUNIT_POLYFILLS_PATH', dirname(__DIR__) . '/vendor/yoast/phpunit-polyfills');
+cpms_mariadb_startup_diagnostic_mark('PHPUNIT_POLYFILLS_REQUIRE');
+try {
+    $_polyfills = dirname(__DIR__) . '/vendor/yoast/phpunit-polyfills/phpunitpolyfills-autoload.php';
+    if (is_file($_polyfills)) {
+        require_once $_polyfills;
+    } elseif (!defined('WP_TESTS_PHPUNIT_POLYFILLS_PATH')) {
+        // مسیر صریح برای وقتی vendor جای دیگری نصب شده است
+        define('WP_TESTS_PHPUNIT_POLYFILLS_PATH', dirname(__DIR__) . '/vendor/yoast/phpunit-polyfills');
+    }
+    unset($_polyfills);
+} catch (\Throwable $error) {
+    cpms_mariadb_startup_diagnostic_fail('BOOTSTRAP_REQUIRE_FAILURE');
+    throw $error;
 }
-unset($_polyfills);
+cpms_mariadb_startup_diagnostic_mark('PHPUNIT_POLYFILLS_READY');
 
-tests_add_filter('muplugins_loaded', static function (): void {
-    require dirname(__DIR__) . '/clinic-practice-management.php';
-});
+cpms_mariadb_startup_diagnostic_mark('WORDPRESS_TEST_LIBRARY_BOOTSTRAP');
+try {
+    tests_add_filter('muplugins_loaded', static function (): void {
+        cpms_mariadb_startup_diagnostic_mark('CPMS_PLUGIN_BOOTSTRAP');
+        try {
+            require dirname(__DIR__) . '/clinic-practice-management.php';
+        } catch (\Throwable $error) {
+            cpms_mariadb_startup_diagnostic_fail('BOOTSTRAP_REQUIRE_FAILURE');
+            throw $error;
+        }
+        cpms_mariadb_startup_diagnostic_mark('WORDPRESS_TEST_LIBRARY_BOOTSTRAP');
+    });
 
-require $_tests_dir . '/includes/bootstrap.php';
+    require $_tests_dir . '/includes/bootstrap.php';
+} catch (\Throwable $error) {
+    cpms_mariadb_startup_diagnostic_fail('WORDPRESS_BOOTSTRAP_FAILURE');
+    throw $error;
+}
+cpms_mariadb_startup_diagnostic_mark('WORDPRESS_TEST_LIBRARY_READY');
 
 /*
  * ── دفترِ تشخیصیِ خطاهای SQL (فقط تست؛ هیچ اثرِ محصولی) ──────────────────────
@@ -45,8 +193,15 @@ require $_tests_dir . '/includes/bootstrap.php';
  * خطای واقعی را در لاگ CI دید. این کلاس هیچ انتظار تست، SQL، اسکیما، مجوزدهی یا
  * رفتار محصولی را تغییر نمی‌دهد؛ فقط می‌خواند و به STDERR می‌نویسد.
  */
-require_once __DIR__ . '/Support/WpSqlFailureLedger.php';
-\ClinicCore\Tests\Support\WpSqlFailureLedger::register();
+cpms_mariadb_startup_diagnostic_mark('SQL_FAILURE_LEDGER_REQUIRE');
+try {
+    require_once __DIR__ . '/Support/WpSqlFailureLedger.php';
+    \ClinicCore\Tests\Support\WpSqlFailureLedger::register();
+} catch (\Throwable $error) {
+    cpms_mariadb_startup_diagnostic_fail('BOOTSTRAP_REQUIRE_FAILURE');
+    throw $error;
+}
+cpms_mariadb_startup_diagnostic_mark('SQL_FAILURE_LEDGER_READY');
 
 /*
  * جداول افزونه را یک‌بار «واقعی» می‌سازیم — بعد از bootstrap وردپرس.
@@ -61,7 +216,14 @@ require_once __DIR__ . '/Support/WpSqlFailureLedger.php';
  * تبدیل می‌شود و ایزوله‌سازی داده همچنان از طریق rollback تراکنش هر تست
  * برقرار است (الگوی استاندارد تست Integration افزونه‌های WP).
  */
-App::migrations()->migrate();
+cpms_mariadb_startup_diagnostic_mark('MIGRATION_BOOTSTRAP');
+try {
+    App::migrations()->migrate();
+} catch (\Throwable $error) {
+    cpms_mariadb_startup_diagnostic_fail('MIGRATION_BOOTSTRAP_FAILURE');
+    throw $error;
+}
+cpms_mariadb_startup_diagnostic_mark('MIGRATION_BOOTSTRAP_READY');
 
 /*
  * بازنویسی تراکنش‌های Service به SAVEPOINT (الگوی خود WP برای CREATE TABLE):
@@ -72,6 +234,7 @@ App::migrations()->migrate();
  * نشانگر cpms را به SAVEPOINT/RELEASE/ROLLBACK-TO تبدیل می‌کند — تراکنش بیرونی
  * تست دست‌نخورده می‌ماند و Production این filter را ندارد.
  */
+cpms_mariadb_startup_diagnostic_mark('BOOTSTRAP_SUPPORT_SETUP');
 $GLOBALS['__cpms_sp_stack'] = [];
 $GLOBALS['__cpms_ddl_seen_since_start'] = false;
 tests_add_filter(
@@ -211,4 +374,9 @@ if (!function_exists('cpms_test_seed_membership')) {
 
         return $service->create_membership($clinicId, $userId, $roleKey);
     }
+}
+
+cpms_mariadb_startup_diagnostic_mark('BOOTSTRAP_COMPLETE');
+if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') === '1') {
+    $GLOBALS['__cpms_mariadb_bootstrap_complete'] = true;
 }

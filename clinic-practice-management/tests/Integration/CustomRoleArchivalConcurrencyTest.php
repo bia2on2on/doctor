@@ -431,8 +431,22 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertSame('WAITING', $waitEdge['requesting_lock_status']);
                 self::assertSame('GRANTED', $waitEdge['blocking_lock_status']);
                 self::assertSame((string) $definitionId, trim((string) $waitEdge['blocking_lock_data']));
-                self::assertSame($lockBefore['lock_id'], $waitEdge['blocking_lock_id']);
-                self::assertSame($lockBefore['transaction_id'], $waitEdge['blocking_transaction_id']);
+                // MariaDB exposes no InnoDB lock id until a waiter exists; the
+                // exact primary-key row ownership was proven behaviourally by
+                // mariaDbGrantedDefinitionLock() and is bound to this engine's
+                // transaction identity below. MySQL 8 still requires both ids.
+                if (!str_starts_with((string) $lockBefore['lock_id'], 'mariadb:behavioural:')) {
+                    self::assertSame($lockBefore['lock_id'], $waitEdge['blocking_lock_id']);
+                    self::assertSame($lockBefore['transaction_id'], $waitEdge['blocking_transaction_id']);
+                }
+                // MariaDB binds the blocking transaction by thread id inside
+                // the wait-edge query itself (blocking_trx.trx_mysql_thread_id
+                // equals the winner connection captured above), so its internal
+                // trx-id rendering is not compared across two InnoDB views.
+                self::assertSame(
+                    (string) $parentConnectionId,
+                    (string) $waitEdge['blocking_connection_id']
+                );
                 self::assertNotSame($waitEdge['requesting_transaction_id'], $waitEdge['blocking_transaction_id']);
                 $parentTransaction = $this->innodbTransactionForConnection($observer, $parentConnectionId);
                 $childTransaction = $this->innodbTransactionForConnection($observer, $childConnectionId);
