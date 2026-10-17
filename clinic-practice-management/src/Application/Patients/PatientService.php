@@ -7,11 +7,13 @@ namespace ClinicCore\Application\Patients;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Licensing\LicenseGate;
+use ClinicCore\Domain\Patients\PatientIdentityException;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Domain\Validators\NationalIdValidator;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
+use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
 
 /**
@@ -57,13 +59,35 @@ final class PatientService
         'medication_allergies', 'other_allergies', 'chronic_conditions', 'current_medications',
     ];
 
+    /**
+     * فعال‌سازی هویتِ سازمانی در مسیرِ ساختِ بیمار. اختیاری‌بودنِ پارامتر فقط
+     * برای حفظِ سازگاریِ call-siteهای موجود است؛ در نبودِ آن یک نمونهٔ
+     * پیش‌فرضِ scope-neutral از همان اتصالِ DB ساخته می‌شود (هرگز غیرفعال
+     * نمی‌شود — فعال‌سازی هویت اختیاری نیست).
+     */
+    private readonly PatientIdentityActivator $identities;
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly PatientRepository $patients,
         private readonly LicenseGate $licenseGate,
         private readonly AuditLogger $audit,
-        private readonly OpLogger $op
+        private readonly OpLogger $op,
+        ?PatientIdentityActivator $identities = null
     ) {
+        $this->identities = $identities ?? self::default_identity_activator( $db );
+    }
+
+    /**
+     * سازندهٔ پیش‌فرضِ فعال‌سازِ هویت — بدون وابستگی به Scope/Settings.
+     */
+    public static function default_identity_activator( CpmsDb $db ): PatientIdentityActivator {
+        $repository = new PatientIdentityRepository( $db );
+
+        return new PatientIdentityActivator(
+            $repository,
+            new PatientIdentityService( $db, $repository )
+        );
     }
 
     // ================= C0/C1 — Me =================
@@ -266,14 +290,30 @@ final class PatientService
 
         $this->assert_unique_national_id( (int) $data['clinic_id'], isset( $data['national_id'] ) ? (string) $data['national_id'] : null );
 
-        $id = $this->patients->create($data);
-        if ( $this->db->wpdb()->last_error !== '' || $id <= 0 ) {
-            // Map the known same-Clinic national-ID uniqueness collision to a
-            // bounded product error. Unrelated SQL failures stay internal.
-            $this->assert_unique_national_id( (int) $data['clinic_id'], isset( $data['national_id'] ) ? (string) $data['national_id'] : null );
-            throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
-        }
-        $row = (array) $this->patients->find($id);
+        // Organization Patient Identity activation: the clinical row and its
+        // organization identity are one atomic unit. A failed activation rolls
+        // the patient insert back — no clinical record is ever left without an
+        // organization identity on this path (fail-closed).
+        $clinic_id = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $id        = $this->db->transactional(
+            function () use ( $data, $clinic_id, $mobile ): int {
+                $id = $this->patients->create( $data );
+                if ( $this->db->wpdb()->last_error !== '' || $id <= 0 ) {
+                    // Map the known same-Clinic national-ID uniqueness collision to a
+                    // bounded product error. Unrelated SQL failures stay internal.
+                    $this->assert_unique_national_id( (int) $data['clinic_id'], isset( $data['national_id'] ) ? (string) $data['national_id'] : null );
+                    throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+                }
+
+                // Clinic comes from the server-side trusted scope, never from the
+                // request body; `identity_id` is not a writable create field, so no
+                // caller can choose or inject the identity.
+                $this->activate_identity( $clinic_id, $id, $mobile );
+
+                return $id;
+            }
+        );
+        $row       = (array) $this->patients->find( $id );
 
         $this->audit->log(
             'PATIENT_CREATED',
@@ -333,6 +373,31 @@ final class PatientService
 
     private function linked_patient_not_found(): BookingException {
         return new BookingException( 'CLINIC_NOT_FOUND', 'بیماری به این حساب متصل نیست', 404 );
+    }
+
+    /**
+     * فعال‌سازی هویتِ سازمانی برای رکوردِ تازه — هیچ استنتاجی از موبایل/کد
+     * ملی/نام انجام نمی‌شود؛ مسیرِ کارکنی هیچ «کاربرِ تأییدشده»ای ندارد، پس
+     * همیشه هویتِ تازه ساخته می‌شود.
+     *
+     * خطاهای حوزهٔ هویت به یک خطای محصولِ کراندار نگاشت می‌شوند تا جزئیات
+     * داخلی افشا نشود؛ خودِ throw باعثِ rollbackِ تراکنشِ ساخت می‌شود.
+     */
+    private function activate_identity( int $clinic_id, int $patient_id, string $mobile ): void {
+        try {
+            $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile );
+        } catch ( PatientIdentityException $e ) {
+            $this->op->error(
+                'patient.identity_activation_failed',
+                [
+                    'patient_id' => $patient_id,
+                    'clinic_id'  => $clinic_id,
+                    'error_code' => $e->error_code,
+                ]
+            );
+
+            throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+        }
     }
 
     private function assertLicense(string $operation): void

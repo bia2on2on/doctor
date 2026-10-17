@@ -38,6 +38,7 @@ use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Location\LocationService;
 use ClinicCore\Application\Membership\MembershipService;
+use ClinicCore\Application\Patients\PatientIdentityActivator;
 use ClinicCore\Application\Patients\PatientIdentityService;
 use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Jobs\ApptReminderHandler;
@@ -568,7 +569,8 @@ final class App
                 self::idem(),
                 self::smsService(),
                 self::notificationService(),
-                new MembershipRepository($db)
+                new MembershipRepository( $db ),
+                self::patient_identity_activator()
             );
         }
 
@@ -807,6 +809,24 @@ final class App
         return $service;
     }
 
+    /**
+     * فعال‌سازِ هویتِ سازمانیِ بیمار در مسیرهای ساختِ بیمار (Phase 2 — AD-14).
+     *
+     * scope-neutral: هیچ Clinic/Settingsِ محیطی در زمانِ ساخت حل نمی‌شود؛
+     * Clinic همیشه از عملیاتِ فراخوان می‌آید.
+     */
+    public static function patient_identity_activator(): PatientIdentityActivator {
+        static $activator = null;
+        if ( $activator === null ) {
+            $activator = new PatientIdentityActivator(
+                new PatientIdentityRepository( self::db() ),
+                self::patient_identity_service()
+            );
+        }
+
+        return $activator;
+    }
+
     public static function clinicalService(): ClinicalService
     {
         static $clinical = null;
@@ -1031,7 +1051,8 @@ final class App
                 // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
                 self::licenseGate(),
                 self::audit(),
-                self::op()
+                self::op(),
+                self::patient_identity_activator()
             );
         }
 

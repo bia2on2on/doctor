@@ -146,6 +146,24 @@ final class PatientIdentityRepository {
     }
 
     /**
+     * اتصالِ **شرطی**: فقط وقتی رکورد هنوز به هیچ هویتی متصل نیست.
+     *
+     * محافظِ هم‌زمانی/بازنویسی: دو مسیرِ هم‌زمان نمی‌توانند `identity_id`
+     * یکدیگر را پاک/جایگزین کنند — بازنده صفر می‌گیرد و باید خودش تصمیم
+     * fail-closed بگیرد. برخلاف `set_patient_identity()` که برای linkingِ
+     * صریحِ اعتبارسنجی‌شده است، این متد هیچ‌وقت لینکِ موجود را لمس نمی‌کند.
+     *
+     * @return int تعداد سطرهای اثرگرفته (۱ = برنده، ۰ = از قبل متصل/ناموجود).
+     */
+    public function set_patient_identity_if_unlinked( int $patient_id, int $identity_id ): int {
+        return $this->db->execute(
+            'UPDATE ' . $this->db->table( 'cpms_patients' ) .
+            ' SET identity_id = %d WHERE id = %d AND identity_id IS NULL',
+            [ $identity_id, $patient_id ]
+        );
+    }
+
+    /**
      * رکوردهای بالینیِ یک هویت در «یک» Clinic — ایزوله از Clinicهای دیگر.
      *
      * @return list<array<string, mixed>>
