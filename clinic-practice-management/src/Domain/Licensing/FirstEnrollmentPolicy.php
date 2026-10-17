@@ -13,8 +13,7 @@ namespace ClinicCore\Domain\Licensing;
  * endpoint remains the only authority and re-evaluates the same policy inside
  * its transaction. No state, history, T0 or Clinic record is returned here.
  */
-final class FirstEnrollmentPolicy
-{
+final class FirstEnrollmentPolicy {
     /**
      * True exactly when SignedLicenseGate treats the license as an ordinary
      * expiration at $now (signed T0 reached). Grace/skew never moves T0.

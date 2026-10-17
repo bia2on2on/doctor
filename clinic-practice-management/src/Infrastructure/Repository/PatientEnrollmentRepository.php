@@ -13,8 +13,7 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  * the resulting Clinic set. No method accepts a Clinic chosen by the browser,
  * reads a foreign clinical row, or returns patient/identity/encounter data.
  */
-final class PatientEnrollmentRepository
-{
+final class PatientEnrollmentRepository {
     public function __construct( private readonly CpmsDb $db ) {
     }
 
@@ -44,8 +43,8 @@ final class PatientEnrollmentRepository
                 continue; // Zero proof is not verified; ambiguity never becomes a fallback.
             }
             $verified[] = [
-                'organization_id' => (int) $row['organization_id'],
-                'identity_id' => (int) $row['identity_id'],
+                'organization_id'     => (int) $row['organization_id'],
+                'identity_id'         => (int) $row['identity_id'],
                 'organization_status' => (string) $row['organization_status'],
             ];
         }
@@ -80,7 +79,7 @@ final class PatientEnrollmentRepository
         $clinics = [];
         foreach ( $rows as $row ) {
             $clinics[] = [
-                'id' => (int) $row['id'],
+                'id'   => (int) $row['id'],
                 'name' => (string) $row['name'],
             ];
         }
@@ -116,7 +115,7 @@ final class PatientEnrollmentRepository
             . ' AND previous_clinic.organization_id = identity_row.organization_id' .
             ' INNER JOIN ' . $this->db->table( 'cpms_visits' ) . ' encounter' .
             ' ON encounter.patient_id = previous_patient.id AND encounter.clinic_id = previous_clinic.id' .
-            " WHERE verified_link.wp_user_id = %d AND verified_link.identity_id = %d" .
+            ' WHERE verified_link.wp_user_id = %d AND verified_link.identity_id = %d' .
             ' AND verified_link.organization_id = %d' .
             " AND encounter.status IN ('consultation_completed', 'awaiting_payment', 'paid', 'checked_out')" .
             ' AND encounter.consultation_completed_at IS NOT NULL' .

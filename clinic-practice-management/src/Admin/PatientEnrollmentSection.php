@@ -18,20 +18,19 @@ use ClinicCore\Application\Patients\PatientEnrollmentOptions;
  * this section. The one-month new-patient reception-only policy is represented
  * by *not* offering online creation to unverified subjects.
  */
-final class PatientEnrollmentSection
-{
+final class PatientEnrollmentSection {
     /**
      * @param array{state:string, clinics:list<array{id:int, name:string}>} $options
      */
     public static function render( array $options ): string {
-        $state = (string) ( $options['state'] ?? PatientEnrollmentOptions::STATE_UNAVAILABLE );
+        $state   = (string) ( $options['state'] ?? PatientEnrollmentOptions::STATE_UNAVAILABLE );
         $clinics = self::sanitize_clinics( $options['clinics'] ?? [] );
 
         if ( $state === PatientEnrollmentOptions::STATE_ELIGIBLE && $clinics === [] ) {
             $state = PatientEnrollmentOptions::STATE_UNAVAILABLE;
         }
 
-        $html = '<section class="cpms-pp-section cpms-pp-enrollment" id="enrollment"'
+        $html  = '<section class="cpms-pp-section cpms-pp-enrollment" id="enrollment"'
             . ' data-role="enrollment-section" data-state="' . esc_attr( $state ) . '"'
             . ' dir="rtl" aria-labelledby="cpms-pp-enrollment-heading">';
         $html .= '<h1 id="cpms-pp-enrollment-heading">ثبت پرونده در مرکز دیگر</h1>';
@@ -100,7 +99,7 @@ final class PatientEnrollmentSection
             . 'بسازید. فقط مراکز مجاز همین حساب نمایش داده می‌شود و هیچ '
             . 'مرکزی به‌صورت خودکار انتخاب نمی‌شود.';
 
-        $html = '<p class="description">' . esc_html( $intro ) . '</p>';
+        $html  = '<p class="description">' . esc_html( $intro ) . '</p>';
         $html .= '<form class="cpms-pp-enrollment__form"'
             . ' data-role="patient-enrollment-form" method="post" novalidate'
             . ' aria-describedby="cpms-pp-enrollment-policy">';
@@ -225,7 +224,7 @@ final class PatientEnrollmentSection
             if ( ! is_array( $clinic ) ) {
                 continue;
             }
-            $id = (int) ( $clinic['id'] ?? 0 );
+            $id   = (int) ( $clinic['id'] ?? 0 );
             $name = trim( (string) ( $clinic['name'] ?? '' ) );
             if ( $id <= 0 || $name === '' || isset( $out[ $id ] ) ) {
                 continue;

@@ -1069,12 +1069,11 @@ final class App
      * grants authority and never accepts a Clinic id. The existing
      * `POST /clinic/v1/patient/enroll` remains the sole authority.
      */
-    public static function patient_enrollment_options(): PatientEnrollmentOptions
-    {
+    public static function patient_enrollment_options(): PatientEnrollmentOptions {
         static $options = null;
-        if ($options === null) {
+        if ( $options === null ) {
             $options = new PatientEnrollmentOptions(
-                new PatientEnrollmentRepository(self::db()),
+                new PatientEnrollmentRepository( self::db() ),
                 self::licenseService()
             );
         }

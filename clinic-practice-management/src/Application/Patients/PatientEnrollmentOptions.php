@@ -25,12 +25,11 @@ use Closure;
  *  - An ineligible subject is not told why: no cross-Clinic history, no T0 and
  *    no "you visited Clinic X" signal is exposed.
  */
-final class PatientEnrollmentOptions
-{
-    public const STATE_ELIGIBLE = 'eligible';
-    public const STATE_UNVERIFIED = 'unverified';
+final class PatientEnrollmentOptions {
+    public const STATE_ELIGIBLE       = 'eligible';
+    public const STATE_UNVERIFIED     = 'unverified';
     public const STATE_NO_DESTINATION = 'no_destination';
-    public const STATE_UNAVAILABLE = 'unavailable';
+    public const STATE_UNAVAILABLE    = 'unavailable';
 
     /** @var Closure():int */
     private readonly Closure $clock;
@@ -56,17 +55,17 @@ final class PatientEnrollmentOptions
             return self::view( self::STATE_UNVERIFIED );
         }
 
-        $license = $this->license->currentState();
-        $status = (string) ( $license['status'] ?? '' );
-        $reason = (string) ( $license['reason'] ?? '' );
+        $license    = $this->license->currentState();
+        $status     = (string) ( $license['status'] ?? '' );
+        $reason     = (string) ( $license['reason'] ?? '' );
         $expires_at = isset( $license['expires_at'] ) && is_numeric( $license['expires_at'] )
             ? (int) $license['expires_at']
             : null;
-        $now = ( $this->clock )();
+        $now        = ( $this->clock )();
 
-        $clinics = [];
+        $clinics                 = [];
         $saw_active_organization = false;
-        $saw_destination = false;
+        $saw_destination         = false;
 
         foreach ( $verified as $identity ) {
             if ( $identity['organization_status'] !== 'active' ) {
