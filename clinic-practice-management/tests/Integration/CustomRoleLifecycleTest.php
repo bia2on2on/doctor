@@ -620,7 +620,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     // most one allowlisted late token from the child. It separates
                     // "child blocked by MariaDB but unobservable" from "child
                     // acquired or failed past the lock". Only exact tokens pass.
-                    $lateLine = $this->readRaceLine($parentPipe, 25.0);
+                    $lateLine = $this->readRaceLine($parentPipe, 25);
                     if (!is_string($lateLine)) {
                         $late = 'none';
                     } elseif (preg_match('/^RESULT:(assigned|denied:[A-Z_]+)$/', $lateLine, $match) === 1) {
