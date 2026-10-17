@@ -503,6 +503,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                                 // Keep an unexpected success reversible; the production
                                 // service itself still owns its atomic savepoint/audit path.
                                 $db2->transactional(function () use (
+                                    $db2,
                                     $assignmentService,
                                     $managerId,
                                     $clinicId,
