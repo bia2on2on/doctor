@@ -823,3 +823,12 @@ extracted `run:` blocks.
 - Corrections driven by real failures, not test weakening: `gmdate()` has no timezone suffix in its output; WPCS requires same-line class braces and aligned assignment/array arrows; the existing portal-cancel browser contract needed the two non-authority config keys (`enroll_path`, `login_url`) added to its allowlist; the shell needed the `#enrollment` navigation item; CSS needed an explicit `[hidden]` rule because the author `display` rule overrode the UA hidden rule; the fetch chain needed a rejection handler.
 - Final documentation-only change in this entry's commit: move the permission-matrix UI note below the patient table (it had split the markdown table). No production behavior changed by that commit.
 - Still Draft/unmerged. Independent security/product acceptance remains required.
+
+## 2026-10-18 — Organization Manager provisioning first slice
+
+- Verified origin/main remains `f4ee9c926e557934f625eccf1e5254afea8b8aff`; started on authorized Arena branch with clean tree. Read repository guide, ADR-0031, permission matrix, migrations, existing scoped authorization, audit chain, setup wizard, and the existing first-practice setup contract.
+- Owner approved explicit Organization memberships and DENY semantics. Added forward migration 0028, an Organization-scoped Clinic provisioning service, Classic admin page/wizard entry link, and an integration test. No legacy users are auto-promoted.
+- Security limitation: current data contains no trusted ownership evidence that can establish an initial Organization Manager. Bootstrap stays closed rather than using `manage_options`, Clinic Manager, or a self-asserted claim. This means no current installation can provision until authorized membership is established by a trusted process. Grant/revoke domain path is implemented for an already-authorized manager; no accessible first-manager ceremony is claimed.
+- Validation pending at log entry; see PR/test report for actual commands and outcomes.
+
+- Local validation: `git diff --check` PASS; `bin/tenant-tripwire.py` PASS (reported only six pre-existing comment/documentation notices). `bin/authorization-coverage-guard.py` was invoked without its required CI artifact arguments and exited 2 (not a valid guard run). PHP/PHPUnit/Composer are absent in this environment (`php: command not found`), so PHP lint, unit, integration, database concurrency, and rollback tests could not be executed locally. Do not interpret test source as passing evidence.

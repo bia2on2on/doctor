@@ -47,12 +47,13 @@ final class AuditLogger
         ?array $before,
         ?array $after,
         array $meta = [],
-        ?int $clinicId = null
+        ?int $clinicId = null,
+        bool $suppressScopeFallback = false
     ): int {
         // C6 (AD-13): کلینیک صریحِ event یا Scope فعالِ درخواست؛ اگر Scope
         // مبهم/ناموجود بود (event واقعاً سیستمی) NULL ثبت می‌شود — ستون از
         // 0016 nullable است؛ NULL = سیستمی، نه «1».
-        if ($clinicId === null) {
+        if ($clinicId === null && ! $suppressScopeFallback) {
             try {
                 $clinicId = App::scope()->clinicId;
             } catch (ScopeRequiredException) {

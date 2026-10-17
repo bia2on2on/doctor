@@ -238,3 +238,16 @@ schema یا کد جدیدی را ایجاد یا مجاز نمی‌کند؛ صر
 | `docs/architecture/phase0.5-target-model.md` | مدل هدف، ERD، برنامهٔ Migration (M-01..M-15)، Decision Register (Q1..Q13) |
 | `docs/drift-register.md` | فهرست اسنادی که هنوز مدل قدیمی را بیان می‌کنند، با فاز مالک هر مورد |
 | `docs/roadmap/roadmap.md` §۰ | Roadmap تأییدشدهٔ Owner (Phase 0..20) |
+
+## Organization authority extension — approved 2026-10-18
+
+The Organization → Clinic → Location hierarchy remains unchanged. An additional **Organization-management** authority layer is approved for the narrow purpose of organization administration and Clinic provisioning; it does not replace or broaden Clinic-scoped authorization.
+
+- Organization authority originates only from a durable, explicit `cpms_organization_memberships` row for the exact Organization and WP user. WordPress Administrator, Clinic Manager, and membership in another Clinic are not evidence of Organization authority.
+- Organization membership capability overrides use `cpms_organization_membership_capabilities`, with explicit **DENY > explicit GRANT > Organization Manager preset > deny**. `cpms_org_clinic_create` and `cpms_org_membership_manage` are distinct authority names. The active Organization status and the exact Organization membership are checked server-side on each mutation.
+- Organization Manager can create Clinics only beneath that Organization and a primary Location is created atomically. This authority confers **no Clinic membership, Location assignment, PHI access, or clinical/financial capability**. Existing `AuthorizationService` semantics remain authoritative for Clinic-scoped operations, including explicit Clinic DENY precedence.
+- Organization Manager grant/revoke is Organization-scoped and audited. Removing/suspending the final active Organization Manager is prohibited under the Organization row lock.
+- No migration silently promotes legacy users. The Organization bootstrap owner path remains closed until a trusted, verifiable ownership proof and secure ceremony are available. `manage_options` or the first-practice setup confirmation is not such proof. Existing installations therefore gain no Organization Manager by upgrade, and provisioning stays unavailable until an authorized membership is established through a separately verified trusted process.
+- Provisioning uses an Organization row lock, uniqueness constraints, transaction, a primary Location, and required hash-chain audit. Any failure must roll back the Clinic/Location/audit mutation.
+
+This is a deliberately narrow first slice, not an organization-wide clinical context or cross-Clinic data access mechanism. It does not claim the setup wizard can yet adaptively complete all facility-specific onboarding.

@@ -1046,7 +1046,7 @@ final class CpmsSetupWizard
                 <div class="notice notice-warning inline" data-cpms-inpatient-unsupported="1"><p>بخش بستری و سامانهٔ جامع بیمارستانی پشتیبانی نمی‌شود؛ این راه‌اندازی فقط درمانگاه‌ها و فرایندهای سرپایی را پوشش می‌دهد.</p></div>
             <?php endif; ?>
             <?php if ( $flow === 'medical_building' ) : ?>
-                <div class="notice notice-warning inline" data-cpms-multi-clinic-blocked="1"><p>ساخت چند درمانگاه مستقل با اختیار مدیر وردپرس انجام نمی‌شود؛ برای هر مطب مستقل، مدیریت و محدودهٔ بالینی و مالی جداگانه لازم است و این بخش تا زمان تصویب مدل اختیار سازمانی فعال نیست. راه‌اندازی تک‌مطب از مسیر امن موجود انجام می‌شود.</p></div>
+                <div class="notice notice-info inline" data-cpms-multi-clinic-blocked="1"><p>ایجاد درمانگاه مستقل فقط با عضویت صریح مدیر سازمان و در محدودهٔ همان سازمان مجاز است؛ این اختیار دسترسی بالینی یا مالی ایجاد نمی‌کند. ایجاد درمانگاه: <a href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-organizations' ) ); ?>">مدیریت سازمان و درمانگاه‌ها</a>. گام‌های تطبیقی درمانگاه‌های جدید در این ویزارد هنوز پیاده‌سازی نشده‌اند.</p></div>
             <?php endif; ?>
         </div>
         <?php
@@ -1413,7 +1413,7 @@ final class CpmsSetupWizard
         $facility_selected = self::selected_facility_type() !== '' || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
         if ( $facility_selected ) {
             if ( ! FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() ) ) {
-                return 'پیش‌نیازهای الزامی برآورده نشده است: ساخت چند درمانگاه مستقل بدون مدل اختیار سازمانیِ مصوب انجام نمی‌شود و راه‌اندازی چنددرمانگاهی در این نصب فعال نیست.';
+                return 'این مرحلهٔ ویزارد هنوز درمانگاه‌های مستقل را به‌صورت تطبیقی راه‌اندازی نمی‌کند. مدیر سازمانِ دارای عضویت صریح می‌تواند درمانگاه را از صفحهٔ «سازمان‌ها و درمانگاه‌ها» ایجاد کند؛ برای ادامهٔ پیکربندی هر درمانگاه، انتخاب صریح محدوده لازم است.';
             }
             $missing = self::missing_required_steps( $settings );
             if ( $missing !== [] ) {

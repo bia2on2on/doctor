@@ -286,3 +286,9 @@
 - **بدون دسترسی پیش‌فرض پزشکی:** واگذاری هیچ Capability بالینی/پرونده/یادداشت خصوصی/Export/Audit نمی‌سازد.
 - **بدون مهاجرت:** واگذاری روی همان جدول موجود `cpms_membership_capabilities` انجام می‌شود.
 - **بدون Cap جدید:** مجموعهٔ ۴۶ Capability و فهرست §2 تغییر نمی‌کند.
+
+## Organization-scoped authority extension (approved 2026-10-18)
+
+Organization provisioning is deliberately separate from the historical Clinic permission matrix. A durable active Organization membership with `role_key=organization_manager` is required for the exact Organization; neither WordPress Administrator nor Clinic Manager is sufficient. Organization overrides are `cpms_org_clinic_create` and `cpms_org_membership_manage`; explicit Organization DENY overrides grants/preset. These capabilities do not imply Clinic membership or any clinical, financial, PHI, or Location access. Clinic-scoped authorization and DENY precedence remain governed by ADR-0031 `AuthorizationService`.
+
+No migration promotes legacy users. Initial Organization ownership remains unavailable until trusted verifiable ownership evidence and a secure bootstrap ceremony are provided; thus current legacy installations do not acquire an Organization Manager automatically.

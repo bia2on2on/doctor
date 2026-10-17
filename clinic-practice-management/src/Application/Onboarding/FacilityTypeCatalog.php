@@ -9,8 +9,9 @@ namespace ClinicCore\Application\Onboarding;
  *
  * A facility type is ONLY a presentation/configuration choice: it never
  * grants authorization, never defines a tenant boundary, and never creates
- * Clinics. Multi-Clinic provisioning has no approved Organization-level
- * authority model, so that flow is explicitly blocked (not silently faked).
+ * Clinics. Multi-Clinic facility onboarding remains an adaptive-flow limitation;
+ * creation is available only through the Organization-scoped provisioning
+ * service and never through this presentation catalogue.
  */
 final class FacilityTypeCatalog {
 
@@ -98,8 +99,9 @@ final class FacilityTypeCatalog {
     }
 
     public static function flow_supports_provisioning( string $flow ): bool {
-        // No approved Organization-level authority model exists for creating
-        // multiple independent Clinics; never fake it with WP admin authority.
+        // Independent Clinic creation exists in OrganizationClinicProvisioningService,
+        // but this wizard flow still cannot provision/configure a facility end-to-end.
+        // Keep this gate closed instead of marking an unprovisioned wizard complete.
         return $flow !== 'medical_building';
     }
 
