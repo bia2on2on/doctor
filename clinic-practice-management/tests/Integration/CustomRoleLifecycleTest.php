@@ -616,6 +616,23 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         $definitionId,
                         $childReaped ? 'reaped' : 'running'
                     );
+                    // Decisive, cheap evidence: after the bounded window, read at
+                    // most one allowlisted late token from the child. It separates
+                    // "child blocked by MariaDB but unobservable" from "child
+                    // acquired or failed past the lock". Only exact tokens pass.
+                    $lateLine = $this->readRaceLine($parentPipe, 25.0);
+                    if (!is_string($lateLine)) {
+                        $late = 'none';
+                    } elseif (preg_match('/^RESULT:(assigned|denied:[A-Z_]+)$/', $lateLine, $match) === 1) {
+                        $late = $match[1];
+                    } elseif (preg_match('/^RESULT:missing-target-lock-query:[a-z]+$/', $lateLine) === 1) {
+                        $late = 'missing-lock-query';
+                    } elseif (preg_match('/^ERROR:([A-Za-z0-9_]+)/', $lateLine, $match) === 1) {
+                        $late = 'error:' . $match[1];
+                    } else {
+                        $late = 'other';
+                    }
+                    $diagnostics['maria_wait_failure'] .= ';late=' . preg_replace('/[^A-Za-z0-9_:]/', '', $late);
                     self::fail(
                         'Did not observe B blocked by A on the exact custom-role definition row before the bounded deadline. Evidence: '
                         . json_encode($diagnostics, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)

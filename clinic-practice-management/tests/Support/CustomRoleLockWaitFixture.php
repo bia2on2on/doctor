@@ -372,12 +372,19 @@ trait CustomRoleLockWaitFixture
             $step = 'sessions';
             $sessions = $this->mariaDbRows(
                 $observer,
-                'SELECT id, command, time FROM information_schema.processlist WHERE id IN ('
+                'SELECT id, command, state, time FROM information_schema.processlist WHERE id IN ('
                 . (int) $requestingConnectionId . ',' . (int) $blockingConnectionId . ')'
             );
             $sessionIds = array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $sessions);
             $tokens[] = 'req_session=' . (in_array($requestingConnectionId, $sessionIds, true) ? 1 : 0);
             $tokens[] = 'blk_session=' . (in_array($blockingConnectionId, $sessionIds, true) ? 1 : 0);
+            foreach ($sessions as $session) {
+                $prefix = (int) $session['id'] === (int) $requestingConnectionId ? 'req' : 'blk';
+                $seconds = (int) ($session['time'] ?? 0);
+                $tokens[] = $prefix . '_cmd=' . (preg_replace('/[^a-z]/', '', strtolower((string) ($session['command'] ?? ''))) ?: 'none');
+                $tokens[] = $prefix . '_state=' . (preg_replace('/[^a-z]/', '', strtolower((string) ($session['state'] ?? ''))) ?: 'none');
+                $tokens[] = $prefix . '_sec=' . ($seconds >= 10 ? 'ge10' : (string) max(0, $seconds));
+            }
 
             $step = 'trx';
             $requesterTrx = $this->mariaDbScalar(
