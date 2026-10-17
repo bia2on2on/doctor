@@ -86,7 +86,7 @@ final class PatientService
 
         return new PatientIdentityActivator(
             $repository,
-            new PatientIdentityService( $db, $repository )
+            new PatientIdentityService( $db, $repository, new AuditLogger( $db, new OpLogger( $db ) ) )
         );
     }
 

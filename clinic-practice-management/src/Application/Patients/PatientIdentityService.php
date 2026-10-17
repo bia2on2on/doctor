@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Patients;
 
 use ClinicCore\Domain\Patients\PatientIdentityException;
 use ClinicCore\Domain\Validators\MobileValidator;
+use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 
@@ -31,7 +32,8 @@ final class PatientIdentityService {
 
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly PatientIdentityRepository $identities
+        private readonly PatientIdentityRepository $identities,
+        private readonly AuditLogger $audit
     ) {
     }
 
@@ -53,18 +55,41 @@ final class PatientIdentityService {
             $normalized = $this->normalize_or_fail( $mobile );
         }
 
-        $now = $this->db->nowUtcSql();
-        $id  = $this->identities->insert(
-            [
-                'organization_id'   => $organization_id,
-                'internal_ref'      => $this->generate_internal_ref(),
-                'normalized_mobile' => $normalized,
-                'created_at'        => $now,
-                'updated_at'        => $now,
-            ]
-        );
+        return $this->db->transactional(
+            function () use ( $organization_id, $normalized ): int {
+                $now = $this->db->nowUtcSql();
+                $id  = $this->identities->insert(
+                    [
+                        'organization_id'   => $organization_id,
+                        'internal_ref'      => $this->generate_internal_ref(),
+                        'normalized_mobile' => $normalized,
+                        'created_at'        => $now,
+                        'updated_at'        => $now,
+                    ]
+                );
+                if ( $id <= 0 ) {
+                    throw PatientIdentityException::of(
+                        'CLINIC_PATIENT_IDENTITY_CREATE_FAILED',
+                        __( 'ساخت هویت بیمار انجام نشد.', 'cpms' ),
+                        500
+                    );
+                }
 
-        return $id;
+                $this->audit->log(
+                    'PATIENT_IDENTITY_CREATED',
+                    $this->current_actor(),
+                    'patient_identity',
+                    $id,
+                    null,
+                    null,
+                    [ 'organization_id' => $organization_id ],
+                    [],
+                    null
+                );
+
+                return $id;
+            }
+        );
     }
 
     /**
@@ -134,29 +159,60 @@ final class PatientIdentityService {
         int $clinic_id,
         int $patient_id
     ): void {
-        $this->require_identity_in_org( $organization_id, $identity_id );
+        $this->db->transactional(
+            function () use ( $organization_id, $identity_id, $clinic_id, $patient_id ): void {
+                $this->require_identity_in_org( $organization_id, $identity_id );
 
-        $clinic_org = $this->identities->clinic_organization( $clinic_id );
-        if ( $clinic_org !== $organization_id ) {
-            throw PatientIdentityException::clinic_not_in_organization( $clinic_id, $organization_id );
-        }
+                $clinic_org = $this->identities->clinic_organization( $clinic_id );
+                if ( $clinic_org !== $organization_id ) {
+                    throw PatientIdentityException::clinic_not_in_organization( $clinic_id, $organization_id );
+                }
 
-        $patient = $this->identities->patient( $patient_id );
-        if ( $patient === null ) {
-            throw PatientIdentityException::not_found( __( 'بیمار', 'cpms' ), $patient_id );
-        }
-        if ( (int) $patient['clinic_id'] !== $clinic_id ) {
-            throw PatientIdentityException::patient_not_in_clinic( $patient_id, $clinic_id );
-        }
+                $patient = $this->identities->patient( $patient_id );
+                if ( $patient === null ) {
+                    throw PatientIdentityException::not_found( __( 'بیمار', 'cpms' ), $patient_id );
+                }
+                if ( (int) $patient['clinic_id'] !== $clinic_id ) {
+                    throw PatientIdentityException::patient_not_in_clinic( $patient_id, $clinic_id );
+                }
 
-        $existing = $patient['identity_id'] !== null ? (int) $patient['identity_id'] : null;
-        if ( $existing !== null && $existing !== $identity_id ) {
-            throw PatientIdentityException::record_already_linked( $patient_id, $existing );
-        }
+                $existing = $patient['identity_id'] !== null ? (int) $patient['identity_id'] : null;
+                if ( $existing !== null && $existing !== $identity_id ) {
+                    throw PatientIdentityException::record_already_linked( $patient_id, $existing );
+                }
 
-        if ( $existing === null ) {
-            $this->identities->set_patient_identity( $patient_id, $identity_id );
-        }
+                if ( $existing === null ) {
+                    $linked = $this->identities->set_patient_identity_if_unlinked( $patient_id, $identity_id );
+                    if ( $linked < 1 ) {
+                        $persisted = $this->identities->patient( $patient_id );
+                        if ( $persisted === null || (int) $persisted['identity_id'] !== $identity_id ) {
+                            throw PatientIdentityException::record_already_linked(
+                                $patient_id,
+                                (int) ( $persisted['identity_id'] ?? 0 )
+                            );
+                        }
+
+                        return;
+                    }
+
+                    $this->audit->log(
+                        'PATIENT_IDENTITY_LINKED',
+                        $this->current_actor(),
+                        'patient_identity',
+                        $identity_id,
+                        $patient_id,
+                        null,
+                        [
+                            'organization_id' => $organization_id,
+                            'clinic_id'       => $clinic_id,
+                            'patient_id'      => $patient_id,
+                        ],
+                        [],
+                        $clinic_id
+                    );
+                }
+            }
+        );
     }
 
     /**
@@ -244,6 +300,26 @@ final class PatientIdentityService {
         }
 
         return $identity;
+    }
+
+    /**
+     * Actor نشست وردپرس؛ عملیات بدون کاربر به‌درستی به‌عنوان سیستم ثبت می‌شود.
+     *
+     * @return array{wp_user_id: int|null, role: string}|null
+     */
+    private function current_actor(): ?array {
+        $user_id = (int) get_current_user_id();
+        if ( $user_id <= 0 ) {
+            return null;
+        }
+
+        $user  = wp_get_current_user();
+        $roles = is_array( $user->roles ?? null ) ? $user->roles : [];
+
+        return [
+            'wp_user_id' => $user_id,
+            'role'       => isset( $roles[0] ) ? (string) $roles[0] : 'authenticated',
+        ];
     }
 
     /**

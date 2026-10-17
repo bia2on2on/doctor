@@ -80,7 +80,9 @@ final class PatientIdentityRepository {
      */
     public function insert( array $fields ): int {
         $data = $this->whitelist( $fields, self::CREATE_FIELDS );
-        $this->db->insert( 'cpms_patient_identities', $data );
+        if ( ! $this->db->insert( 'cpms_patient_identities', $data ) ) {
+            return 0;
+        }
 
         return $this->db->wpdb_last_insert_id();
     }

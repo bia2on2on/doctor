@@ -802,7 +802,8 @@ final class App
         if ( $service === null ) {
             $service = new PatientIdentityService(
                 self::db(),
-                new PatientIdentityRepository( self::db() )
+                new PatientIdentityRepository( self::db() ),
+                self::audit()
             );
         }
 

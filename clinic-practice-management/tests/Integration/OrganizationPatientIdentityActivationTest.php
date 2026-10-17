@@ -83,8 +83,156 @@ final class OrganizationPatientIdentityActivationTest extends WP_UnitTestCase {
     }
 
     protected function tearDown(): void {
+        $this->restoreAuditInserts();
         App::resetScope();
         parent::tearDown();
+    }
+
+    public function testIdentityCreationWritesPrivacyMinimalAuditEvidence(): void {
+        $logs = App::db()->table( 'cpms_audit_logs' );
+
+        $identityId = $this->identityService->create_identity( $this->orgA, '09125550123' );
+        $row = App::db()->fetchRow(
+            "SELECT action, resource_type, resource_id, patient_id, after_json, meta_json FROM {$logs} WHERE action = %s AND resource_id = %d ORDER BY id DESC LIMIT 1",
+            [ 'PATIENT_IDENTITY_CREATED', $identityId ]
+        );
+
+        self::assertNotNull( $row );
+        self::assertSame( 'patient_identity', $row['resource_type'] );
+        self::assertSame( $identityId, (int) $row['resource_id'] );
+        self::assertNull( $row['patient_id'] );
+        $payload = (string) $row['after_json'] . ' ' . (string) $row['meta_json'];
+        self::assertStringContainsString( 'organization_id', $payload );
+        self::assertStringNotContainsString( '09125550123', $payload );
+        self::assertStringNotContainsString( 'mobile', strtolower( $payload ) );
+        self::assertTrue( App::audit()->verifyChain( 500 )['ok'] );
+    }
+
+    public function testPatientIdentityLinkWritesExactlyOneScopedAuditEvent(): void {
+        global $wpdb;
+        $unlinkedPatient = $this->insertPatient( $this->clinicA1, '09125550124' );
+        $identityId      = $this->identityService->create_identity( $this->orgA );
+        $logs            = App::db()->table( 'cpms_audit_logs' );
+
+        $this->identityService->link_clinical_record( $this->orgA, $identityId, $this->clinicA1, $unlinkedPatient );
+        $this->identityService->link_clinical_record( $this->orgA, $identityId, $this->clinicA1, $unlinkedPatient );
+
+        self::assertSame( $identityId, (int) $this->patientRow( $unlinkedPatient )['identity_id'] );
+        self::assertSame(
+            1,
+            (int) $wpdb->get_var( $wpdb->prepare(
+                "SELECT COUNT(*) FROM {$logs} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
+                'PATIENT_IDENTITY_LINKED',
+                $identityId,
+                $unlinkedPatient,
+                $this->clinicA1
+            ) ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        );
+        self::assertTrue( App::audit()->verifyChain( 500 )['ok'] );
+    }
+
+    public function testIdentityAuditFailureRollsBackIdentityCreationAndPatientLink(): void {
+        $identityCount = $this->countIdentities();
+        $this->failAuditInserts();
+        try {
+            try {
+                $this->identityService->create_identity( $this->orgA );
+                self::fail( 'identity creation must fail when required audit persistence fails' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertStringContainsString( 'audit', strtolower( $exception->getMessage() ) );
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+        self::assertSame( $identityCount, $this->countIdentities(), 'identity insert rolls back with its audit' );
+
+        $patientId  = $this->insertPatient( $this->clinicA1, '09125550125' );
+        $identityId = $this->identityService->create_identity( $this->orgA );
+        $this->failAuditInserts();
+        try {
+            try {
+                $this->identityService->link_clinical_record( $this->orgA, $identityId, $this->clinicA1, $patientId );
+                self::fail( 'linkage must fail when required audit persistence fails' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertStringContainsString( 'audit', strtolower( $exception->getMessage() ) );
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+        self::assertNull( $this->patientRow( $patientId )['identity_id'], 'linkage rolls back with its audit' );
+    }
+
+    public function testCrossOrganizationIdentityLinkIsRejectedWithoutSuccessAudit(): void {
+        global $wpdb;
+        $patientId  = $this->insertPatient( $this->clinicA1, '09125550126' );
+        $identityId = $this->identityService->create_identity( $this->orgB );
+        $logs       = App::db()->table( 'cpms_audit_logs' );
+        $before     = (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$logs} WHERE action = %s",
+            'PATIENT_IDENTITY_LINKED'
+        ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
+        try {
+            $this->identityService->link_clinical_record( $this->orgA, $identityId, $this->clinicA1, $patientId );
+            self::fail( 'cross-Organization identity linkage must be refused' );
+        } catch ( PatientIdentityException $exception ) {
+            self::assertSame( 'CLINIC_PATIENT_IDENTITY_NOT_FOUND', $exception->error_code );
+        }
+
+        self::assertNull( $this->patientRow( $patientId )['identity_id'] );
+        self::assertSame( $before, (int) $wpdb->get_var( $wpdb->prepare(
+            "SELECT COUNT(*) FROM {$logs} WHERE action = %s",
+            'PATIENT_IDENTITY_LINKED'
+        ) ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+    }
+
+    /**
+     * @param string $mobile
+     */
+    private function insertPatient( int $clinicId, string $mobile ): int {
+        global $wpdb;
+        $suffix = bin2hex( random_bytes( 4 ) );
+        $wpdb->insert(
+            $wpdb->prefix . 'cpms_patients',
+            [
+                'clinic_id' => $clinicId,
+                'mrn' => 'ID-AUDIT-' . $suffix,
+                'first_name' => 'Audit',
+                'last_name' => 'Fixture',
+                'mobile' => $mobile,
+                'created_at' => App::db()->nowUtcSql(),
+                'updated_at' => App::db()->nowUtcSql(),
+            ]
+        );
+
+        return (int) $wpdb->insert_id;
+    }
+
+    private $auditFault = null;
+    private bool $previousSuppression = false;
+
+    private function failAuditInserts(): void {
+        global $wpdb;
+        $fault = static function ( $query ) {
+            $sql = (string) $query;
+            if ( preg_match( '/\\A\\s*INSERT\\s+INTO\\s+(\\S+)/i', $sql, $match ) === 1 && str_contains( $match[1], 'cpms_audit_logs' ) ) {
+                return 'INSERT INTO ' . $match[1] . ' (`cpms_fault_injection_no_such_column`) VALUES (1)';
+            }
+            return $query;
+        };
+        $this->previousSuppression = (bool) $wpdb->suppress_errors( true );
+        add_filter( 'query', $fault, 5 );
+        $this->auditFault = $fault;
+    }
+
+    private function restoreAuditInserts(): void {
+        if ( $this->auditFault === null ) {
+            return;
+        }
+        remove_filter( 'query', $this->auditFault, 5 );
+        $this->auditFault = null;
+        global $wpdb;
+        $wpdb->suppress_errors( $this->previousSuppression );
     }
 
     // ================= A — activation on the staff creation path =================
