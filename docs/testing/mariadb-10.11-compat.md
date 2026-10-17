@@ -119,3 +119,34 @@ A successful scheduled run is estimated at **15–25 runner-minutes per week**; 
 - **Recommendation:** defer MariaDB 10.11 compatibility sign-off and any product fix until a capable local environment reproduces PHPUnit startup with the same PHP 8.3 / PHPUnit 9.6 / WordPress 7.1.3 test-library inputs and MariaDB 10.11.19. Diagnose from private local process output, then seek fresh authorization before any further CI experiment. This completes the one-run limit; do not retry or start another MariaDB run in this mission.
 - Blockers: the first failure is still before `integration-bootstrap.php`; JUnit and all case-level evidence remain absent; this sandbox has no PHP/Composer/MariaDB for local reproduction. The lane did not call public destructive `restoreApply(..., true)`; the Closure Gate's destructive check is separate.
 - Restored the workflow to `schedule` + `workflow_dispatch` only before stopping. PR #238 remains open/Draft/unmerged; required check names/ruleset and Owner-hosting/security controls were untouched. No Phase 20 work was performed. The final restored workflow and evidence notes are saved on the fixed branch; remote PR/check state is verified before handoff.
+
+## PHPUnit startup root cause and controlled run — 2026-10-17 (session 3)
+
+### Root cause of the `PHPUNIT_BEFORE_BOOTSTRAP` / `UNKNOWN_STARTUP_FAILURE` boundary
+
+The startup blocker was a PHPUnit CLI-version mismatch, established by isolated reproduction (not inference):
+
+- The focused step invoked `vendor/bin/phpunit --configuration phpunit.mariadb-10.11.xml --log-junit ... --no-progress`. The lane pins PHPUnit 9.6 (`composer require --dev phpunit/phpunit:^9.6`), while `--no-progress` is a PHPUnit 10+ CLI option. PHPUnit 9.6's `CliArguments\Builder` option list contains `no-configuration`, `no-coverage`, `no-logging`, `no-interaction`, `no-extensions` but no `no-progress`.
+- Code path (PHPUnit 9.6.31 source): `SebastianBergmann\CliParser\Parser` throws `UnknownOptionException ("Unknown option \"--no-progress\"")` → `Command::handleArguments` catches `ArgumentsException` → `exitWithErrorMessage()` → `exit(TestRunner::FAILURE_EXIT)` (exit code 1). This happens during argument parsing, **before** the XML configuration is loaded and **before** the bootstrap file is executed.
+- Isolated reproduction: a PHPUnit 9.6.31 runtime tree was assembled from the upstream GitHub sources (packagist unreachable in the sandbox) and executed with the exact CI command shape, exact XML, exact bootstrap, and the same `CPMS_MARIADB_STARTUP_DIAGNOSTICS*` marker contract. With `--no-progress`, the only output was the version banner plus `Unknown option "--no-progress"`, and the marker file contained only the wrapper's `PHPUNIT_PROCESS_STARTED` line — byte-for-byte the CI signature. With the flag removed, the same inputs produced `INTEGRATION_BOOTSTRAP_ENTRY` and `WP_TEST_LIBRARY_CHECK` markers and then failed closed at `WP_TEST_LIBRARY_MISSING` (no WordPress test library in the offline sandbox — expected).
+- Cross-run consistency: run 39012015265 (head `08c1aac0`), whose invocation had no `--no-progress`, reached test execution (2 cases / 20 assertions). Every run carrying `--no-progress` (39014819145 `ec499f01`, 39017190427 `104f5c16`, 39020031044 `77762f92`) failed before `INTEGRATION_BOOTSTRAP_ENTRY` with JUnit missing and exit code 1.
+
+### Fix
+
+One-line workflow correction (commit `b5b082a`): drop the unsupported `--no-progress` flag from the focused-test invocation. No application code, no `failOnWarning`, no 18-file selection, no 120-case minimum, and no fail-closed completeness gate was changed. Local reporter/selection regression suite: 26 tests, all passing.
+
+### Controlled real MariaDB 10.11 run (exactly one; no retry)
+
+`workflow_dispatch` returns HTTP 403 for this integration token, so the single authorized run used a temporary `push` trigger limited to the exact session branch `arena/09114e37-doctor`, removed again in the same delivery (final workflow state is `schedule` + `workflow_dispatch` only).
+
+- Run [39024590449](https://github.com/bia2on2on/doctor/actions/runs/39024590449), event `push`, exact head `1c0152dba56ec326287a198b8d13a9c8712faec8`, job/check-run `117372966838`, 2026-10-17 10:21:34Z–10:23:22Z, conclusion **failure** (1m48s).
+- Passed: container/service setup, PHP 8.3, exact MariaDB 10.11.19 identity gate, release ZIP build, clean WordPress 7.1.3 install + CPMS activation, migration head `2026_10_13_0027` + repeat-migrate no-op, safe dump/clone import, PHPUnit 9.6 install, selection/reporter regression step.
+- Failed: "Run focused database-backed CPMS compatibility suites" and "Publish sanitized JUnit summary and enforce completeness" (both exit-code red). Artifact upload and the workflow summary step succeeded.
+- Sanitized Checks-REST annotation (title `MariaDB 10.11 sanitized PHPUnit diagnostic`): `category=test_error+phpunit_nonzero_exit; startup_stage=BOOTSTRAP_COMPLETE; startup_category=NONE; exit=2; tests=216; assertions=3619; failures=0; errors=5; skips=0; classes=18/18; executed=<all 18 expected classes>; missing=none; first=CustomRoleArchivalConcurrencyTest.testActualDefinitionWaitSerializesTerminalOperations`.
+
+### Measured interpretation (honest boundaries)
+
+- The **startup blocker is resolved**, measured directly: `startup_stage=BOOTSTRAP_COMPLETE`, all 18/18 selected classes executed, 216 test cases (≥120 gate) and 3,619 assertions ran against the pinned MariaDB 10.11.19 server with the identity gate green.
+- The lane is **still red**, and correctly so: 5 test **errors** (0 failures, 0 skips) violate the zero-error completeness gate; PHPUnit exit code 2. This is **not a MariaDB 10.11 compatibility PASS**.
+- The first failing identifier is `CustomRoleArchivalConcurrencyTest.testActualDefinitionWaitSerializesTerminalOperations`. The identities of the remaining 4 erroring cases and the error causes are **not** established here: the raw JUnit/step logs remain inaccessible from this sandbox (artifact and log endpoints return EOF), and no raw-log guessing or retry was performed per mandate.
+- Reproduction limitations: offline sandbox (packagist/GitHub release assets unreachable); the PHPUnit 9.6.31 tree was source-assembled and executed under a PHP 8.x WASM runtime (exit codes not propagated by that CLI); the CI counts come from the reporter's regression-tested JUnit parser, via the sanitized annotation channel.
