@@ -706,3 +706,9 @@ extracted `run:` blocks.
 
 - On `30e10f9`, targeted first-enrollment execution failed; full Integration and its focused coverage execution did not run. Coverage guard correctly failed on missing inputs (secondary, not an independent product failure). WPCS/PHPStan and the unit matrix passed on that head; they do not establish targeted/full Integration success.
 - Direct `gh run view --log-failed` / job-log download failed with sandbox egress EOF to Actions result-storage hosts. The new targeted step initially wrote a separate file not included by existing failure-comment mirrors. Corrected the step to write JUnit and text to the existing integration diagnostics paths: a targeted failure is now archived/mirrored, and a successful targeted run is followed by the unchanged full suite which overwrites those paths normally. This fixes actual missing failure observability; no test, assertion, guard, context or threshold is removed/weakened. Diagnose the next observed failure detail before any product correction.
+
+
+### Diagnosed targeted fixture correction (runtime evidence, not speculation)
+
+- New diagnostic mirror from run `39042406683` at `9014049`: **18 tests, 121 assertions, 1 error, 0 failures/warnings/skips**. The single error was `Undefined array key "clinic_id"` in the new successful-walk-in assertion. All negative/boundary/authentication/enrollment tests completed; full Integration remained skipped, so no full-suite PASS is claimed.
+- Inspected actual `VisitService::presentVisit()` contract: it intentionally omits `clinic_id`. Corrected the test to verify Clinic **and Location**, patient ownership and null appointment through the persisted visit row, retaining/strengthening the actual isolation requirement instead of changing the production projection or weakening assertions. Also asserts the hash-chain audit remains valid. Static parser/diff validation repeated before push; exact new-head targeted/full/normal checks still required.

@@ -164,7 +164,12 @@ final class ReturningPatientFirstEnrollmentTest extends WP_UnitTestCase
         $visits = new VisitService($db, new VisitRepository($db), new AppointmentRepository($db), App::settingsFactory(), App::audit(), $this->gate(), null, null);
         $visit = $visits->walkIn($secretary, $created['patient_id'], $clinician);
         $this->assertGreaterThan(0, (int) $visit['id']);
-        $this->assertSame($this->clinic, (int) $visit['clinic_id']);
+        $persisted = $db->fetchRow('SELECT clinic_id, location_id, patient_id, appointment_id FROM ' . $db->table('cpms_visits') . ' WHERE id = %d', [$visit['id']]);
+        $this->assertSame($this->clinic, (int) $persisted['clinic_id']);
+        $this->assertSame($this->location, (int) $persisted['location_id']);
+        $this->assertSame($created['patient_id'], (int) $persisted['patient_id']);
+        $this->assertNull($persisted['appointment_id'], 'Clinical service initiation is not appointment creation');
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
         $this->assertSame($created['patient_id'], (int) $visit['patient_id']);
     }
 
