@@ -313,7 +313,7 @@ final class PatientService
                 return $id;
             }
         );
-        $row = (array) $this->patients->find( $id );
+        $row       = (array) $this->patients->find( $id );
 
         $this->audit->log(
             'PATIENT_CREATED',

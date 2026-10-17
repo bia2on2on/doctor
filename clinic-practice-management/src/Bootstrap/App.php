@@ -570,7 +570,7 @@ final class App
                 self::smsService(),
                 self::notificationService(),
                 new MembershipRepository( $db ),
-                self::patient_identity_activator( )
+                self::patient_identity_activator()
             );
         }
 
