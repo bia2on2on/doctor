@@ -10,6 +10,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseSignature;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
+use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Update\ReleaseSignature;
 use ClinicCore\Infrastructure\Licensing\VendorGateway;
 use ClinicCore\Infrastructure\Repository\LicenseRepository;
@@ -424,7 +425,7 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
 
     // ==================== 7. runtime non-encroachment ====================
 
-    public function testOrdinaryExpirationFollowsTheRightsDecisionWhileTheClinicalGateStaysUnfrozen(): void
+    public function testOrdinaryExpirationKeepsUpdateRightsSeparateFromOwnerClinicalWindows(): void
     {
         $now = time();
         $service = $this->service();
@@ -441,9 +442,10 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
 
         $gate = new SignedLicenseGate($service);
         foreach (SignedLicenseGate::BLOCKED_UNDER_RESTRICTION as $operation) {
-            $this->assertTrue(
+            $this->assertSame(
+                $operation === LicenseGate::OP_INVOICE_CREATE,
                 $gate->assert($operation)->allowed,
-                'ordinary expiration must not freeze new clinical business'
+                'Update rights do not override the Owner clinical policy'
             );
         }
 
@@ -460,7 +462,8 @@ final class UpdateRightsEnforcementTest extends WP_UnitTestCase
         ]))));
         $this->assertFalse($blocked['available']);
         $this->assertSame('update_rights_expired', $blocked['reason']);
-        $this->assertTrue($gate->assert(SignedLicenseGate::BLOCKED_UNDER_RESTRICTION[0])->allowed);
+        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE, ['reception' => true])->allowed);
     }
 
     public function testTheRightsDecisionUsesSignedIntegersOnlyAndNoLocalClock(): void

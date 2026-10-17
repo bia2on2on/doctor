@@ -55,7 +55,7 @@ final class SignedLicenseGate implements LicenseGate
                     (int) ( $context['clinic_id'] ?? 0 ),
                     $expires_at
                 );
-                return PostExpirationPolicy::allowsNewService( $now, $expires_at, $returning, ( $context['reception'] ?? false ) === true )
+                return PostExpirationPolicy::allows_new_service( $now, $expires_at, $returning, ( $context['reception'] ?? false ) === true )
                     ? LicenseDecision::allow()
                     : LicenseDecision::deny( 'license:expired' );
             }

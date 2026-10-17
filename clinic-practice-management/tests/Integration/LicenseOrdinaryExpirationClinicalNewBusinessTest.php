@@ -170,7 +170,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
      * VisitService واقعی با Gate واقعی (SignedLicenseGate روی LicenseService
      * واقعی) — همان سیم‌کشی `VisitLicenseGateTest` با Gate واقعی به‌جای Fake.
      */
-    private function visitService(LicenseService $licenses): VisitService
+    private function visitService(LicenseService $licenses, ?\Closure $clock = null): VisitService
     {
         $db = App::db();
 
@@ -180,7 +180,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             new AppointmentRepository($db),
             App::settingsFactory(),
             App::audit(),
-            new SignedLicenseGate($licenses, new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository($db)),
+            new SignedLicenseGate($licenses, new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository($db), $clock),
             null,
             null
         );
@@ -212,6 +212,62 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         return ['id' => (int) $wpdb->insert_id, 'date' => $date, 'time' => $time];
     }
 
+    public function testBookingRechecksT0AfterCapacityAndSlotLockWaits(): void
+    {
+        $this->expiresAt = time() + 86400;
+        $licenses = $this->installOrdinaryExpiredLicense();
+        $now = $this->expiresAt - 1;
+        $clock = static function () use (&$now): int { return $now; };
+        $db = App::db();
+        $service = new \ClinicCore\Application\Booking\BookingService(
+            $db, new \ClinicCore\Infrastructure\Repository\SlotRepository($db),
+            new AppointmentRepository($db), new \ClinicCore\Infrastructure\Repository\PatientRepository($db),
+            App::settingsFactory(), new SignedLicenseGate($licenses, null, $clock),
+            App::audit(), App::op(), new \ClinicCore\Infrastructure\Security\Idempotency($db), App::smsService()
+        );
+        $slot = $this->makeSlot(2, '13:20');
+        $user = (int) wp_create_user('expiry_lock_public', 'pass-12345', '09127770888@otp.cpms.local');
+        // First demonstrate a hold capacity lock returning after T0.
+        $cross = function (string $sql) use (&$now): string {
+            if (str_contains($sql, 'cpms_schedule_slots') && (str_contains($sql, 'FOR UPDATE') || str_contains($sql, 'UPDATE '))) {
+                $now = $this->expiresAt;
+            }
+            return $sql;
+        };
+        add_filter('query', $cross);
+        try {
+            $service->hold($user, $this->clinicianId, $slot['date'], '13:20');
+            $this->fail('Hold must recheck after capacity lock');
+        } catch (BookingException $e) {
+            $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
+        } finally {
+            remove_filter('query', $cross);
+        }
+        $this->assertSame(0, (int) $db->fetchValue('SELECT held_count FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d', [$slot['id']]));
+        $now = $this->expiresAt - 1;
+        $hold = $service->hold($user, $this->clinicianId, $slot['date'], '13:20');
+        add_filter('query', $cross);
+        try {
+            $service->confirm($hold['hold_token'], $user, null, wp_generate_uuid4(), 'New', 'After lock');
+            $this->fail('Confirm must recheck after slot lock');
+        } catch (BookingException $e) {
+            $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
+        } finally {
+            remove_filter('query', $cross);
+        }
+        $now = $this->expiresAt - 1;
+        add_filter('query', $cross);
+        try {
+            $service->createByStaff($this->secretaryUserId, $this->patientId, $this->clinicianId, $slot['date'], '13:20', null);
+            $this->fail('Staff booking must recheck after slot lock');
+        } catch (BookingException $e) {
+            $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
+        } finally {
+            remove_filter('query', $cross);
+        }
+        $this->assertSame(0, (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_appointments')));
+    }
+
     public function testRestStaffBookingCannotBypassT0(): void
     {
         $this->expiresAt = time() - 1;
@@ -238,6 +294,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $this->installOrdinaryExpiredLicense();
         $slot = $this->makeSlot(2, '11:20');
         $user = (int) wp_create_user('expiry_public', 'pass-12345', '09127770999@otp.cpms.local');
+        (new \WP_User($user))->set_role('cpms_patient');
         $hold = App::bookingService()->hold($user, $this->clinicianId, $slot['date'], '11:20');
         $this->assertNotEmpty($hold['hold_token']);
         $this->expiresAt = time() - 1; // Grace and skew must NOT postpone shutdown.
@@ -255,6 +312,29 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             }
         }
         $this->assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments')));
+        $this->expiresAt = time() + 86400;
+        $this->installOrdinaryExpiredLicense();
+        $confirmed = App::bookingService()->confirm($hold['hold_token'], $user, null, wp_generate_uuid4(), 'Renewed', 'Patient');
+        $this->assertSame('confirmed', $confirmed['status']);
+        $this->assertSame(1, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments')));
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
+    }
+
+    public function testExistingAppointmentRemainsActionableAfterAllNewServiceWindows(): void
+    {
+        $this->expiresAt = time() + 86400;
+        $this->installOrdinaryExpiredLicense();
+        $slot = $this->makeSlot(2, '14:20');
+        $appointment = App::bookingService()->createByStaff($this->secretaryUserId, $this->patientId, $this->clinicianId, $slot['date'], '14:20', null);
+        $this->expiresAt = time() - 220 * 86400;
+        $licenses = $this->installOrdinaryExpiredLicense();
+        $id = (int) $appointment['appointment_id'];
+        // Fixture an appointment booked before the now-expired signed term.
+        App::db()->update('cpms_appointments', ['created_at' => gmdate('Y-m-d H:i:s', $this->expiresAt - 1), 'booked_at' => gmdate('Y-m-d H:i:s', $this->expiresAt - 1)], ['id' => $id]);
+        $visit = $this->visitService($licenses)->checkIn($this->secretaryUserId, $this->patientId, $id);
+        $this->assertSame('waiting', $visit['status']);
+        $this->assertSame($id, (int) $visit['appointment_id']);
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
     }
 
     public function testNewPatientAndWalkInStopAfterOneMonthButVerifiedReturningContinues(): void
@@ -287,6 +367,13 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         ]);
         $visit = $this->visitService($licenses)->walkIn($this->secretaryUserId, $this->patientId, $this->clinicianId);
         $this->assertSame('waiting', $visit['status']);
+        $deadline = \ClinicCore\Domain\Licensing\PostExpirationPolicy::deadline($this->expiresAt, 6);
+        try {
+            $this->visitService($licenses, static fn (): int => $deadline)->walkIn($this->secretaryUserId, $this->patientId, $this->clinicianId);
+            $this->fail('Even verified returning status ends at the exact six-month boundary');
+        } catch (VisitException $e) {
+            $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
+        }
         $this->assertTrue(App::audit()->verifyChain(500)['ok']);
     }
 

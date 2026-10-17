@@ -527,6 +527,8 @@ final class LicenseActivationIdentityTest extends WP_UnitTestCase
             LicenseGate::OP_APPOINTMENT_RESCHEDULE,
             LicenseGate::OP_VISIT_CHECKIN,
             LicenseGate::OP_INVOICE_CREATE,
+            LicenseGate::OP_SMS_COMMERCIAL,
+            LicenseGate::OP_HANDWRITING_NEW,
         ] as $op) {
             $decisions[$op] = $gate->assert($op)->allowed;
         }

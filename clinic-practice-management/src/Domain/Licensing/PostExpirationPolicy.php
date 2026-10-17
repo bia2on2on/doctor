@@ -17,7 +17,7 @@ final class PostExpirationPolicy {
         return $month->setDate( (int) $month->format( 'Y' ), (int) $month->format( 'n' ), $day )->getTimestamp();
     }
 
-    public static function allowsNewService( int $now, int $expires_at, bool $returning, bool $reception ): bool {
+    public static function allows_new_service( int $now, int $expires_at, bool $returning, bool $reception ): bool {
         if ( $returning ) {
             return $now < self::deadline( $expires_at, 6 );
         }

@@ -21,8 +21,9 @@ namespace ClinicCore\Domain\Licensing;
 interface LicenseGate
 {
     // عملیات‌های Protected (کد — نه جمله). F10 مجموعه را کامل می‌کند.
-    public const OP_SMS_COMMERCIAL = 'sms.commercial';
+    public const OP_SMS_COMMERCIAL  = 'sms.commercial';
     public const OP_HANDWRITING_NEW = 'handwriting.new';
+
     public const OP_PATIENT_CREATE = 'patient.create';
     public const OP_PATIENT_UPDATE = 'patient.update';
     public const OP_APPOINTMENT_BOOK = 'appointment.book';
@@ -32,9 +33,9 @@ interface LicenseGate
     public const OP_INVOICE_CREATE = 'invoice.create';
 
     /**
-     * بررسی مجوز عملیات. **باید** خالص و هم‌زمان باشد (بدون I/O شبکه).
+     * بررسی مجوز عملیات. هم‌زمان و فقط محلی (بدون I/O شبکه)؛ evidence از DB محلی.
      *
-     * @param array<string, mixed> $context اطلاعات Log (بدون PHI در reason)
+     * @param array<string, mixed> $context Trusted service-derived eligibility context, never raw request data.
      */
     public function assert(string $operation, array $context = []): LicenseDecision;
 

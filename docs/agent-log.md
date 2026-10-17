@@ -645,3 +645,25 @@ extracted `run:` blocks.
   PHP; tenant tripwire self-tests 59/59, scan zero hardcodes (one existing reviewed
   SystemClinicResolver suspect); changed-lines collector self-tests; diff whitespace.
   GitHub Actions will supply authoritative exact-head runtime/static evidence.
+
+### Same authorization window — diagnosed first-head validation corrections
+
+- Draft PR **#241** created on the authorized branch; first head
+  `77f0eec03c627686b1356751b6e1aaff23459b9d`.
+- First-head Actions evidence: all four PHP unit lanes and PHPStan PASS; WPCS
+  FAIL (34 changed-line style findings). Integration executed 1,980 tests /
+  59,949 assertions and reported 1 error + 5 failures: a protected-operation
+  snapshot omitted the two new operations; three historical expiry tests still
+  expected the superseded unlimited permission; two new evidence tests omitted
+  mandatory Location from their encounter fixture. These are diagnosed test/style
+  corrections, not a reason to weaken security or alter the check architecture.
+  The subsequent absent-coverage guard failure followed the failed Integration
+  step (coverage inputs were not produced); not represented as a separate PASS.
+- Focused failure details retrieved via existing GitHub PR evidence mirrors;
+  direct job-log download was blocked by the sandbox's storage-host egress limit.
+- Corrective work also closes the code-reviewed lock-wait T0 race at booking
+  mutation boundaries, adds a deterministic capacity/slot wait regression,
+  explicit essential clinical-note continuity, existing-appointment check-in,
+  real signed renewal, and missing-identity/demographic-coincidence coverage.
+- Revalidated changed PHP grammar, tenant tripwire and whitespace before the
+  substantive corrective push. No local PHP runtime execution claimed.

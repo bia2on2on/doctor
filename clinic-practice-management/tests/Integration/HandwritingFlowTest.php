@@ -119,7 +119,11 @@ final class HandwritingFlowTest extends WP_UnitTestCase
         }
         // Existing consultation can still complete after all new-service windows.
         $this->installSignedExpiration(time() - 220 * 86400);
-        $completed = App::visitService()->transition($this->doctorUserId, (int) $doc['visit_id'], 'complete');
+        $note = App::clinicalService()->addNote($this->doctorUserId, (int) $doc['visit_id'], [
+            'category' => 'chief_complaint', 'visibility' => 'patient_visible', 'content_text' => 'Essential documentation after expiry',
+        ]);
+        $this->assertSame(1, $note['version']);
+        $completed = App::clinicalService()->completeConsultation($this->doctorUserId, (int) $doc['visit_id']);
         $this->assertSame('consultation_completed', $completed['status']);
         $this->assertNotEmpty($service->getPage($this->doctorUserId, $pageId));
         $this->assertTrue(App::audit()->verifyChain(500)['ok']);

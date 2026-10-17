@@ -28,6 +28,9 @@ final class ReturningPatientEvidenceTest extends WP_UnitTestCase
         $this->org = (int) $db->fetchValue('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [1]);
         $db->insert('cpms_clinics', ['organization_id' => $this->org, 'name' => 'Other clinic', 'slug' => 'returning-evidence', 'timezone' => 'UTC', 'created_at' => $now, 'updated_at' => $now]);
         $this->clinic = $db->wpdb_last_insert_id();
+        $db->insert('cpms_locations', ['clinic_id' => $this->clinic, 'name' => 'Evidence location', 'slug' => 'evidence-primary', 'timezone' => 'UTC', 'is_primary' => 1, 'created_at' => $now, 'updated_at' => $now]);
+        $location = $db->wpdb_last_insert_id();
+        $this->assertGreaterThan(0, $location);
         $this->identity = App::patient_identity_service()->create_identity($this->org);
         foreach ([1, $this->clinic] as $clinic) {
             $db->insert('cpms_patients', ['clinic_id' => $clinic, 'identity_id' => $this->identity, 'mrn' => 'EVIDENCE-' . $clinic, 'first_name' => 'Private', 'last_name' => 'Patient', 'mobile' => '09127770001', 'created_at' => $now, 'updated_at' => $now]);
@@ -40,7 +43,7 @@ final class ReturningPatientEvidenceTest extends WP_UnitTestCase
         $db->insert('cpms_clinicians', ['clinic_id' => $this->clinic, 'full_name' => 'Private clinician', 'created_at' => $now, 'updated_at' => $now]);
         $clinician = $db->wpdb_last_insert_id();
         $db->insert('cpms_visits', [
-            'clinic_id' => $this->clinic, 'patient_id' => $this->previousPatient, 'clinician_id' => $clinician,
+            'clinic_id' => $this->clinic, 'location_id' => $location, 'patient_id' => $this->previousPatient, 'clinician_id' => $clinician,
             'status' => 'consultation_completed', 'visit_date' => '2026-01-30',
             'check_in_at' => '2026-01-30 12:34:56', 'consultation_completed_at' => '2026-01-31 12:34:55.999',
             'active' => 0, 'created_at' => $now, 'updated_at' => $now,
@@ -73,6 +76,18 @@ final class ReturningPatientEvidenceTest extends WP_UnitTestCase
             App::db()->update('cpms_visits', ['status' => $status], ['id' => $this->encounter]);
             $this->assertFalse($repo->qualifies($this->patient, 1, $this->t0), $status);
         }
+    }
+
+    public function testMissingIdentityAndDemographicCoincidenceCannotProveReturningStatus(): void
+    {
+        $this->verifyIdentity();
+        $repo = new ReturningPatientRepository(App::db());
+        $this->assertTrue($repo->qualifies($this->patient, 1, $this->t0));
+        App::db()->update('cpms_patients', ['identity_id' => null], ['id' => $this->patient]);
+        $this->assertFalse($repo->qualifies($this->patient, 1, $this->t0));
+        $other = App::patient_identity_service()->create_identity($this->org, '09127770001');
+        App::db()->update('cpms_patients', ['identity_id' => $other], ['id' => $this->patient]);
+        $this->assertFalse($repo->qualifies($this->patient, 1, $this->t0), 'Matching mobile does not substitute for verified identity');
     }
 
     public function testCrossClinicEligibilityIsBooleanAndNeverCrossesOrganizationOrClinicalScope(): void

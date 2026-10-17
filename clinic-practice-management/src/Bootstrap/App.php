@@ -1129,7 +1129,10 @@ final class App
     public static function licenseGate(): LicenseGate
     {
         if (self::$licenseGate === null) {
-            self::$licenseGate = new SignedLicenseGate(self::licenseService(), new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository(self::db()));
+            self::$licenseGate = new SignedLicenseGate( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing singleton property.
+                self::licenseService(),
+                new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository( self::db() )
+            );
         }
 
         return self::$licenseGate;

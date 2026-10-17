@@ -261,11 +261,14 @@ final class PatientService
      */
     public function create(array $fields, int $actorUserId): array
     {
-        $this->assertLicense( LicenseGate::OP_PATIENT_CREATE, [
-            'clinic_id' => App::scope()->clinicId,
-            // This service is the staff reception path, not public self-registration.
-            'reception' => user_can( $actorUserId, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE ),
-        ] );
+        $this->assert_license(
+            LicenseGate::OP_PATIENT_CREATE,
+            [
+                'clinic_id' => App::scope()->clinicId,
+                // Existing staff reception path, never public self-registration.
+                'reception' => user_can( $actorUserId, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing service argument.
+            ]
+        );
 
         $firstName = (string) ($fields['first_name'] ?? '');
         $lastName = (string) ($fields['last_name'] ?? '');
@@ -342,7 +345,7 @@ final class PatientService
      */
     public function update(int $patientId, array $fields, int $actorUserId): array
     {
-        $this->assertLicense(LicenseGate::OP_PATIENT_UPDATE);
+        $this->assert_license( LicenseGate::OP_PATIENT_UPDATE );
 
         $current = (array) $this->patients->find($patientId);
         if ($current === [] || (int) $current['clinic_id'] !== App::scope()->clinicId) {
@@ -404,9 +407,9 @@ final class PatientService
         }
     }
 
-    private function assertLicense(string $operation, array $context = []): void
+    private function assert_license( string $operation, array $context = [] ): void
     {
-        $decision = $this->licenseGate->assert($operation, $context);
+        $decision = $this->licenseGate->assert( $operation, $context ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing injected property.
         if (!$decision->allowed) {
             throw new BookingException('CLINIC_LICENSE_BLOCKED', 'سیستم در حالت Read-Only است (مجازت)', 503);
         }

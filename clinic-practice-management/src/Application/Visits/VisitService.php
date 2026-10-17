@@ -213,10 +213,6 @@ final class VisitService
     {
         $this->requireSecretary($actorUserId, 'create_walk_in');
 
-        // سیاست لایسنس (§18 دستور کارفرما F4): «ویزیت مستقل جدید» در حالت
-        // Expired/Restricted (Read-Only) ممنوع — Walk-in بدون نوبت است.
-
-
         $actorRole = 'secretary';
 
         return $this->db->transactional(function () use ($actorUserId, $actorRole, $patientId, $clinicianId, $meta): array {
@@ -234,11 +230,14 @@ final class VisitService
                 throw VisitException::of('CLINIC_VALIDATION_FAILED', 'این بیمار به کلینیک دیگری تعلق دارد', 422);
             }
 
-            $this->assertLicense( LicenseGate::OP_VISIT_CHECKIN, [
-                'patient_id' => $patientId,
-                'clinic_id'  => $clinicId,
-                'reception'  => true, // requireSecretary above, never request metadata.
-            ] );
+            $this->assert_license(
+                LicenseGate::OP_VISIT_CHECKIN,
+                [
+                    'patient_id' => (int) $patient['id'],
+                    'clinic_id'  => (int) $patient['clinic_id'],
+                    'reception'  => true, // requireSecretary above, never request metadata.
+                ]
+            );
 
             // Determine Location for duplicate check (same as createVisit operational date logic)
             $locationIdForGuard = null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
@@ -1622,9 +1621,9 @@ final class VisitService
      * Seam مرکزی مجوز (الگوی BookingService) — **بدون Network Call**؛
      * Gate وضعیت local را می‌خواند (ADR-0023). Read-Only → عملیات جدید ممنوع.
      */
-    private function assertLicense(string $operation, array $context = []): void
+    private function assert_license( string $operation, array $context = [] ): void
     {
-        $decision = $this->licenseGate->assert($operation, $context);
+        $decision = $this->licenseGate->assert( $operation, $context ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing injected property.
         if ( !$decision->allowed ) { // phpcs:ignore WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
             throw VisitException::of( 'CLINIC_LICENSE_BLOCKED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
                 'سیستم در حالت Read-Only است (مجازت) — ثبت مراجعه جدید مجاز نیست',

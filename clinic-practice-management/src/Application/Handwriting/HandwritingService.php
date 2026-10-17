@@ -53,7 +53,7 @@ final class HandwritingService
     ) {
     }
 
-    private function assertLicensedNewUse(): void {
+    private function assert_licensed_new_use(): void {
         $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::licenseGate();
         if ( ! $gate->assert( \ClinicCore\Domain\Licensing\LicenseGate::OP_HANDWRITING_NEW )->allowed ) {
             throw HandwritingException::of( 'CLINIC_LICENSE_BLOCKED', 'استفاده جدید از دست‌خط نیازمند تمدید مجوز است', 503 );
@@ -79,7 +79,7 @@ final class HandwritingService
         $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $visit['clinic_id'], 'create_document');
 
         $visit = $this->requireOwnVisit($actorUserId, $visitId, 'create_document');
-        $this->assertLicensedNewUse();
+        $this->assert_licensed_new_use();
 
         if ($pages === []) {
             $pages = [['width' => 1240, 'height' => 1754]];
@@ -166,7 +166,7 @@ final class HandwritingService
         }
         $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $doc['clinic_id'], 'add_page');
         $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'add_page');
-        $this->assertLicensedNewUse();
+        $this->assert_licensed_new_use();
 
         $existing = $this->handwriting->pagesForDocument($documentId);
         $index = count($existing);
@@ -238,7 +238,7 @@ final class HandwritingService
         $doc = $this->requireDocument((int) $page['document_id']);
         $this->authorizeClinicScoped($actorUserId, $trustedClinicId, RolesAndCapabilities::NOTE_CREATE, (int) $doc['clinic_id'], 'save_page');
         $visit = $this->requireOwnVisit($actorUserId, (int) $doc['visit_id'], 'save_page');
-        $this->assertLicensedNewUse();
+        $this->assert_licensed_new_use();
 
         if ($idemKey !== null) {
             $check = $this->idem->check($idemKey, 'handwriting/page', $actorUserId, $pageId, $trustedClinicId);
