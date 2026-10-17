@@ -356,7 +356,7 @@ final class App
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
         FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
-        \\ClinicCore\\Admin\\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning
+        \ClinicCore\Admin\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning
         LocationAdminPage::register(); // Phase 4 — شعبه‌ها (Location master data: create + name/timezone update)
 
         SettingsAdmin::register();
@@ -1256,8 +1256,8 @@ final class App
         return $service;
     }
 
-    public static function organization_clinic_provisioning_service(): \\ClinicCore\\Application\\Onboarding\\OrganizationClinicProvisioningService {
-        return new \\ClinicCore\\Application\\Onboarding\\OrganizationClinicProvisioningService(self::db(), self::audit());
+    public static function organization_clinic_provisioning_service(): \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService {
+        return new \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService(self::db(), self::audit());
     }
 
     public static function audit(): AuditLogger
