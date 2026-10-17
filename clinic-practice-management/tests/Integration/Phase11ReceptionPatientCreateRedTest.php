@@ -290,7 +290,14 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $row = $this->patientRow($pid);
         self::assertSame($fx['clinic'], (int) $row['clinic_id'], 'S5: clinic_id is the trusted Clinic');
         self::assertArrayNotHasKey('location_id', $row, 'S5: patients table does not persist Location as ownership');
-        self::assertTrue(!isset($row['identity_id']) || $row['identity_id'] === null || $row['identity_id'] === '', 'S5: identity_id stays empty');
+        // Organization Patient Identity activation (post-activation contract):
+        // Location is still not ownership, but the new clinical record now carries
+        // a server-resolved Organization identity. Location never appears in it.
+        self::assertSame(
+            $this->organizationOfClinic($fx['clinic']),
+            $this->organizationOfIdentity((int) $row['identity_id']),
+            'S5: activated identity belongs to the trusted Clinic organization'
+        );
     }
 
     // ============ S6 — Required fields + mobile normalization ============
@@ -490,8 +497,23 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $stored = $this->patientRow($pid);
         self::assertTrue($stored['medical_history'] === null || $stored['medical_history'] === '', 'S11: Reception must not write clinical history');
         self::assertTrue($stored['address'] === null || $stored['address'] === '', 'S11: Reception must not write address');
-        self::assertTrue(!isset($stored['identity_id']) || $stored['identity_id'] === null || $stored['identity_id'] === '', 'S11: identity_id stays dormant');
-        self::assertSame($identitiesBefore, $this->countIdentities(), 'S11: Organization patient-identity table is not written by Reception create');
+        // Organization Patient Identity activation (post-activation contract):
+        // exactly one fresh Organization identity per new clinical record, owned by
+        // the trusted Clinic's organization. Nothing is merged and no identity is
+        // reused from demographics; the bounded Reception payload is unchanged and
+        // still exposes no identity internals.
+        self::assertNotNull($stored['identity_id'], 'S11: Organization identity is activated for the new record');
+        self::assertSame(
+            $identitiesBefore + 1,
+            $this->countIdentities(),
+            'S11: exactly one fresh Organization identity is minted (no merge, no reuse)'
+        );
+        self::assertSame(
+            $this->organizationOfClinic($fx['clinic']),
+            $this->organizationOfIdentity((int) $stored['identity_id']),
+            'S11: activated identity is owned by the trusted Clinic organization'
+        );
+        self::assertArrayNotHasKey('identity_id', $row, 'S11: bounded Reception payload exposes no identity internals');
 
         $after = $this->workflowFingerprint($fx['clinic']);
         self::assertSame($before['cpms_visits'], $after['cpms_visits'], 'S11: no Visit created');
@@ -664,6 +686,22 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
     private function countIdentities(): int
     {
         return (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_identities'));
+    }
+
+    private function organizationOfClinic(int $clinicId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$clinicId]
+        );
+    }
+
+    private function organizationOfIdentity(int $identityId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table('cpms_patient_identities') . ' WHERE id = %d',
+            [$identityId]
+        );
     }
 
     /**
