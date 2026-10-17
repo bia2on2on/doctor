@@ -191,3 +191,36 @@ Run 39040250013 leaves exactly one failure: `CustomRoleLifecycleTest.testAssignm
 - MariaDB 10.11.19 results are distinct from MySQL 8 and MariaDB 11.4.13 evidence. The MySQL 8 Integration check on `main` `84fe07bc` passed in CI run 39033834896; that is not MariaDB evidence.
 - Run logs and the uploaded JUnit artifact remain unreachable from this sandbox (endpoints return EOF). All per-test facts above come from the sanitized Checks-REST annotation added in this branch; its reporter suite (26 local tests) verifies that messages, SQL, paths, fixture values and credentials are never published.
 - The temporary `push` trigger used for the five measurements is removed; the final workflow state is `schedule` + `workflow_dispatch` only. Ruleset 22393801 and its nine required contexts are unchanged. No Owner-hosting, ruleset or Phase 20 change was made.
+
+## Final forked-child resolution and green MariaDB 10.11.19 run — 2026-10-17 (session 5)
+
+### Authorization and scope
+
+- Measured receipt `2026-10-17T15:48:01Z`. PR #242 open/Draft at `b2d2d87`, base `main` `84fe07bc625ac9cf69607ea1283036868c136ec5` (unchanged). Only the session branch `arena/ae733fdc-doctor` was written.
+- The contract was **not** weakened: 18 selected classes, >=120 cases, `failOnWarning`, fail-closed reporting and sanitized output are unchanged. No sleep, no elapsed-time substitution, no removed assertion, no skip, no timeout inflation as evidence.
+
+### Root cause of the last failure (measured, then fixed)
+
+- MariaDB 10.11 never registers this forked, read-only waiter in `INNODB_TRX` / `INNODB_LOCK_WAITS` / `INNODB_LOCKS` (runs 39041714039 and 39045431008: `reqtrx=0`, `w=0`, `pw=0`, while `req_cmd=query` and `req_sec=ge10` showed the child's production statement active server-side for more than ten seconds). The view-based edge cannot appear on this engine, so the previous assertion could never pass.
+- Two instrumentation defects were found and fixed by measurement, not guesswork: run 39046979678 returned `Undefined variable $db2` (the nested transactional callback did not close over the repository handle), and run 39047116345 reached the new path but reported code `0` because wpdb's error bookkeeping had already been reset.
+
+### Implemented evidence path (MariaDB only)
+
+1. The parent proves it holds the exact row before the fork (`FOR UPDATE NOWAIT` denied on the same primary key) — unchanged.
+2. The child executes the real production assignment; the existing filter signals the exact `SELECT ... FOR UPDATE` with its SHA-256.
+3. The child activates strict mysqli reporting and captures the failing production statement's own driver code before any rollback, emitting `RESULT:blocked:<errno>:<statement sha256>`.
+4. The parent requires `1205` (MariaDB `ER_LOCK_WAIT_TIMEOUT`, measured) and the exact statement hash, then re-proves that A still owns the row and that B is alive and parked.
+5. After A commits the deactivation, A sends an explicit `RELEASE`; B retries the **same production assignment**, which must read the committed inactive state and deny it (`denied:CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE`). WordPress roles, membership role and audit counters are asserted exactly as before.
+
+MySQL 8 takes none of this path: `CPMS_RACE_AWAIT_RELEASE` is only set on MariaDB, and every `performance_schema` assertion still runs there unchanged.
+
+### Measured result
+
+- Run [39047401299](https://github.com/bia2on2on/doctor/actions/runs/39047401299), head `3b0b0629977d1fd3f4e2dbd670dac1a2c92bc95d`, **success**: 216 tests, 3,962 assertions, 18 of 18 classes, 0 failures, 0 errors, 0 skips, PHPUnit exit 0, `category=none`.
+- The sanitized annotation is green because the reporter's fail-closed gate (exit 0, >=120 cases, all 18 classes, zero failures/errors/skips) was satisfied by the real suite, and the MariaDB branch's own assertions (statement hash, errno 1205, parent lock, post-commit denial) executed inside it.
+
+### Final head versus verified head
+
+- MariaDB-verified SHA: `3b0b0629977d1fd3f4e2dbd670dac1a2c92bc95d`.
+- The following commit removes the temporary `push` trigger and adds this documentation. It changes no test or product code, so the final PR head is not itself a MariaDB-measured SHA; the final workflow state is `schedule` + `workflow_dispatch` only.
+- Evidence boundaries: this is MariaDB 10.11.19 evidence only. It is not MySQL 8 evidence, not MariaDB 11.4.13 evidence, and not a substitute for any required PR check. Run logs and JUnit artifacts remain unreachable; every count above comes from the sanitized Checks-REST annotation.
