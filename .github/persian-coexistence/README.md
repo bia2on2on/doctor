@@ -267,9 +267,84 @@ The existing booking fixture resolves the explicit Clinic and reads its trusted
 Location timezone for slot generation. Site language/timezone does not replace
 that authority. **Clinic A/B isolation is NOT RUN**: this reused fixture contains
 one Clinic, and independent persona browser contexts are not two-clinic proof.
-The synthetic broken-migration injection and unrelated standalone theme-switching
-proof remain in their existing lanes and are NOT RUN in this bounded group.
-A timezone override/isolation matrix is likewise not claimed.
+The unrelated standalone theme-switching proof remains in its existing lane and is
+NOT RUN in this bounded group. A timezone override/isolation matrix is likewise not
+claimed.
+
+**D3 (synthetic broken migration) is now measured in the heaviest lane only.** The
+reusable workflow's existing D3 step is gated `!inputs.persian_coexistence`, so it is
+`skipped` in all six lanes; its documented cause is the pinned WooCommerce WP-CLI
+`after_wp_load` hook race, which the standalone lane answers with
+`--skip-plugins=woocommerce`. That answer is not usable as coexistence evidence,
+because disabling the plugin under measurement would hide exactly the interference
+this lane exists to observe. `coexistence-combined-nineteen` therefore gets a separate
+step, `D3 in coexistence — broken migration never recorded (isolated clone)`, which
+keeps **every pinned plugin active** and isolates the fault injection in the
+environment instead:
+
+- a disposable copy of the lane's WordPress tree (`<WP_DIR>-d3probe`), never the canonical tree;
+- a disposable database (`<DB_NAME>_d3probe`) restored from a consistent
+  `mysqldump --single-transaction` snapshot of the acceptance database;
+- the injected `2999_01_01_9999_acceptance_broken.php` written only into the clone.
+
+The authoritative *never recorded as successful* assertion is read with direct SQL
+(`probe.mysql_query`) against the disposable database — no WordPress runtime and no
+plugin hooks are in that path, so the hook race cannot mask it by construction rather
+than by disabling anything. Fail closed: refusing to overwrite an existing clone
+path/database is `UNEXECUTED`; a zero-row reading without positive proof that the
+injected migration was actually reached and actually failed (probe throwable, or the
+injected version / broken SQL marker in the WP-CLI output or the clone `debug.log`) is
+`UNEXECUTED`, never PASS; and the canonical acceptance database, `wp-config.php` and
+`Migrations` directory are fingerprinted before and after — any difference is a FAIL.
+Evidence: `D3/result.json`, `D3/evidence.json`, `D3/probe-output.txt`,
+`D3/probe-result.json`, `D3/clone-debug.log`. The remaining five lanes keep their
+truthful `synthetic broken migration: NOT RUN` declaration and continue to rely on the
+standalone exact-head `Real WP Acceptance` job for D3.
+
+**Refusals and cleanup failures are red, not green.** A leftover disposable clone path
+or database causes a safe refusal *before* anything is copied, created, dumped, restored
+or dropped: the check is recorded `UNEXECUTED`, the lane fails, and the pre-existing
+disposable database is never dropped because the probe never created it. Only read-only
+`SELECT`s are issued on that path, and the canonical fingerprint still has to match.
+Cleanup runs in `finally` and is itself asserted (`d3_cleanup_complete`, **material**):
+a failed `DROP DATABASE` or a failed disposable-directory removal blocks the lane even
+when the D3 property itself held, and a leftover clone stays visible on disk so the next
+run's refusal path is what protects it.
+
+**`measured` separates "proved" from "attempted".** `D3/result.json` carries
+`measured: true` only once the injected migration was actually attempted *and* the
+authoritative direct-SQL assertion was actually evaluated. `finalize` drops the lane's
+`synthetic broken migration: NOT RUN` declaration **only** when `measured` is true; a
+refusal or abort keeps NOT RUN and rewrites its reason to say the probe was attempted but
+measured nothing, so a red lane can never be misread as D3 coverage. `summary.md` prints
+`property actually measured in this lane: YES | NO — refusal/abort, not coverage`.
+
+**Clone-path guard.** `d3_assert_sibling_clone()` replaces an earlier
+`str(clone_wp).startswith(str(canonical_wp) + D3_CLONE_SUFFIX)` check plus a
+`clone_wp == canonical_wp` check. Both were tautologies — `clone_wp` is derived from
+`canonical_wp` with `with_name()`, so the prefix always matched and the paths were never
+equal (verified across plain, trailing-slash, whitespace and `..` path shapes). Dead code
+that reads like a safety check invites trust, so it was replaced with conditions that can
+actually fail: the suffix must be one non-empty separator-free path component, the clone
+must be a strict sibling (same parent, not equal, neither containing the other) and its
+name must be exactly the canonical name plus the suffix. The same helper is re-asserted
+immediately before the `rm -rf --` call, not only where the path is computed; the earlier
+code checked once and then removed the path unchecked.
+
+### Discoverable verdicts without a seventh check
+
+`finalize` now emits exactly **one** bounded, sanitized check-run annotation per lane
+(`coexistence verdict | group=… | Stage A=… | Stage B=… | NOT RUN scope limits=… |
+FEATURE UNAVAILABLE=… | D3 broken-migration probe=…`), plus a greppable
+`coexistence_verdict group=… stage_a=… stage_b=… d3=…` line at the top of each lane's
+`summary.md` and job step summary. Six lanes therefore surface as six lines in the same
+annotation list on the PR/check interface — one aggregated view, built without
+cross-runner coordination, without a seventh PR check (the 26-check PR architecture is
+unchanged) and without six separate commit comments. Annotation level is `error` when a
+stage is FAIL, `warning` when Stage A is NOT RUN or a verdict is unknown, otherwise
+`notice`; annotation levels never change a job conclusion, and only allowlisted scalars
+are emitted — free-text `detail`/`reason` (which can carry raw output, URLs,
+credentials or patient values) is never inspected, so nothing sensitive is published.
 
 ## Evidence and security boundaries
 
