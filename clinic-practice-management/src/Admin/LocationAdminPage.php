@@ -13,7 +13,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
- * «شعبه‌ها» (Location master data) — Phase 4: فقط CREATE + UPDATE name/timezone.
+ * «شعبه‌ها» (Location master data): CREATE + UPDATE name/timezone + lifecycle transitions.
  *
  * طراحی امن (هم‌راستا با StaffManagementPage / ClinicProfileService):
  *  - `cpms_config` فقط گیت نمایش/ورود wp-admin است؛ جایگزین مجوز Clinic نیست.
@@ -24,10 +24,9 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  *  - timezone شعبه حقیقت عملیاتی است: فقط شناسهٔ معتبر IANA پذیرفته می‌شود،
  *    بدون fallback و بدون sync با cpms_clinics.timezone. تغییر آن فقط
  *    forward-looking است و هیچ ردیف تاریخی را بازنویسی نمی‌کند.
- *  - این صفحه Location اصلی (is_primary) را نمی‌سازد/تغییر نمی‌دهد/غیرفعال
- *    نمی‌کند؛ activate/deactivate/delete/change-primary عمداً جزو این slice نیست.
- *  - UPDATE فقط name/timezone است؛ slug/مالک/وضعیت/created_at فقط نمایش
- *    داده می‌شوند (ثابت).
+ *  - Location اصلی (is_primary) هرگز غیرفعال/حذف/تبدیل نمی‌شود؛ تغییر
+ *    وضعیت فقط برای Location غیراصلی و با نگه‌داشتن ردیف‌های تاریخی است.
+ *  - UPDATE فقط name/timezone است؛ slug/مالک/created_at ثابت می‌مانند.
  *  - Location ناموجود و خارجی پیام یکسان می‌گیرند (enumeration parity).
  */
 final class LocationAdminPage
@@ -35,12 +34,14 @@ final class LocationAdminPage
     public const PAGE_SLUG = 'cpms-locations';
 
     private const NONCE_ACTION = 'cpms_location_save';
+    private const LIFECYCLE_NONCE_ACTION = 'cpms_location_lifecycle';
     private const NOTICE_KEY = 'cpms_location_notice';
 
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu']);
         add_action('admin_post_cpms_location_save', [self::class, 'save']);
+        add_action('admin_post_cpms_location_lifecycle', [self::class, 'saveLifecycle']);
     }
 
     public static function menu(): void
@@ -73,7 +74,7 @@ final class LocationAdminPage
         ?>
         <div class="wrap" dir="rtl">
             <h1>شعبه‌ها و محل‌ها</h1>
-            <p class="description">افزودن شعبهٔ جدید و ویرایش نام/منطقهٔ زمانی شعبه‌های همین Clinic. منطقهٔ زمانی هر شعبه «حقیقت عملیاتی» همان شعبه است و شناسهٔ معتبر IANA می‌گیرد (مثل Asia/Tehran یا Europe/Berlin)؛ با منطقهٔ زمانی Clinic هم‌گام‌سازی نمی‌شود. شعبهٔ اصلی و وضعیت فعال/غیرفعال از این صفحه قابل تغییر نیست.</p>
+            <p class="description">افزودن و ویرایش شعبه‌های همین Clinic، و فعال/غیرفعال‌کردن شعبه‌های غیراصلی بدون حذف سابقه. شعبهٔ اصلی همواره فعال می‌ماند. منطقهٔ زمانی هر شعبه حقیقت عملیاتی همان شعبه است؛ تغییر آن سوابق تاریخی را بازنویسی نمی‌کند.</p>
 
             <?php if ($clinicChoices !== []) : ?>
                 <form method="get" action="<?php echo esc_url(admin_url('admin.php')); ?>" class="cpms-autofocus">
@@ -113,8 +114,16 @@ final class LocationAdminPage
                             <td class="cpms-actions-cell" data-label="عملیات">
                                 <?php if ((int) $r['is_primary'] !== 1) : ?>
                                     <a class="button button-small" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&edit=' . (int) $r['id'] . '&clinic_id=' . $clinicId)); ?>">ویرایش نام/منطقهٔ زمانی</a>
+                                    <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" class="cpms-inline-form">
+                                        <?php wp_nonce_field(self::LIFECYCLE_NONCE_ACTION); ?>
+                                        <input type="hidden" name="action" value="cpms_location_lifecycle">
+                                        <input type="hidden" name="clinic_id" value="<?php echo (int) $clinicId; ?>">
+                                        <input type="hidden" name="location_id" value="<?php echo (int) $r['id']; ?>">
+                                        <input type="hidden" name="active" value="<?php echo (int) $r['is_active'] === 1 ? '0' : '1'; ?>">
+                                        <button type="submit" class="button button-small"><?php echo (int) $r['is_active'] === 1 ? 'غیرفعال‌سازی' : 'فعال‌سازی'; ?></button>
+                                    </form>
                                 <?php else : ?>
-                                    —
+                                    <span>شعبهٔ اصلی همواره فعال است.</span>
                                 <?php endif; ?>
                             </td>
                         </tr>
@@ -207,6 +216,42 @@ final class LocationAdminPage
         exit;
     }
 
+    /** Handle a nonce-protected status transition from the native admin list. */
+    public static function saveLifecycle(): void
+    {
+        if (!is_user_logged_in()) {
+            wp_die('دسترسی ندارید', 403);
+        }
+        check_admin_referer(self::LIFECYCLE_NONCE_ACTION);
+
+        $actorUserId = (int) get_current_user_id();
+        $requestedClinicId = isset($_POST['clinic_id']) ? absint($_POST['clinic_id']) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $locationId = isset($_POST['location_id']) ? absint($_POST['location_id']) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $activeValue = isset($_POST['active']) ? sanitize_text_field(wp_unslash($_POST['active'])) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+
+        $notice = 'خطا: دسترسی مدیریت شعبه‌ها برای این Clinic مجاز نیست.';
+        $authorization = self::authorizeLocationWrite($actorUserId, $requestedClinicId);
+        if ($authorization['error'] === '' && ($activeValue === '0' || $activeValue === '1')) {
+            try {
+                App::locationService()->setActive(
+                    $actorUserId,
+                    $authorization['clinic_id'],
+                    $locationId,
+                    $activeValue === '1'
+                );
+                $notice = 'وضعیت شعبه با موفقیت تغییر کرد.';
+            } catch (LocationException $exception) {
+                $notice = 'خطا: ' . self::mapError($exception);
+            }
+        } elseif ($authorization['error'] === '') {
+            $notice = 'خطا: درخواست نامعتبر است.';
+        }
+
+        set_transient(self::NOTICE_KEY, $notice, 60);
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $authorization['clinic_id']));
+        exit;
+    }
+
     /**
      * مرز خالصِ write مسیر واقعی admin — پس از nonce/auth در save().
      *
@@ -288,6 +333,9 @@ final class LocationAdminPage
         }
         if ($code === LocationException::NOT_FOUND) {
             return 'محل موردنظر یافت نشد.';
+        }
+        if ($code === LocationException::LIFECYCLE_CONFLICT) {
+            return $e->getMessage();
         }
         if ($code === LocationException::PERMISSION_DENIED) {
             return 'دسترسی لازم را ندارید.';

@@ -46,6 +46,62 @@ final class LocationRepository
     }
 
     /**
+     * Lock a Location row after its Clinic row has been locked by the domain service.
+     *
+     * @return array<string,mixed>|null
+     */
+    public function findForUpdate(int $locationId, int $clinicId): ?array
+    {
+        if ($locationId <= 0 || $clinicId <= 0) {
+            return null;
+        }
+
+        $row = $this->db->fetchRowForUpdate(
+            'SELECT * FROM ' . $this->db->table('cpms_locations')
+            . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [$locationId, $clinicId]
+        );
+        $this->assertNoSqlError();
+
+        return $row;
+    }
+
+    /** @return int number of active Locations in the Clinic */
+    public function activeCountForClinic(int $clinicId): int
+    {
+        if ($clinicId <= 0) {
+            return 0;
+        }
+
+        $count = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_locations')
+            . ' WHERE clinic_id = %d AND is_active = 1',
+            [$clinicId]
+        );
+        $this->assertNoSqlError();
+
+        return (int) $count;
+    }
+
+    /**
+     * Conditional lifecycle write. Caller holds the Clinic and Location locks.
+     */
+    public function setActive(int $locationId, int $clinicId, bool $active, int $expected, string $nowSql): int
+    {
+        $changed = $this->db->update(
+            'cpms_locations',
+            ['is_active' => $active ? 1 : 0, 'updated_at' => $nowSql],
+            ['id' => $locationId, 'clinic_id' => $clinicId, 'is_active' => $expected]
+        );
+        $this->assertNoSqlError();
+        if ($changed === false) {
+            throw new RuntimeException('location lifecycle update failed');
+        }
+
+        return (int) $changed;
+    }
+
+    /**
      * یکتایی slug فقط در محدودهٔ یک Clinic بررسی می‌شود (u_location_slug).
      *
      * @return array<string,mixed>|null

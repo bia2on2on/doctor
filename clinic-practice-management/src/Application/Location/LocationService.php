@@ -242,6 +242,89 @@ final class LocationService
     }
 
     /**
+     * Change active state without deleting history. The Clinic lock serializes
+     * lifecycle writes and protects the final-active-Location invariant.
+     * The primary Location cannot be deactivated.
+     *
+     * @return array{location_id:int, clinic_id:int, name:string, slug:string, timezone:string, is_primary:int, is_active:int, created_at:string, updated_at:string, noop:bool}
+     * @throws LocationException
+     */
+    public function setActive(int $actorUserId, int $trustedClinicId, int $locationId, bool $active): array
+    {
+        $this->guardActorAndScope($actorUserId, $trustedClinicId);
+        if ($locationId <= 0) {
+            throw LocationException::of(LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404);
+        }
+
+        return $this->db->transactional(function () use ($actorUserId, $trustedClinicId, $locationId, $active): array {
+            $clinic = $this->db->fetchRowForUpdate(
+                'SELECT c.id, o.status AS organization_status FROM ' . $this->db->table('cpms_clinics') . ' c'
+                . ' JOIN ' . $this->db->table('cpms_organizations') . ' o ON o.id = c.organization_id'
+                . ' WHERE c.id = %d LIMIT 1',
+                [$trustedClinicId]
+            );
+            if ($clinic === null || $clinic['organization_status'] !== 'active') {
+                throw LocationException::of(LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404);
+            }
+
+            $current = $this->locations->findForUpdate($locationId, $trustedClinicId);
+            if ($current === null) {
+                throw LocationException::of(LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404);
+            }
+            $wasActive = (int) $current['is_active'] === 1;
+            if ($wasActive === $active) {
+                return $this->resultRow($current, true);
+            }
+            if (!$active && (int) $current['is_primary'] === 1) {
+                throw LocationException::of(
+                    LocationException::LIFECYCLE_CONFLICT,
+                    'محل اصلی قابل غیرفعال‌سازی نیست.',
+                    409
+                );
+            }
+            if (!$active && $this->locations->activeCountForClinic($trustedClinicId) <= 1) {
+                throw LocationException::of(
+                    LocationException::LIFECYCLE_CONFLICT,
+                    'حداقل یک محل فعال برای Clinic لازم است.',
+                    409
+                );
+            }
+
+            $now = $this->db->nowUtcSql();
+            $changed = $this->locations->setActive(
+                $locationId,
+                $trustedClinicId,
+                $active,
+                $wasActive ? 1 : 0,
+                $now
+            );
+            if ($changed !== 1) {
+                throw LocationException::of(LocationException::QUERY_FAILED, 'تغییر وضعیت محل ثبت نشد.', 409);
+            }
+
+            $action = $active ? 'LOCATION_REACTIVATED' : 'LOCATION_DEACTIVATED';
+            $this->audit->log(
+                $action,
+                ['wp_user_id' => $actorUserId],
+                'location',
+                $locationId,
+                null,
+                ['location.is_active' => $wasActive ? 1 : 0],
+                ['location.is_active' => $active ? 1 : 0],
+                ['op' => $active ? 'location_reactivate' : 'location_deactivate'],
+                $trustedClinicId
+            );
+
+            $updated = $this->readBack($locationId);
+            if ((int) $updated['clinic_id'] !== $trustedClinicId || (int) $updated['is_active'] !== ($active ? 1 : 0)) {
+                throw LocationException::of(LocationException::QUERY_FAILED, 'وضعیت محل پس از ذخیره قابل تأیید نبود.', 500);
+            }
+
+            return $this->resultRow($updated, false);
+        });
+    }
+
+    /**
      * گارد مشترک: actor معتبر + trusted Clinic صریح + CONFIG scoped.
      *
      * @throws LocationException

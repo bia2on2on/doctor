@@ -35,7 +35,7 @@ use WP_UnitTestCase;
  */
 final class OrganizationPatientIdentityActivationTest extends WP_UnitTestCase {
 
-    private const LATEST_MIGRATION = '2026_10_13_0027';
+    private const LATEST_MIGRATION = '2026_10_18_0028';
 
     private PatientIdentityActivator $activator;
     private PatientIdentityService $identityService;

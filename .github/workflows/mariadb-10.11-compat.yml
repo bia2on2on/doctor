@@ -160,7 +160,7 @@ jobs:
           mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root "$DB_NAME" \
             --batch --raw --execute='SELECT version, applied_at FROM wp_cpms_schema_migrations ORDER BY version' \
             | tee /tmp/mariadb-compat/schema-migrations.txt
-          grep -q '^2026_10_13_0027[[:space:]]' /tmp/mariadb-compat/schema-migrations.txt
+          grep -q '^2026_10_18_0028[[:space:]]' /tmp/mariadb-compat/schema-migrations.txt
           cat > /tmp/mariadb-compat/migrate-twice.php <<'PHP'
           <?php
           $migrations = \ClinicCore\Bootstrap\App::migrations();
@@ -170,11 +170,11 @@ jobs:
           echo 'schema_head=' . (string) $head . "\n";
           echo 'repeat_migrate_first=' . json_encode($first, JSON_THROW_ON_ERROR) . "\n";
           echo 'repeat_migrate_second=' . json_encode($second, JSON_THROW_ON_ERROR) . "\n";
-          exit($head === '2026_10_13_0027' && $first === [] && $second === [] ? 0 : 1);
+          exit($head === '2026_10_18_0028' && $first === [] && $second === [] ? 0 : 1);
           PHP
           wp eval-file /tmp/mariadb-compat/migrate-twice.php --path="$WP_DIR" --allow-root \
             | tee /tmp/mariadb-compat/migration-repeat.txt
-          grep -q 'schema_head=2026_10_13_0027' /tmp/mariadb-compat/migration-repeat.txt
+          grep -q 'schema_head=2026_10_18_0028' /tmp/mariadb-compat/migration-repeat.txt
           grep -q 'repeat_migrate_first=\[\]' /tmp/mariadb-compat/migration-repeat.txt
           grep -q 'repeat_migrate_second=\[\]' /tmp/mariadb-compat/migration-repeat.txt
 
@@ -200,7 +200,7 @@ jobs:
           clone_tables="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
             --batch --skip-column-names "$RESTORE_DB_NAME" \
             --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'wp_cpms_%'")"
-          test "$source_head" = '2026_10_13_0027'
+          test "$source_head" = '2026_10_18_0028'
           test "$clone_head" = "$source_head"
           test "$source_tables" -gt 0
           test "$clone_tables" = "$source_tables"
