@@ -1321,6 +1321,12 @@ class D3CoexistenceProbeTests(unittest.TestCase):
         """Stub every external effect; return the recorded command log."""
         module = self.module
         calls = []
+        # CRITICAL: `probe.annotate` prints a real GitHub Actions workflow command.
+        # The `Lint` step runs this suite inside every acceptance lane, so an
+        # unstubbed annotate turns a deliberately-exercised refusal path into a
+        # genuine `[failure]` annotation on that lane's check run -- exactly the
+        # misleading evidence this harness must never produce. Capture instead.
+        self.annotations = []
         if probe_json is None:
             probe_json = {"attempted": True, "thrown": "RuntimeException: SQL",
                           "recorded_in_wp": 0}
@@ -1390,6 +1396,9 @@ class D3CoexistenceProbeTests(unittest.TestCase):
             patch.object(module.probe, "scalar", scalar),
             patch.object(module.probe, "run", run),
             patch.object(module.probe, "wp_cli", wp_cli),
+            patch.object(module.probe, "annotate",
+                         lambda level, message: self.annotations.append((level, message))),
+            patch.object(module, "print", lambda *a, **k: None),
             patch.object(module, "subprocess", type("S", (), {"run": staticmethod(subprocess_run),
                                                              "CompletedProcess": subprocess.CompletedProcess})),
             patch.object(module, "d3_fingerprint",
@@ -1505,6 +1514,9 @@ class D3CoexistenceProbeTests(unittest.TestCase):
         evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
         self.assertTrue(any(c["status"] == self.module.probe.UNEXECUTED for c in evidence),
                         "a refusal must stay UNEXECUTED, never a silent pass")
+        self.assertEqual([level for level, _ in self.annotations], ["error"],
+                         "a refusal must annotate loudly, but only through the stub")
+        self.assertIn("could not complete", self.annotations[0][1])
 
     def test_inactive_cpms_keeps_the_probe_not_run(self):
         self.install_stubs(cpms_active=False)
