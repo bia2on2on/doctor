@@ -559,6 +559,29 @@ jobs:
             tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/phpunit-int.log
           grep -qE '^OK \(' /tmp/phpunit-int.log
 
+      # Classic patient-facing enrollment UI: server-derived Clinic list,
+      # unverified/unavailable states, strict policy boundaries and read-only
+      # projection. Both files must execute without skips.
+      - name: Run patient enrollment options and UI regressions
+        run: |
+          set -o pipefail
+          for suite in PatientEnrollmentOptionsTest.php PatientEnrollmentUiTest.php; do
+            php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+              --log-junit "/tmp/${suite}-junit.xml" \
+              --bootstrap tests/integration-bootstrap.php \
+              "tests/Integration/${suite}" 2>&1 | tee "/tmp/${suite}.log"
+            grep -qE '^OK \(' "/tmp/${suite}.log"
+          done
+          python3 - <<'PYENROLL'
+          import xml.etree.ElementTree as ET
+          for suite in ('PatientEnrollmentOptionsTest.php', 'PatientEnrollmentUiTest.php'):
+              root = ET.parse(f'/tmp/{suite}-junit.xml').getroot()
+              cases = root.findall('.//testcase')
+              if not cases or any(c.find(tag) is not None for c in cases for tag in ('skipped', 'failure', 'error')):
+                  raise SystemExit(f'{suite}: all enrollment tests must execute without skip/failure/error')
+              print(f'{suite}: {len(cases)} tests executed')
+          PYENROLL
+
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests
