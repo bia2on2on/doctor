@@ -75,7 +75,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
             $now = App::db()->nowUtcSql();
             $ok  = $wpdb->query($wpdb->prepare(
                 "INSERT INTO {$defs} (clinic_id, role_key, display_name, status, version, created_at, updated_at) VALUES (1, 'dname_survive', %s, 'active', 3, %s, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                'نام نمایشی — Unicode 受付',
+                'نام نمایشی — Unicode 受付 🧑‍⚕️',
                 $now,
                 $now
             ));
@@ -97,7 +97,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
             $row = $wpdb->get_row($wpdb->prepare("SELECT role_key, display_name, status, version FROM {$defs} WHERE id = %d", $defId), ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             self::assertIsArray($row);
             self::assertSame('dname_survive', (string) $row['role_key'], 'the technical key must never be rewritten');
-            self::assertSame('نام نمایشی — Unicode 受付', (string) $row['display_name'], 'the Unicode display name must round-trip');
+            self::assertSame('نام نمایشی — Unicode 受付 🧑‍⚕️', (string) $row['display_name'], 'the Unicode display name must round-trip');
             self::assertSame('active', (string) $row['status']);
             self::assertSame(3, (int) $row['version'], 'the durable version must be untouched');
 

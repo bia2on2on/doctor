@@ -6,10 +6,11 @@
  * and data, and fail closed when either database engine's guard is uncertain.
  *
  * MySQL 8 reports CHECK enforcement through TABLE_CONSTRAINTS.ENFORCED.
- * MariaDB 11.4.13 reports CHECK ownership through CHECK_CONSTRAINTS.TABLE_NAME
- * and has no ENFORCED column; CHECK evaluation is controlled by
- * @@SESSION.check_constraint_checks. The engine-specific metadata paths follow
- * the official MySQL 8.0 TABLE_CONSTRAINTS and MariaDB CHECK_CONSTRAINTS docs.
+ * MariaDB 10.11.x and 11.4.13 report CHECK ownership through
+ * CHECK_CONSTRAINTS.TABLE_NAME and expose no ENFORCED column; CHECK evaluation
+ * is controlled by @@SESSION.check_constraint_checks. These engine-specific
+ * metadata paths follow the official MySQL 8.0 TABLE_CONSTRAINTS and MariaDB
+ * CHECK_CONSTRAINTS documentation.
  */
 
 declare(strict_types=1);
@@ -31,8 +32,13 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
 
     $version = $server['SERVER_VERSION'];
     $comment = $server['VERSION_COMMENT'];
-    if ( ( stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false )
-        && preg_match( '/\A11\.4\.13(?:-MariaDB)?(?:[-+]|\z)/i', $version ) === 1 ) {
+    if (
+        ( stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false )
+        && preg_match(
+            '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13)(?:-MariaDB)?(?:[-+][a-zA-Z0-9._-]+)?\\z/i',
+            $version
+        ) === 1
+    ) {
         return 'mariadb';
     }
 
@@ -41,7 +47,9 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
         return 'mysql';
     }
 
-    throw new \RuntimeException( 'migration 0027: unsupported database server; expected MySQL 8 or MariaDB 11.4.13' );
+    throw new \RuntimeException(
+        'migration 0027: unsupported database server; expected MySQL 8, MariaDB 10.11.x, or MariaDB 11.4.13'
+    );
 };
 
 
