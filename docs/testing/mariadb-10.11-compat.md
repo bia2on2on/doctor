@@ -150,3 +150,44 @@ One-line workflow correction (commit `b5b082a`): drop the unsupported `--no-prog
 - The lane is **still red**, and correctly so: 5 test **errors** (0 failures, 0 skips) violate the zero-error completeness gate; PHPUnit exit code 2. This is **not a MariaDB 10.11 compatibility PASS**.
 - The first failing identifier is `CustomRoleArchivalConcurrencyTest.testActualDefinitionWaitSerializesTerminalOperations`. The identities of the remaining 4 erroring cases and the error causes are **not** established here: the raw JUnit/step logs remain inaccessible from this sandbox (artifact and log endpoints return EOF), and no raw-log guessing or retry was performed per mandate.
 - Reproduction limitations: offline sandbox (packagist/GitHub release assets unreachable); the PHPUnit 9.6.31 tree was source-assembled and executed under a PHP 8.x WASM runtime (exit codes not propagated by that CLI); the CI counts come from the reporter's regression-tested JUnit parser, via the sanitized annotation channel.
+
+## PR #238 consolidation and five-error diagnosis — 2026-10-17 (session 4)
+
+### Authorization and branch ownership
+
+- Measured receipt `2026-10-17T13:50:12Z`. Live `main` was `84fe07bc625ac9cf69607ea1283036868c136ec5`; Draft PR #238 was open at head `arena/c2bb7f15-doctor` = `a516abce28c861c3f6d3ba13377b955d08a2c0f4`, base `main`, `maintainerCanModify=false`; the proven fix branch `arena/09114e37-doctor` = `dc4f4520ec1190ff6292ad8a2abd461e3ffcb288`.
+- The session branch `arena/ae733fdc-doctor` was not allowed to push to PR #238's branch. It therefore received a normal `--no-ff` merge of `arena/09114e37-doctor` (merge commit `a17163b562f1ae796360eae42c8ccfd2595c91bc`); only the append-only `docs/agent-log.md` conflicted, and both histories were kept in chronological order. No reset, clean, rebase, force push, history rewrite or empty commit was used. PR #238 remains open, Draft and untouched.
+- Replacement Draft PR: [#242](https://github.com/bia2on2on/doctor/pull/242), base `main`, head `arena/ae733fdc-doctor`.
+
+### Preserved contracts
+
+The merge preserves PR #238's 11-file implementation, `phpunit.mariadb-10.11.xml` with exactly 18 explicit files, the >=120-case gate, `failOnWarning="true"`, the fail-closed JUnit/selection/reporting gate, and the final `schedule` + `workflow_dispatch`-only triggers. The PHPUnit 9.6 correction from `dc4f4520` (no `--no-progress`) is unchanged. No application, migration, security, tenant, finance or backup behavior was modified.
+
+### Measured executions
+
+Every run below used the pinned `mariadb:10.11.19` image and the identity gate; all preconditions (WordPress 7.1.3 + CPMS ZIP, migration head, safe clone import, PHPUnit 9.6 install, reporter regressions) passed.
+
+| Run | Head | Measured result |
+| --- | --- | --- |
+| [39024590449](https://github.com/bia2on2on/doctor/actions/runs/39024590449) | `1c0152d` (proven fix branch) | 216 tests / 3,619 assertions / 18 of 18 classes / 0 failures / **5 errors** / 0 skips |
+| [39038448525](https://github.com/bia2on2on/doctor/actions/runs/39038448525) | `6fa39d42` | identical 5 errors after the MariaDB lock-introspection dialect landed |
+| [39039803860](https://github.com/bia2on2on/doctor/actions/runs/39039803860) | `112bb314` | sanitized signatures: all 5 errors at `CustomRoleLockWaitFixture.php:256`, throwable token `runtime`, category `lock_wait_timeout` |
+| [39039942475](https://github.com/bia2on2on/doctor/actions/runs/39039942475) | `6462a4bd` | 216 / 3,852 / 18 of 18 / 0 errors / 4 failures / 0 skips |
+| [39040092485](https://github.com/bia2on2on/doctor/actions/runs/39040092485) | `579336d6` | same 4 failures, failure signatures published |
+| [39040250013](https://github.com/bia2on2on/doctor/actions/runs/39040250013) | `96aa748e` | **216 / 3,937 / 18 of 18 / 0 errors / 1 failure / 0 skips** |
+
+### Established causes (evidence, not inference)
+
+1. **Missing MariaDB Performance Schema tables.** MariaDB 10.11 has no `performance_schema.data_locks` / `data_lock_waits`; [MDEV-31165](https://jira.mariadb.org/browse/MDEV-31165) is still open. The selected tests now detect the live server family with `VERSION()` and read `information_schema.INNODB_LOCKS` / `INNODB_LOCK_WAITS` on MariaDB. Because those views cannot expose a granted row lock before a waiter exists, ownership is proven behaviourally by an independent `FOR UPDATE NOWAIT` probe on the exact primary key.
+2. **MariaDB NOWAIT denial code.** Run 39039803860 isolated all five errors to the probe. MariaDB 10.11.19 reports a `NOWAIT` denial as `ER_LOCK_WAIT_TIMEOUT` (1205), not MySQL 8's `ER_LOCK_NOWAIT` (3572); treating 1205 as fatal turned a correct lock denial into five errors. Both codes now count as proof; every other error stays fatal.
+3. **Cross-view transaction identity.** Run 39039942475 left three archival failures at `CustomRoleArchivalConcurrencyTest.php:441`, comparing `INNODB_TRX.trx_id` with `INNODB_LOCK_WAITS.blocking_trx_id` across two MariaDB views. The MariaDB wait-edge query now binds the blocking transaction by the winner connection thread id, keeps the blocking lock pinned to `PRIMARY` with `lock_data` equal to the definition id, and only the waiting lock may sit on the index the production statement actually used.
+
+### Remaining failure (precise)
+
+Run 39040250013 leaves exactly one failure: `CustomRoleLifecycleTest.testAssignmentWaitsForLockedDefinitionAndRevalidatesAfterDeactivation` at line 610 — the forked-child case does not observe a MariaDB wait edge within its bounded deadline. The four `CustomRoleArchivalConcurrencyTest` data rows pass. No speculative change was made to the forked-session case. The lane is therefore **still red and not a MariaDB 10.11 compatibility pass**; the fail-closed gate correctly remains non-zero.
+
+### Evidence boundaries
+
+- MariaDB 10.11.19 results are distinct from MySQL 8 and MariaDB 11.4.13 evidence. The MySQL 8 Integration check on `main` `84fe07bc` passed in CI run 39033834896; that is not MariaDB evidence.
+- Run logs and the uploaded JUnit artifact remain unreachable from this sandbox (endpoints return EOF). All per-test facts above come from the sanitized Checks-REST annotation added in this branch; its reporter suite (26 local tests) verifies that messages, SQL, paths, fixture values and credentials are never published.
+- The temporary `push` trigger used for the five measurements is removed; the final workflow state is `schedule` + `workflow_dispatch` only. Ruleset 22393801 and its nine required contexts are unchanged. No Owner-hosting, ruleset or Phase 20 change was made.
