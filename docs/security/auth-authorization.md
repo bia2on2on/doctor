@@ -64,6 +64,21 @@ service routes retain their independent scoped authorization. See ADR-0023 §0
 and API C0a for the six-month window and rejection contracts. Unverified new
 patients still require physical reception within one month after expiry.
 
+**Classic patient-facing UI (2026-10-17).** The Patient Portal's enrollment
+section is a presentation view over a server-derived, read-only option list. It
+accepts only the authenticated session's user id; it never accepts a Clinic,
+identity, patient, Organization or policy value from the browser. Only
+Organizations with exactly one explicit identity link and `active` status
+contribute, and a Clinic is omitted when that identity already has a local
+record. Suspended/ambiguous/unverified subjects and subjects outside the signed
+policy window receive a generic reception-contact notice — never a Clinic list,
+T0, deadline, encounter, source Clinic or cross-Clinic history. The select's
+options are the only choices offered and no default is preselected; C0a still
+re-authorizes every POST. A failed/unknown preview response degrades to the same
+generic notice. The section contains no appointment/booking control, and a
+successful C0a response is accepted only when it matches the documented minimal
+`{patient_id, clinic_id, mrn}` shape.
+
 ### 1.2 Doctor/Secretary
 - V1: WP Login (username+password، سیاست رمز قوی) + Session.
 - V1.5: TOTP 2FA (فیلدها و Flow آماده؛ Setting `2fa.enabled`) — (FR-1.9).

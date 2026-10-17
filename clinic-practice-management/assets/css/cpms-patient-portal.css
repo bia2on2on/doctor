@@ -915,3 +915,84 @@
 	border-block-start: 1px solid var(--cpms-pp-border);
 	font-size: 0.9rem;
 }
+
+/* ---------------------------------------------------------------------------
+   Cross-Clinic first enrollment — Classic Patient Portal (RTL-first).
+   Only presentation: the server has already resolved the authorized Clinics.
+   --------------------------------------------------------------------------- */
+.cpms-patient-portal-shell .cpms-pp-enrollment__form {
+	display: grid;
+	gap: 16px;
+	max-width: 46rem;
+	margin-block: 16px;
+}
+.cpms-pp-enrollment__fieldset {
+	border: 1px solid var(--cpms-pp-border, #dcdcde);
+	border-radius: var(--cpms-pp-radius-sm, 6px);
+	padding: 16px;
+	margin: 0;
+	min-width: 0;
+}
+.cpms-pp-enrollment__fieldset legend {
+	font-weight: 700;
+	padding-inline: 6px;
+}
+.cpms-pp-enrollment__field {
+	display: grid;
+	gap: 6px;
+	margin-block-end: 14px;
+}
+.cpms-pp-enrollment__field:last-child { margin-block-end: 0; }
+.cpms-pp-enrollment__field label { font-weight: 600; }
+.cpms-pp-enrollment__field input,
+.cpms-pp-enrollment__field select {
+	width: 100%;
+	min-height: var(--cpms-pp-touch, 44px);
+	padding: 10px 12px;
+	border: 1px solid var(--cpms-pp-border, #dcdcde);
+	border-radius: var(--cpms-pp-radius-sm, 6px);
+	background: var(--cpms-pp-surface, #fff);
+	color: var(--cpms-pp-text, #1d2327);
+	font: inherit;
+}
+.cpms-pp-enrollment__field input:focus-visible,
+.cpms-pp-enrollment__field select:focus-visible {
+	outline: 3px solid var(--cpms-pp-primary, #2271b1);
+	outline-offset: 2px;
+}
+.cpms-pp-enrollment__notice {
+	padding: 12px 14px;
+	border: 1px solid var(--cpms-pp-border, #dcdcde);
+	border-radius: var(--cpms-pp-radius-sm, 6px);
+	background: var(--cpms-pp-surface-alt, #f6f7f7);
+}
+.cpms-pp-enrollment__notice p { margin-block: 0 8px; }
+.cpms-pp-enrollment__notice p:last-child { margin-block-end: 0; }
+.cpms-pp-enrollment__notice--muted { color: var(--cpms-pp-muted, #50575e); }
+.cpms-pp-enrollment__actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cpms-pp-enrollment__error {
+	color: var(--cpms-pp-danger, #b32d2e);
+	font-weight: 600;
+	margin: 0;
+	padding: 8px 0;
+}
+.cpms-pp-enrollment__status { color: var(--cpms-pp-muted, #646970); margin: 0; }
+.cpms-pp-enrollment__success {
+	display: grid;
+	gap: 8px;
+	max-width: 46rem;
+	padding: 16px;
+	border: 1px solid var(--cpms-pp-ok, #00a32a);
+	border-radius: var(--cpms-pp-radius-sm, 6px);
+	background: #f0f8f1;
+}
+.cpms-pp-enrollment__success:focus-visible {
+	outline: 3px solid var(--cpms-pp-ok, #00a32a);
+	outline-offset: 2px;
+}
+.cpms-pp-enrollment__success h2 { margin: 0; font-size: 1.15rem; }
+.cpms-pp-enrollment__success p { margin: 0; }
+@media (max-width: 480px) {
+	.cpms-pp-enrollment__fieldset { padding: 12px; }
+	.cpms-pp-enrollment__actions .cpms-pp-btn { width: 100%; }
+}

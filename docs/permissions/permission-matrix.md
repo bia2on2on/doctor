@@ -188,6 +188,13 @@
 | Doctor Private Note | **—** | — | — | — | — |
 | Patient Visible Note | Self | — | — | — | — |
 | Prescription | Self | — | — | — | Self (PDF) |
+
+> **UI note (2026-10-17):** the Classic Patient Portal exposes first enrollment
+> only for a verified patient subject. Its destination list is derived
+> server-side from the same exactly-one explicit identity rule; it exposes no
+> Clinic the session is not entitled to, offers no default Clinic, and gives
+> unverified/policy-blocked subjects only a generic reception-contact notice.
+> The browser supplies just the selected Clinic id, which C0a re-authorizes.
 | Recommendation/Follow-Up | Self | — | — | — | — |
 | Attachment | Self (مجاز) | Self (مجاز) | — | — | Self |
 | Invoice/Receipt | Self (اگر Setting فعال) | — | — | — | Self |
