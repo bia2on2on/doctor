@@ -239,6 +239,56 @@ def _event_identifiers(cases: list[ET.Element], tag: str) -> list[dict[str, str]
     return identifiers
 
 
+_SIGNATURE_CATEGORIES = (
+    ("performance_schema", "performance_schema_surface"),
+    ("innodb_lock_waits", "innodb_legacy_views"),
+    ("innodb_locks", "innodb_legacy_views"),
+    ("unknown database", "database_unknown"),
+    ("access denied", "database_access"),
+    ("connection refused", "database_connection"),
+    ("getaddrinfo", "database_dns"),
+    ("no such host", "database_dns"),
+    ("deadlock", "deadlock"),
+    ("lock wait timeout", "lock_wait_timeout"),
+    ("duplicate entry", "duplicate_entry"),
+    ("foreign key", "foreign_key"),
+    ("nowait", "lock_nowait"),
+)
+
+
+def _type_token(value: str | None) -> str:
+    """Reduce a PHP throwable name to a short token with no raw class text."""
+    token = re.sub(r"[^A-Za-z0-9_]", "", (value or "").split("\\")[-1])
+    token = re.sub(r"(?i)exception$", "", token)
+    return (token or "unknown").lower()[:40]
+
+
+def _error_signatures(cases: list[ET.Element]) -> list[str]:
+    """Bounded, sanitized location/type evidence for each PHPUnit error.
+
+    Only an allowlisted class/method, the basename:line of the first PHP frame,
+    a throwable token and a fixed category are emitted. Messages, SQL, paths,
+    fixture values and credentials never leave this function.
+    """
+    signatures: list[str] = []
+    for case in cases:
+        error = next((child for child in list(case) if local_name(child.tag) == "error"), None)
+        if error is None:
+            continue
+        class_name = normalize_classname(case.attrib.get("classname"))
+        safe_class = class_name if class_name in EXPECTED_CLASS_SET else "unrecognized"
+        text = f"{error.text or ''} {error.attrib.get('message') or ''}"
+        frame = re.search(r"([A-Za-z0-9_.-]+\.php):(\d+)", text)
+        frame_text = f"{frame.group(1)}:{frame.group(2)}" if frame else "unknown"
+        lowered = text.lower()
+        category = next((label for needle, label in _SIGNATURE_CATEGORIES if needle in lowered), "other")
+        signatures.append(
+            f"{safe_class}.{_safe_method_name(case.attrib.get('name'))}"
+            f"@{frame_text}[{_type_token(error.attrib.get('type'))};{category}]"
+        )
+    return signatures[:5]
+
+
 def _case_counts(cases: list[ET.Element]) -> dict[str, int]:
     counts = {"failures": 0, "errors": 0, "skipped": 0}
     tags = {"failure": "failures", "error": "errors", "skipped": "skipped"}
@@ -389,6 +439,7 @@ def analyze_junit(
             "unexpected_class_count": len(executed_classes.difference(EXPECTED_CLASS_SET)),
             "failure_identifiers": _event_identifiers(cases, "failure"),
             "error_identifiers": _event_identifiers(cases, "error"),
+            "error_signatures": _error_signatures(cases),
             "skip_identifiers": _event_identifiers(cases, "skipped"),
             "first_failing_identifier": _first_failure_in_document_order(cases),
         }
@@ -587,6 +638,11 @@ def _escape_workflow_message(value: str) -> str:
     )
 
 
+def _signature_text(result: dict[str, Any]) -> str:
+    signatures = result.get("error_signatures") or []
+    return "|".join(signatures) if signatures else "none"
+
+
 def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
     """Build exactly one bounded, sanitized GitHub workflow-command annotation."""
     level = "notice" if result["gate_pass"] and not output_error else "error"
@@ -614,7 +670,7 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
         f"skips={_display(result['skipped'])}; "
         f"classes={_display(result['executed_class_count'])}/{result['expected_class_count']}; "
         f"executed={executed}; missing={missing_text}; "
-        f"first={_first_failing_identifier(result)}"
+        f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result)}"
     )
     message = _escape_workflow_message(message)
     if len(message) > 1800:
@@ -626,7 +682,7 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
             f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
             f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
             f"skips={_display(result['skipped'])}; missing_count={len(missing or []) if missing is not None else 'UNKNOWN'}; "
-            f"first={_first_failing_identifier(result)}"
+            f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result)}"
         )
     title = "MariaDB 10.11 sanitized PHPUnit diagnostic"
     return f"::{level} title={title}::{message}"
