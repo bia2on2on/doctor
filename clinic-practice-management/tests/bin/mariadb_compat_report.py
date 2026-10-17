@@ -282,10 +282,16 @@ def _failure_signatures(cases: list[ET.Element], tag: str) -> list[str]:
         frame_text = f"{frame.group(1)}:{frame.group(2)}" if frame else "unknown"
         lowered = text.lower()
         category = next((label for needle, label in _SIGNATURE_CATEGORIES if needle in lowered), "other")
-        signatures.append(
+        signature = (
             f"{safe_class}.{_safe_method_name(case.attrib.get('name'))}"
             f"@{frame_text}[{_type_token(error.attrib.get('type'))};{category}]"
         )
+        # A test may attach a fixed-token diagnostic payload; only bare
+        # alphanumerics and structural separators survive this allowlist.
+        readiag = re.search(r"RDIAG=([A-Za-z0-9_:;=.,|/-]{0,700})", text)
+        if readiag:
+            signature += "{rdiag=" + readiag.group(1)[:640] + "}"
+        signatures.append(signature)
     return signatures[:5]
 
 

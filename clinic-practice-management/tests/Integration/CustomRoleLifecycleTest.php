@@ -607,9 +607,19 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         'child_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
                         'wait_edge' => null,
                     ];
+                    // Sanitized, content-free tokens published by the MariaDB
+                    // reporter so a missed edge is diagnosable without logs.
+                    $diagnostics['maria_wait_failure'] = $this->mariaDbWaitFailureDiagnostics(
+                        $observer,
+                        $childConnectionId,
+                        $parentConnectionId,
+                        $definitionId,
+                        $childReaped ? 'reaped' : 'running'
+                    );
                     self::fail(
                         'Did not observe B blocked by A on the exact custom-role definition row before the bounded deadline. Evidence: '
                         . json_encode($diagnostics, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)
+                        . ' RDIAG=' . $diagnostics['maria_wait_failure']
                     );
                 }
 

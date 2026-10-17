@@ -349,6 +349,109 @@ trait CustomRoleLockWaitFixture
     }
 
     /**
+     * Content-free evidence for a missed MariaDB wait edge.
+     *
+     * Every value is a count, an enum token, a lock index/type/mode name or a
+     * 0/1 match flag; no SQL, message, fixture value or identifier text can
+     * reach the result. Used only on the failure path of a timing-bounded wait.
+     */
+    private function mariaDbWaitFailureDiagnostics(
+        \mysqli $observer,
+        int $requestingConnectionId,
+        int $blockingConnectionId,
+        int $definitionId,
+        string $childState
+    ): string {
+        try {
+            $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
+            $definitionId = (int) $definitionId;
+            $requesterTrx = $this->mariaDbScalar(
+                $observer,
+                'SELECT trx_id FROM information_schema.innodb_trx'
+                . ' WHERE trx_mysql_thread_id = ' . (int) $requestingConnectionId . ' LIMIT 1'
+            );
+            $blockingTrx = $this->mariaDbScalar(
+                $observer,
+                'SELECT trx_id FROM information_schema.innodb_trx'
+                . ' WHERE trx_mysql_thread_id = ' . (int) $blockingConnectionId . ' LIMIT 1'
+            );
+            $describe = static function (array $row) use ($table, $definitionId): string {
+                $normalized = str_replace(['`', ' '], '', (string) ($row['lock_table'] ?? ''));
+                return sprintf(
+                    'i=%s;t=%s;m=%s;tb=%d;d=%d',
+                    preg_replace('/[^A-Za-z0-9_]/', '', (string) ($row['lock_index'] ?? '')),
+                    preg_replace('/[^A-Za-z0-9_]/', '', (string) ($row['lock_type'] ?? '')),
+                    preg_replace('/[^A-Za-z0-9_]/', '', (string) ($row['lock_mode'] ?? '')),
+                    $normalized === (string) DB_NAME . '.' . $table ? 1 : 0,
+                    trim((string) ($row['lock_data'] ?? '')) === (string) $definitionId ? 1 : 0
+                );
+            };
+            $waits = $this->mariaDbRows(
+                $observer,
+                'SELECT waits.blocking_trx_id AS blocking_trx_id, locks.lock_index, locks.lock_type,'
+                . ' locks.lock_mode, locks.lock_table, locks.lock_data'
+                . ' FROM information_schema.innodb_lock_waits AS waits'
+                . ' LEFT JOIN information_schema.innodb_locks AS locks ON locks.lock_id = waits.blocking_lock_id'
+                . ' WHERE waits.requesting_trx_id = ' . $observer->real_escape_string((string) $requesterTrx)
+                . ' LIMIT 3'
+            );
+            $blockedByParent = $this->mariaDbRows(
+                $observer,
+                'SELECT waits.requesting_trx_id AS requesting_trx_id'
+                . ' FROM information_schema.innodb_lock_waits AS waits'
+                . ' WHERE waits.blocking_trx_id = ' . $observer->real_escape_string((string) $blockingTrx)
+                . ' LIMIT 3'
+            );
+            $parentLocks = $this->mariaDbRows(
+                $observer,
+                'SELECT lock_index, lock_type, lock_mode, lock_table, lock_data'
+                . ' FROM information_schema.innodb_locks'
+                . " WHERE lock_trx_id = '" . $observer->real_escape_string((string) $blockingTrx) . "' LIMIT 3"
+            );
+
+            return 'child=' . preg_replace('/[^a-zA-Z]/', '', $childState)
+                . ';reqtrx=' . ($requesterTrx === '' ? 0 : 1)
+                . ';ptrx=' . ($blockingTrx === '' ? 0 : 1)
+                . ';w=' . count($waits)
+                . ';pw=' . count($blockedByParent)
+                . ';wdesc=' . ($waits === [] ? 'none' : implode('|', array_map($describe, $waits)))
+                . ';pdesc=' . ($parentLocks === [] ? 'none' : implode('|', array_map($describe, $parentLocks)));
+        } catch (\Throwable $exception) {
+            return 'error=' . preg_replace('/[^A-Za-z]/', '', (new \ReflectionClass($exception))->getShortName());
+        }
+    }
+
+    private function mariaDbScalar(\mysqli $observer, string $sql): string
+    {
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not read MariaDB lock diagnostics: ' . $observer->error);
+        }
+        $row = $result->fetch_row();
+        $result->free();
+
+        return is_array($row) ? (string) ($row[0] ?? '') : '';
+    }
+
+    /**
+     * @return list<array<string,string|null>>
+     */
+    private function mariaDbRows(\mysqli $observer, string $sql): array
+    {
+        $result = $observer->query($sql);
+        if ($result === false) {
+            throw new RuntimeException('Could not read MariaDB lock diagnostics: ' . $observer->error);
+        }
+        $rows = [];
+        while ($row = $result->fetch_assoc()) {
+            $rows[] = $row;
+        }
+        $result->free();
+
+        return $rows;
+    }
+
+    /**
      * @return list<array<string,string|null>>
      */
     private function mariaDbDefinitionLocks(\mysqli $observer, int $connectionId): array

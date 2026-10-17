@@ -536,6 +536,31 @@ class MariaDbCompatReportTest(unittest.TestCase):
         self.assertIn("First failing test identifier", summary)
         self.assertNotIn("irrelevant", summary)
 
+    def test_failure_rdiag_payload_is_allowlisted_and_cannot_inject_commands(self) -> None:
+        classnames = [EXPECTED_CLASSES[index % 18] for index in range(120)]
+        junit = self.write_junit(self.work / "rdiag.xml", classnames, failure_index=0)
+        tree = ET.parse(junit)
+        case = tree.findall(".//testcase")[0]
+        failure = case.find("failure")
+        failure.text = (
+            "Did not observe the wait edge. RDIAG=child=running;reqtrx=1;ptrx=1;w=0;pw=0;"
+            "wdesc=none;pdesc=i=PRIMARY;t=RECORD;m=X;tb=1;d=1 "
+            "::error title=leak:: /tmp/secret.php PHI-77"
+        )
+        tree.write(junit, encoding="utf-8", xml_declaration=True)
+
+        report = analyze_junit(junit, DEFAULT_SELECTION_CONFIG, 1)
+        annotation = build_annotation(report)
+        serialized = json.dumps(report)
+        summary = render_markdown(report)
+
+        self.assertIn("rdiag=child=running;reqtrx=1;ptrx=1;w=0;pw=0", annotation)
+        self.assertIn("d=1", annotation)
+        for forbidden in ("PHI-77", "/tmp/secret.php", "title=leak"):
+            self.assertNotIn(forbidden, annotation + summary)
+        self.assertEqual(annotation.count("::"), 2)
+        self.assertNotIn("PHI-77", serialized)
+
     def test_missing_classes_are_named_in_summary_and_annotation(self) -> None:
         junit = self.write_junit(
             self.work / "first-class-only.xml",
