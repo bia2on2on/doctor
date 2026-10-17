@@ -1055,11 +1055,194 @@
 		});
 	}
 
+
+	/**
+	 * ثبت پرونده در مرکز دیگر — Classic Patient Portal.
+	 *
+	 * Server has already authorized the destination list; the browser only sends
+	 * the explicitly selected id to the existing C0a endpoint with the existing
+	 * wp_rest nonce. A malformed 2xx is never treated as success, repeated submits
+	 * are blocked while a request is in flight, and no booking action exists.
+	 */
+	function enrollmentDigits(value) {
+		return String(value || '')
+			.replace(/[۰-۹]/g, function (d) { return String(d.charCodeAt(0) - 0x06F0); })
+			.replace(/[٠-٩]/g, function (d) { return String(d.charCodeAt(0) - 0x0660); })
+			.replace(/[^0-9]/g, '');
+	}
+
+	function enrollmentMobile(value) {
+		var digits = enrollmentDigits(value);
+		if (digits.indexOf('0098') === 0) { digits = digits.substring(4); }
+		else if (digits.indexOf('98') === 0 && digits.length >= 12) { digits = digits.substring(2); }
+		if (digits.length === 10 && digits.charAt(0) === '9') { digits = '0' + digits; }
+		return /^09[0-9]{9}$/.test(digits) ? digits : '';
+	}
+
+	function enrollmentError(section, message) {
+		var box = section.querySelector('[data-role="enrollment-error"]');
+		if (!box) { return; }
+		box.textContent = message;
+		box.hidden = false;
+		try { box.focus(); } catch (e) {}
+	}
+
+	function enrollmentClearError(section) {
+		var box = section.querySelector('[data-role="enrollment-error"]');
+		if (!box) { return; }
+		box.textContent = '';
+		box.hidden = true;
+	}
+
+	function enrollmentSetBusy(form, busy) {
+		var button = form.querySelector('[data-role="enrollment-submit"]');
+		form.setAttribute('aria-busy', busy ? 'true' : 'false');
+		Array.prototype.forEach.call(form.querySelectorAll('input, select, button'), function (field) {
+			field.disabled = busy;
+		});
+		if (button) {
+			if (!button.getAttribute('data-enrollment-label')) {
+				button.setAttribute('data-enrollment-label', button.textContent);
+			}
+			button.textContent = busy ? 'در حال ثبت…' : button.getAttribute('data-enrollment-label');
+		}
+	}
+
+	function enrollmentFail(section, form, result, config) {
+		var status = result && result.status ? result.status : 0;
+		var code = serverCode(result);
+		var message = serverMessage(result);
+		enrollmentSetBusy(form, false);
+
+		if (status === 401 || status === 403) {
+			var box = section.querySelector('[data-role="enrollment-error"]');
+			if (!box) { return; }
+			box.textContent = 'نشست شما منقضی شده است. لطفاً دوباره وارد شوید. ';
+			if (isNonEmptyString(config.login_url)) {
+				var link = document.createElement('a');
+				link.href = config.login_url;
+				link.textContent = 'ورود دوباره';
+				box.appendChild(link);
+			}
+			box.hidden = false;
+			try { box.focus(); } catch (e) {}
+			return;
+		}
+
+		if (status === 404) {
+			var select = form.querySelector('[data-role="enrollment-clinic"]');
+			if (select && select.selectedIndex >= 0) {
+				select.options[select.selectedIndex].disabled = true;
+				select.value = '';
+			}
+			enrollmentError(section, 'ثبت برای این مرکز در دسترس نیست. مرکز دیگری را انتخاب کنید.');
+			return;
+		}
+
+		if (status === 503 || code === 'CLINIC_LICENSE_BLOCKED') {
+			enrollmentError(section, 'ثبت آنلاین در حال حاضر برای این مرکز ممکن نیست. برای تشکیل پرونده با پذیرش مطب تماس بگیرید.');
+			return;
+		}
+
+		if (status === 400 && message !== '') {
+			enrollmentError(section, message);
+			return;
+		}
+
+		enrollmentError(section, 'ثبت پرونده انجام نشد. اطلاعات واردشده حفظ شده است؛ دوباره تلاش کنید یا با مطب تماس بگیرید.');
+	}
+
+	function enrollmentSuccess(form, section, data) {
+		var success = section.querySelector('[data-role="enrollment-success"]');
+		var mrn = data && isNonEmptyString(data.mrn) ? data.mrn : '';
+		if (!success || mrn === '') {
+			enrollmentSetBusy(form, false);
+			enrollmentError(section, 'پاسخ سرور کامل نبود؛ وضعیت پرونده را در «پروفایل» بررسی کنید یا با مطب تماس بگیرید.');
+			return;
+		}
+		var mrnNode = success.querySelector('[data-role="enrollment-mrn"]');
+		if (mrnNode) { mrnNode.textContent = mrn; }
+		form.hidden = true;
+		success.hidden = false;
+		section.setAttribute('data-state', 'success');
+		try { success.focus(); } catch (e) {}
+	}
+
+	function bindEnrollment(config) {
+		var section = document.querySelector('[data-role="enrollment-section"]');
+		var form = section ? section.querySelector('[data-role="patient-enrollment-form"]') : null;
+		if (!section || !form || !isNonEmptyString(config.enroll_path)) { return; }
+
+		form.addEventListener('submit', function (event) {
+			event.preventDefault();
+			if (form.getAttribute('aria-busy') === 'true') { return; }
+			enrollmentClearError(section);
+
+			var select = form.querySelector('[data-role="enrollment-clinic"]');
+			var first = form.querySelector('[data-role="enrollment-first-name"]');
+			var last = form.querySelector('[data-role="enrollment-last-name"]');
+			var mobileField = form.querySelector('[data-role="enrollment-mobile"]');
+			var clinicId = select ? String(select.value || '') : '';
+			var allowed = false;
+			if (select && clinicId !== '') {
+				Array.prototype.forEach.call(select.options, function (option) {
+					if (option.value === clinicId) { allowed = true; }
+				});
+			}
+			if (!allowed) {
+				enrollmentError(section, 'لطفاً یک مرکز را از فهرست انتخاب کنید.');
+				if (select) { select.focus(); }
+				return;
+			}
+
+			var firstName = first ? String(first.value || '').trim() : '';
+			var lastName = last ? String(last.value || '').trim() : '';
+			if (firstName === '' || lastName === '') {
+				enrollmentError(section, 'نام و نام خانوادگی را کامل کنید.');
+				if (firstName === '' && first) { first.focus(); }
+				else if (last) { last.focus(); }
+				return;
+			}
+
+			var mobile = mobileField ? enrollmentMobile(mobileField.value) : '';
+			if (mobile === '') {
+				enrollmentError(section, 'شمارهٔ موبایل معتبر نیست (نمونه: 09121234567).');
+				if (mobileField) { mobileField.focus(); }
+				return;
+			}
+
+			enrollmentSetBusy(form, true);
+			requestJson(apiUrl(config.rest_root, config.enroll_path), {
+				method: 'POST',
+				credentials: 'same-origin',
+				headers: {
+					'Content-Type': 'application/json',
+					'X-WP-Nonce': config.nonce
+				},
+				body: JSON.stringify({
+					clinic_id: Number(clinicId),
+					first_name: firstName,
+					last_name: lastName,
+					mobile: mobile
+				})
+			}).then(function (result) {
+				if (!result.ok) {
+					enrollmentFail(section, form, result, config);
+					return;
+				}
+				enrollmentSuccess(form, section, result.body && result.body.data ? result.body.data : null);
+			}).catch(function () {
+				enrollmentSetBusy(form, false);
+				enrollmentError(section, 'ارتباط با سرور برقرار نشد. اطلاعات واردشده حفظ شده است؛ دوباره تلاش کنید.');
+			});
+		});
+	}
+
 	function bindSectionNav() {
 		var navLinks = document.querySelectorAll('[data-role="patient-nav"] a');
 		function apply() {
 			var hash = (window.location.hash || '').replace(/^#/, '');
-			var target = (hash === 'profile' || hash === 'visits' || hash === 'prescriptions' || hash === 'files') ? hash : 'appointments';
+			var target = (hash === 'profile' || hash === 'enrollment' || hash === 'visits' || hash === 'prescriptions' || hash === 'files') ? hash : 'appointments';
 			Array.prototype.forEach.call(navLinks, function (a) {
 				var role = a.getAttribute('data-role');
 				var isActive = role === 'nav-' + target;
@@ -1184,6 +1367,7 @@
 		bindVisits(config);
 		bindPrescriptions(config);
 		bindFiles(config);
+		bindEnrollment(config);
 		bindSectionNav();
 	}
 

@@ -38,6 +38,7 @@ use ClinicCore\Application\Finance\FinanceService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Location\LocationService;
 use ClinicCore\Application\Membership\MembershipService;
+use ClinicCore\Application\Patients\PatientEnrollmentOptions;
 use ClinicCore\Application\Patients\PatientIdentityActivator;
 use ClinicCore\Application\Patients\PatientIdentityService;
 use ClinicCore\Application\Patients\PatientService;
@@ -95,6 +96,7 @@ use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use ClinicCore\Infrastructure\Repository\PatientEnrollmentRepository;
 use ClinicCore\Infrastructure\Repository\PatientIdentityRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\HandwritingRepository;
@@ -1058,6 +1060,25 @@ final class App
         }
 
         return $patients;
+    }
+
+    /**
+     * Read-only server-side options for patient-self first enrollment.
+     *
+     * Scope-neutral and presentation-only: it never creates a patient, never
+     * grants authority and never accepts a Clinic id. The existing
+     * `POST /clinic/v1/patient/enroll` remains the sole authority.
+     */
+    public static function patient_enrollment_options(): PatientEnrollmentOptions {
+        static $options = null;
+        if ( $options === null ) {
+            $options = new PatientEnrollmentOptions(
+                new PatientEnrollmentRepository( self::db() ),
+                self::licenseService()
+            );
+        }
+
+        return $options;
     }
 
     public static function otpService(): OtpService

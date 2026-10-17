@@ -51,6 +51,21 @@
 | # | Method/Path | توضیح |
 |---|---|---|
 | C0a | `POST /patient/enroll` | Verified patient-self first enrollment: cookie session + `X-WP-Nonce` + `cpms_patient` role; body `{clinic_id, first_name, last_name, mobile}`. `clinic_id` is only a destination selector: the server requires a persisted Clinic in an active Organization and exactly one explicit Organization identity linked to the authenticated user. No staff capability/membership is granted. Returns `data: {patient_id, clinic_id, mrn}` for the new local row only. No appointment, copied clinical history, or cross-Clinic PHI. Supplied identity/user/Organization IDs, returning/reception flags, timestamps and other fields are ignored. Contact mobile is validation/uniqueness data, never identity proof. Missing/ambiguous/legacy-only proof or unrelated/missing destination or suspended Organization → non-enumerating `404 CLINIC_NOT_FOUND`; existing destination identity record → `400 CLINIC_VALIDATION_FAILED` (use C0/C1; no overwrite). At ordinary expiry requires the verified same-Organization encounter completed strictly before signed T0 and `now < T0 + 6 Gregorian months`; otherwise `503 CLINIC_LICENSE_BLOCKED`, with no persisted enrollment/link/success audit. All new appointments remain blocked from T0. |
+
+> **Classic patient-facing UI (2026-10-17):** the Classic Patient Portal renders a
+> server-derived «ثبت پرونده در مرکز دیگر» section. The destination options are
+> discovered server-side from the authenticated user's exactly-one explicit
+> `cpms_patient_identity_links` relationship in each active Organization, minus
+> Clinics where that identity already has a local record. The browser receives
+> only Clinic `{id, name}` choices; it cannot submit a Clinic list, identity,
+> patient, Organization, T0 or policy field. A raw Clinic id remains a selector
+> only and C0a re-authorizes it. Unverified/new subjects and policy-blocked
+> subjects receive a generic reception-contact notice with no Clinic list,
+> cross-Clinic history, T0 or deadline. The UI creates no appointment, performs
+> no booking action and does not expose the one-month new-patient/self-enrollment
+> window. Repeated clicks are disabled in-flight; C0a remains the race-safe,
+> duplicate-rejecting authority. Preview is read-only and performs no mutation.
+
 | C0 | `GET /patient/my-records` | انتخاب‌گر پرونده‌های خود: در `data` فقط آرایه‌ای از `{link_id, clinic_id, clinic_name, patient_id, patient_display_name, mrn, is_primary}` برای پیوند پایدارِ کاربرِ احرازشده با Patient فعال و Clinicِ هم‌خوان برمی‌گردد؛ هیچ فیلد پروفایل/PHI دیگری ندارد. |
 | C1 | `GET /patient/me?link_id?` | پروفایل خود (فیلدهای مجاز). `link_id` فقط selector است؛ `0` پیوند فعال → `404 CLINIC_NOT_FOUND`، `1` → رفتار خودکار سازگار، `N>1` بدون selector → `422 CLINIC_SELECTION_REQUIRED` (بدون fallback primary/اولین). selector خارجی/غیرفعال/ناموجود همگی `404 CLINIC_NOT_FOUND` غیرقابل‌شمارش‌اند. |
 | C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. |

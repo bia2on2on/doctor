@@ -394,7 +394,8 @@ def run_journey(browser, run):
         required = {"cancel_path", "nonce", "notifications_read_path", "rest_root"}
         allowed = required | {"me_path", "my_records_path", "profile_initial", "profile_me_path",
                               "profile_my_records_path", "profile_records", "visits_path", "visit_detail_path",
-                              "prescriptions_path", "files_path", "files_stream_path"}
+                              "prescriptions_path", "files_path", "files_stream_path",
+                              "enroll_path", "login_url"}
         if not required.issubset(set(cfg.keys())):
             raise RuntimeError(f"config must contain cancel_path/nonce/notifications_read_path/rest_root, got {sorted(cfg.keys())}")
         # Slice 5 adds only the existing C5/C6 route templates, never authority.
