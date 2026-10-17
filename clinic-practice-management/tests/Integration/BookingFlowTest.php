@@ -27,6 +27,11 @@ final class BookingFlowTest extends WP_UnitTestCase
     private int $patientUserId;
     private int $otherUserId;
 
+    /** @var callable|null */
+    private $auditFault = null;
+
+    private bool $previousSuppression = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -81,6 +86,13 @@ final class BookingFlowTest extends WP_UnitTestCase
 
         // کاربر دوم (بدون Patient — برای تست Auto-Creation)
         $this->otherUserId = (int) wp_create_user('patient_2', 'pass-12345', '09120000002@otp.cpms.local', ['role' => 'cpms_patient']);
+    }
+
+    protected function tearDown(): void
+    {
+        $this->restoreAuditInserts();
+        App::resetScope();
+        parent::tearDown();
     }
 
     /**
@@ -300,6 +312,159 @@ final class BookingFlowTest extends WP_UnitTestCase
         $this->assertSame((int) $result['appointment_id'], (int) $wpdb->get_var(
             $wpdb->prepare('SELECT id FROM ' . $wpdb->prefix . 'cpms_appointments WHERE patient_id = %d', (int) $patient['id']) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         ));
+        $identityId = (int) $patient['identity_id'];
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        $this->assertGreaterThan( 0, $identityId, 'BookingService::confirm activates a new organization identity' );
+        $this->assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
+                [ 'PATIENT_IDENTITY_CREATED', $identityId ]
+            ),
+            'production BookingService::confirm persists the identity creation event'
+        );
+        $this->assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
+                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], 1 ]
+            ),
+            'production BookingService::confirm persists the identity linkage event'
+        );
+    }
+
+    public function testBookingConfirmReusesVerifiedIdentityAndAuditsLinkage(): void
+    {
+        global $wpdb;
+        $organizationId = (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            [ 1 ]
+        );
+        $identityService = App::patient_identity_service();
+        $identityId = $identityService->create_identity( $organizationId );
+        $identityService->link_user( $organizationId, $identityId, $this->otherUserId, '09120000002' );
+
+        $slot = $this->makeSlot( 3, '11:00', 1 );
+        $hold = $this->booking()->hold( $this->otherUserId, $this->clinicianId, $slot['date'], $slot['time'] );
+        $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
+
+        $patient = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT p.id, p.identity_id FROM ' . $wpdb->prefix . 'cpms_patient_user_links l
+                 JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id
+                 WHERE l.wp_user_id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->otherUserId
+            ),
+            ARRAY_A
+        );
+        $this->assertNotNull( $patient );
+        $this->assertSame( $identityId, (int) $patient['identity_id'], 'confirm reuses only the pre-verified identity link' );
+
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        $this->assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
+                [ 'PATIENT_IDENTITY_CREATED', $identityId ]
+            )
+        );
+        $this->assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
+                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], 1 ]
+            ),
+            'verified-reuse path through BookingService::confirm must audit the new patient edge'
+        );
+    }
+
+    public function testBookingConfirmAuditFailureRollsBackNewPatientAndIdentity(): void
+    {
+        global $wpdb;
+        $slot = $this->makeSlot( 3, '12:00', 1 );
+        $hold = $this->booking()->hold( $this->otherUserId, $this->clinicianId, $slot['date'], $slot['time'] );
+        $beforeIdentities = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
+        );
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        $createdEventsBefore = (int) App::db()->fetchValue(
+            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+            [ 'PATIENT_IDENTITY_CREATED' ]
+        );
+        $linkedEventsBefore = (int) App::db()->fetchValue(
+            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+            [ 'PATIENT_IDENTITY_LINKED' ]
+        );
+        $this->failAuditInserts();
+        try {
+            try {
+                $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
+                $this->fail( 'confirm must fail closed when identity audit persistence fails' );
+            } catch ( BookingException $exception ) {
+                $this->assertSame( 'CLINIC_INTERNAL_ERROR', $exception->errorCode );
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        $this->assertSame(
+            $beforeIdentities,
+            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' ) ),
+            'identity creation must roll back with failed audit'
+        );
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var( $wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE wp_user_id = %d',
+                $this->otherUserId
+            ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'new patient user-link must roll back with failed identity audit'
+        );
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var( $wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d',
+                $slot['id']
+            ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'confirmation appointment must not persist'
+        );
+        $this->assertSame(
+            $createdEventsBefore,
+            (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_CREATED' ] ),
+            'creation success evidence cannot survive the failed transaction'
+        );
+        $this->assertSame(
+            $linkedEventsBefore,
+            (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_LINKED' ] ),
+            'link success evidence cannot survive the failed transaction'
+        );
+    }
+
+    private function failAuditInserts(): void
+    {
+        global $wpdb;
+        $fault = static function ( $query ) {
+            $sql = (string) $query;
+            if ( preg_match( '/\\A\\s*INSERT\\s+INTO\\s+(\\S+)/i', $sql, $match ) === 1
+                && str_contains( $match[1], 'cpms_audit_logs' ) ) {
+                return 'INSERT INTO ' . $match[1] . ' (`cpms_fault_injection_no_such_column`) VALUES (1)';
+            }
+            return $query;
+        };
+        $this->previousSuppression = (bool) $wpdb->suppress_errors( true );
+        add_filter( 'query', $fault, 5 );
+        $this->auditFault = $fault;
+    }
+
+    private function restoreAuditInserts(): void
+    {
+        if ( $this->auditFault === null ) {
+            return;
+        }
+        remove_filter( 'query', $this->auditFault, 5 );
+        $this->auditFault = null;
+        global $wpdb;
+        $wpdb->suppress_errors( $this->previousSuppression );
     }
 
     // ---------- B3/B4/B5/B6 ----------

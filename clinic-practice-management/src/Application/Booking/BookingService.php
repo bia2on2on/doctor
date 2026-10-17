@@ -6,6 +6,8 @@ namespace ClinicCore\Application\Booking;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Application\Patients\PatientIdentityActivator;
+use ClinicCore\Application\Patients\PatientService;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
@@ -15,6 +17,7 @@ use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
 use ClinicCore\Domain\Machine\VisitMachine;
+use ClinicCore\Domain\Patients\PatientIdentityException;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Slots\DurationResolver;
@@ -55,6 +58,9 @@ final class BookingService
 
     private readonly MembershipRepository $memberships;
 
+    /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 (ساختِ بیمارِ جدیدِ OTP-verified). */
+    private readonly PatientIdentityActivator $identities;
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly SlotRepository $slots,
@@ -67,9 +73,14 @@ final class BookingService
         private readonly Idempotency $idem,
         private readonly SmsService $sms,
         private readonly ?NotificationService $notifications = null,
-        ?MembershipRepository $memberships = null
+        ?MembershipRepository $memberships = null,
+        ?PatientIdentityActivator $identities = null
     ) {
-        $this->memberships = $memberships ?? new MembershipRepository($this->db);
+        $this->memberships = $memberships ?? new MembershipRepository( $this->db );
+        // Organization Patient Identity activation is not optional on the
+        // new-patient path; the nullable argument only keeps existing
+        // call-sites source-compatible (scope-neutral default).
+        $this->identities = $identities ?? PatientService::default_identity_activator( $this->db );
     }
 
     /**
@@ -2028,7 +2039,41 @@ final class BookingService
             'is_primary' => 1,
             'linked_at' => $nowSql,
         ]);
-        return (array) $this->patients->find($id);
+
+        // Organization Patient Identity activation — inside the caller's
+        // confirm transaction, so a failure rolls the new Patient, its user
+        // link and the whole confirmation back (fail-closed). The Clinic comes
+        // from the persisted Hold, never from the request body.
+        $wp_user_id = $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->activate_patient_identity( $clinic_id, (int) $id, $mobile, $wp_user_id );
+
+        return (array) $this->patients->find( $id );
+    }
+
+    /**
+     * فعال‌سازی هویتِ سازمانی برای بیمارِ تازهٔ مسیرِ رزرو.
+     *
+     * `$wp_user_id` همان مالکِ احرازشدهٔ Hold (OTP-verified) است و فقط برای
+     * «تأییدِ صریحِ قابل‌اتکا» استفاده می‌شود: اگر و تنها اگر همین کاربر از
+     * قبل دقیقاً یک لینکِ صریحِ کاربر↔هویت در همان Organization داشته باشد،
+     * همان هویت دوباره استفاده می‌شود. هیچ تطبیقی بر اساس موبایل/کد ملی/نام
+     * انجام نمی‌شود — در غیر این صورت هویتِ تازه ساخته می‌شود.
+     */
+    private function activate_patient_identity( int $clinic_id, int $patient_id, string $mobile, int $wp_user_id ): void {
+        try {
+            $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile, $wp_user_id );
+        } catch ( PatientIdentityException $e ) {
+            $this->op->error(
+                'booking.patient_identity_activation_failed',
+                [
+                    'patient_id' => $patient_id,
+                    'clinic_id'  => $clinic_id,
+                    'error_code' => $e->error_code,
+                ]
+            );
+
+            throw BookingException::of( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+        }
     }
 
     /**
