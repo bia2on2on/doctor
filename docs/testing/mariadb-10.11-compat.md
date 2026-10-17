@@ -38,7 +38,7 @@ The focused real database suite additionally selects:
 - `FinanceAuthorizationPolicyRegressionTest` and `FinanceClinicIsolationTest`: financial authorization, transaction ownership, clinic scoping, and rollback/audit behavior.
 - `BackupEngineTest` and `BackupMultiClinicFilesRestoreGreenTest`: application backup generation/integrity/preflight, the non-destructive `restoreApply(..., false)` confirmation guard, and safely isolated multi-clinic file restoration.
 
-A separate workflow step also uses `mysqldump --single-transaction` to copy the synthetic WordPress/CPMS database into a new disposable MariaDB database, imports that copy, and checks migration/table state. It does not run a destructive restore against the installation database. No confirmed/destructive `restoreApply(..., true)` is invoked. The application-level table-replacement restore path remains out of scope; do not infer it was tested from the safe clone import or the non-destructive confirmation-guard test.
+A separate workflow step also uses `mariadb-dump --single-transaction` to copy the synthetic WordPress/CPMS database into a new disposable MariaDB database, imports that copy, and checks migration/table state. It does not run a destructive restore against the installation database. No confirmed/destructive `restoreApply(..., true)` is invoked. The application-level table-replacement restore path remains out of scope; do not infer it was tested from the safe clone import or the non-destructive confirmation-guard test.
 
 ## Explicit limits
 
