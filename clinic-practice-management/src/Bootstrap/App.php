@@ -569,8 +569,8 @@ final class App
                 self::idem(),
                 self::smsService(),
                 self::notificationService(),
-                new MembershipRepository($db),
-                self::patient_identity_activator()
+                new MembershipRepository( $db ),
+                self::patient_identity_activator( )
             );
         }
 

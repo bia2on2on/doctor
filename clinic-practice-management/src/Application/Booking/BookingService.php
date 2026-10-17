@@ -76,11 +76,11 @@ final class BookingService
         ?MembershipRepository $memberships = null,
         ?PatientIdentityActivator $identities = null
     ) {
-        $this->memberships = $memberships ?? new MembershipRepository($this->db);
+        $this->memberships = $memberships ?? new MembershipRepository( $this->db );
         // Organization Patient Identity activation is not optional on the
         // new-patient path; the nullable argument only keeps existing
         // call-sites source-compatible (scope-neutral default).
-        $this->identities = $identities ?? PatientService::default_identity_activator($this->db);
+        $this->identities = $identities ?? PatientService::default_identity_activator( $this->db );
     }
 
     /**
@@ -2044,35 +2044,35 @@ final class BookingService
         // confirm transaction, so a failure rolls the new Patient, its user
         // link and the whole confirmation back (fail-closed). The Clinic comes
         // from the persisted Hold, never from the request body.
-        $this->activate_patient_identity($clinic_id, (int) $id, $mobile, $wpUserId);
+        $wp_user_id = $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $this->activate_patient_identity( $clinic_id, (int) $id, $mobile, $wp_user_id );
 
-        return (array) $this->patients->find($id);
+        return (array) $this->patients->find( $id );
     }
 
     /**
      * فعال‌سازی هویتِ سازمانی برای بیمارِ تازهٔ مسیرِ رزرو.
      *
-     * `$wpUserId` همان مالکِ احرازشدهٔ Hold (OTP-verified) است و فقط برای
+     * `$wp_user_id` همان مالکِ احرازشدهٔ Hold (OTP-verified) است و فقط برای
      * «تأییدِ صریحِ قابل‌اتکا» استفاده می‌شود: اگر و تنها اگر همین کاربر از
      * قبل دقیقاً یک لینکِ صریحِ کاربر↔هویت در همان Organization داشته باشد،
      * همان هویت دوباره استفاده می‌شود. هیچ تطبیقی بر اساس موبایل/کد ملی/نام
      * انجام نمی‌شود — در غیر این صورت هویتِ تازه ساخته می‌شود.
      */
-    private function activate_patient_identity(int $clinic_id, int $patient_id, string $mobile, int $wpUserId): void
-    {
+    private function activate_patient_identity( int $clinic_id, int $patient_id, string $mobile, int $wp_user_id ): void {
         try {
-            $this->identities->activate_for_new_patient($clinic_id, $patient_id, $mobile, $wpUserId);
-        } catch (PatientIdentityException $e) {
+            $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile, $wp_user_id );
+        } catch ( PatientIdentityException $e ) {
             $this->op->error(
                 'booking.patient_identity_activation_failed',
                 [
                     'patient_id' => $patient_id,
-                    'clinic_id' => $clinic_id,
+                    'clinic_id'  => $clinic_id,
                     'error_code' => $e->error_code,
                 ]
             );
 
-            throw BookingException::of('CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500);
+            throw BookingException::of( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
         }
     }
 
