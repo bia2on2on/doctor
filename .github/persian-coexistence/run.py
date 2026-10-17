@@ -3,6 +3,7 @@
 import argparse
 from datetime import datetime, timezone
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -581,6 +582,274 @@ def stage_a_failure_visibility(stage_a, stage_b_status):
         markdown = markdown[:_STAGE_A_SUMMARY_LIMIT - 70] + "\n- Summary bounded; full evidence remains in `A/result.json`."
 
     return {"annotation": annotation, "markdown": markdown}
+
+
+# --------------------------------------------------------------------------- #
+# D3 — synthetic broken-migration fault injection inside a coexistence group
+# --------------------------------------------------------------------------- #
+# WHY THIS EXISTS. The reusable workflow's existing D3 step ("Migration failure
+# must NOT be recorded as success (D3)") is gated `!inputs.persian_coexistence`,
+# so in every coexistence lane GitHub reports it as `skipped` (observed on main
+# f1ebb5a65eeeb3125a63c8aef885e200d8b14bbe, jobs 117234311158/117234311121/
+# 117234311082). The reason is documented in that step's own comment: a pinned
+# WooCommerce's WP-CLI `after_wp_load` hook can drive `rest_api_init` before
+# `wp eval-file` reaches the probe body, and CPMS re-runs migrations from
+# `rest_api_init` (`App::ensureMigrated()`, src/Bootstrap/App.php). The
+# standalone lane resolves that with `--skip-plugins=woocommerce`.
+#
+# `--skip-plugins` is NOT usable as coexistence evidence: disabling the very
+# plugin whose interference is under measurement would hide it. So this probe
+# keeps every pinned plugin active and moves the isolation into the environment:
+#   * a disposable copy of the WordPress tree (`<wp_dir>-d3probe`), never the
+#     canonical tree;
+#   * a disposable database (`<db>_d3probe`) restored from a consistent
+#     `mysqldump --single-transaction` snapshot of the acceptance database;
+#   * the injected broken migration file is written only into the clone.
+#
+# The authoritative "never recorded as successful" assertion is then read with
+# `probe.mysql_query` — direct SQL against the disposable database, with no
+# WordPress runtime and no plugin hooks in the path at all. That makes the
+# assertion immune to the WP-CLI hook race *by construction* instead of by
+# disabling a plugin, so plugin interference stays fully in the measurement.
+#
+# FAIL-CLOSED RULES. An unexecuted probe is never a green probe:
+#   * refusing to overwrite an existing clone path/database -> UNEXECUTED;
+#   * the migration attempt must be *proven* to have been reached and to have
+#     failed loudly (probe-recorded throwable, or the injected version / broken
+#     SQL marker present in the WP-CLI output or the clone's debug.log). Without
+#     that proof a "0 rows recorded" reading is vacuous — the migration may never
+#     have been attempted — so the result is UNEXECUTED, not PASS;
+#   * the canonical acceptance database, canonical wp-config.php and canonical
+#     Migrations directory are fingerprinted before and after; any difference is
+#     a FAIL, because the probe would then have touched real acceptance state.
+#
+# SCOPE. Enabled only for the heaviest group (`combined-nineteen`, 18 active
+# pins) and only when Stage B actually installed CPMS. The other five lanes keep
+# their truthful `synthetic broken migration: NOT RUN` declaration; their D3
+# coverage remains the standalone exact-head `Real WP Acceptance` job.
+D3_GROUP = "combined-nineteen"
+D3_VERSION = "2999_01_01_9999"
+D3_FILE_NAME = f"{D3_VERSION}_acceptance_broken.php"
+D3_BROKEN_SQL = "CREATE TABLE syntax broken ((("
+D3_CLONE_SUFFIX = "-d3probe"
+D3_DB_SUFFIX = "_d3probe"
+D3_SCHEMA_TABLE = "cpms_schema_migrations"
+D3_MIGRATIONS_RELPATH = ("wp-content/plugins/clinic-practice-management/"
+                         "src/Migrations")
+# Markers that prove the injected migration was actually reached. Any one of
+# them in the WP-CLI output or the clone's debug.log is causal evidence; none of
+# them can be produced by an unrelated plugin failure.
+D3_CAUSAL_MARKERS = (D3_VERSION, D3_BROKEN_SQL, "acceptance_broken")
+
+D3_MIGRATION_PHP = """<?php
+// Injected ONLY into the disposable D3 clone by the acceptance harness; this
+// file never exists in the release ZIP, the canonical tree or any artifact.
+return [
+    'version' => '%(version)s',
+    'description' => 'coexistence acceptance probe: intentionally broken SQL',
+    'up' => function (\\ClinicCore\\Infrastructure\\Db\\CpmsDb $db): void {
+        $db->query('%(broken_sql)s');
+    },
+    'down' => function (\\ClinicCore\\Infrastructure\\Db\\CpmsDb $db): void {
+    },
+];
+"""
+
+# The probe body writes its own machine-readable result BEFORE any assertion can
+# abort it, so a later fatal (including one caused by the hook race) still leaves
+# durable evidence of what happened inside WordPress.
+D3_PROBE_PHP = """<?php
+$result = [
+    'schema' => 'cpms-coexistence-d3-probe/v1',
+    'attempted' => false,
+    'thrown' => null,
+    'recorded_in_wp' => null,
+    'current_version' => null,
+];
+$path = '%(result_path)s';
+$write = static function () use ($path, &$result): void {
+    if ($path) {
+        file_put_contents($path, json_encode($result, JSON_UNESCAPED_SLASHES));
+    }
+};
+register_shutdown_function($write);
+try {
+    $result['attempted'] = true;
+    $write();
+    \\ClinicCore\\Bootstrap\\App::migrations()->migrate();
+} catch (\\Throwable $e) {
+    $result['thrown'] = $e::class . ': ' . $e->getMessage();
+    $write();
+}
+$db = \\ClinicCore\\Bootstrap\\App::db();
+$result['recorded_in_wp'] = (int) $db->fetchValue(
+    'SELECT COUNT(*) FROM ' . $db->table('%(schema_table)s') . ' WHERE version = %%s',
+    ['%(version)s']
+);
+$result['current_version'] = \\ClinicCore\\Bootstrap\\App::migrations()->currentVersion();
+$write();
+if ($result['thrown'] === null) {
+    fwrite(STDERR, "D3 FAIL: the injected broken migration completed without throwing\\n");
+    exit(1);
+}
+if ($result['recorded_in_wp'] !== 0) {
+    fwrite(STDERR, "D3 FAIL: the broken migration version was recorded\\n");
+    exit(1);
+}
+echo "D3 in-WordPress probe: fail-loud OK and not-recorded OK\\n";
+"""
+
+
+def d3_enabled(group=None, stage_b_enabled=None):
+    """True only for the heaviest group when CPMS Stage B is actually allowed."""
+    group = GROUP if group is None else group
+    if stage_b_enabled is None:
+        stage_b_enabled = STAGE_B_ENABLED
+    return group == D3_GROUP and bool(stage_b_enabled)
+
+
+def d3_isolated_db_name(db_name):
+    """Return the disposable database name, or None when it cannot be isolated."""
+    if not isinstance(db_name, str) or not re.fullmatch(r"[A-Za-z0-9_]{1,57}", db_name):
+        return None
+    candidate = f"{db_name}{D3_DB_SUFFIX}"
+    if len(candidate) > 64 or not re.fullmatch(r"[A-Za-z0-9_]+", candidate):
+        return None
+    if candidate == db_name:
+        return None
+    return candidate
+
+
+def d3_attempt_proven(probe_result, cli_text, debug_text):
+    """Classify whether the injected broken migration was reached and failed.
+
+    Returns ``(proven, how)``. ``proven`` is only True with positive causal
+    evidence, so an environment that never reached the migration cannot be read
+    as a passing D3 assertion.
+    """
+    if isinstance(probe_result, dict):
+        thrown = probe_result.get("thrown")
+        if isinstance(thrown, str) and thrown.strip():
+            return True, f"probe throwable recorded: {thrown[:200]}"
+        if probe_result.get("attempted") is True and probe_result.get("recorded_in_wp") == 0:
+            return True, "probe reached migrate() and recorded zero rows"
+    for label, text in (("wp-cli output", cli_text), ("clone debug.log", debug_text)):
+        if not isinstance(text, str) or not text:
+            continue
+        for marker in D3_CAUSAL_MARKERS:
+            if marker in text:
+                return True, f"injected marker {marker!r} present in {label}"
+    return False, ("no probe throwable and no injected-version/broken-SQL marker in "
+                   "the WP-CLI output or the clone debug.log; the migration attempt "
+                   "was never proven to have been reached")
+
+
+def d3_fingerprint(db_name, wp_dir, schema_table=D3_SCHEMA_TABLE):
+    """Fingerprint the canonical acceptance state that must never be touched."""
+    prefix = probe.DB_PREFIX
+    rows = {}
+    ok, value, diag = probe.scalar(
+        f"SELECT COUNT(*) FROM {prefix}{schema_table}", db_name)
+    rows["schema_migrations_rows"] = value if ok else None
+    rows["schema_migrations_error"] = diag or None
+    ok, value, diag = probe.scalar(
+        f"SELECT MD5(GROUP_CONCAT(version ORDER BY version)) "
+        f"FROM {prefix}{schema_table}", db_name)
+    rows["schema_migrations_versions_md5"] = value if ok else None
+    ok, value, diag = probe.scalar(
+        f"SELECT MAX(version) FROM {prefix}{schema_table}", db_name)
+    rows["migrations_max_version"] = value if ok else None
+    ok, value, diag = probe.scalar(
+        "SELECT COUNT(*) FROM information_schema.tables "
+        f"WHERE table_schema='{db_name}' AND table_name LIKE '{prefix}cpms_%'",
+        db_name)
+    rows["cpms_table_count"] = value if ok else None
+    config = Path(wp_dir) / "wp-config.php"
+    try:
+        rows["wp_config_sha256"] = hashlib.sha256(config.read_bytes()).hexdigest()
+    except OSError as exc:
+        rows["wp_config_sha256"] = None
+        rows["wp_config_error"] = f"{type(exc).__name__}: {exc}"
+    migrations_dir = Path(wp_dir) / D3_MIGRATIONS_RELPATH
+    try:
+        rows["migrations_files"] = sorted(p.name for p in migrations_dir.iterdir())
+    except OSError as exc:
+        rows["migrations_files"] = None
+        rows["migrations_error"] = f"{type(exc).__name__}: {exc}"
+    return rows
+
+
+def d3_fingerprint_diff(before, after):
+    """List the canonical fingerprint keys that changed across the probe."""
+    changed = []
+    for key in sorted(set(before) | set(after)):
+        if key.endswith("_error"):
+            continue
+        if before.get(key) != after.get(key):
+            changed.append(key)
+    return changed
+
+
+def coexistence_verdict_annotation(summary, d3=None, group=None):
+    """Build ONE bounded, sanitized verdict annotation per coexistence lane.
+
+    Every lane publishes exactly one annotation, so the six lanes surface as six
+    lines in the same check-annotation list on the PR/check interface — one
+    aggregated view built without cross-runner coordination, without a seventh
+    check and without six separate commit comments.
+
+    Only allowlisted scalars are emitted: the group key, verdict strings from a
+    fixed set, integer counts, and a check name that has already passed
+    `_visible_check_name`. ``detail``/``reason`` free text is never inspected, so
+    no log line, URL, credential or patient value can reach a public annotation.
+    """
+    group = GROUP if group is None else group
+    if group not in GROUPS:
+        group = "unknown-group"
+    allowed = {"PASS", "FAIL", "NOT RUN"}
+    stage_a = summary.get("stage_a") if isinstance(summary, dict) else None
+    stage_b = summary.get("stage_b") if isinstance(summary, dict) else None
+    stage_a = stage_a if isinstance(stage_a, dict) else {}
+    stage_b = stage_b if isinstance(stage_b, dict) else {}
+    status_a = stage_a.get("status") if stage_a.get("status") in allowed else "UNKNOWN"
+    status_b = stage_b.get("status") if stage_b.get("status") in allowed else "UNKNOWN"
+    not_run = summary.get("not_run") if isinstance(summary.get("not_run"), dict) else {}
+    unavailable = (summary.get("unavailable_features")
+                   if isinstance(summary.get("unavailable_features"), dict) else {})
+    first = stage_a.get("first_causal_check")
+    if not _is_stage_a_blocker(first):
+        blockers_list = stage_a.get("blocking_checks")
+        ordered = [c for c in blockers_list if _is_stage_a_blocker(c)] \
+            if isinstance(blockers_list, list) else []
+        first = ordered[0] if ordered else None
+    first_name = _visible_check_name(first) if first else None
+
+    if status_a == "FAIL" or status_b == "FAIL":
+        level = "error"
+    elif status_a == "NOT RUN" or status_b == "UNKNOWN":
+        level = "warning"
+    else:
+        level = "notice"
+
+    names = sorted(str(key) for key in not_run)[:8]
+    names = [name for name in names if re.fullmatch(r"[A-Za-z0-9 _/.()\-]{1,80}", name)]
+    omitted = max(0, len(not_run) - len(names))
+    text = (f"coexistence verdict | group={group} | Stage A (CPMS absent)={status_a} | "
+            f"Stage B (CPMS active)={status_b} | "
+            f"stage_a_measurement_complete="
+            f"{stage_a.get('measurement_complete') if isinstance(stage_a.get('measurement_complete'), bool) else 'not recorded'} | "
+            f"NOT RUN scope limits={len(not_run)}"
+            + (f" [{', '.join(names)}" + (f", +{omitted} more" if omitted else "") + "]"
+               if names else "")
+            + f" | FEATURE UNAVAILABLE={len(unavailable)}")
+    if first_name:
+        text += f" | first_causal_check={first_name}"
+    if isinstance(d3, dict) and d3.get("status") in allowed:
+        text += f" | D3 broken-migration probe={d3['status']}"
+        if d3.get("status") == "PASS" and d3.get("isolation_proof") is not True:
+            text += " (isolation proof incomplete)"
+    text += " | workflow success is not product acceptance"
+    return level, text[:1600]
 
 
 class Slice:
@@ -1593,6 +1862,238 @@ class Slice:
         save(self.root / "B/result.json", result)
         return result
 
+    def d3_probe(self):
+        """D3: prove a failed migration is never recorded as successful.
+
+        Runs against a disposable copy of this lane's WordPress tree and database
+        with every pinned plugin still active. The canonical acceptance
+        environment is fingerprinted before and after and must be unchanged.
+        """
+        out = self.root / "D3"
+        out.mkdir(parents=True, exist_ok=True)
+        store = self.store("D3")
+        store.subject(id=f"{GROUP}-d3", kind="synthetic-broken-migration-probe",
+                      pins=PINS, cpms="ACTIVE in a disposable clone only")
+        result = {"status": "NOT RUN", "isolation_proof": False, "group": GROUP,
+                  "injected_version": D3_VERSION, "cleanup": {}, "canonical": {}}
+        save(out / "result.json", result)
+
+        if not d3_enabled():
+            result["reason"] = (f"D3 is enabled only for group {D3_GROUP!r} with CPMS "
+                                "Stage B allowed; this lane keeps its truthful "
+                                "`synthetic broken migration: NOT RUN` declaration")
+            save(out / "result.json", result)
+            return result
+
+        canonical_wp = Path(self.wp_dir).resolve()
+        clone_wp = canonical_wp.with_name(canonical_wp.name + D3_CLONE_SUFFIX)
+        # Guard the only destructive cleanup targets this method may ever touch.
+        if not str(clone_wp).startswith(str(canonical_wp) + D3_CLONE_SUFFIX):
+            raise RuntimeError("refusing to compute a clone path outside the canonical tree")
+        if clone_wp == canonical_wp:
+            raise RuntimeError("clone path equals the canonical WordPress path")
+        clone_db = d3_isolated_db_name(self.db_name)
+
+        active_ok, active, active_err = probe.db_active_plugins(self.db_name)
+        cpms_active = active_ok and any(
+            str(p).split("/")[0] == "clinic-practice-management" for p in active)
+        store.check("d3_precondition_cpms_active", cpms_active, probe.HARNESS,
+                    "D3 needs an activated CPMS to fault-inject",
+                    expected=["clinic-practice-management"], observed=active if active_ok else active_err)
+        if not cpms_active:
+            result.update(status="NOT RUN",
+                          reason="CPMS is not active in this lane, so no migration can be fault-injected")
+            store.save()
+            save(out / "result.json", result)
+            return result
+
+        canonical_before = d3_fingerprint(self.db_name, str(canonical_wp))
+        result["canonical"]["before"] = canonical_before
+        if canonical_before.get("schema_migrations_rows") in (None, "0"):
+            store.unexecuted("d3_canonical_schema_baseline", probe.HARNESS,
+                             "the canonical acceptance schema_migrations table is "
+                             "unreadable or empty; a D3 assertion would be vacuous",
+                             "D3")
+            result.update(status="NOT RUN",
+                          reason="canonical schema baseline unavailable; refusing to inject")
+            store.save()
+            save(out / "result.json", result)
+            return result
+
+        clone_created = False
+        db_created = False
+        injected = None
+        try:
+            if clone_wp.exists():
+                store.unexecuted("d3_clone_path_isolation", probe.HARNESS,
+                                 "refusing to overwrite an existing disposable WordPress path",
+                                 "D3")
+                raise RuntimeError(f"disposable WordPress path already exists: {clone_wp}")
+            if clone_db is None:
+                store.unexecuted("d3_clone_db_isolation", probe.HARNESS,
+                                 "canonical database name cannot be safely isolated", "D3")
+                raise RuntimeError("cannot derive a safe disposable database name")
+            exists, count, err = probe.scalar(
+                "SELECT COUNT(*) FROM information_schema.schemata "
+                f"WHERE schema_name='{clone_db}'", self.db_name)
+            if not exists or count != "0":
+                store.unexecuted("d3_clone_db_isolation", probe.HARNESS,
+                                 err or "refusing to overwrite an existing disposable database",
+                                 "D3")
+                raise RuntimeError(f"disposable database already exists: {clone_db}")
+
+            copy = probe.run(["sudo", "cp", "-a", str(canonical_wp), str(clone_wp)], timeout=300)
+            if copy["rc"] != 0:
+                raise RuntimeError(f"WordPress clone failed: {(copy['stderr'] or '')[:400]}")
+            clone_created = True
+            create_db = probe.run(
+                ["mysql", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-proot",
+                 "-e", f"CREATE DATABASE `{clone_db}` CHARACTER SET utf8mb4 "
+                       "COLLATE utf8mb4_unicode_ci;"])
+            if create_db["rc"] != 0:
+                raise RuntimeError(f"disposable database creation failed: "
+                                   f"{(create_db['stderr'] or '')[:400]}")
+            db_created = True
+            dump = subprocess.run(
+                ["mysqldump", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-proot",
+                 "--default-character-set=utf8mb4", "--single-transaction", self.db_name],
+                capture_output=True, timeout=300, check=False)
+            if dump.returncode != 0:
+                raise RuntimeError(f"canonical snapshot failed: "
+                                   f"{dump.stderr.decode(errors='replace')[:400]}")
+            restore = subprocess.run(
+                ["mysql", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-proot",
+                 "--default-character-set=utf8mb4", clone_db],
+                input=dump.stdout, capture_output=True, timeout=300, check=False)
+            if restore.returncode != 0:
+                raise RuntimeError(f"disposable restore failed: "
+                                   f"{restore.stderr.decode(errors='replace')[:400]}")
+            store.check("d3_disposable_clone_ready", True, probe.HARNESS,
+                        "tree copied and database restored into the disposable clone")
+
+            config = clone_wp / "wp-config.php"
+            original = config.read_text(encoding="utf-8")
+            pattern = re.compile(r"(?m)^define\(\s*'DB_NAME'\s*,\s*'"
+                                 + re.escape(self.db_name) + r"'\s*\);\s*$")
+            updated, substitutions = pattern.subn(
+                f"define( 'DB_NAME', '{clone_db}' );", original, count=1)
+            if substitutions != 1:
+                raise RuntimeError("could not isolate the cloned wp-config.php to the "
+                                   "disposable database")
+            written = subprocess.run(["sudo", "tee", str(config)], input=updated,
+                                     text=True, capture_output=True, check=False)
+            if written.returncode != 0:
+                raise RuntimeError("could not write the cloned wp-config.php")
+            store.check("d3_clone_db_binding", clone_db in config.read_text(encoding="utf-8"),
+                        probe.HARNESS, "the clone must point at the disposable database only")
+
+            migrations_dir = clone_wp / D3_MIGRATIONS_RELPATH
+            if not migrations_dir.is_dir():
+                raise RuntimeError(f"clone migrations directory missing: {migrations_dir}")
+            injected = migrations_dir / D3_FILE_NAME
+            write_php = subprocess.run(
+                ["sudo", "tee", str(injected)],
+                input=D3_MIGRATION_PHP % {"version": D3_VERSION, "broken_sql": D3_BROKEN_SQL},
+                text=True, capture_output=True, check=False)
+            if write_php.returncode != 0:
+                raise RuntimeError("could not inject the synthetic broken migration")
+            probe.run(["sudo", "chmod", "a+r", str(injected)])
+            canonical_injected = canonical_wp / D3_MIGRATIONS_RELPATH / D3_FILE_NAME
+            store.check("d3_injection_confined_to_clone",
+                        injected.exists() and not canonical_injected.exists(),
+                        probe.HARNESS,
+                        "the injected file must exist only inside the disposable clone")
+
+            result_path = out / "probe-result.json"
+            if not re.fullmatch(r"[A-Za-z0-9_./-]{1,200}", str(result_path)):
+                raise RuntimeError("unsafe probe result path")
+            probe_php = out / "probe.php"
+            probe_php.write_text(D3_PROBE_PHP % {
+                "result_path": str(result_path), "schema_table": D3_SCHEMA_TABLE,
+                "version": D3_VERSION})
+            cli = probe.wp_cli(["eval-file", str(probe_php)], str(clone_wp), timeout=300)
+            (out / "probe-output.txt").write_text(
+                f"rc={cli['rc']}\n--- stdout ---\n{cli['stdout']}\n--- stderr ---\n{cli['stderr']}\n",
+                encoding="utf-8")
+            cli_text = f"{cli['stdout']}\n{cli['stderr']}"
+            debug_read = probe.run(["sudo", "cat", str(clone_wp / "wp-content/debug.log")])
+            debug_text = debug_read["stdout"] if debug_read["rc"] == 0 else ""
+            (out / "clone-debug.log").write_text(debug_text, encoding="utf-8")
+            probe_result = load(result_path, {}) if result_path.exists() else {}
+            result["wp_cli_rc"] = cli["rc"]
+            result["probe_result"] = probe_result
+
+            # AUTHORITATIVE assertion: direct SQL, no WordPress, no plugin hooks.
+            ok, recorded, diag = probe.scalar(
+                f"SELECT COUNT(*) FROM {probe.DB_PREFIX}{D3_SCHEMA_TABLE} "
+                f"WHERE version='{D3_VERSION}'", clone_db)
+            store.check("d3_broken_version_not_recorded_direct_sql",
+                        ok and recorded == "0", probe.PRODUCT,
+                        diag or "read directly from the disposable database, bypassing "
+                                "WP-CLI so the WooCommerce-style hook race cannot mask it",
+                        expected="0", observed=recorded if ok else diag)
+            ok, current, diag = probe.scalar(
+                f"SELECT MAX(version) FROM {probe.DB_PREFIX}{D3_SCHEMA_TABLE}", clone_db)
+            expected_max = canonical_before.get("migrations_max_version")
+            store.check("d3_clone_schema_intact",
+                        ok and bool(current) and current == expected_max, probe.HARNESS,
+                        diag or "the disposable copy still holds exactly the real applied "
+                                "schema, so the zero-row reading is not an empty-table artifact",
+                        expected=expected_max, observed=current if ok else diag)
+
+            proven, how = d3_attempt_proven(probe_result, cli_text, debug_text)
+            store.check("d3_migration_attempt_proven", proven, probe.HARNESS, how)
+            result["attempt_proof"] = how
+        except Exception as exc:  # noqa: BLE001
+            detail = traceback.format_exc()
+            (out / "exception.txt").write_text(detail, encoding="utf-8")
+            store.check("d3_probe_executed", False, probe.HARNESS,
+                        f"{type(exc).__name__}: {exc}"[:400])
+            probe.annotate("error", f"D3 coexistence probe could not complete: "
+                                    f"{type(exc).__name__}")
+        finally:
+            cleanup = {}
+            if injected is not None:
+                cleanup["remove_injected"] = probe.run(
+                    ["sudo", "rm", "-f", str(injected)])["rc"]
+            if clone_created:
+                cleanup["remove_clone_tree"] = probe.run(
+                    ["sudo", "rm", "-rf", "--", str(clone_wp)], timeout=300)["rc"]
+            if db_created and clone_db:
+                cleanup["drop_clone_db"] = probe.run(
+                    ["mysql", "-h", "127.0.0.1", "-P", "3306", "-uroot", "-proot",
+                     "-e", f"DROP DATABASE IF EXISTS `{clone_db}`;"])["rc"]
+            result["cleanup"] = cleanup
+            store.check("d3_cleanup_complete", all(rc == 0 for rc in cleanup.values()),
+                        probe.HARNESS, "disposable clone removed; a leftover clone would "
+                                       "be picked up by a later run", observed=cleanup)
+
+            canonical_after = d3_fingerprint(self.db_name, str(canonical_wp))
+            result["canonical"]["after"] = canonical_after
+            diff = d3_fingerprint_diff(canonical_before, canonical_after)
+            result["canonical"]["changed_keys"] = diff
+            store.check("d3_canonical_environment_untouched", not diff, probe.HARNESS,
+                        "the acceptance database, wp-config.php and Migrations directory "
+                        "must be byte-identical before and after the probe",
+                        expected=[], observed=diff)
+            result["isolation_proof"] = (not diff
+                                         and canonical_before.get("schema_migrations_rows")
+                                         == canonical_after.get("schema_migrations_rows"))
+            store.save()
+
+        checks = store.data["checks"]
+        blocking = blockers(checks)
+        unexecuted = any(c["status"] == probe.UNEXECUTED for c in checks)
+        if blocking or unexecuted:
+            result["status"] = "FAIL"
+            result["blocking_checks"] = [c["name"] for c in blocking]
+        else:
+            result["status"] = "PASS"
+        save(out / "result.json", result)
+        print(f"D3 coexistence probe: {result['status']} "
+              f"(isolation_proof={result['isolation_proof']})")
+        return result
+
     def finalize(self, steps):
         summary = load(self.root / "summary.json", {})
         stage_a = load(self.root / "A/result.json")
@@ -1623,6 +2124,25 @@ class Slice:
                 summary["stage_b"] = {"status": "FAIL", "reason": "incomplete Stage B; see B/exception.txt"}
         summary["not_run"] = NOT_RUN
         summary["unavailable_features"] = UNAVAILABLE
+        # D3 is measured in the heaviest lane only. When it really ran there, the
+        # lane's own NOT RUN declaration must stop claiming otherwise; when it did
+        # not run, the declaration stays exactly as truthful as before.
+        d3 = load(self.root / "D3/result.json", None)
+        not_run = dict(NOT_RUN)
+        if isinstance(d3, dict) and d3.get("status") in {"PASS", "FAIL"}:
+            not_run.pop("synthetic broken migration", None)
+        summary["not_run"] = not_run
+        if isinstance(d3, dict):
+            summary["d3_probe"] = {
+                "status": d3.get("status"),
+                "isolation_proof": d3.get("isolation_proof") is True,
+                "injected_version": d3.get("injected_version"),
+                "canonical_changed_keys": d3.get("canonical", {}).get("changed_keys", []),
+                "attempt_proof": d3.get("attempt_proof") or d3.get("reason"),
+                "evidence": "D3/result.json, D3/probe-output.txt, D3/evidence.json",
+            }
+            if d3.get("status") == "FAIL":
+                summary["d3_probe"]["blocking_checks"] = d3.get("blocking_checks", [])
         if self._diagnostic is not None:
             summary["diagnostic_evidence"] = "A/diagnostic.json"
             summary["failure_taxonomy"] = {
@@ -1630,19 +2150,40 @@ class Slice:
                 "reason": "Third-party/plugin and permission observations are evidence; no CPMS A/B attribution or D classification is inferred from permission contribution alone.",
             }
         save(self.root / "summary.json", summary)
+        d3_summary = summary.get("d3_probe") if isinstance(summary.get("d3_probe"), dict) else None
+        d3_status = d3_summary.get("status") if d3_summary else "NOT RUN"
         text = (f"## {GROUPS[GROUP]['title']}\n"
+                f"- coexistence_verdict group=`{GROUP}` stage_a=`{summary['stage_a']['status']}`"
+                f" stage_b=`{summary['stage_b']['status']}` d3=`{d3_status}`"
+                f" not_run=`{len(not_run)}` unavailable=`{len(UNAVAILABLE)}`\n"
                 f"- Stage A (CPMS absent): **{summary['stage_a']['status']}**\n"
                 f"- Stage B (after CPMS activation): **{summary['stage_b']['status']}**\n"
                 "- Workflow success is not product acceptance. No union of individual baselines is assumed.\n"
                 f"- Raw evidence: `{GROUPS[GROUP]['artifact']}-wp_` artifact, `{GROUPS[GROUP]['root']}/A` and `{GROUPS[GROUP]['root']}/B`.\n"
-                + "".join(f"- {name}: {reason}\n" for name, reason in NOT_RUN.items()))
+                + "".join(f"- {name}: {reason}\n" for name, reason in not_run.items()))
         if UNAVAILABLE:
             text += "".join(f"- FEATURE UNAVAILABLE — {name}: {reason}\n"
                             for name, reason in UNAVAILABLE.items())
+        if d3_summary:
+            text += ("- D3 synthetic broken-migration probe (disposable clone, every pin "
+                     f"still active): **{d3_status}**\n")
+            text += (f"  - canonical acceptance environment untouched: "
+                     f"`{'PROVEN' if d3_summary.get('isolation_proof') else 'NOT PROVEN'}`"
+                     f" (changed keys: `{d3_summary.get('canonical_changed_keys') or 'none'}`)\n")
+            attempt = d3_summary.get("attempt_proof")
+            if isinstance(attempt, str) and attempt:
+                text += f"  - migration attempt evidence: `{attempt[:200]}`\n"
+            if d3_status == "FAIL":
+                text += (f"  - blocking checks: `{d3_summary.get('blocking_checks') or []}`\n")
+        elif d3_enabled():
+            text += ("- D3 synthetic broken-migration probe: **NOT RUN** — enabled for this "
+                     "group but never reached; the lane's `synthetic broken migration` NOT RUN "
+                     "declaration above stays authoritative\n")
         visibility = stage_a_failure_visibility(summary["stage_a"], summary["stage_b"].get("status"))
         if visibility:
             text += "\n" + visibility["markdown"] + "\n"
             probe.annotate("error", visibility["annotation"])
+        probe.annotate(*coexistence_verdict_annotation(summary, d3_summary))
         (self.root / "summary.md").write_text(text)
         print(text)
         if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -1650,17 +2191,23 @@ class Slice:
                 handle.write(text)
         if not STAGE_B_ENABLED:
             return 0 if summary["stage_a"].get("measurement_complete") is True else 1
+        if d3_status == "FAIL":
+            return 1
         return 0 if all(summary[s]["status"] == "PASS" for s in ("stage_a", "stage_b")) else 1
 
 
 def main():
     parser = argparse.ArgumentParser(__doc__)
-    parser.add_argument("command", choices=("init", "stage-a", "begin-b", "finalize"))
+    parser.add_argument("command",
+                        choices=("init", "stage-a", "begin-b", "d3-probe", "finalize"))
     args = parser.parse_args()
     lane = Slice(f"/tmp/acc/{GROUPS[GROUP]['root']}", os.environ["WP_DIR"], os.environ["WP_URL"], os.environ["DB_NAME"])
     try:
         if args.command == "finalize":
             return lane.finalize(json.loads(os.environ.get("COEX_STEPS", "{}")))
+        if args.command == "d3-probe":
+            # Fail closed: only an actually-proven D3 assertion may conclude green.
+            return 0 if lane.d3_probe().get("status") == "PASS" else 1
         return getattr(lane, args.command.replace("-", "_"))() or 0
     except Exception:
         stage = "B" if args.command == "begin-b" else "A"

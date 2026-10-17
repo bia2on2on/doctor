@@ -930,9 +930,18 @@ class CombinedNineteenGroupTests(unittest.TestCase):
         step_summary = summary_file.read_text()
         self.assertIn("Stage A blocker visibility", summary)
         self.assertIn("group=combined-nineteen", annotations[0][1])
-        self.assertEqual(len(annotations), 1)
+        # annotations[0] is the preserved Stage A blocker `error`; annotations[1]
+        # is the new single per-lane verdict annotation. No third annotation may
+        # appear, so the lane stays one concise report instead of comment spam.
+        self.assertEqual(len(annotations), 2)
         self.assertEqual(annotations[0][0], "error")
-        visible = annotations[0][1] + "\n" + summary + "\n" + step_summary
+        self.assertEqual(annotations[1][0], "error",
+                         "a FAIL stage must never be annotated below error level")
+        self.assertIn("Stage A (CPMS absent)=FAIL", annotations[1][1])
+        self.assertIn("Stage B (CPMS active)=NOT RUN", annotations[1][1])
+        self.assertIn("mysql_full_version_exact", annotations[1][1])
+        visible = ("\n".join(message for _, message in annotations)
+                   + "\n" + summary + "\n" + step_summary)
         for marker in ("Stage A=FAIL", "Stage B=NOT RUN", "mysql_full_version_exact",
                        "unchanged_version::woocommerce", "browser_session_check",
                        "UNEXECUTED (blocks)", "expected=8.4.11; observed=8.4.10"):
@@ -968,6 +977,10 @@ class CombinedNineteenGroupTests(unittest.TestCase):
         self.assertIn("full ordered list remains in `A/result.json`", visibility["markdown"])
 
     def test_healthy_stage_a_and_b_keep_pass_result_without_failure_annotation(self):
+        # A healthy lane must not gain a failure annotation. It does gain exactly
+        # one `notice` verdict annotation, because the whole point of the change is
+        # that the real verdict and the NOT RUN scope limits are discoverable from
+        # the check interface without opening an artifact.
         lane_slice = self.module.Slice(self.root / "healthy", str(self.root / "wp"),
                                        "http://example.test", "fixture")
         lane_slice.init()
@@ -988,10 +1001,21 @@ class CombinedNineteenGroupTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         stage_b.assert_called_once_with({})
-        self.assertEqual(annotations, [])
-        self.assertIn("Stage A (CPMS absent): **PASS**", summary_file.read_text())
-        self.assertIn("Stage B (after CPMS activation): **PASS**", summary_file.read_text())
-        self.assertNotIn("Stage A blocker visibility", summary_file.read_text())
+        self.assertEqual([level for level, _ in annotations], ["notice"],
+                         "a healthy lane must emit exactly one notice, never error/warning")
+        verdict_text = annotations[0][1]
+        self.assertIn("group=combined-nineteen", verdict_text)
+        self.assertIn("Stage A (CPMS absent)=PASS", verdict_text)
+        self.assertIn("Stage B (CPMS active)=PASS", verdict_text)
+        self.assertIn("NOT RUN scope limits=", verdict_text)
+        self.assertIn("workflow success is not product acceptance", verdict_text)
+        self.assertNotIn("=FAIL", verdict_text)
+        self.assertLessEqual(len(verdict_text), 1600)
+        healthy_summary = summary_file.read_text()
+        self.assertIn("Stage A (CPMS absent): **PASS**", healthy_summary)
+        self.assertIn("Stage B (after CPMS activation): **PASS**", healthy_summary)
+        self.assertNotIn("Stage A blocker visibility", healthy_summary)
+        self.assertIn("coexistence_verdict group=`combined-nineteen`", healthy_summary)
 
 
 class PermissionDiagnosisTests(unittest.TestCase):
@@ -1255,3 +1279,342 @@ class HTTPTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class D3CoexistenceProbeTests(unittest.TestCase):
+    """Isolated D3 fault injection: real assertions, never a vacuous green.
+
+    These are local harness/fault-injection tests with every external command
+    stubbed. They prove the probe's decision logic and its refusal paths; they are
+    NOT WordPress compatibility evidence and make no runtime claim.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.module = load_group("combined-nineteen")
+        self.wp = self.root / "rwp"
+        self.migrations = self.wp / self.module.D3_MIGRATIONS_RELPATH
+        self.migrations.mkdir(parents=True)
+        (self.migrations / "2026_10_13_0027_latest.php").write_text("<?php\n")
+        (self.wp / "wp-config.php").write_text(
+            "<?php\ndefine( 'DB_NAME', 'cpms_acc' );\ndefine( 'DB_USER', 'root' );\n")
+        self.clone = self.root / ("rwp" + self.module.D3_CLONE_SUFFIX)
+        self.clone_db = "cpms_acc" + self.module.D3_DB_SUFFIX
+        self.canonical = {
+            "schema_migrations_rows": "31",
+            "schema_migrations_versions_md5": "aaa",
+            "migrations_max_version": "2026_10_13_0027",
+            "cpms_table_count": "31",
+            "wp_config_sha256": "cfg",
+            "migrations_files": ["2026_10_13_0027_latest.php"],
+        }
+
+    def slice_for(self):
+        return self.module.Slice(self.root / "lane", str(self.wp),
+                                 "http://example.test", "cpms_acc")
+
+    def install_stubs(self, cli_rc=1, cli_text="", probe_json=None, clone_recorded="0",
+                      clone_max="2026_10_13_0027", fingerprint_after=None,
+                      clone_exists=False, db_exists="0", cpms_active=True):
+        """Stub every external effect; return the recorded command log."""
+        module = self.module
+        calls = []
+        if probe_json is None:
+            probe_json = {"attempted": True, "thrown": "RuntimeException: SQL",
+                          "recorded_in_wp": 0}
+
+        def db_active_plugins(_db):
+            active = ["woocommerce/woocommerce.php"]
+            if cpms_active:
+                active.append("clinic-practice-management/clinic-practice-management.php")
+            return True, sorted(active), ""
+
+        def scalar(sql, db_name):
+            calls.append(("scalar", db_name, sql))
+            if "information_schema.schemata" in sql:
+                return True, db_exists, ""
+            if "COUNT(*)" in sql and module.D3_VERSION in sql:
+                return True, clone_recorded, ""
+            if "MAX(version)" in sql:
+                return True, clone_max, ""
+            return True, self.canonical["schema_migrations_rows"], ""
+
+        def run(cmd, timeout=300):
+            calls.append(("run", tuple(str(part) for part in cmd)))
+            if cmd[:3] == ["sudo", "cp", "-a"]:
+                if clone_exists:
+                    return {"rc": 1, "stdout": "", "stderr": "exists"}
+                shutil.copytree(self.wp, self.clone, symlinks=True)
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            if cmd[0] == "sudo" and cmd[1] == "cat":
+                return {"rc": 0, "stdout": cli_text, "stderr": ""}
+            if cmd[:3] == ["sudo", "rm", "-rf"]:
+                target = Path(cmd[-1])
+                if target == self.clone:
+                    shutil.rmtree(target, ignore_errors=True)
+                else:
+                    return {"rc": 1, "stdout": "", "stderr": "refused: not the clone"}
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            if cmd[:3] == ["sudo", "rm", "-f"]:
+                Path(cmd[-1]).unlink(missing_ok=True)
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            return {"rc": 0, "stdout": "", "stderr": ""}
+
+        def wp_cli(args, wp_dir, timeout=300):
+            calls.append(("wp_cli", tuple(args), wp_dir))
+            result_path = Path(wp_dir).parent / "lane" / "D3" / "probe-result.json"
+            match = re.search(r"\$path = '([^']+)'", args[1] if len(args) > 1 else "")
+            probe_file = Path(args[1]) if len(args) > 1 else None
+            if probe_file is not None and probe_file.is_file():
+                match = re.search(r"\$path = '([^']+)'", probe_file.read_text())
+            if match:
+                target = Path(match.group(1))
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(json.dumps(probe_json))
+            del result_path
+            return {"rc": cli_rc, "stdout": cli_text, "stderr": cli_text}
+
+        def subprocess_run(cmd, **kwargs):
+            calls.append(("subprocess", tuple(str(part) for part in cmd[:4])))
+            completed = subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
+            if "tee" in cmd:
+                Path(cmd[-1]).write_text(kwargs.get("input") or "")
+            if cmd[0] == "mysqldump":
+                completed.stdout = b"-- dump\n"
+            return completed
+
+        patches = [
+            patch.object(module.probe, "db_active_plugins", db_active_plugins),
+            patch.object(module.probe, "scalar", scalar),
+            patch.object(module.probe, "run", run),
+            patch.object(module.probe, "wp_cli", wp_cli),
+            patch.object(module, "subprocess", type("S", (), {"run": staticmethod(subprocess_run),
+                                                             "CompletedProcess": subprocess.CompletedProcess})),
+            patch.object(module, "d3_fingerprint",
+                         side_effect=lambda db, wp: (dict(self.canonical) if wp == str(self.wp)
+                                                     and db == "cpms_acc" and calls.count("fp") == 0
+                                                     else dict(fingerprint_after or self.canonical))),
+        ]
+        # Deterministic before/after fingerprint sequencing.
+        sequence = [dict(self.canonical), dict(fingerprint_after or self.canonical)]
+        patches[-1] = patch.object(module, "d3_fingerprint", side_effect=lambda db, wp: sequence.pop(0))
+        for item in patches:
+            item.start()
+            self.addCleanup(item.stop)
+        return calls
+
+    def test_probe_is_enabled_only_for_the_heaviest_group_with_stage_b(self):
+        self.assertTrue(self.module.d3_enabled("combined-nineteen", True))
+        for group in ("persian-five", "security-authentication", "combined-ten",
+                      "persian-woocommerce-diagnosis", "persian-woocommerce-sms"):
+            self.assertFalse(self.module.d3_enabled(group, True), group)
+        self.assertFalse(self.module.d3_enabled("combined-nineteen", False))
+        # Every other lane therefore keeps its truthful NOT RUN declaration.
+        for group in ("persian-five", "combined-ten", "persian-woocommerce-sms"):
+            self.assertIn("synthetic broken migration", load_group(group).NOT_RUN)
+
+    def test_isolated_database_name_is_refused_when_unsafe(self):
+        self.assertEqual(self.module.d3_isolated_db_name("cpms_acc"), "cpms_acc_d3probe")
+        self.assertIsNone(self.module.d3_isolated_db_name("a" * 62))
+        self.assertIsNone(self.module.d3_isolated_db_name("bad-name; DROP"))
+        self.assertIsNone(self.module.d3_isolated_db_name(""))
+
+    def test_unproven_attempt_is_never_a_pass_even_with_zero_rows(self):
+        """The core anti-vacuous-green contract."""
+        self.install_stubs(cli_rc=0, cli_text="", probe_json={"attempted": False,
+                                                              "thrown": None,
+                                                              "recorded_in_wp": None},
+                           clone_recorded="0")
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "FAIL",
+                         "zero recorded rows without a proven attempt is not a PASS")
+        self.assertTrue(result["isolation_proof"],
+                        "the canonical environment was still untouched")
+        names = [c["name"] for c in self.module.load(
+            self.root / "lane/D3/evidence.json")["checks"]]
+        self.assertIn("d3_migration_attempt_proven", names)
+        self.assertIn("d3_broken_version_not_recorded_direct_sql", names)
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        attempt = next(c for c in evidence if c["name"] == "d3_migration_attempt_proven")
+        self.assertEqual(attempt["status"], self.module.probe.FAIL)
+
+    def test_attempt_proof_accepts_throwable_or_injected_marker(self):
+        proven, how = self.module.d3_attempt_proven({"thrown": "RuntimeException: x"}, "", "")
+        self.assertTrue(proven)
+        self.assertIn("probe throwable", how)
+        proven, how = self.module.d3_attempt_proven({}, "SQL: CREATE TABLE syntax broken (((", "")
+        self.assertTrue(proven)
+        self.assertIn("wp-cli output", how)
+        proven, how = self.module.d3_attempt_proven({}, "", "2999_01_01_9999 in bootstrap")
+        self.assertTrue(proven)
+        self.assertIn("clone debug.log", how)
+        proven, how = self.module.d3_attempt_proven({}, "unrelated plugin warning", "notice")
+        self.assertFalse(proven)
+        self.assertIn("never proven", how)
+
+    def test_happy_path_passes_and_confines_injection_to_the_clone(self):
+        calls = self.install_stubs(cli_rc=1, cli_text="RuntimeException: SQLSTATE[42000]")
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "PASS", result)
+        self.assertTrue(result["isolation_proof"])
+        self.assertEqual(result["canonical"]["changed_keys"], [])
+        # The injected file went to the clone only, and the clone was cleaned up.
+        self.assertFalse((self.wp / self.module.D3_MIGRATIONS_RELPATH
+                          / self.module.D3_FILE_NAME).exists())
+        self.assertFalse(self.clone.exists())
+        self.assertTrue(any(kind == "run" and "rm" in str(payload) and "--" in str(payload)
+                            for kind, *payload in [(c[0], c[1:]) for c in calls
+                                                   if c[0] == "run"]))
+        self.assertTrue(any(kind == "wp_cli" and str(self.clone) in str(payload)
+                            for kind, payload in [(c[0], c[1:]) for c in calls
+                                                  if c[0] == "wp_cli"]))
+        # No plugin was skipped: the hook race is answered by direct SQL, not by
+        # disabling WooCommerce.
+        for entry in calls:
+            self.assertNotIn("--skip-plugins", str(entry))
+
+    def test_canonical_mutation_is_a_fail_not_a_warning(self):
+        mutated = dict(self.canonical)
+        mutated["schema_migrations_rows"] = "32"
+        self.install_stubs(cli_rc=1, cli_text="2999_01_01_9999", fingerprint_after=mutated)
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "FAIL")
+        self.assertFalse(result["isolation_proof"])
+        self.assertIn("schema_migrations_rows", result["canonical"]["changed_keys"])
+
+    def test_recorded_broken_version_is_a_product_fail(self):
+        self.install_stubs(cli_rc=1, cli_text="ok", clone_recorded="1")
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "FAIL")
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        recorded = next(c for c in evidence
+                        if c["name"] == "d3_broken_version_not_recorded_direct_sql")
+        self.assertEqual(recorded["status"], self.module.probe.FAIL)
+        self.assertEqual(recorded["klass"], self.module.probe.PRODUCT)
+
+    def test_existing_clone_path_is_refused_without_any_copy(self):
+        self.clone.mkdir(parents=True)
+        calls = self.install_stubs(cli_rc=1, cli_text="x")
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "FAIL")
+        self.assertFalse(any(kind == "run" and "cp" in str(payload)
+                             for kind, *payload in [(c[0], c[1:]) for c in calls
+                                                    if c[0] == "run"]))
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        self.assertTrue(any(c["status"] == self.module.probe.UNEXECUTED for c in evidence),
+                        "a refusal must stay UNEXECUTED, never a silent pass")
+
+    def test_inactive_cpms_keeps_the_probe_not_run(self):
+        self.install_stubs(cpms_active=False)
+        result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "NOT RUN")
+        self.assertIn("not active", result["reason"])
+
+    def test_finalize_drops_the_not_run_claim_only_when_the_probe_really_ran(self):
+        lane_slice = self.slice_for()
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
+        self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
+        self.module.save(lane_slice.root / "D3/result.json",
+                         {"status": "PASS", "isolation_proof": True,
+                          "injected_version": self.module.D3_VERSION,
+                          "canonical": {"changed_keys": []},
+                          "attempt_proof": "probe throwable recorded"})
+        with patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+        self.assertEqual(exit_code, 0)
+        summary = self.module.load(lane_slice.root / "summary.json")
+        self.assertNotIn("synthetic broken migration", summary["not_run"])
+        self.assertEqual(summary["d3_probe"]["status"], "PASS")
+        self.assertTrue(summary["d3_probe"]["isolation_proof"])
+        self.assertIn("D3 synthetic broken-migration probe", (lane_slice.root / "summary.md").read_text())
+
+        # A probe that never ran must leave the NOT RUN declaration untouched.
+        other = self.module.Slice(self.root / "lane2", str(self.wp), "http://example.test", "cpms_acc")
+        other.init()
+        store = other.store("A")
+        store.check("sentinel", True, self.module.probe.PROBE if hasattr(self.module.probe, "PROBE")
+                    else self.module.probe.PRODUCT)
+        self.module.save(other.root / "A/result.json", self.module.verdict(store, True))
+        self.module.save(other.root / "B/started.json", {"stage_a": "PASS"})
+        self.module.save(other.root / "D3/result.json", {"status": "NOT RUN", "reason": "no"})
+        with patch.object(other, "stage_b", return_value={"status": "PASS"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            other.finalize({})
+        self.assertIn("synthetic broken migration",
+                      self.module.load(other.root / "summary.json")["not_run"])
+
+    def test_a_failed_d3_probe_turns_the_lane_red(self):
+        lane_slice = self.slice_for()
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
+        self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
+        self.module.save(lane_slice.root / "D3/result.json",
+                         {"status": "FAIL", "isolation_proof": False,
+                          "canonical": {"changed_keys": []}, "blocking_checks": ["x"]})
+        with patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+        self.assertEqual(exit_code, 1, "a red D3 probe must never be published as green")
+
+
+class VerdictAnnotationTests(unittest.TestCase):
+    """One bounded, sanitized verdict annotation per lane — never a fake PASS."""
+
+    def setUp(self):
+        self.module = load_group("combined-nineteen")
+
+    def test_pass_with_not_run_scope_stays_notice_and_lists_limits(self):
+        summary = {"stage_a": {"status": "PASS", "measurement_complete": True},
+                   "stage_b": {"status": "PASS"},
+                   "not_run": {"Clinic A/B isolation": "NOT RUN — one Clinic"},
+                   "unavailable_features": {"LiteSpeed Cache server-level page cache": "x"}}
+        level, text = self.module.coexistence_verdict_annotation(summary)
+        self.assertEqual(level, "notice")
+        self.assertIn("Stage A (CPMS absent)=PASS", text)
+        self.assertIn("Stage B (CPMS active)=PASS", level + text)
+        self.assertIn("NOT RUN scope limits=1", text)
+        self.assertIn("Clinic A/B isolation", text)
+        self.assertIn("FEATURE UNAVAILABLE=1", text)
+        self.assertIn("workflow success is not product acceptance", text)
+        self.assertNotIn("=FAIL", text)
+
+    def test_failed_stage_is_annotated_at_error_level(self):
+        summary = {"stage_a": {"status": "FAIL", "first_causal_check":
+                               {"name": "mysql_full_version_exact", "status": "FAIL",
+                                "material": True, "detail": "secret-token DO-NOT-EMIT"}},
+                   "stage_b": {"status": "NOT RUN"}, "not_run": {}, "unavailable_features": {}}
+        level, text = self.module.coexistence_verdict_annotation(summary)
+        self.assertEqual(level, "error")
+        self.assertIn("Stage A (CPMS absent)=FAIL", text)
+        self.assertIn("first_causal_check=mysql_full_version_exact", text)
+        self.assertNotIn("DO-NOT-EMIT", text, "free-text detail must never be emitted")
+
+    def test_unknown_or_missing_verdicts_never_render_as_pass(self):
+        for summary in ({}, {"stage_a": None, "stage_b": None},
+                        {"stage_a": {"status": "PASS"}, "stage_b": {"status": "green"}}):
+            level, text = self.module.coexistence_verdict_annotation(summary)
+            self.assertIn(level, {"warning", "error"})
+            self.assertIn("UNKNOWN", text)
+            self.assertNotIn("Stage B (CPMS active)=PASS", text)
+
+    def test_annotation_is_bounded_and_carries_the_d3_verdict(self):
+        summary = {"stage_a": {"status": "PASS"}, "stage_b": {"status": "PASS"},
+                   "not_run": {f"limit {index}": "x" for index in range(40)},
+                   "unavailable_features": {}}
+        d3 = {"status": "PASS", "isolation_proof": True}
+        level, text = self.module.coexistence_verdict_annotation(summary, d3)
+        self.assertIn("D3 broken-migration probe=PASS", text)
+        self.assertLessEqual(len(text), 1600)
+        self.assertIn("NOT RUN scope limits=40", text)
+        self.assertIn("+", text, "omitted NOT RUN entries must stay visible as a count")
+        d3_unproven = {"status": "PASS", "isolation_proof": False}
+        _, text = self.module.coexistence_verdict_annotation(summary, d3_unproven)
+        self.assertIn("isolation proof incomplete", text)

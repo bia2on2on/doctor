@@ -747,6 +747,43 @@ jobs:
           cat /tmp/acc/acceptance.log
           if [ "$RC" -ne 0 ]; then echo "ACCEPTANCE FAILED (rc=$RC)"; exit "$RC"; fi
 
+      # ---------- 5b) D3 inside the heaviest coexistence group (isolated clone) ----------
+      # The D3 step above is gated `!inputs.persian_coexistence`, so GitHub reports
+      # it as `skipped` in all six coexistence lanes. Its documented reason is the
+      # pinned WooCommerce WP-CLI `after_wp_load` hook race, which the standalone
+      # lane resolves with `--skip-plugins=woocommerce`. That resolution cannot be
+      # reused here: skipping the plugin under measurement would hide exactly the
+      # interference this lane exists to observe.
+      #
+      # This step therefore keeps every pinned plugin ACTIVE and isolates the fault
+      # injection in the environment instead — a disposable copy of this lane's
+      # WordPress tree plus a disposable database restored from a consistent
+      # `mysqldump --single-transaction` snapshot. The authoritative
+      # "broken version recorded 0 times" assertion is read by direct SQL with no
+      # WordPress runtime and no plugin hooks in the path, which makes it immune to
+      # the hook race by construction rather than by disabling anything.
+      #
+      # Fail closed: a probe that cannot prove the migration was actually attempted
+      # and actually failed is recorded UNEXECUTED and turns this step red; a
+      # canonical acceptance database, wp-config.php or Migrations directory that
+      # differs after the probe is a FAIL. Nothing here may weaken Stage A/B gates.
+      # Scoped to the heaviest group only (18 active pins) so the other five lanes
+      # keep their truthful `synthetic broken migration: NOT RUN` declaration.
+      - name: D3 in coexistence — broken migration never recorded (isolated clone)
+        if: inputs.persian_coexistence && inputs.coexistence_stage_b && inputs.coexistence_group == 'combined-nineteen'
+        id: coexistence_d3
+        run: |
+          set -uo pipefail
+          # No pipe-masking: run.py decides PASS only from a proven attempt plus a
+          # direct-SQL zero-row reading plus an unchanged canonical environment.
+          python3 .github/persian-coexistence/run.py d3-probe
+          RC=$?
+          if [ "$RC" -ne 0 ]; then
+            echo "D3 COEXISTENCE PROBE FAILED (rc=$RC) — see D3/result.json and D3/probe-output.txt in the artifact"
+            exit "$RC"
+          fi
+          echo 'D3 COEXISTENCE PROBE PASS (disposable clone; canonical acceptance state fingerprinted unchanged)'
+
       - name: Phase 18 Slice 18-4 — coexistence evidence after existing Real WP smoke
         if: matrix.prefix == 'wp_' && !inputs.persian_coexistence
         run: |
