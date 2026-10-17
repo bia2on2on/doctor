@@ -280,10 +280,10 @@ final class ReturningPatientFirstEnrollmentTest extends WP_UnitTestCase
         $this->denied('CLINIC_PERMISSION_DENIED');
     }
 
-    public function testInactiveAndNonexistentDestinationsFailClosed(): void
+    public function testSuspendedOrganizationAndNonexistentClinicFailClosed(): void
     {
         $this->denied('CLINIC_NOT_FOUND', 999999);
-        App::db()->update('cpms_clinics', ['status' => 'suspended'], ['id' => $this->clinic]);
+        App::db()->update('cpms_organizations', ['status' => 'suspended'], ['id' => $this->org]);
         $this->denied();
     }
 

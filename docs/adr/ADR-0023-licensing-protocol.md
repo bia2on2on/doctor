@@ -64,8 +64,8 @@ new-patient/new-visit rules. Those historical rules are not authorization.
   Denial rolls all of that back. It neither copies nor returns foreign medical
   data, imports a legacy identity, grants staff permissions, nor creates an
   appointment. Existing destination identity records are not overwritten or
-  duplicated: use the existing own-record selector instead. Destination Clinic
-  and Organization must be active; the bound scope is restored on every exit.
+  duplicated: use the existing own-record selector instead. Destination Clinic must exist and its
+  Organization must be active; the bound scope is restored on every exit.
 - Eligibility reads across Clinics in the same Organization return **only a
   boolean**, never another Clinic's records, encounter details, or identifiers.
   Authorization, Clinic/Location isolation, explicit DENY precedence, and finance

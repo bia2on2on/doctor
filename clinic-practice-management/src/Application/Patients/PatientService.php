@@ -273,8 +273,8 @@ final class PatientService
                     $clinic = $this->db->fetchRowForUpdate(
                         'SELECT clinic.id, clinic.organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' clinic' .
                         ' INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' organization ON organization.id = clinic.organization_id' .
-                        ' WHERE clinic.id = %d AND clinic.status = %s AND organization.status = %s',
-                        [ $clinic_id, 'active', 'active' ]
+                        ' WHERE clinic.id = %d AND organization.status = %s',
+                        [ $clinic_id, 'active' ]
                     );
                     if ( $clinic === null ) {
                         throw $this->linked_patient_not_found();

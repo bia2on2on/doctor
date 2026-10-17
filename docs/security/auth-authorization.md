@@ -44,7 +44,7 @@
 
 `POST /patient/enroll` uses the current authenticated patient's WP session and
 REST nonce, **not** a caller-supplied WP user/identity ID. The destination Clinic
-is a selector validated against persisted active Clinic/Organization rows; only
+is a selector validated against a persisted Clinic in an active Organization; only
 an exactly-one explicit `cpms_patient_identity_links` relationship in that same
 Organization authorizes self-enrollment. Neither an OTP-associated phone number,
 matching demographics, a legacy clinical self-link alone, nor a generated fresh
