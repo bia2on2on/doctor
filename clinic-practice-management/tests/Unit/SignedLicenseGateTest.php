@@ -135,12 +135,26 @@ final class SignedLicenseGateTest extends TestCase
         }
     }
 
-    public function testGraceStillAllowsNewBusiness(): void
+    public function testGraceIsNotAuthorizationToBookAfterSignedT0(): void
     {
-        // GRACE (میراث F3 read-only) در مدل F10 = هشدار برجسته ولی فعالیت
-        // مجاز تا پایان مهلت — این رفتار توسط ADR-0023 جایگزین معنای قدیمی شد
-        $gate = new SignedLicenseGate($this->provider(LicenseStatus::GRACE));
-        $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $provider = new class implements LicenseStateProvider {
+            public function currentState(): array
+            {
+                return [
+                    'status' => LicenseStatus::GRACE,
+                    'reason' => 'grace',
+                    'expires_at' => time() - 1,
+                    'needs_renewal' => true,
+                ];
+            }
+            public function entitlements(): EntitlementRegistry
+            {
+                return new EntitlementRegistry();
+            }
+        };
+        $gate = new SignedLicenseGate($provider);
+        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_CANCEL)->allowed);
     }
 
     public function testUnreachableWithoutCacheBlocksNewBusiness(): void

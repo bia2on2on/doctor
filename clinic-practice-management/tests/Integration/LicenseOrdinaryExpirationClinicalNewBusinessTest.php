@@ -409,7 +409,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $this->assertTrue($gate->assert(\ClinicCore\Domain\Licensing\LicenseGate::OP_INVOICE_CREATE)->allowed);
     }
 
-    public function testOrdinaryExpirationDoesNotBlockNewPatientCreation(): void
+    public function testReceptionCanCreateNewPatientInsideOneMonthWindow(): void
     {
         $this->installOrdinaryExpiredLicense();
 
@@ -440,7 +440,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $this->assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments')));
     }
 
-    public function testOrdinaryExpirationDoesNotBlockWalkInVisit(): void
+    public function testReceptionCanStartWalkInInsideOneMonthWindow(): void
     {
         $service = $this->installOrdinaryExpiredLicense();
 

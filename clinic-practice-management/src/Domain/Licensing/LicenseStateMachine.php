@@ -9,6 +9,10 @@ use RuntimeException;
 /**
  * ماشین محاسبه‌ی وضعیت محلی مجوز (خالص — ADR-0023 §3).
  *
+ * Display/diagnostic state only: Owner policy (ADR-0023 §0) enforces signed
+ * expires_at exactly in SignedLicenseGate. Neither the grace nor skew below
+ * delays booking shutdown or the one/six Gregorian-month new-service windows.
+ *
  * ورودی: سند امضاشده‌ی محلیِ آخر (در صورت وجود) + «اعتبار» آن
  * (verified | signature_invalid | unreachable) + policy + now.
  * خروجی: وضعیت قطعی + reason + expiresAt + needsRenewal (+ renewal_in_sec).

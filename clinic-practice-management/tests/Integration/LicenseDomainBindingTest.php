@@ -178,10 +178,7 @@ final class LicenseDomainBindingTest extends WP_UnitTestCase
         // همان سایت روی دامنهٔ اعلام‌شدهٔ سند → وضعیت عادی برمی‌گردد (بدون دست‌زدن به سند).
         $this->setLocalHome('https://www.Clinic-B.example');
         $this->assertSame(LicenseStatus::ACTIVE, $licenses->currentState()['status']);
-        $gate = new SignedLicenseGate($licenses);
-        $this->assertFalse($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
-        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE, ['reception' => true])->allowed);
-        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertTrue((new SignedLicenseGate($licenses))->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
 
         // بازگشت به دامنهٔ نادرست → دوباره محدود.
         $this->setLocalHome('https://clinic-a.example');
@@ -203,10 +200,7 @@ final class LicenseDomainBindingTest extends WP_UnitTestCase
         $state = $licenses->currentState();
         $this->assertSame(LicenseStatus::ACTIVE, $state['status']);
         $this->assertSame('', $state['reason']);
-        $gate = new SignedLicenseGate($licenses);
-        $this->assertFalse($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
-        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE, ['reception' => true])->allowed);
-        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertTrue((new SignedLicenseGate($licenses))->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
     }
 
     /**

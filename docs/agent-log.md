@@ -667,3 +667,21 @@ extracted `run:` blocks.
   real signed renewal, and missing-identity/demographic-coincidence coverage.
 - Revalidated changed PHP grammar, tenant tripwire and whitespace before the
   substantive corrective push. No local PHP runtime execution claimed.
+
+### Second-head validation diagnosis (same window)
+
+- Head `ed2a4cea62c2cd36e6b13cf2d06f0c978aecb3f6`, CI run 39037795141:
+  four unit lanes, PHPStan and tripwire PASS. Integration ran 1,983 tests /
+  60,008 assertions with **two failures only**; the new lock-wait, returning
+  evidence, clinical, finance, SMS, backup and renewal regressions did not fail.
+- Both remaining Integration failures were my overbroad replacement in two
+  **ACTIVE**, not expired, domain-binding test cases. Restored their original
+  positive expectations; bounded-expiry expectations remain only in the expired
+  test. This is a test-edit defect, not a product authorization regression.
+- WPCS reduced to one assignment-alignment warning on the added staff-booking
+  final-decision boundary; corrected that exact line without disabling the sniff.
+- Replaced the remaining misleading old `GRACE allows booking` unit test with
+  an explicit signed-T0 denial plus cancellation-continuity assertion. Added
+  status/policy comments making grace/skew diagnostic-only for this policy.
+- Focused mirrored failure messages inspected before the next push; local PHP
+  remains unavailable. Repeated grammar/whitespace validation before committing.

@@ -6,7 +6,8 @@ namespace ClinicCore\Domain\Licensing;
 
 /**
  * Policy زمانی مجوز (V1 — ADR-0023 §3):
- *  - expiry_grace: پیش‌فرض 7 روز (F10 spec §16)
+ *  - expiry_grace: پیش‌فرض 7 روز (F10 spec §16) — warning/status metadata only;
+ *    ADR-0023 §0: never shifts signed T0 or grants post-T0 bookings.
  *  - unreachable_grace: مهلت استفاده از آخرین وضعیت معتبرِ کش‌شده هنگام قطع
  *    شبکه — متمایز از invalid (spec §15)
  *  - activation_window_days: پنجرهٔ فعال‌سازی نصبِ تازه (تصمیم کارفرما —

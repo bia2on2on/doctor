@@ -1297,7 +1297,7 @@ final class BookingService
                     $is_today = $slot_date === gmdate( 'Y-m-d' );
                     // The final decision is after capacity/Location lock waits.
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
-                    $appt_id  = $this->appointments->create(
+                    $appt_id = $this->appointments->create(
                         [
                             'clinic_id'         => (int) $slot['clinic_id'],
                             'reference_code'    => $this->referenceCode( $slot_date ),
