@@ -362,9 +362,24 @@ trait CustomRoleLockWaitFixture
         int $definitionId,
         string $childState
     ): string {
+        $tokens = ['child=' . preg_replace('/[^a-zA-Z]/', '', $childState)];
+        $step = 'init';
         try {
             $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
             $definitionId = (int) $definitionId;
+            $literal = static fn (string $value): string => "'" . $value . "'";
+
+            $step = 'sessions';
+            $sessions = $this->mariaDbRows(
+                $observer,
+                'SELECT id, command, time FROM information_schema.processlist WHERE id IN ('
+                . (int) $requestingConnectionId . ',' . (int) $blockingConnectionId . ')'
+            );
+            $sessionIds = array_map(static fn (array $row): int => (int) ($row['id'] ?? 0), $sessions);
+            $tokens[] = 'req_session=' . (in_array($requestingConnectionId, $sessionIds, true) ? 1 : 0);
+            $tokens[] = 'blk_session=' . (in_array($blockingConnectionId, $sessionIds, true) ? 1 : 0);
+
+            $step = 'trx';
             $requesterTrx = $this->mariaDbScalar(
                 $observer,
                 'SELECT trx_id FROM information_schema.innodb_trx'
@@ -375,6 +390,9 @@ trait CustomRoleLockWaitFixture
                 'SELECT trx_id FROM information_schema.innodb_trx'
                 . ' WHERE trx_mysql_thread_id = ' . (int) $blockingConnectionId . ' LIMIT 1'
             );
+            $tokens[] = 'reqtrx=' . ($requesterTrx === '' ? 0 : 1);
+            $tokens[] = 'ptrx=' . ($blockingTrx === '' ? 0 : 1);
+
             $describe = static function (array $row) use ($table, $definitionId): string {
                 $normalized = str_replace(['`', ' '], '', (string) ($row['lock_table'] ?? ''));
                 return sprintf(
@@ -386,39 +404,41 @@ trait CustomRoleLockWaitFixture
                     trim((string) ($row['lock_data'] ?? '')) === (string) $definitionId ? 1 : 0
                 );
             };
-            $waits = $this->mariaDbRows(
+
+            $step = 'waits';
+            $waits = $requesterTrx === '' ? [] : $this->mariaDbRows(
                 $observer,
-                'SELECT waits.blocking_trx_id AS blocking_trx_id, locks.lock_index, locks.lock_type,'
-                . ' locks.lock_mode, locks.lock_table, locks.lock_data'
+                'SELECT locks.lock_index, locks.lock_type, locks.lock_mode, locks.lock_table, locks.lock_data'
                 . ' FROM information_schema.innodb_lock_waits AS waits'
                 . ' LEFT JOIN information_schema.innodb_locks AS locks ON locks.lock_id = waits.blocking_lock_id'
-                . ' WHERE waits.requesting_trx_id = ' . $observer->real_escape_string((string) $requesterTrx)
+                . ' WHERE waits.requesting_trx_id = ' . $literal($observer->real_escape_string($requesterTrx))
                 . ' LIMIT 3'
             );
-            $blockedByParent = $this->mariaDbRows(
+            $blockedByParent = $blockingTrx === '' ? [] : $this->mariaDbRows(
                 $observer,
                 'SELECT waits.requesting_trx_id AS requesting_trx_id'
                 . ' FROM information_schema.innodb_lock_waits AS waits'
-                . ' WHERE waits.blocking_trx_id = ' . $observer->real_escape_string((string) $blockingTrx)
+                . ' WHERE waits.blocking_trx_id = ' . $literal($observer->real_escape_string($blockingTrx))
                 . ' LIMIT 3'
             );
-            $parentLocks = $this->mariaDbRows(
+            $parentLocks = $blockingTrx === '' ? [] : $this->mariaDbRows(
                 $observer,
                 'SELECT lock_index, lock_type, lock_mode, lock_table, lock_data'
                 . ' FROM information_schema.innodb_locks'
-                . " WHERE lock_trx_id = '" . $observer->real_escape_string((string) $blockingTrx) . "' LIMIT 3"
+                . ' WHERE lock_trx_id = ' . $literal($observer->real_escape_string($blockingTrx))
+                . ' LIMIT 3'
             );
-
-            return 'child=' . preg_replace('/[^a-zA-Z]/', '', $childState)
-                . ';reqtrx=' . ($requesterTrx === '' ? 0 : 1)
-                . ';ptrx=' . ($blockingTrx === '' ? 0 : 1)
-                . ';w=' . count($waits)
-                . ';pw=' . count($blockedByParent)
-                . ';wdesc=' . ($waits === [] ? 'none' : implode('|', array_map($describe, $waits)))
-                . ';pdesc=' . ($parentLocks === [] ? 'none' : implode('|', array_map($describe, $parentLocks)));
+            $tokens[] = 'w=' . count($waits);
+            $tokens[] = 'pw=' . count($blockedByParent);
+            $tokens[] = 'wdesc=' . ($waits === [] ? 'none' : implode('|', array_map($describe, $waits)));
+            $tokens[] = 'pdesc=' . ($parentLocks === [] ? 'none' : implode('|', array_map($describe, $parentLocks)));
         } catch (\Throwable $exception) {
-            return 'error=' . preg_replace('/[^A-Za-z]/', '', (new \ReflectionClass($exception))->getShortName());
+            $tokens[] = 'error=' . preg_replace('/[^A-Za-z]/', '', (new \ReflectionClass($exception))->getShortName());
+            $tokens[] = 'step=' . preg_replace('/[^a-z]/', '', $step);
+            $tokens[] = 'errno=' . (int) $observer->errno;
         }
+
+        return implode(';', $tokens);
     }
 
     private function mariaDbScalar(\mysqli $observer, string $sql): string
