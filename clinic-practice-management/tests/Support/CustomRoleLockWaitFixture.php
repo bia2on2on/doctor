@@ -252,7 +252,12 @@ trait CustomRoleLockWaitFixture
             }
             if ($result === false) {
                 $probeErrno = $probeErrno !== 0 ? $probeErrno : (int) $probe->errno;
-                if ($probeErrno !== 3572) {
+                // MySQL 8 reports a NOWAIT denial as ER_LOCK_NOWAIT (3572);
+                // MariaDB reports the same denial as ER_LOCK_WAIT_TIMEOUT
+                // (1205, measured on 10.11.19). Both mean the exact primary
+                // key row could not be acquired, which is the proof required
+                // here; any other error is a real failure and stays fatal.
+                if (!in_array($probeErrno, [3572, 1205], true)) {
                     throw new RuntimeException(
                         'Could not execute the MariaDB primary-key lock probe: ' . $probe->error,
                         0
