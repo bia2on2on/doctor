@@ -10,6 +10,12 @@ on:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
   workflow_dispatch:
+  push:
+    # TEMPORARY (authorization-mandated single controlled run): workflow_dispatch
+    # is not permitted for this integration token. Removed immediately after the
+    # one controlled measurement; final state remains schedule + workflow_dispatch.
+    branches:
+      - arena/09114e37-doctor
 
 concurrency:
   # Unique per execution: never cancel a scheduled/manual compatibility run.
