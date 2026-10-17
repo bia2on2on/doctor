@@ -700,3 +700,9 @@ extracted `run:` blocks.
 
 - Rechecked migration 0001 and 0010: `cpms_clinics` has no `status` column; only the owning Organization has `active/suspended`. Corrected the enrollment ownership query and its suspended-destination regression to use the actual persisted Clinic + active Organization model, without inventing a column/migration. Updated the new API/security/ADR wording accordingly. This is a real implementation/fixture correction, not a retrigger commit. Initial head `0782a6a` is superseded and must not be reported as final validation evidence.
 - Initial-head WPCS, tripwire and PHP 8.1/8.2/8.4 unit jobs observed SUCCESS while other checks were queued/running. No claim that its targeted/full Integration passed; the schema mismatch was established by local source inspection. New exact-head Actions remain authoritative.
+
+
+### Targeted-step failure diagnostics (same task)
+
+- On `30e10f9`, targeted first-enrollment execution failed; full Integration and its focused coverage execution did not run. Coverage guard correctly failed on missing inputs (secondary, not an independent product failure). WPCS/PHPStan and the unit matrix passed on that head; they do not establish targeted/full Integration success.
+- Direct `gh run view --log-failed` / job-log download failed with sandbox egress EOF to Actions result-storage hosts. The new targeted step initially wrote a separate file not included by existing failure-comment mirrors. Corrected the step to write JUnit and text to the existing integration diagnostics paths: a targeted failure is now archived/mirrored, and a successful targeted run is followed by the unchanged full suite which overwrites those paths normally. This fixes actual missing failure observability; no test, assertion, guard, context or threshold is removed/weakened. Diagnose the next observed failure detail before any product correction.

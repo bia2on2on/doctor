@@ -554,9 +554,10 @@ jobs:
         run: |
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/phpunit-int-junit.xml \
             --bootstrap tests/integration-bootstrap.php \
-            tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/returning-first-enrollment.log
-          grep -qE '^OK \(' /tmp/returning-first-enrollment.log
+            tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/phpunit-int.log
+          grep -qE '^OK \(' /tmp/phpunit-int.log
 
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
