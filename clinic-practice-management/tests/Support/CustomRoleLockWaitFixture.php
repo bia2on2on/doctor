@@ -326,7 +326,10 @@ trait CustomRoleLockWaitFixture
             ' AND blocking_trx.trx_mysql_thread_id = ' . $blockingConnectionId .
             ' AND requesting_lock.lock_type = ' . "'RECORD'" .
             " AND requesting_lock.lock_mode LIKE 'X%'" .
-            " AND requesting_lock.lock_index = 'PRIMARY'" .
+            // MariaDB may report the waiting record lock on the index the
+            // production statement actually used (PRIMARY or a secondary
+            // index); the blocking lock below is still pinned to PRIMARY and
+            // its lock_data is asserted against the exact definition id.
             ' AND ' . sprintf($normalizedTable, 'requesting_lock') .
             ' AND blocking_lock.lock_type = ' . "'RECORD'" .
             " AND blocking_lock.lock_mode LIKE 'X%'" .

@@ -625,8 +625,11 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 self::assertSame('GRANTED', $waitEvidence['blocking_lock_status']);
                 if (!str_starts_with((string) $parentLockBefore['lock_id'], 'mariadb:behavioural:')) {
                     self::assertSame($parentLockBefore['lock_id'], $waitEvidence['blocking_lock_id']);
+                    self::assertSame($parentLockBefore['transaction_id'], $waitEvidence['blocking_transaction_id']);
                 }
-                self::assertSame($parentLockBefore['transaction_id'], $waitEvidence['blocking_transaction_id']);
+                // The MariaDB wait-edge query already pins the blocking
+                // transaction to the parent connection thread id.
+                self::assertSame((string) $parentConnectionId, (string) $waitEvidence['blocking_connection_id']);
                 self::assertNotSame($waitEvidence['requesting_transaction_id'], $waitEvidence['blocking_transaction_id']);
 
                 $parentTransactionWhileWaiting = $this->innodbTransactionForConnection($observer, $parentConnectionId);
