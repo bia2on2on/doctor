@@ -920,6 +920,7 @@
    Cross-Clinic first enrollment — Classic Patient Portal (RTL-first).
    Only presentation: the server has already resolved the authorized Clinics.
    --------------------------------------------------------------------------- */
+.cpms-pp-enrollment [hidden] { display: none !important; }
 .cpms-patient-portal-shell .cpms-pp-enrollment__form {
 	display: grid;
 	gap: 16px;

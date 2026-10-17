@@ -84,7 +84,7 @@ final class FirstEnrollmentPolicyTest extends TestCase
         $endOfMonth = strtotime( '2026-08-31 10:00:00 UTC' );
         $deadline = PostExpirationPolicy::deadline( $endOfMonth, 6 );
 
-        self::assertSame( '2027-02-28 10:00:00 UTC', gmdate( 'Y-m-d H:i:s', $deadline ) );
+        self::assertSame( '2027-02-28 10:00:00', gmdate( 'Y-m-d H:i:s', $deadline ) );
         self::assertTrue( FirstEnrollmentPolicy::allows_first_enrollment( LicenseStatus::RESTRICTED, 'expired', $endOfMonth, $deadline - 1, true ) );
         self::assertFalse( FirstEnrollmentPolicy::allows_first_enrollment( LicenseStatus::RESTRICTED, 'expired', $endOfMonth, $deadline, true ) );
     }

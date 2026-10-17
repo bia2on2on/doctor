@@ -107,11 +107,13 @@ final class PatientEnrollmentRepository
         $value = $this->db->fetchValue(
             'SELECT 1 FROM ' . $this->db->table( 'cpms_patient_identity_links' ) . ' verified_link' .
             ' INNER JOIN ' . $this->db->table( 'cpms_patient_identities' ) . ' identity_row' .
-            ' ON identity_row.id = verified_link.identity_id AND identity_row.organization_id = verified_link.organization_id' .
+            ' ON identity_row.id = verified_link.identity_id'
+            . ' AND identity_row.organization_id = verified_link.organization_id' .
             ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' previous_patient' .
             ' ON previous_patient.identity_id = identity_row.id' .
             ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' previous_clinic' .
-            ' ON previous_clinic.id = previous_patient.clinic_id AND previous_clinic.organization_id = identity_row.organization_id' .
+            ' ON previous_clinic.id = previous_patient.clinic_id'
+            . ' AND previous_clinic.organization_id = identity_row.organization_id' .
             ' INNER JOIN ' . $this->db->table( 'cpms_visits' ) . ' encounter' .
             ' ON encounter.patient_id = previous_patient.id AND encounter.clinic_id = previous_clinic.id' .
             " WHERE verified_link.wp_user_id = %d AND verified_link.identity_id = %d" .

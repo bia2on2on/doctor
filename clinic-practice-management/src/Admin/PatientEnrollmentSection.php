@@ -43,19 +43,19 @@ final class PatientEnrollmentSection
             case PatientEnrollmentOptions::STATE_UNVERIFIED:
                 $html .= self::notice_markup(
                     'ثبت آنلاین برای بیماران تأییدنشده فعال نیست',
-                    'هویت سازمانی شما برای ثبت آنلاین پرونده در مرکز دیگر تأیید نشده است. این وضعیت برای بیماران جدید یا تأییدنشده طبیعی است و به‌معنای نبود دسترسی به پرونده‌های خودتان نیست. برای تشکیل پروندهٔ جدید به پذیرش مرکز مراجعه کنید یا با مطب تماس بگیرید.'
+                    self::unverified_body()
                 );
                 break;
             case PatientEnrollmentOptions::STATE_NO_DESTINATION:
                 $html .= self::notice_markup(
                     'مرکز دیگری برای ثبت در دسترس نیست',
-                    'برای همهٔ مراکز مجاز این حساب که امکان ثبت دارند، پروندهٔ محلی شما وجود دارد یا مرکز دیگری ثبت نشده است. برای نوبت یا تغییر پرونده با پذیرش مطب تماس بگیرید.'
+                    self::no_destination_body()
                 );
                 break;
             default:
                 $html .= self::notice_markup(
                     'ثبت آنلاین در حال حاضر در دسترس نیست',
-                    'امکان ثبت آنلاین پرونده در مرکز دیگر برای این حساب در حال حاضر وجود ندارد. برای بررسی وضعیت و تشکیل یا ادامهٔ پرونده با پذیرش مطب تماس بگیرید. هیچ پرونده یا سابقهٔ مرکز دیگری در این صفحه نمایش داده نمی‌شود.'
+                    self::unavailable_body()
                 );
                 break;
         }
@@ -63,71 +63,146 @@ final class PatientEnrollmentSection
         return $html . '</section>';
     }
 
+    private static function unverified_body(): string {
+        return 'هویت سازمانی شما برای ثبت آنلاین پرونده در مرکز دیگر '
+            . 'تأیید نشده است. این وضعیت برای بیماران جدید یا تأییدنشده '
+            . 'طبیعی است و به‌معنای نبود دسترسی '
+            . 'به پرونده‌های خودتان نیست. '
+            . 'برای تشکیل پروندهٔ جدید به پذیرش مرکز مراجعه کنید یا با '
+            . 'مطب تماس بگیرید.';
+    }
+
+    private static function no_destination_body(): string {
+        return 'برای همهٔ مراکز مجاز این حساب که امکان ثبت '
+            . 'دارند، پروندهٔ '
+            . 'محلی شما وجود دارد یا مرکز دیگری ثبت نشده است. '
+            . 'برای نوبت یا '
+            . 'تغییر پرونده با پذیرش مطب تماس بگیرید.';
+    }
+
+    private static function unavailable_body(): string {
+        return 'امکان ثبت آنلاین پرونده در مرکز دیگر برای این '
+            . 'حساب در حال '
+            . 'حاضر وجود ندارد. برای بررسی وضعیت و تشکیل یا '
+            . 'ادامهٔ پرونده با '
+            . 'پذیرش مطب تماس بگیرید. هیچ پرونده یا سابقهٔ '
+            . 'مرکز دیگری در این '
+            . 'صفحه نمایش داده نمی‌شود.';
+    }
+
     /**
      * @param list<array{id:int, name:string}> $clinics
      */
     private static function eligible_markup( array $clinics ): string {
-        $html = '<p class="description">برای سازمان‌هایی که هویت شما در آن‌ها تأیید شده است، می‌توانید در مرکزی که هنوز پروندهٔ محلی ندارید پروندهٔ تازه بسازید. فقط مراکز مجاز همین حساب نمایش داده می‌شود و هیچ مرکزی به‌صورت خودکار انتخاب نمی‌شود.</p>';
-        $html .= '<form class="cpms-pp-enrollment__form" data-role="patient-enrollment-form" method="post" novalidate aria-describedby="cpms-pp-enrollment-policy">';
+        $intro = 'برای سازمان‌هایی که هویت شما در آن‌ها تأیید شده است، '
+            . 'می‌توانید در مرکزی که هنوز پروندهٔ محلی ندارید '
+            . 'پروندهٔ تازه '
+            . 'بسازید. فقط مراکز مجاز همین حساب نمایش داده می‌شود و هیچ '
+            . 'مرکزی به‌صورت خودکار انتخاب نمی‌شود.';
+
+        $html = '<p class="description">' . esc_html( $intro ) . '</p>';
+        $html .= '<form class="cpms-pp-enrollment__form"'
+            . ' data-role="patient-enrollment-form" method="post" novalidate'
+            . ' aria-describedby="cpms-pp-enrollment-policy">';
 
         $html .= '<fieldset class="cpms-pp-enrollment__fieldset">';
         $html .= '<legend>اطلاعات پروندهٔ محلی</legend>';
 
         $html .= '<div class="cpms-pp-enrollment__field">';
         $html .= '<label for="cpms-pp-enrollment-clinic">مرکز مقصد</label>';
-        $html .= '<select id="cpms-pp-enrollment-clinic" data-role="enrollment-clinic" required aria-describedby="cpms-pp-enrollment-clinic-hint" aria-required="true">';
+        $html .= '<select id="cpms-pp-enrollment-clinic" data-role="enrollment-clinic"'
+            . ' required aria-describedby="cpms-pp-enrollment-clinic-hint"'
+            . ' aria-required="true">';
         $html .= '<option value="">انتخاب مرکز…</option>';
         foreach ( $clinics as $clinic ) {
-            $html .= '<option value="' . esc_attr( (string) $clinic['id'] ) . '">' . esc_html( $clinic['name'] ) . '</option>';
+            $html .= '<option value="' . esc_attr( (string) $clinic['id'] ) . '">'
+                . esc_html( $clinic['name'] ) . '</option>';
         }
         $html .= '</select>';
-        $html .= '<p id="cpms-pp-enrollment-clinic-hint" class="description">این فهرست از وضعیت تأییدشدهٔ حساب شما ساخته شده است؛ مرکز را خودتان انتخاب کنید.</p>';
+        $html .= '<p id="cpms-pp-enrollment-clinic-hint" class="description">'
+            . 'این فهرست از وضعیت تأییدشدهٔ حساب شما ساخته شده '
+            . 'است؛ مرکز را '
+            . 'خودتان انتخاب کنید.</p>';
         $html .= '</div>';
 
         $html .= '<div class="cpms-pp-enrollment__field">';
         $html .= '<label for="cpms-pp-enrollment-first-name">نام</label>';
-        $html .= '<input id="cpms-pp-enrollment-first-name" name="first_name" data-role="enrollment-first-name" type="text" autocomplete="given-name" maxlength="120" required aria-required="true">';
+        $html .= '<input id="cpms-pp-enrollment-first-name" name="first_name"'
+            . ' data-role="enrollment-first-name" type="text"'
+            . ' autocomplete="given-name" maxlength="120" required'
+            . ' aria-required="true">';
         $html .= '</div>';
 
         $html .= '<div class="cpms-pp-enrollment__field">';
         $html .= '<label for="cpms-pp-enrollment-last-name">نام خانوادگی</label>';
-        $html .= '<input id="cpms-pp-enrollment-last-name" name="last_name" data-role="enrollment-last-name" type="text" autocomplete="family-name" maxlength="120" required aria-required="true">';
+        $html .= '<input id="cpms-pp-enrollment-last-name" name="last_name"'
+            . ' data-role="enrollment-last-name" type="text"'
+            . ' autocomplete="family-name" maxlength="120" required'
+            . ' aria-required="true">';
         $html .= '</div>';
 
         $html .= '<div class="cpms-pp-enrollment__field">';
         $html .= '<label for="cpms-pp-enrollment-mobile">شمارهٔ موبایل</label>';
-        $html .= '<input id="cpms-pp-enrollment-mobile" name="mobile" data-role="enrollment-mobile" type="tel" inputmode="tel" autocomplete="tel" maxlength="16" dir="ltr" required aria-required="true" aria-describedby="cpms-pp-enrollment-mobile-hint">';
-        $html .= '<p id="cpms-pp-enrollment-mobile-hint" class="description">شمارهٔ تماس این پروندهٔ محلی؛ برای تأیید هویت استفاده نمی‌شود.</p>';
+        $html .= '<input id="cpms-pp-enrollment-mobile" name="mobile"'
+            . ' data-role="enrollment-mobile" type="tel" inputmode="tel"'
+            . ' autocomplete="tel" maxlength="16" dir="ltr" required'
+            . ' aria-required="true"'
+            . ' aria-describedby="cpms-pp-enrollment-mobile-hint">';
+        $html .= '<p id="cpms-pp-enrollment-mobile-hint" class="description">'
+            . 'شمارهٔ تماس این پروندهٔ محلی؛ برای تأیید هویت '
+            . 'استفاده نمی‌شود.</p>';
         $html .= '</div>';
 
         $html .= '</fieldset>';
 
-        $html .= '<div class="cpms-pp-enrollment__notice cpms-pp-enrollment__notice--info" id="cpms-pp-enrollment-policy">';
-        $html .= '<p><strong>این اقدام نوبت ایجاد نمی‌کند.</strong> ثبت پرونده فقط یک پروندهٔ محلی تازه در مرکز انتخاب‌شده می‌سازد. سابقهٔ درمانی، ویزیت‌ها و اطلاعات بالینی مراکز دیگر کپی یا نمایش داده نمی‌شود.</p>';
-        $html .= '<p>بررسی نهایی مجاز بودن ثبت، هنگام ارسال درخواست و در سمت سرور انجام می‌شود.</p>';
+        $html .= '<div class="cpms-pp-enrollment__notice'
+            . ' cpms-pp-enrollment__notice--info" id="cpms-pp-enrollment-policy">';
+        $html .= '<p><strong>این اقدام نوبت ایجاد نمی‌کند.</strong> '
+            . 'ثبت پرونده فقط یک پروندهٔ محلی تازه در مرکز '
+            . 'انتخاب‌شده می‌سازد. '
+            . 'سابقهٔ درمانی، ویزیت‌ها و اطلاعات بالینی مراکز '
+            . 'دیگر کپی یا '
+            . 'نمایش داده نمی‌شود.</p>';
+        $html .= '<p>بررسی نهایی مجاز بودن ثبت، هنگام ارسال درخواست '
+            . 'و در سمت '
+            . 'سرور انجام می‌شود.</p>';
         $html .= '</div>';
 
-        $html .= '<p class="cpms-pp-enrollment__error" role="alert" tabindex="-1" data-role="enrollment-error" hidden></p>';
-        $html .= '<p class="cpms-pp-enrollment__status" role="status" aria-live="polite" data-role="enrollment-status" hidden></p>';
+        $html .= '<p class="cpms-pp-enrollment__error" role="alert" tabindex="-1"'
+            . ' data-role="enrollment-error" hidden></p>';
+        $html .= '<p class="cpms-pp-enrollment__status" role="status"'
+            . ' aria-live="polite" data-role="enrollment-status" hidden></p>';
 
         $html .= '<div class="cpms-pp-enrollment__actions">';
-        $html .= '<button type="submit" class="cpms-pp-btn cpms-pp-btn--primary" data-role="enrollment-submit">ثبت پرونده در این مرکز</button>';
+        $html .= '<button type="submit" class="cpms-pp-btn cpms-pp-btn--primary"'
+            . ' data-role="enrollment-submit">ثبت پرونده در این مرکز</button>';
         $html .= '</div>';
-        $html .= '<noscript><p class="description">برای ثبت آنلاین، جاوااسکریپت مرورگر باید فعال باشد. در غیر این صورت با پذیرش مطب تماس بگیرید.</p></noscript>';
+        $html .= '<noscript><p class="description">برای ثبت آنلاین،'
+            . ' جاوااسکریپت مرورگر باید فعال باشد. در غیر این '
+            . 'صورت با پذیرش'
+            . ' مطب تماس بگیرید.</p></noscript>';
         $html .= '</form>';
 
-        $html .= '<div class="cpms-pp-enrollment__success" role="status" tabindex="-1" data-role="enrollment-success" hidden>';
+        $html .= '<div class="cpms-pp-enrollment__success" role="status"'
+            . ' tabindex="-1" data-role="enrollment-success" hidden>';
         $html .= '<h2>پروندهٔ محلی شما ثبت شد</h2>';
-        $html .= '<p>ثبت پرونده انجام شد. هیچ نوبتی ایجاد نشده است. برای دیدن پرونده، صفحه را دوباره بارگذاری کنید یا به بخش «پروفایل» بروید.</p>';
-        $html .= '<p class="description">شمارهٔ پرونده (MRN): <b dir="ltr" data-role="enrollment-mrn"></b></p>';
-        $html .= '<p class="description">اگر این پرونده را نمی‌شناسید، فوراً با پذیرش مطب تماس بگیرید.</p>';
+        $html .= '<p>ثبت پرونده انجام شد. هیچ نوبتی ایجاد نشده است. برای '
+            . 'دیدن پرونده، صفحه را دوباره بارگذاری کنید یا به '
+            . 'بخش «پروفایل»'
+            . ' بروید.</p>';
+        $html .= '<p class="description">شمارهٔ پرونده (MRN):'
+            . ' <b dir="ltr" data-role="enrollment-mrn"></b></p>';
+        $html .= '<p class="description">اگر این پرونده را نمی‌شناسید، فوراً'
+            . ' با پذیرش مطب تماس بگیرید.</p>';
         $html .= '</div>';
 
         return $html;
     }
 
     private static function notice_markup( string $title, string $body ): string {
-        return '<div class="cpms-pp-enrollment__notice cpms-pp-enrollment__notice--muted" data-role="enrollment-unavailable" role="status">'
+        return '<div class="cpms-pp-enrollment__notice'
+            . ' cpms-pp-enrollment__notice--muted"'
+            . ' data-role="enrollment-unavailable" role="status">'
             . '<h2>' . esc_html( $title ) . '</h2>'
             . '<p>' . esc_html( $body ) . '</p>'
             . '</div>';

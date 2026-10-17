@@ -41,6 +41,9 @@ final class PatientEnrollmentOptionsTest extends WP_UnitTestCase
 
         $db = App::db();
         $stamp = $db->nowUtcSql();
+        $this->user = (int) self::factory()->user->create(
+            [ 'role' => RolesAndCapabilities::ROLE_PATIENT, 'user_login' => 'enrollment_options' ]
+        );
         $this->t0 = strtotime( '-3 months' );
         $this->now = $this->t0 + DAY_IN_SECONDS;
         $this->org = (int) $db->fetchValue( 'SELECT organization_id FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', [ 1 ] );
@@ -121,7 +124,6 @@ final class PatientEnrollmentOptionsTest extends WP_UnitTestCase
         $this->unrelated_clinic = $db->wpdb_last_insert_id();
 
         $this->identity = App::patient_identity_service()->create_identity( $this->org, '09127770001' );
-        $this->user = (int) self::factory()->user->create( [ 'role' => RolesAndCapabilities::ROLE_PATIENT, 'user_login' => 'enrollment_options' ] );
         App::patient_identity_service()->link_user( $this->org, $this->identity, $this->user, '09127770001' );
 
         $db->insert( 'cpms_patients', [

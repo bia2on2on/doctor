@@ -345,7 +345,7 @@ final class PatientPortalPage
 
         $html .= '. رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.</p></div>';
         $html .= '</section>';
-        $html .= self::enrollmentSection( $user_id );
+        $html .= self::enrollment_section( $user_id );
         $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
         $html .= self::visits_section( $profile_records, $user_id );
         $html .= self::prescriptions_section( $profile_records, $user_id );
@@ -606,7 +606,8 @@ final class PatientPortalPage
      *  - `notifications_read_path`: مسیرِ موجودِ R2b (POST `{"all":true}`) — Slice 2.
      *  - `profile_my_records_path`/`profile_me_path`/`my_records_path`/`me_path`: مسیرهای Patient Profile (Slice 4) — نسبی به NS، بدون پیشوند تکراری.
      *  - `files_path`/`files_stream_path`: مسیرهای موجودِ C3/C4 و E17 (Slice 7) — نسبی به NS؛ `{patient_id}`/`{id}` فقط سلکتور شیء.
-     *  - `enroll_path`/`login_url`: مسیرِ موجودِ C0a و ورود دوباره؛ هیچ clinic_id/patient_id یا اختیار مرورگری منتشر نمی‌شود.
+     *  - `enroll_path`/`login_url`: مسیرِ موجودِ C0a و ورود دوباره؛ هیچ
+     *    clinic_id/patient_id یا اختیار مرورگری منتشر نمی‌شود.
      *  - `profile_records`: لینک‌های فعال کاربر (link_id + clinic_name + patient_display_name + mrn + is_primary) — صرفاً برای نمایش در سلکتور؛ clinic_id/patient_id سرور-ساید enforcement.
      *  - `profile_initial`: رکورد + me در حالت تک‌پیوند (N=1) تا فرم بدون درخواست اضافی لود شود.
      *  - `nonce`: `wp_rest` — همان مرزِ CSRF که `cancelPermission`/`permission` می‌سنجند.
@@ -944,7 +945,7 @@ final class PatientPortalPage
      * here, no default Clinic is inferred, and a resolver failure degrades to a
      * safe "unavailable" notice with no clinic names or PHI.
      */
-    private static function enrollmentSection( int $user_id ): string {
+    private static function enrollment_section( int $user_id ): string {
         try {
             $options = App::patient_enrollment_options()->for_user( $user_id );
         } catch ( \Throwable $exception ) {
