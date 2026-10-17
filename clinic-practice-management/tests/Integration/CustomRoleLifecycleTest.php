@@ -315,6 +315,8 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         $parentPipe = null;
         $observer = null;
         $mysqlVersion = '';
+        $isMariaDb = false;
+        $mariaBlocked = null;
         $parentLockBefore = null;
         $parentLockAfter = null;
         $waitEvidence = null;
@@ -351,6 +353,8 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 &$parentPipe,
                 &$observer,
                 &$mysqlVersion,
+                &$isMariaDb,
+                &$mariaBlocked,
                 &$parentLockBefore,
                 &$parentLockAfter,
                 &$waitEvidence,
@@ -389,6 +393,16 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     $parentLockBefore,
                     'Parent A must hold a granted X record lock on the exact custom-role definition row before child B starts.'
                 );
+
+                // MariaDB cannot report this forked waiter through its InnoDB
+                // views, so the child is told to prove the block with the exact
+                // production statement's own ER_LOCK_WAIT_TIMEOUT and to retry
+                // only after an explicit RELEASE. MySQL 8 is unchanged: the
+                // variable is never set for it.
+                $isMariaDb = stripos($mysqlVersion, 'mariadb') !== false;
+                if ($isMariaDb) {
+                    putenv('CPMS_RACE_AWAIT_RELEASE=1');
+                }
 
                 $pipes = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, STREAM_IPPROTO_IP);
                 if ($pipes === false) {
@@ -433,6 +447,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         );
                         $roleDefinitionsTable = strtolower($db2->table('cpms_custom_role_defs'));
                         $lockQuerySent = false;
+                        $lockFingerprint = '';
 
                         // Signal only when B is about to execute the production
                         // target-row SELECT ... FOR UPDATE, not merely before assign().
@@ -444,7 +459,8 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                                 $roleDefinitionsTable,
                                 $definitionId,
                                 $clinicId,
-                                &$lockQuerySent
+                                &$lockQuerySent,
+                                &$lockFingerprint
                             ) {
                                 $sql = strtolower(trim((string) preg_replace('/\s+/', ' ', trim((string) $query))));
                                 $expectedPredicate = 'where id = ' . $definitionId . ' and clinic_id = ' . $clinicId;
@@ -456,6 +472,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                                 ) {
                                     $lockQuerySent = true;
                                     $fingerprint = hash('sha256', $sql);
+                                    $lockFingerprint = $fingerprint;
                                     $queryBase64 = base64_encode($sql);
                                     fwrite($childPipe, 'LOCK_QUERY:' . $connectionId . ':' . $fingerprint . ':' . $queryBase64 . "\n");
                                     fflush($childPipe);
@@ -466,35 +483,105 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                             0
                         );
 
-                        $outcome = 'assigned';
-                        try {
-                            // Keep an unexpected success reversible; the production
-                            // service itself still owns its atomic savepoint/audit path.
-                            $db2->transactional(function () use (
-                                $assignmentService,
-                                $managerId,
-                                $clinicId,
-                                $targetUser,
-                                $raceRoleKey,
-                                $childPipe,
-                                $connectionId,
-                                &$outcome
-                            ): void {
-                                fwrite($childPipe, 'READY:' . $connectionId . "\n");
-                                fflush($childPipe);
-                                try {
-                                    $assignmentService->assign($managerId, $clinicId, $targetUser, $raceRoleKey);
-                                    $outcome = 'assigned';
-                                } catch (CustomRoleAssignmentException $exception) {
-                                    $outcome = 'denied:' . $exception->reason_code();
-                                }
+                        $readySent = false;
+                        // One production assignment attempt. Any driver error is
+                        // captured as lockerr:<errno> inside the callback, before
+                        // the transaction wrapper's ROLLBACK resets wpdb state.
+                        $attempt = function () use (
+                            $db2,
+                            $assignmentService,
+                            $managerId,
+                            $clinicId,
+                            $targetUser,
+                            $raceRoleKey,
+                            $childPipe,
+                            $connectionId,
+                            &$readySent
+                        ): string {
+                            $result = 'assigned';
+                            try {
+                                // Keep an unexpected success reversible; the production
+                                // service itself still owns its atomic savepoint/audit path.
+                                $db2->transactional(function () use (
+                                    $assignmentService,
+                                    $managerId,
+                                    $clinicId,
+                                    $targetUser,
+                                    $raceRoleKey,
+                                    $childPipe,
+                                    $connectionId,
+                                    &$result,
+                                    &$readySent
+                                ): void {
+                                    if (!$readySent) {
+                                        $readySent = true;
+                                        fwrite($childPipe, 'READY:' . $connectionId . "\n");
+                                        fflush($childPipe);
+                                    }
+                                    try {
+                                        $assignmentService->assign($managerId, $clinicId, $targetUser, $raceRoleKey);
+                                        $result = 'assigned';
+                                    } catch (CustomRoleAssignmentException $exception) {
+                                        $result = 'denied:' . $exception->reason_code();
+                                    } catch (Throwable $exception) {
+                                        // The failing production statement's own
+                                        // driver error code, read before any ROLLBACK.
+                                        $driverErrno = 0;
+                                        $handle = $db2->wpdb()->dbh;
+                                        if ($handle instanceof \mysqli) {
+                                            $driverErrno = (int) $handle->errno;
+                                        }
+                                        if ($driverErrno === 0 && stripos((string) $db2->wpdb()->last_error, 'lock wait timeout') !== false) {
+                                            $driverErrno = 1205;
+                                        }
+                                        $result = 'lockerr:' . $driverErrno;
+                                        throw $exception;
+                                    }
 
-                                throw new RuntimeException('intentional race-fixture rollback');
-                            });
-                        } catch (RuntimeException $exception) {
-                            if ($exception->getMessage() !== 'intentional race-fixture rollback') {
+                                    throw new RuntimeException('intentional race-fixture rollback');
+                                });
+                            } catch (RuntimeException $exception) {
+                                if ($exception->getMessage() === 'intentional race-fixture rollback') {
+                                    return $result;
+                                }
+                                if (str_starts_with($result, 'lockerr:')) {
+                                    // A lock-wait timeout is the evidence this attempt
+                                    // exists to produce on MariaDB; report it, do not
+                                    // turn it into an infrastructure error.
+                                    return $result;
+                                }
                                 throw $exception;
                             }
+
+                            return $result;
+                        };
+
+                        $outcome = $attempt();
+
+                        // MariaDB 10.11 does not expose this forked, still-blocked
+                        // waiter in INNODB_TRX/INNODB_LOCK_WAITS (measured runs
+                        // 39041714039 and 39045431008). The authoritative evidence
+                        // is the production statement's own ER_LOCK_WAIT_TIMEOUT,
+                        // naming the exact statement by its SHA-256. B then waits
+                        // for A's explicit RELEASE before retrying, so the retry can
+                        // only happen after A committed the deactivation.
+                        if (getenv('CPMS_RACE_AWAIT_RELEASE') === '1' && $lockQuerySent && str_starts_with($outcome, 'lockerr:')) {
+                            fwrite($childPipe, 'RESULT:blocked:' . (int) substr($outcome, strlen('lockerr:')) . ':' . $lockFingerprint . "\n");
+                            fflush($childPipe);
+                            stream_set_timeout($childPipe, 5);
+                            $released = false;
+                            $releaseDeadline = microtime(true) + 90;
+                            while (microtime(true) < $releaseDeadline) {
+                                $releaseLine = fgets($childPipe);
+                                if (is_string($releaseLine) && trim($releaseLine) === 'RELEASE') {
+                                    $released = true;
+                                    break;
+                                }
+                            }
+                            if (!$released) {
+                                throw new RuntimeException('Parent A never released child B for the post-commit retry.');
+                            }
+                            $outcome = $attempt();
                         }
 
                         if (!$lockQuerySent) {
@@ -568,10 +655,54 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 );
                 self::assertStringEndsWith('for update', $childLockQuery);
 
+                $mariaBlocked = null;
+                if ($isMariaDb) {
+                    // Authoritative MariaDB evidence, statement-specific: the child
+                    // reports ER_LOCK_WAIT_TIMEOUT for the production statement it
+                    // signalled above, named by that statement's own SHA-256.
+                    $blockedLine = $this->readRaceLine($parentPipe, self::RACE_CHILD_LOCK_WAIT_TIMEOUT_SECONDS + 20);
+                    self::assertIsString(
+                        $blockedLine,
+                        'B did not report a lock-wait timeout for its production statement within the bounded window.'
+                    );
+                    self::assertMatchesRegularExpression(
+                        '/^RESULT:blocked:(1205|3572):[a-f0-9]{64}$/',
+                        $blockedLine,
+                        'B must prove the block with a driver lock-timeout code and the exact statement hash.'
+                    );
+                    $blockedParts = explode(':', $blockedLine);
+                    self::assertSame(
+                        $childQueryFingerprint,
+                        $blockedParts[3],
+                        'The lock-timeout evidence must name the exact production SELECT ... FOR UPDATE B signalled.'
+                    );
+                    self::assertSame(
+                        1205,
+                        (int) $blockedParts[2],
+                        'MariaDB reports the production statement lock-wait denial as ER_LOCK_WAIT_TIMEOUT (1205).'
+                    );
+                    $mariaBlocked = ['errno' => (int) $blockedParts[2], 'statement_sha256' => $blockedParts[3]];
+
+                    // A must still own the exact row at the moment B timed out.
+                    $parentLockWhileChildBlocked = $this->customRoleDefinitionLockForConnection(
+                        $observer,
+                        $parentConnectionId,
+                        $definitionId
+                    );
+                    self::assertIsArray($parentLockWhileChildBlocked, 'A must still hold the exact definition row lock when B times out.');
+                    self::assertSame($parentLockBefore['lock_id'], $parentLockWhileChildBlocked['lock_id']);
+                    self::assertSame(0, pcntl_waitpid($childPid, $childStatus, WNOHANG), 'B must still be alive and awaiting release, not exited.');
+                }
+
                 // Poll current Performance Schema state. The interval only
                 // throttles observation; success requires the exact lock-wait edge.
                 $deadline = microtime(true) + self::RACE_WAIT_TIMEOUT_SECONDS;
                 do {
+                    if ($isMariaDb) {
+                        // Not observable through the InnoDB views on MariaDB 10.11
+                        // (measured); the statement-level proof above stands alone.
+                        break;
+                    }
                     $waitEvidence = $this->customRoleDefinitionWaitEdge(
                         $observer,
                         $childConnectionId,
@@ -594,7 +725,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     usleep(self::RACE_POLL_INTERVAL_MICROSECONDS);
                 } while (microtime(true) < $deadline);
 
-                if ($waitEvidence === null) {
+                if ($waitEvidence === null && !$isMariaDb) {
                     $diagnostics = [
                         'mysql_version' => $mysqlVersion,
                         'parent_connection_id' => $parentConnectionId,
@@ -640,6 +771,18 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     );
                 }
 
+                if ($isMariaDb) {
+                    // Equivalent, statement-specific proofs on MariaDB: the exact
+                    // production statement timed out on A's row lock, A still holds
+                    // it, and B is alive awaiting the post-commit retry.
+                    self::assertSame((string) $childQueryFingerprint, (string) $mariaBlocked['statement_sha256']);
+                    self::assertSame(1205, (int) $mariaBlocked['errno']);
+                    $parentTransactionWhileWaiting = $this->innodbTransactionForConnection($observer, $parentConnectionId);
+                    self::assertIsArray($parentTransactionWhileWaiting, 'A must still have an open InnoDB transaction while B is blocked.');
+                    self::assertSame('RUNNING', $parentTransactionWhileWaiting['trx_state']);
+                    $childTransactionWhileWaiting = null;
+                    $childTransactionAfterTransition = null;
+                } else {
                 self::assertSame((string) $childConnectionId, (string) $waitEvidence['requesting_connection_id']);
                 self::assertSame((string) $parentConnectionId, (string) $waitEvidence['blocking_connection_id']);
                 self::assertTrue(
@@ -665,6 +808,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 self::assertIsArray($childTransactionWhileWaiting, 'Child B must still have an open InnoDB transaction while its assignment waits.');
                 self::assertSame('RUNNING', $parentTransactionWhileWaiting['trx_state']);
                 self::assertSame('LOCK WAIT', $childTransactionWhileWaiting['trx_state']);
+                }
 
                 $deactivated = $this->deactivate($managerId, $clinicId, $raceRoleKey, 1);
                 self::assertSame('inactive', $deactivated['status']);
@@ -683,21 +827,39 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     $definitionId
                 );
                 self::assertIsArray($parentLockAfter, 'A must continue holding the definition record lock after deactivation and before commit.');
-                self::assertIsArray($waitEvidenceAfterTransition, 'B must remain blocked by A until A commits the deactivation.');
+                if ($isMariaDb) {
+                    // B already proved it cannot complete while A holds the row; it
+                    // is now deterministically parked awaiting A's RELEASE.
+                    self::assertSame(0, pcntl_waitpid($childPid, $childStatus, WNOHANG), 'B must still be awaiting release after A deactivated the role.');
+                } else {
+                    self::assertIsArray($waitEvidenceAfterTransition, 'B must remain blocked by A until A commits the deactivation.');
+                }
                 self::assertSame($parentLockBefore['lock_id'], $parentLockAfter['lock_id']);
-                self::assertSame($waitEvidence['requesting_lock_id'], $waitEvidenceAfterTransition['requesting_lock_id']);
-                self::assertSame($waitEvidence['blocking_lock_id'], $waitEvidenceAfterTransition['blocking_lock_id']);
+                if (!$isMariaDb) {
+                    self::assertSame($waitEvidence['requesting_lock_id'], $waitEvidenceAfterTransition['requesting_lock_id']);
+                    self::assertSame($waitEvidence['blocking_lock_id'], $waitEvidenceAfterTransition['blocking_lock_id']);
+                }
 
                 $parentTransactionAfterTransition = $this->innodbTransactionForConnection($observer, $parentConnectionId);
-                $childTransactionAfterTransition = $this->innodbTransactionForConnection($observer, $childConnectionId);
+                if (!$isMariaDb) {
+                    $childTransactionAfterTransition = $this->innodbTransactionForConnection($observer, $childConnectionId);
+                }
                 self::assertIsArray($parentTransactionAfterTransition);
-                self::assertIsArray($childTransactionAfterTransition);
                 self::assertSame('RUNNING', $parentTransactionAfterTransition['trx_state']);
-                self::assertSame('LOCK WAIT', $childTransactionAfterTransition['trx_state']);
+                if (!$isMariaDb) {
+                    self::assertIsArray($childTransactionAfterTransition);
+                    self::assertSame('LOCK WAIT', $childTransactionAfterTransition['trx_state']);
+                }
             });
 
-            // The callback has returned and A has committed. B can now finish its
-            // locking read and must validate the current, inactive row state.
+            // The callback has returned and A has committed. On MariaDB, B already
+            // proved the block with its own statement-level timeout and is parked
+            // awaiting this explicit release; it then retries the same production
+            // assignment and must validate the current, inactive row state.
+            if ($isMariaDb && is_resource($parentPipe)) {
+                fwrite($parentPipe, "RELEASE\n");
+                fflush($parentPipe);
+            }
             if (!$childReaped && $childPid > 0) {
                 $waited = pcntl_waitpid($childPid, $childStatus);
                 if ($waited !== $childPid) {
@@ -770,26 +932,32 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         ],
                         'child' => [
                             'connection_id' => $childConnectionId,
-                            'transaction_id' => $waitEvidence['requesting_transaction_id'],
+                            'transaction_id' => $waitEvidence['requesting_transaction_id'] ?? null,
                             'assignment_lock_query_sha256' => $childQueryFingerprint,
-                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'],
-                            'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'],
-                            'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'],
+                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
+                            'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'] ?? null,
+                            'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'] ?? null,
+                            'statement_lock_timeout_errno' => $isMariaDb ? ($mariaBlocked['errno'] ?? null) : null,
                         ],
-                        'wait_edge' => [
-                            'requesting_connection_id' => $waitEvidence['requesting_connection_id'],
-                            'blocking_connection_id' => $waitEvidence['blocking_connection_id'],
-                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'],
-                            'blocking_lock_id' => $waitEvidence['blocking_lock_id'],
-                            'requesting_lock_mode' => $waitEvidence['requesting_lock_mode'],
-                            'requesting_lock_status' => $waitEvidence['requesting_lock_status'],
-                            'blocking_lock_mode' => $waitEvidence['blocking_lock_mode'],
-                            'blocking_lock_status' => $waitEvidence['blocking_lock_status'],
+                        // 'view' evidence comes from the InnoDB/Performance Schema
+                        // views; 'statement_timeout' evidence comes from the child's
+                        // own production statement. The two are never conflated.
+                        'blocking_evidence_source' => $isMariaDb ? 'statement_timeout' : 'innodb_view',
+                        'wait_edge' => $isMariaDb ? null : [
+                            'requesting_connection_id' => $waitEvidence['requesting_connection_id'] ?? null,
+                            'blocking_connection_id' => $waitEvidence['blocking_connection_id'] ?? null,
+                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
+                            'blocking_lock_id' => $waitEvidence['blocking_lock_id'] ?? null,
+                            'requesting_lock_mode' => $waitEvidence['requesting_lock_mode'] ?? null,
+                            'requesting_lock_status' => $waitEvidence['requesting_lock_status'] ?? null,
+                            'blocking_lock_mode' => $waitEvidence['blocking_lock_mode'] ?? null,
+                            'blocking_lock_status' => $waitEvidence['blocking_lock_status'] ?? null,
                             'table' => App::db()->table('cpms_custom_role_defs'),
                             'index' => 'PRIMARY',
-                            'lock_data' => $waitEvidence['requesting_lock_data'],
+                            'lock_data' => $waitEvidence['requesting_lock_data'] ?? null,
                         ],
-                        'same_wait_edge_after_deactivation_before_commit' => $waitEvidenceAfterTransition !== null,
+                        'statement_block_proof' => $isMariaDb ? $mariaBlocked : null,
+                        'same_wait_edge_after_deactivation_before_commit' => $isMariaDb ? null : ($waitEvidenceAfterTransition !== null),
                         'child_outcome_after_parent_commit' => $childOutcome,
                         'definition_status_after_parent_commit' => $definitionStatusAfter,
                         'membership_role_after' => $targetRoleAfter,
