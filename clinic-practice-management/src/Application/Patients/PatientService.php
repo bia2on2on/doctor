@@ -294,8 +294,9 @@ final class PatientService
         // organization identity are one atomic unit. A failed activation rolls
         // the patient insert back — no clinical record is ever left without an
         // organization identity on this path (fail-closed).
-        $id = $this->db->transactional(
-            function () use ( $data, $clinicId, $mobile ): int {
+        $clinic_id = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $id        = $this->db->transactional(
+            function () use ( $data, $clinic_id, $mobile ): int {
                 $id = $this->patients->create( $data );
                 if ( $this->db->wpdb()->last_error !== '' || $id <= 0 ) {
                     // Map the known same-Clinic national-ID uniqueness collision to a
@@ -307,12 +308,12 @@ final class PatientService
                 // Clinic comes from the server-side trusted scope, never from the
                 // request body; `identity_id` is not a writable create field, so no
                 // caller can choose or inject the identity.
-                $this->activate_identity( $clinicId, $id, $mobile );
+                $this->activate_identity( $clinic_id, $id, $mobile );
 
                 return $id;
             }
         );
-        $row = (array) $this->patients->find($id);
+        $row = (array) $this->patients->find( $id );
 
         $this->audit->log(
             'PATIENT_CREATED',
