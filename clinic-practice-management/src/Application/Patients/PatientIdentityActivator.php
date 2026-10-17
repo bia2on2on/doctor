@@ -106,6 +106,11 @@ final class PatientIdentityActivator {
         return $identity_id;
     }
 
+    /** Server-authenticated subject only; no demographic or request identity selector. */
+    public function verified_identity_for_clinic( int $clinic_id, int $wp_user_id ): ?int {
+        return $this->resolve_verified_identity( $this->require_organization( $clinic_id ), $wp_user_id );
+    }
+
     /**
      * Organizationِ مالکِ Clinic — سمت سرور و اجباری. Clinicِ ناشناخته یا
      * بدونِ Organization ⇒ fail-closed (هیچ هویتی ساخته نمی‌شود).

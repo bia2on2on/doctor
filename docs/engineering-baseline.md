@@ -381,6 +381,14 @@ exception. Historical seven-day grace remains warning/status metadata only; it
   and an encounter completed strictly before T0 in one of exactly
   `consultation_completed`, `awaiting_payment`, `paid`, `checked_out`.
   Missing identity/completion proof fails closed for returning classification.
+  **All Clinics in that Organization are included, even a first visit with no
+  local record.** The authenticated patient-self `/patient/enroll` path resolves
+  exactly one explicit Organization identity from the session user, creates a
+  minimal local record and durable self-link, and checks eligibility atomically
+  with rollback on denial. No request identity IDs or demographic/phone matches,
+  no copied foreign PHI, no appointment creation, and no staff permission grant.
+  Unverified staff creation remains reception-only for one month. This explicitly
+  supersedes any earlier first-new-Clinic enrollment limitation in PR #241.
 - Windows are half-open, Gregorian UTC, month-end clamped, time-of-day retained;
   Jalali is display-only. No seven-day addition and no 30/180-day approximation.
 - Nonessential SMS/reminders and premium handwriting new use stop at T0;

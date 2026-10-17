@@ -253,6 +253,69 @@ final class PatientService
         return $this->staffView((array) $row);
     }
 
+    /**
+     * Patient-self enrollment in a destination Clinic, including its first local
+     * record. Session subject + explicit Organization link are the authority;
+     * supplied identity/user IDs and demographics are never identity selectors.
+     *
+     * @param array<string, mixed> $fields New local data, never copied from another Clinic.
+     * @return array<string, mixed>
+     */
+    public function enroll_current_patient( int $clinic_id, array $fields ): array {
+        $user = wp_get_current_user();
+        if ( ! $user->exists() || ! in_array( \ClinicCore\Auth\RolesAndCapabilities::ROLE_PATIENT, (array) $user->roles, true ) ) {
+            throw new BookingException( 'CLINIC_PERMISSION_DENIED', 'دسترسی ندارید', 403 );
+        }
+        $previous = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+        try {
+            return $this->db->transactional(
+                function () use ( $clinic_id, $fields, $user ): array {
+                    $clinic = $this->db->fetchRowForUpdate(
+                        'SELECT clinic.id, clinic.organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' clinic' .
+                        ' INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' organization ON organization.id = clinic.organization_id' .
+                        ' WHERE clinic.id = %d AND clinic.status = %s AND organization.status = %s',
+                        [ $clinic_id, 'active', 'active' ]
+                    );
+                    if ( $clinic === null ) {
+                        throw $this->linked_patient_not_found();
+                    }
+                    // Serialize verification and enrollment with changes to this
+                    // user's Organization links; ambiguity never becomes a fallback grant.
+                    $this->db->fetchAll(
+                        'SELECT id FROM ' . $this->db->table( 'cpms_patient_identity_links' ) .
+                        ' WHERE organization_id = %d AND wp_user_id = %d FOR UPDATE',
+                        [ (int) $clinic['organization_id'], (int) $user->ID ]
+                    );
+                    if ( $this->db->wpdb()->last_error !== '' ) {
+                        throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+                    }
+                    $identity = $this->identities->verified_identity_for_clinic( $clinic_id, (int) $user->ID );
+                    if ( $identity === null ) {
+                        throw $this->linked_patient_not_found();
+                    }
+                    $existing = $this->db->fetchValue(
+                        'SELECT id FROM ' . $this->db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d AND identity_id = %d LIMIT 1',
+                        [ $clinic_id, $identity ]
+                    );
+                    if ( $this->db->wpdb()->last_error !== '' ) {
+                        throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+                    }
+                    if ( $existing !== null ) {
+                        throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'پرونده در این کلینیک موجود است', 400 );
+                    }
+                    App::replaceExplicitScope( \ClinicCore\Application\Scope\ClinicScope::forClinic( $clinic_id )->withOrganization( (int) $clinic['organization_id'] ) );
+                    // Only new, self-supplied local demographics; no import of
+                    // clinical history, no caller-selected subject or identity.
+                    $local_fields = array_intersect_key( $fields, array_flip( [ 'first_name', 'last_name', 'mobile' ] ) );
+                    $created      = $this->create_record( $local_fields, (int) $user->ID, (int) $user->ID, $identity );
+                    return [ 'patient_id' => (int) $created['id'], 'clinic_id' => $clinic_id, 'mrn' => (string) $created['mrn'] ];
+                }
+            );
+        } finally {
+            App::replaceExplicitScope( $previous );
+        }
+    }
+
     // ================= D4 — Create (Secretary) =================
 
     /**
@@ -261,14 +324,18 @@ final class PatientService
      */
     public function create(array $fields, int $actorUserId): array
     {
-        $this->assert_license(
-            LicenseGate::OP_PATIENT_CREATE,
-            [
-                'clinic_id' => App::scope()->clinicId,
-                // Existing staff reception path, never public self-registration.
-                'reception' => user_can( $actorUserId, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing service argument.
-            ]
-        );
+        return $this->create_record( $fields, $actorUserId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public API.
+    }
+
+    /**
+     * @param array<string, mixed> $fields
+     * @return array<string, mixed>
+     */
+    private function create_record( array $fields, int $actor_user_id, ?int $verified_user = null, ?int $expected_identity = null ): array {
+        $reception = $verified_user === null && user_can( $actor_user_id, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE );
+        if ( $verified_user === null ) {
+            $this->assert_license( LicenseGate::OP_PATIENT_CREATE, [ 'clinic_id' => App::scope()->clinicId, 'reception' => $reception ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing scope value object.
+        }
 
         $firstName = (string) ($fields['first_name'] ?? '');
         $lastName = (string) ($fields['last_name'] ?? '');
@@ -303,7 +370,7 @@ final class PatientService
         // organization identity on this path (fail-closed).
         $clinic_id = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $id        = $this->db->transactional(
-            function () use ( $data, $clinic_id, $mobile ): int {
+            function () use ( $data, $clinic_id, $mobile, $verified_user, $expected_identity, $reception ): int {
                 $id = $this->patients->create( $data );
                 if ( $this->db->wpdb()->last_error !== '' || $id <= 0 ) {
                     // Map the known same-Clinic national-ID uniqueness collision to a
@@ -315,7 +382,26 @@ final class PatientService
                 // Clinic comes from the server-side trusted scope, never from the
                 // request body; `identity_id` is not a writable create field, so no
                 // caller can choose or inject the identity.
-                $this->activate_identity( $clinic_id, $id, $mobile );
+                $identity = $this->activate_identity( $clinic_id, $id, $mobile, $verified_user );
+                if ( $verified_user !== null && $identity !== $expected_identity ) {
+                    throw $this->linked_patient_not_found();
+                }
+                // The new destination row now carries the verified Organization
+                // identity. Reuse the boolean-only cross-Clinic evidence policy;
+                // denial rolls back row, identity edge, and hash-chained audit.
+                $this->assert_license(
+                    LicenseGate::OP_PATIENT_CREATE,
+                    [ 'patient_id' => $id, 'clinic_id' => $clinic_id, 'reception' => $reception ]
+                );
+                if ( $verified_user !== null ) {
+                    $linked = $this->db->insert(
+                        'cpms_patient_user_links',
+                        [ 'clinic_id' => $clinic_id, 'patient_id' => $id, 'wp_user_id' => $verified_user, 'mobile_at_link' => $mobile, 'is_primary' => 0, 'linked_at' => $this->db->nowUtcSql() ]
+                    );
+                    if ( ! $linked || $this->db->wpdb()->last_error !== '' ) {
+                        throw new BookingException( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
+                    }
+                }
 
                 return $id;
             }
@@ -324,7 +410,7 @@ final class PatientService
 
         $this->audit->log(
             'PATIENT_CREATED',
-            ['wp_user_id' => $actorUserId, 'role' => 'staff'],
+            [ 'wp_user_id' => $actor_user_id, 'role' => $verified_user === null ? 'staff' : 'patient' ],
             'patient',
             $id,
             $id,
@@ -332,7 +418,7 @@ final class PatientService
             $this->staffView($row),
             ['mobile' => MobileValidator::mask($mobile)]
         );
-        $this->op->info('patient.created', ['patient_id' => $id, 'actor' => $actorUserId, 'mobile' => MobileValidator::mask($mobile)]);
+        $this->op->info( 'patient.created', [ 'patient_id' => $id, 'actor' => $actor_user_id, 'mobile' => MobileValidator::mask( $mobile ) ] );
 
         return $this->staffView($row);
     }
@@ -390,9 +476,9 @@ final class PatientService
      * خطاهای حوزهٔ هویت به یک خطای محصولِ کراندار نگاشت می‌شوند تا جزئیات
      * داخلی افشا نشود؛ خودِ throw باعثِ rollbackِ تراکنشِ ساخت می‌شود.
      */
-    private function activate_identity( int $clinic_id, int $patient_id, string $mobile ): void {
+    private function activate_identity( int $clinic_id, int $patient_id, string $mobile, ?int $verified_user = null ): int {
         try {
-            $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile );
+            return $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile, $verified_user );
         } catch ( PatientIdentityException $e ) {
             $this->op->error(
                 'patient.identity_activation_failed',

@@ -45,6 +45,27 @@ new-patient/new-visit rules. Those historical rules are not authorization.
   `awaiting_payment`, `paid`, and `checked_out`. Generated identity alone,
   demographics, creation date, a pending visit, or client assertions are not
   verification. Missing/ambiguous evidence never grants returning status.
+- **Owner clarification: the six-month window applies across ALL Clinics of
+  the same Organization, including a first visit with no local patient row.**
+  The absence of a destination record must not turn a verified returning patient
+  into a one-month new patient. `POST /patient/enroll` is a separate authenticated
+  patient-self enrollment path (cookie session + REST nonce + patient role), not
+  appointment booking and not public/new-patient self-registration. Its server
+  subject is exclusively `wp_get_current_user()`, resolved through exactly one
+  explicit Organization identity/user link in the persisted destination Clinic's
+  Organization. Zero/ambiguous links, legacy demographics-only records, and a
+  different Organization fail closed; request identity/user IDs never select a
+  subject. The existing staff create path has no patient proof and stays on its
+  one-month reception rule; authenticated enrollment followed by the normal,
+  independently authorized reception service path supports the verified case.
+  Enrollment atomically creates only fresh local contact/name data, reuses the
+  verified identity, checks the existing boolean pre-T0 encounter policy using
+  the new local row, and persists its patient/user link plus hash-chained audit.
+  Denial rolls all of that back. It neither copies nor returns foreign medical
+  data, imports a legacy identity, grants staff permissions, nor creates an
+  appointment. Existing destination identity records are not overwritten or
+  duplicated: use the existing own-record selector instead. Destination Clinic
+  and Organization must be active; the bound scope is restored on every exit.
 - Eligibility reads across Clinics in the same Organization return **only a
   boolean**, never another Clinic's records, encounter details, or identifiers.
   Authorization, Clinic/Location isolation, explicit DENY precedence, and finance
@@ -74,7 +95,8 @@ new-patient/new-visit rules. Those historical rules are not authorization.
 Implementation: `SignedLicenseGate`, pure `PostExpirationPolicy`, a read-only
 `ReturningPatientRepository` boolean aggregate, and enforcement at Booking,
 Patient, Visit, SMS and Handwriting service boundaries. PR #240's identity
-foundation is reused unchanged; no migration or new identity mechanism.
+foundation's existing resolver and audited linking primitives are reused; no
+migration, demographic matching, or new identity mechanism.
 
 ### 1. Boundaries
 - **Data Plane** (customer WordPress): all medical/clinical/financial data. **Control Plane** (vendor): commercial account, entitlements, release metadata, update authorization only. Formalized in ADR-0028 (data/control plane). No medical data flows to the control plane in any F10 path.
