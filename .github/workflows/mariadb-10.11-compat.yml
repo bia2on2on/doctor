@@ -3,15 +3,13 @@ name: MariaDB 10.11 Compatibility (CPMS + WordPress)
 # Weekly, real-server compatibility evidence for the WordPress-recommended
 # MariaDB 10.11 series. This is deliberately separate from the MySQL 8 PR
 # integration check and the MariaDB 11.4.13 browser acceptance lane.
-# The temporary pull_request trigger is removed after collecting fresh evidence.
+# No pull_request trigger: preserve the existing PR-check architecture.
 
 on:
   schedule:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
   workflow_dispatch:
-  pull_request:
-    branches: [main]
 
 concurrency:
   # Unique per execution: never cancel a scheduled/manual compatibility run.
