@@ -263,7 +263,7 @@ def _type_token(value: str | None) -> str:
     return (token or "unknown").lower()[:40]
 
 
-def _error_signatures(cases: list[ET.Element]) -> list[str]:
+def _failure_signatures(cases: list[ET.Element], tag: str) -> list[str]:
     """Bounded, sanitized location/type evidence for each PHPUnit error.
 
     Only an allowlisted class/method, the basename:line of the first PHP frame,
@@ -272,7 +272,7 @@ def _error_signatures(cases: list[ET.Element]) -> list[str]:
     """
     signatures: list[str] = []
     for case in cases:
-        error = next((child for child in list(case) if local_name(child.tag) == "error"), None)
+        error = next((child for child in list(case) if local_name(child.tag) == tag), None)
         if error is None:
             continue
         class_name = normalize_classname(case.attrib.get("classname"))
@@ -439,7 +439,8 @@ def analyze_junit(
             "unexpected_class_count": len(executed_classes.difference(EXPECTED_CLASS_SET)),
             "failure_identifiers": _event_identifiers(cases, "failure"),
             "error_identifiers": _event_identifiers(cases, "error"),
-            "error_signatures": _error_signatures(cases),
+            "error_signatures": _failure_signatures(cases, "error"),
+            "failure_signatures": _failure_signatures(cases, "failure"),
             "skip_identifiers": _event_identifiers(cases, "skipped"),
             "first_failing_identifier": _first_failure_in_document_order(cases),
         }
@@ -638,8 +639,8 @@ def _escape_workflow_message(value: str) -> str:
     )
 
 
-def _signature_text(result: dict[str, Any]) -> str:
-    signatures = result.get("error_signatures") or []
+def _signature_text(result: dict[str, Any], key: str) -> str:
+    signatures = result.get(key) or []
     return "|".join(signatures) if signatures else "none"
 
 
@@ -670,7 +671,8 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
         f"skips={_display(result['skipped'])}; "
         f"classes={_display(result['executed_class_count'])}/{result['expected_class_count']}; "
         f"executed={executed}; missing={missing_text}; "
-        f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result)}"
+        f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result, 'error_signatures')}; "
+        f"failsig={_signature_text(result, 'failure_signatures')}"
     )
     message = _escape_workflow_message(message)
     if len(message) > 1800:
@@ -682,7 +684,8 @@ def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
             f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
             f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
             f"skips={_display(result['skipped'])}; missing_count={len(missing or []) if missing is not None else 'UNKNOWN'}; "
-            f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result)}"
+            f"first={_first_failing_identifier(result)}; errorsig={_signature_text(result, 'error_signatures')}; "
+            f"failsig={_signature_text(result, 'failure_signatures')}"
         )
     title = "MariaDB 10.11 sanitized PHPUnit diagnostic"
     return f"::{level} title={title}::{message}"
