@@ -162,6 +162,39 @@ final class OrganizationPatientIdentityActivationTest extends WP_UnitTestCase {
         self::assertNull( $this->patientRow( $patientId )['identity_id'], 'linkage rolls back with its audit' );
     }
 
+    public function testPatientServiceCreateRollsBackWhenIdentityAuditInsertFails(): void {
+        $patientsBefore   = $this->countPatients();
+        $identitiesBefore = $this->countIdentities();
+        $audit            = App::db()->table( 'cpms_audit_logs' );
+        $eventBefore      = (int) App::db()->fetchValue(
+            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+            [ 'PATIENT_IDENTITY_CREATED' ]
+        );
+        $this->failAuditInserts();
+        try {
+            ScopeContext::set( ClinicScope::forClinic( $this->clinicA1 ) );
+            try {
+                App::patientService()->create(
+                    [ 'first_name' => 'Rollback', 'last_name' => 'Audit', 'mobile' => '09125550127' ],
+                    1
+                );
+                self::fail( 'production PatientService::create must fail when identity audit persistence fails' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertStringContainsString( 'audit', strtolower( $exception->getMessage() ) );
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        self::assertSame( $patientsBefore, $this->countPatients(), 'clinical patient insert rolls back' );
+        self::assertSame( $identitiesBefore, $this->countIdentities(), 'identity insert rolls back' );
+        self::assertSame(
+            $eventBefore,
+            (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_CREATED' ] ),
+            'no creation success audit survives the rolled-back operation'
+        );
+    }
+
     public function testCrossOrganizationIdentityLinkIsRejectedWithoutSuccessAudit(): void {
         global $wpdb;
         $patientId  = $this->insertPatient( $this->clinicA1, '09125550126' );
@@ -255,6 +288,23 @@ final class OrganizationPatientIdentityActivationTest extends WP_UnitTestCase {
         );
         self::assertSame( '09120000001', (string) $identity['normalized_mobile'], 'A: mobile is stored as a lookup attribute only' );
         self::assertSame( $before + 1, $this->countIdentities(), 'A: exactly one identity is minted' );
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
+                [ 'PATIENT_IDENTITY_CREATED', (int) $row['identity_id'] ]
+            ),
+            'A: production PatientService::create writes one identity-creation event'
+        );
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
+                [ 'PATIENT_IDENTITY_LINKED', (int) $row['identity_id'], (int) $created['id'], $this->clinicA1 ]
+            ),
+            'A: production PatientService::create writes one scoped linkage event'
+        );
 
         // The clinical record stays Clinic-scoped — activation shares nothing.
         self::assertSame( $this->clinicA1, (int) $row['clinic_id'] );

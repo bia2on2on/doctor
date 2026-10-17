@@ -93,13 +93,14 @@ final class PatientIdentityActivator {
         $identity_id = $this->resolve_verified_identity( $organization_id, $verified_wp_user_id )
             ?? $this->service->create_identity( $organization_id, $normalized_mobile );
 
-        $linked = $this->identities->set_patient_identity_if_unlinked( $patient_id, $identity_id );
-        if ( $linked < 1 ) {
-            // بازندهٔ مسابقه: فقط اگر وضعیتِ پایدار دقیقاً همان هویت باشد قابل قبول است.
-            $this->assert_persisted_identity( $patient_id, $identity_id );
-        }
+        // Route every new edge through the single audited link boundary. It
+        // performs the Organization/Clinic checks, conditional write, persisted
+        // state confirmation, and writes linkage audit in this caller's outer
+        // transaction. A concurrent same-identity winner is an idempotent
+        // no-op there, so it cannot create duplicate success evidence.
+        $this->service->link_clinical_record( $organization_id, $identity_id, $clinic_id, $patient_id );
 
-        // تأییدِ پس از نوشتن — هیچ «موفقیتِ اعلام‌شدهٔ بدونِ داده» پذیرفته نیست.
+        // Independent postcondition: activation never reports an unpersisted edge.
         $this->assert_persisted_identity( $patient_id, $identity_id );
 
         return $identity_id;
