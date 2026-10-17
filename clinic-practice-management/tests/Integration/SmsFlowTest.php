@@ -16,6 +16,8 @@ use WP_UnitTestCase;
  */
 final class SmsFlowTest extends WP_UnitTestCase
 {
+    use \ClinicCore\Tests\Support\SignedExpirationFixture;
+
     private const MOBILE = '09128887766';
 
     protected function setUp(): void
@@ -23,6 +25,34 @@ final class SmsFlowTest extends WP_UnitTestCase
         parent::setUp();
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
+    }
+
+    protected function tearDown(): void
+    {
+        remove_all_filters('cpms_license_public_key');
+        parent::tearDown();
+    }
+
+    public function testExpirationSuppressesNewAndQueuedCommercialSmsButKeepsSecurityOtp(): void
+    {
+        $this->installSignedExpiration(time() + 86400);
+        $queued = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), 'appointment', 8675309);
+        $this->assertSame(SmsMessageStatus::QUEUED, $queued['status']);
+
+        $this->installSignedExpiration(time() - 1); // Inside historical grace/skew, still T0.
+        $this->sms()->dispatchMessage($queued['message_id']);
+        $row = App::db()->fetchRow('SELECT status, failure_code FROM ' . App::db()->table('cpms_sms_messages') . ' WHERE id = %d', [$queued['message_id']]);
+        $this->assertSame(SmsMessageStatus::FAILED, $row['status']);
+        $this->assertSame('CLINIC_LICENSE_BLOCKED', $row['failure_code']);
+        $suppressed = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), inline: true);
+        $this->assertSame(0, $suppressed['message_id']);
+        $this->assertSame(SmsMessageStatus::FAILED, $suppressed['status']);
+        $this->testOtpRequestCreatesSentMessageRow();
+
+        $this->installSignedExpiration(time() + 86400);
+        $renewed = $this->sms()->sendEvent(1, 'appointment_reminder', self::MOBILE, $this->apptVars(), inline: true);
+        $this->assertSame(SmsMessageStatus::SENT, $renewed['status']);
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
     }
 
     private function sms(): SmsService

@@ -21,6 +21,8 @@ namespace ClinicCore\Domain\Licensing;
 interface LicenseGate
 {
     // عملیات‌های Protected (کد — نه جمله). F10 مجموعه را کامل می‌کند.
+    public const OP_SMS_COMMERCIAL = 'sms.commercial';
+    public const OP_HANDWRITING_NEW = 'handwriting.new';
     public const OP_PATIENT_CREATE = 'patient.create';
     public const OP_PATIENT_UPDATE = 'patient.update';
     public const OP_APPOINTMENT_BOOK = 'appointment.book';

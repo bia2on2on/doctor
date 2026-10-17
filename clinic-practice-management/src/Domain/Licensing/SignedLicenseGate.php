@@ -4,29 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Domain\Licensing;
 
-/**
- * پیاده‌سازی واقعی F10 LicenseGate (ADR-0023) — بدون هیچ I/O شبکه.
- *
- * وضعیت از Provider محلی (کشِ امضاشده) خوانده می‌شود؛ refresh توسط Job
- * جداگانه انجام می‌شود (هرگز در مسیر درخواست).
- *
- * سیاست RESTRICTED (spec §16):
- *  - مسدود: فعالیت مستقلِ جدید (ساخت بیمار جدید، رزرو/جابه‌جایی نوبت،
- *    ورود ویزیتِ جدیدِ بدون نوبت/چک‌اینِ ویزیتِ جدید، صدور فاکتورِ جدید).
- *  - مجاز: لغو نوبت (بهداشت صف/بیمار)، به‌روزرسانی بیمار موجود، خواندن/
- *    تاریخچه/Export، و تمام گردش‌کارِ بالینیِ ویزیتِ در جریان (این مسیرها
- *    اصلاً assert نمی‌کنند — الگوی F4: transitions در Read-Only مجاز).
- *
- * استثنای Phase 16 Slice 1 (جهت تجاری: واحد = Organization؛ پایه = Annual
- * License + Version Rights): «انقضای عادی تجاری» — یعنی صرفاً پایانِ سالانهٔ
- * مجوزِ معتبر — فعالیت بالینیِ جدید را مسدود نمی‌کند. این استثنا **علت‌محور**
- * و باریک است (status=RESTRICTED + reason=expired)؛ پایان پنجرهٔ فعال‌سازی،
- * vendor-unreachable/stale، suspension، revocation، سند نامعتبر و علتِ
- * ناشناخته/غایب همگی همان رفتار قبلی را دارند (fail-closed). نمایش وضعیت و
- * نیاز به تمدید (state/isReadOnly/statusMeta) هیچ تغییری نمی‌کند.
- *
- * این فایل در Domain است ولی به Provider تزئینی وابسته است؛ خود Gate خالص
- * (بدون WP/DB/شبکه) و با FakeProvider واحدتست می‌شود.
+/** Local signed-license enforcement. Owner post-expiration policy supersedes
+ * the historical ordinary-expiration exemption and grace-based permissions.
  */
 final class SignedLicenseGate implements LicenseGate
 {
@@ -39,22 +18,15 @@ final class SignedLicenseGate implements LicenseGate
         LicenseGate::OP_APPOINTMENT_RESCHEDULE,
         LicenseGate::OP_VISIT_CHECKIN,
         LicenseGate::OP_INVOICE_CREATE,
+        LicenseGate::OP_SMS_COMMERCIAL,
+        LicenseGate::OP_HANDWRITING_NEW,
     ];
 
-    /**
-     * تنها `reason` به‌رسمیت‌شناخته‌شده برای «انقضای عادی تجاری» در وضعیت
-     * RESTRICTED — همان خروجیِ `LicenseStateMachine::compute()` برای سندِ
-     * verifiedِ منقضیِ خارج از expiry_grace.
-     *
-     * تطبیق **دقیق** است: همسایه‌های معنایی مثل `expired_unreachable`
-     * (vendor-unreachable/stale) یا `activation_window_expired` /
-     * `migration_grace_expired` (پایان پنجرهٔ فعال‌سازی) صریحاً بیرون از این
-     * استثنا هستند و مسدود می‌مانند.
-     */
-    private const REASON_ORDINARY_EXPIRATION = 'expired';
-
-    public function __construct(private readonly LicenseStateProvider $provider)
-    {
+    public function __construct(
+        private readonly LicenseStateProvider $provider,
+        private readonly ?ReturningPatientEvidence $returning = null,
+        private readonly ?\Closure $clock = null
+    ) {
     }
 
     public function assert(string $operation, array $context = []): LicenseDecision
@@ -62,21 +34,38 @@ final class SignedLicenseGate implements LicenseGate
         $state = $this->provider->currentState();
         $status = $state['status'];
 
-        if (LicenseStatus::allowsNewBusiness($status)) {
+        $now        = $this->clock !== null ? ( $this->clock )() : time();
+        $expires_at = $state['expires_at'] ?? null;
+        $ordinary   = match ( $status ) {
+            LicenseStatus::ACTIVE => ( $state['reason'] ?? null ) === '',
+            LicenseStatus::EXPIRING => ( $state['reason'] ?? null ) === 'near_expiry',
+            LicenseStatus::GRACE => in_array( $state['reason'] ?? null, [ 'grace', 'unreachable_grace' ], true ),
+            LicenseStatus::RESTRICTED => ( $state['reason'] ?? null ) === 'expired',
+            default => false,
+        };
+
+        // Check signed T0 BEFORE allowsNewBusiness: neither grace nor skew moves T0.
+        if ( $ordinary && is_int( $expires_at ) && $expires_at > 0 && $now >= $expires_at ) {
+            if ( in_array( $operation, [ self::OP_APPOINTMENT_BOOK, self::OP_APPOINTMENT_RESCHEDULE, self::OP_SMS_COMMERCIAL, self::OP_HANDWRITING_NEW ], true ) ) {
+                return LicenseDecision::deny( 'license:expired' );
+            }
+            if ( in_array( $operation, [ self::OP_PATIENT_CREATE, self::OP_VISIT_CHECKIN ], true ) ) {
+                $returning = $this->returning !== null && $this->returning->qualifies(
+                    (int) ( $context['patient_id'] ?? 0 ),
+                    (int) ( $context['clinic_id'] ?? 0 ),
+                    $expires_at
+                );
+                return PostExpirationPolicy::allowsNewService( $now, $expires_at, $returning, ( $context['reception'] ?? false ) === true )
+                    ? LicenseDecision::allow()
+                    : LicenseDecision::deny( 'license:expired' );
+            }
+            // Existing authorized care, including its legitimate finance, is not new business.
             return LicenseDecision::allow();
         }
-        if (!in_array($operation, self::BLOCKED_UNDER_RESTRICTION, true)) {
-            // لغو/به‌روزرسانی/بهداشت/تکمیل — همیشه مجاز
+        if ( LicenseStatus::allowsNewBusiness( $status ) ) {
             return LicenseDecision::allow();
         }
-        // Phase 16 Slice 1 — تنها علتِ به‌رسمیت‌شناخته‌شدهٔ «انقضای عادی تجاری»
-        // (پایانِ صرفِ سالانهٔ مجوزِ معتبر): status=RESTRICTED با reason دقیقاً
-        // 'expired'. fail-closed: نبودِ کلید reason، مقدارِ خالی/ناشناخته/
-        // غیررشته‌ای، یا هر status دیگر ⇒ همان رفتارِ قبلیِ مسدود.
-        $restricted_reason = $state['reason'] ?? null;
-        if ( $status === LicenseStatus::RESTRICTED && $restricted_reason === self::REASON_ORDINARY_EXPIRATION ) {
-            // فعالیت بالینیِ جدید آزاد؛ نمایش وضعیت/تمدید عمداً دست‌نخورده
-            // می‌ماند (state/isReadOnly/statusMeta).
+        if ( ! in_array( $operation, self::BLOCKED_UNDER_RESTRICTION, true ) ) {
             return LicenseDecision::allow();
         }
 

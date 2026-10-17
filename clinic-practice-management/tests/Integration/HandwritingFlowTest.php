@@ -27,6 +27,8 @@ use WP_UnitTestCase;
  */
 final class HandwritingFlowTest extends WP_UnitTestCase
 {
+    use \ClinicCore\Tests\Support\SignedExpirationFixture;
+
     private const NS = '/clinic/v1';
 
     private int $clinicianId;
@@ -87,9 +89,40 @@ final class HandwritingFlowTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        remove_all_filters('cpms_license_public_key');
         App::replaceExplicitScope($this->previousScope);
         $this->previousScope = null;
         parent::tearDown();
+    }
+
+    public function testExpiryBlocksPremiumWritesButPreservesExistingHandwritingAndClinicalCare(): void
+    {
+        [$doc, $pageId] = $this->makeDocWithPage();
+        $this->installSignedExpiration(time() - 1);
+        $service = App::handwritingService();
+        $page = $service->getPage($this->doctorUserId, $pageId);
+        $this->assertNotEmpty($page);
+        $this->assertNotEmpty($service->listDocuments($this->doctorUserId, (int) $doc['visit_id']));
+        foreach (['document', 'page', 'save'] as $operation) {
+            try {
+                if ($operation === 'document') {
+                    $service->createDocument($this->doctorUserId, (int) $doc['visit_id'], null, []);
+                } elseif ($operation === 'page') {
+                    $service->addPage($this->doctorUserId, (int) $doc['id'], []);
+                } else {
+                    $service->savePage($this->doctorUserId, $pageId, [], null);
+                }
+                $this->fail('Premium write must stop at T0: ' . $operation);
+            } catch (HandwritingException $e) {
+                $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
+            }
+        }
+        // Existing consultation can still complete after all new-service windows.
+        $this->installSignedExpiration(time() - 220 * 86400);
+        $completed = App::visitService()->transition($this->doctorUserId, (int) $doc['visit_id'], 'complete');
+        $this->assertSame('consultation_completed', $completed['status']);
+        $this->assertNotEmpty($service->getPage($this->doctorUserId, $pageId));
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
     }
 
     // ================= F1 — ایجاد سند =================

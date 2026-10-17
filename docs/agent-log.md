@@ -621,3 +621,27 @@ extracted `run:` blocks.
 - Corrected the activator to delegate the new identity-to-patient edge to `link_clinical_record()`. That existing audited service boundary retains Organization/Clinic checks, conditional `identity_id IS NULL` linkage, persisted-state verification, and emits the hash-chained link event in the caller's outer transaction. Already-linked same-identity retries remain no-op/no duplicate event; conflicting links fail closed. This is after verified identity resolution and covers both reused and freshly created identity paths. No migration or matching rule changed.
 - Added production-entry integration assertions for both identity creation and linkage events through `PatientService::create()` and `BookingService::confirm()` (fresh + verified-reuse paths). Added real-entry audit-insert fault tests asserting `PatientService::create()` and booking confirm fail closed and roll back patient/identity/confirmation effects. Existing direct regression still verifies cross-Organization refusal, idempotent one-event linkage and chain integrity.
 - Local PHP/Composer/WPCS tools are absent. `php-parser` (PHP 8.1 grammar) syntax parsing passed for changed PHP files; the WPCS collector self-tests passed 5/5; `git diff --check` passed. Actual PHPCS and WP/MySQL integration execution remain to be established by exact-head CI after the single coherent push; no PHP test PASS is asserted locally.
+
+## 2026-10-17 — Owner-authorized CPMS Classic post-expiration policy (Draft; no merge)
+
+- Measured authorization receipt: **2026-10-17T13:24:54Z UTC**. New writing session on
+  `arena/d95f9c45-doctor`; expected/live main verified as
+  `84fe07bc625ac9cf69607ea1283036868c136ec5` (merged identity foundation PR #240).
+- Read AGENTS/start guide, relevant licensing/identity/service code and CI architecture.
+  Live ruleset 22393801 inspected read-only: nine required contexts, no bypass.
+  Only existing open PR was Draft #238; not modified. No hosting/rules/workflow changes.
+- Replaced unrestricted ordinary-expiry exception with signed-T0 booking shutdown,
+  Gregorian UTC month-clamped reception/verified-returning new-service windows,
+  boolean-only Organization evidence aggregate, and SMS/handwriting service gates.
+  Existing appointment, clinical, finance, read/export and recovery paths preserved.
+  Reuses PR #240 identity primitives without migration/backfill or Phase 20 work.
+- ADR-0023 §0 and engineering-baseline §13A explicitly supersede historical conflicts.
+- Added exact-boundary unit cases and real signed-document integration regressions
+  for holds/booking/REST, identity/completion/tenant evidence, reception and returning
+  services, SMS/OTP/renewal, handwriting/clinical continuity, finance/audit, backup
+  verification and non-destructive restore preflight. Existing old-expiry expectations replaced.
+- Local PHP runtime unavailable (`php: command not found`); no local PHP test PASS
+  claimed. Available static validation: JS php-parser (PHP 8.1 grammar) on changed
+  PHP; tenant tripwire self-tests 59/59, scan zero hardcodes (one existing reviewed
+  SystemClinicResolver suspect); changed-lines collector self-tests; diff whitespace.
+  GitHub Actions will supply authoritative exact-head runtime/static evidence.

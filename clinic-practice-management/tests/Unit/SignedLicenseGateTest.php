@@ -168,34 +168,13 @@ final class SignedLicenseGateTest extends TestCase
         $this->assertTrue($gate->isReadOnly());
     }
 
-    // ============ Phase 16 Slice 1 — علتِ RESTRICTED تعیین‌کننده است ============
-    //
-    // جهت تجاری: واحد تجاری = Organization؛ جهت پایه = Annual License + Version
-    // Rights. «انقضای عادی تجاری» (پایان سالانه) نباید فعالیت بالینیِ جدید را
-    // قفل کند — درحالی‌که نمایش وضعیت/تمدید دست‌نخورده می‌ماند. تنها استثنای
-    // به‌رسمیت‌شناخته‌شده: status=RESTRICTED + reason=expired. پایان پنجرهٔ
-    // فعال‌سازی، vendor-unreachable/stale، suspension، revocation، invalid و
-    // علتِ ناشناخته همگی همان رفتار قبلی را دارند (fail-closed).
-
-    public function testOrdinaryCommercialExpirationAllowsEveryGatedNewBusinessOperation(): void
+    public function testExpirationWithoutTrustedTimestampDoesNotGrantAnException(): void
     {
         $gate = new SignedLicenseGate($this->providerWithReason(LicenseStatus::RESTRICTED, 'expired'));
-
         foreach (SignedLicenseGate::BLOCKED_UNDER_RESTRICTION as $op) {
-            $this->assertTrue(
-                $gate->assert($op)->allowed,
-                "{$op} نباید صرفاً به‌خاطر انقضای عادی تجاری مسدود شود"
-            );
+            $this->assertFalse($gate->assert($op)->allowed);
         }
-
-        // بهداشت/به‌روزرسانی/لغو — همچنان مجاز
-        foreach ([LicenseGate::OP_PATIENT_UPDATE, LicenseGate::OP_APPOINTMENT_CANCEL] as $op) {
-            $this->assertTrue($gate->assert($op)->allowed, "{$op} باید مجاز بماند");
-        }
-
-        // نمایش وضعیت/تمدید بدون تغییر باقی می‌ماند — فقط سیاستِ «فعالیت جدید»
-        // برای همین یک علت آزاد می‌شود.
-        $this->assertSame(LicenseStatus::RESTRICTED, $gate->state());
+        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_UPDATE)->allowed);
         $this->assertTrue($gate->isReadOnly());
     }
 

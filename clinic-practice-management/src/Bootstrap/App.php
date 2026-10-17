@@ -1129,7 +1129,7 @@ final class App
     public static function licenseGate(): LicenseGate
     {
         if (self::$licenseGate === null) {
-            self::$licenseGate = new SignedLicenseGate(self::licenseService());
+            self::$licenseGate = new SignedLicenseGate(self::licenseService(), new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository(self::db()));
         }
 
         return self::$licenseGate;

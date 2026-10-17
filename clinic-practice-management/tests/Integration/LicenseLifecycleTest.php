@@ -248,16 +248,8 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
         $this->assertNotEmpty($meta['last_refresh_error']);
     }
 
-    /**
-     * Phase 16 Slice 1: این تست پیش‌تر ادعا می‌کرد «انقضای عادی تجاری باید
-     * فعالیت جدید را مسدود کند». جهت تجاری جدید (واحد = Organization؛ پایه =
-     * Annual License + Version Rights) آن ادعا را جایگزین می‌کند: پایانِ
-     * صرفِ سالانه، فعالیت بالینیِ جدید را قفل نمی‌کند — درحالی‌که نمایش
-     * وضعیت/تمدید (RESTRICTED + expired + needs_renewal) و isReadOnly()
-     * دست‌نخورده می‌ماند. علت‌های دیگرِ RESTRICTED (پایان پنجرهٔ فعال‌سازی،
-     * vendor-unreachable/stale) در تست‌های خودشان دست‌نخورده و مسدود می‌مانند.
-     */
-    public function testExpiredBeyondGraceKeepsRestrictedRepresentationAndAllowsNewBusiness(): void
+    /** Owner policy: representation retained; booking stops at signed T0. */
+    public function testExpiredBeyondGraceKeepsRepresentationButBlocksNewBookings(): void
     {
         $svc = $this->service();
         $svc->activateWithKey('k');
@@ -270,9 +262,9 @@ final class LicenseLifecycleTest extends WP_UnitTestCase
         $this->assertTrue($state['needs_renewal']);
 
         $gate = new SignedLicenseGate($svc);
-        // انقضای عادی تجاری — فعالیت بالینیِ جدید آزاد (Phase 16 Slice 1)
-        $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
-        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
+        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
+        $this->assertFalse($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
+        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE, ['reception' => true])->allowed);
         $this->assertTrue($gate->assert(LicenseGate::OP_INVOICE_CREATE)->allowed);
         // بهداشت/تکمیل/به‌روزرسانی مجاز (spec §16)
         $this->assertTrue($gate->assert(LicenseGate::OP_APPOINTMENT_CANCEL)->allowed);
