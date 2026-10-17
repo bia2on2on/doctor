@@ -28,6 +28,8 @@ use WP_UnitTestCase;
  */
 final class BackupEngineTest extends WP_UnitTestCase
 {
+    use \ClinicCore\Tests\Support\SignedExpirationFixture;
+
     private string $tmpBase;
     private string $filesBase;
     private BackupService $backups;
@@ -93,6 +95,7 @@ final class BackupEngineTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        remove_all_filters('cpms_license_public_key');
         global $wpdb;
         if ($this->clinicId > 0 || $this->orgId > 0) {
             $db = App::db();
@@ -116,6 +119,17 @@ final class BackupEngineTest extends WP_UnitTestCase
         }
         \ClinicCore\Settings\Settings::flushCache();
         parent::tearDown();
+    }
+
+    public function testExpiredLicensePreservesBackupVerificationAndRestorePreflight(): void
+    {
+        $this->installSignedExpiration(time() - 220 * 86400);
+        $this->testCreateBackupProducesVerifiableArtifact();
+        $meta = $this->backups->createBackup('expired-continuity');
+        $this->assertTrue($this->backups->verifyBackup($meta['backup_id'])['ok']);
+        $preflight = $this->backups->restorePreflight($meta['backup_id']);
+        $this->assertTrue($preflight['restore_safe']);
+        $this->assertTrue($preflight['integrity_ok']);
     }
 
     public function testCreateBackupProducesVerifiableArtifact(): void

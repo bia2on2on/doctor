@@ -548,6 +548,17 @@ jobs:
             /tmp/custom-role-archive-migration-junit.xml
           if-no-files-found: warn
 
+      # Owner cross-Clinic first-enrollment regression: real signed document,
+      # authenticated REST subject, strict boundaries and atomic denial.
+      - name: Run returning-patient first-enrollment regressions
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/phpunit-int-junit.xml \
+            --bootstrap tests/integration-bootstrap.php \
+            tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/phpunit-int.log
+          grep -qE '^OK \(' /tmp/phpunit-int.log
+
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests

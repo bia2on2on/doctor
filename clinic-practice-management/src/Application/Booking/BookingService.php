@@ -512,6 +512,8 @@ final class BookingService
             if ($hasPatientCol) {
                 $row['patient_id'] = $patientIdToPersist;
             }
+            // A capacity lock wait may have crossed signed T0; rollback the hold claim.
+            $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
             $this->db->insert('cpms_slot_holds', $row);
         });
 
@@ -757,6 +759,8 @@ final class BookingService
                     // before a new Patient, link, or audit can be created.
                     $this->assert_slot_has_bookable_local_time( $slot );
 
+                    // Re-authorize after lock acquisition, before any new patient side effect.
+                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
                     $new_patient_names = $confirmation_input['newPatientNames'];
 
                     $confirmed_patient   = $patient;
@@ -785,6 +789,7 @@ final class BookingService
                     $ref      = $this->referenceCode( (string) $slot['slot_date'] );
                     $now_sql  = $this->db->nowUtcSql();
 
+                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
                     $appt_id = $this->appointments->create(
                         [
                             'clinic_id'         => (int) $slot['clinic_id'],
@@ -1104,6 +1109,7 @@ final class BookingService
                 $ownerUserId = $actor === 'staff'
                     ? ((int) ($appt['wp_user_id'] ?? 0) > 0 ? (int) $appt['wp_user_id'] : null)
                     : $actorUserId;
+                $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
                 $newApptId = $this->appointments->create([
                     'clinic_id' => (int) $newSlot['clinic_id'],
                     'reference_code' => $this->referenceCode($newDate),
@@ -1289,7 +1295,9 @@ final class BookingService
                     $duration = (int) $slot['duration_min'];
                     $now_sql  = $this->db->nowUtcSql();
                     $is_today = $slot_date === gmdate( 'Y-m-d' );
-                    $appt_id  = $this->appointments->create(
+                    // The final decision is after capacity/Location lock waits.
+                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                    $appt_id = $this->appointments->create(
                         [
                             'clinic_id'         => (int) $slot['clinic_id'],
                             'reference_code'    => $this->referenceCode( $slot_date ),

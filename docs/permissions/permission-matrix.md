@@ -182,6 +182,7 @@
 | Resource | R | C | U | D | E |
 |---|---|---|---|---|---|
 | Patient Profile (خودش) | Self | — | Self (فیلدهای مجاز) | — | — |
+| Verified Organization patient: first local enrollment | Self selector only | Self via `/patient/enroll` only: authenticated patient + nonce + exactly one explicit same-Organization identity link; ordinary-expiry six-month/pre-T0-encounter policy still required | — | — | — |
 | Appointment (خودش) | Self | Self (آنلاین) | Self (لغو/جابه‌جا در Policy 12h) | Self (cancel) | — |
 | Visit (خودش) | Self (فقط `patient_visible`) | — | — | — | — |
 | Doctor Private Note | **—** | — | — | — | — |

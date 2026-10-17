@@ -704,3 +704,104 @@ extracted `run:` blocks.
 - **Fix:** MariaDB-only statement-level proof — strict mysqli reporting, capture of the failing production statement's own driver code (1205) before rollback, emission with the statement's SHA-256, re-proof that A still owns the row and B is alive, then an explicit `RELEASE` after A commits and a retry of the same production assignment that must revalidate and deny. MySQL 8 keeps its performance_schema assertions untouched; no sleep, no removed assertion, no skip, no timeout inflation.
 - **Measured PASS:** run [39047401299](https://github.com/bia2on2on/doctor/actions/runs/39047401299), head `3b0b0629977d1fd3f4e2dbd670dac1a2c92bc95d`: 216 tests, 3,962 assertions, 18/18 classes, 0 failures, 0 errors, 0 skips, exit 0, `category=none`.
 - **Final head:** trigger removal + this record only; MariaDB-verified SHA is `3b0b0629`, final workflow state `schedule` + `workflow_dispatch` only. Logs/JUnit remain unreachable; all counts are from the sanitized Checks-REST annotation. MariaDB 10.11 evidence only — not MySQL 8 or MariaDB 11.4.13 evidence.
+
+## 2026-10-17 — Owner-authorized CPMS Classic post-expiration policy (Draft; no merge)
+
+- Measured authorization receipt: **2026-10-17T13:24:54Z UTC**. New writing session on
+  `arena/d95f9c45-doctor`; expected/live main verified as
+  `84fe07bc625ac9cf69607ea1283036868c136ec5` (merged identity foundation PR #240).
+- Read AGENTS/start guide, relevant licensing/identity/service code and CI architecture.
+  Live ruleset 22393801 inspected read-only: nine required contexts, no bypass.
+  Only existing open PR was Draft #238; not modified. No hosting/rules/workflow changes.
+- Replaced unrestricted ordinary-expiry exception with signed-T0 booking shutdown,
+  Gregorian UTC month-clamped reception/verified-returning new-service windows,
+  boolean-only Organization evidence aggregate, and SMS/handwriting service gates.
+  Existing appointment, clinical, finance, read/export and recovery paths preserved.
+  Reuses PR #240 identity primitives without migration/backfill or Phase 20 work.
+- ADR-0023 §0 and engineering-baseline §13A explicitly supersede historical conflicts.
+- Added exact-boundary unit cases and real signed-document integration regressions
+  for holds/booking/REST, identity/completion/tenant evidence, reception and returning
+  services, SMS/OTP/renewal, handwriting/clinical continuity, finance/audit, backup
+  verification and non-destructive restore preflight. Existing old-expiry expectations replaced.
+- Local PHP runtime unavailable (`php: command not found`); no local PHP test PASS
+  claimed. Available static validation: JS php-parser (PHP 8.1 grammar) on changed
+  PHP; tenant tripwire self-tests 59/59, scan zero hardcodes (one existing reviewed
+  SystemClinicResolver suspect); changed-lines collector self-tests; diff whitespace.
+  GitHub Actions will supply authoritative exact-head runtime/static evidence.
+
+### Same authorization window — diagnosed first-head validation corrections
+
+- Draft PR **#241** created on the authorized branch; first head
+  `77f0eec03c627686b1356751b6e1aaff23459b9d`.
+- First-head Actions evidence: all four PHP unit lanes and PHPStan PASS; WPCS
+  FAIL (34 changed-line style findings). Integration executed 1,980 tests /
+  59,949 assertions and reported 1 error + 5 failures: a protected-operation
+  snapshot omitted the two new operations; three historical expiry tests still
+  expected the superseded unlimited permission; two new evidence tests omitted
+  mandatory Location from their encounter fixture. These are diagnosed test/style
+  corrections, not a reason to weaken security or alter the check architecture.
+  The subsequent absent-coverage guard failure followed the failed Integration
+  step (coverage inputs were not produced); not represented as a separate PASS.
+- Focused failure details retrieved via existing GitHub PR evidence mirrors;
+  direct job-log download was blocked by the sandbox's storage-host egress limit.
+- Corrective work also closes the code-reviewed lock-wait T0 race at booking
+  mutation boundaries, adds a deterministic capacity/slot wait regression,
+  explicit essential clinical-note continuity, existing-appointment check-in,
+  real signed renewal, and missing-identity/demographic-coincidence coverage.
+- Revalidated changed PHP grammar, tenant tripwire and whitespace before the
+  substantive corrective push. No local PHP runtime execution claimed.
+
+### Second-head validation diagnosis (same window)
+
+- Head `ed2a4cea62c2cd36e6b13cf2d06f0c978aecb3f6`, CI run 39037795141:
+  four unit lanes, PHPStan and tripwire PASS. Integration ran 1,983 tests /
+  60,008 assertions with **two failures only**; the new lock-wait, returning
+  evidence, clinical, finance, SMS, backup and renewal regressions did not fail.
+- Both remaining Integration failures were my overbroad replacement in two
+  **ACTIVE**, not expired, domain-binding test cases. Restored their original
+  positive expectations; bounded-expiry expectations remain only in the expired
+  test. This is a test-edit defect, not a product authorization regression.
+- WPCS reduced to one assignment-alignment warning on the added staff-booking
+  final-decision boundary; corrected that exact line without disabling the sniff.
+- Replaced the remaining misleading old `GRACE allows booking` unit test with
+  an explicit signed-T0 denial plus cancellation-continuity assertion. Added
+  status/policy comments making grace/skew diagnostic-only for this policy.
+- Focused mirrored failure messages inspected before the next push; local PHP
+  remains unavailable. Repeated grammar/whitespace validation before committing.
+
+
+## 2026-10-17 — PR #241 Owner cross-Clinic first-enrollment correction (authorization receipt 14:29:54Z)
+
+- Verified live Draft #241 at `4891af5a572236142c72ddf3816d351d398ac338`, base/main `84fe07bc625ac9cf69607ea1283036868c136ec5`, current authorized writer `arena/d95f9c45-doctor`; no changes to #238/#242 or history rewriting.
+- Confirmed the gap: staff `PatientService::create` had no verified patient subject and checked licensing before any destination row existed. Added authenticated patient-self `/patient/enroll`, with nonce/role and a server-resolved unique explicit Organization identity from the current session; arbitrary request identity/user IDs and demographics cannot prove eligibility.
+- First destination row, existing identity activation, boolean-only pre-T0 returning check, durable self-link and success audit are atomic. Denial/failure rolls back; active destination ownership and subject links are locked; caller scope is always restored; repeated enrollment cannot overwrite or duplicate an existing identity record. Only new local name/contact data is accepted and the response is a minimal local selector. Staff one-month reception behavior, booking shutdown at signed T0, normal care/finance/records/recovery protections and staff scoped authorization are unchanged.
+- Added substantive signed-policy integration regressions covering same-Organization first visit and actual authorized walk-in, different Organization, forged subject, ambiguity/legacy, exact six-month boundary, strict encounter completion, no foreign PHI, persistent self-link, scope restoration, repeated enrollment, audit rollback, nonce/role and staff one-month control. Added a targeted execution step inside the existing Integration job, without adding/removing contexts or weakening any gate; full integration still runs.
+- ADR-0023 §0, baseline §13A, API, security and permission contracts now explicitly include all same-Organization Clinics and first enrollment. This supersedes the previous report's first-new-Clinic limitation; historical log entries remain unchanged.
+- Pre-push local evidence: PHP 8.1 syntax-only parser, diff whitespace check, tripwire self-tests 59/59 + production scan (0 hardcodes; pre-existing reviewed SystemClinicResolver suspect), WPCS collector self-tests 5/5. No local PHP runtime: targeted/full PHP, PHPStan, WPCS and acceptance results must be taken from the new exact-head Actions run, not reused from the earlier green head. Draft/unmerged; independent re-review required.
+
+### Same-task schema-verification correction (after first push, before relying on runtime results)
+
+- Rechecked migration 0001 and 0010: `cpms_clinics` has no `status` column; only the owning Organization has `active/suspended`. Corrected the enrollment ownership query and its suspended-destination regression to use the actual persisted Clinic + active Organization model, without inventing a column/migration. Updated the new API/security/ADR wording accordingly. This is a real implementation/fixture correction, not a retrigger commit. Initial head `0782a6a` is superseded and must not be reported as final validation evidence.
+- Initial-head WPCS, tripwire and PHP 8.1/8.2/8.4 unit jobs observed SUCCESS while other checks were queued/running. No claim that its targeted/full Integration passed; the schema mismatch was established by local source inspection. New exact-head Actions remain authoritative.
+
+
+### Targeted-step failure diagnostics (same task)
+
+- On `30e10f9`, targeted first-enrollment execution failed; full Integration and its focused coverage execution did not run. Coverage guard correctly failed on missing inputs (secondary, not an independent product failure). WPCS/PHPStan and the unit matrix passed on that head; they do not establish targeted/full Integration success.
+- Direct `gh run view --log-failed` / job-log download failed with sandbox egress EOF to Actions result-storage hosts. The new targeted step initially wrote a separate file not included by existing failure-comment mirrors. Corrected the step to write JUnit and text to the existing integration diagnostics paths: a targeted failure is now archived/mirrored, and a successful targeted run is followed by the unchanged full suite which overwrites those paths normally. This fixes actual missing failure observability; no test, assertion, guard, context or threshold is removed/weakened. Diagnose the next observed failure detail before any product correction.
+
+
+### Diagnosed targeted fixture correction (runtime evidence, not speculation)
+
+- New diagnostic mirror from run `39042406683` at `9014049`: **18 tests, 121 assertions, 1 error, 0 failures/warnings/skips**. The single error was `Undefined array key "clinic_id"` in the new successful-walk-in assertion. All negative/boundary/authentication/enrollment tests completed; full Integration remained skipped, so no full-suite PASS is claimed.
+- Inspected actual `VisitService::presentVisit()` contract: it intentionally omits `clinic_id`. Corrected the test to verify Clinic **and Location**, patient ownership and null appointment through the persisted visit row, retaining/strengthening the actual isolation requirement instead of changing the production projection or weakening assertions. Also asserts the hash-chain audit remains valid. Static parser/diff validation repeated before push; exact new-head targeted/full/normal checks still required.
+
+
+## 2026-10-17 — PR #241 release coordination after #242
+
+- New authorization receipt observed 18:08:05Z UTC; fixed writer branch `arena/d95f9c45-doctor`. Main `ee5403749ed363d36f67e703b0961d0bdc2d8cfe` is #242's merge; seven native push families and 48/48 exact-SHA checks verified SUCCESS. No mutation of #242, hosting, rulesets, unrelated workflows or Phase 20.
+- Owner reproduced reviewer session `arena/e38ee216-doctor`, report `CPMS_PR241_FIRST_ENROLLMENT_FINAL_REVIEW.md`: accepted head `d543c664ecdc90995d5133238ba35a2a23b42503`, base `84fe07bc625ac9cf69607ea1283036868c136ec5`, Security ACCEPT, Product ACCEPT, no blocking findings. Original report is in reviewer's workspace, NOT hosted on GitHub; this records the reproduced decision rather than retrieval of the original report. Reviewer could not independently retrieve exact PHPUnit totals but confirmed successful CI steps.
+- Base delta reviewed: migration 0027 database-version recognition, compatibility tests, opt-in test bootstrap diagnostics, schedule/manual-only compatibility lane. Only overlapping file is this log: retain main's entire log byte-for-byte, then accepted head's complete appended entries, then this entry. Every accepted changed file except log remains byte-identical; every imported main file except log remains byte-identical. Licensing, enrollment, identity, authorization and PHI implementation are substantively unchanged, so reproduced independent acceptance remains applicable to that implementation. Fresh combined-head CI must validate migration/bootstrap integration before ready/merge.
+- Preserved byte-identical rehydrated worktree in named Git stash, then fast-forwarded local authorized branch to existing remote accepted head. Shallow history initially hid common ancestor; non-destructive unshallow fetch established original base before normal forward merge. No unrelated-history merge, reset, clean, rebase, force push or loss of unique work.
+- Outstanding Classic product follow-up: patient-facing UI for secured authenticated cross-Clinic enrollment API. API-only delivery remains an accepted non-blocking limitation, not completed UI work. Do not start Phase 20.
+- After successful PR merge this writer permanently retires from ALL GitHub-writing/mutation tasks. Subsequent seven-family / 48-check merge-SHA observation is read-only; technical merge alone is not full merge-SHA CI acceptance.

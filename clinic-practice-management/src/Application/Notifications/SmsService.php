@@ -76,8 +76,18 @@ final class SmsService
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
         private readonly JobQueue $jobs,
-        private readonly \Closure $currentClinicResolver
+        private readonly \Closure $currentClinicResolver, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing constructor API.
+        private readonly ?\ClinicCore\Domain\Licensing\LicenseGate $license_gate = null
     ) {
+    }
+
+    private function allows_licensed_event( string $event ): bool {
+        // OTP is the registry's authentication/security event, not a commercial reminder.
+        if ( $event === SmsEvents::OTP ) {
+            return true;
+        }
+        $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::licenseGate();
+        return $gate->assert( \ClinicCore\Domain\Licensing\LicenseGate::OP_SMS_COMMERCIAL )->allowed;
     }
 
     // =========================================================
@@ -165,6 +175,11 @@ final class SmsService
         $info = $isTest ? null : SmsEvents::info($event);
         if (!$isTest && $info === null) {
             throw new DomainException('CLINIC_SMS_EVENT_UNKNOWN: ' . $event);
+        }
+        if ( ! $this->allows_licensed_event( $event ) ) {
+            // Do not fail the clinical transaction because its optional SMS is suppressed.
+            $this->op->info( 'sms.license_suppressed', [ 'event' => $event ] );
+            return [ 'message_id' => 0, 'status' => SmsMessageStatus::FAILED ];
         }
         $normalized = MobileValidator::normalize($mobile);
         if ($normalized === null) {
@@ -273,6 +288,12 @@ final class SmsService
         $row = $this->fetchMessage($messageId);
         if ($row === [] || SmsMessageStatus::isTerminal((string) $row['status'])) {
             return; // Idempotency — اجرای تکراری Job بی‌اثر است
+        }
+
+        // Re-check queued messages: enqueue before T0 is not permission to send after T0.
+        if ( ! $this->allows_licensed_event( (string) $row['event'] ) ) {
+            $this->updateMessage( (int) $row['id'], [ 'status' => SmsMessageStatus::FAILED, 'failure_code' => 'CLINIC_LICENSE_BLOCKED' ] );
+            return;
         }
 
         $maxAttempts = (int) ($row['max_attempts'] ?? 3);

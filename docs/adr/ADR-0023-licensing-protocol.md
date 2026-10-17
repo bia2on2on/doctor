@@ -13,6 +13,91 @@ F1–F9 shipped CPMS with a deliberate licensing **seam**: `Domain/Licensing/Lic
 
 ## Decision
 
+### 0. Owner-approved CPMS Classic post-expiration policy (2026-10-17 — authoritative)
+
+This decision **supersedes** the conflicting Phase 16 Slice 1 ordinary-expiration
+exemption, §3's historical grace-based new-business permission, §5's unrestricted
+ordinary-expiry language, and engineering-baseline §§13–16 / §32's old blanket
+new-patient/new-visit rules. Those historical rules are not authorization.
+
+- **T0 is the locally stored, trusted signed `expires_at` UTC instant.** Neither
+  the historical seven-day `expiry_grace` nor the status-display clock-skew
+  allowance postpones T0, booking shutdown, or either patient window. Status and
+  renewal warnings can retain their historical representation; permission cannot.
+- At **now >= T0**, all **new bookings** stop: public holds, hold confirmation,
+  staff booking, REST callers, direct service callers, and rescheduling that
+  creates a replacement booking. A hold created before T0 is not an appointment
+  and confers no right to confirm after T0. An idempotent replay of a booking
+  already completed before T0 is not a new booking.
+- Existing appointments remain valid/actionable (read, cancellation, check-in,
+  care completion); ongoing treatment and essential clinical documentation are
+  preserved, including after both new-service windows close.
+- Genuinely new patients may receive **new services only through in-person
+  reception**, during **[T0, T0 + 1 Gregorian calendar month)**. The existing
+  staff patient-create and secretary walk-in service paths represent reception;
+  request metadata cannot declare a channel or returning-patient exemption.
+- Verified returning **Organization** patients may receive new services during
+  **[T0, T0 + 6 Gregorian calendar months)**. Classification requires the
+  foundation's explicit Organization identity/user link, a same-Organization
+  clinical record linked to that identity, and a qualifying encounter whose
+  durable `consultation_completed_at` is non-null and **strictly before T0**.
+  Qualifying current statuses are exactly `consultation_completed`,
+  `awaiting_payment`, `paid`, and `checked_out`. Generated identity alone,
+  demographics, creation date, a pending visit, or client assertions are not
+  verification. Missing/ambiguous evidence never grants returning status.
+- **Owner clarification: the six-month window applies across ALL Clinics of
+  the same Organization, including a first visit with no local patient row.**
+  The absence of a destination record must not turn a verified returning patient
+  into a one-month new patient. `POST /patient/enroll` is a separate authenticated
+  patient-self enrollment path (cookie session + REST nonce + patient role), not
+  appointment booking and not public/new-patient self-registration. Its server
+  subject is exclusively `wp_get_current_user()`, resolved through exactly one
+  explicit Organization identity/user link in the persisted destination Clinic's
+  Organization. Zero/ambiguous links, legacy demographics-only records, and a
+  different Organization fail closed; request identity/user IDs never select a
+  subject. The existing staff create path has no patient proof and stays on its
+  one-month reception rule; authenticated enrollment followed by the normal,
+  independently authorized reception service path supports the verified case.
+  Enrollment atomically creates only fresh local contact/name data, reuses the
+  verified identity, checks the existing boolean pre-T0 encounter policy using
+  the new local row, and persists its patient/user link plus hash-chained audit.
+  Denial rolls all of that back. It neither copies nor returns foreign medical
+  data, imports a legacy identity, grants staff permissions, nor creates an
+  appointment. Existing destination identity records are not overwritten or
+  duplicated: use the existing own-record selector instead. Destination Clinic must exist and its
+  Organization must be active; the bound scope is restored on every exit.
+- Eligibility reads across Clinics in the same Organization return **only a
+  boolean**, never another Clinic's records, encounter details, or identifiers.
+  Authorization, Clinic/Location isolation, explicit DENY precedence, and finance
+  ownership remain independent requirements; license permission never grants access.
+- Gregorian month addition is UTC and **clamps to the target month's last day**
+  while preserving time-of-day (Jan 31 → Feb 28/29). Equality at either deadline
+  is denied. Jalali is display-only. The server UTC clock is authoritative,
+  never browser time or a request-provided timestamp.
+- Nonessential commercial SMS stops at T0, both at enqueue and dispatch, including
+  already-queued reminders. Registry OTP authentication/security SMS remains
+  available. Suppression must not abort the associated clinical transaction.
+- Premium handwriting **new use** (create document, add page, save strokes) stops
+  at T0. Existing documents remain readable/exportable; ordinary clinical notes,
+  prescriptions, attachments and essential documentation are not disabled.
+- Clinical records, authorized reads/exports, backup/restore, and legitimate
+  invoices/payments/refunds/reconciliation for authorized care remain available.
+  No new finance license gate, schema, identity backfill, or clinical restriction
+  is introduced. Commercial add-ons keep their actual signed entitlement
+  contracts (including version/update rights); no blanket disabling of unrelated
+  clinical functions or invented expiry contract is permitted.
+- Renewal through the existing verified-document path restores permission from
+  the renewed signed expiry immediately; no destructive cleanup or persisted
+  local lock is added. Other blocking causes (invalid/binding mismatch,
+  suspension/revocation, activation-window exhaustion and stale/unreachable
+  state) remain fail-closed for new protected activity; this is not a bypass.
+
+Implementation: `SignedLicenseGate`, pure `PostExpirationPolicy`, a read-only
+`ReturningPatientRepository` boolean aggregate, and enforcement at Booking,
+Patient, Visit, SMS and Handwriting service boundaries. PR #240's identity
+foundation's existing resolver and audited linking primitives are reused; no
+migration, demographic matching, or new identity mechanism.
+
 ### 1. Boundaries
 - **Data Plane** (customer WordPress): all medical/clinical/financial data. **Control Plane** (vendor): commercial account, entitlements, release metadata, update authorization only. Formalized in ADR-0028 (data/control plane). No medical data flows to the control plane in any F10 path.
 - Business services keep depending only on `LicenseGate`. The F10 real implementation is `SignedLicenseGate` (name below), substituted solely inside `App::licenseGate()` — exactly as F1–F9 designed. `ActiveLicenseGate` remains as the dev/test/CI fixture.
@@ -36,9 +121,14 @@ F1–F9 shipped CPMS with a deliberate licensing **seam**: `Domain/Licensing/Lic
 - The value sits inside the canonical signed JSON like every other key, so changing, adding or removing it after signing invalidates the document. It is persisted only through the existing stored payload JSON (`cpms_license_state.payload_json`) — **no new table/column and no migration**. Online activation, refresh and offline signed-document activation share the same verification/storage path. CPMS does not echo the handle back to the vendor: the activate/refresh request allowlist (ADR-0028 §2) is unchanged.
 - **No enforcement expansion:** no status, entitlement or gate decision reads `activation_id`; its presence or absence creates no clinical lock. Historical data, backup/restore, export/recovery, security functions and safe in-progress care remain exactly as governed by §5.
 
-### 3. State semantics (spec §15) — amended by employer decision 2026-09-06
+### 3. State semantics (spec §15) — historical representation; permissions superseded by §0
 Distinct states, stored + exposed:
-- `ACTIVE`, `EXPIRING` (within grace boundary, warnings only), `GRACE` (default 7 days, renewal path; read/write of new business allowed with persistent warning — policy), `RESTRICTED` (still *represented* as expired/restricted/needs-renewal; **enforcement is cause-aware — amended by Phase 16 Slice 1**: ordinary commercial expiration no longer blocks new independent licensed activity, while every other `RESTRICTED` cause still does — see §5; historical access, safe export, and finishing in-progress workflow always allowed), plus `SUSPENDED`/`REVOKED` (from a *verified signed* document), `INVALID` (signature/authenticity failure), `UNKNOWN/UNREACHABLE` (network failure with no usable cache).
+- `ACTIVE`, `EXPIRING`, `GRACE` (historical default seven-day warning period),
+  `RESTRICTED` (expired/restricted/needs-renewal representation), plus
+  `SUSPENDED`/`REVOKED` (verified signed document), `INVALID` (authenticity
+  failure), and `UNKNOWN/UNREACHABLE` (no usable cache). **These display states
+  do not postpone §0's T0 enforcement.** The former ordinary-expiry exemption
+  and grace new-business allowance are superseded.
 
 **Pre-activation states (employer decision — never conflate with normal license GRACE):**
 - `NOT_CONFIGURED` — defensive only: no install/window row exists yet (pre-migration or broken env). Open, but Health/Admin flag it.
@@ -65,15 +155,14 @@ Critical distinctions enforced in code and tests:
 ### 5. Operation gating
 `assert(OP_*)` decisions per existing enum; SUSPENDED/REVOKED/INVALID block *new* protected ops with `CLINIC_LICENSE_BLOCKED` (503).
 
-**`RESTRICTED` is cause-aware (amended by Phase 16 Slice 1).** The gate distinguishes the *cause* of `RESTRICTED` from the existing current-state `status` + `reason`:
-- **Ordinary commercial expiration** — a previously valid signed document that is simply past expiry grace, i.e. the internally derived cause `expired` — **no longer blocks** the protected new-business operations. The annual term ending alone does not freeze ordinary clinical new business.
-- **Every other `RESTRICTED` cause still blocks, fail-closed:** activation-window exhaustion (`activation_window_expired`), migration-grace exhaustion (`migration_grace_expired`), vendor-unreachable/stale cache (`expired_unreachable`), and any absent/empty/unknown/malformed cause.
-- The cause match is exact; `SUSPENDED`/`REVOKED`/`INVALID`/`UNREACHABLE` and unknown states are **not** relaxed by this amendment.
-- Representation is unchanged: an ordinarily-expired license is still reported as `RESTRICTED` with reason `expired` and `needs_renewal`, and the gate still reports itself read-only, so status and renewal visibility are unaffected.
-- `CLINIC_LICENSE_BLOCKED` remains the code wherever the gate actually denies an operation.
+**Ordinary expiration is governed exclusively by §0.** The former Phase 16
+Slice 1 blanket allowance is superseded. Other `RESTRICTED` causes, malformed
+state, suspension/revocation/invalid, and stale/unreachable state still deny new
+protected activity. `CLINIC_LICENSE_BLOCKED` remains the denial code. Existing
+care, read/export and recovery exemptions remain intact.
 
 **Signed domain binding (Phase 16 Slice 2).** A verified signed document that carries a `domain` claim is valid only for the canonical local site domain, derived from WordPress `home_url()` with the single documented rule (lower-case + leading `www.` removed; no IDN/punycode/path/port policy, and never the request host/`HTTP_HOST`). The same canonicalization is applied to both sides of the comparison.
-- **Mismatch — or a present but empty/non-string/unusable claim — fails closed:** the stored document is kept, the state is `RESTRICTED` with the bounded internal reason `binding_mismatch`, and the protected new-business operations are denied through the existing gate (only the exact `expired` cause keeps the ordinary-expiration exception — `binding_mismatch` never does). Reads/history, patient update, cancel/hygiene, in-progress clinical workflow completion, backup/restore, export/recovery and security functions remain open; nothing is deleted.
+- **Mismatch — or a present but empty/non-string/unusable claim — fails closed:** the stored document is kept, the state is `RESTRICTED` with the bounded internal reason `binding_mismatch`, and the protected new-business operations are denied through the existing gate (`expired` uses §0's bounded policy; `binding_mismatch` never grants an exception). Reads/history, patient update, cancel/hygiene, in-progress clinical workflow completion, backup/restore, export/recovery and security functions remain open; nothing is deleted.
 - **Reversible:** with the document untouched, restoring the bound local domain restores the normal state; no local persistence or migration is added and no `WP_ENVIRONMENT_TYPE`-style bypass exists.
 - **A document without a `domain` claim is legacy/unbound** and keeps the pre-slice behavior. `install_id` verification is unchanged.
 - Refresh sends the current canonical domain through the existing `VendorGateway` contract (already an allowed metadata category per ADR-0028 §2).

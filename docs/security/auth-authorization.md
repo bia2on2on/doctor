@@ -40,6 +40,30 @@
 
 **Binding Session به Mobile:** `patient_user_links.mobile_at_link` — اگر موبایل بیمار تغییر کند، Flow ارتقا (تأیید شماره جدید) فعال می‌شود.
 
+### 1.1a Verified Organization subject → first Clinic enrollment (Owner clarification, 2026-10-17)
+
+`POST /patient/enroll` uses the current authenticated patient's WP session and
+REST nonce, **not** a caller-supplied WP user/identity ID. The destination Clinic
+is a selector validated against a persisted Clinic in an active Organization; only
+an exactly-one explicit `cpms_patient_identity_links` relationship in that same
+Organization authorizes self-enrollment. Neither an OTP-associated phone number,
+matching demographics, a legacy clinical self-link alone, nor a generated fresh
+identity can replace that explicit proof. The contact mobile submitted for the
+new row and stored in `mobile_at_link` is only a contact/history snapshot, **not**
+new phone verification or an identity/authentication authority.
+
+The transaction locks destination ownership and subject links, creates only a
+new local row, verifies existing boolean returning eligibility against signed
+T0, writes the matching local self-link and required audit, and rolls back on
+any denial/failure. Existing local identity records cannot be overwritten or
+re-enrolled. Scope restoration uses `finally`. The response contains only the
+new `{patient_id, clinic_id, mrn}`, never a foreign record/encounter or identity
+identifier. This grants no staff capability or staff Membership, weakens no
+explicit DENY, and does not authorize appointments or visits; existing staff
+service routes retain their independent scoped authorization. See ADR-0023 §0
+and API C0a for the six-month window and rejection contracts. Unverified new
+patients still require physical reception within one month after expiry.
+
 ### 1.2 Doctor/Secretary
 - V1: WP Login (username+password، سیاست رمز قوی) + Session.
 - V1.5: TOTP 2FA (فیلدها و Flow آماده؛ Setting `2fa.enabled`) — (FR-1.9).

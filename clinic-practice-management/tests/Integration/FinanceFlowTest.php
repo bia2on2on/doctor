@@ -26,6 +26,8 @@ use WP_UnitTestCase;
  */
 final class FinanceFlowTest extends WP_UnitTestCase
 {
+    use \ClinicCore\Tests\Support\SignedExpirationFixture;
+
     private const NS = '/clinic/v1';
 
     private int $clinicianId;
@@ -106,10 +108,35 @@ final class FinanceFlowTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        remove_all_filters('cpms_license_public_key');
         // C7-S3: بازیابی Scope پیشین — بدون نشت زمینه بین تست‌ها.
         App::replaceExplicitScope($this->previousScope);
         $this->previousScope = null;
         parent::tearDown();
+    }
+
+    public function testAuthorizedFinanceContinuesAfterSixMonthWindowAndStillHonorsDenies(): void
+    {
+        $visitId = $this->makeCompletedVisit();
+        $this->installSignedExpiration(time() - 220 * 86400);
+        $invoice = $this->finance()->issueInvoice($this->secretaryUserId, [
+            'visit_id' => $visitId,
+            'items' => [['description' => 'Authorized existing care', 'unit_price' => 100000, 'quantity' => 1]],
+        ]);
+        $paid = $this->finance()->recordPayment($this->secretaryUserId, (int) $invoice['id'], ['amount' => 100000, 'method' => 'cash'], $this->uuid());
+        $this->assertGreaterThan(0, (int) $paid['payment_id']);
+        $refund = $this->finance()->refundPayment($this->secretaryUserId, (int) $paid['payment_id'], 'Authorized refund', ['amount' => 10000]);
+        $this->assertNotEmpty($refund);
+        $this->assertNotEmpty($this->finance()->receipt($this->secretaryUserId, (int) $invoice['id']));
+        $this->assertNotEmpty($this->finance()->summary($this->secretaryUserId));
+        $this->assertTrue(App::audit()->verifyChain(500)['ok']);
+        // Expiry must never turn the technical administrator into a finance owner.
+        try {
+            $this->finance()->recordPayment($this->adminUserId, (int) $invoice['id'], ['amount' => 1, 'method' => 'cash'], $this->uuid());
+            $this->fail('Technical admin must remain denied');
+        } catch (FinanceException $e) {
+            $this->assertSame(403, $e->httpStatus);
+        }
     }
 
     // ================= D12 — صدور فاکتور =================

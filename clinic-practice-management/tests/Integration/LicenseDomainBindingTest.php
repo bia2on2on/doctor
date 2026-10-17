@@ -260,7 +260,7 @@ final class LicenseDomainBindingTest extends WP_UnitTestCase
         );
     }
 
-    public function testCorrectlyBoundOrdinarilyExpiredDocumentKeepsSliceOneBehavior(): void
+    public function testCorrectlyBoundExpiredDocumentUsesOwnerReceptionWindowButBlocksBookings(): void
     {
         $this->setLocalHome('https://clinic-a.example');
         $licenses = $this->licenseService();
@@ -274,7 +274,10 @@ final class LicenseDomainBindingTest extends WP_UnitTestCase
         $state = $licenses->currentState();
         $this->assertSame(LicenseStatus::RESTRICTED, $state['status']);
         $this->assertSame('expired', $state['reason']);
-        $this->assertTrue((new SignedLicenseGate($licenses))->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
+        $gate = new SignedLicenseGate($licenses);
+        $this->assertFalse($gate->assert(LicenseGate::OP_PATIENT_CREATE)->allowed);
+        $this->assertTrue($gate->assert(LicenseGate::OP_PATIENT_CREATE, ['reception' => true])->allowed);
+        $this->assertFalse($gate->assert(LicenseGate::OP_APPOINTMENT_BOOK)->allowed);
     }
 
     // =========================================================================

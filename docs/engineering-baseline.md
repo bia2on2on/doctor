@@ -360,13 +360,51 @@ Default Grace Period پیشنهادی:
 
 این مقدار Server-configurable باشد.
 
+## 13A. OWNER SUPERSESSION — CPMS CLASSIC (2026-10-17)
+
+**Authoritative policy: [ADR-0023 §0](adr/ADR-0023-licensing-protocol.md).**
+This explicitly supersedes historical conflicting expiry/grace rules in §§13–16,
+§32 acceptance statements, and Phase 16 Slice 1's unlimited ordinary-expiry
+exception. Historical seven-day grace remains warning/status metadata only; it
+**does not postpone T0** or either window.
+
+- T0 = trusted signed `expires_at`, evaluated with server UTC, not client time.
+- **All new bookings stop at T0**, public/staff/REST/direct services alike;
+  pre-T0 holds cannot confirm new bookings after T0.
+- Existing appointments remain valid and actionable. Ongoing care, essential
+  clinical documentation, authorized read/export, backup/restore and legitimate
+  finance (invoices, payments, refunds, reconciliation) remain available.
+- New patients: new services through **in-person reception only**, before
+  **T0 + one Gregorian calendar month**.
+- Verified returning Organization patients: new services before **T0 + six
+  Gregorian calendar months**. Require explicit verified Organization identity
+  and an encounter completed strictly before T0 in one of exactly
+  `consultation_completed`, `awaiting_payment`, `paid`, `checked_out`.
+  Missing identity/completion proof fails closed for returning classification.
+  **All Clinics in that Organization are included, even a first visit with no
+  local record.** The authenticated patient-self `/patient/enroll` path resolves
+  exactly one explicit Organization identity from the session user, creates a
+  minimal local record and durable self-link, and checks eligibility atomically
+  with rollback on denial. No request identity IDs or demographic/phone matches,
+  no copied foreign PHI, no appointment creation, and no staff permission grant.
+  Unverified staff creation remains reception-only for one month. This explicitly
+  supersedes any earlier first-new-Clinic enrollment limitation in PR #241.
+- Windows are half-open, Gregorian UTC, month-end clamped, time-of-day retained;
+  Jalali is display-only. No seven-day addition and no 30/180-day approximation.
+- Nonessential SMS/reminders and premium handwriting new use stop at T0;
+  authentication/security SMS and existing handwritten-record read/export remain.
+  Unrelated essential clinical functions must not be arbitrarily disabled;
+  commercial add-ons retain their actual entitlement contracts.
+- Organization/Clinic/Location privacy, hash-chained audit, normal permissions,
+  explicit DENY precedence, and finance ownership are never relaxed by expiry.
+
 ## 14. EXPIRED LICENSE POLICY
 
 اصل اصلی:
 
 LICENSE EXPIRATION MUST NEVER DELETE OR DESTROY MEDICAL DATA.
 
-پس از پایان License و Grace Period:
+از T0 (بدون تعویق توسط Grace؛ قواعد جاری در §13A):
 
 Existing Medical Data باید باقی بماند.
 
@@ -396,45 +434,19 @@ Expired License نباید باعث افزایش Access شود.
 
 ## 15. RESTRICTIONS AFTER LICENSE EXPIRATION
 
-پس از پایان Grace Period:
-
-ایجاد Business/Medical Activity جدید متوقف شود.
-
-حداقل عملیات زیر ممنوع شوند:
-
-- Create New Patient
-- Create New Appointment
-- Create New Walk-in
-- Create New Visit unrelated to a pre-existing appointment/workflow
-- Start New Independent Consultation
-- Create New Medical Workflow
-- Public Booking
-
-هدف این است که مطب بعد از پایان License نتواند بیمار/فعالیت جدید وارد سیستم کند.
-
-این محدودیت باید Backend-side اجرا شود.
-
-صرف Disable کردن Button کافی نیست.
+**Superseded ordinary-expiry rules:** see §13A and ADR-0023 §0. No new booking
+at/after T0. New reception services for genuinely new patients end at T0 + one
+calendar month; verified returning Organization patients end at T0 + six calendar
+months. Existing and ongoing care is preserved. Enforcement is backend-side,
+not merely disabled buttons. Other restrictive causes retain their own policy.
 
 ## 16. EXISTING PATIENTS AFTER EXPIRATION
 
-Patient قدیمی همچنان قابل مشاهده است.
-
-اما وجود Patient قبلی به معنی اجازه ایجاد Visit جدید نیست.
-
-قاعده:
-
-Existing Patient:
-READ = ALLOWED
-
-New Independent Appointment:
-DENIED
-
-New Independent Visit:
-DENIED
-
-New Patient:
-DENIED
+Existing authorized records remain readable. Existing patient rows alone do not
+prove returning status. The explicit Organization identity and strictly pre-T0
+qualifying completed encounter required by §13A determine the six-month window.
+No new appointment is allowed at/after T0; existing appointment/ongoing treatment
+continuity is not a new independent service and is not cut off at these deadlines.
 
 ## 17. PRE-EXISTING APPOINTMENTS
 
@@ -820,9 +832,9 @@ Unauthenticated User cannot access Medical Attachment.
 
 Unauthorized User cannot Export Medical Data.
 
-Expired License cannot create New Patient.
+Ordinary expiry: new reception patients/services allowed only before T0 + one Gregorian month (see §13A).
 
-Expired License cannot create New Appointment.
+No new appointment at/after signed T0, including confirmation of pre-T0 holds (see §13A).
 
 Expired License can read Existing Authorized Patient Data.
 

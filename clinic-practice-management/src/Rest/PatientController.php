@@ -35,6 +35,19 @@ final class PatientController extends RestBase
 
     public function register_routes(): void
     {
+        register_rest_route(
+            self::NS,
+            '/patient/enroll',
+            [
+                'methods'             => WP_REST_Server::CREATABLE,
+                'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
+                'callback'            => fn ( WP_REST_Request $request ) => $this->wrap(
+                    fn () => $this->patients->enroll_current_patient( (int) $request->get_param( 'clinic_id' ), $this->body( $request ) )
+                ),
+                'args'                => [ 'clinic_id' => [ 'required' => true, 'type' => 'integer', 'minimum' => 1 ] ],
+            ]
+        );
+
         // ---------- Patient (C0–C2) ----------
         register_rest_route(
             self::NS,
