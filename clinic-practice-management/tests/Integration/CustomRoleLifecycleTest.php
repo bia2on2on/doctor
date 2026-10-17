@@ -660,15 +660,31 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                     // Authoritative MariaDB evidence, statement-specific: the child
                     // reports ER_LOCK_WAIT_TIMEOUT for the production statement it
                     // signalled above, named by that statement's own SHA-256.
-                    $blockedLine = $this->readRaceLine($parentPipe, self::RACE_CHILD_LOCK_WAIT_TIMEOUT_SECONDS + 20);
-                    self::assertIsString(
-                        $blockedLine,
-                        'B did not report a lock-wait timeout for its production statement within the bounded window.'
-                    );
+                    $blockedLine = $this->readRaceLine($parentPipe, 75);
+                    if (!is_string($blockedLine)) {
+                        self::fail(
+                            'B produced no statement-level evidence within the bounded window. RDIAG='
+                            . $this->mariaDbWaitFailureDiagnostics(
+                                $observer,
+                                $childConnectionId,
+                                $parentConnectionId,
+                                $definitionId,
+                                'none'
+                            )
+                        );
+                    }
                     self::assertMatchesRegularExpression(
                         '/^RESULT:blocked:(1205|3572):[a-f0-9]{64}$/',
                         $blockedLine,
-                        'B must prove the block with a driver lock-timeout code and the exact statement hash.'
+                        'B must prove the block with a driver lock-timeout code and the exact statement hash. RDIAG=line:'
+                        . preg_replace('/[^A-Za-z0-9_:]/', '', substr($blockedLine, 0, 120))
+                        . ';' . $this->mariaDbWaitFailureDiagnostics(
+                            $observer,
+                            $childConnectionId,
+                            $parentConnectionId,
+                            $definitionId,
+                            'line'
+                        )
                     );
                     $blockedParts = explode(':', $blockedLine);
                     self::assertSame(
