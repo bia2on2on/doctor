@@ -301,6 +301,36 @@ Evidence: `D3/result.json`, `D3/evidence.json`, `D3/probe-output.txt`,
 truthful `synthetic broken migration: NOT RUN` declaration and continue to rely on the
 standalone exact-head `Real WP Acceptance` job for D3.
 
+**Refusals and cleanup failures are red, not green.** A leftover disposable clone path
+or database causes a safe refusal *before* anything is copied, created, dumped, restored
+or dropped: the check is recorded `UNEXECUTED`, the lane fails, and the pre-existing
+disposable database is never dropped because the probe never created it. Only read-only
+`SELECT`s are issued on that path, and the canonical fingerprint still has to match.
+Cleanup runs in `finally` and is itself asserted (`d3_cleanup_complete`, **material**):
+a failed `DROP DATABASE` or a failed disposable-directory removal blocks the lane even
+when the D3 property itself held, and a leftover clone stays visible on disk so the next
+run's refusal path is what protects it.
+
+**`measured` separates "proved" from "attempted".** `D3/result.json` carries
+`measured: true` only once the injected migration was actually attempted *and* the
+authoritative direct-SQL assertion was actually evaluated. `finalize` drops the lane's
+`synthetic broken migration: NOT RUN` declaration **only** when `measured` is true; a
+refusal or abort keeps NOT RUN and rewrites its reason to say the probe was attempted but
+measured nothing, so a red lane can never be misread as D3 coverage. `summary.md` prints
+`property actually measured in this lane: YES | NO — refusal/abort, not coverage`.
+
+**Clone-path guard.** `d3_assert_sibling_clone()` replaces an earlier
+`str(clone_wp).startswith(str(canonical_wp) + D3_CLONE_SUFFIX)` check plus a
+`clone_wp == canonical_wp` check. Both were tautologies — `clone_wp` is derived from
+`canonical_wp` with `with_name()`, so the prefix always matched and the paths were never
+equal (verified across plain, trailing-slash, whitespace and `..` path shapes). Dead code
+that reads like a safety check invites trust, so it was replaced with conditions that can
+actually fail: the suffix must be one non-empty separator-free path component, the clone
+must be a strict sibling (same parent, not equal, neither containing the other) and its
+name must be exactly the canonical name plus the suffix. The same helper is re-asserted
+immediately before the `rm -rf --` call, not only where the path is computed; the earlier
+code checked once and then removed the path unchecked.
+
 ### Discoverable verdicts without a seventh check
 
 `finalize` now emits exactly **one** bounded, sanitized check-run annotation per lane

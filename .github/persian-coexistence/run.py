@@ -744,6 +744,40 @@ def d3_attempt_proven(probe_result, cli_text, debug_text):
                    "was never proven to have been reached")
 
 
+def d3_assert_sibling_clone(canonical_wp, clone_wp, suffix=None):
+    """Live invariant for the only `rm -rf` target this probe may ever touch.
+
+    This replaces an earlier ``str(clone_wp).startswith(str(canonical_wp) +
+    D3_CLONE_SUFFIX)`` guard plus a ``clone_wp == canonical_wp`` guard. Both were
+    tautologies: ``clone_wp`` is built from ``canonical_wp`` with ``with_name()``,
+    so the prefix always matched and the paths were never equal — verified across
+    plain, trailing-slash, whitespace and ``..`` path shapes. Dead code that reads
+    like a safety check is worse than no check, because it invites trust.
+
+    These conditions can actually fail — if the suffix is ever edited to be empty,
+    to contain a separator, or to name the parent — and the same helper is
+    re-asserted at the destructive call site, not only where the path is computed.
+    Raises (fail closed); never returns a verdict.
+    """
+    suffix = D3_CLONE_SUFFIX if suffix is None else suffix
+    if not isinstance(suffix, str) or not suffix or re.search(r"[/\\\0]", suffix):
+        raise RuntimeError("D3 clone suffix must be one non-empty separator-free "
+                           "path component")
+    if not isinstance(canonical_wp, Path) or not isinstance(clone_wp, Path):
+        raise RuntimeError("D3 clone guard requires pathlib.Path operands")
+    if clone_wp == canonical_wp:
+        raise RuntimeError("D3 clone path equals the canonical WordPress path")
+    if clone_wp.parent != canonical_wp.parent:
+        raise RuntimeError("D3 clone path is not a sibling of the canonical "
+                           "WordPress path")
+    if canonical_wp in clone_wp.parents or clone_wp in canonical_wp.parents:
+        raise RuntimeError("D3 clone path and the canonical tree must not contain "
+                           "each other")
+    if clone_wp.name != canonical_wp.name + suffix:
+        raise RuntimeError("D3 clone path name is not the canonical name plus the "
+                           "clone suffix")
+
+
 def d3_fingerprint(db_name, wp_dir, schema_table=D3_SCHEMA_TABLE):
     """Fingerprint the canonical acceptance state that must never be touched."""
     prefix = probe.DB_PREFIX
@@ -1874,8 +1908,14 @@ class Slice:
         store = self.store("D3")
         store.subject(id=f"{GROUP}-d3", kind="synthetic-broken-migration-probe",
                       pins=PINS, cpms="ACTIVE in a disposable clone only")
-        result = {"status": "NOT RUN", "isolation_proof": False, "group": GROUP,
-                  "injected_version": D3_VERSION, "cleanup": {}, "canonical": {}}
+        # `measured` is True only once the injected migration was actually attempted
+        # and the authoritative direct-SQL assertion was actually evaluated. A refusal
+        # (pre-existing clone path/database, inactive CPMS, unreadable canonical
+        # baseline) stays False, so the lane's `synthetic broken migration: NOT RUN`
+        # declaration is never dropped for coverage that does not exist.
+        result = {"status": "NOT RUN", "isolation_proof": False, "measured": False,
+                  "group": GROUP, "injected_version": D3_VERSION, "cleanup": {},
+                  "canonical": {}}
         save(out / "result.json", result)
 
         if not d3_enabled():
@@ -1887,11 +1927,9 @@ class Slice:
 
         canonical_wp = Path(self.wp_dir).resolve()
         clone_wp = canonical_wp.with_name(canonical_wp.name + D3_CLONE_SUFFIX)
-        # Guard the only destructive cleanup targets this method may ever touch.
-        if not str(clone_wp).startswith(str(canonical_wp) + D3_CLONE_SUFFIX):
-            raise RuntimeError("refusing to compute a clone path outside the canonical tree")
-        if clone_wp == canonical_wp:
-            raise RuntimeError("clone path equals the canonical WordPress path")
+        # Guards the only destructive cleanup target this method may ever touch.
+        # Re-asserted at the `rm -rf` call site below, not only here.
+        d3_assert_sibling_clone(canonical_wp, clone_wp)
         clone_db = d3_isolated_db_name(self.db_name)
 
         active_ok, active, active_err = probe.db_active_plugins(self.db_name)
@@ -2032,6 +2070,7 @@ class Slice:
                         diag or "read directly from the disposable database, bypassing "
                                 "WP-CLI so the WooCommerce-style hook race cannot mask it",
                         expected="0", observed=recorded if ok else diag)
+            result["measured"] = True
             ok, current, diag = probe.scalar(
                 f"SELECT MAX(version) FROM {probe.DB_PREFIX}{D3_SCHEMA_TABLE}", clone_db)
             expected_max = canonical_before.get("migrations_max_version")
@@ -2057,6 +2096,11 @@ class Slice:
                 cleanup["remove_injected"] = probe.run(
                     ["sudo", "rm", "-f", str(injected)])["rc"]
             if clone_created:
+                # Re-assert at the destructive call site: `rm -rf --` may only ever
+                # receive the sibling clone, never the canonical acceptance tree.
+                # If this raises, the removal does not happen and the probe exits
+                # fail-closed through main()'s handler.
+                d3_assert_sibling_clone(canonical_wp, clone_wp)
                 cleanup["remove_clone_tree"] = probe.run(
                     ["sudo", "rm", "-rf", "--", str(clone_wp)], timeout=300)["rc"]
             if db_created and clone_db:
@@ -2130,11 +2174,22 @@ class Slice:
         d3 = load(self.root / "D3/result.json", None)
         not_run = dict(NOT_RUN)
         if isinstance(d3, dict) and d3.get("status") in {"PASS", "FAIL"}:
-            not_run.pop("synthetic broken migration", None)
+            if d3.get("measured") is True:
+                # The property really was measured in this lane, so the NOT RUN
+                # declaration would now be the inaccurate statement.
+                not_run.pop("synthetic broken migration", None)
+            elif d3.get("status") == "FAIL":
+                # Attempted but refused/aborted before measuring: keep NOT RUN, and
+                # say precisely why, so a red lane is never readable as coverage.
+                not_run["synthetic broken migration"] = (
+                    "NOT RUN — the isolated D3 probe was attempted in this lane but "
+                    "refused or aborted before measuring anything; see D3/result.json "
+                    "and D3/evidence.json. The lane is red; this is not coverage")
         summary["not_run"] = not_run
         if isinstance(d3, dict):
             summary["d3_probe"] = {
                 "status": d3.get("status"),
+                "measured": d3.get("measured") is True,
                 "isolation_proof": d3.get("isolation_proof") is True,
                 "injected_version": d3.get("injected_version"),
                 "canonical_changed_keys": d3.get("canonical", {}).get("changed_keys", []),
@@ -2170,6 +2225,8 @@ class Slice:
             text += (f"  - canonical acceptance environment untouched: "
                      f"`{'PROVEN' if d3_summary.get('isolation_proof') else 'NOT PROVEN'}`"
                      f" (changed keys: `{d3_summary.get('canonical_changed_keys') or 'none'}`)\n")
+            text += (f"  - property actually measured in this lane: "
+                     f"`{'YES' if d3_summary.get('measured') else 'NO — refusal/abort, not coverage'}`\n")
             attempt = d3_summary.get("attempt_proof")
             if isinstance(attempt, str) and attempt:
                 text += f"  - migration attempt evidence: `{attempt[:200]}`\n"

@@ -1317,7 +1317,8 @@ class D3CoexistenceProbeTests(unittest.TestCase):
 
     def install_stubs(self, cli_rc=1, cli_text="", probe_json=None, clone_recorded="0",
                       clone_max="2026_10_13_0027", fingerprint_after=None,
-                      clone_exists=False, db_exists="0", cpms_active=True):
+                      clone_exists=False, db_exists="0", cpms_active=True,
+                      fail_cleanup=()):
         """Stub every external effect; return the recorded command log."""
         module = self.module
         calls = []
@@ -1358,13 +1359,22 @@ class D3CoexistenceProbeTests(unittest.TestCase):
                 return {"rc": 0, "stdout": cli_text, "stderr": ""}
             if cmd[:3] == ["sudo", "rm", "-rf"]:
                 target = Path(cmd[-1])
-                if target == self.clone:
-                    shutil.rmtree(target, ignore_errors=True)
-                else:
+                if target != self.clone:
                     return {"rc": 1, "stdout": "", "stderr": "refused: not the clone"}
+                if "remove_clone_tree" in fail_cleanup:
+                    # Simulated failure: the leftover clone must stay visible, so a
+                    # later run's refusal path is what actually protects it.
+                    return {"rc": 1, "stdout": "", "stderr": "simulated removal failure"}
+                shutil.rmtree(target, ignore_errors=True)
                 return {"rc": 0, "stdout": "", "stderr": ""}
             if cmd[:3] == ["sudo", "rm", "-f"]:
+                if "remove_injected" in fail_cleanup:
+                    return {"rc": 1, "stdout": "", "stderr": "simulated removal failure"}
                 Path(cmd[-1]).unlink(missing_ok=True)
+                return {"rc": 0, "stdout": "", "stderr": ""}
+            if cmd[0] == "mysql" and any("DROP DATABASE" in str(part) for part in cmd):
+                if "drop_clone_db" in fail_cleanup:
+                    return {"rc": 1, "stdout": "", "stderr": "simulated DROP failure"}
                 return {"rc": 0, "stdout": "", "stderr": ""}
             return {"rc": 0, "stdout": "", "stderr": ""}
 
@@ -1518,6 +1528,198 @@ class D3CoexistenceProbeTests(unittest.TestCase):
                          "a refusal must annotate loudly, but only through the stub")
         self.assertIn("could not complete", self.annotations[0][1])
 
+    def finalize_over_written_d3_result(self):
+        """Run finalize against the D3/result.json the probe just wrote.
+
+        Proves the end-to-end contract rather than only the probe's own return
+        value: a red D3 result must turn the whole lane red and must never be
+        published as coverage.
+        """
+        lane_slice = self.slice_for()
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("sentinel", True, self.module.probe.PRODUCT)
+        self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
+        self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
+        with patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}), \
+                patch.object(self.module.probe, "annotate", lambda *a: None), \
+                contextlib.redirect_stdout(io.StringIO()):
+            exit_code = lane_slice.finalize({})
+        return exit_code, self.module.load(lane_slice.root / "summary.json")
+
+    def test_pre_existing_disposable_database_is_refused_without_touching_it(self):
+        """Adversarial: a leftover disposable DB must cause a safe refusal.
+
+        Four properties, each asserted from the recorded command/SQL log rather
+        than from the result dict alone: no overwrite, no DROP of the pre-existing
+        database, no mutation of the canonical database, and no false PASS.
+        """
+        calls = self.install_stubs(db_exists="1")
+        result = self.slice_for().d3_probe()
+
+        # --- (4) no false PASS -------------------------------------------------
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIsNot(result["status"], "PASS")
+        self.assertFalse(result["measured"], "nothing was measured, so nothing is proven")
+        self.assertIn("d3_clone_db_isolation", result["blocking_checks"])
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        refusal = next(c for c in evidence if c["name"] == "d3_clone_db_isolation")
+        self.assertEqual(refusal["status"], self.module.probe.UNEXECUTED,
+                         "a refusal stays UNEXECUTED; it is never reclassified as PASS")
+        self.assertTrue(any(c["status"] == self.module.probe.UNEXECUTED
+                            for c in self.module.blockers(evidence)))
+        # End to end: the lane goes red and keeps its NOT RUN declaration.
+        exit_code, summary = self.finalize_over_written_d3_result()
+        self.assertEqual(exit_code, 1, "a refused D3 probe must never conclude green")
+        self.assertEqual(summary["d3_probe"]["status"], "FAIL")
+        self.assertFalse(summary["d3_probe"]["measured"])
+        self.assertIn("synthetic broken migration", summary["not_run"],
+                      "a refusal must NOT be published as D3 coverage")
+        self.assertIn("refused or aborted before measuring",
+                      summary["not_run"]["synthetic broken migration"])
+
+        # --- (1) no overwrite: nothing was copied, created, dumped or restored --
+        shell = [" ".join(entry[1]) for entry in calls if entry[0] == "run"]
+        spawned = [" ".join(entry[1]) for entry in calls if entry[0] == "subprocess"]
+        wp_cli = [entry for entry in calls if entry[0] == "wp_cli"]
+        self.assertEqual(wp_cli, [], "no WP-CLI invocation may follow a refusal")
+        for forbidden in ("cp -a", "CREATE DATABASE", "DROP DATABASE", "rm -rf", "rm -f"):
+            self.assertFalse(any(forbidden in command for command in shell), forbidden)
+        for forbidden in ("mysqldump", "tee", "mysql"):
+            self.assertFalse(any(forbidden in command for command in spawned), forbidden)
+        self.assertFalse(self.clone.exists(), "no disposable tree may be created")
+        self.assertFalse((self.clone.parent / (self.clone.name + "-extra")).exists())
+
+        # --- (2) no DROP of the pre-existing database -------------------------
+        self.assertEqual(result["cleanup"], {},
+                         "cleanup must not run at all, so the pre-existing database "
+                         "cannot be dropped by a probe that never created it")
+        self.assertFalse(any("DROP" in command.upper() for command in shell + spawned))
+
+        # --- (3) no mutation of the canonical database ------------------------
+        sql = [entry[2] for entry in calls if entry[0] == "scalar"]
+        self.assertTrue(sql, "the refusal must still have read the schema list")
+        for statement in sql:
+            self.assertTrue(statement.lstrip().upper().startswith("SELECT"),
+                            f"only read-only SQL may be issued: {statement}")
+        for write in ("INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE",
+                      "TRUNCATE", "REPLACE", "RENAME"):
+            for statement in sql:
+                self.assertNotIn(write, statement.upper())
+        # The probe never even reached the disposable schema's own tables.
+        self.assertFalse(any(self.module.D3_SCHEMA_TABLE in statement for statement in sql))
+        self.assertEqual(result["canonical"]["changed_keys"], [])
+        self.assertTrue(result["isolation_proof"],
+                        "the canonical environment is provably untouched by a refusal")
+        untouched = next(c for c in evidence
+                         if c["name"] == "d3_canonical_environment_untouched")
+        self.assertEqual(untouched["status"], self.module.probe.PASS)
+
+    def test_drop_database_cleanup_failure_is_material_blocking_and_cannot_pass(self):
+        """Adversarial: a failed DROP DATABASE must block, even though D3 itself passed."""
+        self.install_stubs(cli_rc=1, cli_text="RuntimeException: SQLSTATE[42000]",
+                           fail_cleanup=("drop_clone_db",))
+        result = self.slice_for().d3_probe()
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        by_name = {c["name"]: c for c in evidence}
+
+        # The real D3 property genuinely held...
+        self.assertEqual(by_name["d3_broken_version_not_recorded_direct_sql"]["status"],
+                         self.module.probe.PASS)
+        self.assertEqual(by_name["d3_migration_attempt_proven"]["status"],
+                         self.module.probe.PASS)
+        self.assertEqual(by_name["d3_canonical_environment_untouched"]["status"],
+                         self.module.probe.PASS)
+        self.assertTrue(result["measured"])
+
+        # ...and the cleanup failure still makes the whole probe FAIL.
+        cleanup_check = by_name["d3_cleanup_complete"]
+        self.assertEqual(cleanup_check["status"], self.module.probe.FAIL)
+        self.assertTrue(cleanup_check["material"],
+                        "a cleanup failure must be material, not a recorded-only warning")
+        self.assertIn("d3_cleanup_complete",
+                      [c["name"] for c in self.module.blockers(evidence)])
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("d3_cleanup_complete", result["blocking_checks"])
+        self.assertEqual(result["cleanup"]["drop_clone_db"], 1)
+        self.assertEqual(result["cleanup"]["remove_clone_tree"], 0)
+        self.assertFalse(self.clone.exists(), "the tree removal really did succeed")
+
+        exit_code, summary = self.finalize_over_written_d3_result()
+        self.assertEqual(exit_code, 1, "a leftover disposable database must redden the lane")
+        self.assertEqual(summary["d3_probe"]["status"], "FAIL")
+        # Measured, so the NOT RUN declaration is correctly dropped — but the lane
+        # is red, so this can never be read as a green D3.
+        self.assertNotIn("synthetic broken migration", summary["not_run"])
+        self.assertIn("D3 broken-migration probe=FAIL",
+                      self.module.coexistence_verdict_annotation(summary, summary["d3_probe"])[1])
+
+    def test_clone_directory_cleanup_failure_is_material_blocking_and_cannot_pass(self):
+        """Adversarial: a failed disposable-directory removal must block and stay visible."""
+        self.install_stubs(cli_rc=1, cli_text=self.module.D3_VERSION,
+                           fail_cleanup=("remove_clone_tree",))
+        result = self.slice_for().d3_probe()
+        evidence = self.module.load(self.root / "lane/D3/evidence.json")["checks"]
+        by_name = {c["name"]: c for c in evidence}
+
+        self.assertEqual(by_name["d3_broken_version_not_recorded_direct_sql"]["status"],
+                         self.module.probe.PASS)
+        cleanup_check = by_name["d3_cleanup_complete"]
+        self.assertEqual(cleanup_check["status"], self.module.probe.FAIL)
+        self.assertTrue(cleanup_check["material"])
+        self.assertEqual(result["status"], "FAIL")
+        self.assertIn("d3_cleanup_complete", result["blocking_checks"])
+        self.assertEqual(result["cleanup"]["remove_clone_tree"], 1)
+        self.assertEqual(result["cleanup"]["drop_clone_db"], 0)
+        self.assertTrue(self.clone.exists(),
+                        "a failed removal must leave the leftover visible, never hide it")
+
+        exit_code, summary = self.finalize_over_written_d3_result()
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(summary["d3_probe"]["status"], "FAIL")
+        # The leftover clone is exactly what the refusal path protects against next
+        # run, so the two tests are complementary rather than redundant.
+        self.assertTrue(self.clone.exists())
+
+    def test_sibling_clone_guard_rejects_malformed_suffixes_and_paths(self):
+        """The replacement guard must be live where the old prefix check was dead."""
+        guard = self.module.d3_assert_sibling_clone
+        canonical = Path("/a/rwp")
+        guard(canonical, Path("/a/rwp-d3probe"))  # the real shape must be accepted
+        for suffix in ("", "/", "\\", "a/b", "a\\b", "x\0y", 3):
+            with self.subTest(suffix=repr(suffix)):
+                with self.assertRaises(RuntimeError):
+                    guard(canonical, Path("/a/rwp-d3probe"), suffix)
+        for clone in (canonical, Path("/b/rwp-d3probe"), Path("/a"),
+                      Path("/a/rwp/child"), Path("/a/other-d3probe")):
+            with self.subTest(clone=str(clone)):
+                with self.assertRaises(RuntimeError):
+                    guard(canonical, clone)
+        with self.assertRaises(RuntimeError):
+            guard("/a/rwp", "/a/rwp-d3probe")  # non-Path operands are refused too
+
+    def test_clone_guard_is_re_asserted_at_the_destructive_call_site(self):
+        """The old code checked the path once and then ran `rm -rf` on it unchecked."""
+        self.install_stubs(cli_rc=1, cli_text="RuntimeException: x")
+        real = self.module.d3_assert_sibling_clone
+        invocations = []
+
+        def counting(canonical, clone, suffix=None):
+            invocations.append((str(canonical), str(clone)))
+            return real(canonical, clone, suffix)
+
+        with patch.object(self.module, "d3_assert_sibling_clone", counting):
+            result = self.slice_for().d3_probe()
+        self.assertEqual(result["status"], "PASS")
+        self.assertEqual(len(invocations), 2,
+                         "once where the path is computed, once immediately before `rm -rf`")
+        self.assertEqual(invocations[0], invocations[1])
+        resolved = self.wp.resolve()
+        expected_clone = str(resolved.with_name(resolved.name + self.module.D3_CLONE_SUFFIX))
+        self.assertTrue(all(clone == expected_clone for _, clone in invocations), invocations)
+        self.assertTrue(all(canonical == str(resolved) for canonical, _ in invocations),
+                        invocations)
+
     def test_inactive_cpms_keeps_the_probe_not_run(self):
         self.install_stubs(cpms_active=False)
         result = self.slice_for().d3_probe()
@@ -1532,7 +1734,7 @@ class D3CoexistenceProbeTests(unittest.TestCase):
         self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
         self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
         self.module.save(lane_slice.root / "D3/result.json",
-                         {"status": "PASS", "isolation_proof": True,
+                         {"status": "PASS", "measured": True, "isolation_proof": True,
                           "injected_version": self.module.D3_VERSION,
                           "canonical": {"changed_keys": []},
                           "attempt_proof": "probe throwable recorded"})
@@ -1569,7 +1771,7 @@ class D3CoexistenceProbeTests(unittest.TestCase):
         self.module.save(lane_slice.root / "A/result.json", self.module.verdict(store, True))
         self.module.save(lane_slice.root / "B/started.json", {"stage_a": "PASS"})
         self.module.save(lane_slice.root / "D3/result.json",
-                         {"status": "FAIL", "isolation_proof": False,
+                         {"status": "FAIL", "measured": True, "isolation_proof": False,
                           "canonical": {"changed_keys": []}, "blocking_checks": ["x"]})
         with patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}), \
                 contextlib.redirect_stdout(io.StringIO()):
