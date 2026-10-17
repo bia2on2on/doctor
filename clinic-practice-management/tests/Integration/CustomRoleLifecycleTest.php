@@ -484,6 +484,13 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         );
 
                         $readySent = false;
+                        // Strict driver reporting: a failed production statement then
+                        // raises mysqli_sql_exception carrying the server error code
+                        // (1205 ER_LOCK_WAIT_TIMEOUT on MariaDB), which is the exact
+                        // statement-level evidence; wpdb's bookkeeping alone reset to 0.
+                        if (function_exists('mysqli_report')) {
+                            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+                        }
                         // One production assignment attempt. Any driver error is
                         // captured as lockerr:<errno> inside the callback, before
                         // the transaction wrapper's ROLLBACK resets wpdb state.
@@ -527,9 +534,9 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                                     } catch (Throwable $exception) {
                                         // The failing production statement's own
                                         // driver error code, read before any ROLLBACK.
-                                        $driverErrno = 0;
+                                        $driverErrno = (int) $exception->getCode();
                                         $handle = $db2->wpdb()->dbh;
-                                        if ($handle instanceof \mysqli) {
+                                        if ($driverErrno === 0 && $handle instanceof \mysqli) {
                                             $driverErrno = (int) $handle->errno;
                                         }
                                         if ($driverErrno === 0 && stripos((string) $db2->wpdb()->last_error, 'lock wait timeout') !== false) {
