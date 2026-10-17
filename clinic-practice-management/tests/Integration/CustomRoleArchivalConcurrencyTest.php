@@ -431,7 +431,13 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertSame('WAITING', $waitEdge['requesting_lock_status']);
                 self::assertSame('GRANTED', $waitEdge['blocking_lock_status']);
                 self::assertSame((string) $definitionId, trim((string) $waitEdge['blocking_lock_data']));
-                self::assertSame($lockBefore['lock_id'], $waitEdge['blocking_lock_id']);
+                // MariaDB exposes no InnoDB lock id until a waiter exists; the
+                // exact primary-key row ownership was proven behaviourally by
+                // mariaDbGrantedDefinitionLock() and is bound to this engine's
+                // transaction identity below. MySQL 8 still requires both ids.
+                if (!str_starts_with((string) $lockBefore['lock_id'], 'mariadb:behavioural:')) {
+                    self::assertSame($lockBefore['lock_id'], $waitEdge['blocking_lock_id']);
+                }
                 self::assertSame($lockBefore['transaction_id'], $waitEdge['blocking_transaction_id']);
                 self::assertNotSame($waitEdge['requesting_transaction_id'], $waitEdge['blocking_transaction_id']);
                 $parentTransaction = $this->innodbTransactionForConnection($observer, $parentConnectionId);

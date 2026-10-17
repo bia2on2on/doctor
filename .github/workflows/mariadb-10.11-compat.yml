@@ -10,6 +10,11 @@ on:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
   workflow_dispatch:
+  # TEMPORARY measurement trigger for this exact session branch only.
+  # Removed in the follow-up evidence commit; final state is schedule + dispatch.
+  push:
+    branches:
+      - arena/ae733fdc-doctor
 
 concurrency:
   # Unique per execution: never cancel a scheduled/manual compatibility run.

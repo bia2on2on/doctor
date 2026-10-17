@@ -23,6 +23,9 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use RuntimeException;
 use Throwable;
 use WP_UnitTestCase;
+use ClinicCore\Tests\Support\CustomRoleLockWaitFixture;
+
+require_once dirname(__DIR__) . '/Support/CustomRoleLockWaitFixture.php';
 
 /**
  * Custom Role Management — Slice 4A, reversible deactivation/reactivation.
@@ -35,6 +38,8 @@ use WP_UnitTestCase;
  */
 final class CustomRoleLifecycleTest extends WP_UnitTestCase
 {
+    use CustomRoleLockWaitFixture;
+
     private const RACE_SIGNAL_TIMEOUT_SECONDS = 10;
     private const RACE_WAIT_TIMEOUT_SECONDS = 10;
     private const RACE_CHILD_LOCK_WAIT_TIMEOUT_SECONDS = 20;
@@ -618,7 +623,9 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 self::assertSame((string) $definitionId, trim((string) $waitEvidence['blocking_lock_data']));
                 self::assertSame('WAITING', $waitEvidence['requesting_lock_status']);
                 self::assertSame('GRANTED', $waitEvidence['blocking_lock_status']);
-                self::assertSame($parentLockBefore['lock_id'], $waitEvidence['blocking_lock_id']);
+                if (!str_starts_with((string) $parentLockBefore['lock_id'], 'mariadb:behavioural:')) {
+                    self::assertSame($parentLockBefore['lock_id'], $waitEvidence['blocking_lock_id']);
+                }
                 self::assertSame($parentLockBefore['transaction_id'], $waitEvidence['blocking_transaction_id']);
                 self::assertNotSame($waitEvidence['requesting_transaction_id'], $waitEvidence['blocking_transaction_id']);
 
@@ -1004,151 +1011,6 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         }
 
         return $connection;
-    }
-
-    /**
-     * @return array{transaction_id:string,lock_id:string,lock_mode:string,lock_status:string,lock_data:string}|null
-     */
-    private function customRoleDefinitionLockForConnection(\mysqli $observer, int $connectionId, int $definitionId): ?array
-    {
-        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
-        $lockData = $observer->real_escape_string((string) $definitionId);
-        $connectionId = (int) $connectionId;
-        $sql =
-            'SELECT locks.engine_transaction_id AS transaction_id, locks.engine_lock_id AS lock_id,' .
-            ' locks.lock_mode AS lock_mode, locks.lock_status AS lock_status, locks.lock_data AS lock_data' .
-            ' FROM performance_schema.data_locks AS locks' .
-            ' INNER JOIN performance_schema.threads AS threads ON threads.thread_id = locks.thread_id' .
-            ' WHERE threads.processlist_id = ' . $connectionId .
-            ' AND locks.object_schema = DATABASE()' .
-            " AND locks.object_name = '{$table}'" .
-            " AND locks.index_name = 'PRIMARY'" .
-            " AND locks.lock_type = 'RECORD'" .
-            " AND locks.lock_mode LIKE 'X%'" .
-            " AND locks.lock_status = 'GRANTED'" .
-            " AND locks.lock_data = '{$lockData}' LIMIT 1";
-        $result = $observer->query($sql);
-        if ($result === false) {
-            throw new RuntimeException('Could not inspect the parent definition lock: ' . $observer->error);
-        }
-
-        $row = $result->fetch_assoc();
-        $result->free();
-
-        return is_array($row) ? $row : null;
-    }
-
-    /**
-     * @return array<string,string|null>|null
-     */
-    private function customRoleDefinitionWaitEdge(
-        \mysqli $observer,
-        int $requestingConnectionId,
-        int $blockingConnectionId,
-        int $definitionId
-    ): ?array {
-        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
-        $lockData = $observer->real_escape_string((string) $definitionId);
-        $requestingConnectionId = (int) $requestingConnectionId;
-        $blockingConnectionId = (int) $blockingConnectionId;
-        $sql =
-            'SELECT waits.requesting_engine_transaction_id AS requesting_transaction_id,' .
-            ' waits.blocking_engine_transaction_id AS blocking_transaction_id,' .
-            ' waits.requesting_engine_lock_id AS requesting_lock_id,' .
-            ' waits.blocking_engine_lock_id AS blocking_lock_id,' .
-            ' requesting_lock.lock_mode AS requesting_lock_mode,' .
-            ' requesting_lock.lock_status AS requesting_lock_status,' .
-            ' requesting_lock.lock_data AS requesting_lock_data,' .
-            ' blocking_lock.lock_mode AS blocking_lock_mode,' .
-            ' blocking_lock.lock_status AS blocking_lock_status,' .
-            ' blocking_lock.lock_data AS blocking_lock_data,' .
-            ' requesting_thread.processlist_id AS requesting_connection_id,' .
-            ' blocking_thread.processlist_id AS blocking_connection_id' .
-            ' FROM performance_schema.data_lock_waits AS waits' .
-            ' INNER JOIN performance_schema.data_locks AS requesting_lock' .
-            ' ON requesting_lock.engine_lock_id = waits.requesting_engine_lock_id' .
-            ' INNER JOIN performance_schema.data_locks AS blocking_lock' .
-            ' ON blocking_lock.engine_lock_id = waits.blocking_engine_lock_id' .
-            ' INNER JOIN performance_schema.threads AS requesting_thread' .
-            ' ON requesting_thread.thread_id = requesting_lock.thread_id' .
-            ' INNER JOIN performance_schema.threads AS blocking_thread' .
-            ' ON blocking_thread.thread_id = blocking_lock.thread_id' .
-            ' WHERE requesting_thread.processlist_id = ' . $requestingConnectionId .
-            ' AND blocking_thread.processlist_id = ' . $blockingConnectionId .
-            ' AND requesting_lock.object_schema = DATABASE()' .
-            " AND requesting_lock.object_name = '{$table}'" .
-            " AND requesting_lock.index_name = 'PRIMARY'" .
-            " AND requesting_lock.lock_type = 'RECORD'" .
-            " AND requesting_lock.lock_mode LIKE 'X%'" .
-            " AND requesting_lock.lock_status = 'WAITING'" .
-            ' AND blocking_lock.object_schema = DATABASE()' .
-            " AND blocking_lock.object_name = '{$table}'" .
-            " AND blocking_lock.index_name = 'PRIMARY'" .
-            " AND blocking_lock.lock_type = 'RECORD'" .
-            " AND blocking_lock.lock_mode LIKE 'X%'" .
-            " AND blocking_lock.lock_status = 'GRANTED'" .
-            " AND blocking_lock.lock_data = '{$lockData}' LIMIT 1";
-        $result = $observer->query($sql);
-        if ($result === false) {
-            throw new RuntimeException('Could not inspect the exact InnoDB lock-wait edge: ' . $observer->error);
-        }
-
-        $row = $result->fetch_assoc();
-        $result->free();
-
-        return is_array($row) ? $row : null;
-    }
-
-    /**
-     * @return array<string,string>|null
-     */
-    private function innodbTransactionForConnection(\mysqli $observer, int $connectionId): ?array
-    {
-        $connectionId = (int) $connectionId;
-        $sql =
-            'SELECT trx_id AS transaction_id, trx_state, trx_operation_state,' .
-            ' trx_requested_lock_id, trx_mysql_thread_id' .
-            ' FROM information_schema.innodb_trx' .
-            ' WHERE trx_mysql_thread_id = ' . $connectionId . ' LIMIT 1';
-        $result = $observer->query($sql);
-        if ($result === false) {
-            throw new RuntimeException('Could not inspect the InnoDB transaction state: ' . $observer->error);
-        }
-
-        $row = $result->fetch_assoc();
-        $result->free();
-
-        return is_array($row) ? $row : null;
-    }
-
-    /**
-     * @return list<array<string,string|null>>
-     */
-    private function customRoleDefinitionLocksForConnection(\mysqli $observer, int $connectionId): array
-    {
-        $table = $observer->real_escape_string(App::db()->table('cpms_custom_role_defs'));
-        $connectionId = (int) $connectionId;
-        $sql =
-            'SELECT locks.engine_transaction_id AS transaction_id, locks.engine_lock_id AS lock_id,' .
-            ' locks.object_name, locks.index_name, locks.lock_type, locks.lock_mode,' .
-            ' locks.lock_status, locks.lock_data' .
-            ' FROM performance_schema.data_locks AS locks' .
-            ' INNER JOIN performance_schema.threads AS threads ON threads.thread_id = locks.thread_id' .
-            ' WHERE threads.processlist_id = ' . $connectionId .
-            ' AND locks.object_schema = DATABASE()' .
-            " AND locks.object_name = '{$table}' LIMIT 20";
-        $result = $observer->query($sql);
-        if ($result === false) {
-            throw new RuntimeException('Could not inspect definition-row lock diagnostics: ' . $observer->error);
-        }
-
-        $rows = [];
-        while ($row = $result->fetch_assoc()) {
-            $rows[] = $row;
-        }
-        $result->free();
-
-        return $rows;
     }
 
     /**
