@@ -3,9 +3,13 @@ name: MariaDB 10.11 Compatibility (CPMS + WordPress)
 # Weekly, real-server compatibility evidence for the WordPress-recommended
 # MariaDB 10.11 series. This is deliberately separate from the MySQL 8 PR
 # integration check and the MariaDB 11.4.13 browser acceptance lane.
-# No pull_request trigger: preserve the existing PR-check architecture.
+# Temporary pull_request trigger is used for one controlled diagnostic run only;
+# restore the schedule/dispatch-only trigger immediately afterwards.
 
 on:
+  pull_request:
+    branches:
+      - main
   schedule:
     # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
     - cron: '37 3 * * 3'
@@ -218,7 +222,29 @@ jobs:
           bash tests/bin/install-wp-tests.sh "$TEST_DB_NAME" root "$MYSQL_PWD" 127.0.0.1 "$WP_VERSION" 3306
 
       - name: Validate exact PHPUnit selection and red-result guard
-        run: python3 tests/bin/test_mariadb_compat_report.py
+        run: |
+          set -euo pipefail
+          regression_log=/tmp/mariadb-compat/reporter-regression.private
+          mkdir -p /tmp/mariadb-compat
+          trap 'rm -f "$regression_log"' EXIT
+          set +e
+          python3 tests/bin/test_mariadb_compat_report.py > "$regression_log" 2>&1
+          regression_exit=$?
+          set -e
+          if grep -Eq '::[[:alpha:]][[:alnum:]-]*( |::)' "$regression_log"; then
+            echo 'Reporter regression output contained a workflow-command pattern; raw output withheld.' >&2
+            exit 1
+          fi
+          if [ "$regression_exit" -ne 0 ]; then
+            echo "Reporter regression tests failed with exit code $regression_exit; raw output withheld." >&2
+            exit "$regression_exit"
+          fi
+          test_count="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\}.*/\1/p' "$regression_log" | tail -n 1)"
+          if [ -z "$test_count" ]; then
+            echo 'Reporter regression output did not contain a test count; raw output withheld.' >&2
+            exit 1
+          fi
+          echo "Reporter regression tests passed ($test_count); no GitHub workflow-command patterns were emitted."
 
       - name: Run focused database-backed CPMS compatibility suites
         id: focused_tests
@@ -247,7 +273,8 @@ jobs:
             --selection-config phpunit.mariadb-10.11.xml \
             --phpunit-exit-file /tmp/mariadb-compat/phpunit-exit-code.txt \
             --summary-file "$GITHUB_STEP_SUMMARY" \
-            --json-output /tmp/mariadb-compat/focused-results.json
+            --json-output /tmp/mariadb-compat/focused-results.json \
+            --check-annotation
 
       - name: Upload bounded compatibility evidence
         if: always()
@@ -271,7 +298,7 @@ jobs:
         run: |
           {
             echo
-            echo '## MariaDB 10.11 Compatibility (separate, non-PR lane)'
+            echo '## MariaDB 10.11 Compatibility (temporary diagnostic PR execution)'
             echo
             echo "- run: \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- checkout: \`${GITHUB_SHA}\`"

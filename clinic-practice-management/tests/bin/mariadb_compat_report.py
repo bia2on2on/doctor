@@ -150,15 +150,8 @@ def _assertion_count(root: ET.Element, cases: list[ET.Element]) -> int | None:
     return 0 if not cases else None
 
 
-def _junit_integrity_issues(root: ET.Element, cases: list[ET.Element], counts: dict[str, int]) -> list[str]:
+def _junit_integrity_issues(root: ET.Element, cases: list[ET.Element]) -> list[str]:
     issues: list[str] = []
-    actual_by_attribute = {
-        "tests": len(cases),
-        "failures": counts["failures"],
-        "errors": counts["errors"],
-        "skipped": counts["skipped"],
-    }
-
     if local_name(root.tag) not in {"testsuite", "testsuites"}:
         return ["JUnit XML has an unexpected root element."]
 
@@ -212,6 +205,7 @@ def analyze_junit(
         "failure_identifiers": [],
         "error_identifiers": [],
         "skip_identifiers": [],
+        "first_failing_identifier": None,
         "expected_class_count": len(EXPECTED_CLASSES),
         "expected_file_count": len(EXPECTED_FILES),
         "configured_file_count": configured_file_count,
@@ -256,78 +250,156 @@ def analyze_junit(
             "failure_identifiers": _event_identifiers(cases, "failure"),
             "error_identifiers": _event_identifiers(cases, "error"),
             "skip_identifiers": _event_identifiers(cases, "skipped"),
+            "first_failing_identifier": _first_failure_in_document_order(cases),
         }
     )
-    issues.extend(_junit_integrity_issues(root, cases, counts))
+    issues.extend(_junit_integrity_issues(root, cases))
     if not cases:
         issues.append("JUnit XML contains no testcase records.")
     result["issues"] = list(dict.fromkeys(issues))
     return _finish_gate(result)
 
 
+def _first_failure_in_document_order(cases: list[ET.Element]) -> dict[str, str] | None:
+    for case in cases:
+        if any(local_name(child.tag) in {"failure", "error"} for child in list(case)):
+            class_name = normalize_classname(case.attrib.get("classname"))
+            safe_class = class_name if class_name in EXPECTED_CLASS_SET else "unrecognized"
+            return {
+                "class": safe_class,
+                "method": _safe_method_name(case.attrib.get("name")),
+            }
+    return None
+
+
 def _finish_gate(result: dict[str, Any]) -> dict[str, Any]:
     reasons = list(result["issues"])
     if result["phpunit_exit_code"] is None:
-        reasons.append("The PHPUnit process exit code was not recorded.")
+        reasons.append("The PHPUnit process exit code is UNKNOWN.")
     elif result["phpunit_exit_code"] != 0:
         reasons.append("The PHPUnit process exited non-zero.")
 
     test_cases = result["test_cases"]
-    if test_cases is None or test_cases < MINIMUM_TEST_CASES:
+    if test_cases is None:
+        reasons.append(f"Actual test count is UNKNOWN; at least {MINIMUM_TEST_CASES} is required.")
+    elif test_cases < MINIMUM_TEST_CASES:
         reasons.append(f"At least {MINIMUM_TEST_CASES} executed test cases are required.")
 
     for key, label in (("failures", "failures"), ("errors", "errors"), ("skipped", "skips")):
         value = result[key]
-        if value is None or value != 0:
+        if value is None:
+            reasons.append(f"JUnit {label} count is UNKNOWN; zero is required.")
+        elif value != 0:
             reasons.append(f"JUnit must report zero {label}.")
 
-    if result["missing_classes"] is None or result["missing_classes"]:
-        reasons.append("One or more expected selected test classes are missing or unverifiable.")
+    if result["missing_classes"] is None:
+        reasons.append("Expected selected test classes are UNKNOWN because JUnit could not be verified.")
+    elif result["missing_classes"]:
+        reasons.append("One or more expected selected test classes are missing from JUnit.")
 
     result["issues"] = list(dict.fromkeys(reasons))
     result["gate_pass"] = not result["issues"] and result["junit_status"] == "valid"
+    result["failure_categories"] = _failure_categories(result)
     return result
 
 
+def _failure_categories(result: dict[str, Any]) -> list[str]:
+    """Return fixed allowlisted categories; never classify from raw failure text."""
+    categories: list[str] = []
+    issues = result["issues"]
+    if any(
+        "selection configuration" in issue
+        or "PHPUnit configuration" in issue
+        or "approved 18-file" in issue
+        or "expected selected test files" in issue
+        for issue in issues
+    ):
+        categories.append("selection_config_invalid")
+    if result["junit_status"] == "missing":
+        categories.append("junit_missing")
+    elif result["junit_status"] == "malformed":
+        categories.append("junit_malformed")
+    if any("aggregate counts" in issue or "non-numeric aggregate" in issue for issue in issues):
+        categories.append("junit_inconsistent")
+    if any("unexpected root element" in issue for issue in issues):
+        categories.append("junit_unexpected_format")
+    if result["test_cases"] == 0:
+        categories.append("junit_empty")
+    if (result["failures"] or 0) > 0:
+        categories.append("assertion_failure")
+    if (result["errors"] or 0) > 0:
+        categories.append("test_error")
+    if (result["skipped"] or 0) > 0:
+        categories.append("skipped_tests")
+    if result["test_cases"] is None:
+        categories.append("test_count_unknown")
+    elif result["test_cases"] < MINIMUM_TEST_CASES:
+        categories.append("below_minimum_case_count")
+    if result["missing_classes"] is None:
+        categories.append("class_inventory_unknown")
+    elif result["missing_classes"]:
+        categories.append("missing_expected_classes")
+    if result["phpunit_exit_code"] is None:
+        categories.append("phpunit_exit_unknown")
+    elif result["phpunit_exit_code"] != 0:
+        categories.append("phpunit_nonzero_exit")
+    if not result["gate_pass"] and not categories:
+        categories.append("unknown")
+    return list(dict.fromkeys(categories))
+
+
 def _display(value: Any) -> str:
-    return "unavailable" if value is None else str(value)
+    return "UNKNOWN" if value is None else str(value)
+
+
+def _first_failing_identifier(result: dict[str, Any]) -> str:
+    first = result.get("first_failing_identifier")
+    if isinstance(first, dict):
+        return f"{first['class']}.{first['method']}"
+    return "UNKNOWN"
+
+
+def _expected_class_list(value: list[str] | None) -> str:
+    if value is None:
+        return "UNKNOWN"
+    return ", ".join(value) if value else "none"
 
 
 def render_markdown(result: dict[str, Any]) -> str:
     status = "PASS" if result["gate_pass"] else "FAIL"
+    executed_classes = result["executed_expected_classes"]
     lines = [
         "## MariaDB 10.11 focused PHPUnit evidence (sanitized)",
         "",
         f"- Completeness gate: **{status}**",
+        f"- Failure category: `{'+'.join(result.get('failure_categories', [])) or 'none'}`",
         f"- PHPUnit process exit code: `{_display(result['phpunit_exit_code'])}`",
         f"- JUnit XML: `{result['junit_status']}`",
         f"- Test cases: `{_display(result['test_cases'])}` (minimum {MINIMUM_TEST_CASES})",
         f"- Assertions: `{_display(result['assertions'])}`",
         f"- Failures / errors / skips: `{_display(result['failures'])} / {_display(result['errors'])} / {_display(result['skipped'])}`",
         f"- Executed classes: " + (
-            "unavailable (JUnit XML could not be parsed)"
+            "UNKNOWN (JUnit XML could not be parsed)"
             if result["executed_class_count"] is None
-            else f"`{result['executed_class_count']}` total; `{len(result['executed_expected_classes'])}/{result['expected_class_count']}` expected"
+            else f"`{result['executed_class_count']}` total; `{len(executed_classes)}/{result['expected_class_count']}` expected"
         ),
+        "- Executed expected class names: " + _expected_class_list(executed_classes),
         f"- Configured explicit files: `{_display(result['configured_file_count'])}/{result['expected_file_count']}` expected",
-        "- Missing expected classes: " + (
-            "unavailable (JUnit XML could not be parsed)"
-            if result["missing_classes"] is None
-            else (", ".join(f"`{name}`" for name in result["missing_classes"]) if result["missing_classes"] else "none")
-        ),
+        "- Missing expected class names: " + _expected_class_list(result["missing_classes"]),
+        f"- First failing test identifier: `{_first_failing_identifier(result)}`",
     ]
     for label, key in (("Failure", "failure_identifiers"), ("Error", "error_identifiers"), ("Skip", "skip_identifiers")):
         identifiers = result[key]
         if identifiers:
             shown = identifiers[:MAX_DIAGNOSTIC_IDENTIFIERS]
-            values = ", ".join(f"`{item['class']}::{item['method']}`" for item in shown)
+            values = ", ".join(f"`{item['class']}.{item['method']}`" for item in shown)
             omitted = len(identifiers) - len(shown)
             suffix = f" (+{omitted} omitted)" if omitted else ""
             lines.append(f"- {label} test identifiers (method names only): {values}{suffix}")
     if result["unverified_classes"]:
         lines.append(
             "- Expected classes not verifiable: "
-            + ", ".join(f"`{name}`" for name in result["unverified_classes"])
+            + ", ".join(result["unverified_classes"])
         )
     if result["issues"]:
         lines.extend(["", "Gate details:"])
@@ -335,17 +407,70 @@ def render_markdown(result: dict[str, Any]) -> str:
     lines.extend(
         [
             "",
-            "Only aggregate JUnit counts and statically expected class names are shown. Test output, failure messages, SQL, credentials, fixture values, and raw logs are intentionally omitted.",
+            "Only aggregate JUnit counts, allowlisted class/method identifiers, and fixed failure categories are shown. Test output, failure messages, SQL, credentials, fixture values, and raw logs are intentionally omitted.",
             "",
         ]
     )
     return "\n".join(lines)
 
 
+def _escape_workflow_message(value: str) -> str:
+    """Escape workflow-command data syntax; caller supplies only allowlisted data."""
+    return (
+        value.replace("%", "%25")
+        .replace("\r", "%0D")
+        .replace("\n", "%0A")
+        .replace(":", "%3A")
+        .replace(",", "%2C")
+    )
+
+
+def build_annotation(result: dict[str, Any], output_error: bool = False) -> str:
+    """Build exactly one bounded, sanitized GitHub workflow-command annotation."""
+    level = "notice" if result["gate_pass"] and not output_error else "error"
+    categories = list(result.get("failure_categories", []))
+    if output_error:
+        categories.append("evidence_output_failure")
+    category = "+".join(dict.fromkeys(categories)) or "none"
+    executed_classes = result["executed_expected_classes"]
+    if executed_classes is None:
+        executed = "UNKNOWN"
+    else:
+        executed = "|".join(executed_classes) if executed_classes else "none"
+    missing = result["missing_classes"]
+    if missing is None:
+        missing_text = "UNKNOWN"
+    else:
+        missing_text = "|".join(missing) if missing else "none"
+
+    message = (
+        f"category={category}; exit={_display(result['phpunit_exit_code'])}; "
+        f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
+        f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
+        f"skips={_display(result['skipped'])}; "
+        f"classes={_display(result['executed_class_count'])}/{result['expected_class_count']}; "
+        f"executed={executed}; missing={missing_text}; "
+        f"first={_first_failing_identifier(result)}"
+    )
+    message = _escape_workflow_message(message)
+    if len(message) > 1800:
+        # Keep check annotations bounded; the complete sanitized class inventory is in the step summary.
+        message = _escape_workflow_message(
+            f"category={category}; exit={_display(result['phpunit_exit_code'])}; "
+            f"tests={_display(result['test_cases'])}; assertions={_display(result['assertions'])}; "
+            f"failures={_display(result['failures'])}; errors={_display(result['errors'])}; "
+            f"skips={_display(result['skipped'])}; missing_count={len(missing or []) if missing is not None else 'UNKNOWN'}; "
+            f"first={_first_failing_identifier(result)}"
+        )
+    title = "MariaDB 10.11 sanitized PHPUnit diagnostic"
+    return f"::{level} title={title}::{message}"
+
+
 def _read_exit_code(path: Path) -> int | None:
     try:
         text = path.read_text(encoding="utf-8").strip()
-        return int(text)
+        value = int(text)
+        return value if 0 <= value <= 255 else None
     except (OSError, ValueError):
         return None
 
@@ -357,21 +482,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--phpunit-exit-file", type=Path, required=True)
     parser.add_argument("--summary-file", type=Path)
     parser.add_argument("--json-output", type=Path)
+    parser.add_argument("--check-annotation", action="store_true")
     args = parser.parse_args(argv)
 
-    result = analyze_junit(
-        args.junit,
-        config_path=args.selection_config,
-        phpunit_exit_code=_read_exit_code(args.phpunit_exit_file),
-    )
+    exit_code = _read_exit_code(args.phpunit_exit_file)
+    try:
+        result = analyze_junit(
+            args.junit,
+            config_path=args.selection_config,
+            phpunit_exit_code=exit_code,
+        )
+    except Exception:
+        # Never echo an unfiltered parser/exception message into logs or annotations.
+        result = {
+            "junit_status": "unavailable",
+            "test_cases": None,
+            "assertions": None,
+            "failures": None,
+            "errors": None,
+            "skipped": None,
+            "executed_class_count": None,
+            "executed_expected_classes": None,
+            "missing_classes": None,
+            "unverified_classes": list(EXPECTED_CLASSES),
+            "unexpected_class_count": None,
+            "failure_identifiers": [],
+            "error_identifiers": [],
+            "skip_identifiers": [],
+            "first_failing_identifier": None,
+            "expected_class_count": len(EXPECTED_CLASSES),
+            "expected_file_count": len(EXPECTED_FILES),
+            "configured_file_count": None,
+            "phpunit_exit_code": exit_code,
+            "issues": ["Sanitized reporter failed internally; diagnostic details are withheld."],
+            "gate_pass": False,
+            "failure_categories": ["reporter_internal_error"],
+        }
+
     markdown = render_markdown(result)
+    output_error = False
     if args.summary_file:
         try:
             with args.summary_file.open("a", encoding="utf-8") as summary:
                 summary.write(markdown)
         except OSError:
             print("Unable to write sanitized MariaDB PHPUnit summary.", file=sys.stderr)
-            return 1
+            output_error = True
     else:
         print(markdown)
 
@@ -384,9 +540,12 @@ def main(argv: list[str] | None = None) -> int:
             )
         except OSError:
             print("Unable to write sanitized MariaDB PHPUnit result JSON.", file=sys.stderr)
-            return 1
+            output_error = True
 
-    return 0 if result["gate_pass"] else 1
+    if args.check_annotation:
+        print(build_annotation(result, output_error=output_error))
+
+    return 0 if result["gate_pass"] and not output_error else 1
 
 
 if __name__ == "__main__":
