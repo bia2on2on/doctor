@@ -55,6 +55,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create',
             'username' => 'doc_flow_1',
             'display_name' => 'دکتر جریان',
@@ -75,6 +76,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $acc = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create',
             'username' => 'doc_flow_link',
             'display_name' => 'دکتر پیوند',
@@ -101,6 +103,7 @@ final class DoctorWorkflowTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $acc = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create',
             'username' => 'doc_flow_guard',
             'display_name' => 'دکتر گارد',

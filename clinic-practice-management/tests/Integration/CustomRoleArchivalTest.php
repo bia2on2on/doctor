@@ -398,22 +398,47 @@ final class CustomRoleArchivalTest extends WP_UnitTestCase
     {
         $this->createRole('archive_ui', ['cpms_search']);
         wp_set_current_user($this->managerA);
-        ob_start();
-        CustomRoleDefinitionsPage::render();
-        $html = (string) ob_get_clean();
-        self::assertStringContainsString('cpms_custom_role_archive', $html);
-        self::assertStringContainsString(wp_create_nonce('cpms_custom_role_archive'), $html);
-        self::assertStringContainsString('confirm_archive', $html);
-        self::assertStringContainsString('برگشت', $html, 'terminal consequences must be stated');
-        self::assertStringContainsString('version', $html);
-        $this->archive('archive_ui', 1);
-        ob_start();
-        CustomRoleDefinitionsPage::render();
-        $archived = (string) ob_get_clean();
-        self::assertStringContainsString('بایگانی', $archived);
-        foreach (['cpms_custom_role_archive', 'cpms_custom_role_reactivate', 'cpms_custom_role_deactivate', 'cpms_custom_role_rename', 'cpms_custom_role_caps'] as $action) {
-            self::assertStringNotContainsString('value="' . $action . '"', $archived, 'archived definitions must be read-only');
+        $oldGet = $_GET;
+        $_GET['cpms_clinic_id'] = (string) $this->clinicA;
+        try {
+            ob_start();
+            CustomRoleDefinitionsPage::render();
+            $html = (string) ob_get_clean();
+            self::assertStringContainsString('cpms_custom_role_archive', $html);
+            self::assertStringContainsString(wp_create_nonce('cpms_custom_role_archive'), $html);
+            self::assertStringContainsString('confirm_archive', $html);
+            self::assertStringContainsString('برگشت', $html, 'terminal consequences must be stated');
+            self::assertStringContainsString('version', $html);
+            $this->archive('archive_ui', 1);
+            ob_start();
+            CustomRoleDefinitionsPage::render();
+            $archived = (string) ob_get_clean();
+            self::assertStringContainsString('بایگانی', $archived);
+            foreach (['cpms_custom_role_archive', 'cpms_custom_role_reactivate', 'cpms_custom_role_deactivate', 'cpms_custom_role_rename', 'cpms_custom_role_caps'] as $action) {
+                self::assertStringNotContainsString('value="' . $action . '"', $archived, 'archived definitions must be read-only');
+            }
+        } finally {
+            $_GET = $oldGet;
         }
+    }
+
+    public function testCustomRoleDefinitionPageDoesNotSelectTheOnlyManageableClinicImplicitly(): void
+    {
+        $this->createRole('archive_no_scope', ['cpms_search']);
+        wp_set_current_user($this->managerA);
+        $oldGet = $_GET;
+        unset($_GET['cpms_clinic_id']);
+        try {
+            ob_start();
+            CustomRoleDefinitionsPage::render();
+            $html = (string) ob_get_clean();
+        } finally {
+            $_GET = $oldGet;
+        }
+
+        self::assertStringContainsString('— انتخاب Clinic —', $html);
+        self::assertStringContainsString('Clinic معتبری انتخاب نشده است.', $html);
+        self::assertStringNotContainsString('value="cpms_custom_role_deactivate"', $html);
     }
 
     public function testInvalidArchiveNonceStopsBeforeMutation(): void

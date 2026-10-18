@@ -14,8 +14,8 @@ use RuntimeException;
  * - create() همیشه `is_primary = 0` و `is_active = 1` می‌نویسد؛ payload هرگز
  *   این ستون‌ها یا مالک (clinic_id) را انتخاب نمی‌کند — clinic_id فقط از
  *   trusted Clinic سرویس می‌آید.
- * - updateProfile() فقط name/timezone/updated_at را تغییر می‌دهد؛
- *   clinic_id/slug/is_primary/is_active/created_at هرگز mutate نمی‌شوند.
+ * - updateProfile() فقط profile fields (name/address/phone/timezone) و updated_at
+ *   را تغییر می‌دهد؛ clinic_id/slug/is_primary/is_active/created_at immutable می‌مانند.
  * - Fail-closed روی خطای SQL (last_error) — خطای query هرگز موفقیت بی‌صدا نمی‌شود.
  * - timezone همان شناسهٔ IANA اعتبارسنجی‌شدهٔ سرویس ذخیره می‌شود؛ این ریپو
  *   validate نمی‌کند (تک‌مسئولیتی) و هیچ fallback زمانی ندارد.
@@ -178,7 +178,7 @@ final class LocationRepository
      * @return int id ردیف ساخته‌شده
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function create( int $clinic_id, string $name, string $slug, string $timezone, string $now_sql ): int
+    public function create( int $clinic_id, string $name, string $slug, ?string $address, ?string $phone, string $timezone, string $now_sql ): int
     {
         if ( $clinic_id <= 0 ) {
             throw new RuntimeException( 'invalid trusted clinic id for location create' );
@@ -190,6 +190,8 @@ final class LocationRepository
                 'clinic_id'  => $clinic_id,
                 'name'       => $name,
                 'slug'       => $slug,
+                'address'    => $address,
+                'phone'      => $phone,
                 'timezone'   => $timezone,
                 'is_primary' => 0,
                 'is_active'  => 1,
@@ -213,14 +215,14 @@ final class LocationRepository
     }
 
     /**
-     * به‌روزرسانی فقط name/timezone/updated_at.
+     * به‌روزرسانی profile قابل‌ویرایش؛ tenant، slug، وضعیت و زمان ایجاد immutable می‌مانند.
      *
      * @return int affected rows (0 = no-op یا not-found — تمایز با check وجودِ قبلی سرویس)
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function updateProfile( int $location_id, string $name, string $timezone, string $now_sql ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
+    public function updateProfile( int $location_id, int $clinic_id, string $name, ?string $address, ?string $phone, string $timezone, string $now_sql ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
-        if ( $location_id <= 0 ) {
+        if ( $location_id <= 0 || $clinic_id <= 0 ) {
             throw new RuntimeException( 'invalid location id' );
         }
 
@@ -228,10 +230,12 @@ final class LocationRepository
             'cpms_locations',
             [
                 'name' => $name,
+                'address' => $address,
+                'phone' => $phone,
                 'timezone' => $timezone,
                 'updated_at' => $now_sql,
             ],
-            ['id' => $location_id]
+            ['id' => $location_id, 'clinic_id' => $clinic_id]
         );
 
         $this->assertNoSqlError();

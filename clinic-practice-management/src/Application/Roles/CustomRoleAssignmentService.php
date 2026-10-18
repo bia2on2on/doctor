@@ -321,9 +321,14 @@ final class CustomRoleAssignmentService {
         if ( $actor_wp_user_id <= 0 ) {
             throw new ScopeRequiredException( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'reason' => 'unauthenticated' ], 403 );
         }
+        if ( $requested_clinic_id === null || $requested_clinic_id <= 0 ) {
+            throw new ScopeRequiredException( 'CLINIC_SCOPE_REQUIRED', 'An explicit Clinic selection is required.', [ 'reason' => 'explicit_clinic_required' ], 400 );
+        }
 
         // The selector is validated against durable persistence; it is never
         // trusted by itself, and a forged value cannot conjure a membership.
+        // We deliberately do not infer a sole-membership Clinic for staff-role
+        // management: the operator must select the tenant context explicitly.
         $scope = $this->scope->establish( $actor_wp_user_id, $requested_clinic_id, null, $for_update );
 
         $this->authorization->authorize( $actor_wp_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.

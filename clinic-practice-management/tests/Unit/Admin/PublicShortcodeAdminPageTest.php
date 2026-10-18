@@ -36,4 +36,10 @@ final class PublicShortcodeAdminPageTest extends TestCase {
 		self::assertStringContainsString( 'data-cpms-copy', $this->source );
 		self::assertStringContainsString( 'document.execCommand(\'copy\')', $this->source );
 	}
+
+	public function testClinicMustBeSelectedExplicitlyEvenForSingleMembership(): void {
+		self::assertStringContainsString( '<option value="">انتخاب Clinic</option>', $this->source );
+		self::assertStringContainsString( 'Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.', $this->source );
+		self::assertStringNotContainsString( '1 === count( $clinic_choices )', $this->source );
+	}
 }

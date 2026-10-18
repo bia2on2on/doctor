@@ -161,6 +161,7 @@ final class RoleManagementGTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->adminId);
         $acc = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create', 'username' => 'accountant_g', 'display_name' => 'حسابدار تست',
             'email' => 'accountant_g@test.local', 'role' => RolesAndCapabilities::ROLE_ACCOUNTANT, 'password' => 'StrongPass123',
         ], $this->adminId);
@@ -168,6 +169,7 @@ final class RoleManagementGTest extends WP_UnitTestCase
         $this->assertContains(RolesAndCapabilities::ROLE_ACCOUNTANT, (array) get_user_by('login', 'accountant_g')->roles);
 
         $mgr = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create', 'username' => 'manager_g', 'display_name' => 'مدیر تست',
             'email' => 'manager_g@test.local', 'role' => RolesAndCapabilities::ROLE_MANAGER, 'password' => 'StrongPass123',
         ], $this->adminId);
@@ -179,6 +181,7 @@ final class RoleManagementGTest extends WP_UnitTestCase
     {
         wp_set_current_user($this->adminId);
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create', 'username' => 'evil_g', 'display_name' => 'کاربر غیرمجاز',
             'email' => 'evil_g@test.local', 'role' => 'administrator', 'password' => 'StrongPass123',
         ], $this->adminId);
@@ -192,13 +195,14 @@ final class RoleManagementGTest extends WP_UnitTestCase
         // مدیر کلینیک کاربر دیگری می‌سازد (Staff)
         wp_set_current_user($this->managerId);
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => 1,
             'mode' => 'create', 'username' => 'staff_by_mgr', 'display_name' => 'کارمند مدیر',
             'email' => 'staff_by_mgr@test.local', 'role' => RolesAndCapabilities::ROLE_SECRETARY, 'password' => 'StrongPass123',
         ], $this->managerId);
         $this->assertSame('', $r['error'], 'مدیر باید بتواند پرسنل بسازد');
 
         // غیرفعال‌سازی حساب خودش ممنوع (جلوگیری از قفل‌شدن)
-        $selfToggle = StaffManagementPage::toggleUser($this->managerId, 'deactivate', $this->managerId);
+        $selfToggle = StaffManagementPage::toggleUser($this->managerId, 'deactivate', $this->managerId, 1);
         $this->assertStringContainsString('خودتان', $selfToggle['error']);
         $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) get_userdata($this->managerId)->roles);
     }
@@ -206,12 +210,12 @@ final class RoleManagementGTest extends WP_UnitTestCase
     public function testDeactivateAndReactivateManagerKeepsHistory(): void
     {
         wp_set_current_user($this->adminId);
-        $d = StaffManagementPage::toggleUser($this->managerId, 'deactivate', $this->adminId);
+        $d = StaffManagementPage::toggleUser($this->managerId, 'deactivate', $this->adminId, 1);
         $this->assertSame('', $d['error']);
         $this->assertContains('subscriber', (array) get_userdata($this->managerId)->roles);
         $this->assertSame(RolesAndCapabilities::ROLE_MANAGER, (string) get_user_meta($this->managerId, 'cpms_previous_role', true));
 
-        $a = StaffManagementPage::toggleUser($this->managerId, 'activate', $this->adminId);
+        $a = StaffManagementPage::toggleUser($this->managerId, 'activate', $this->adminId, 1);
         $this->assertSame('', $a['error']);
         $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) get_userdata($this->managerId)->roles);
     }

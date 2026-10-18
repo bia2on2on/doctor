@@ -39,6 +39,11 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
     private int $managerB = 0;
     private int $noMembership = 0;
 
+    /** @var callable|null */
+    private $auditFault = null;
+
+    private bool $previousSuppression = false;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -109,6 +114,7 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        $this->restoreAuditInserts();
         App::resetScope();
         wp_set_current_user(0);
         parent::tearDown();
@@ -131,6 +137,8 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
             'mode' => 'create',
             'clinic_id' => $this->clinicA,
             'name' => '  شعبه دوم شمال  ',
+            'address' => 'خیابان نمونه، پلاک ۱۲',
+            'phone' => '021-12345678',
             'slug' => $slug,
             'timezone' => 'Europe/Berlin',
         ], $this->managerA);
@@ -144,6 +152,8 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertNotNull($row, 'created location must be readable');
         self::assertSame($this->clinicA, (int) $row['clinic_id'], 'durable ownership is exactly the trusted clinic');
         self::assertSame('شعبه دوم شمال', (string) $row['name'], 'name is stored trimmed');
+        self::assertSame('خیابان نمونه، پلاک ۱۲', (string) $row['address'], 'optional address is stored');
+        self::assertSame('021-12345678', (string) $row['phone'], 'optional phone is stored');
         self::assertSame($slug, (string) $row['slug'], 'slug stored as requested');
         self::assertSame(0, (int) $row['is_primary'], 'CREATE invariant: is_primary = 0');
         self::assertSame(1, (int) $row['is_active'], 'CREATE invariant: is_active = 1');
@@ -172,9 +182,11 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame('location', (string) $audit['resource_type'], 'audit resource_type is location');
         self::assertSame($this->managerA, (int) $audit['actor_wp_user_id'], 'audit actor is the operating manager');
         $after = is_string($audit['after_json']) ? (array) json_decode($audit['after_json'], true) : [];
-        self::assertSame('شعبه دوم شمال', (string) ($after['location.name'] ?? ''), 'audit after carries the name');
-        self::assertSame('Europe/Berlin', (string) ($after['location.timezone'] ?? ''), 'audit after carries the timezone');
-        self::assertSame(0, (int) ($after['location.is_primary'] ?? 1), 'audit after records non-primary');
+        self::assertSame('شعبه دوم شمال', (string) ($after['name'] ?? ''), 'audit after carries the name');
+        self::assertSame('Europe/Berlin', (string) ($after['timezone'] ?? ''), 'audit after carries the timezone');
+        self::assertSame('خیابان نمونه، پلاک ۱۲', (string) ($after['address'] ?? ''), 'audit carries the Location address');
+        self::assertSame('***5678', (string) ($after['phone'] ?? ''), 'audit masks the Location phone');
+        self::assertSame(0, (int) ($after['is_primary'] ?? 1), 'audit after records non-primary');
     }
 
     // ================= LIFECYCLE =================
@@ -187,6 +199,17 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
             'شعبه قابل مدیریت',
             'Asia/Tehran'
         );
+        $historyIds = $this->insertOperationalRows($this->clinicA, $locationId);
+        $historyBefore = [
+            'schedule' => $this->tableRow('cpms_schedule', $historyIds['schedule']),
+            'slot' => $this->tableRow('cpms_schedule_slots', $historyIds['slot']),
+            'appointment' => $this->tableRow('cpms_appointments', $historyIds['appointment']),
+            'visit' => $this->tableRow('cpms_visits', $historyIds['visit']),
+            'clinical_note' => $this->tableRow('cpms_clinical_notes', $historyIds['clinical_note']),
+            'clinical_note_version' => $this->tableRow('cpms_clinical_note_versions', $historyIds['clinical_note_version']),
+            'invoice' => $this->tableRow('cpms_invoices', $historyIds['invoice']),
+            'payment' => $this->tableRow('cpms_payments', $historyIds['payment']),
+        ];
         wp_set_current_user($this->managerA);
 
         $disabled = App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, false);
@@ -196,6 +219,18 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame(0, (int) $disabledRow['is_active'], 'Location is inactive');
         self::assertSame($this->clinicA, (int) $disabledRow['clinic_id'], 'ownership is preserved');
         self::assertSame(0, (int) $disabledRow['is_primary'], 'non-primary identity is preserved');
+        foreach ([
+            'schedule' => ['cpms_schedule', $historyIds['schedule']],
+            'slot' => ['cpms_schedule_slots', $historyIds['slot']],
+            'appointment' => ['cpms_appointments', $historyIds['appointment']],
+            'visit' => ['cpms_visits', $historyIds['visit']],
+            'clinical_note' => ['cpms_clinical_notes', $historyIds['clinical_note']],
+            'clinical_note_version' => ['cpms_clinical_note_versions', $historyIds['clinical_note_version']],
+            'invoice' => ['cpms_invoices', $historyIds['invoice']],
+            'payment' => ['cpms_payments', $historyIds['payment']],
+        ] as $kind => [$table, $id]) {
+            $this->assertEqualsHistorical($historyBefore[$kind], $this->tableRow($table, $id), $kind . ' history survives Location deactivation');
+        }
         self::assertSame(1, $this->auditCount('LOCATION_DEACTIVATED'), 'deactivation is audited');
         $duplicate = App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, false);
         self::assertTrue((bool) $duplicate['noop'], 'duplicate deactivation is idempotent');
@@ -260,6 +295,8 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
             'clinic_id' => $this->clinicA,
             'location_id' => $second,
             'name' => 'شعبه دوم — نام جدید',
+            'address' => 'بلوار جدید، پلاک ۳',
+            'phone' => '021-87654321',
             'timezone' => 'Asia/Kabul',
         ], $this->managerA);
 
@@ -270,6 +307,8 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         $after = $this->locationRow($second);
         self::assertSame('شعبه دوم — نام جدید', (string) $after['name'], 'name updated');
         self::assertSame('Asia/Kabul', (string) $after['timezone'], 'timezone updated to intended IANA identifier');
+        self::assertSame('بلوار جدید، پلاک ۳', (string) $after['address'], 'address is editable');
+        self::assertSame('021-87654321', (string) $after['phone'], 'phone is editable');
         self::assertSame((string) $before['slug'], (string) $after['slug'], 'UPDATE cannot alter slug');
         self::assertSame((string) $before['clinic_id'], (string) $after['clinic_id'], 'UPDATE cannot alter clinic_id');
         self::assertSame((string) $before['is_primary'], (string) $after['is_primary'], 'UPDATE cannot alter is_primary');
@@ -287,10 +326,12 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame($this->clinicA, (int) $audit['clinic_id'], 'audit trusted clinic id explicit');
         $beforeJson = is_string($audit['before_json']) ? (array) json_decode($audit['before_json'], true) : [];
         $afterJson = is_string($audit['after_json']) ? (array) json_decode($audit['after_json'], true) : [];
-        self::assertSame('شعبه دوم', (string) ($beforeJson['location.name'] ?? ''), 'audit before carries old name');
-        self::assertSame('Asia/Tehran', (string) ($beforeJson['location.timezone'] ?? ''), 'audit before carries old timezone');
-        self::assertSame('شعبه دوم — نام جدید', (string) ($afterJson['location.name'] ?? ''), 'audit after carries new name');
-        self::assertSame('Asia/Kabul', (string) ($afterJson['location.timezone'] ?? ''), 'audit after carries new timezone');
+        self::assertSame('شعبه دوم', (string) ($beforeJson['name'] ?? ''), 'audit before carries old name');
+        self::assertSame('Asia/Tehran', (string) ($beforeJson['timezone'] ?? ''), 'audit before carries old timezone');
+        self::assertSame('شعبه دوم — نام جدید', (string) ($afterJson['name'] ?? ''), 'audit after carries new name');
+        self::assertSame('Asia/Kabul', (string) ($afterJson['timezone'] ?? ''), 'audit after carries new timezone');
+        self::assertSame('***0000', (string) ($beforeJson['phone'] ?? ''), 'audit masks the old phone');
+        self::assertSame('***4321', (string) ($afterJson['phone'] ?? ''), 'audit masks the new phone');
     }
 
     public function testUpdateTimezoneDoesNotRewriteHistoricalOperationalRows(): void
@@ -302,6 +343,7 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         $slotBefore = $this->tableRow('cpms_schedule_slots', $ids['slot']);
         $apptBefore = $this->tableRow('cpms_appointments', $ids['appointment']);
         $visitBefore = $this->tableRow('cpms_visits', $ids['visit']);
+        $profileBefore = $this->locationRow($second);
 
         wp_set_current_user($this->managerA);
         $result = LocationAdminPage::upsertLocation([
@@ -328,7 +370,10 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame((string) $visitBefore['check_in_at'], (string) $visitAfter['check_in_at'], 'visit check-in wall-clock untouched');
         self::assertSame((string) $visitBefore['location_id'], (string) $visitAfter['location_id'], 'visit location_id untouched');
 
-        self::assertSame('Europe/Berlin', (string) $this->locationRow($second)['timezone'], 'location timezone updated');
+        $profileAfter = $this->locationRow( $second );
+        self::assertSame( $profileBefore['address'], $profileAfter['address'], 'an omitted address field preserves the stored value' );
+        self::assertSame( $profileBefore['phone'], $profileAfter['phone'], 'an omitted phone field preserves the stored value' );
+        self::assertSame('Europe/Berlin', (string) $profileAfter['timezone'], 'location timezone updated');
         self::assertSame('Asia/Tehran', (string) $this->locationRow($this->locA)['timezone'], 'other location timezone unchanged');
         self::assertSame('Asia/Tehran', (string) $this->clinicRow($this->clinicA)['timezone'], 'clinic timezone unchanged');
     }
@@ -380,6 +425,14 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         ], $this->secretaryA);
         self::assertNotSame('', (string) $result['error'], 'secretary without CONFIG must be denied');
         self::assertSame(0, (int) $result['location_id']);
+        $invalidUnderUnauthorized = LocationAdminPage::upsertLocation([
+            'mode' => 'create',
+            'clinic_id' => $this->clinicA,
+            'name' => '',
+            'slug' => 'denied-invalid-' . bin2hex(random_bytes(2)),
+            'timezone' => 'Not/AZone',
+        ], $this->secretaryA);
+        self::assertSame((string) $result['error'], (string) $invalidUnderUnauthorized['error'], 'authorization denial takes precedence over caller-controlled validation');
 
         // actor with no membership at all
         wp_set_current_user($this->noMembership);
@@ -530,24 +583,48 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         ], $this->managerA);
         self::assertNotSame('', (string) $zero['error'], 'clinic_id 0 must not become an implicit clinic scope');
 
-        // absent clinic_id resolves ONLY through the durable unique active
-        // membership of the actor (TrustedClinicEstablisher) — deterministic,
-        // never a guess, never a foreign clinic.
-        $implicit = LocationAdminPage::upsertLocation([
+        // A unique active membership is not a default for a management form:
+        // without an explicit selector the page must not infer a target Clinic.
+        $countBeforeMissing = $this->countLocations($this->clinicA);
+        $missing = LocationAdminPage::upsertLocation([
             'mode' => 'create',
             'clinic_id' => null,
-            'name' => 'شعبه ضمنی',
-            'slug' => 'implicit-' . bin2hex(random_bytes(2)),
+            'name' => 'شعبه بدون انتخاب Clinic',
+            'slug' => 'missing-clinic-' . bin2hex(random_bytes(2)),
             'timezone' => 'Asia/Tehran',
         ], $this->managerA);
-        self::assertSame('', (string) $implicit['error'], 'unique-membership scope resolution must work for the single-clinic actor');
-        $implicitRow = $this->locationRow((int) $implicit['location_id']);
-        self::assertNotNull($implicitRow);
-        self::assertSame(
-            $this->clinicA,
-            (int) $implicitRow['clinic_id'],
-            'implicit scope lands exactly in the durable unique active membership clinic'
-        );
+        self::assertNotSame('', (string) $missing['error'], 'missing Clinic selector must be denied even for a sole active membership');
+        self::assertSame($countBeforeMissing, $this->countLocations($this->clinicA), 'missing selector cannot create a Location');
+    }
+
+    public function testLocationAdminRequiresExplicitClinicAndShowsClinicVsLocationActions(): void
+    {
+        wp_set_current_user($this->managerA);
+        $previousGet = $_GET;
+        try {
+            unset($_GET['clinic_id'], $_GET['edit']);
+            $_GET['page'] = LocationAdminPage::PAGE_SLUG;
+            ob_start();
+            LocationAdminPage::render();
+            $unselected = (string) ob_get_clean();
+
+            self::assertStringContainsString('Clinic را صریحاً از فهرست انتخاب کنید', $unselected, 'no default Clinic is inferred');
+            self::assertStringNotContainsString('شعبه اصلی A', $unselected, 'no Location data is rendered before explicit selection');
+            self::assertStringNotContainsString('افزودن شعبهٔ جدید', $unselected, 'no Location write form appears before selection');
+            self::assertStringContainsString('مدیریت Clinicها', $unselected, 'Clinic creation is clearly a separate Organization-scoped flow');
+
+            $_GET['clinic_id'] = (string) $this->clinicA;
+            ob_start();
+            LocationAdminPage::render();
+            $selected = (string) ob_get_clean();
+            self::assertStringContainsString('شعبه اصلی A', $selected, 'selected Clinic A Locations are rendered');
+            self::assertStringNotContainsString('شعبه اصلی B', $selected, 'Clinic B Locations are not rendered');
+            self::assertStringContainsString('page=cpms-staff', $selected, 'role assignment links to Clinic-scoped staff management');
+            self::assertStringContainsString('_wpnonce', $selected, 'Location write forms include WordPress nonce fields');
+            self::assertStringContainsString('این صفحه فقط برای افزودن و ویرایش یک', $selected, 'Clinic-versus-Location distinction is visible');
+        } finally {
+            $_GET = $previousGet;
+        }
     }
 
     public function testInvalidInputsCauseZeroPartialMutation(): void
@@ -732,6 +809,159 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame(0, (int) $this->locationRow((int) $created['location_id'])['is_primary'], 'created location stays non-primary');
     }
 
+    public function testLocationSaveRejectsInvalidNonceBeforeCreating(): void
+    {
+        wp_set_current_user( $this->managerA );
+        $slug        = 'p4loc-invalid-nonce-' . bin2hex( random_bytes( 3 ) );
+        $countBefore = $this->countLocations( $this->clinicA );
+        $oldPost     = $_POST;
+        $oldRequest  = $_REQUEST;
+        $_POST       = [
+            'mode'      => 'create',
+            'clinic_id' => (string) $this->clinicA,
+            'name'      => 'درخواست با nonce نامعتبر',
+            'slug'      => $slug,
+            'timezone'  => 'Europe/Berlin',
+            '_wpnonce'  => 'invalid-location-save-nonce',
+        ];
+        $_REQUEST = $_POST;
+        $dieFilter = static fn ( $handler ) => static function ( $message ): void {
+            throw new \RuntimeException( 'location save nonce denied' );
+        };
+        add_filter( 'wp_die_handler', $dieFilter );
+        try {
+            try {
+                LocationAdminPage::save();
+                self::fail( 'invalid Location save nonce must stop the handler' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertSame( 'location save nonce denied', $exception->getMessage() );
+            }
+        } finally {
+            remove_filter( 'wp_die_handler', $dieFilter );
+            $_POST    = $oldPost;
+            $_REQUEST = $oldRequest;
+        }
+
+        self::assertSame( $countBefore, $this->countLocations( $this->clinicA ), 'nonce failure cannot create a Location' );
+        self::assertSame( 0, $this->countLocationsWithSlug( $this->clinicA, $slug ) );
+    }
+
+    public function testLocationLifecycleRejectsInvalidNonceBeforeStatusChange(): void
+    {
+        $locationId = $this->insertSecondLocation( $this->clinicA, 'p4loc-invalid-lifecycle-nonce-' . bin2hex( random_bytes( 2 ) ), 'Nonce transition', 'Asia/Tehran' );
+        $before     = $this->locationRow( $locationId );
+        $auditBefore = $this->auditCount( 'LOCATION_DEACTIVATED' );
+        wp_set_current_user( $this->managerA );
+        $oldPost    = $_POST;
+        $oldRequest = $_REQUEST;
+        $_POST      = [
+            'clinic_id'   => (string) $this->clinicA,
+            'location_id' => (string) $locationId,
+            'active'      => '0',
+            '_wpnonce'    => 'invalid-location-lifecycle-nonce',
+        ];
+        $_REQUEST = $_POST;
+        $dieFilter = static fn ( $handler ) => static function ( $message ): void {
+            throw new \RuntimeException( 'location lifecycle nonce denied' );
+        };
+        add_filter( 'wp_die_handler', $dieFilter );
+        try {
+            try {
+                LocationAdminPage::save_lifecycle();
+                self::fail( 'invalid Location lifecycle nonce must stop the handler' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertSame( 'location lifecycle nonce denied', $exception->getMessage() );
+            }
+        } finally {
+            remove_filter( 'wp_die_handler', $dieFilter );
+            $_POST    = $oldPost;
+            $_REQUEST = $oldRequest;
+        }
+
+        $this->assertEqualsHistorical( $before, $this->locationRow( $locationId ), 'invalid nonce preserves Location active-state fields' );
+        self::assertSame( $auditBefore, $this->auditCount( 'LOCATION_DEACTIVATED' ), 'invalid nonce emits no lifecycle audit event' );
+    }
+
+    public function testFailedCreateAuditRollsBackLocationInsert(): void
+    {
+        wp_set_current_user($this->managerA);
+        $slug = 'p4loc-audit-create-' . bin2hex(random_bytes(3));
+        $countBefore = $this->countLocations($this->clinicA);
+        $auditBefore = $this->auditCount('LOCATION_CREATED');
+
+        $this->failAuditInserts();
+        try {
+            $result = LocationAdminPage::upsertLocation([
+                'mode' => 'create',
+                'clinic_id' => $this->clinicA,
+                'name' => 'ایجاد با شکست Audit',
+                'slug' => $slug,
+                'timezone' => 'Europe/Berlin',
+            ], $this->managerA);
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        self::assertNotSame('', (string) $result['error'], 'a failed hash-chained audit must fail the create request');
+        self::assertSame($countBefore, $this->countLocations($this->clinicA), 'Location insert rolls back with audit failure');
+        self::assertSame(0, $this->countLocationsWithSlug($this->clinicA, $slug), 'no partial Location row remains');
+        self::assertSame($auditBefore, $this->auditCount('LOCATION_CREATED'), 'no success audit was persisted');
+        self::assertTrue(App::audit()->verifyChain()['ok'], 'the audit chain remains valid after rollback');
+    }
+
+    public function testFailedUpdateAuditRollsBackProfileChange(): void
+    {
+        $locationId = $this->insertSecondLocation($this->clinicA, 'p4loc-audit-update-' . bin2hex(random_bytes(2)), 'پروفایل اولیه', 'Asia/Tehran');
+        $before = $this->locationRow($locationId);
+        $auditBefore = $this->auditCount('LOCATION_UPDATED');
+        wp_set_current_user($this->managerA);
+
+        $this->failAuditInserts();
+        try {
+            $result = LocationAdminPage::upsertLocation([
+                'mode' => 'update',
+                'clinic_id' => $this->clinicA,
+                'location_id' => $locationId,
+                'name' => 'تغییر نباید بماند',
+                'address' => 'آدرس موقت',
+                'phone' => '021-99998888',
+                'timezone' => 'Europe/Berlin',
+            ], $this->managerA);
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        self::assertNotSame('', (string) $result['error'], 'a failed audit must fail the update request');
+        $this->assertEqualsHistorical($before, $this->locationRow($locationId), 'profile update rolls back with audit failure');
+        self::assertSame($auditBefore, $this->auditCount('LOCATION_UPDATED'), 'no success audit was persisted');
+        self::assertTrue(App::audit()->verifyChain()['ok'], 'the audit chain remains valid after rollback');
+    }
+
+    public function testFailedLifecycleAuditRollsBackActiveFlag(): void
+    {
+        $locationId = $this->insertSecondLocation($this->clinicA, 'p4loc-audit-lifecycle-' . bin2hex(random_bytes(2)), 'وضعیت اولیه', 'Asia/Tehran');
+        $before = $this->locationRow($locationId);
+        $auditBefore = $this->auditCount('LOCATION_DEACTIVATED');
+        wp_set_current_user($this->managerA);
+
+        $this->failAuditInserts();
+        try {
+            $failed = false;
+            try {
+                App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, false);
+            } catch (\ClinicCore\Application\Location\LocationException) {
+                $failed = true;
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        self::assertTrue($failed, 'failed lifecycle audit must return a fail-closed error');
+        $this->assertEqualsHistorical($before, $this->locationRow($locationId), 'active-state update rolls back with audit failure');
+        self::assertSame($auditBefore, $this->auditCount('LOCATION_DEACTIVATED'), 'no success audit was persisted');
+        self::assertTrue(App::audit()->verifyChain()['ok'], 'the audit chain remains valid after rollback');
+    }
+
     // ================= Helpers =================
 
     /**
@@ -784,10 +1014,12 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, %d, 1, %s, %s)',
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, address, phone, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %d, 1, %s, %s)',
             $clinicId,
             $name,
             $slug,
+            'آدرس ' . $slug,
+            '02100000000',
             $tz,
             $isPrimary,
             $now,
@@ -818,7 +1050,7 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
      * Historical operational rows (schedule/slot/appointment/visit) bound to a
      * location — the rows a timezone update must never rewrite.
      *
-     * @return array{clinician:int, patient:int, schedule:int, slot:int, appointment:int, visit:int}
+     * @return array{clinician:int, patient:int, schedule:int, slot:int, appointment:int, visit:int, clinical_note:int, clinical_note_version:int, invoice:int, payment:int}
      */
     private function insertOperationalRows(int $clinicId, int $locationId): array
     {
@@ -901,6 +1133,58 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         $visitId = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $visitId, 'fixture: visit row');
 
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinical_notes (clinic_id, visit_id, patient_id, clinician_id, category, visibility, content_text, version, is_archived, created_by_wp_user_id, created_at, updated_at) VALUES (%d, %d, %d, %d, "clinical_note", "doctor_private", %s, 1, 0, %d, %s, %s)',
+            $clinicId,
+            $visitId,
+            $patientId,
+            $clinicianId,
+            'یادداشت تاریخی ' . $unique,
+            $this->managerA,
+            $now,
+            $now
+        ));
+        $clinicalNoteId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $clinicalNoteId, 'fixture: clinical record row');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinical_note_versions (note_id, version, content_snapshot, changed_by_wp_user_id, created_at) VALUES (%d, 1, %s, %d, %s)',
+            $clinicalNoteId,
+            'نسخهٔ اول یادداشت تاریخی ' . $unique,
+            $this->managerA,
+            $now
+        ));
+        $clinicalNoteVersionId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $clinicalNoteVersionId, 'fixture: clinical record history row');
+
+        $invoiceNumber = 'INV-' . strtoupper($unique);
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_invoices (clinic_id, invoice_number, patient_id, visit_id, status, subtotal, total, paid_amount, balance, issued_by_wp_user_id, created_at, updated_at) VALUES (%d, %s, %d, %d, "partial", 1000, 1000, 500, 500, %d, %s, %s)',
+            $clinicId,
+            $invoiceNumber,
+            $patientId,
+            $visitId,
+            $this->managerA,
+            $now,
+            $now
+        ));
+        $invoiceId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $invoiceId, 'fixture: finance invoice row');
+
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_payments (clinic_id, payment_number, invoice_id, patient_id, amount, method, idempotency_key, status, paid_at, received_by_wp_user_id, created_at) VALUES (%d, %s, %d, %d, 500, "cash", %s, "captured", %s, %d, %s)',
+            $clinicId,
+            'PAY-' . strtoupper($unique),
+            $invoiceId,
+            $patientId,
+            'p4loc-' . $unique,
+            $now,
+            $this->managerA,
+            $now
+        ));
+        $paymentId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $paymentId, 'fixture: finance payment row');
+
         return [
             'clinician' => $clinicianId,
             'patient' => $patientId,
@@ -908,7 +1192,39 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
             'slot' => $slotId,
             'appointment' => $appointmentId,
             'visit' => $visitId,
+            'clinical_note' => $clinicalNoteId,
+            'clinical_note_version' => $clinicalNoteVersionId,
+            'invoice' => $invoiceId,
+            'payment' => $paymentId,
         ];
+    }
+
+    /** Fail real audit INSERTs with a MySQL unknown-column error. */
+    private function failAuditInserts(): void
+    {
+        global $wpdb;
+        self::assertNull($this->auditFault, 'audit failure filter must not be installed twice');
+        $fault = static function ($query) {
+            $sql = (string) $query;
+            if ( preg_match('/\A\s*INSERT\s+INTO\s+(\S+)/i', $sql, $match) === 1 && str_contains($match[1], 'cpms_audit_logs') ) {
+                return 'INSERT INTO ' . $match[1] . ' (`cpms_fault_no_such_column`) VALUES (1)';
+            }
+            return $query;
+        };
+        $this->previousSuppression = (bool) $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 5);
+        $this->auditFault = $fault;
+    }
+
+    private function restoreAuditInserts(): void
+    {
+        if ( $this->auditFault === null ) {
+            return;
+        }
+        remove_filter('query', $this->auditFault, 5);
+        $this->auditFault = null;
+        global $wpdb;
+        $wpdb->suppress_errors($this->previousSuppression);
     }
 
     private function makeUser(string $prefix, string $role): int
