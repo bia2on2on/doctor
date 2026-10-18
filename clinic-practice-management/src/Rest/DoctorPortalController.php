@@ -1256,7 +1256,7 @@ final class DoctorPortalController extends RestBase {
 			$organizations[ (int) $row['id'] ] = $row;
 		}
 
-		$authorized = [];
+		$authorized    = [];
 		$authorization = App::authorization_service();
 		foreach ( $memberships as $membership ) {
 			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );

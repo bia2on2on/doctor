@@ -296,7 +296,7 @@ final class QueueController extends RestBase {
 	}
 
 	private function requireExplicitPortalClinic( WP_REST_Request $r ): ?WP_Error {
-		$route          = (string) $r->get_route();
+		$route         = (string) $r->get_route();
 		$portal_routes = [
 			'/' . self::NS . '/doctor/today',
 			'/' . self::NS . '/doctor/portal/today',
