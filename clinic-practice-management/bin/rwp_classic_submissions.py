@@ -1131,14 +1131,14 @@ echo 'PROV_DB=' . wp_json_encode([
         "Clinic status badge updated to غیرفعال",
     )
 
-    # Verify DB status=='suspended', CLINIC_SUSPENDED audit, AND that new-demand operational booking is blocked while suspended
+    # Verify DB status=='suspended', CLINIC_DEACTIVATED audit, AND that new-demand operational booking is blocked while suspended
     susp_raw = wp_eval_php(
         f"""
 $db = \\ClinicCore\\Bootstrap\\App::db();
 $cid = {clinic_id};
 $locMgr = {int(fx['loc_manager_uid'])};
 $row = $db->fetchRow('SELECT name, address, phone, status FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$cid]);
-$suspAudit = $db->fetchRow('SELECT id, action FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d AND action = %s ORDER BY id DESC LIMIT 1', [$cid, 'CLINIC_SUSPENDED']);
+$suspAudit = $db->fetchRow('SELECT id, action FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d AND action = %s ORDER BY id DESC LIMIT 1', [$cid, 'CLINIC_DEACTIVATED']);
 $blockedCode = '';
 \\ClinicCore\\Application\\Scope\\ScopeContext::set(\\ClinicCore\\Application\\Scope\\ClinicScope::forClinic($cid));
 try {{
@@ -1163,7 +1163,7 @@ echo 'SUSP_DB=' . wp_json_encode([
         and susp_db["row"]["address"] == "خراسان رضوی، مشهد، بلوار وکیل‌آباد، پلاک ۱۵"
         and bool(susp_db.get("susp_audit"))
         and susp_db.get("blocked_code") == "CLINIC_SUSPENDED",
-        f"status={susp_db['row']['status']} blocked_code={susp_db.get('blocked_code')!r}",
+        f"status={susp_db['row']['status']} audit={susp_db.get('susp_audit')} blocked_code={susp_db.get('blocked_code')!r}",
     )
 
     # Reactivate the Clinic via the real browser form so Flow 4 (Location Manager) can operate on it
