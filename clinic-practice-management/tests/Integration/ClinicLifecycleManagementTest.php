@@ -747,8 +747,9 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         // CONTROL: with the Clinic ACTIVE the same call is never refused for suspension.
         $this->reactivate_clinic_a();
         $control_code = null;
+        $control_view = null;
         try {
-            $booking->createByStaff( $this->clinicMember, $linked['patient_id'], $clinician_id, $slot['slot_date'], $slot['slot_time'], 'staff creation while active', $slot['id'] );
+            $control_view = $booking->createByStaff( $this->clinicMember, $linked['patient_id'], $clinician_id, $slot['slot_date'], $slot['slot_time'], 'staff creation while active', $slot['id'] );
         } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
             $control_code = $e->errorCode;
         }
