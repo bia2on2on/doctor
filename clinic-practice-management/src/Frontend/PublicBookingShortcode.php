@@ -320,7 +320,7 @@ final class PublicBookingShortcode
         // no security sniff is suppressed by it.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $requested_clinic_id = (int) $clinicId;
-        $clinic_status = App::db()->fetchValue(
+        $clinic_status       = App::db()->fetchValue(
             'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [ $requested_clinic_id ]
         );

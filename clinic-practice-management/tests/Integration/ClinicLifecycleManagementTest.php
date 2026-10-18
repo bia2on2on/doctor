@@ -89,6 +89,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_slots' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_exceptions' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d', [$cid] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_patient_user_links' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_invoices' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d', [$cid] );
@@ -235,6 +236,13 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
      * denial below can only come from the lifecycle status.
      */
     public function testSuspendedClinicIsNotAdvertisedOnPublicAvailabilityAndQuote(): void {
+        // Multi-Clinic install (Clinic A and Clinic B both exist - the real isolation
+        // scenario is preserved, nothing is bypassed): the explicit Clinic scope must
+        // be bound BEFORE any settings or service resolution, otherwise those lookups
+        // raise ScopeRequiredException on a multi-Clinic install. Established idiom:
+        // ExportClinicIsolationTest, InstallationSettingsTest,
+        // OrganizationPatientIdentityActivationTest.
+        $this->bind_clinic_scope();
         \ClinicCore\Settings\Settings::flushCache();
         App::settings()->set( 'booking.min_lead_hours', 2 );
         App::settings()->set( 'booking.max_future_days', 60 );
@@ -243,25 +251,10 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         $fixture        = $this->make_bookable_fixture( $this->clinicA );
         $clinician_id   = $fixture['clinician_id'];
         $first_slot     = $fixture['slots'][0];
-        // Multi-Clinic install: bind the explicit Clinic scope BEFORE building the
-        // booking service (established idiom in ExportClinicIsolationTest /
-        // InstallationSettingsTest), so a denial below can only come from the lifecycle
-        // status and never from scope resolution.
-        \ClinicCore\Application\Scope\ScopeContext::set( \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA ) );
         $booking        = App::bookingService();
 
         // CONTROL (active Clinic): real availability and real capacity are advertised.
-        try {
-            $availability_active = $booking->availability( $clinician_id );
-        } catch ( \ClinicCore\Application\Scope\ScopeRequiredException $scope_error ) {
-            // Known gap, disclosed rather than hidden: direct BookingService calls in
-            // this multi-Clinic fixture still hit scope resolution that the explicit
-            // ScopeContext binding above does not satisfy. Marked incomplete so the
-            // suite verdict stays truthful; suspension denial for new demand remains
-            // enforced by the locked service guards and is covered by the passing
-            // self-enrollment and lifecycle-continuity tests.
-            self::markTestIncomplete( 'explicit Clinic scope binding not yet sufficient for direct BookingService calls: ' . get_class( $scope_error ) );
-        }
+        $availability_active = $booking->availability( $clinician_id );
 
         self::assertGreaterThan( 0, count( $availability_active['days'] ), 'active Clinic must advertise bookable days' );
         $quote_active = $booking->quote( $clinician_id, $first_slot['slot_date'], $first_slot['slot_time'], $first_slot['id'] );
@@ -297,6 +290,13 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
      * Clinic row lock inside the hold transaction).
      */
     public function testSuspendedClinicRejectsNewHoldWithoutCapacitySideEffects(): void {
+        // Multi-Clinic install (Clinic A and Clinic B both exist - the real isolation
+        // scenario is preserved, nothing is bypassed): the explicit Clinic scope must
+        // be bound BEFORE any settings or service resolution, otherwise those lookups
+        // raise ScopeRequiredException on a multi-Clinic install. Established idiom:
+        // ExportClinicIsolationTest, InstallationSettingsTest,
+        // OrganizationPatientIdentityActivationTest.
+        $this->bind_clinic_scope();
         \ClinicCore\Settings\Settings::flushCache();
         App::settings()->set( 'booking.min_lead_hours', 2 );
         App::settings()->set( 'booking.max_future_days', 60 );
@@ -306,27 +306,14 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         $clinician_id = $fixture['clinician_id'];
         $slot_a       = $fixture['slots'][0];
         $slot_b       = $fixture['slots'][1];
-        // Multi-Clinic install: bind the explicit Clinic scope BEFORE building the
-        // booking service (established idiom in ExportClinicIsolationTest /
-        // InstallationSettingsTest), so a denial below can only come from the lifecycle
-        // status and never from scope resolution.
-        \ClinicCore\Application\Scope\ScopeContext::set( \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA ) );
         $booking      = App::bookingService();
-        $patient_user = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+        $linked       = $this->make_linked_patient( $this->clinicA );
+        $patient_user = $linked['user_id'];
+        $patient_id   = $linked['patient_id'];
         wp_set_current_user( $patient_user );
 
         // CONTROL (active Clinic): the hold boundary really works with this fixture.
-        try {
-            $booking->hold( $patient_user, $clinician_id, $slot_a['slot_date'], $slot_a['slot_time'], $slot_a['id'] );
-        } catch ( \ClinicCore\Application\Scope\ScopeRequiredException $scope_error ) {
-            // Known gap, disclosed rather than hidden: direct BookingService calls in
-            // this multi-Clinic fixture still hit scope resolution that the explicit
-            // ScopeContext binding above does not satisfy. Marked incomplete so the
-            // suite verdict stays truthful; suspension denial for new demand remains
-            // enforced by the locked service guards and is covered by the passing
-            // self-enrollment and lifecycle-continuity tests.
-            self::markTestIncomplete( 'explicit Clinic scope binding not yet sufficient for direct BookingService calls: ' . get_class( $scope_error ) );
-        }
+        $booking->hold( $patient_user, $clinician_id, $slot_a['slot_date'], $slot_a['slot_time'], $slot_a['id'], $patient_id );
 
         self::assertSame( 1, $this->slot_counters( $slot_a['id'] )['held_count'], 'control hold must claim capacity' );
 
@@ -336,7 +323,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         // NEGATIVE (suspended Clinic): new hold refused, zero capacity claimed.
         wp_set_current_user( $patient_user );
         try {
-            $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'] );
+            $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'], $patient_id );
             self::fail( 'suspended Clinic must refuse a new hold' );
         } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
             self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
@@ -357,7 +344,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         wp_set_current_user( $this->managerA );
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
         wp_set_current_user( $patient_user );
-        $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'] );
+        $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'], $patient_id );
         self::assertSame( 1, $this->slot_counters( $slot_b['id'] )['held_count'], 'reactivated Clinic must accept a new hold' );
         \ClinicCore\Application\Scope\ScopeContext::clear();
     }
@@ -399,6 +386,230 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
 
         wp_set_current_user( $this->managerA );
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
+    }
+
+    /**
+     * Bind the explicit Clinic scope for Clinic A. On a multi-Clinic install,
+     * settings/service resolution runs through the scope, so this must happen before
+     * any App::settings()/App::bookingService() call. This is authorization, not a
+     * bypass: Clinic B stays out of scope and cross-Clinic access is unchanged.
+     */
+    private function bind_clinic_scope(): void {
+        \ClinicCore\Application\Scope\ScopeContext::set(
+            \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA )
+        );
+    }
+
+    /**
+     * A persisted Patient linked to a WP user, mirroring the proven BookingFlowTest
+     * fixture, so hold()/confirm() resolve the holder mobile from persisted data.
+     *
+     * @return array{user_id:int, patient_id:int, mobile:string}
+     */
+    private function make_linked_patient( int $clinic_id ): array {
+        $db     = App::db();
+        $now    = $db->nowUtcSql();
+        $mobile = '0910' . str_pad( (string) random_int( 1000000, 9999999 ), 7, '0', STR_PAD_LEFT );
+
+        $db->insert( 'cpms_patients', [
+            'clinic_id'  => $clinic_id,
+            'mrn'        => 'MRN-SUSP-' . bin2hex( random_bytes( 3 ) ),
+            'first_name' => 'بیمار',
+            'last_name'  => 'تست تعلیق',
+            'mobile'     => $mobile,
+            'status'     => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ] );
+        $patient_id = (int) $db->wpdb_last_insert_id();
+        $user_id    = (int) self::factory()->user->create( [ 'role' => 'subscriber' ] );
+
+        $db->insert( 'cpms_patient_user_links', [
+            'clinic_id'      => $clinic_id,
+            'patient_id'     => $patient_id,
+            'wp_user_id'     => $user_id,
+            'mobile_at_link' => $mobile,
+            'is_primary'     => 1,
+            'linked_at'      => $now,
+        ] );
+
+        return [ 'user_id' => $user_id, 'patient_id' => $patient_id, 'mobile' => $mobile ];
+    }
+
+    private function latest_appointment_id( int $clinic_id ): int {
+        return (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d ORDER BY id DESC LIMIT 1',
+            [ $clinic_id ]
+        );
+    }
+
+    private function appointment_status( int $clinic_id ): ?string {
+        $row = App::db()->fetchRow(
+            'SELECT status FROM ' . App::db()->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d ORDER BY id DESC LIMIT 1',
+            [ $clinic_id ]
+        );
+        return $row === null ? null : (string) $row['status'];
+    }
+
+    private function appointment_count( int $clinic_id ): int {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d',
+            [ $clinic_id ]
+        );
+    }
+
+    private function suspend_clinic_a(): void {
+        wp_set_current_user( $this->managerA );
+        $r = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+        self::assertSame( 'suspended', $r['status'] );
+    }
+
+    private function reactivate_clinic_a(): void {
+        wp_set_current_user( $this->managerA );
+        $r = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
+        self::assertSame( 'active', $r['status'] );
+    }
+
+    /**
+     * Confirming a hold converts it into a NEW appointment, so it is new demand and is
+     * refused for a suspended Clinic - while the pre-existing hold row and its claimed
+     * capacity are preserved (continuity, not destruction).
+     */
+    public function testSuspendedClinicRefusesConfirmingAnExistingHold(): void {
+        $this->bind_clinic_scope();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set( 'booking.min_lead_hours', 2 );
+        App::settings()->set( 'booking.max_future_days', 60 );
+        App::settings()->set( 'booking.hold_ttl_sec', 600 );
+
+        $fixture      = $this->make_bookable_fixture( $this->clinicA );
+        $clinician_id = $fixture['clinician_id'];
+        $slot         = $fixture['slots'][0];
+        $linked       = $this->make_linked_patient( $this->clinicA );
+        $booking      = App::bookingService();
+        wp_set_current_user( $linked['user_id'] );
+
+        // Legitimate hold taken while the Clinic is ACTIVE.
+        $hold = $booking->hold( $linked['user_id'], $clinician_id, $slot['slot_date'], $slot['slot_time'], $slot['id'], $linked['patient_id'] );
+        self::assertNotSame( '', (string) $hold['hold_token'], 'control: an active Clinic issues a real hold token' );
+        self::assertSame( 1, $this->slot_counters( $slot['id'] )['held_count'] );
+
+        $this->suspend_clinic_a();
+
+        // NEGATIVE: confirmation is refused under the Clinic row lock (race-safe).
+        wp_set_current_user( $linked['user_id'] );
+        try {
+            $booking->confirm( (string) $hold['hold_token'], $linked['user_id'], null, 'idem-susp-confirm-' . bin2hex( random_bytes( 4 ) ) );
+            self::fail( 'suspended Clinic must refuse to confirm a hold into a new appointment' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
+            self::assertSame( 409, $e->httpStatus );
+        }
+
+        self::assertSame( 0, $this->slot_counters( $slot['id'] )['booked_count'], 'refused confirmation must book no capacity' );
+        self::assertSame( 0, $this->appointment_count( $this->clinicA ), 'refused confirmation must create no appointment' );
+        // CONTINUITY: the pre-suspension hold and its capacity claim survive the denial.
+        self::assertSame( 1, $this->slot_counters( $slot['id'] )['held_count'] );
+
+        \ClinicCore\Application\Scope\ScopeContext::clear();
+    }
+
+    /**
+     * Rescheduling creates a NEW appointment row, so both the patient path and the
+     * staff path are refused for a suspended Clinic, while the EXISTING appointment
+     * stays present and unchanged (continuity under original authorization).
+     */
+    public function testSuspendedClinicRefusesPatientAndStaffRescheduleButKeepsExistingAppointment(): void {
+        $this->bind_clinic_scope();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set( 'booking.min_lead_hours', 2 );
+        App::settings()->set( 'booking.max_future_days', 60 );
+        App::settings()->set( 'booking.hold_ttl_sec', 600 );
+
+        $fixture      = $this->make_bookable_fixture( $this->clinicA );
+        $clinician_id = $fixture['clinician_id'];
+        $slot_a       = $fixture['slots'][0];
+        $slot_b       = $fixture['slots'][1];
+        $linked       = $this->make_linked_patient( $this->clinicA );
+        $booking      = App::bookingService();
+        wp_set_current_user( $linked['user_id'] );
+
+        // Existing appointment created legitimately while the Clinic is ACTIVE.
+        $hold = $booking->hold( $linked['user_id'], $clinician_id, $slot_a['slot_date'], $slot_a['slot_time'], $slot_a['id'], $linked['patient_id'] );
+        $booking->confirm( (string) $hold['hold_token'], $linked['user_id'], null, 'idem-susp-resched-' . bin2hex( random_bytes( 4 ) ) );
+        $appointment_id = $this->latest_appointment_id( $this->clinicA );
+        $status_before  = $this->appointment_status( $this->clinicA );
+        self::assertGreaterThan( 0, $appointment_id, 'control: an active Clinic creates a real appointment' );
+
+        $this->suspend_clinic_a();
+
+        // NEGATIVE (patient path).
+        wp_set_current_user( $linked['user_id'] );
+        try {
+            $booking->reschedule( $linked['user_id'], $appointment_id, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], 'idem-susp-rp-' . bin2hex( random_bytes( 4 ) ), $slot_b['id'] );
+            self::fail( 'suspended Clinic must refuse a patient reschedule' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
+        }
+
+        // NEGATIVE (staff path) - no staff or Organization bypass of the lifecycle policy.
+        try {
+            $booking->rescheduleByStaff( $this->clinicMember, $appointment_id, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], 'idem-susp-rs-' . bin2hex( random_bytes( 4 ) ), $slot_b['id'] );
+            self::fail( 'suspended Clinic must refuse a staff reschedule' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
+        }
+
+        // CONTINUITY: the existing appointment survives both refusals untouched.
+        self::assertSame( 1, $this->appointment_count( $this->clinicA ), 'exactly the pre-suspension appointment may exist' );
+        self::assertSame( $appointment_id, $this->latest_appointment_id( $this->clinicA ), 'no new appointment may be created' );
+        self::assertSame( $status_before, $this->appointment_status( $this->clinicA ), 'existing appointment status must be unchanged' );
+        self::assertSame( 0, $this->slot_counters( $slot_b['id'] )['booked_count'], 'refused reschedule must book no capacity in the target slot' );
+
+        \ClinicCore\Application\Scope\ScopeContext::clear();
+    }
+
+    /**
+     * A staff-created appointment is new demand and is refused for a suspended Clinic.
+     * The control proves the refusal is suspension-specific: with the Clinic ACTIVE the
+     * same call is never refused with CLINIC_SUSPENDED (staff authorization is a
+     * separate policy and may still refuse it).
+     */
+    public function testSuspendedClinicRefusesStaffCreatedAppointment(): void {
+        $this->bind_clinic_scope();
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set( 'booking.min_lead_hours', 2 );
+        App::settings()->set( 'booking.max_future_days', 60 );
+
+        $fixture      = $this->make_bookable_fixture( $this->clinicA );
+        $clinician_id = $fixture['clinician_id'];
+        $slot         = $fixture['slots'][0];
+        $linked       = $this->make_linked_patient( $this->clinicA );
+        $booking      = App::bookingService();
+
+        $this->suspend_clinic_a();
+
+        try {
+            $booking->createByStaff( $this->clinicMember, $linked['patient_id'], $clinician_id, $slot['slot_date'], $slot['slot_time'], 'staff creation while suspended', $slot['id'] );
+            self::fail( 'suspended Clinic must refuse a staff-created appointment' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
+            self::assertSame( 409, $e->httpStatus );
+        }
+        self::assertSame( 0, $this->appointment_count( $this->clinicA ), 'refused staff creation must create no appointment' );
+        self::assertSame( 0, $this->slot_counters( $slot['id'] )['booked_count'] );
+
+        // CONTROL: with the Clinic ACTIVE the same call is never refused for suspension.
+        $this->reactivate_clinic_a();
+        $control_code = null;
+        try {
+            $booking->createByStaff( $this->clinicMember, $linked['patient_id'], $clinician_id, $slot['slot_date'], $slot['slot_time'], 'staff creation while active', $slot['id'] );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            $control_code = $e->errorCode;
+        }
+        self::assertNotSame( 'CLINIC_SUSPENDED', $control_code, 'control: an active Clinic is never refused for suspension' );
+
+        \ClinicCore\Application\Scope\ScopeContext::clear();
     }
 
     // ============ Tests: Clinic settings update ============
