@@ -125,7 +125,10 @@ final class ClinicManagementPage {
 
         echo '<table class="widefat striped" role="presentation"><thead><tr><th>نام</th><th>شناسه</th><th>منطقهٔ زمانی</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>';
         foreach ( $clinics as $clinic ) {
-            $status_badge = $clinic['status'] === 'active' ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>';
+            $status_badge = wp_kses(
+                $clinic['status'] === 'active' ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>',
+                [ 'span' => [ 'class' => [] ] ]
+            );
             $active = $clinic['status'] === 'active';
             echo '<tr><td>' . esc_html( $clinic['name'] ) . '</td><td class="ltr">' . esc_html( $clinic['slug'] ) . '</td><td class="ltr">' . esc_html( $clinic['timezone'] ) . '</td><td>' . $status_badge . '</td><td>';
             echo '<a class="button button-small" href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE . '&organization_id=' . $selected_org_id . '&clinic_id=' . $clinic['id'] ) ) . '">تنظیم و چرخهٔ حیات</a> ';
@@ -169,7 +172,7 @@ final class ClinicManagementPage {
                 echo '<tr><th><label for="cm_phone">تلفن</label></th><td><input id="cm_phone" name="phone" maxlength="32" class="regular-text ltr" value="' . esc_attr( (string) ( $full['phone'] ?? '' ) ) . '"><p class="description">حداکثر ۳۲ نویسه.</p></td></tr>';
                 echo '<tr><th>شناسه (slug)</th><td class="ltr">' . esc_html( $clinic_row['slug'] ) . ' <code>(غیرقابل تغییر — کلید یکتا)</code></td></tr>';
                 echo '<tr><th>منطقهٔ زمانی</th><td class="ltr">' . esc_html( $clinic_row['timezone'] ) . ' <code>(ثابت — حقیقت عملیاتی شعبه‌ها از Location است)</code></td></tr>';
-                echo '<tr><th>وضعیت</th><td>' . ( $clinic_row['status'] === 'active' ? 'فعال' : 'غیرفعال (تاریخچه حفظ می‌شود)' ) . '</td></tr>';
+                echo '<tr><th>وضعیت</th><td>' . esc_html( $clinic_row['status'] === 'active' ? 'فعال' : 'غیرفعال (تاریخچه حفظ می‌شود)' ) . '</td></tr>';
                 echo '</tbody></table>';
                 echo '<p><button class="button button-primary">ذخیرهٔ تنظیمات</button> <a class="button" href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE . '&organization_id=' . $selected_org_id ) ) . '">انصراف</a></p>';
                 echo '</form>';

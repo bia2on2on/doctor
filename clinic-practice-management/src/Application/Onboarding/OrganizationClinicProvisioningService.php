@@ -13,6 +13,22 @@ use RuntimeException;
 final class OrganizationClinicProvisioningService {
 
     public const CAPABILITY            = 'cpms_org_clinic_create';
+
+    /**
+     * Organization-scoped capability: Clinic profile updates (name/address/phone).
+     *
+     * Least privilege: separate from Clinic creation and from lifecycle transitions,
+     * and each is evaluated with its own DENY > GRANT > Organization Manager preset
+     * precedence in authorized() — a DENY on one never leaks into the others.
+     */
+    public const CAPABILITY_PROFILE_UPDATE = 'cpms_org_clinic_update';
+
+    /**
+     * Organization-scoped capability: Clinic lifecycle transitions
+     * (suspend / reactivate). Suspension never grants broader access: it only stops
+     * genuinely new demand at the booking/enrollment/slot-generation boundaries.
+     */
+    public const CAPABILITY_LIFECYCLE = 'cpms_org_clinic_lifecycle';
     public const MEMBERSHIP_CAPABILITY = 'cpms_org_membership_manage';
     public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
 
@@ -489,43 +505,13 @@ final class OrganizationClinicProvisioningService {
             throw new InvalidArgumentException( 'invalid clinic update context' );
         }
 
-        $raw_name    = $input['name'] ?? null;
-        $raw_address = $input['address'] ?? null;
-        $raw_phone   = $input['phone'] ?? null;
-
-        $name    = is_string( $raw_name ) ? trim( $raw_name ) : ( is_scalar( $raw_name ) ? trim( (string) $raw_name ) : '' );
-        $address = $raw_address === null ? null : trim( (string) $raw_address );
-        $phone   = $raw_phone === null ? null : trim( (string) $raw_phone );
-        if ( $address === '' ) {
-            $address = null;
-        }
-        if ( $phone === '' ) {
-            $phone = null;
-        }
-
-        $errors = [];
-        if ( $name === '' ) {
-            $errors['name'] = 'نام کلینیک الزامی است';
-        } elseif ( mb_strlen( $name ) > 190 ) {
-            $errors['name'] = 'نام کلینیک حداکثر ۱۹۰ کاراکتر است';
-        }
-        if ( $address !== null && mb_strlen( $address ) > 255 ) {
-            $errors['address'] = 'آدرس حداکثر ۲۵۵ کاراکتر است';
-        }
-        if ( $phone !== null && mb_strlen( $phone ) > 32 ) {
-            $errors['phone'] = 'تلفن حداکثر ۳۲ کاراکتر است';
-        }
-        if ( $errors !== [] ) {
-            throw new InvalidArgumentException( 'invalid clinic profile attributes: ' . json_encode( $errors, JSON_UNESCAPED_UNICODE ) );
-        }
-
         return $this->db->transactional(
-            function () use ( $actor_id, $organization_id, $clinic_id, $name, $address, $phone ): array {
+            function () use ( $actor_id, $organization_id, $clinic_id, $input ): array {
                 $organization = $this->db->fetchRowForUpdate(
                     'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
                     [$organization_id]
                 );
-                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY ) ) {
+                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY_PROFILE_UPDATE ) ) {
                     throw new RuntimeException( 'organization clinic update denied' );
                 }
 
@@ -535,6 +521,40 @@ final class OrganizationClinicProvisioningService {
                 );
                 if ( $current === null || (int) $current['organization_id'] !== $organization_id ) {
                     throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                // Authorization precedes validation of tenant-specific input: an
+                // unauthorized or cross-Organization actor receives the same generic
+                // denial regardless of payload shape, so validation messages never
+                // become a cross-tenant attribute oracle.
+                $raw_name    = $input['name'] ?? null;
+                $raw_address = $input['address'] ?? null;
+                $raw_phone   = $input['phone'] ?? null;
+
+                $name    = is_string( $raw_name ) ? trim( $raw_name ) : ( is_scalar( $raw_name ) ? trim( (string) $raw_name ) : '' );
+                $address = $raw_address === null ? null : trim( (string) $raw_address );
+                $phone   = $raw_phone === null ? null : trim( (string) $raw_phone );
+                if ( $address === '' ) {
+                    $address = null;
+                }
+                if ( $phone === '' ) {
+                    $phone = null;
+                }
+
+                $errors = [];
+                if ( $name === '' ) {
+                    $errors['name'] = 'نام کلینیک الزامی است';
+                } elseif ( mb_strlen( $name ) > 190 ) {
+                    $errors['name'] = 'نام کلینیک حداکثر ۱۹۰ کاراکتر است';
+                }
+                if ( $address !== null && mb_strlen( $address ) > 255 ) {
+                    $errors['address'] = 'آدرس حداکثر ۲۵۵ کاراکتر است';
+                }
+                if ( $phone !== null && mb_strlen( $phone ) > 32 ) {
+                    $errors['phone'] = 'تلفن حداکثر ۳۲ کاراکتر است';
+                }
+                if ( $errors !== [] ) {
+                    throw new InvalidArgumentException( 'invalid clinic profile attributes: ' . json_encode( $errors, JSON_UNESCAPED_UNICODE ) );
                 }
 
                 $old_name    = (string) ( $current['name'] ?? '' );
@@ -631,7 +651,7 @@ final class OrganizationClinicProvisioningService {
                     'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
                     [$organization_id]
                 );
-                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY ) ) {
+                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY_LIFECYCLE ) ) {
                     throw new RuntimeException( 'organization clinic lifecycle denied' );
                 }
 
@@ -714,7 +734,12 @@ final class OrganizationClinicProvisioningService {
         if ( $actor_id <= 0 || $organization_id <= 0 ) {
             return [];
         }
-        if ( ! $this->authorized( $actor_id, $organization_id, false, self::CAPABILITY ) ) {
+        // Read for the management UI: authorized by ANY of the three separate
+        // Organization Clinic capabilities, each still subject to its own DENY.
+        $can_read = $this->authorized( $actor_id, $organization_id, false, self::CAPABILITY )
+            || $this->authorized( $actor_id, $organization_id, false, self::CAPABILITY_PROFILE_UPDATE )
+            || $this->authorized( $actor_id, $organization_id, false, self::CAPABILITY_LIFECYCLE );
+        if ( ! $can_read ) {
             return [];
         }
         $rows = $this->db->fetchAll(

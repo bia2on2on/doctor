@@ -281,7 +281,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         );
         App::db()->insert( 'cpms_organization_membership_capabilities', [
             'membership_id' => $membership_id,
-            'capability' => 'cpms_org_clinic_create',
+            'capability' => 'cpms_org_clinic_update',
             'effect' => 'deny',
             'created_by_wp_user_id' => $this->managerA,
             'created_at' => App::db()->nowUtcSql(),
@@ -298,7 +298,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         }
 
         // Cleanup
-        App::db()->query( 'DELETE FROM ' . App::db()->table( 'cpms_organization_membership_capabilities' ) . ' WHERE membership_id = %d AND capability = %s', [$membership_id, 'cpms_org_clinic_create'] );
+        App::db()->query( 'DELETE FROM ' . App::db()->table( 'cpms_organization_membership_capabilities' ) . ' WHERE membership_id = %d AND capability = %s', [$membership_id, 'cpms_org_clinic_update'] );
 
         // Now should succeed again
         $r = App::organization_clinic_provisioning_service()->update_clinic_profile(
@@ -362,30 +362,113 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
     }
 
-    public function testSuspendedClinicBlocksTrustedClinicEstablishmentButOrgManagementStillWorks(): void {
+    /**
+     * Suspension is operation-specific, never a blanket scope denial.
+     *
+     * Existing clinical/financial/history operations stay authorized under their
+     * ORIGINAL permissions (Clinic-scoped membership for establishment, explicit
+     * Organization capability for management), while genuinely new demand is refused
+     * at the authoritative boundaries: BookingService hold/confirm/reschedule/staff
+     * booking, patient self-enrollment and background slot generation each read
+     * cpms_clinics.status (under a Clinic row lock where a race is possible).
+     */
+    public function testSuspendedClinicPreservesContinuityAndRefusesNewDemandAtBoundaries(): void {
         wp_set_current_user( $this->managerA );
-        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+        $deact = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+        self::assertSame( 'suspended', $deact['status'] );
 
-        // Clinic-scoped operational establishment should fail for a suspended clinic (even for a manager who is also clinic member)
-        // Our managerA is org manager but also we gave clinicMember membership; test with clinicMember
+        // CONTINUITY: Clinic-scoped establishment keeps working for the existing
+        // member under its original membership permission (records, medical files,
+        // treatment completion, existing appointments, finance, reports, export).
         wp_set_current_user( $this->clinicMember );
+        $establisher = new \ClinicCore\Application\Scope\TrustedClinicEstablisher( App::db(), new \ClinicCore\Infrastructure\Repository\MembershipRepository( App::db() ) );
+        $scope = $establisher->establish( $this->clinicMember, $this->clinicA );
+        self::assertSame( $this->clinicA, $scope->clinicId );
+
+        // CONTINUITY: durable medical history seeded before suspension is intact.
+        self::assertGreaterThan(
+            0,
+            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', [ $this->clinicA ] )
+        );
+        self::assertTrue( App::audit()->verifyChain( 500 )['ok'] );
+
+        // NEW DEMAND: slot generation only sweeps Clinics with status = active.
+        self::assertNull(
+            App::db()->fetchValue(
+                'SELECT cl.id FROM ' . App::db()->table( 'cpms_clinics' ) . ' cl WHERE cl.id = %d AND cl.status = %s',
+                [ $this->clinicA, 'active' ]
+            ),
+            'suspended Clinic must be excluded from slot generation and self-enrollment scope'
+        );
+
+        // Org management keeps working while suspended and reactivation restores new demand.
+        wp_set_current_user( $this->managerA );
+        $profile = App::organization_clinic_provisioning_service()->update_clinic_profile(
+            $this->managerA, $this->orgA, $this->clinicA, [ 'name' => 'نام در حالت تعلیق ' . bin2hex( random_bytes( 2 ) ) ]
+        );
+        self::assertFalse( $profile['noop'] );
+
+        $react = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
+        self::assertSame( 'active', $react['status'] );
+        self::assertNotNull(
+            App::db()->fetchValue(
+                'SELECT cl.id FROM ' . App::db()->table( 'cpms_clinics' ) . ' cl WHERE cl.id = %d AND cl.status = %s',
+                [ $this->clinicA, 'active' ]
+            )
+        );
+
+        wp_set_current_user( $this->clinicMember );
+        $scope_after = ( new \ClinicCore\Application\Scope\TrustedClinicEstablisher( App::db(), new \ClinicCore\Infrastructure\Repository\MembershipRepository( App::db() ) ) )->establish( $this->clinicMember, $this->clinicA );
+        self::assertSame( $this->clinicA, $scope_after->clinicId );
+    }
+
+    /**
+     * Explicit DENY precedence is preserved INDEPENDENTLY for each separate
+     * Organization Clinic capability: denying lifecycle must not disable profile
+     * updates, and vice versa.
+     */
+    public function testOrganizationDenyIsIndependentPerClinicCapability(): void {
+        $membership_id = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_organization_memberships' ) . ' WHERE organization_id = %d AND wp_user_id = %d',
+            [ $this->orgA, $this->managerA ]
+        );
+        App::db()->insert( 'cpms_organization_membership_capabilities', [
+            'membership_id'           => $membership_id,
+            'capability'              => 'cpms_org_clinic_lifecycle',
+            'effect'                  => 'deny',
+            'created_by_wp_user_id'   => $this->managerA,
+            'created_at'              => App::db()->nowUtcSql(),
+        ] );
+
+        wp_set_current_user( $this->managerA );
         try {
-            $establisher = new \ClinicCore\Application\Scope\TrustedClinicEstablisher( App::db(), new \ClinicCore\Infrastructure\Repository\MembershipRepository( App::db() ) );
-            $establisher->establish( $this->clinicMember, $this->clinicA );
-            self::fail( 'suspended clinic must not be establishable for operational use' );
-        } catch ( \ClinicCore\Application\Scope\ScopeRequiredException $e ) {
-            self::assertStringContainsString( 'CLINIC_SCOPE_UNAVAILABLE', $e->getErrorCode() );
+            App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+            self::fail( 'lifecycle DENY must block lifecycle transitions' );
+        } catch ( RuntimeException $e ) {
+            self::assertStringContainsString( 'denied', strtolower( $e->getMessage() ) );
         }
 
-        // Org management can still reactivate
-        wp_set_current_user( $this->managerA );
-        $r = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
-        self::assertSame( 'active', $r['status'] );
+        // Profile update capability is unaffected by the lifecycle DENY.
+        $r = App::organization_clinic_provisioning_service()->update_clinic_profile(
+            $this->managerA, $this->orgA, $this->clinicA, [ 'name' => 'Still allowed under lifecycle DENY ' . bin2hex( random_bytes( 2 ) ) ]
+        );
+        self::assertFalse( $r['noop'] );
 
-        // Now establishment works again
-        wp_set_current_user( $this->clinicMember );
-        $scope = ( new \ClinicCore\Application\Scope\TrustedClinicEstablisher( App::db(), new \ClinicCore\Infrastructure\Repository\MembershipRepository( App::db() ) ) )->establish( $this->clinicMember, $this->clinicA );
-        self::assertSame( $this->clinicA, $scope->clinicId );
+        // Status unchanged (lifecycle really was refused).
+        self::assertSame(
+            'active',
+            (string) App::db()->fetchValue( 'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d', [ $this->clinicA ] )
+        );
+
+        App::db()->query(
+            'DELETE FROM ' . App::db()->table( 'cpms_organization_membership_capabilities' ) . ' WHERE membership_id = %d AND capability = %s',
+            [ $membership_id, 'cpms_org_clinic_lifecycle' ]
+        );
+
+        // Lifecycle authority returns once the DENY row is removed.
+        $after = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+        self::assertSame( 'suspended', $after['status'] );
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
     }
 
     public function testClinicLifecycleRespectsSuspendedOrganizationFailClosed(): void {
