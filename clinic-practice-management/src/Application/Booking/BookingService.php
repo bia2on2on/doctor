@@ -519,10 +519,13 @@ final class BookingService
 
         $hasPatientCol = $this->holdsHasPatientIdColumn();
         $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt, $patientIdToPersist, $hasPatientCol): void {
-            // New demand (public/patient path) + suspension/booking race: the Clinic
-            // status is read under the Clinic row lock, inside this transaction,
-            // before any capacity is claimed.
+            // New demand (public/patient path) + lifecycle races: the Clinic row
+            // is locked first. LocationService also locks Clinic before changing
+            // Location state, so this final active-Location read is stable through
+            // commit without taking a Location lock ahead of the established
+            // Clinic -> Slot order.
             $this->assert_clinic_accepting_new_demand( (int) $slot['clinic_id'], true );
+            $this->assert_active_location_for_booking( (int) $slot['location_id'], (int) $slot['clinic_id'] );
 
             if (!$this->slots->atomicHold((int) $slot['id'])) {
                 // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
@@ -791,9 +794,15 @@ final class BookingService
                     // its capacity claim untouched.
                     $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
                     $slot = $this->slots->findForUpdate( $slot_id );
-                    if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
+                    if ( $slot === null || (int) $slot['is_open'] !== 1 || (int) $slot['clinic_id'] !== $hold_clinic_id ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
+                    // A Hold created before Location deactivation is not authority
+                    // to create a new Appointment at that Location. This check runs
+                    // after the Clinic lock (which serializes with LocationService)
+                    // and the Slot lock, but before Patient, Appointment, audit, or
+                    // capacity writes. Existing records remain untouched.
+                    $this->assert_active_location_for_booking( (int) $slot['location_id'], $hold_clinic_id );
                     // The final DST decision is made on the locked persisted Slot
                     // before a new Patient, link, or audit can be created.
                     $this->assert_slot_has_bookable_local_time( $slot );
@@ -1123,17 +1132,26 @@ final class BookingService
                     $newClinicId = $this->requireClinician($newClinicianId);
                 }
 
+                // Rescheduling carries the existing Patient into its replacement;
+                // never let a patient-owned Appointment or its PHI move across
+                // Clinic boundaries without a separate, Clinic-local patient flow.
+                if ( $newClinicId !== (int) $appt['clinic_id'] ) {
+                    throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+                }
+
                 // Rescheduling creates a genuinely new replacement appointment, so it is
                 // new demand and the DESTINATION Clinic must be active. Read under the
                 // Clinic row lock, inside this transaction and before any Slot lock or
                 // capacity mutation, matching hold()/confirm() (fixed lock order: Clinic
                 // first, then Slots in ascending id order). Both the patient path and the
                 // staff path funnel through here, so neither can bypass the lifecycle.
-                // The SOURCE Clinic is deliberately not gated: leaving/cancelling inside a
-                // suspended Clinic stays allowed (continuity), while a replacement may
-                // only be created in an active one. On denial the whole transaction rolls
-                // back and the catch below frees only the Idempotency key, so the existing
-                // appointment, both Slots and their counters stay byte-identical.
+                // Cross-Clinic replacements were rejected above to prevent moving a
+                // Patient/PHI between tenant boundaries, so this destination is the same
+                // Clinic as the existing Appointment. Existing appointments remain
+                // readable/cancellable during suspension, but a replacement is new demand
+                // and is denied there. On denial the transaction rolls back and the catch
+                // below frees only the Idempotency key, preserving the appointment and
+                // both Slot counters.
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
                 $this->assert_clinic_accepting_new_demand( $newClinicId, true );
 
@@ -1146,19 +1164,25 @@ final class BookingService
                     throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404);
                 }
 
-                // Window اسلات جدید با timezone مقصد.
-                // Staff: min-lead = 0 (owner-issued policy; N-3 staff create parity).
-                // Patient: existing destination min-lead setting.
-                $newLocationTz = $this->resolveLocationTimezone((int) $newSlot['location_id'], $newClinicId);
                 $newSettings = $this->settingsFor($newClinicId);
                 $minLead = $actor === 'staff' ? 0 : (int) $newSettings->get('booking.min_lead_hours', 2);
-                $this->assertWindowWithTimezone($newDate, $newTime, $newLocationTz, $minLead, $newSettings);
                 $newSlotId = (int) $newSlot['id'];
 
                 // قفل هر دو اسلات — مرتب بر اساس id (پیشگیری از Deadlock)
                 [$first, $second] = $oldSlotId < $newSlotId ? [$oldSlotId, $newSlotId] : [$newSlotId, $oldSlotId];
                 $this->slots->findForUpdate($first);
                 $this->slots->findForUpdate($second);
+
+                // A replacement Appointment is new demand at its destination.
+                // The destination Clinic lock already held above serializes this
+                // check with Location deactivation/reactivation; reject before
+                // releasing the existing booking or claiming destination capacity.
+                $this->assert_active_location_for_booking( (int) $newSlot['location_id'], $newClinicId );
+
+                // Final timezone/window validation follows all lock waits, using
+                // the persisted destination Location and Clinic policy.
+                $newLocationTz = $this->resolveLocationTimezone( (int) $newSlot['location_id'], $newClinicId );
+                $this->assertWindowWithTimezone( $newDate, $newTime, $newLocationTz, $minLead, $newSettings );
 
                 $dup = $this->appointments->findActiveForPatientSlot((int) $appt['patient_id'], $newSlotId, self::ACTIVE_STATUSES);
                 if ($dup !== null && (int) $dup['id'] !== $appointmentId) {
@@ -1339,8 +1363,9 @@ final class BookingService
 
                     // Lock the persisted Slot first (the established booking lock),
                     // then lock its Location before the final timezone decision.
-                    // Location updates lock only that Location row, so this order
-                    // introduces no inverse Slot lock in the Location writer.
+                    // LocationService writers acquire Organization -> Clinic -> Location;
+                    // this path already holds Clinic, so a writer cannot hold Location
+                    // while waiting on this Slot or create an inverse lock cycle.
                     $slot = $this->slots->findForUpdate( (int) $resolved_slot['id'] );
                     if (
                         $slot === null
@@ -1676,9 +1701,13 @@ final class BookingService
     }
 
     /**
-     * New public booking may use only a real, active Location owned by the
-     * slot's persisted Clinic. Inactive historical appointment operations keep
-     * using resolveLocationTimezone() unchanged.
+     * New demand may use only a real, active Location owned by the Slot Clinic.
+     * The in-transaction call sites invoke this after locking that Clinic row;
+     * LocationService locks the Clinic before changing Location status, so the
+     * read remains stable through commit without adding a Location lock before
+     * the established Clinic -> Slot lock order. Historical appointment
+     * operations continue to resolve their Location timezone without requiring
+     * current activity.
      */
     private function assert_active_location_for_booking( int $location_id, int $clinic_id ): void {
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
@@ -1731,7 +1760,9 @@ final class BookingService
 
     /**
      * Lock the exact Location row after the Slot lock before the final staff
-     * write validation. Location writers hold only their Location row.
+     * write validation. LocationService writers acquire Organization -> Clinic
+     * -> Location; this booking path already holds Clinic, so the Location lock
+     * cannot invert the lifecycle writer's order.
      */
     private function resolve_location_timezone_for_update( int $location_id, int $clinic_id ): \DateTimeZone {
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
@@ -1739,7 +1770,7 @@ final class BookingService
         }
 
         $row = $this->db->fetchRowForUpdate(
-            'SELECT id, clinic_id, timezone FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            'SELECT id, clinic_id, timezone, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
             [ $location_id ]
         );
         if ( $row === null ) {
@@ -1747,6 +1778,9 @@ final class BookingService
         }
         if ( (int) $row['clinic_id'] !== $clinic_id ) {
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Location به کلینیک دیگری تعلق دارد', 422 );
+        }
+        if ( (int) ( $row['is_active'] ?? 0 ) !== 1 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'Location یافت نشد', 404 );
         }
         $tz_name = trim( (string) ( $row['timezone'] ?? '' ) );
         if ( $tz_name === '' || ! in_array( $tz_name, timezone_identifiers_list(), true ) ) {
@@ -1896,10 +1930,11 @@ final class BookingService
      * appointments (cancel/no-show/read), finance settlement and refunds, reports,
      * export, backup and recovery.
      *
-     * Race safety: callers that create new demand re-run this check with
-     * $for_update = true INSIDE their transaction, after the slot/appointment lock,
-     * so a concurrent suspension is serialized by the Clinic row lock and the final
-     * state is revalidated before commit.
+     * Race safety: callers that create new demand run this check with
+     * $for_update = true INSIDE their transaction, before acquiring Slot locks
+     * (after any source Appointment lock required by rescheduling). This fixed
+     * Clinic -> Slot order serializes a concurrent suspension before capacity or
+     * Appointment mutations can commit.
      *
      * Missing/legacy rows (no status value) never become a blanket denial here; an
      * invalid Clinic id is handled by the caller's own fail-closed scope check.

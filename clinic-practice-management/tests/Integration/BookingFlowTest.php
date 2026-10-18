@@ -96,18 +96,36 @@ final class BookingFlowTest extends WP_UnitTestCase
     }
 
     /**
-     * @return array{id: int, date: string, time: string}
+     * @return array{id: int, date: string, time: string, location_id: int}
      */
-    private function makeSlot(int $dayOffset, string $time, int $capacity = 1, int $duration = 20): array
+    private function makeSlot(int $dayOffset, string $time, int $capacity = 1, int $duration = 20, ?int $locationId = null): array
     {
         global $wpdb;
+        if ($locationId === null) {
+            $locationId = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations'
+                    . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    1
+                )
+            );
+        }
+        $this->assertGreaterThan(0, $locationId, 'A persisted Location is required for every booking Slot.');
+        $locationClinicId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $locationId
+            )
+        );
+        $this->assertSame(1, $locationClinicId, 'The booking Slot Location must belong to Clinic 1.');
         $date = gmdate('Y-m-d', time() + $dayOffset * 86400);
         $now = App::db()->nowUtcSql();
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
                      (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, %d, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (1, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $locationId,
                 $this->clinicianId,
                 $date,
                 $time,
@@ -117,8 +135,47 @@ final class BookingFlowTest extends WP_UnitTestCase
                 $now
             )
         );
+        $this->assertGreaterThan(0, (int) $wpdb->insert_id, 'A test slot must persist.');
 
-        return ['id' => (int) $wpdb->insert_id, 'date' => $date, 'time' => $time];
+        return ['id' => (int) $wpdb->insert_id, 'date' => $date, 'time' => $time, 'location_id' => $locationId];
+    }
+
+    private function makeSecondaryLocation(): int
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $inserted = $wpdb->insert(
+            $wpdb->prefix . 'cpms_locations',
+            [
+                'clinic_id' => 1,
+                'name' => 'Booking lifecycle ' . bin2hex(random_bytes(3)),
+                'slug' => 'booking-lifecycle-' . bin2hex(random_bytes(4)),
+                'timezone' => 'Asia/Tehran',
+                'is_primary' => 0,
+                'is_active' => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ],
+            ['%d', '%s', '%s', '%s', '%d', '%d', '%s', '%s']
+        );
+        $this->assertNotFalse($inserted, 'The secondary test Location must persist.');
+        $locationId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan(0, $locationId, 'The secondary test Location needs a persisted id.');
+
+        return $locationId;
+    }
+
+    private function deactivateLocation(int $locationId): void
+    {
+        global $wpdb;
+        $changed = $wpdb->update(
+            $wpdb->prefix . 'cpms_locations',
+            ['is_active' => 0, 'updated_at' => App::db()->nowUtcSql()],
+            ['id' => $locationId, 'clinic_id' => 1],
+            ['%d', '%s'],
+            ['%d', '%d']
+        );
+        $this->assertSame(1, $changed, 'The test Location must transition to inactive.');
     }
 
     private function booking()
@@ -552,6 +609,204 @@ final class BookingFlowTest extends WP_UnitTestCase
         );
         $this->assertSame('rescheduled', $oldAppt['status']);
         $this->assertSame((int) $result['appointment_id'], (int) $oldAppt['rescheduled_to']);
+    }
+
+    public function testInactiveLocationRejectsDirectHoldAndStaffCreateWithoutCapacityMutation(): void
+    {
+        $locationId = $this->makeSecondaryLocation();
+        $slot = $this->makeSlot(3, '10:00', 1, 20, $locationId);
+        $this->deactivateLocation($locationId);
+
+        try {
+            $this->booking()->hold($this->patientUserId, $this->clinicianId, $slot['date'], $slot['time'], $slot['id'], null, $locationId);
+            $this->fail('A direct service hold must reject an inactive Location.');
+        } catch (BookingException $exception) {
+            $this->assertSame('CLINIC_NOT_FOUND', $exception->errorCode);
+            $this->assertSame(404, $exception->httpStatus);
+        }
+
+        $patientId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_patients') . ' WHERE mrn = %s LIMIT 1',
+            ['MR-TEST-0001']
+        );
+        $this->assertGreaterThan(0, $patientId, 'Staff-create control requires the persisted same-Clinic patient.');
+        try {
+            $this->booking()->createByStaff(
+                $this->patientUserId,
+                $patientId,
+                $this->clinicianId,
+                $slot['date'],
+                $slot['time'],
+                'inactive Location',
+                $slot['id']
+            );
+            $this->fail('A direct service staff-create must reject an inactive Location.');
+        } catch (BookingException $exception) {
+            $this->assertSame('CLINIC_NOT_FOUND', $exception->errorCode);
+            $this->assertSame(404, $exception->httpStatus);
+        }
+
+        $slotRow = App::db()->fetchRow(
+            'SELECT booked_count, held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slot['id']]
+        );
+        $this->assertNotNull($slotRow, 'The inactive Location slot remains persisted.');
+        $this->assertSame(0, (int) $slotRow['booked_count'], 'Inactive Location denials leave booked capacity untouched.');
+        $this->assertSame(0, (int) $slotRow['held_count'], 'Inactive Location denials leave held capacity untouched.');
+        $holdCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_slot_holds') . ' WHERE slot_id = %d',
+            [$slot['id']]
+        );
+        $appointmentCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+            [$slot['id']]
+        );
+        $this->assertSame(0, $holdCount, 'The rejected hold creates no persisted row.');
+        $this->assertSame(0, $appointmentCount, 'The rejected staff create creates no Appointment.');
+    }
+
+    public function testConfirmAtLocationDeactivatedAfterHoldReleasesOnlyTheTemporaryHold(): void
+    {
+        $locationId = $this->makeSecondaryLocation();
+        $slot = $this->makeSlot(3, '10:00', 1, 20, $locationId);
+        $hold = $this->booking()->hold(
+            $this->patientUserId,
+            $this->clinicianId,
+            $slot['date'],
+            $slot['time'],
+            $slot['id'],
+            null,
+            $locationId
+        );
+        $heldBefore = (int) App::db()->fetchValue(
+            'SELECT held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slot['id']]
+        );
+        $this->assertSame(1, $heldBefore, 'The active Hold consumes one capacity unit before deactivation.');
+
+        $this->deactivateLocation($locationId);
+        try {
+            $this->booking()->confirm($hold['hold_token'], $this->patientUserId, null, $this->uuid());
+            $this->fail('A Hold created before Location deactivation must not create a new Appointment there.');
+        } catch (BookingException $exception) {
+            $this->assertSame('CLINIC_NOT_FOUND', $exception->errorCode);
+            $this->assertSame(404, $exception->httpStatus);
+        }
+
+        $holdRow = App::db()->fetchRow(
+            'SELECT status FROM ' . App::db()->table('cpms_slot_holds') . ' WHERE token = %s LIMIT 1',
+            [$hold['hold_token']]
+        );
+        $slotRow = App::db()->fetchRow(
+            'SELECT booked_count, held_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slot['id']]
+        );
+        $this->assertNotNull($holdRow, 'The persisted Hold row remains as an auditable terminal row.');
+        $this->assertNotNull($slotRow, 'The slot row remains present after the denial.');
+        $this->assertSame('released', (string) $holdRow['status'], 'The temporary Hold is released so inactive capacity is not stranded.');
+        $this->assertSame(0, (int) $slotRow['booked_count'], 'No Appointment was created.');
+        $this->assertSame(0, (int) $slotRow['held_count'], 'Compensation releases the temporary held capacity exactly once.');
+        $appointmentCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id = %d',
+            [$slot['id']]
+        );
+        $this->assertSame(0, $appointmentCount, 'The inactive Location denial creates no Appointment.');
+    }
+
+    public function testRescheduleToInactiveLocationPreservesTheExistingAppointmentAndBothSlotCounters(): void
+    {
+        $locationId = $this->makeSecondaryLocation();
+        $oldSlot = $this->makeSlot(3, '10:00', 1);
+        $newSlot = $this->makeSlot(5, '14:00', 1, 20, $locationId);
+        $hold = $this->booking()->hold(
+            $this->patientUserId,
+            $this->clinicianId,
+            $oldSlot['date'],
+            $oldSlot['time'],
+            $oldSlot['id'],
+            null,
+            $oldSlot['location_id']
+        );
+        $appointment = $this->booking()->confirm($hold['hold_token'], $this->patientUserId, null, $this->uuid());
+        $this->deactivateLocation($locationId);
+
+        try {
+            $this->booking()->reschedule(
+                $this->patientUserId,
+                (int) $appointment['appointment_id'],
+                $this->clinicianId,
+                $newSlot['date'],
+                $newSlot['time'],
+                $this->uuid(),
+                $newSlot['id']
+            );
+            $this->fail('A replacement Appointment must not be created at an inactive destination Location.');
+        } catch (BookingException $exception) {
+            $this->assertSame('CLINIC_NOT_FOUND', $exception->errorCode);
+            $this->assertSame(404, $exception->httpStatus);
+        }
+
+        $oldRow = App::db()->fetchRow(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$oldSlot['id']]
+        );
+        $newRow = App::db()->fetchRow(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$newSlot['id']]
+        );
+        $appointmentRow = App::db()->fetchRow(
+            'SELECT status, rescheduled_to FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [(int) $appointment['appointment_id']]
+        );
+        $appointmentCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE slot_id IN (%d, %d)',
+            [$oldSlot['id'], $newSlot['id']]
+        );
+        $this->assertNotNull($oldRow, 'The source Slot remains persisted.');
+        $this->assertNotNull($newRow, 'The destination Slot remains persisted.');
+        $this->assertNotNull($appointmentRow, 'The original Appointment remains persisted.');
+        $this->assertSame(1, (int) $oldRow['booked_count'], 'Rollback preserves the original booking capacity.');
+        $this->assertSame(0, (int) $newRow['booked_count'], 'Denied destination never claims capacity.');
+        $this->assertSame('confirmed', (string) $appointmentRow['status'], 'The historical Appointment remains confirmed.');
+        $this->assertNull($appointmentRow['rescheduled_to'], 'No replacement link is written.');
+        $this->assertSame(1, $appointmentCount, 'No replacement appointment was persisted.');
+    }
+
+    public function testExistingAppointmentRemainsCancellableAfterLocationDeactivation(): void
+    {
+        $locationId = $this->makeSecondaryLocation();
+        $slot = $this->makeSlot(3, '10:00', 1, 20, $locationId);
+        $hold = $this->booking()->hold(
+            $this->patientUserId,
+            $this->clinicianId,
+            $slot['date'],
+            $slot['time'],
+            $slot['id'],
+            null,
+            $locationId
+        );
+        $appointment = $this->booking()->confirm($hold['hold_token'], $this->patientUserId, null, $this->uuid());
+        $this->deactivateLocation($locationId);
+
+        $cancelled = $this->booking()->cancelByPatient(
+            $this->patientUserId,
+            (int) $appointment['appointment_id'],
+            'Location deactivated'
+        );
+        $appointmentRow = App::db()->fetchRow(
+            'SELECT status, location_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [(int) $appointment['appointment_id']]
+        );
+        $bookedCount = (int) App::db()->fetchValue(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slot['id']]
+        );
+
+        $this->assertNotNull($appointmentRow, 'The historical Appointment remains persisted after cancellation.');
+        $this->assertSame('cancelled_by_patient', $cancelled['status']);
+        $this->assertSame('cancelled_by_patient', (string) $appointmentRow['status']);
+        $this->assertSame($locationId, (int) $appointmentRow['location_id'], 'The historical Appointment retains its Location snapshot.');
+        $this->assertSame(0, $bookedCount, 'Continuity cancellation releases the original capacity.');
     }
 
     public function testResumeAfterDisconnect(): void

@@ -708,9 +708,12 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
             'G5 fixture: zero eligible Locations really persisted.'
         );
         wp_set_current_user($doctorId);
-        $zero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
-        self::assertSame(403, $zero->get_status(), 'G5: 0 eligible Locations fails closed.');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zero), 'G5: established zero-Location denial code.');
+        $zeroMissing = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
+        self::assertSame(400, $zeroMissing->get_status(), 'G5: even with 0 eligible Locations, an absent explicit selector remains a scope-required error.');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zeroMissing), 'G5: the Portal never infers a Location when none is selectable.');
+        $zero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, $locationId));
+        self::assertSame(403, $zero->get_status(), 'G5: a now-inactive explicit Location fails closed when the Clinic has 0 eligible Locations.');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zero), 'G5: established explicit-unavailable denial code.');
     }
 
     // =================================================================

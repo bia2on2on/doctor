@@ -247,6 +247,7 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Otp\OtpPolicy;
 use ClinicCore\Settings\Settings;
 use WP_REST_Request;
@@ -1105,6 +1106,80 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $ttl = strtotime((string) $holdRow['expires_at']) - time();
         self::assertGreaterThanOrEqual(540, $ttl, 'The Hold TTL is the existing configured default (600s), not shorter.');
         self::assertLessThanOrEqual(605, $ttl, 'The Hold TTL is the existing configured default (600s), not longer.');
+    }
+
+    public function testRescheduleCannotMovePatientAppointmentAcrossClinics(): void
+    {
+        $this->buildTwoClinicFixture();
+        $sourceSlot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '10:00:00', 1);
+        $destinationSlot = $this->seedSlot($this->clinicB, $this->locationB, $this->clinicianB, $this->ymdDaysAhead(8), '12:00:00', 1);
+        $mobile = '0912' . str_pad((string) random_int(1, 9999999), 7, '0', STR_PAD_LEFT);
+        $userId = $this->provisionOtpUser($mobile, '717171');
+        $booking = App::bookingService();
+
+        $hold = $booking->hold(
+            $userId,
+            $this->clinicianA,
+            $sourceSlot['date'],
+            $sourceSlot['time'],
+            $sourceSlot['slot_id'],
+            null,
+            $this->locationA
+        );
+        $appointment = $booking->confirm(
+            $hold['hold_token'],
+            $userId,
+            null,
+            $this->uuid(),
+            'Source',
+            'Patient'
+        );
+
+        try {
+            $booking->reschedule(
+                $userId,
+                (int) $appointment['appointment_id'],
+                $this->clinicianB,
+                $destinationSlot['date'],
+                $destinationSlot['time'],
+                $this->uuid(),
+                $destinationSlot['slot_id']
+            );
+            self::fail('A patient reschedule must not transfer a Clinic A Patient into Clinic B.');
+        } catch (BookingException $exception) {
+            self::assertSame('CLINIC_NOT_FOUND', $exception->errorCode);
+            self::assertSame(404, $exception->httpStatus);
+        }
+
+        $source = App::db()->fetchRow(
+            'SELECT clinic_id, patient_id, status, rescheduled_to FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [(int) $appointment['appointment_id']]
+        );
+        self::assertNotNull($source, 'The source Appointment remains persisted.');
+        $patientClinicId = (int) App::db()->fetchValue(
+            'SELECT clinic_id FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [(int) $source['patient_id']]
+        );
+        $sourceBooked = (int) App::db()->fetchValue(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$sourceSlot['slot_id']]
+        );
+        $destinationBooked = (int) App::db()->fetchValue(
+            'SELECT booked_count FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$destinationSlot['slot_id']]
+        );
+        $replacementCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_appointments') . ' WHERE rescheduled_from = %d',
+            [(int) $appointment['appointment_id']]
+        );
+
+        self::assertSame($this->clinicA, (int) $source['clinic_id'], 'The existing Appointment retains its source Clinic.');
+        self::assertSame($this->clinicA, $patientClinicId, 'The Patient remains bound to the source Clinic.');
+        self::assertSame('confirmed', (string) $source['status'], 'A rejected cross-Clinic attempt preserves the existing Appointment.');
+        self::assertNull($source['rescheduled_to'], 'No cross-Clinic replacement link is written.');
+        self::assertSame(1, $sourceBooked, 'The source Slot remains booked.');
+        self::assertSame(0, $destinationBooked, 'The foreign destination Slot remains untouched.');
+        self::assertSame(0, $replacementCount, 'No replacement Appointment or cross-Clinic Patient reference is persisted.');
     }
 
     // =================================================================

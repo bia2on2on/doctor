@@ -951,7 +951,7 @@ def appointment_presentation_problem(dom, patient_name, server_status, expected_
     return None
 
 
-def refresh_appointment_presentation(page, doctor, appt_id, patient_name, label):
+def refresh_appointment_presentation(page, state, doctor, appt_id, patient_name, label):
     """PHASE B — exactly ONE controlled refresh for a legitimately stale DOM.
 
     The Doctor Portal re-renders its appointments from ``/doctor/today`` on
@@ -959,33 +959,45 @@ def refresh_appointment_presentation(page, doctor, appt_id, patient_name, label)
     transition (the real ``visits.no_show`` sweep, confirmed -> no_show, actor
     ``system``) publishes no Visit realtime event, so the live DOM can
     legitimately stay on its previous render while the server has already moved
-    on. The ONE doctor in this fixture has a single eligible Location — the
-    portal hides the Location selector and auto-resolves it (asserted earlier in
-    this journey) — so re-selecting the current Location is not an available
-    path, and the smallest established user-visible refresh is a normal portal
-    navigation: the same established path the journey itself uses on entry.
+    on. The ONE fixture has a single eligible Clinic and Location, but both
+    remain explicit selections. The controlled full-page navigation clears
+    in-memory scope; the harness re-selects the same authorized Clinic and
+    Location through the real selectors and binds the resulting real
+    ``/doctor/today`` response to the refreshed DOM.
 
     Deterministic pairing, never a mock: the REAL ``/doctor/today`` response of
-    THIS refresh is bound with ``expect_response`` BEFORE the navigation, the
-    expected row is read from that bound payload, and the re-rendered DOM of
-    that same document is compared against it. No later fetch is compared with
-    an older render, no response is fulfilled from test code, and no test-only
-    endpoint is invented.
+    THIS re-selection is bound by ``expect_response`` before the Location
+    change, the expected row is read from that response, and the re-rendered
+    DOM is compared against it. No later fetch is compared with an older
+    render, no response is fulfilled from test code, and no test-only endpoint
+    is invented.
 
     Exactly one refresh can occur: this function is reached from one
     straight-line branch, is never called inside a loop, and performs exactly
     one navigation. The counter delta is re-asserted per call as a tripwire.
     """
     before = dict(FALLBACK_STATS)
-    today_pred = lambda r: route_of(r.url).endswith("/doctor/today")
     FALLBACK_STATS["fallback_refresh"] += 1
     if FALLBACK_STATS["fallback_refresh"] - before["fallback_refresh"] > APPT_FALLBACK_REFRESH_MAX:
         raise RuntimeError(f"{label} a second controlled fallback refresh was attempted")
-    with page.expect_response(today_pred, timeout=25000) as today_info:
-        harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
-    bound = payload(
-        _json(today_info.value, "today (bound to the one controlled refresh)")
+
+    goto_portal(page, state)
+    context = assert_scope_unselected(
+        page, state, doctor["clinic_id"], {doctor["clinic_id"]}, f"{label} controlled refresh"
     )
+    if (context.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
+        raise RuntimeError(f"{label} controlled refresh lost the authenticated clinician identity")
+    select_portal_clinic(
+        page,
+        doctor["clinic_id"],
+        {doctor["clinic_id"]},
+        {doctor["location_id"]},
+        f"{label} controlled refresh",
+    )
+    select_portal_location(
+        page, state, doctor["location_id"], f"{label} controlled refresh"
+    )
+    bound = payload(state["todays"][-1])
     if bound.get("location_id") != doctor["location_id"] or bound.get("date") != doctor["today"]:
         raise RuntimeError(
             f"{label} the /doctor/today response bound to the one controlled refresh is "
@@ -1029,7 +1041,7 @@ def refresh_appointment_presentation(page, doctor, appt_id, patient_name, label)
     return server_status, expected_label
 
 
-def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
+def assert_appointment_presentation(page, state, doctor, appt_id, patient_name, label):
     """Bind the rendered appointment row to FRESH ACTUAL server truth.
 
     The appointment is identified by its stable fixture id. Its CURRENT status
@@ -1084,10 +1096,10 @@ def assert_appointment_presentation(page, doctor, appt_id, patient_name, label):
         f"dom={dom.get('status')!r} server={server_status!r} "
         f"bounded_wait_s={APPT_PRESENTATION_WAIT_SECONDS:g}"
     )
-    return refresh_appointment_presentation(page, doctor, appt_id, patient_name, label)
+    return refresh_appointment_presentation(page, state, doctor, appt_id, patient_name, label)
 
 
-def probe_controlled_refresh(page, doctor, appt_id, patient_name, label):
+def probe_controlled_refresh(page, state, doctor, appt_id, patient_name, label):
     """Deterministic probe of the PHASE B path inside the real browser journey.
 
     The divergence the repaired invariant must survive cannot be produced on
@@ -1142,7 +1154,7 @@ def probe_controlled_refresh(page, doctor, appt_id, patient_name, label):
             f"server={server_status!r}"
         )
     bound_status, bound_label = refresh_appointment_presentation(
-        page, doctor, appt_id, patient_name, label
+        page, state, doctor, appt_id, patient_name, label
     )
     delta = {key: FALLBACK_STATS[key] - before[key] for key in FALLBACK_STATS}
     expected = {"fallback_refresh": 1, "refresh_response_bound": 1, "post_refresh_dom_match": 1}
@@ -1167,22 +1179,111 @@ def _json(resp, label):
     return resp.json()
 
 
-def goto_portal(page, state, expect_today):
+def goto_portal(page, state):
+    """Load only the unscoped bootstrap; operational Clinic/Location scope is explicit."""
     reset_net(state)
     context_pred = lambda r: route_of(r.url).endswith("/doctor/portal/context")
-    if expect_today:
-        today_pred = lambda r: route_of(r.url).endswith("/doctor/today")
-        with page.expect_response(context_pred, timeout=25000) as ctx_info:
-            with page.expect_response(today_pred, timeout=25000) as today_info:
-                harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
-        state["context"] = _json(ctx_info.value, "context")
-        state["todays"].append(_json(today_info.value, "today"))
-    else:
-        with page.expect_response(context_pred, timeout=25000) as ctx_info:
-            harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
-        state["context"] = _json(ctx_info.value, "context")
+    with page.expect_response(context_pred, timeout=25000) as ctx_info:
+        harness_goto(page, STAFF_URL, wait_until="domcontentloaded")
+    state["context"] = _json(ctx_info.value, "context")
     page.wait_for_load_state("networkidle")
     assert_shell(page)
+
+
+def assert_scope_unselected(page, state, clinic_id, expected_clinic_ids, label):
+    """Prove that even a sole Clinic/Location is not inferred before selection."""
+    context = payload(state.get("context") or {})
+    selected_clinic = context.get("selected_clinic_id")
+    selected_location = context.get("selected_location_id")
+    if selected_clinic not in (None, 0, "") or selected_location not in (None, 0, ""):
+        raise RuntimeError(f"{label} server bootstrap inferred Clinic or Location scope")
+
+    clinics = [int(row.get("id")) for row in (context.get("clinics") or [])]
+    if set(clinics) != set(expected_clinic_ids) or clinic_id not in clinics:
+        raise RuntimeError(f"{label} eligible Clinics are not the expected set: {clinics}")
+
+    clinic_wrap = page.locator('[data-role="clinic-selector-wrap"]')
+    clinic_select = page.locator('[data-role="clinic-select"]')
+    location_wrap = page.locator('[data-role="location-selector-wrap"]')
+    location_select = page.locator('[data-role="location-select"]')
+    if not clinic_wrap.is_visible() or clinic_select.input_value() != "":
+        raise RuntimeError(f"{label} Clinic must remain visibly unselected until user choice")
+    if location_wrap.is_visible() or location_select.input_value() != "":
+        raise RuntimeError(f"{label} Location must remain unselected until explicit Clinic choice")
+    if any(
+        page.locator(f'[data-role="{role}"]').is_visible()
+        for role in ("today-section", "queue-section", "appointments-section", "rx-history-section")
+    ):
+        raise RuntimeError(f"{label} operational data is visible before explicit Clinic and Location selection")
+    operational_routes = ("/doctor/today", "/rt/queue", "/doctor/portal/prescriptions/history")
+    if any(any(request["route"].endswith(route) for route in operational_routes) for request in state["reqs"]):
+        raise RuntimeError(f"{label} operational data was requested before explicit Clinic and Location selection")
+    return context
+
+
+def select_portal_clinic(page, clinic_id, expected_clinic_ids, expected_location_ids, label):
+    """Select the Clinic explicitly and verify its active Location choices."""
+    if int(clinic_id) not in set(expected_clinic_ids):
+        raise RuntimeError(f"{label} attempted to select a Clinic outside the authorized set")
+    clinic_select = page.locator('[data-role="clinic-select"]')
+    if clinic_select.input_value() != "":
+        raise RuntimeError(f"{label} Clinic was selected before the explicit user action")
+    locations_pred = lambda r: route_of(r.url).endswith("/doctor/portal/locations")
+    with page.expect_response(locations_pred, timeout=20000) as locations_info:
+        clinic_select.select_option(str(clinic_id))
+    location_data = payload(_json(locations_info.value, "eligible Locations"))
+    if int(location_data.get("clinic_id") or 0) != int(clinic_id):
+        raise RuntimeError(f"{label} Location response is not bound to the explicitly selected Clinic")
+    locations = location_data.get("locations") or []
+    location_ids = {int(row.get("id")) for row in locations}
+    if location_ids != set(expected_location_ids):
+        raise RuntimeError(f"{label} active Location set is incorrect: {sorted(location_ids)}")
+
+    page.wait_for_function(
+        """([clinicId, locationIds]) => {
+          const clinic = document.querySelector('[data-role="clinic-select"]');
+          const wrap = document.querySelector('[data-role="location-selector-wrap"]');
+          const location = document.querySelector('[data-role="location-select"]');
+          if (!clinic || clinic.value !== clinicId || !wrap || wrap.hidden || !location || location.value !== '') return false;
+          const values = Array.from(location.options).map(option => option.value);
+          return locationIds.every(id => values.includes(id));
+        }""",
+        arg=[str(clinic_id), [str(item) for item in expected_location_ids]],
+        timeout=20000,
+    )
+    if any(
+        page.locator(f'[data-role="{role}"]').is_visible()
+        for role in ("today-section", "queue-section", "appointments-section", "rx-history-section")
+    ):
+        raise RuntimeError(f"{label} operational data loaded before explicit Location selection")
+    return locations
+
+
+def select_portal_location(page, state, location_id, label, previous_location_id=None):
+    """Select a Location explicitly and bind the rendered day to its real response."""
+    location_select = page.locator('[data-role="location-select"]')
+    expected_before = "" if previous_location_id is None else str(previous_location_id)
+    if location_select.input_value() != expected_before:
+        raise RuntimeError(f"{label} Location selector did not have the expected pre-selection value")
+    today_pred = lambda r: route_of(r.url).endswith("/doctor/today")
+    with page.expect_response(today_pred, timeout=25000) as today_info:
+        location_select.select_option(str(location_id))
+    today_body = _json(today_info.value, "today")
+    state["todays"].append(today_body)
+    data = payload(today_body)
+    if int(data.get("location_id") or 0) != int(location_id):
+        raise RuntimeError(f"{label} /doctor/today response is not bound to the explicit Location")
+    if location_select.input_value() != str(location_id):
+        raise RuntimeError(f"{label} Location selector lost the explicit selection")
+    page.wait_for_function(
+        """() => {
+          const today = document.querySelector('[data-role="today-section"]');
+          const queue = document.querySelector('[data-role="queue-section"]');
+          return !!today && !today.hidden && !!queue && !queue.hidden;
+        }""",
+        timeout=20000,
+    )
+    return data
 
 
 def row_sel(vid):
@@ -2776,8 +2877,24 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
     try:
         login(page, doctor)
         stage = "shell"
-        goto_portal(page, state, expect_today=True)
+        goto_portal(page, state)
         nav0 = nav_mark(page)
+        stage = "explicit-scope"
+        ctx_body = assert_scope_unselected(
+            page, state, doctor["clinic_id"], {doctor["clinic_id"]}, f"{vp['vp']} one-location Clinic"
+        )
+        if (ctx_body.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
+            raise RuntimeError("server clinician identity mismatch")
+        select_portal_clinic(
+            page,
+            doctor["clinic_id"],
+            {doctor["clinic_id"]},
+            {doctor["location_id"]},
+            f"{vp['vp']} one-location Clinic",
+        )
+        select_portal_location(
+            page, state, doctor["location_id"], f"{vp['vp']} one-location Location"
+        )
         page.wait_for_function(
             """(name) => {
               const el = document.querySelector('[data-role="context-title"]');
@@ -2790,6 +2907,18 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]',
             timeout=20000,
         )
+        clinic_select = page.locator('[data-role="clinic-select"]')
+        location_select = page.locator('[data-role="location-select"]')
+        if clinic_select.input_value() != str(doctor["clinic_id"]):
+            raise RuntimeError("the selected Clinic is not the explicit user choice")
+        if location_select.input_value() != str(doctor["location_id"]):
+            raise RuntimeError("the selected Location is not the explicit user choice")
+        clinic_text = page.locator('[data-role="context-clinic"]').inner_text()
+        loc_text = page.locator('[data-role="context-location"]').inner_text()
+        if doctor["clinic_name"] not in clinic_text or doctor["location_name"] not in loc_text:
+            raise RuntimeError("clinic/location identity not visible")
+        if "Asia/Tehran" not in loc_text:
+            raise RuntimeError("location timezone not visible")
         assert_queue_hugs_content(page, vp["vp"])
         if shot_name:
             assert_single_staff_document(page)
@@ -2797,29 +2926,11 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             fp_raw, fp = shell_fingerprint(page)
             CANON_FP[vp["vp"]] = fp_raw
             info(
-                f"canonical-shell-{vp['vp']} fingerprint={fp} single_shell=1 legacy_wrapper=0 wp_admin_chrome=0 "
+                f"canonical-shell-{vp['vp']} fingerprint={fp} single_shell=1 legacy_wrapper=0 wp-admin_chrome=0 "
                 f"theme_chrome=0 queue_w={qm['queue_w']} name_min_w={qm['min_w']} name_max_lines={qm['max_lines']}"
             )
             shot(page, shot_name)
             shot(page, f"staff-portal-{vp['vp']}-canonical-landing")
-        stage = "auto-resolve"
-        ctx_body = payload(state["context"] or {})
-        if ctx_body.get("selected_clinic_id") != doctor["clinic_id"]:
-            raise RuntimeError("one clinic did not auto-resolve")
-        if ctx_body.get("selected_location_id") != doctor["location_id"]:
-            raise RuntimeError("one location did not auto-resolve")
-        if (ctx_body.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
-            raise RuntimeError("server clinician identity mismatch")
-        if page.locator('[data-role="clinic-selector-wrap"]').is_visible():
-            raise RuntimeError("clinic selector visible for one clinic")
-        if page.locator('[data-role="location-selector-wrap"]').is_visible():
-            raise RuntimeError("location selector visible for one location")
-        clinic_text = page.locator('[data-role="context-clinic"]').inner_text()
-        loc_text = page.locator('[data-role="context-location"]').inner_text()
-        if doctor["clinic_name"] not in clinic_text or doctor["location_name"] not in loc_text:
-            raise RuntimeError("clinic/location identity not visible")
-        if "Asia/Tehran" not in loc_text:
-            raise RuntimeError("location timezone not visible")
         stage = "today-queue"
         data = today_data(state)
         if data.get("date") != doctor["today"] or data.get("location_id") != doctor["location_id"]:
@@ -2935,12 +3046,12 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
         # no-show job may legitimately have moved it confirmed -> no_show), never
         # a hardcoded one and never the initially cached response.
         booked_status, booked_label = assert_appointment_presentation(
-            page, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
+            page, state, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
         )
         arrived_status = ""
         if doctor["appt_arrived"]:
             arrived_status, _ = assert_appointment_presentation(
-                page, doctor, doctor["appt_arrived"], doctor["arrived_name"], vp["vp"]
+                page, state, doctor, doctor["appt_arrived"], doctor["arrived_name"], vp["vp"]
             )
             arrived = page.locator(f'[data-appointment-id="{doctor["appt_arrived"]}"]')
             if arrived.get_attribute("data-visit-status") != "checked_in":
@@ -2956,7 +3067,7 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
             # /doctor/today response on this run (see probe_controlled_refresh).
             stage = "fallback-probe"
             probe_controlled_refresh(
-                page, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
+                page, state, doctor, doctor["appt_booked"], doctor["booked_name"], vp["vp"]
             )
         if did_actions:
             # Phase 13 Slice 2 — bounded finalized prescription history +
@@ -2968,7 +3079,20 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
                 and r.request.method == "GET",
                 timeout=25000,
             ):
-                goto_portal(page, state, expect_today=True)
+                goto_portal(page, state)
+                assert_scope_unselected(
+                    page, state, doctor["clinic_id"], {doctor["clinic_id"]}, f"{vp['vp']} history reload"
+                )
+                select_portal_clinic(
+                    page,
+                    doctor["clinic_id"],
+                    {doctor["clinic_id"]},
+                    {doctor["location_id"]},
+                    f"{vp['vp']} history reload",
+                )
+                select_portal_location(
+                    page, state, doctor["location_id"], f"{vp['vp']} history reload"
+                )
             prove_rx_history_state(page, state, vp["vp"])
             prove_rx_history(page, state, doctor, vp["vp"])
         stage = "no-reload"
@@ -2990,11 +3114,11 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
         sw, iw = assert_hygiene(page, state, vp["vp"])
         ok(
             key,
-            "independent shell, one location auto-resolves, own queue only, selector authority",
+            "explicit Clinic and Location selection, own queue only, selector authority",
             f"clinic={doctor['clinic_id']} location={doctor['location_id']} own={doctor['visit_own']} other_hidden=1 clinician_id_sent=0 actions={1 if did_actions else 0} sw={sw} iw={iw}",
         )
         info(
-            f"{key} shell=1 rtl=1 auto_clinic=1 auto_location=1 own_visit=1 other_visit=0 clinician_id_sent=0"
+            f"{key} shell=1 rtl=1 explicit_clinic=1 explicit_location=1 own_visit=1 other_visit=0 clinician_id_sent=0"
             f" booked_status={booked_status} booked_label={booked_label}"
             + (f" arrived_status={arrived_status}" if arrived_status else "")
         )
@@ -3016,47 +3140,82 @@ def prove_multi(browser, doctor, vp, shots=False):
     try:
         login(page, doctor)
         stage = "before"
-        goto_portal(page, state, expect_today=False)
+        goto_portal(page, state)
         nav0 = nav_mark(page)
-        page.wait_for_selector('[data-role="location-selector-wrap"]:not([hidden])', timeout=20000)
         assert_queue_hugs_content(page, vp["vp"])
         if shots:
             shot(page, "doctor-portal-multi-before-selection")
-        ctx_body = payload(state["context"] or {})
-        if ctx_body.get("selected_clinic_id") != doctor["clinic_id"]:
-            raise RuntimeError("multi clinic did not resolve the sole membership")
-        if ctx_body.get("selected_location_id") not in (None, 0, ""):
-            raise RuntimeError("multi location was auto-selected by context")
-        eligible = [int(row.get("id")) for row in (ctx_body.get("eligible_locations") or [])]
-        if set(eligible) != {doctor["loc_a"], doctor["loc_b"]}:
-            raise RuntimeError(f"eligible locations are not exactly A and B: {eligible}")
+        ctx_body = assert_scope_unselected(
+            page, state, doctor["clinic_id"], {doctor["clinic_id"]}, f"{vp['vp']} multi-location Clinic"
+        )
+        if (ctx_body.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
+            raise RuntimeError("multi-location bootstrap lost the authenticated clinician identity")
+
+        stage = "explicit-clinic"
+        locations = select_portal_clinic(
+            page,
+            doctor["clinic_id"],
+            {doctor["clinic_id"]},
+            {doctor["loc_a"], doctor["loc_b"]},
+            f"{vp['vp']} multi-location Clinic",
+        )
+        eligible = {int(row.get("id")) for row in locations}
         if doctor["inactive_loc"] in eligible:
-            raise RuntimeError("inactive location was eligible")
-        if page.locator('[data-role="clinic-selector-wrap"]').is_visible():
-            raise RuntimeError("clinic selector visible for one clinic")
+            raise RuntimeError("inactive Location was eligible")
         select = page.locator('[data-role="location-select"]')
-        if select.input_value() != "":
-            raise RuntimeError("location selector auto-selected a value")
         option_values = select.locator("option").evaluate_all("els => els.map(e => e.value)")
         if str(doctor["loc_a"]) not in option_values or str(doctor["loc_b"]) not in option_values:
-            raise RuntimeError("both eligible locations must be offered")
+            raise RuntimeError("both active Locations must be offered after explicit Clinic selection")
         if str(doctor["inactive_loc"]) in option_values:
-            raise RuntimeError("inactive location was offered")
+            raise RuntimeError("inactive Location was offered")
         if option_values and option_values[0] != "":
-            raise RuntimeError("first option is not the empty placeholder")
-        if page.locator('[data-role="today-section"]').is_visible() or page.locator('[data-role="queue-section"]').is_visible():
-            raise RuntimeError("operational sections visible before location selection")
-        if any(r["route"].endswith("/doctor/today") or r["route"].endswith("/rt/queue") for r in state["reqs"]):
-            raise RuntimeError("today or queue was requested before location selection")
-        if any(r["route"].endswith("/doctor/today") and r["status"] == 200 for r in state["rest"]):
-            raise RuntimeError("today succeeded before location selection")
+            raise RuntimeError("Location selector does not begin with its empty placeholder")
         loc_box = select.bounding_box()
         if not loc_box or loc_box["height"] < 40:
-            raise RuntimeError("location selector is below a touch target")
-        stage = "after"
-        with page.expect_response(lambda r: route_of(r.url).endswith("/doctor/today"), timeout=20000) as today_info:
-            select.select_option(str(doctor["loc_b"]))
-        state["todays"].append(_json(today_info.value, "today"))
+            raise RuntimeError("Location selector is below a touch target")
+        if any(
+            r["route"].endswith("/doctor/today") or r["route"].endswith("/rt/queue")
+            for r in state["reqs"]
+        ):
+            raise RuntimeError("today or queue was requested before explicit Location selection")
+
+        stage = "explicit-location-a"
+        data_a = select_portal_location(
+            page, state, doctor["loc_a"], f"{vp['vp']} explicit Location A"
+        )
+        page.wait_for_selector(
+            f'[data-role="queue-item"][data-visit-id="{doctor["visit_a"]}"]',
+            timeout=20000,
+        )
+        if data_a.get("date") != doctor["today"] or data_a.get("location_id") != doctor["loc_a"]:
+            raise RuntimeError("today response is not bound to explicit Location A")
+        ids_a = [int(row.get("id")) for row in (data_a.get("queue") or [])]
+        if set(ids_a) != {doctor["visit_a"]} or doctor["visit_other"] in ids_a:
+            raise RuntimeError(f"Location A queue isolation failed: {ids_a}")
+        assert_appointment_payload(
+            data_a,
+            [doctor["appt_a"]],
+            [doctor["appt_b"], doctor["appt_colleague"]],
+            f"{vp['vp']} Location A",
+        )
+        assert_appointment_section(
+            page,
+            [doctor["appt_a"]],
+            [doctor["appt_b"], doctor["appt_colleague"]],
+            f"{vp['vp']} Location A",
+        )
+        assert_no_appointments_route(state, f"{vp['vp']} Location A")
+        if set(queue_ids(page)) != {doctor["visit_a"]}:
+            raise RuntimeError("rendered Location A queue does not match its server response")
+
+        stage = "explicit-location-b"
+        data = select_portal_location(
+            page,
+            state,
+            doctor["loc_b"],
+            f"{vp['vp']} explicit Location B",
+            previous_location_id=doctor["loc_a"],
+        )
         page.wait_for_function(
             """(visitId) => !!document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"]')""",
             arg=str(doctor["visit_b"]),
@@ -3066,8 +3225,7 @@ def prove_multi(browser, doctor, vp, shots=False):
         if shots:
             shot(page, "doctor-portal-multi-after-selection")
         if select.input_value() != str(doctor["loc_b"]):
-            raise RuntimeError("location B was not the explicit selection")
-        data = today_data(state)
+            raise RuntimeError("Location B was not the explicit selection")
         if data.get("location_id") != doctor["loc_b"] or data.get("date") != doctor["today"]:
             raise RuntimeError("today after selection is not location B")
         ids = [int(row.get("id")) for row in (data.get("queue") or [])]
@@ -3092,12 +3250,16 @@ def prove_multi(browser, doctor, vp, shots=False):
         assert_no_appointments_route(state, vp["vp"])
         if doctor["appt_b_name"] not in (page.locator('[data-role="appointments-section"]').inner_text() or ""):
             raise RuntimeError("selected location appointment name is not visible")
-        b_reqs = [
+        scoped_reqs = [
             r for r in state["reqs"]
             if r["route"].endswith("/doctor/today") or r["route"].endswith("/rt/queue")
         ]
-        if not b_reqs or any(r["headers"].get("x-cpms-location-id") != str(doctor["loc_b"]) for r in b_reqs):
-            raise RuntimeError("operational requests were not bound to location B")
+        seen_locations = {r["headers"].get("x-cpms-location-id") for r in scoped_reqs}
+        expected_locations = {str(doctor["loc_a"]), str(doctor["loc_b"])}
+        if not scoped_reqs or not expected_locations.issubset(seen_locations):
+            raise RuntimeError("operational requests did not exercise both selected Locations")
+        if any(r["headers"].get("x-cpms-location-id") not in expected_locations for r in scoped_reqs):
+            raise RuntimeError("an operational request escaped the explicitly selected Locations")
         stage = "location-actions"
         prove_location_actions(page, state, doctor, vp["vp"])
         stage = "no-reload"
@@ -3115,10 +3277,12 @@ def prove_multi(browser, doctor, vp, shots=False):
         sw, iw = assert_hygiene(page, state, vp["vp"])
         ok(
             key,
-            "multi-location requires explicit B; today and queue stay on B",
-            f"clinic={doctor['clinic_id']} A={doctor['loc_a']} B={doctor['loc_b']} visitB={doctor['visit_b']} leak=0 clinician_id_sent=0 sw={sw} iw={iw}",
+            "explicit Clinic and Location A/B selections scope separate daily queues",
+            f"clinic={doctor['clinic_id']} A={doctor['loc_a']} B={doctor['loc_b']} "
+            f"visitA={doctor['visit_a']} visitB={doctor['visit_b']} "
+            f"leak=0 clinician_id_sent=0 sw={sw} iw={iw}",
         )
-        info(f"{key} before_today=0 primary_auto_selected=0 after_location=B other_doctor=0 clinician_id_sent=0")
+        info(f"{key} before_scope=unselected explicit_clinic=1 location_A=1 location_B=1 other_doctor=0 clinician_id_sent=0")
     except Exception as e:  # noqa: BLE001
         try:
             shot(page, f"doctor-portal-FAIL-{key}-{stage}")
@@ -3179,12 +3343,28 @@ def prove_legacy(browser, doctor, vp):
                 f"legacy entry navigation count unexpected (harness={harness_docs}, "
                 f"product={after['product_docs'] - before['product_docs']})"
             )
-        context = payload(_json(ctx_info.value, "context (legacy entry)"))
+        context_body = _json(ctx_info.value, "context (legacy entry)")
+        state["context"] = context_body
+        context = payload(context_body)
         if (context.get("doctor") or {}).get("clinician_id") != doctor["clinician_id"]:
             raise RuntimeError("legacy entry lost the authenticated doctor session/identity")
         page.wait_for_load_state("networkidle")
         stage = "shared-shell"
         assert_shell(page)
+        stage = "explicit-scope"
+        assert_scope_unselected(
+            page, state, doctor["clinic_id"], {doctor["clinic_id"]}, f"{vp['vp']} legacy entry"
+        )
+        select_portal_clinic(
+            page,
+            doctor["clinic_id"],
+            {doctor["clinic_id"]},
+            {doctor["location_id"]},
+            f"{vp['vp']} legacy entry",
+        )
+        select_portal_location(
+            page, state, doctor["location_id"], f"{vp['vp']} legacy entry"
+        )
         page.wait_for_selector(
             f'[data-role="queue-item"][data-visit-id="{doctor["visit_own"]}"]',
             timeout=20000,
@@ -3310,7 +3490,20 @@ def prove_handwriting_admin(browser, doctor, vp):
 
     try:
         login(page, doctor)
-        goto_portal(page, state, expect_today=True)
+        goto_portal(page, state)
+        assert_scope_unselected(
+            page, state, doctor["clinic_id"], {doctor["clinic_id"]}, "wp-admin handwriting preflight"
+        )
+        select_portal_clinic(
+            page,
+            doctor["clinic_id"],
+            {doctor["clinic_id"]},
+            {doctor["location_id"]},
+            "wp-admin handwriting preflight",
+        )
+        select_portal_location(
+            page, state, doctor["location_id"], "wp-admin handwriting preflight"
+        )
         identity_response = portal_fetch(page, doctor, "GET", "/doctor/portal/context")
         identity = payload(identity_response["body"]).get("doctor") or {} if identity_response["status"] == 200 else {}
         session_user = identity.get("wp_user_id")
