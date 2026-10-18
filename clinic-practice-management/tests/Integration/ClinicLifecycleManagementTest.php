@@ -80,19 +80,22 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
 
         foreach ( [$this->clinicA, $this->clinicB] as $cid ) {
             if ( $cid > 0 ) {
-                // Booking fixtures created by the suspension tests must go before the
-                // Clinic rows, otherwise the InnoDB FKs (holds/appointments/clinicians
-                // -> clinics) reject the Clinic delete and tearDown cascades.
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_slot_holds' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_slots' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_exceptions' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_patient_user_links' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_invoices' ) . ' WHERE clinic_id = %d', [$cid] );
-                $db->query( 'DELETE FROM ' . $db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d', [$cid] );
+                // FK-safe cleanup order, deepest child first, matching the real InnoDB
+                // constraints (fk_audit_logs_clinic, fk_slots_clinician,
+                // fk_clinics_organization): Slots must go before the Clinician rows they
+                // reference and Audit logs before the Clinic rows, otherwise the deletes
+                // are rejected and committed rows leak into subsequent tests.
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_slot_holds' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_slots' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_exceptions' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_patient_user_links' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_invoices' ) . ' WHERE clinic_id = %d', [ $cid ] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d', [ $cid ] );
             }
         }
         foreach ( $this->membershipRows as $mid ) {
@@ -182,10 +185,36 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         ] );
         $clinician_id = (int) $db->wpdb_last_insert_id();
 
+        // availability() advertises only Slots of an ACTIVE Location owned by this
+        // Clinic whose timezone is a valid identifier, and its default window is built
+        // from the clinician's ACTIVE cpms_schedule rows (defaultAvailabilityWindow +
+        // location_details_map + locationTimezoneMap). A fixture without those rows is
+        // fail-closed to days = [] even for an ACTIVE Clinic, which would make the
+        // positive control vacuous - so the real requirements are seeded here.
         $location_id = (int) $db->fetchValue(
             'SELECT id FROM ' . $db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
             [ $clinic_id ]
         );
+        if ( $location_id > 0 ) {
+            $db->query(
+                'UPDATE ' . $db->table( 'cpms_locations' ) . " SET is_active = 1, timezone = 'Asia/Tehran', updated_at = %s WHERE id = %d",
+                [ $now, $location_id ]
+            );
+        } else {
+            $db->insert( 'cpms_locations', [
+                'clinic_id'  => $clinic_id,
+                'name'       => 'شعبهٔ اصلی تست چرخه حیات',
+                'slug'       => 'lifecycle-primary-' . bin2hex( random_bytes( 3 ) ),
+                'address'    => 'نشانی تست چرخه حیات',
+                'timezone'   => 'Asia/Tehran',
+                'is_primary' => 1,
+                'is_active'  => 1,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ] );
+            $location_id = (int) $db->wpdb_last_insert_id();
+        }
+        self::assertGreaterThan( 0, $location_id, 'the bookable fixture requires an active Location' );
 
         $slots = [];
         for ( $i = 1; $i <= $slot_count; $i++ ) {
@@ -193,7 +222,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             $slot_time = sprintf( '%02d:30:00', 9 + $i );
             $db->insert( 'cpms_schedule_slots', [
                 'clinic_id'     => $clinic_id,
-                'location_id'   => $location_id > 0 ? $location_id : null,
+                'location_id'   => $location_id,
                 'clinician_id'  => $clinician_id,
                 'slot_date'     => $slot_date,
                 'slot_time'     => $slot_time,
@@ -212,7 +241,32 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             ];
         }
 
-        return [ 'clinician_id' => $clinician_id, 'slots' => $slots ];
+        // Active schedule rows per weekday actually used by the seeded Slots: without
+        // them defaultAvailabilityWindow() returns null and the public calendar is
+        // fail-closed to days = [] even though the Slots are bookable.
+        $seeded_days = [];
+        foreach ( $slots as $seeded_slot ) {
+            $day_of_week = (int) gmdate( 'w', (int) strtotime( $seeded_slot['slot_date'] . ' 00:00:00 UTC' ) );
+            if ( isset( $seeded_days[ $day_of_week ] ) ) {
+                continue;
+            }
+            $seeded_days[ $day_of_week ] = true;
+            $db->insert( 'cpms_schedule', [
+                'clinic_id'                => $clinic_id,
+                'clinician_id'             => $clinician_id,
+                'location_id'              => $location_id,
+                'day_of_week'              => $day_of_week,
+                'start_time'               => '08:00:00',
+                'end_time'                 => '18:00:00',
+                'appointment_duration_min' => 20,
+                'slot_capacity'            => 1,
+                'is_active'                => 1,
+                'created_at'               => $now,
+                'updated_at'               => $now,
+            ] );
+        }
+
+        return [ 'clinician_id' => $clinician_id, 'location_id' => $location_id, 'slots' => $slots ];
     }
 
     private function slot_counters( int $slot_id ): array {

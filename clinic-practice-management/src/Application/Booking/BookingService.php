@@ -781,13 +781,19 @@ final class BookingService
                     $slot_id        = (int) $hold['slot_id'];
                     $hold_clinic_id = (int) $hold['clinic_id'];
                     $wp_user_id     = (int) $hold['holder_wp_user_id'];
+                    // A confirmation creates a genuinely new appointment, so it is new
+                    // demand: the Clinic status is revalidated under the Clinic row lock.
+                    // Lock order is fixed across every booking transaction - Clinic row
+                    // first, then Slot rows in ascending id order - so hold(), confirm()
+                    // and rescheduleAs() can never form an ABBA deadlock cycle when a
+                    // suspension races a booking. Denial is side-effect-free: the rolled
+                    // back transaction plus the catch below leave the existing Hold and
+                    // its capacity claim untouched.
+                    $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
                     $slot           = $this->slots->findForUpdate( $slot_id );
                     if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
-                    // A confirmation creates a genuinely new appointment: new demand,
-                    // revalidated under the Clinic row lock after the slot lock.
-                    $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
                     // The final DST decision is made on the locked persisted Slot
                     // before a new Patient, link, or audit can be created.
                     $this->assert_slot_has_bookable_local_time( $slot );
@@ -862,13 +868,23 @@ final class BookingService
             );
         } catch (Throwable $e) {
             // آزادسازی ظرفیت Hold + کلید Idempotency (خارج از Transaction رول‌بک‌شده)
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'released' WHERE id = %d AND status = 'active'",
-                [$holdId]
-            );
-            $this->slots->releaseHold($slotId);
-            $this->idem->release($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
-            throw $this->toBookingException($e);
+            $denial = $this->toBookingException( $e );
+            // CLINIC_SUSPENDED is a policy denial of NEW demand, not a defect of the
+            // existing Hold. Product invariant: a suspension denial is side-effect-free,
+            // so the pre-suspension Hold row and the capacity it legitimately claimed
+            // survive unchanged (continuity) and the patient can retry after the Clinic
+            // is reactivated. Only the Idempotency key is freed, which is required for
+            // that retry. Every other failure keeps the historical compensation
+            // (release Hold capacity + key) outside the rolled-back Transaction.
+            if ( $denial->errorCode !== 'CLINIC_SUSPENDED' ) {
+                $this->db->query(
+                    'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
+                    [ $holdId ]
+                );
+                $this->slots->releaseHold( $slotId );
+            }
+            $this->idem->release( $idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId );
+            throw $denial;
         }
 
         $appt                = $confirmation['appointment'];
@@ -1099,6 +1115,20 @@ final class BookingService
                 } else {
                     $newClinicId = $this->requireClinician($newClinicianId);
                 }
+
+                // Rescheduling creates a genuinely new replacement appointment, so it is
+                // new demand and the DESTINATION Clinic must be active. Read under the
+                // Clinic row lock, inside this transaction and before any Slot lock or
+                // capacity mutation, matching hold()/confirm() (fixed lock order: Clinic
+                // first, then Slots in ascending id order). Both the patient path and the
+                // staff path funnel through here, so neither can bypass the lifecycle.
+                // The SOURCE Clinic is deliberately not gated: leaving/cancelling inside a
+                // suspended Clinic stays allowed (continuity), while a replacement may
+                // only be created in an active one. On denial the whole transaction rolls
+                // back and the catch below frees only the Idempotency key, so the existing
+                // appointment, both Slots and their counters stay byte-identical.
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+                $this->assert_clinic_accepting_new_demand( $newClinicId, true );
 
                 // Resolve new destination slot unambiguously (exact id preferred)
                 $newSlot = $this->resolveSlotForBooking($newClinicId, $newClinicianId, $newDate, $newTime, $newSlotId);
