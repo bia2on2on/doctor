@@ -501,7 +501,7 @@ final class CpmsSetupWizard
 
     private static function renderDoctors(): void
     {
-        $count                 = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
+        $count                 = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
         $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
         $facility_profile      = self::current_facility_profile();
         ?>
