@@ -1257,7 +1257,7 @@ final class App
     }
 
     public static function organization_clinic_provisioning_service(): \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService {
-        return new \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService(self::db(), self::audit());
+        return new \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService( self::db(), self::audit() );
     }
 
     public static function audit(): AuditLogger

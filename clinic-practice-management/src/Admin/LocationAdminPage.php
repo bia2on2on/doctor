@@ -67,22 +67,22 @@ final class LocationAdminPage
             delete_transient( self::NOTICE_KEY );
         }
 
-        $clinic_id = self::formClinicId();
-        $rows = $clinic_id > 0 ? App::locationRepository()->listForClinic( $clinic_id ) : [];
-        $edit = self::editTarget( $clinic_id );
-        $clinicChoices = self::managedClinicChoices( (int) get_current_user_id() );
+        $clinic_id      = self::formClinicId();
+        $rows           = $clinic_id > 0 ? App::locationRepository()->listForClinic( $clinic_id ) : [];
+        $edit           = self::edit_target( $clinic_id );
+        $clinic_choices = self::managed_clinic_choices( (int) get_current_user_id() );
         ?>
         <div class="wrap" dir="rtl">
             <h1>شعبه‌ها و محل‌ها</h1>
             <p class="description">افزودن و ویرایش شعبه‌های همین Clinic، و فعال/غیرفعال‌کردن شعبه‌های غیراصلی بدون حذف سابقه. شعبهٔ اصلی همواره فعال می‌ماند. منطقهٔ زمانی هر شعبه حقیقت عملیاتی همان شعبه است؛ تغییر آن سوابق تاریخی را بازنویسی نمی‌کند.</p>
 
-            <?php if ( $clinicChoices !== [] ) : ?>
+            <?php if ( $clinic_choices !== [] ) : ?>
                 <form method="get" action="<?php echo esc_url( admin_url( 'admin.php' ) ); ?>" class="cpms-autofocus">
                     <input type="hidden" name="page" value="<?php echo esc_attr( self::PAGE_SLUG ); ?>">
                     <label for="cpms_location_clinic">Clinic هدف</label>
                     <select id="cpms_location_clinic" name="clinic_id" required>
                         <option value="">انتخاب Clinic</option>
-                        <?php foreach ( $clinicChoices as $choice ) : ?>
+                        <?php foreach ( $clinic_choices as $choice ) : ?>
                             <option value="<?php echo (int) $choice['clinic_id']; ?>" <?php selected( $clinic_id, (int) $choice['clinic_id'] ); ?>><?php echo esc_html( (string) $choice['clinic_name'] ); ?></option>
                         <?php endforeach; ?>
                     </select>
@@ -200,11 +200,11 @@ final class LocationAdminPage
         $mode = sanitize_key( wp_unslash( $_POST['mode'] ?? 'create' ) ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $in = [
             'mode' => $mode === 'update' ? 'update' : 'create',
-            'clinic_id' => array_key_exists( 'clinic_id', $_POST ) ? absint( $_POST['clinic_id'] ) : null, // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'clinic_id'   => array_key_exists( 'clinic_id', $_POST ) ? absint( $_POST['clinic_id'] ) : null, // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'location_id' => isset( $_POST['location_id'] ) ? absint( $_POST['location_id'] ) : 0, // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-            'name' => isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-            'slug' => isset( $_POST['slug'] ) ? sanitize_text_field( wp_unslash( $_POST['slug'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-            'timezone' => isset( $_POST['timezone'] ) ? sanitize_text_field( wp_unslash( $_POST['timezone'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'name'        => isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'slug'        => isset( $_POST['slug'] ) ? sanitize_text_field( wp_unslash( $_POST['slug'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'timezone'    => isset( $_POST['timezone'] ) ? sanitize_text_field( wp_unslash( $_POST['timezone'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         ];
 
         $result = self::upsertLocation( $in, (int) get_current_user_id() );
@@ -217,21 +217,21 @@ final class LocationAdminPage
     }
 
     /** Handle a nonce-protected status transition from the native admin list. */
-    public static function save_lifecycle(): void
-    {
+    public static function save_lifecycle(): void {
+
         if ( ! is_user_logged_in() ) {
             wp_die( 'دسترسی ندارید', 403 );
         }
         check_admin_referer( self::LIFECYCLE_NONCE_ACTION );
 
-        $actor_user_id = (int) get_current_user_id();
+        $actor_user_id       = (int) get_current_user_id();
         $requested_clinic_id = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        $location_id = isset( $_POST['location_id'] ) ? absint( $_POST['location_id'] ) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-        $active_value = isset( $_POST['active'] ) ? sanitize_text_field( wp_unslash( $_POST['active'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $location_id         = isset( $_POST['location_id'] ) ? absint( $_POST['location_id'] ) : 0; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+        $active_value        = isset( $_POST['active'] ) ? sanitize_text_field( wp_unslash( $_POST['active'] ) ) : ''; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
 
-        $notice = 'خطا: دسترسی مدیریت شعبه‌ها برای این Clinic مجاز نیست.';
+        $notice        = 'خطا: دسترسی مدیریت شعبه‌ها برای این Clinic مجاز نیست.';
         $authorization = self::authorize_location_write( $actor_user_id, $requested_clinic_id );
-        if ( $authorization['error'] === '' && ($active_value === '0' || $active_value === '1') ) {
+        if ( $authorization['error'] === '' && ( $active_value === '0' || $active_value === '1' ) ) {
             try {
                 App::locationService()->set_active(
                     $actor_user_id,
@@ -241,7 +241,7 @@ final class LocationAdminPage
                 );
                 $notice = 'وضعیت شعبه با موفقیت تغییر کرد.';
             } catch ( LocationException $exception ) {
-                $notice = 'خطا: ' . self::mapError( $exception );
+                $notice = 'خطا: ' . self::map_error( $exception );
             }
         } elseif ( $authorization['error'] === '' ) {
             $notice = 'خطا: درخواست نامعتبر است.';
@@ -264,7 +264,7 @@ final class LocationAdminPage
      *
      * @return array{error:string, location_id:int, noop:bool}
      */
-    public static function upsertLocation( array $in, int $updatedBy ): array
+    public static function upsertLocation( array $in, int $updatedBy ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
         if ( $updatedBy <= 0 || ! is_user_logged_in() || (int) get_current_user_id() !== $updatedBy ) {
             return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'location_id' => 0, 'noop' => false];
@@ -304,7 +304,7 @@ final class LocationAdminPage
                 );
             }
         } catch ( LocationException $e ) {
-            return ['error' => self::mapError( $e ), 'location_id' => 0, 'noop' => false];
+            return ['error' => self::map_error( $e ), 'location_id' => 0, 'noop' => false];
         }
 
         return ['error' => '', 'location_id' => (int) $result['location_id'], 'noop' => (bool) $result['noop']];
@@ -314,7 +314,7 @@ final class LocationAdminPage
      * نگاشت خطای دامنه به پیام مرز admin — پیام NOT_FOUND ثابت است تا
      * Location ناموجود و خارجی از بیرون قابل تمایز نباشند.
      */
-    private static function mapError( LocationException $e ): string
+    private static function map_error( LocationException $e ): string
     {
         $code = $e->getErrorCode();
 
@@ -358,12 +358,12 @@ final class LocationAdminPage
     private static function authorize_location_write( int $actor_user_id, ?int $requested_clinic_id ): array
     {
         try {
-            $scope = (new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ))
+            $scope = ( new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ) )
                 ->establish( $actor_user_id, $requested_clinic_id );
-            App::authorization_service()->authorize( $actor_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG );
+            App::authorization_service()->authorize( $actor_user_id, $scope->clinicId, RolesAndCapabilities::CONFIG ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 
             return ['error' => '', 'clinic_id' => (int) $scope->clinicId];
-        } catch ( ScopeRequiredException|AuthorizationException $e ) {
+        } catch ( ScopeRequiredException | AuthorizationException $e ) {
             return ['error' => 'دسترسی مدیریت شعبه‌ها برای این Clinic مجاز نیست.', 'clinic_id' => 0];
         }
     }
@@ -371,7 +371,7 @@ final class LocationAdminPage
     /**
      * @return list<array{clinic_id:int, clinic_name:string}>
      */
-    private static function managedClinicChoices( int $actor_user_id ): array
+    private static function managed_clinic_choices( int $actor_user_id ): array
     {
         if ( $actor_user_id <= 0 ) {
             return [];
@@ -379,13 +379,13 @@ final class LocationAdminPage
 
         $choices = [];
         foreach ( App::membership_service()->active_memberships_for_user( $actor_user_id ) as $membership ) {
-            $clinic_id = (int) ($membership['clinic_id'] ?? 0);
+            $clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
             if ( $clinic_id <= 0 || ! App::authorization_service()->can( $actor_user_id, $clinic_id, RolesAndCapabilities::CONFIG ) ) {
                 continue;
             }
             $choices[] = [
-                'clinic_id' => $clinic_id,
-                'clinic_name' => (string) ($membership['clinic_name'] ?? ('Clinic #' . $clinic_id)),
+                'clinic_id'   => $clinic_id,
+                'clinic_name' => (string) ( $membership['clinic_name'] ?? ( 'Clinic #' . $clinic_id ) ),
             ];
         }
 
@@ -398,7 +398,7 @@ final class LocationAdminPage
      */
     private static function formClinicId(): int
     {
-        $requested = array_key_exists( 'clinic_id', $_GET ) ? absint( $_GET['clinic_id'] ) : null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
+        $requested     = array_key_exists( 'clinic_id', $_GET ) ? absint( $_GET['clinic_id'] ) : null; // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
         $authorization = self::authorize_location_write( (int) get_current_user_id(), $requested );
 
         return $authorization['clinic_id'];
@@ -410,7 +410,7 @@ final class LocationAdminPage
      *
      * @return array<string,mixed>|null
      */
-    private static function editTarget( int $clinic_id ): ?array
+    private static function edit_target( int $clinic_id ): ?array
     {
         if ( $clinic_id <= 0 || ! isset( $_GET['edit'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only
             return null;
@@ -422,7 +422,7 @@ final class LocationAdminPage
         }
 
         $row = App::locationRepository()->find( $location_id );
-        if ( $row === null || (int) ($row['clinic_id'] ?? 0) !== $clinic_id || (int) ($row['is_primary'] ?? 0) === 1 ) {
+        if ( $row === null || (int) ( $row['clinic_id'] ?? 0 ) !== $clinic_id || (int) ( $row['is_primary'] ?? 0 ) === 1 ) {
             return null;
         }
 

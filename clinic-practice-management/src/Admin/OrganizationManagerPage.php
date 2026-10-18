@@ -7,12 +7,12 @@ namespace ClinicCore\Admin;
 use ClinicCore\Bootstrap\App;
 
 /** Classic RTL admin screen; selectors are display-only and revalidated by the domain service. */
-final class OrganizationManagerPage
-{
+final class OrganizationManagerPage {
+
     public const PAGE = 'cpms-organizations';
 
-    public static function register(): void
-    {
+    public static function register(): void {
+
         add_action( 'admin_menu', [ self::class, 'menu' ] );
         add_action( 'admin_post_cpms_provision_organization_clinic', [ self::class, 'handle' ] );
         add_action( 'admin_menu', [ OrganizationManagerBootstrapPage::class, 'menu' ] );
@@ -21,8 +21,8 @@ final class OrganizationManagerPage
         add_action( 'admin_post_' . OrganizationManagerMembershipPage::ACTION, [ OrganizationManagerMembershipPage::class, 'handle' ] );
     }
 
-    public static function menu(): void
-    {
+    public static function menu(): void {
+
         add_menu_page(
             'سازمان‌ها و درمانگاه‌ها',
             'سازمان‌ها',
@@ -34,10 +34,10 @@ final class OrganizationManagerPage
         );
     }
 
-    public static function render(): void
-    {
-        $service = App::organization_clinic_provisioning_service();
-        $actor_id = (int) get_current_user_id();
+    public static function render(): void {
+
+        $service       = App::organization_clinic_provisioning_service();
+        $actor_id      = (int) get_current_user_id();
         $organizations = $service->organizations_for_manager( $actor_id );
 
         echo '<div class="wrap" dir="rtl"><h1>مدیریت سازمان و درمانگاه‌ها</h1>';
@@ -65,12 +65,12 @@ final class OrganizationManagerPage
         echo '</select></td></tr>';
 
         $fields = [
-            'name' => ['نام درمانگاه', 190, true],
-            'slug' => ['شناسهٔ یکتا (لاتین)', 190, true],
-            'timezone' => ['منطقهٔ زمانی IANA', 64, true],
+            'name'          => ['نام درمانگاه', 190, true],
+            'slug'          => ['شناسهٔ یکتا (لاتین)', 190, true],
+            'timezone'      => ['منطقهٔ زمانی IANA', 64, true],
             'location_name' => ['نام مکان اصلی', 190, false],
-            'address' => ['نشانی', 255, false],
-            'phone' => ['تلفن', 32, false],
+            'address'       => ['نشانی', 255, false],
+            'phone'         => ['تلفن', 32, false],
         ];
         foreach ( $fields as $key => [$label, $max_length, $required] ) {
             echo '<tr><th><label for="' . esc_attr( $key ) . '">' . esc_html( $label ) . '</label></th><td>';
@@ -87,8 +87,8 @@ final class OrganizationManagerPage
         echo '</ul></div>';
     }
 
-    public static function handle(): void
-    {
+    public static function handle(): void {
+
         if ( ! is_user_logged_in() ) {
             wp_die( esc_html__( 'دسترسی ندارید', 'cpms' ), 403 );
         }

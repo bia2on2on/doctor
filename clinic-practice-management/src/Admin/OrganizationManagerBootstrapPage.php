@@ -7,14 +7,14 @@ namespace ClinicCore\Admin;
 use ClinicCore\Bootstrap\App;
 
 /** Owner-approved, one-time bootstrap of the first Organization Manager. */
-final class OrganizationManagerBootstrapPage
-{
-    public const PAGE = 'cpms-organization-manager-bootstrap';
-    public const ACTION = 'cpms_bootstrap_organization_manager';
+final class OrganizationManagerBootstrapPage {
+
+    public const PAGE          = 'cpms-organization-manager-bootstrap';
+    public const ACTION        = 'cpms_bootstrap_organization_manager';
     private const NONCE_ACTION = 'cpms_bootstrap_organization_manager';
 
-    public static function menu(): void
-    {
+    public static function menu(): void {
+
         add_submenu_page(
             'options-general.php',
             'فعال‌سازی مدیر اولیهٔ سازمان',
@@ -25,15 +25,15 @@ final class OrganizationManagerBootstrapPage
         );
     }
 
-    public static function render(): void
-    {
+    public static function render(): void {
+
         if ( ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
         }
 
-        $actor_id = (int) get_current_user_id();
+        $actor_id   = (int) get_current_user_id();
         $notice_key = 'cpms_org_bootstrap_notice_' . $actor_id;
-        $notice = get_transient( $notice_key );
+        $notice     = get_transient( $notice_key );
         if ( $notice !== false ) {
             delete_transient( $notice_key );
         }
@@ -48,7 +48,7 @@ final class OrganizationManagerBootstrapPage
 
         if ( is_string( $notice ) && $notice !== '' ) {
             $error = str_starts_with( $notice, 'خطا:' );
-            echo '<div class="notice ' . ($error ? 'notice-error' : 'notice-success') . '"><p>' . esc_html( $notice ) . '</p></div>';
+            echo '<div class="notice ' . ( $error ? 'notice-error' : 'notice-success' ) . '"><p>' . esc_html( $notice ) . '</p></div>';
         }
 
         if ( $organizations === [] ) {
@@ -71,15 +71,17 @@ final class OrganizationManagerBootstrapPage
             echo '<option value="' . (int) $organization['id'] . '">' . esc_html( $label ) . '</option>';
         }
         echo '</select></td></tr><tr><th><label for="cpms-bootstrap-user">مدیر سازمانِ موردنظر</label></th><td>';
-        wp_dropdown_users( [
-            'name' => 'target_user_id',
-            'id' => 'cpms-bootstrap-user',
-            'show' => 'display_name_with_login',
-            'show_option_none' => '— انتخاب صریح کاربر WordPress —',
-            'option_none_value' => '0',
-            'selected' => 0,
-            'class' => 'regular-text',
-        ] );
+        wp_dropdown_users(
+            [
+                'name'              => 'target_user_id',
+                'id'                => 'cpms-bootstrap-user',
+                'show'              => 'display_name_with_login',
+                'show_option_none'  => '— انتخاب صریح کاربر WordPress —',
+                'option_none_value' => '0',
+                'selected'          => 0,
+                'class'             => 'regular-text',
+            ]
+        );
         echo '<p class="description">فقط همان حساب به عضویت organization_manager در سازمان انتخاب‌شده افزوده می‌شود؛ نقش‌های WordPress تغییر نمی‌کنند.</p>';
         echo '</td></tr><tr><th>تأیید نهایی</th><td>';
         echo '<label><input type="checkbox" name="confirm_bootstrap" value="1" required> تأیید می‌کنم سازمان و حساب مدیر بالا را بررسی کرده‌ام و فعال‌سازی اولیه را صریحاً درخواست می‌کنم.</label>';
@@ -88,8 +90,8 @@ final class OrganizationManagerBootstrapPage
     }
 
     /** Request-bound checks used by the POST handler and directly exercised by integration tests. */
-    public static function valid_bootstrap_request( int $actor_id, array $request ): bool
-    {
+    public static function valid_bootstrap_request( int $actor_id, array $request ): bool {
+
         if ( $actor_id <= 0 || $actor_id !== (int) get_current_user_id() || ! current_user_can( 'manage_options' ) ) {
             return false;
         }
@@ -102,15 +104,15 @@ final class OrganizationManagerBootstrapPage
         ) {
             return false;
         }
-        if ( ($request['confirm_bootstrap'] ?? '') !== '1' ) {
+        if ( ( $request['confirm_bootstrap'] ?? '' ) !== '1' ) {
             return false;
         }
 
         return wp_verify_nonce( sanitize_text_field( wp_unslash( $request['_wpnonce'] ) ), self::NONCE_ACTION ) !== false;
     }
 
-    private static function is_positive_integer( mixed $value ): bool
-    {
+    private static function is_positive_integer( mixed $value ): bool {
+
         if ( is_int( $value ) ) {
             return $value > 0;
         }
@@ -118,8 +120,8 @@ final class OrganizationManagerBootstrapPage
         return is_string( $value ) && $value !== '' && ctype_digit( $value ) && (int) $value > 0;
     }
 
-    public static function handle(): void
-    {
+    public static function handle(): void {
+
         if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
         }
@@ -135,7 +137,7 @@ final class OrganizationManagerBootstrapPage
         }
 
         $organization_id = absint( $_POST['organization_id'] );
-        $target_user_id = absint( $_POST['target_user_id'] );
+        $target_user_id  = absint( $_POST['target_user_id'] );
         try {
             $result = App::organization_clinic_provisioning_service()->bootstrap_owner(
                 $actor_id,
@@ -146,12 +148,15 @@ final class OrganizationManagerBootstrapPage
                 ? 'این حساب از قبل مدیر فعالِ یکتای همین سازمان است؛ تغییری انجام نشد.'
                 : 'مدیر اولیهٔ سازمان با موفقیت فعال شد. هیچ دسترسی Clinic، بالینی یا مالی اعطا نشد.';
         } catch ( \Throwable $exception ) {
-            App::op()->warning( 'ORGANIZATION_MANAGER_BOOTSTRAP_FAILED', [
-                'actor_wp_user_id' => $actor_id,
-                'organization_id' => $organization_id,
-                'target_wp_user_id' => $target_user_id,
-                'reason' => $exception->getMessage(),
-            ] );
+            App::op()->warning(
+                'ORGANIZATION_MANAGER_BOOTSTRAP_FAILED',
+                [
+                    'actor_wp_user_id'  => $actor_id,
+                    'organization_id'   => $organization_id,
+                    'target_wp_user_id' => $target_user_id,
+                    'reason'            => $exception->getMessage(),
+                ]
+            );
             $notice = 'خطا: فعال‌سازی انجام نشد؛ سازمان یا کاربر نامعتبر، غیرفعال، متعارض یا قبلاً مدیریت‌شده است. هیچ تغییری ثبت نشد.';
         }
 

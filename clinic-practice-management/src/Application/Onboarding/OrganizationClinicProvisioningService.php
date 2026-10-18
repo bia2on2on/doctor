@@ -10,11 +10,11 @@ use InvalidArgumentException;
 use RuntimeException;
 
 /** Organization-scoped Clinic creation; this authority never grants Clinic/PHI access. */
-final class OrganizationClinicProvisioningService
-{
-    public const CAPABILITY = 'cpms_org_clinic_create';
+final class OrganizationClinicProvisioningService {
+
+    public const CAPABILITY            = 'cpms_org_clinic_create';
     public const MEMBERSHIP_CAPABILITY = 'cpms_org_membership_manage';
-    public const AUDIT_ACTION = 'ORGANIZATION_CLINIC_PROVISIONED';
+    public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
 
     public function __construct(
         private readonly CpmsDb $db,
@@ -23,8 +23,8 @@ final class OrganizationClinicProvisioningService
     }
 
     /** @return list<array{id:int,name:string}> */
-    public function organizations_for_manager( int $actor_id, string $permission = self::CAPABILITY ): array
-    {
+    public function organizations_for_manager( int $actor_id, string $permission = self::CAPABILITY ): array {
+
         if ( $actor_id <= 0 ) {
             return [];
         }
@@ -42,7 +42,7 @@ final class OrganizationClinicProvisioningService
             $organization_id = (int) $row['id'];
             if ( $this->authorized( $actor_id, $organization_id, false, $permission ) ) {
                 $out[] = [
-                    'id' => $organization_id,
+                    'id'   => $organization_id,
                     'name' => (string) $row['name'],
                 ];
             }
@@ -52,8 +52,8 @@ final class OrganizationClinicProvisioningService
     }
 
     /** @return list<array{id:int,name:string,slug:string}> */
-    public function clinics_for_manager( int $actor_id ): array
-    {
+    public function clinics_for_manager( int $actor_id ): array {
+
         if ( $actor_id <= 0 ) {
             return [];
         }
@@ -63,7 +63,7 @@ final class OrganizationClinicProvisioningService
             . ' WHERE wp_user_id = %d AND status = %s AND role_key = %s ORDER BY organization_id',
             [$actor_id, 'active', 'organization_manager']
         );
-        $out = [];
+        $out     = [];
 
         foreach ( $members as $member ) {
             $organization_id = (int) $member['organization_id'];
@@ -78,7 +78,7 @@ final class OrganizationClinicProvisioningService
             );
             foreach ( $clinics as $clinic ) {
                 $out[] = [
-                    'id' => (int) $clinic['id'],
+                    'id'   => (int) $clinic['id'],
                     'name' => (string) $clinic['name'],
                     'slug' => (string) $clinic['slug'],
                 ];
@@ -112,7 +112,7 @@ final class OrganizationClinicProvisioningService
             throw new InvalidArgumentException( 'invalid timezone' );
         }
 
-        $location_name = trim( (string) ($location_name ?? $name) );
+        $location_name = trim( (string) ( $location_name ?? $name ) );
         if ( $location_name === '' || mb_strlen( $location_name ) > 190 ) {
             throw new InvalidArgumentException( 'invalid location name' );
         }
@@ -123,200 +123,223 @@ final class OrganizationClinicProvisioningService
             }
         }
 
-        return $this->db->transactional( function () use (
-            $actor_id,
-            $organization_id,
-            $name,
-            $slug,
-            $timezone,
-            $location_name,
-            $address,
-            $phone
-        ): array {
-            $organization = $this->db->fetchRowForUpdate(
-                'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
-                [$organization_id]
-            );
-            if (
-                $organization === null
-                || (string) $organization['status'] !== 'active'
-                || ! $this->authorized( $actor_id, $organization_id, true )
-            ) {
-                throw new RuntimeException( 'organization provisioning denied' );
-            }
+        return $this->db->transactional(
+            function () use (
+                $actor_id,
+                $organization_id,
+                $name,
+                $slug,
+                $timezone,
+                $location_name,
+                $address,
+                $phone
+            ): array {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [$organization_id]
+                );
+                if (
+                    $organization === null
+                    || (string) $organization['status'] !== 'active'
+                    || ! $this->authorized( $actor_id, $organization_id, true )
+                ) {
+                    throw new RuntimeException( 'organization provisioning denied' );
+                }
 
-            if ( $this->db->fetchValue(
-                'SELECT id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE slug = %s LIMIT 1',
-                [$slug]
-            ) !== null ) {
-                throw new RuntimeException( 'clinic slug unavailable' );
-            }
+                if ( $this->db->fetchValue(
+                    'SELECT id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE slug = %s LIMIT 1',
+                    [$slug]
+                ) !== null ) {
+                    throw new RuntimeException( 'clinic slug unavailable' );
+                }
 
-            $now = $this->db->nowUtcSql();
-            if ( ! $this->db->insert( 'cpms_clinics', [
-                'organization_id' => $organization_id,
-                'name' => $name,
-                'slug' => $slug,
-                'timezone' => $timezone,
-                'address' => $address,
-                'phone' => $phone,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ] ) ) {
-                throw new RuntimeException( 'clinic creation failed' );
-            }
-            $clinic_id = $this->db->wpdb_last_insert_id();
-            if ( $clinic_id <= 0 ) {
-                throw new RuntimeException( 'clinic id unavailable' );
-            }
+                $now = $this->db->nowUtcSql();
+                if ( ! $this->db->insert(
+                    'cpms_clinics',
+                    [
+                        'organization_id' => $organization_id,
+                        'name'            => $name,
+                        'slug'            => $slug,
+                        'timezone'        => $timezone,
+                        'address'         => $address,
+                        'phone'           => $phone,
+                        'created_at'      => $now,
+                        'updated_at'      => $now,
+                    ]
+                ) ) {
+                    throw new RuntimeException( 'clinic creation failed' );
+                }
+                $clinic_id = $this->db->wpdb_last_insert_id();
+                if ( $clinic_id <= 0 ) {
+                    throw new RuntimeException( 'clinic id unavailable' );
+                }
 
-            if ( ! $this->db->insert( 'cpms_locations', [
-                'clinic_id' => $clinic_id,
-                'name' => $location_name,
-                'slug' => 'main',
-                'address' => $address,
-                'phone' => $phone,
-                'timezone' => $timezone,
-                'is_primary' => 1,
-                'is_active' => 1,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ] ) ) {
-                throw new RuntimeException( 'primary location creation failed' );
-            }
-            $location_id = $this->db->wpdb_last_insert_id();
-            if ( $location_id <= 0 ) {
-                throw new RuntimeException( 'location id unavailable' );
-            }
+                if ( ! $this->db->insert(
+                    'cpms_locations',
+                    [
+                        'clinic_id'  => $clinic_id,
+                        'name'       => $location_name,
+                        'slug'       => 'main',
+                        'address'    => $address,
+                        'phone'      => $phone,
+                        'timezone'   => $timezone,
+                        'is_primary' => 1,
+                        'is_active'  => 1,
+                        'created_at' => $now,
+                        'updated_at' => $now,
+                    ]
+                ) ) {
+                    throw new RuntimeException( 'primary location creation failed' );
+                }
+                $location_id = $this->db->wpdb_last_insert_id();
+                if ( $location_id <= 0 ) {
+                    throw new RuntimeException( 'location id unavailable' );
+                }
 
-            $audit_id = $this->audit->log(
-                self::AUDIT_ACTION,
-                ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
-                'clinic',
-                (int) $clinic_id,
-                null,
-                null,
-                ['organization_id' => $organization_id, 'slug' => $slug, 'timezone' => $timezone],
-                ['location_id' => $location_id],
-                (int) $clinic_id
-            );
+                $audit_id = $this->audit->log(
+                    self::AUDIT_ACTION,
+                    ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
+                    'clinic',
+                    (int) $clinic_id,
+                    null,
+                    null,
+                    ['organization_id' => $organization_id, 'slug' => $slug, 'timezone' => $timezone],
+                    ['location_id' => $location_id],
+                    (int) $clinic_id
+                );
 
-            return [
-                'clinic_id' => (int) $clinic_id,
-                'location_id' => (int) $location_id,
-                'audit_id' => $audit_id,
-            ];
-        } );
+                return [
+                    'clinic_id'   => (int) $clinic_id,
+                    'location_id' => (int) $location_id,
+                    'audit_id'    => $audit_id,
+                ];
+            }
+        );
     }
 
     /** Explicit organization-scoped manager grant/revocation; last active manager is protected. */
-    public function set_manager( int $actor_id, int $organization_id, int $target_user_id, bool $active ): int
-    {
+    public function set_manager( int $actor_id, int $organization_id, int $target_user_id, bool $active ): int {
+
         if ( $actor_id <= 0 || $organization_id <= 0 || $target_user_id <= 0 || get_userdata( $target_user_id ) === false ) {
             throw new InvalidArgumentException( 'invalid membership subject' );
         }
 
-        return $this->db->transactional( function () use ( $actor_id, $organization_id, $target_user_id, $active ): int {
-            $organization = $this->db->fetchRowForUpdate(
-                'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
-                [$organization_id]
-            );
-            if (
-                $organization === null
-                || $organization['status'] !== 'active'
-                || ! $this->authorized( $actor_id, $organization_id, true, self::MEMBERSHIP_CAPABILITY )
-            ) {
-                throw new RuntimeException( 'organization membership management denied' );
-            }
-
-            $membership_table = $this->db->table( 'cpms_organization_memberships' );
-            $target = $this->db->fetchRowForUpdate(
-                'SELECT id, status, role_key FROM ' . $membership_table
-                . ' WHERE organization_id = %d AND wp_user_id = %d LIMIT 1',
-                [$organization_id, $target_user_id]
-            );
-            if ( $target !== null && $target['role_key'] !== 'organization_manager' ) {
-                throw new RuntimeException( 'organization membership role conflict' );
-            }
-            if ( $target === null && ! $active ) {
-                throw new RuntimeException( 'organization membership not found' );
-            }
-            if ( $target !== null && $active && $target['status'] === 'active' ) {
-                return (int) $target['id'];
-            }
-            if ( $target !== null && ! $active && $target['status'] === 'suspended' ) {
-                return (int) $target['id'];
-            }
-
-            if ( ! $active && $target !== null && $target['status'] === 'active' && $target['role_key'] === 'organization_manager' ) {
-                $manager_count = (int) $this->db->fetchValue(
-                    'SELECT COUNT(*) FROM ' . $membership_table
-                    . ' WHERE organization_id = %d AND status = %s AND role_key = %s',
-                    [$organization_id, 'active', 'organization_manager']
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $target_user_id, $active ): int {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [$organization_id]
                 );
-                if ( $manager_count <= 1 ) {
-                    throw new RuntimeException( 'cannot remove last active organization manager' );
+                if (
+                    $organization === null
+                    || $organization['status'] !== 'active'
+                    || ! $this->authorized( $actor_id, $organization_id, true, self::MEMBERSHIP_CAPABILITY )
+                ) {
+                    throw new RuntimeException( 'organization membership management denied' );
                 }
-            }
 
-            $now = $this->db->nowUtcSql();
-            if ( $active ) {
-                if ( $target === null ) {
-                    if ( ! $this->db->insert( 'cpms_organization_memberships', [
-                        'organization_id' => $organization_id,
-                        'wp_user_id' => $target_user_id,
-                        'role_key' => 'organization_manager',
-                        'status' => 'active',
-                        'created_by_wp_user_id' => $actor_id,
-                        'created_at' => $now,
-                        'updated_at' => $now,
-                    ] ) ) {
-                        throw new RuntimeException( 'organization membership grant failed' );
-                    }
-                    $membership_id = $this->db->wpdb_last_insert_id();
-                    if ( $membership_id <= 0 ) {
-                        throw new RuntimeException( 'organization membership id unavailable' );
-                    }
-                } else {
-                    $membership_id = (int) $target['id'];
-                    $updated = $this->db->update( 'cpms_organization_memberships', [
-                        'role_key' => 'organization_manager',
-                        'status' => 'active',
-                        'updated_at' => $now,
-                    ], ['id' => $membership_id], true );
-                    if ( $updated !== 1 ) {
-                        throw new RuntimeException( 'organization membership grant failed' );
-                    }
+                $membership_table = $this->db->table( 'cpms_organization_memberships' );
+                $target           = $this->db->fetchRowForUpdate(
+                    'SELECT id, status, role_key FROM ' . $membership_table
+                    . ' WHERE organization_id = %d AND wp_user_id = %d LIMIT 1',
+                    [$organization_id, $target_user_id]
+                );
+                if ( $target !== null && $target['role_key'] !== 'organization_manager' ) {
+                    throw new RuntimeException( 'organization membership role conflict' );
                 }
-            } else {
-                if ( $target === null ) {
+                if ( $target === null && ! $active ) {
                     throw new RuntimeException( 'organization membership not found' );
                 }
-                $membership_id = (int) $target['id'];
-                $updated = $this->db->update( 'cpms_organization_memberships', [
-                    'status' => 'suspended',
-                    'updated_at' => $now,
-                ], ['id' => $membership_id], true );
-                if ( $updated !== 1 ) {
-                    throw new RuntimeException( 'organization membership revoke failed' );
+                if ( $target !== null && $active && $target['status'] === 'active' ) {
+                    return (int) $target['id'];
                 }
+                if ( $target !== null && ! $active && $target['status'] === 'suspended' ) {
+                    return (int) $target['id'];
+                }
+
+                if ( ! $active && $target !== null && $target['status'] === 'active' && $target['role_key'] === 'organization_manager' ) {
+                    $manager_count = (int) $this->db->fetchValue(
+                        'SELECT COUNT(*) FROM ' . $membership_table
+                        . ' WHERE organization_id = %d AND status = %s AND role_key = %s',
+                        [$organization_id, 'active', 'organization_manager']
+                    );
+                    if ( $manager_count <= 1 ) {
+                        throw new RuntimeException( 'cannot remove last active organization manager' );
+                    }
+                }
+
+                $now = $this->db->nowUtcSql();
+                if ( $active ) {
+                    if ( $target === null ) {
+                        if ( ! $this->db->insert(
+                            'cpms_organization_memberships',
+                            [
+                                'organization_id'       => $organization_id,
+                                'wp_user_id'            => $target_user_id,
+                                'role_key'              => 'organization_manager',
+                                'status'                => 'active',
+                                'created_by_wp_user_id' => $actor_id,
+                                'created_at'            => $now,
+                                'updated_at'            => $now,
+                            ]
+                        ) ) {
+                            throw new RuntimeException( 'organization membership grant failed' );
+                        }
+                        $membership_id = $this->db->wpdb_last_insert_id();
+                        if ( $membership_id <= 0 ) {
+                            throw new RuntimeException( 'organization membership id unavailable' );
+                        }
+                    } else {
+                        $membership_id = (int) $target['id'];
+                        $updated       = $this->db->update(
+                            'cpms_organization_memberships',
+                            [
+                                'role_key'   => 'organization_manager',
+                                'status'     => 'active',
+                                'updated_at' => $now,
+                            ],
+                            ['id' => $membership_id],
+                            true
+                        );
+                        if ( $updated !== 1 ) {
+                            throw new RuntimeException( 'organization membership grant failed' );
+                        }
+                    }
+                } else {
+                    if ( $target === null ) {
+                        throw new RuntimeException( 'organization membership not found' );
+                    }
+                    $membership_id = (int) $target['id'];
+                    $updated       = $this->db->update(
+                        'cpms_organization_memberships',
+                        [
+                            'status'     => 'suspended',
+                            'updated_at' => $now,
+                        ],
+                        ['id' => $membership_id],
+                        true
+                    );
+                    if ( $updated !== 1 ) {
+                        throw new RuntimeException( 'organization membership revoke failed' );
+                    }
+                }
+
+                $this->audit->log(
+                    $active ? 'ORGANIZATION_MANAGER_GRANTED' : 'ORGANIZATION_MANAGER_REVOKED',
+                    ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
+                    'organization',
+                    $organization_id,
+                    null,
+                    null,
+                    null,
+                    ['target_wp_user_id' => $target_user_id, 'active' => $active],
+                    null,
+                    true
+                );
+
+                return (int) $membership_id;
             }
-
-            $this->audit->log(
-                $active ? 'ORGANIZATION_MANAGER_GRANTED' : 'ORGANIZATION_MANAGER_REVOKED',
-                ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
-                'organization',
-                $organization_id,
-                null,
-                null,
-                null,
-                ['target_wp_user_id' => $target_user_id, 'active' => $active],
-                null,
-                true
-            );
-
-            return (int) $membership_id;
-        } );
+        );
     }
 
     /**
@@ -325,8 +348,8 @@ final class OrganizationClinicProvisioningService
      *
      * @return array{membership_id:int,noop:bool,audit_id:int|null}
      */
-    public function bootstrap_owner( int $actor_id, int $organization_id, int $target_user_id ): array
-    {
+    public function bootstrap_owner( int $actor_id, int $organization_id, int $target_user_id ): array {
+
         if (
             $actor_id <= 0
             || $actor_id !== (int) get_current_user_id()
@@ -338,80 +361,85 @@ final class OrganizationClinicProvisioningService
             throw new RuntimeException( 'organization manager bootstrap denied' );
         }
 
-        return $this->db->transactional( function () use ( $actor_id, $organization_id, $target_user_id ): array {
-            $organization = $this->db->fetchRowForUpdate(
-                'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
-                [$organization_id]
-            );
-            if ( $organization === null || $organization['status'] !== 'active' ) {
-                throw new RuntimeException( 'organization manager bootstrap denied' );
-            }
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $target_user_id ): array {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [$organization_id]
+                );
+                if ( $organization === null || $organization['status'] !== 'active' ) {
+                    throw new RuntimeException( 'organization manager bootstrap denied' );
+                }
 
-            // The Organization lock serializes competing first-manager claims.
-            // Lock every assignment: bootstrap never silently coexists with an
-            // ambiguous Organization-level role or replaces a prior manager.
-            $assignments = $this->db->fetchAllForUpdate(
-                'SELECT id, wp_user_id, status, role_key FROM ' . $this->db->table( 'cpms_organization_memberships' )
-                . ' WHERE organization_id = %d ORDER BY id',
-                [$organization_id]
-            );
-            if (
-                count( $assignments ) === 1
-                && (int) $assignments[0]['wp_user_id'] === $target_user_id
-                && $assignments[0]['role_key'] === 'organization_manager'
-                && $assignments[0]['status'] === 'active'
-            ) {
+                // The Organization lock serializes competing first-manager claims.
+                // Lock every assignment: bootstrap never silently coexists with an
+                // ambiguous Organization-level role or replaces a prior manager.
+                $assignments = $this->db->fetchAllForUpdate(
+                    'SELECT id, wp_user_id, status, role_key FROM ' . $this->db->table( 'cpms_organization_memberships' )
+                    . ' WHERE organization_id = %d ORDER BY id',
+                    [$organization_id]
+                );
+                if (
+                    count( $assignments ) === 1
+                    && (int) $assignments[0]['wp_user_id'] === $target_user_id
+                    && $assignments[0]['role_key'] === 'organization_manager'
+                    && $assignments[0]['status'] === 'active'
+                ) {
+                    return [
+                        'membership_id' => (int) $assignments[0]['id'],
+                        'noop'          => true,
+                        'audit_id'      => null,
+                    ];
+                }
+                if ( $assignments !== [] ) {
+                    throw new RuntimeException( 'organization manager bootstrap conflict' );
+                }
+
+                $now = $this->db->nowUtcSql();
+                if ( ! $this->db->insert(
+                    'cpms_organization_memberships',
+                    [
+                        'organization_id'       => $organization_id,
+                        'wp_user_id'            => $target_user_id,
+                        'role_key'              => 'organization_manager',
+                        'status'                => 'active',
+                        'created_by_wp_user_id' => $actor_id,
+                        'created_at'            => $now,
+                        'updated_at'            => $now,
+                    ]
+                ) ) {
+                    throw new RuntimeException( 'organization manager bootstrap membership failed' );
+                }
+                $membership_id = $this->db->wpdb_last_insert_id();
+                if ( $membership_id <= 0 ) {
+                    throw new RuntimeException( 'organization manager bootstrap membership failed' );
+                }
+
+                $audit_id = $this->audit->log(
+                    'ORGANIZATION_MANAGER_BOOTSTRAPPED',
+                    ['wp_user_id' => $actor_id, 'role' => 'wordpress_administrator'],
+                    'organization',
+                    $organization_id,
+                    null,
+                    null,
+                    ['target_wp_user_id' => $target_user_id, 'role_key' => 'organization_manager', 'status' => 'active'],
+                    ['authority' => 'owner_approved_wordpress_administrator_bootstrap'],
+                    null,
+                    true
+                );
+
                 return [
-                    'membership_id' => (int) $assignments[0]['id'],
-                    'noop' => true,
-                    'audit_id' => null,
+                    'membership_id' => (int) $membership_id,
+                    'noop'          => false,
+                    'audit_id'      => $audit_id,
                 ];
             }
-            if ( $assignments !== [] ) {
-                throw new RuntimeException( 'organization manager bootstrap conflict' );
-            }
-
-            $now = $this->db->nowUtcSql();
-            if ( ! $this->db->insert( 'cpms_organization_memberships', [
-                'organization_id' => $organization_id,
-                'wp_user_id' => $target_user_id,
-                'role_key' => 'organization_manager',
-                'status' => 'active',
-                'created_by_wp_user_id' => $actor_id,
-                'created_at' => $now,
-                'updated_at' => $now,
-            ] ) ) {
-                throw new RuntimeException( 'organization manager bootstrap membership failed' );
-            }
-            $membership_id = $this->db->wpdb_last_insert_id();
-            if ( $membership_id <= 0 ) {
-                throw new RuntimeException( 'organization manager bootstrap membership failed' );
-            }
-
-            $audit_id = $this->audit->log(
-                'ORGANIZATION_MANAGER_BOOTSTRAPPED',
-                ['wp_user_id' => $actor_id, 'role' => 'wordpress_administrator'],
-                'organization',
-                $organization_id,
-                null,
-                null,
-                ['target_wp_user_id' => $target_user_id, 'role_key' => 'organization_manager', 'status' => 'active'],
-                ['authority' => 'owner_approved_wordpress_administrator_bootstrap'],
-                null,
-                true
-            );
-
-            return [
-                'membership_id' => (int) $membership_id,
-                'noop' => false,
-                'audit_id' => $audit_id,
-            ];
-        } );
+        );
     }
 
-    private function authorized( int $actor_id, int $organization_id, bool $lock, string $permission = self::CAPABILITY ): bool
-    {
-        $read = $lock ? 'fetchRowForUpdate' : 'fetchRow';
+    private function authorized( int $actor_id, int $organization_id, bool $lock, string $permission = self::CAPABILITY ): bool {
+
+        $read       = $lock ? 'fetchRowForUpdate' : 'fetchRow';
         $membership = $this->db->$read(
             'SELECT id, role_key, status FROM ' . $this->db->table( 'cpms_organization_memberships' )
             . ' WHERE organization_id = %d AND wp_user_id = %d LIMIT 1',
@@ -425,7 +453,7 @@ final class OrganizationClinicProvisioningService
             return false;
         }
 
-        $read_all = $lock ? 'fetchAllForUpdate' : 'fetchAll';
+        $read_all  = $lock ? 'fetchAllForUpdate' : 'fetchAll';
         $overrides = $this->db->$read_all(
             'SELECT capability, effect FROM ' . $this->db->table( 'cpms_organization_membership_capabilities' )
             . ' WHERE membership_id = %d',

@@ -47,13 +47,13 @@ final class AuditLogger
         ?array $before,
         ?array $after,
         array $meta = [],
-        ?int $clinicId = null,
-        bool $suppressScopeFallback = false
+        ?int $clinicId = null, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public audit API parameter name
+        bool $suppress_scope_fallback = false
     ): int {
         // C6 (AD-13): کلینیک صریحِ event یا Scope فعالِ درخواست؛ اگر Scope
         // مبهم/ناموجود بود (event واقعاً سیستمی) NULL ثبت می‌شود — ستون از
         // 0016 nullable است؛ NULL = سیستمی، نه «1».
-        if ($clinicId === null && ! $suppressScopeFallback) {
+        if ( $clinicId === null && ! $suppress_scope_fallback ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public audit API parameter name
             try {
                 $clinicId = App::scope()->clinicId;
             } catch (ScopeRequiredException) {

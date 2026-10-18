@@ -50,8 +50,8 @@ final class LocationRepository
      *
      * @return array<string,mixed>|null
      */
-    public function find_for_update( int $location_id, int $clinic_id ): ?array
-    {
+    public function find_for_update( int $location_id, int $clinic_id ): ?array {
+
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
             return null;
         }
@@ -67,8 +67,8 @@ final class LocationRepository
     }
 
     /** @return int number of active Locations in the Clinic */
-    public function active_count_for_clinic( int $clinic_id ): int
-    {
+    public function active_count_for_clinic( int $clinic_id ): int {
+
         if ( $clinic_id <= 0 ) {
             return 0;
         }
@@ -86,8 +86,8 @@ final class LocationRepository
     /**
      * Conditional lifecycle write. Caller holds the Clinic and Location locks.
      */
-    public function set_active( int $location_id, int $clinic_id, bool $active, int $expected, string $now_sql ): int
-    {
+    public function set_active( int $location_id, int $clinic_id, bool $active, int $expected, string $now_sql ): int {
+
         $changed = $this->db->update(
             'cpms_locations',
             ['is_active' => $active ? 1 : 0, 'updated_at' => $now_sql],
@@ -106,7 +106,7 @@ final class LocationRepository
      *
      * @return array<string,mixed>|null
      */
-    public function findBySlug( int $clinic_id, string $slug ): ?array
+    public function findBySlug( int $clinic_id, string $slug ): ?array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
         if ( $clinic_id <= 0 || $slug === '' ) {
             return null;
@@ -132,7 +132,7 @@ final class LocationRepository
      *
      * @return array<string,mixed>|null
      */
-    public function findActiveForClinic( int $clinic_id, int $location_id ): ?array
+    public function findActiveForClinic( int $clinic_id, int $location_id ): ?array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
         if ( $clinic_id <= 0 || $location_id <= 0 ) {
             return null;
@@ -152,7 +152,7 @@ final class LocationRepository
     /**
      * @return list<array<string,mixed>>
      */
-    public function listForClinic( int $clinic_id ): array
+    public function listForClinic( int $clinic_id ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
         if ( $clinic_id <= 0 ) {
             return [];
@@ -184,16 +184,19 @@ final class LocationRepository
             throw new RuntimeException( 'invalid trusted clinic id for location create' );
         }
 
-        $ok = $this->db->insert( 'cpms_locations', [
-            'clinic_id' => $clinic_id,
-            'name' => $name,
-            'slug' => $slug,
-            'timezone' => $timezone,
-            'is_primary' => 0,
-            'is_active' => 1,
-            'created_at' => $now_sql,
-            'updated_at' => $now_sql,
-        ] );
+        $ok = $this->db->insert(
+            'cpms_locations',
+            [
+                'clinic_id'  => $clinic_id,
+                'name' => $name,
+                'slug' => $slug,
+                'timezone' => $timezone,
+                'is_primary' => 0,
+                'is_active' => 1,
+                'created_at' => $now_sql,
+                'updated_at' => $now_sql,
+            ]
+        );
 
         if ( ! $ok ) {
             throw new RuntimeException( 'location insert failed' );
@@ -215,7 +218,7 @@ final class LocationRepository
      * @return int affected rows (0 = no-op یا not-found — تمایز با check وجودِ قبلی سرویس)
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function updateProfile( int $location_id, string $name, string $timezone, string $now_sql ): int
+    public function updateProfile( int $location_id, string $name, string $timezone, string $now_sql ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
         if ( $location_id <= 0 ) {
             throw new RuntimeException( 'invalid location id' );

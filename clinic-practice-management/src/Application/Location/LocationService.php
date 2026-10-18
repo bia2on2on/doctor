@@ -51,13 +51,13 @@ final class LocationService
      *
      * @throws LocationException
      */
-    public function createLocation( int $actor_user_id, int $trusted_clinic_id, array $input ): array
+    public function createLocation( int $actor_user_id, int $trusted_clinic_id, array $input ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
-        $this->guardActorAndScope( $actor_user_id, $trusted_clinic_id );
+        $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
         // ---- اعتبارسنجی کامل قبل از هر mutation ----
-        $name = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
-        $slug = self::sanitizeSlug( (string) ($input['slug'] ?? '') );
+        $name     = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
+        $slug     = self::sanitize_slug( (string) ( $input['slug'] ?? '' ) );
         $timezone = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
 
         $errors = [];
@@ -112,10 +112,10 @@ final class LocationService
             throw LocationException::of( LocationException::QUERY_FAILED, 'خطای پایگاه داده هنگام ساخت محل', 500, ['reason' => $e->getMessage()] );
         }
 
-        $row = $this->readBack( $location_id );
+        $row = $this->read_back( $location_id );
 
         // ---- readback: invariantهای قطعی CREATE باید دقیقاً برقرار باشند ----
-        if ( (int) ($row['clinic_id'] ?? 0) !== $trusted_clinic_id
+        if ( (int) ( $row['clinic_id'] ?? 0 ) !== $trusted_clinic_id
             || (int) ($row['is_primary'] ?? 1) !== 0
             || (int) ($row['is_active'] ?? 0) !== 1
         ) {
@@ -139,7 +139,7 @@ final class LocationService
             ['op' => 'location_create']
         );
 
-        return $this->resultRow( $row, false );
+        return $this->result_row( $row, false );
     }
 
     /**
@@ -151,9 +151,9 @@ final class LocationService
      *
      * @throws LocationException
      */
-    public function updateLocation( int $actor_user_id, int $trusted_clinic_id, int $location_id, array $input ): array
+    public function updateLocation( int $actor_user_id, int $trusted_clinic_id, int $location_id, array $input ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
-        $this->guardActorAndScope( $actor_user_id, $trusted_clinic_id );
+        $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
         // ---- خواندن ردیف durable اول؛ مالکیت باید با trusted Clinic یکی باشد ----
         // Location ناموجود و Location خارجی دقیقاً denial یکسان می‌گیرند.
@@ -163,12 +163,12 @@ final class LocationService
             throw LocationException::of( LocationException::QUERY_FAILED, 'خطای پایگاه داده', 500, ['reason' => $e->getMessage()] );
         }
 
-        if ( $current === null || (int) ($current['clinic_id'] ?? 0) !== $trusted_clinic_id ) {
+        if ( $current === null || (int) ( $current['clinic_id'] ?? 0 ) !== $trusted_clinic_id ) {
             throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
         }
 
         // ---- اعتبارسنجی کامل قبل از mutation ----
-        $name = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
+        $name     = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
         $timezone = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
 
         $errors = [];
@@ -189,14 +189,14 @@ final class LocationService
         }
 
         // ---- mutation: فقط name/timezone/updated_at ----
-        $beforeName = (string) ($current['name'] ?? '');
-        $beforeTimezone = (string) ($current['timezone'] ?? '');
+        $before_name = (string) ($current['name'] ?? '');
+        $before_timezone = (string) ($current['timezone'] ?? '');
 
         // ---- no-op صریح: مقادیر یکسان = بدون update، بدون تغییر updated_at و
         // بدون success-audit گمراه‌کننده. «0 affected rows» هرگز نشانهٔ گم‌شدن
         // object نیست — object از قبل با find() احراز شده است. ----
-        if ( $name === $beforeName && $timezone === $beforeTimezone ) {
-            return $this->resultRow( $current, true );
+        if ( $name === $before_name && $timezone === $before_timezone ) {
+            return $this->result_row( $current, true );
         }
 
         $now = $this->db->nowUtcSql();
@@ -209,10 +209,10 @@ final class LocationService
             throw LocationException::of( LocationException::QUERY_FAILED, 'خطای پایگاه داده هنگام به‌روزرسانی محل', 500, ['reason' => $e->getMessage()] );
         }
 
-        $row = $this->readBack( $location_id );
+        $row = $this->read_back( $location_id );
 
         // ---- ستون‌های محافظت‌شده باید دست‌نخورده باشند ----
-        if ( (int) ($row['clinic_id'] ?? 0) !== (int) ($current['clinic_id'] ?? 0)
+        if ( (int) ( $row['clinic_id'] ?? 0 ) !== (int) ( $current['clinic_id'] ?? 0 )
             || (string) ($row['slug'] ?? '') !== (string) ($current['slug'] ?? '')
             || (int) ($row['is_primary'] ?? 0) !== (int) ($current['is_primary'] ?? 0)
             || (int) ($row['is_active'] ?? 0) !== (int) ($current['is_active'] ?? 0)
@@ -227,8 +227,8 @@ final class LocationService
             $location_id,
             $trusted_clinic_id,
             [
-                'location.name' => $beforeName,
-                'location.timezone' => $beforeTimezone,
+                'location.name' => $before_name,
+                'location.timezone' => $before_timezone,
             ],
             [
                 'location.name' => $name,
@@ -238,7 +238,7 @@ final class LocationService
             ['op' => 'location_update']
         );
 
-        return $this->resultRow( $row, false );
+        return $this->result_row( $row, false );
     }
 
     /**
@@ -249,82 +249,84 @@ final class LocationService
      * @return array{location_id:int, clinic_id:int, name:string, slug:string, timezone:string, is_primary:int, is_active:int, created_at:string, updated_at:string, noop:bool}
      * @throws LocationException
      */
-    public function set_active( int $actor_user_id, int $trusted_clinic_id, int $location_id, bool $active ): array
-    {
-        $this->guardActorAndScope( $actor_user_id, $trusted_clinic_id );
+    public function set_active( int $actor_user_id, int $trusted_clinic_id, int $location_id, bool $active ): array {
+
+        $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
         if ( $location_id <= 0 ) {
             throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
         }
 
-        return $this->db->transactional( function  () use ( $actor_user_id, $trusted_clinic_id, $location_id, $active ): array {
-            $clinic = $this->db->fetchRowForUpdate(
-                'SELECT c.id, o.status AS organization_status FROM ' . $this->db->table( 'cpms_clinics' ) . ' c'
-                . ' JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
-                . ' WHERE c.id = %d LIMIT 1',
-                [$trusted_clinic_id]
-            );
-            if ( $clinic === null || $clinic['organization_status'] !== 'active' ) {
-                throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
-            }
-
-            $current = $this->locations->find_for_update( $location_id, $trusted_clinic_id );
-            if ( $current === null ) {
-                throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
-            }
-            $was_active = (int) $current['is_active'] === 1;
-            if ( $was_active === $active ) {
-                return $this->resultRow( $current, true );
-            }
-            if ( ! $active && (int) $current['is_primary'] === 1 ) {
-                throw LocationException::of(
-                    LocationException::LIFECYCLE_CONFLICT,
-                    'محل اصلی قابل غیرفعال‌سازی نیست.',
-                    409
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $trusted_clinic_id, $location_id, $active ): array {
+                $clinic = $this->db->fetchRowForUpdate(
+                    'SELECT c.id, o.status AS organization_status FROM ' . $this->db->table( 'cpms_clinics' ) . ' c'
+                    . ' JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+                    . ' WHERE c.id = %d LIMIT 1',
+                    [$trusted_clinic_id]
                 );
-            }
-            if ( ! $active && $this->locations->active_count_for_clinic( $trusted_clinic_id ) <= 1 ) {
-                throw LocationException::of(
-                    LocationException::LIFECYCLE_CONFLICT,
-                    'حداقل یک محل فعال برای Clinic لازم است.',
-                    409
+                if ( $clinic === null || $clinic['organization_status'] !== 'active' ) {
+                    throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
+                }
+
+                $current = $this->locations->find_for_update( $location_id, $trusted_clinic_id );
+                if ( $current === null ) {
+                    throw LocationException::of( LocationException::NOT_FOUND, 'محل موردنظر یافت نشد', 404 );
+                }
+                $was_active = (int) $current['is_active'] === 1;
+                if ( $was_active === $active ) {
+                    return $this->result_row( $current, true );
+                }
+                if ( ! $active && (int) $current['is_primary'] === 1 ) {
+                    throw LocationException::of(
+                        LocationException::LIFECYCLE_CONFLICT,
+                        'محل اصلی قابل غیرفعال‌سازی نیست.',
+                        409
+                    );
+                }
+                if ( ! $active && $this->locations->active_count_for_clinic( $trusted_clinic_id ) <= 1 ) {
+                    throw LocationException::of(
+                        LocationException::LIFECYCLE_CONFLICT,
+                        'حداقل یک محل فعال برای Clinic لازم است.',
+                        409
+                    );
+                }
+
+                $now     = $this->db->nowUtcSql();
+                $changed = $this->locations->set_active(
+                    $location_id,
+                    $trusted_clinic_id,
+                    $active,
+                    $was_active ? 1 : 0,
+                    $now
                 );
+                if ( $changed !== 1 ) {
+                    throw LocationException::of( LocationException::QUERY_FAILED, 'تغییر وضعیت محل ثبت نشد.', 409 );
+                }
+
+                $action = $active ? 'LOCATION_REACTIVATED' : 'LOCATION_DEACTIVATED';
+                $this->audit->log(
+                    $action,
+                    ['wp_user_id' => $actor_user_id],
+                    'location',
+                    $location_id,
+                    null,
+                    ['location.is_active' => $was_active ? 1 : 0],
+                    ['location.is_active' => $active ? 1 : 0],
+                    ['op' => $active ? 'location_reactivate' : 'location_deactivate'],
+                    $trusted_clinic_id
+                );
+
+                $updated = $this->read_back( $location_id );
+                if ( (int) $updated['clinic_id'] !== $trusted_clinic_id || (int) $updated['is_active'] !== ( $active ? 1 : 0 ) ) {
+                    throw LocationException::of( LocationException::QUERY_FAILED, 'وضعیت محل پس از ذخیره قابل تأیید نبود.', 500 );
+                }
+
+                return $this->result_row( $updated, false );
             }
-
-            $now = $this->db->nowUtcSql();
-            $changed = $this->locations->set_active(
-                $location_id,
-                $trusted_clinic_id,
-                $active,
-                $was_active ? 1 : 0,
-                $now
-            );
-            if ( $changed !== 1 ) {
-                throw LocationException::of( LocationException::QUERY_FAILED, 'تغییر وضعیت محل ثبت نشد.', 409 );
-            }
-
-            $action = $active ? 'LOCATION_REACTIVATED' : 'LOCATION_DEACTIVATED';
-            $this->audit->log(
-                $action,
-                ['wp_user_id' => $actor_user_id],
-                'location',
-                $location_id,
-                null,
-                ['location.is_active' => $was_active ? 1 : 0],
-                ['location.is_active' => $active ? 1 : 0],
-                ['op' => $active ? 'location_reactivate' : 'location_deactivate'],
-                $trusted_clinic_id
-            );
-
-            $updated = $this->readBack( $location_id );
-            if ( (int) $updated['clinic_id'] !== $trusted_clinic_id || (int) $updated['is_active'] !== ($active ? 1 : 0) ) {
-                throw LocationException::of( LocationException::QUERY_FAILED, 'وضعیت محل پس از ذخیره قابل تأیید نبود.', 500 );
-            }
-
-            return $this->resultRow( $updated, false );
-        } );
+        );
     }
 
-    private function guardActorAndScope( int $actor_user_id, int $trusted_clinic_id ): void
+    private function guard_actor_and_scope( int $actor_user_id, int $trusted_clinic_id ): void
     {
         if ( $actor_user_id <= 0 ) {
             throw LocationException::of( LocationException::AUTH_REQUIRED, 'احراز هویت لازم است', 401 );
@@ -355,7 +357,7 @@ final class LocationService
      *
      * @throws LocationException
      */
-    private function readBack( int $location_id ): array
+    private function read_back( int $location_id ): array
     {
         try {
             $row = $this->locations->find( $location_id );
@@ -404,7 +406,7 @@ final class LocationService
                     'LOCATION_AUDIT_FAILED',
                     ['clinic_id' => $trusted_clinic_id, 'location_id' => $location_id, 'error' => $e->getMessage()]
                 );
-            } catch ( \Throwable ) {
+            } catch ( \Throwable ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- WPCS
                 // ignore — شکست دوبارهٔ logger نباید مسیر موفق را شکست بدهد
             }
         }
@@ -415,7 +417,7 @@ final class LocationService
      *
      * @return array{location_id:int, clinic_id:int, name:string, slug:string, timezone:string, is_primary:int, is_active:int, created_at:string, updated_at:string, noop:bool}
      */
-    private function resultRow( array $row, bool $noop ): array
+    private function result_row( array $row, bool $noop ): array
     {
         return [
             'location_id' => (int) ($row['id'] ?? 0),
@@ -434,7 +436,7 @@ final class LocationService
     /**
      * slug با کانوانسیون WordPress: trim → فاصله‌ها به خط تیره → sanitize_key.
      */
-    private static function sanitizeSlug( string $raw ): string
+    private static function sanitize_slug( string $raw ): string
     {
         return sanitize_key( str_replace( ' ', '-', trim( $raw ) ) );
     }
