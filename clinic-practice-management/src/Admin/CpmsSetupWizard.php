@@ -11,6 +11,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 
@@ -426,7 +427,7 @@ final class CpmsSetupWizard
                 </tr>
                 <tr>
                     <th><label for="caddr">آدرس</label></th>
-                    <td><input type="text" id="caddr" name="clinic_address" class="regular-text" value="<?php echo esc_attr($address); ?>"></td>
+                    <td><?php AddressSelectorField::render( $address, 'caddr', 'address_province', 'address_city', 'caddr' ); ?><input type="text" id="caddr" name="clinic_address" class="regular-text" value="<?php echo esc_attr( $address ); ?>"></td>
                 </tr>
                 <tr>
                     <th><label for="cphone">تلفن</label></th>
@@ -1497,9 +1498,19 @@ final class CpmsSetupWizard
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
         // Input normalization (same as service validation but early check for UX)
-        $name = trim((string) ($post['clinic_name'] ?? ''));
-        $address = trim((string) ($post['clinic_address'] ?? ''));
-        $phone = trim((string) ($post['clinic_phone'] ?? ''));
+        $name             = trim( (string) ( $post['clinic_name'] ?? '' ) );
+        $address          = trim( (string) ( $post['clinic_address'] ?? '' ) );
+        $address_province = trim( (string) ( $post['address_province'] ?? '' ) );
+        $address_city     = trim( (string) ( $post['address_city'] ?? '' ) );
+        $phone            = trim( (string) ( $post['clinic_phone'] ?? '' ) );
+
+        if ( $address_province !== '' || $address_city !== '' ) {
+            try {
+                $address = (string) ( IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city ) ?? '' );
+            } catch ( \InvalidArgumentException $e ) {
+                return $e->getMessage();
+            }
+        }
 
         // Basic pre-validation to keep error messages consistent with old wizard
         if ($name === '') {

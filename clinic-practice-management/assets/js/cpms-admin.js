@@ -167,9 +167,41 @@
     if (host) { host.focus(); }
   }
 
+  // 4) انتخابگر آفلاین استان/شهر ایران (بدون هیچ فراخوانی شبکه‌ای یا وابستگی خارجی).
+  function bindAddressGeography() {
+    Array.prototype.forEach.call(document.querySelectorAll('[data-cpms-address-geography="1"]'), function (box) {
+      var provinceSelect = box.querySelector('[data-cpms-province-select="1"]');
+      var citySelect = box.querySelector('[data-cpms-city-select="1"]');
+      if (!provinceSelect || !citySelect) { return; }
+
+      function syncCityOptions(resetOnMismatch) {
+        var selectedProvince = provinceSelect.value || '';
+        Array.prototype.forEach.call(citySelect.querySelectorAll('optgroup[data-province]'), function (group) {
+          var groupProvince = group.getAttribute('data-province') || '';
+          var mismatch = selectedProvince !== '' && groupProvince !== selectedProvince;
+          group.hidden = mismatch;
+          group.disabled = mismatch;
+        });
+        if (resetOnMismatch) {
+          var currentOption = citySelect.options[citySelect.selectedIndex];
+          var optionProvince = currentOption ? (currentOption.getAttribute('data-province') || '') : '';
+          if (selectedProvince === '' || (optionProvince !== '' && optionProvince !== selectedProvince)) {
+            citySelect.value = '';
+          }
+        }
+      }
+
+      provinceSelect.addEventListener('change', function () {
+        syncCityOptions(true);
+      });
+      syncCityOptions(false);
+    });
+  }
+
   function init() {
     bindConfirms();
     bindCapSearch();
+    bindAddressGeography();
     autofocusHost();
   }
 

@@ -30,6 +30,16 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+from rwp_classic_submissions import (
+    run_admin_bootstrap_and_b4_boundary,
+    run_clinic_manager_location_lifecycle,
+    run_non_admin_bootstrap_denial,
+    run_org_manager_clinic_lifecycle,
+    run_unverified_patient_enrollment,
+    run_verified_patient_enrollment,
+    setup_classic_submission_fixtures,
+)
+
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 WP_DIR = os.environ.get("WP_DIR", "")
 ADMIN_USER = os.environ["ADMIN_USER"]
@@ -1691,6 +1701,52 @@ with sync_playwright() as p:
 
     # ---------- Public Booking (shortcode) — شاهدِ Plain-permalink برای A1 ----------
     public_booking_permalink(browser)
+
+    # ---------- Classic Real-Browser Submissions (Cross-Clinic Enrollment, Org Manager Bootstrap, B1/B2/B3/B4 + Iran Offline Geography) ----------
+    if WP_DIR:
+        classic_fx = setup_classic_submission_fixtures(wp_eval_php, check)
+        if classic_fx:
+            unv_pat_ctx = new_persona_context(browser)
+            unv_pat_page = unv_pat_ctx.new_page()
+            if login(unv_pat_page, classic_fx["unverified_patient_login"], classic_fx["pass"], "classic-patient-unverified"):
+                run_unverified_patient_enrollment(unv_pat_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            unv_pat_page.close()
+            unv_pat_ctx.close()
+
+            enr_pat_ctx = new_persona_context(browser)
+            enr_pat_page = enr_pat_ctx.new_page()
+            if login(enr_pat_page, classic_fx["verified_patient_login"], classic_fx["pass"], "classic-patient-enroll"):
+                run_verified_patient_enrollment(enr_pat_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            enr_pat_page.close()
+            enr_pat_ctx.close()
+
+            non_adm_ctx = new_persona_context(browser)
+            non_adm_page = non_adm_ctx.new_page()
+            if login(non_adm_page, classic_fx["non_admin_login"], classic_fx["pass"], "classic-bootstrap-denied"):
+                run_non_admin_bootstrap_denial(non_adm_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            non_adm_page.close()
+            non_adm_ctx.close()
+
+            boot_adm_ctx = new_persona_context(browser)
+            boot_adm_page = boot_adm_ctx.new_page()
+            if login(boot_adm_page, classic_fx["pure_admin_login"], classic_fx["pass"], "classic-pure-admin"):
+                run_admin_bootstrap_and_b4_boundary(boot_adm_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            boot_adm_page.close()
+            boot_adm_ctx.close()
+
+            org_mgr_ctx = new_persona_context(browser)
+            org_mgr_page = org_mgr_ctx.new_page()
+            if login(org_mgr_page, classic_fx["org_manager_login"], classic_fx["pass"], "classic-org-manager"):
+                run_org_manager_clinic_lifecycle(org_mgr_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            org_mgr_page.close()
+            org_mgr_ctx.close()
+
+            loc_mgr_ctx = new_persona_context(browser)
+            loc_mgr_page = loc_mgr_ctx.new_page()
+            if login(loc_mgr_page, classic_fx["loc_manager_login"], classic_fx["pass"], "classic-loc-manager"):
+                run_clinic_manager_location_lifecycle(loc_mgr_page, check, wp_eval_php, BASE, OUT, classic_fx)
+            loc_mgr_page.close()
+            loc_mgr_ctx.close()
 
     browser.close()
 
