@@ -412,11 +412,12 @@ final class CpmsSetupWizard
 
         ?>
         <?php self::open_step_form( 'clinic' ); ?>
+        <?php $facility_profile = self::current_facility_profile(); ?>
         <div class="card">
-            <h2>مشخصات کلینیک</h2>
+            <h2>مشخصات <?php echo esc_html( $facility_profile['unit'] ); ?></h2>
             <table class="form-table" role="presentation">
                 <tr>
-                    <th><label for="cname">نام کلینیک</label></th>
+                    <th><label for="cname"><?php echo esc_html( $facility_profile['name_label'] ); ?></label></th>
                     <td><input type="text" id="cname" name="clinic_name" class="regular-text" required value="<?php echo esc_attr($name); ?>"></td>
                 </tr>
                 <tr>
@@ -502,11 +503,12 @@ final class CpmsSetupWizard
     {
         $count = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
         $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
+        $facility_profile = self::current_facility_profile();
         ?>
         <div class="card">
-            <h2>پزشکان</h2>
-            <p>پزشکان را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن پزشک بدون حذف تاریخچه انجام می‌شود.</p>
-            <p>تعداد پزشکان فعال: <strong><?php echo esc_html((string) $count); ?></strong></p>
+            <h2><?php echo esc_html( $facility_profile['clinicians'] ); ?></h2>
+            <p><?php echo esc_html( $facility_profile['clinicians'] ); ?> را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن <?php echo esc_html( $facility_profile['clinician'] ); ?> بدون حذف تاریخچه انجام می‌شود.</p>
+            <p>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال: <strong><?php echo esc_html((string) $count); ?></strong></p>
             <?php if ( $can_manage_clinicians ) : ?>
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
@@ -514,10 +516,10 @@ final class CpmsSetupWizard
         <?php self::open_step_form( 'doctors' ); ?>
         <div class="card">
             <p>
-                <label for="cpms_intended_clinicians">تعداد پزشکان موردنظر</label>
+                <label for="cpms_intended_clinicians">تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> موردنظر</label>
                 <input type="number" id="cpms_intended_clinicians" name="intended_clinicians" min="1" max="200" style="max-width:100%;" value="<?php echo esc_attr( (string) max( 1, self::intended_clinicians( App::settings() ) ) ); ?>">
             </p>
-            <p class="description">این گام فقط وقتی کامل است که دست‌کم به همین تعداد پزشک فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.</p>
+            <p class="description">این گام فقط وقتی کامل است که دست‌کم به همین تعداد <?php echo esc_html( $facility_profile['clinician'] ); ?> فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.</p>
             <?php self::submit_step_form( 'doctors', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -691,13 +693,14 @@ final class CpmsSetupWizard
     private static function render_review( Settings $settings ): void {
         $clinic_name  = self::canonical_clinic_name( $settings );
         $doctor_count = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $facility_profile = self::current_facility_profile();
         ?>
         <div class="card">
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
-                <tr><th>نام کلینیک</th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
-                <tr><th>پزشکان فعال</th><td><?php echo esc_html( (string) $doctor_count ); ?></td></tr>
-                <tr><th>تعداد پزشکان موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
+                <tr><th><?php echo esc_html( $facility_profile['name_label'] ); ?></th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
+                <tr><th><?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال</th><td><?php echo esc_html( (string) $doctor_count ); ?></td></tr>
+                <tr><th>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
                 <tr><th>مکان‌های فعال</th><td><?php echo esc_html( (string) count( array_filter( App::locationRepository()->listForClinic( (int) App::scope()->clinicId ), static fn ( $loc ) => (int) ( $loc['is_active'] ?? 0 ) === 1 ) ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase ?></td></tr>
                 <tr><th>مدت پیش‌فرض نوبت (دقیقه)</th><td><?php echo esc_html( (string) (int) $settings->get( 'booking.duration_default_min', 20 ) ); ?></td></tr>
                 <tr><th>گام‌های الزامیِ باقی‌مانده</th><td>
@@ -773,7 +776,59 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
+        // Resumable/shared presentation state: the Clinic-scoped stored
+        // structure is the fallback so every authorized manager of the same
+        // Clinic sees the same adaptive flow. Read-only; GET never writes.
+        try {
+            $stored = (string) ( App::settings()->get( 'setup.facility_structure', '' ) ?? '' );
+            if ( isset( FacilityTypeCatalog::structures()[ $stored ] ) ) {
+                return $stored;
+            }
+        } catch ( \Throwable ) {
+            // Without Clinic-scoped Settings no structure is selected.
+        }
+
         return '';
+    }
+
+    /**
+     * Flow resolved from the persisted Clinic-scoped selection only
+     * ('' when no valid facility type is stored). Used for safe
+     * configuration-evolution checks; never from request input.
+     */
+    private static function persisted_flow( Settings $settings ): string {
+        $facility = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
+        if ( ! FacilityTypeCatalog::is_valid( $facility ) ) {
+            return '';
+        }
+        $structure = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
+        if ( ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
+            $structure = '';
+        }
+
+        return FacilityTypeCatalog::resolve_flow( $facility, $structure );
+    }
+
+    /**
+     * Adaptive Persian presentation profile for the current selection;
+     * generic legacy wording when nothing is selected. Presentation only.
+     *
+     * @return array{unit:string,clinician:string,clinicians:string,name_label:string}
+     */
+    private static function current_facility_profile(): array {
+        $facility = self::selected_facility_type();
+        if ( $facility === '' ) {
+            try {
+                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+                if ( FacilityTypeCatalog::is_valid( $stored ) ) {
+                    $facility = $stored;
+                }
+            } catch ( \Throwable ) {
+                $facility = '';
+            }
+        }
+
+        return FacilityTypeCatalog::type_profile( $facility );
     }
 
     private static function current_flow(): string {
@@ -1074,7 +1129,22 @@ final class CpmsSetupWizard
         if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
             return 'ساختار مجموعه نامعتبر است.';
         }
+        // Safe configuration evolution (fail-closed, non-destructive):
+        // once setup is completed for a persisted flow, a change to a
+        // DIFFERENT flow is refused here before any write; the explicit
+        // restart action (progress-only, never touches Clinic/Location/
+        // Membership rows) is the sanctioned path. Same-flow evolution
+        // (e.g. درمانگاه عمومی → کلینیک دندانپزشکی) is always allowed and
+        // also never touches tenant rows — presentation/config only.
+        if ( (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+            $persisted = self::persisted_flow( $settings );
+            $next      = FacilityTypeCatalog::resolve_flow( $facility, $structure );
+            if ( $persisted !== '' && $next !== $persisted ) {
+                return 'راه‌اندازی این مرکز با جریان قبلی تکمیل شده است؛ تغییر به جریان متفاوت از این گام مجاز نیست. برای شروع دوباره از «بازنشانی پیشرفت راه‌اندازی» استفاده کنید؛ هیچ دادهٔ کلینیک، کاربر یا عضویتی حذف نمی‌شود.';
+            }
+        }
         $settings->set( 'setup.facility_type', $facility, $updated_by );
+        $settings->set( 'setup.facility_structure', $structure, $updated_by );
         if ( $updated_by > 0 ) {
             update_user_meta( $updated_by, 'cpms_onboarding_facility_type', $facility );
             update_user_meta( $updated_by, 'cpms_onboarding_structure', $structure );

@@ -53,6 +53,49 @@ final class FacilityTypeCatalog {
     }
 
     /**
+     * Adaptive Persian presentation profile for one facility type.
+     *
+     * Presentation/configuration ONLY: these labels never grant
+     * authorization, never define a tenant boundary and never change
+     * validation semantics (flow-level validation stays authoritative).
+     * An empty/unknown id returns the generic legacy profile so old
+     * installations keep the previous "نام کلینیک + پزشک" wording.
+     *
+     * @return array{unit:string,clinician:string,clinicians:string,name_label:string}
+     */
+    public static function type_profile( string $id ): array {
+        $defaults = [
+            'unit'       => 'کلینیک',
+            'clinician'  => 'پزشک',
+            'clinicians' => 'پزشکان',
+            'name_label' => 'نام کلینیک',
+        ];
+        $profiles = [
+            'doctor_practice'               => ['unit' => 'مطب', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مطب'],
+            'general_clinic'                => ['unit' => 'درمانگاه', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام درمانگاه'],
+            'specialized_clinic'            => ['unit' => 'درمانگاه', 'clinician' => 'پزشک متخصص', 'clinicians' => 'پزشکان متخصص', 'name_label' => 'نام درمانگاه'],
+            'dental_clinic'                 => ['unit' => 'کلینیک دندانپزشکی', 'clinician' => 'دندانپزشک', 'clinicians' => 'دندانپزشکان', 'name_label' => 'نام کلینیک دندانپزشکی'],
+            'diagnostic_center'             => ['unit' => 'مرکز تشخیصی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز'],
+            'rehabilitation_center'         => ['unit' => 'مرکز توانبخشی', 'clinician' => 'پزشک/درمانگر', 'clinicians' => 'پزشکان/درمانگران', 'name_label' => 'نام مرکز'],
+            'mental_health_center'          => ['unit' => 'مرکز سلامت روان', 'clinician' => 'پزشک/درمانگر', 'clinicians' => 'پزشکان/درمانگران', 'name_label' => 'نام مرکز'],
+            'specialized_outpatient_center' => ['unit' => 'مرکز درمان سرپایی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز'],
+            'limited_surgery_center'        => ['unit' => 'مرکز جراحی محدود', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز'],
+            'hospital'                      => ['unit' => 'بیمارستان', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام بیمارستان (فقط محدودهٔ سرپایی)'],
+            'comprehensive_health_center'   => ['unit' => 'مرکز جامع سلامت', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز'],
+            'other'                         => ['unit' => 'مرکز', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز'],
+        ];
+
+        $profile = $profiles[ $id ] ?? [];
+
+        return [
+            'unit'       => (string) ( $profile['unit'] ?? $defaults['unit'] ),
+            'clinician'  => (string) ( $profile['clinician'] ?? $defaults['clinician'] ),
+            'clinicians' => (string) ( $profile['clinicians'] ?? $defaults['clinicians'] ),
+            'name_label' => (string) ( $profile['name_label'] ?? $defaults['name_label'] ),
+        ];
+    }
+
+    /**
      * Structure override values selectable alongside a facility type.
      *
      * @return array<string,string>

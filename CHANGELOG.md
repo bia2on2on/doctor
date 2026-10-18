@@ -2,6 +2,19 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — Adaptive facility-type onboarding slice (2026-10-18, Draft)
+
+### Added
+- `FacilityTypeCatalog::type_profile()` — adaptive Persian presentation profiles (`unit`/`clinician`/`clinicians`/`name_label`) for all 12 approved facility types; the wizard's clinic, doctors and review steps render these labels RTL. Presentation/configuration only: no authorization, no tenant semantics, no change to flow-level validation. Empty/unknown ids fall back to the generic legacy profile, so installations without a facility selection keep the previous wording exactly.
+- `setup.facility_structure` — the whitelisted structure override is now persisted Clinic-scoped beside `setup.facility_type`, so every authorized manager of the same Clinic resumes the identical adaptive flow; per-admin user-meta remains the display preference. GET stays strictly read-only.
+- `tests/Integration/FacilityAdaptiveFlowEvolutionTest.php` — integration coverage for all 12 catalogue profiles, adaptive RTL rendering (dental clinic, doctor practice), hospital outpatient-only disclosure, cross-admin structure resumability without writes, same-flow evolution after completion, refused cross-flow transitions, invalid-input rollback (no partial settings/user-meta), `manage_options` + nonce authorization on the pre-bootstrap selection, and medical-building fail-closed finish with the Organization Manager provisioning disclosure — each non-destructive path asserting Clinic/Location/Membership/Clinician row counts are untouched. Plus one new profile-contract method in `tests/Unit/Onboarding/FacilityTypeCatalogTest.php`.
+
+### Changed
+- Safe configuration evolution in `CpmsSetupWizard::save_facility()`: while setup is completed for a persisted flow, a selection resolving to a different flow is refused **before any write** with Persian guidance to the explicit progress-only restart (which never deletes Clinic, user, membership or clinical data). Same-flow evolution (e.g. درمانگاه عمومی → کلینیک دندانپزشکی) remains allowed at any time.
+
+### Security
+- Facility-type selection remains presentation/configuration only: invalid type or structure input is rejected with zero partial state; no facility save writes tenant rows; medical-building completion stays fail-closed behind Organization Manager provisioning (no tenant-scope guessing); hospital never implies inpatient/HIS support; Organization → Clinic → Location boundaries unchanged.
+
 ## [Unreleased] — Post-onboarding Clinic & Location management slice (2026-10-18)
 
 ### Added
