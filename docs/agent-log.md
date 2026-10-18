@@ -844,3 +844,74 @@ extracted `run:` blocks.
 - **تست‌ها:** `tests/Integration/ClinicLifecycleManagementTest.php` (۱۸ تست DB-backed) + به‌روزرسانی pinهای schema-head در ۷ فایل تست موجود.
 - **صداقت اجرا:** در این sandbox هیچ مفسر PHP وجود ندارد (`php` یافت نشد)؛ **هیچ تستی محلی اجرا نشد** و هیچ نتیجهٔ PASS اعلام نمی‌شود. تست‌ها برای اجرای CI کامیت شده‌اند.
 - **موارد tracked/انجام‌نشده:** احترام به `status=suspended` در انتخابگر نوبت‌دهی عمومی؛ تست رقابت دو‌فرایندی برای چرخهٔ حیات Clinic؛ پوشش مرورگر واقعی برای ثبت‌نام بین‌کلینیکی بیمار و bootstrap مدیر سازمان؛ انتقال خودکار نوع مرکز و جریان بستری/HIS.
+
+## Clinic lifecycle suspension — implemented safety contract (2026-10-18, PR #245)
+
+**Scope-gate decision (reversal recorded).** `TrustedClinicEstablisher` does **not** gate on
+`cpms_clinics.status`. An earlier blanket `clinic_suspended` scope block was reverted because it broke
+continuity: a suspended Clinic must keep read access to existing clinical records, medical files,
+treatment completion, existing appointments, finance settlement/refunds, reports, export, backup and
+recovery. Suspension is enforced **operation-by-operation at new-demand boundaries** instead
+(`BookingService` hold/confirm/rescheduleAs/createByStaff, patient self-enrollment, slot generation,
+public availability/quote/shortcode advertisement, booking-selection OTP). The full refused-vs-preserved
+matrix lives in [`docs/post-onboarding-clinic-location-management.md`](post-onboarding-clinic-location-management.md).
+
+**Authorization model.** Clinic administration resolves a per-operation Organization capability with
+`DENY > GRANT > Organization-Manager preset`: `cpms_org_clinic_create` (provisioning),
+`cpms_org_clinic_update` (settings), `cpms_org_clinic_lifecycle` (suspend/reactivate); management reads
+are the union. Capabilities are independent (a DENY on one neither widens nor narrows another) and
+authorization is evaluated **before** tenant-supplied input validation, so a denied actor learns nothing
+about the target row. Audit events: `CLINIC_PROFILE_UPDATED`, `CLINIC_DEACTIVATED`, `CLINIC_REACTIVATED`.
+Matrix: [`docs/permissions/permission-matrix.md`](permissions/permission-matrix.md).
+
+**Invariants established from executed evidence, not assumption.**
+1. A `CLINIC_SUSPENDED` denial is **side-effect-free**. `confirm()`'s compensation handler caught
+   `Throwable` and released the pre-existing Hold plus its claimed capacity for *any* failure, including
+   a policy denial; it now releases only for non-suspension failures and always frees the Idempotency key
+   so the patient can retry after reactivation.
+2. Uniform lock order in every booking transaction: **Clinic row (`FOR UPDATE`) → Slot rows ascending by
+   id**; `rescheduleAs()` locks the old appointment before the Clinic. Previously `hold()` locked
+   Clinic→Slot while `confirm()` locked Slot→Clinic — an ABBA cycle introduced by this slice, now removed.
+   Advertisement reads stay non-locking on purpose because every demand-creating path re-checks under the
+   Clinic row lock.
+3. `rescheduleAs()` is the single shared implementation behind both the patient and the staff reschedule
+   path, so guarding it once closes both. The **destination** Clinic must be active (a replacement
+   appointment is new demand) while the source Clinic is not gated (leaving/cancelling a suspended Clinic
+   stays allowed).
+4. Public advertisement fail-closes without leaking a reason: availability → HTTP 200 `days = []`, quote →
+   `available=false`/`capacity_left=0`, the shortcode does not advertise, OTP → 409 only for
+   booking-selection purposes.
+5. `availability()` fail-closes to `days = []` unless the Clinic has an **active Location with a valid
+   `timezone`** and the clinician has **active `cpms_schedule` rows** (`defaultAvailabilityWindow`,
+   `location_details_map`, `locationTimezoneMap`). Fixtures that omit them produce a *vacuous* positive
+   control — the lifecycle fixture now seeds both, which is why the active-Clinic control asserts real
+   advertised days.
+
+**Bypass review (bounded, read-only).** All appointment creation in `src/` happens at exactly three
+`BookingService` sites (confirm, rescheduleAs, createByStaff) and all three are guarded; the staff REST
+surface (`ReceptionPortalController`) delegates to `createByStaff()` / `rescheduleByStaff()` /
+`cancelByStaff()` rather than writing appointments itself, and `VisitService` walk-in/queue creation
+creates visits, not appointments — so no direct-service, patient, staff, REST or public booking path
+creates new demand in a suspended Clinic. No new speculative tests were added for already-covered paths.
+
+**CI evidence (executed, not inferred).** Head `6c7c0c0` first reached
+`stage=full_integration_suite phpunit_exit=0 tests=1952 assertions=56134 failures=0 errors=0 skipped=0
+failing_tests_capped_20=none error_categories=none` (run 39122572352) while WPCS still failed on
+re-indented lines; head `1fba27c` (naming-sniff ignores + one alignment fix, no logic change) passed
+**both** Integration and WPCS (run 39123514332). Earlier in the arc, nine stale `2026_10_18_0028`
+schema-head pins were reconciled to `0029` (strict assertions preserved) and two `ScopeRequiredException`
+fixture errors were fixed by binding the explicit Clinic scope **before** any settings/service resolution
+on a multi-Clinic install. No `markTestIncomplete`/`markTestSkipped` fallback is used anywhere in these
+tests, and no count/warning/failure gate was relaxed.
+
+**Scoped follow-ups (explicitly NOT done here).**
+- *Canonical Clinic profile validation + repository reuse.* Clinic create, settings update and lifecycle
+  still validate/persist through three separate paths inside `OrganizationClinicProvisioningService`
+  (with `ClinicProfileService` a fourth). Consolidation is a refactor that needs its own characterization
+  tests; bundling it into a security change was judged riskier than documenting it.
+- *Management-page reachability.* `ClinicManagementPage` resolves its Organization dropdown with
+  `cpms_org_clinic_create`, while the Clinic list is the union of the three capabilities — an actor
+  granted only `cpms_org_clinic_update`/`_lifecycle` has no UI path. Service enforcement is correct and
+  fail-closed, so this is a UX/authorization-surface gap, not a bypass.
+- *Two-connection race test* for suspend-vs-hold/confirm across real MySQL connections: the lock order is
+  implemented and reviewed, but not yet proven with a two-process wait-edge test.

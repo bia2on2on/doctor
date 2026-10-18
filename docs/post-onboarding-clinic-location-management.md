@@ -130,3 +130,55 @@ App::audit()->verifyChain(1000)['ok'] // true
 ```
 
 Admin: *سازمان‌ها → مدیریت درمانگاه‌ها* (explicit Org selector → clinic table → per-clinic update form → lifecycle buttons). All forms are Classic RTL, accessible, keyboard navigable.
+
+## Clinic suspension — enforced boundaries (implemented)
+
+Suspension is a **new-demand** control, not a scope blackout. The Clinic row keeps its scope, so
+existing care and administration continue; only operations that would create new demand in that
+Clinic are refused.
+
+### Refused while `status = suspended`
+| Boundary | Enforcement | Result |
+| --- | --- | --- |
+| `BookingService::hold()` | `assert_clinic_accepting_new_demand( …, for_update: true )` inside the transaction, **before** capacity is claimed | `BookingException CLINIC_SUSPENDED` (409), zero `held_count` |
+| `BookingService::confirm()` | same locked guard, taken **before** the Slot lock | 409, **side-effect-free**: the pre-suspension Hold stays `active` with its capacity, no appointment, no `booked_count`; only the Idempotency key is freed for retry |
+| `BookingService::rescheduleAs()` — the single implementation behind patient `reschedule()` and staff `rescheduleByStaff()` | locked guard on the **destination** Clinic before any Slot lock or capacity mutation | 409; the existing appointment survives untouched (id, status and counters unchanged) |
+| `BookingService::createByStaff()` | guard right after `trustedClinicIdForStaff()`, before the transaction | 409; no staff or Organization bypass |
+| Patient self-enrollment (`PatientService::enroll_current_patient()`) | `AND clinic.status = 'active'` inside the locked query | existing 404 parity preserved (no new information leak) |
+| Slot generation sweep (`SlotsGenerateHandler`) | `cl.status = 'active'` join | no new Slots are generated for a suspended Clinic |
+| Booking-selection OTP (`OtpController::requestCode()`) | suspended selected Clinic | `409 CLINIC_SUSPENDED`; selection-less purposes (login, mobile verification) still work |
+| Public availability / quote / shortcode | non-locking `clinic_is_suspended()` read at the advertisement boundary | availability → HTTP 200 with `days = []`; quote → `available=false`, `capacity_left=0`; the shortcode does not advertise the Clinic. Non-locking on purpose: every demand-creating path re-checks under the Clinic row lock, so an advertisement read that races a suspension can never produce an appointment |
+
+### Preserved while `status = suspended` (continuity)
+Existing appointments and their lifecycle (`resume`, `listMine`, cancel, no-show), visits and
+treatment completion, clinical records and medical files, finance settlement/refunds, reports,
+exports, backup enumeration and recovery, audit/history queries, Organization administration of the
+Clinic (profile read, settings, reactivation) and Location management. Leaving a suspended Clinic is
+allowed: the reschedule guard applies to the **destination** Clinic, so a patient can be moved to an
+active one, while a replacement appointment can never be created inside a suspended Clinic.
+
+### Locking, atomicity and race behaviour
+- Uniform lock order in every booking transaction: **Clinic row (`FOR UPDATE`) → Slot rows in
+  ascending id order**; `rescheduleAs()` takes the old appointment lock before the Clinic. No path
+  locks a Clinic after a Slot, so a suspension racing a booking cannot form an ABBA deadlock cycle
+  (MySQL would otherwise choose a victim and surface a raw database error).
+- All guarded mutations run inside the existing `db->transactional()` boundary; a denial rolls the
+  whole transaction back, and `confirm()`'s compensation handler releases Hold capacity only for
+  **non**-suspension failures.
+- Lifecycle writes take the Organization row lock + Clinic `FOR UPDATE`, use a conditional update with
+  expected-Organization match, read the result back and are idempotent (no duplicate audit when the
+  status is already the desired one).
+
+### Regression coverage
+`tests/Integration/ClinicLifecycleManagementTest.php` (25 DB-backed tests) covers the boundaries
+above, including `testSuspendedClinicIsNotAdvertisedOnPublicAvailabilityAndQuote` (with a real
+active-Location + active-`cpms_schedule` positive control),
+`testSuspendedClinicRejectsNewHoldWithoutCapacitySideEffects`,
+`testSuspendedClinicRefusesConfirmingAnExistingHold`,
+`testSuspendedClinicRefusesPatientAndStaffRescheduleButKeepsExistingAppointment`,
+`testSuspendedClinicRefusesStaffCreatedAppointment`,
+`testSuspendedClinicRefusesNewSelfEnrollmentButKeepsExistingRecords` and
+`testSuspendedClinicPreservesContinuityAndRefusesNewDemandAtBoundaries`. No test is skipped or marked
+incomplete. Teardown deletes children before parents (`cpms_audit_logs`, holds, appointments,
+slots/schedule before clinicians, then Locations/Clinics/Organizations) so no committed row leaks into
+a later test.
