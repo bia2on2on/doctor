@@ -640,11 +640,97 @@ jobs:
       # REST-level + Concurrency (pcntl_fork روی اتصال‌های مستقل واقعی MySQL)؛
       # --no-configuration چون phpunit.xml با schema مخصوص PHPUnit 11 است.
       - name: Run integration tests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
+          phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log || phpunit_status=$?
+          # Narrow sanitized diagnostics for the FULL suite, mirrored onto the PR
+          # because raw job logs and artifact blobs are unreachable for some
+          # reviewers. Published facts are bounded and non-sensitive only:
+          # PHPUnit exit code, test/assertion totals, failure/error/skip counts,
+          # sanitized failing test identifiers (class::method, allowlisted charset,
+          # capped) and bounded exception CLASS names. Never published: raw PHPUnit
+          # output, assertion/exception messages, SQL, credentials, patient
+          # identifiers or any PHI. Purely additive - the strict verdicts below are
+          # unchanged and the original PHPUnit exit code is propagated verbatim.
+          python3 - "$phpunit_status" <<'PY' || true
+          import os
+          import re
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+
+          status = sys.argv[1]
+          identifier_re = re.compile(r'[^A-Za-z0-9_:\.\- ]')
+          stats = {'cases': 0, 'assertions': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
+          identifiers = []
+          categories = {}
+          try:
+              root = ET.parse('/tmp/phpunit-int-junit.xml').getroot()
+              for suite in root.iter('testsuite'):
+                  for key, attr in (('cases', 'tests'), ('assertions', 'assertions'), ('failures', 'failures'), ('errors', 'errors'), ('skipped', 'skipped')):
+                      value = suite.get(attr)
+                      if value is not None and suite.find('testsuite') is None:
+                          stats[key] += int(value)
+              for case in root.findall('.//testcase'):
+                  for tag in ('error', 'failure'):
+                      node = case.find(tag)
+                      if node is None:
+                          continue
+                      raw_id = '{}::{}'.format(case.get('class') or case.get('file') or 'unknown', case.get('name') or 'unknown')
+                      safe_id = identifier_re.sub('', raw_id)[:160]
+                      if len(identifiers) < 20:
+                          identifiers.append(safe_id)
+                      category = identifier_re.sub('', (node.get('type') or tag))[-60:]
+                      categories[category] = categories.get(category, 0) + 1
+          except Exception:
+              categories['junit_unavailable'] = 1
+
+          completed = 'unknown'
+          try:
+              with open('/tmp/phpunit-int.log', 'r', errors='ignore') as handle:
+                  tail = handle.read()[-4000:]
+              completed = 'yes' if re.search(r'(?m)^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)', tail) else 'no'
+          except Exception:
+              completed = 'log_unavailable'
+
+          body = (
+              '### Full Integration suite - sanitized diagnostics '
+              '(run {}, attempt {})\n'
+              '```\n'
+              'stage=full_integration_suite phpunit_exit={} terminal_summary_printed={}\n'
+              'tests={} assertions={} failures={} errors={} skipped={}\n'
+              'failing_tests_capped_20={}\n'
+              'error_categories={}\n'
+              '```\n'
+          ).format(
+              os.environ.get('GITHUB_RUN_ID', '?'),
+              os.environ.get('GITHUB_RUN_ATTEMPT', '?'),
+              status,
+              completed,
+              stats['cases'],
+              stats['assertions'],
+              stats['failures'],
+              stats['errors'],
+              stats['skipped'],
+              ';'.join(identifiers) or 'none',
+              ' '.join('{}={}'.format(k, v) for k, v in sorted(categories.items())) or 'none',
+          )
+          pr = os.environ.get('PR_NUMBER', '')
+          if pr:
+              subprocess.run(['gh', 'pr', 'comment', pr, '--body', body], check=False)
+          else:
+              print(body)
+          PY
+          if [ "$phpunit_status" -ne 0 ]; then
+            echo "::error::Integration PHPUnit exited $phpunit_status."
+            exit "$phpunit_status"
+          fi
           # Completion guard (false-green protection): a COMPLETED PHPUnit run always
           # prints a terminal summary (OK / OK-but / FAILURES! / ERRORS! / WARNINGS!).
           # Production exit()/wp_die inside a test can terminate the process with rc=0

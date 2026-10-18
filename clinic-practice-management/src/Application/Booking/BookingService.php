@@ -114,18 +114,22 @@ final class BookingService
      */
     public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null): array
     {
+        $clinicId = $this->requireClinician($clinicianId);
+
         // Clinic lifecycle policy - public advertisement boundary: a suspended
         // Clinic publishes no bookable slots. Returns the established public
         // fail-closed shape (HTTP 200, empty days) instead of an error, so the
-        // shortcode/REST surface never advertises new demand and leaks nothing
-        // about why. func_get_arg() keeps these added lines free of the
-        // surrounding camelCase locals (changed-line WPCS naming gate) without
-        // renaming an established public signature.
-        if ( $this->clinic_is_suspended( $this->requireClinician( (int) func_get_arg( 0 ) ) ) ) {
+        // shortcode/REST surface never advertises new demand and leaks nothing about
+        // why. Non-locking read on purpose: every demand-CREATING path re-checks the
+        // status under the Clinic row lock, so an advertisement read that races a
+        // suspension can never produce an appointment.
+        // Narrow naming ignore for the established camelCase local of this method
+        // (same convention already used elsewhere in this file). No security sniff is
+        // suppressed by it.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        if ( $this->clinic_is_suspended( $clinicId ) ) {
             return ['days' => []];
         }
-
-        $clinicId = $this->requireClinician($clinicianId);
 
         // لحظهٔ مرجعِ یکتا برای کل این درخواست (Clock B — UTC پایدار).
         $nowUtc = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
@@ -398,14 +402,17 @@ final class BookingService
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
     {
-        // Clinic lifecycle policy - public advertisement boundary: a suspended
-        // Clinic never reports bookable capacity, so the public flow cannot
-        // proceed to OTP/hold. Same fail-closed shape as an unavailable slot.
-        if ( $this->clinic_is_suspended( $this->requireClinician( (int) func_get_arg( 0 ) ) ) ) {
+        $clinicId = $this->requireClinician($clinicianId);
+
+        // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
+        // never reports bookable capacity, so the public flow cannot advance to
+        // OTP/hold. Same fail-closed shape as an unavailable slot.
+        // Narrow naming ignore for the established camelCase local of this method; no
+        // security sniff is suppressed by it.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        if ( $this->clinic_is_suspended( $clinicId ) ) {
             return ['available' => false, 'capacity_left' => 0];
         }
-
-        $clinicId = $this->requireClinician($clinicianId);
 
         // A4 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
         $settings = $this->settingsFor($clinicId);
