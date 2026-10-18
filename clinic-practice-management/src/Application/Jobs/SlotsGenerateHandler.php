@@ -102,6 +102,7 @@ final class SlotsGenerateHandler
              LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = s.location_id
              LEFT JOIN ' . $this->db->table('cpms_clinic_memberships') . ' m
                     ON m.wp_user_id = c.wp_user_id AND m.clinic_id = s.clinic_id AND m.status = \'active\'
+             JOIN ' . $this->db->table('cpms_clinics') . ' cl ON cl.id = s.clinic_id AND cl.status = \'active\'
              WHERE c.is_active = 1'
         );
 

@@ -97,12 +97,12 @@ final class TrustedClinicEstablisher {
 
 		$read   = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
 		$clinic = $this->db->$read(
-			'SELECT c.id, c.organization_id, o.status AS organization_status, COALESCE(c.status, %s) AS clinic_status
+			'SELECT c.id, c.organization_id, o.status AS organization_status
 			   FROM ' . $this->db->table( 'cpms_clinics' ) . ' c
 			   INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
 			  WHERE c.id = %d
 			  LIMIT 1',
-			['active', $clinic_id]
+			[ $clinic_id ]
 		);
 		if ( $for_update && $this->db->wpdb()->last_error !== '' ) {
 			throw new \RuntimeException( 'trusted Clinic locking read failed' );
@@ -113,9 +113,12 @@ final class TrustedClinicEstablisher {
 		if ( 'active' !== (string) ( $clinic['organization_status'] ?? '' ) ) {
 			$this->unavailable( 'organization' );
 		}
-		if ( 'active' !== (string) ( $clinic['clinic_status'] ?? 'active' ) ) {
-			$this->unavailable( 'clinic_suspended' );
-		}
+		// Clinic lifecycle (cpms_clinics.status) is deliberately NOT a scope gate: a
+		// suspended Clinic must keep read/continuity access to existing clinical
+		// records, medical files, treatment completion, existing appointments, finance
+		// settlement and refunds, reports, export, backup and recovery. Suspension is
+		// enforced operation-by-operation at the new-demand boundaries
+		// (BookingService, patient self-enrollment, slot generation).
 
 		$organization_id = (int) $clinic['organization_id'];
 		$scope           = ClinicScope::forClinic( $clinic_id )->withOrganization( $organization_id );

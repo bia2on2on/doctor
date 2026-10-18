@@ -271,10 +271,15 @@ final class PatientService
             return $this->db->transactional(
                 function () use ( $clinic_id, $fields, $user ): array {
                     $clinic = $this->db->fetchRowForUpdate(
+                        // Clinic lifecycle policy: a suspended Clinic accepts no NEW
+                        // self-enrollment. Checked on the same Clinic row lock that
+                        // serializes the enrollment, so a suspension racing with this
+                        // request is ordered by InnoDB and the final state is revalidated.
+                        // 404 parity with an unlinked Clinic (no existence oracle).
                         'SELECT clinic.id, clinic.organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' clinic' .
                         ' INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' organization ON organization.id = clinic.organization_id' .
-                        ' WHERE clinic.id = %d AND organization.status = %s',
-                        [ $clinic_id, 'active' ]
+                        ' WHERE clinic.id = %d AND organization.status = %s AND clinic.status = %s',
+                        [ $clinic_id, 'active', 'active' ]
                     );
                     if ( $clinic === null ) {
                         throw $this->linked_patient_not_found();

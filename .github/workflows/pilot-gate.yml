@@ -241,7 +241,7 @@ jobs:
           require getenv('WP_HOME') . '/wp-load.php';
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_10_18_0028' ? 0 : 1);
+          exit($v === '2026_10_18_0029' ? 0 : 1);
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/check-schema.php
           # F10 — نصب تازه: پنجرهٔ فعال‌سازی (fresh، بدون دادهٔ legacy) باید
@@ -1467,7 +1467,7 @@ jobs:
             echo '## Upgrade Compatibility (pinned pre-#191 source → candidate artifact)'
             echo '```'
             echo "previous CPMS source: $PREVIOUS_CPMS_REF"
-            echo 'schema: 2026_09_26_0023 → 2026_10_18_0028 (migrations 2026_10_10_0024 + 2026_10_11_0025 + 2026_10_11_0026 + 2026_10_13_0027 + 2026_10_18_0028 applied)'
+            echo 'schema: 2026_09_26_0023 → 2026_10_18_0029 (migrations 2026_10_10_0024 + 2026_10_11_0025 + 2026_10_11_0026 + 2026_10_13_0027 + 2026_10_18_0028 + 2026_10_18_0029 applied)'
             echo 'synthetic Organization → Clinic → Location scopes: 2; preserved representative rows: 20'
             echo 'current migration CLI + two safe runner repeats + tenant-aware reads: verified'
             echo '```'
