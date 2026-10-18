@@ -295,14 +295,19 @@ tests_add_filter(
         if ( 'COMMIT' === $verb ) {
             // Real DDL performs an implicit COMMIT that destroys all savepoints.
             // If a real DDL was observed since the last START, the stack is stale
-            // (savepoints no longer exist) — treat COMMIT as a harmless no-op
-            // and clear the entire stack, regardless of whether the stack is
-            // empty or still contains entries.
+            // (savepoints no longer exist) — RELEASE SAVEPOINT cannot be used.
+            // MySQL already committed everything that existed when the DDL ran,
+            // but a write that happened *after* the DDL (a migration ledger row,
+            // for example) now lives in a fresh transaction that still has to be
+            // committed. Inside an open transaction that means a real COMMIT;
+            // with no open transaction there is nothing to commit and the
+            // harmless no-op is kept.
             if ( ! empty( $GLOBALS['__cpms_ddl_seen_since_start'] ) ) {
                 $GLOBALS['__cpms_ddl_seen_since_start'] = false;
+                $had_transaction = ! empty( $stack );
                 $GLOBALS['__cpms_sp_stack'] = [];
 
-                return 'SELECT 1';
+                return $had_transaction ? 'COMMIT' : 'SELECT 1';
             }
             $name = array_pop( $stack );
             if ( null === $name ) {

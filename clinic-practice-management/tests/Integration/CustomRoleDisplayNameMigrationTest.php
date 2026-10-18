@@ -29,7 +29,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
     private const VERSION = '2026_10_11_0025';
     private const PREVIOUS_VERSION = '2026_10_10_0024';
     /** Slice 3A adds the first-setup marker column after this migration. */
-    private const HEAD_VERSION = '2026_10_13_0027';
+    private const HEAD_VERSION = '2026_10_18_0028';
 
     protected function setUp(): void
     {
@@ -114,6 +114,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
         $this->withRealTables(function () use ($wpdb, $defs): void {
             $rolledHead = App::migrations()->rollbackOne();
             self::assertSame(self::HEAD_VERSION, $rolledHead, 'later migrations must roll back before the display-name migration');
+            self::assertSame('2026_10_13_0027', App::migrations()->rollbackOne(), 'the archival migration must roll back before the display-name migration');
             self::assertSame('2026_10_11_0026', App::migrations()->rollbackOne());
             $rolled = App::migrations()->rollbackOne();
             self::assertSame(self::VERSION, $rolled, 'the display-name migration must roll back before 0024');
@@ -144,6 +145,7 @@ final class CustomRoleDisplayNameMigrationTest extends WP_UnitTestCase
         try {
             $this->withRealTables(function () use ($wpdb, $defs): void {
                 self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
+                self::assertSame('2026_10_13_0027', App::migrations()->rollbackOne(), 'the archival migration must roll back before the display-name migration');
                 self::assertSame('2026_10_11_0026', App::migrations()->rollbackOne());
                 self::assertSame(self::VERSION, App::migrations()->rollbackOne());
                 self::assertSame(self::PREVIOUS_VERSION, App::migrations()->currentVersion());

@@ -21,15 +21,50 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->withRealTables(static fn(): array => App::migrations()->migrate());
+        $this->migrateThroughArchivalVersion();
     }
 
     protected function tearDown(): void
     {
         try {
-            $this->withRealTables(static fn(): array => App::migrations()->migrate());
+            // Restore the fully migrated schema (0028 included) for every later
+            // test class. Leaving 0028 pending here would make the next class
+            // re-apply it while the WP temporary-table rewrite is active.
+            $this->withRealTables(static fn (): array => App::migrations()->migrate());
         } finally {
             parent::tearDown();
+        }
+    }
+
+    /**
+     * Keep this focused migration contract at 0027 while the later independent
+     * Organization migration is present. The production runner still applies
+     * 0028; this test immediately rolls it back so rollbackOne targets 0027.
+     *
+     * The WP test suite rewrites CREATE TABLE into CREATE TEMPORARY TABLE while
+     * a test transaction is open. Migration 0028 creates two tables that carry
+     * FOREIGN KEY clauses, and InnoDB refuses a FOREIGN KEY on a temporary
+     * table (errno 150) — so every point that can (re-)apply 0028 must run
+     * with those two rewrite callbacks suspended. This helper owns that
+     * window itself, because it is also called directly from test bodies
+     * (not only from setUp/tearDown).
+     *
+     * @return list<string>
+     */
+    private function migrateThroughArchivalVersion(): array
+    {
+        $this->suspendWpTempTableRewrites();
+
+        try {
+            $applied = App::migrations()->migrate();
+            if (App::migrations()->currentVersion() === '2026_10_18_0028') {
+                App::migrations()->rollbackOne();
+                $applied = array_values(array_diff($applied, ['2026_10_18_0028']));
+            }
+
+            return $applied;
+        } finally {
+            $this->restoreWpTempTableRewrites();
         }
     }
 
@@ -44,7 +79,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         self::assertSame('NO', $column['Null']);
         self::assertSame('active', $column['Default']);
         self::assertNull(App::db()->fetchRow('SHOW COLUMNS FROM ' . App::db()->table('cpms_custom_role_defs') . " LIKE 'archived_at'"));
-        self::assertSame([], App::migrations()->migrate());
+        self::assertSame([], $this->migrateThroughArchivalVersion());
     }
 
     public function test_mysql_raw_and_mariadb_quoted_active_defaults_share_semantic_ddl(): void
@@ -419,12 +454,12 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         try {
             $db->query( 'DELETE FROM ' . $db->table( 'cpms_schema_migrations' ) . ' WHERE version = %s', [ self::VERSION ] );
             self::assertSame( '2026_10_11_0026', App::migrations()->currentVersion() );
-            self::assertSame( [ self::VERSION ], App::migrations()->migrate() );
+            self::assertSame( [ self::VERSION ], $this->migrateThroughArchivalVersion() );
             self::assertSame( $column, $this->statusColumn(), 'an already-expanded enum is verified, not rewritten' );
             self::assertSame( $indexes, $this->indexes() );
             self::assertNull( $db->fetchRow( "SHOW COLUMNS FROM {$defs} LIKE 'archived_at'" ) );
         } finally {
-            App::migrations()->migrate();
+            $this->migrateThroughArchivalVersion();
         }
     }
 
@@ -518,7 +553,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
 
                 $decoy = $guard . '_decoy';
                 $db->query( "ALTER TABLE {$defs} ADD CONSTRAINT `{$decoy}` CHECK (`status` IN ('active','inactive'))" );
-                self::assertSame( [ self::VERSION ], App::migrations()->migrate() );
+                self::assertSame( [ self::VERSION ], $this->migrateThroughArchivalVersion() );
                 self::assertSame( self::VERSION, App::migrations()->currentVersion() );
 
                 $remaining = $db->fetchAll(
@@ -531,7 +566,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                 $db->query( "ALTER TABLE {$defs} {$drop_type} `{$decoy}`" );
             } finally {
                 if ( App::migrations()->currentVersion() !== self::VERSION ) {
-                    App::migrations()->migrate();
+                    $this->migrateThroughArchivalVersion();
                 }
                 $decoy_exists = (int) $db->fetchValue(
                     'SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_SCHEMA = DATABASE() AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND CONSTRAINT_NAME = %s AND CONSTRAINT_TYPE = %s',
@@ -603,7 +638,7 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                     $beforeIndexes = $this->indexes();
                     $beforeRows = $this->rows($ids);
                     $beforeCaps = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_custom_role_capabilities') . ' WHERE role_def_id IN (%d, %d) ORDER BY role_def_id, capability', $ids);
-                    self::assertSame([self::VERSION], App::migrations()->migrate());
+                    self::assertSame([self::VERSION], $this->migrateThroughArchivalVersion());
                     $afterColumn = $this->statusColumn();
                     self::assertMatchesRegularExpression(
                         "/\\A(?i:enum)\\('active','inactive','archived'\\)\\z/",
@@ -614,9 +649,9 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
                     self::assertSame($beforeIndexes, $this->indexes(), 'indexes and uniqueness must be untouched');
                     self::assertSame($beforeRows, $this->rows($ids));
                     self::assertSame($beforeCaps, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_custom_role_capabilities') . ' WHERE role_def_id IN (%d, %d) ORDER BY role_def_id, capability', $ids));
-                    self::assertSame([], App::migrations()->migrate());
+                    self::assertSame([], $this->migrateThroughArchivalVersion());
                 } finally {
-                    App::migrations()->migrate();
+                    $this->migrateThroughArchivalVersion();
                 }
             });
         } finally {

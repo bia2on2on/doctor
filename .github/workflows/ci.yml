@@ -242,7 +242,7 @@ jobs:
       # Add a separate real MariaDB runtime within this existing Integration
       # check: the historical MySQL 8 database and full suite remain unchanged.
       # Keeping the MariaDB lane in this job preserves the established 47-check
-      # contract while testing migration 0027 against the pinned server release.
+      # contract while testing migration 0028 after the pinned migration 0027 baseline against the server release.
       - name: Prepare MariaDB 11.4.13 WordPress test suite
         env:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb

@@ -244,6 +244,7 @@
 | Audit | ❌ | ✅ `cpms_audit_read` |
 | Export حساس | ❌ | ✅ `cpms_export` |
 | عملیات بالینی/مالی روزانه | ❌ | ❌ (رنگ `clinic_manager` جدا) |
+| فعال‌سازی اولیهٔ یک مدیر سازمان | فقط مراسم صریح و یک‌بارهٔ Owner-approved: `manage_options` + سازمان/کاربر انتخاب‌شده + nonce + تأیید؛ هیچ مجوز روزمره‌ای نمی‌دهد | — |
 
 ## 5. آزمون مربوط
 - TP-07: IDOR (Patient A → Patient B)
@@ -286,3 +287,13 @@
 - **بدون دسترسی پیش‌فرض پزشکی:** واگذاری هیچ Capability بالینی/پرونده/یادداشت خصوصی/Export/Audit نمی‌سازد.
 - **بدون مهاجرت:** واگذاری روی همان جدول موجود `cpms_membership_capabilities` انجام می‌شود.
 - **بدون Cap جدید:** مجموعهٔ ۴۶ Capability و فهرست §2 تغییر نمی‌کند.
+
+## Organization-scoped authority extension (approved 2026-10-18)
+
+Organization provisioning is deliberately separate from the historical Clinic permission matrix. A durable active Organization membership with `role_key=organization_manager` is required for the exact Organization; neither WordPress Administrator nor Clinic Manager is sufficient. Organization overrides are `cpms_org_clinic_create` and `cpms_org_membership_manage`; explicit Organization DENY overrides grants/preset. These capabilities do not imply Clinic membership or any clinical, financial, PHI, or Location access. Clinic-scoped authorization and DENY precedence remain governed by ADR-0031 `AuthorizationService`.
+
+### Owner decision: first Organization Manager bootstrap (2026-10-18)
+
+A currently authenticated WordPress Administrator may explicitly activate the first `organization_manager` for one selected, active Organization and one selected, existing WordPress user. This is the only bootstrap power of `manage_options`: it requires a valid nonce and explicit confirmation, is row-locked/transactional, and produces a hash-chained `ORGANIZATION_MANAGER_BOOTSTRAPPED` event. No organization/user is auto-selected and no install, upgrade, or login path bootstraps implicitly. Same-target retries are idempotent; conflicting or ambiguous manager assignments fail closed. Audit failure rolls back the new membership.
+
+The operation changes no WordPress role, Clinic membership, Location assignment, or capability override and confers no clinical, financial, PHI, Clinic, or Location access. Administrators do not bypass ordinary Organization DENY or Clinic `AuthorizationService`/DENY checks. After initial bootstrap, manager grants/revocations remain Organization-scoped with DENY precedence and last-active-manager protection. Legacy users are never promoted by migration. See [ADR-0031](../adr/ADR-0031-organization-clinic-location-scoped-authorization.md) and the [bootstrap implementation contract](../security/organization-manager-bootstrap-proposal.md).

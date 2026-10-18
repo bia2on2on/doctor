@@ -21,6 +21,7 @@ final class LocationException extends RuntimeException
     public const QUERY_FAILED = 'LOCATION_QUERY_FAILED';
     public const AUTH_REQUIRED = 'LOCATION_AUTH_REQUIRED';
     public const SCOPE_REQUIRED = 'LOCATION_SCOPE_REQUIRED';
+    public const LIFECYCLE_CONFLICT = 'LOCATION_LIFECYCLE_CONFLICT';
 
     /**
      * @param array<string,mixed> $data

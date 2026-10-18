@@ -177,6 +177,72 @@ final class Phase4LocationMasterDataTest extends WP_UnitTestCase
         self::assertSame(0, (int) ($after['location.is_primary'] ?? 1), 'audit after records non-primary');
     }
 
+    // ================= LIFECYCLE =================
+
+    public function testLocationLifecyclePreservesRowAndAuditsBothTransitions(): void
+    {
+        $locationId = $this->insertSecondLocation(
+            $this->clinicA,
+            'p4loc-lifecycle-' . bin2hex(random_bytes(2)),
+            'شعبه قابل مدیریت',
+            'Asia/Tehran'
+        );
+        wp_set_current_user($this->managerA);
+
+        $disabled = App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, false);
+        self::assertFalse((bool) $disabled['noop'], 'deactivation is a real transition');
+        $disabledRow = $this->locationRow($locationId);
+        self::assertNotNull($disabledRow, 'deactivation preserves the Location row');
+        self::assertSame(0, (int) $disabledRow['is_active'], 'Location is inactive');
+        self::assertSame($this->clinicA, (int) $disabledRow['clinic_id'], 'ownership is preserved');
+        self::assertSame(0, (int) $disabledRow['is_primary'], 'non-primary identity is preserved');
+        self::assertSame(1, $this->auditCount('LOCATION_DEACTIVATED'), 'deactivation is audited');
+        $duplicate = App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, false);
+        self::assertTrue((bool) $duplicate['noop'], 'duplicate deactivation is idempotent');
+        self::assertSame(1, $this->auditCount('LOCATION_DEACTIVATED'), 'duplicate submissions do not duplicate audit entries');
+
+        $enabled = App::locationService()->set_active($this->managerA, $this->clinicA, $locationId, true);
+        self::assertFalse((bool) $enabled['noop'], 'reactivation is a real transition');
+        $enabledRow = $this->locationRow($locationId);
+        self::assertNotNull($enabledRow, 'reactivation preserves the Location row');
+        self::assertSame(1, (int) $enabledRow['is_active'], 'Location is active again');
+        self::assertSame(1, $this->auditCount('LOCATION_REACTIVATED'), 'reactivation is audited');
+    }
+
+    public function testLifecycleMutationCannotCrossClinicScope(): void
+    {
+        $locationId = $this->insertSecondLocation(
+            $this->clinicA,
+            'p4loc-cross-scope-' . bin2hex(random_bytes(2)),
+            'شعبه محدود',
+            'Asia/Tehran'
+        );
+        wp_set_current_user($this->managerB);
+
+        try {
+            App::locationService()->set_active($this->managerB, $this->clinicA, $locationId, false);
+            self::fail('a manager from Clinic B cannot change Clinic A Location state');
+        } catch (\ClinicCore\Application\Location\LocationException $exception) {
+            self::assertSame('LOCATION_PERMISSION_DENIED', $exception->getErrorCode());
+        }
+
+        $row = $this->locationRow($locationId);
+        self::assertNotNull($row, 'foreign Location remains present');
+        self::assertSame(1, (int) $row['is_active'], 'foreign Location remains active');
+        self::assertSame(0, $this->auditCount('LOCATION_DEACTIVATED'), 'denied lifecycle write is not audited as success');
+    }
+
+    public function testLifecycleRejectsPrimaryDeactivation(): void
+    {
+        wp_set_current_user($this->managerA);
+        try {
+            App::locationService()->set_active($this->managerA, $this->clinicA, $this->locA, false);
+            self::fail('primary Location cannot be deactivated');
+        } catch (\ClinicCore\Application\Location\LocationException $exception) {
+            self::assertSame('LOCATION_LIFECYCLE_CONFLICT', $exception->getErrorCode());
+        }
+    }
+
     // ================= UPDATE =================
 
     public function testUpdateTimezoneAndNamePreservesProtectedColumns(): void
