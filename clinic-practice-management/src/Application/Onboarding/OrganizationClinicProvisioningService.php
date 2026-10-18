@@ -39,6 +39,48 @@ final class OrganizationClinicProvisioningService {
     }
 
     /** @return list<array{id:int,name:string}> */
+    /**
+     * Organizations reachable by the Clinic management screen: the UNION of the three
+     * independent Clinic capabilities. Each capability is resolved with its own
+     * DENY > GRANT > Organization-Manager preset, so an explicit DENY on one (for example
+     * create) never erases a GRANT on another (update / lifecycle). This widens READ
+     * reachability of the management screen only - every write re-authorizes itself per
+     * operation - and it grants no WordPress Administrator implicit Clinic authority.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function management_organizations( int $actor_id ): array {
+        $seen = [];
+        $out  = [];
+        foreach ( [ self::CAPABILITY, self::CAPABILITY_PROFILE_UPDATE, self::CAPABILITY_LIFECYCLE ] as $permission ) {
+            foreach ( $this->organizations_for_manager( $actor_id, $permission ) as $organization ) {
+                $organization_id = (int) ( $organization['id'] ?? 0 );
+                if ( $organization_id <= 0 || isset( $seen[ $organization_id ] ) ) {
+                    continue;
+                }
+                $seen[ $organization_id ] = true;
+                $out[]                    = $organization;
+            }
+        }
+
+        return $out;
+    }
+
+    /**
+     * Read-only UI probe: is this actor authorized for ONE specific Clinic capability in
+     * this Organization? DENY > GRANT > preset stays the resolver's, per capability, so a
+     * DENY is never masked by another capability's GRANT. Used only to hide controls the
+     * actor may not use; it never widens a write path (each write re-authorizes itself)
+     * and confers no WordPress Administrator shortcut.
+     */
+    public function can( int $actor_id, int $organization_id, string $permission ): bool {
+        if ( $actor_id <= 0 || $organization_id <= 0 || '' === $permission ) {
+            return false;
+        }
+
+        return $this->authorized( $actor_id, $organization_id, false, $permission );
+    }
+
     public function organizations_for_manager( int $actor_id, string $permission = self::CAPABILITY ): array {
 
         if ( $actor_id <= 0 ) {

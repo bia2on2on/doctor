@@ -66,6 +66,13 @@ final class PatientEnrollmentRepository {
             'SELECT c.id, c.name' .
             ' FROM ' . $this->db->table( 'cpms_clinics' ) . ' c' .
             ' WHERE c.organization_id = %d' .
+            // Clinic lifecycle policy: a suspended Clinic is not a valid enrollment
+            // destination, so it is never offered by PatientEnrollmentOptions::for_user().
+            // This is advertisement filtering only - PatientService::enroll_current_patient()
+            // stays the server-side authority (it re-checks clinic.status under the Clinic
+            // row lock and keeps 404 parity), and identity verification plus tenant
+            // isolation are unchanged.
+            " AND c.status = 'active'" .
             ' AND NOT EXISTS (SELECT 1 FROM ' . $this->db->table( 'cpms_patients' ) . ' p' .
             ' WHERE p.clinic_id = c.id AND p.identity_id = %d)' .
             ' AND NOT EXISTS (SELECT 1 FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' local_link' .

@@ -554,6 +554,19 @@ final class ReceptionPortalController extends RestBase {
 		}
 		$clinic_id     = (int) $resolved['clinic_id'];
 		$location_id   = (int) $resolved['location_id'];
+
+		// Clinic lifecycle policy: a suspended Clinic advertises no bookable Slot on the
+		// reception surface either. Same bounded empty read as the 0-eligible-Location and
+		// unusable-timezone branches (HTTP 200, empty day, no reason leaked). Advertisement
+		// filtering only - createByStaff()/rescheduleByStaff() re-check the status under the
+		// Clinic row lock, so a suspension racing this read cannot produce an appointment.
+		$clinic_status = (string) App::db()->fetchValue(
+			'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+			[ $clinic_id ]
+		);
+		if ( 'active' !== $clinic_status ) {
+			return $this->success( $this->empty_slot_day( $clinician_id ) );
+		}
 		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		if ( null === $location_zone ) {
 			return $this->success( [ 'appointments' => [] ] );

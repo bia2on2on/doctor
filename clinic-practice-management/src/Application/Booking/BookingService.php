@@ -1327,6 +1327,16 @@ final class BookingService
                     $trusted_clinic_id,
                     $settings
                 ): array {
+                    // Staff-created appointments are new demand, so the Clinic lifecycle
+                    // status is revalidated under the Clinic row lock INSIDE this
+                    // transaction and BEFORE any Slot lock - the same fixed order used by
+                    // hold(), confirm() and rescheduleAs() (Clinic first, then Slots in
+                    // ascending id order). The unlocked pre-transaction check above is only
+                    // an early refusal: a suspension that lands between it and the Slot lock
+                    // is serialized by InnoDB here, and denial rolls back with zero durable
+                    // side effects (no appointment, no capacity mutation).
+                    $this->assert_clinic_accepting_new_demand( $trusted_clinic_id, true );
+
                     // Lock the persisted Slot first (the established booking lock),
                     // then lock its Location before the final timezone decision.
                     // Location updates lock only that Location row, so this order

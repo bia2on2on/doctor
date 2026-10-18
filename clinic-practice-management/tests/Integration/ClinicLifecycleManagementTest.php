@@ -448,6 +448,97 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
      * any App::settings()/App::bookingService() call. This is authorization, not a
      * bypass: Clinic B stays out of scope and cross-Clinic access is unchanged.
      */
+    /**
+     * A suspended Clinic must disappear from the patient enrollment destinations offered by
+     * PatientEnrollmentOptions::for_user() (which is built from this repository query) and must
+     * return after reactivation. Server-side rejection is unchanged and stays the authority:
+     * enroll_current_patient() re-checks clinic.status under the Clinic row lock and is covered
+     * by testSuspendedClinicRefusesNewSelfEnrollmentButKeepsExistingRecords.
+     */
+    public function testSuspendedClinicIsNotOfferedAsEnrollmentDestinationAndReturnsAfterReactivation(): void {
+        $repository = new \ClinicCore\Infrastructure\Repository\PatientEnrollmentRepository( App::db() );
+        // An identity with no local record anywhere: every ACTIVE Clinic of the Organization is a
+        // legitimate destination, so only the lifecycle filter can remove one from the list.
+        $identity_id = 987654321;
+        $wp_user_id  = $this->outsider;
+
+        $ids_before = array_column( $repository->destination_clinics( $this->orgA, $identity_id, $wp_user_id ), 'id' );
+        self::assertContains( $this->clinicA, $ids_before, 'control: an active Clinic is offered as a destination' );
+        self::assertContains( $this->clinicB, $ids_before, 'control: the sibling Clinic is offered too' );
+
+        $this->suspend_clinic_a();
+
+        $ids_suspended = array_column( $repository->destination_clinics( $this->orgA, $identity_id, $wp_user_id ), 'id' );
+        self::assertNotContains( $this->clinicA, $ids_suspended, 'a suspended Clinic must not be offered as an enrollment destination' );
+        self::assertContains( $this->clinicB, $ids_suspended, 'suspension is per Clinic: the sibling destination stays available' );
+
+        $this->reactivate_clinic_a();
+
+        $ids_after = array_column( $repository->destination_clinics( $this->orgA, $identity_id, $wp_user_id ), 'id' );
+        self::assertContains( $this->clinicA, $ids_after, 'the destination must return after reactivation' );
+
+        \ClinicCore\Application\Scope\ScopeContext::clear();
+    }
+
+    /**
+     * UI reachability and per-capability authority: an explicit DENY on cpms_org_clinic_create
+     * must NOT erase the Organization-Manager preset GRANT on cpms_org_clinic_update or
+     * cpms_org_clinic_lifecycle. The Organization selector is the union of the three
+     * capabilities, the control-visibility probes are per capability, and the authorized writes
+     * really succeed through the page entry points. A WordPress Administrator without an
+     * Organization membership still gets nothing.
+     */
+    public function testManagerWithCreateDenyKeepsUpdateAndLifecycleUiReachability(): void {
+        $service       = App::organization_clinic_provisioning_service();
+        $membership_id = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_organization_memberships' ) . ' WHERE organization_id = %d AND wp_user_id = %d',
+            [ $this->orgA, $this->managerA ]
+        );
+        self::assertGreaterThan( 0, $membership_id, 'fixture: the manager membership exists' );
+
+        App::db()->insert( 'cpms_organization_membership_capabilities', [
+            'membership_id'         => $membership_id,
+            'capability'            => 'cpms_org_clinic_create',
+            'effect'                => 'deny',
+            'created_by_wp_user_id' => $this->managerA,
+            'created_at'            => App::db()->nowUtcSql(),
+        ] );
+
+        // UI reachability: the selector data source is the union of the three capabilities.
+        $selector_ids = array_column( $service->management_organizations( $this->managerA ), 'id' );
+        self::assertContains( $this->orgA, $selector_ids, 'DENY(create) must not remove the Organization from the management selector' );
+
+        // Per-capability probes that drive control visibility, each with its own DENY precedence.
+        self::assertFalse( $service->can( $this->managerA, $this->orgA, 'cpms_org_clinic_create' ), 'DENY(create) must be honoured' );
+        self::assertTrue( $service->can( $this->managerA, $this->orgA, 'cpms_org_clinic_update' ), 'DENY(create) must not erase GRANT(update)' );
+        self::assertTrue( $service->can( $this->managerA, $this->orgA, 'cpms_org_clinic_lifecycle' ), 'DENY(create) must not erase GRANT(lifecycle)' );
+
+        // Actual authorized actions through the page boundaries (server-side authorization intact).
+        wp_set_current_user( $this->managerA );
+        $updated = ClinicManagementPage::update_clinic_for_test(
+            [
+                'organization_id' => $this->orgA,
+                'clinic_id'       => $this->clinicA,
+                'name'            => 'نام به‌روز شده با DENY(create)',
+            ],
+            $this->managerA
+        );
+        self::assertSame( '', $updated['error'], 'profile update must succeed with GRANT(update) despite DENY(create): ' . $updated['error'] );
+        self::assertSame( $this->clinicA, $updated['clinic_id'] );
+
+        $lifecycle = ClinicManagementPage::lifecycle_for_test( $this->managerA, $this->orgA, $this->clinicA, false );
+        self::assertSame( '', $lifecycle['error'], 'suspension must succeed with GRANT(lifecycle) despite DENY(create): ' . $lifecycle['error'] );
+        self::assertSame( 'suspended', $lifecycle['status'] );
+
+        // No implicit WordPress Administrator authority.
+        self::assertSame( [], $service->management_organizations( $this->admin ), 'a WP Administrator without an Organization membership must see no Organization' );
+        self::assertFalse( $service->can( $this->admin, $this->orgA, 'cpms_org_clinic_lifecycle' ) );
+
+        App::db()->query( 'DELETE FROM ' . App::db()->table( 'cpms_organization_membership_capabilities' ) . ' WHERE membership_id = %d', [ $membership_id ] );
+        $this->reactivate_clinic_a();
+        \ClinicCore\Application\Scope\ScopeContext::clear();
+    }
+
     private function bind_clinic_scope(): void {
         \ClinicCore\Application\Scope\ScopeContext::set(
             \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA )
@@ -662,6 +753,23 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             $control_code = $e->errorCode;
         }
         self::assertNotSame( 'CLINIC_SUSPENDED', $control_code, 'control: an active Clinic is never refused for suspension' );
+        if ( null === $control_code ) {
+            // The staff path is fully authorized in this fixture, so prove REAL creation:
+            // an appointment row and the capacity it claims. This is what makes the
+            // suspended refusal above meaningful rather than a fixture that can never book.
+            self::assertSame( 1, $this->appointment_count( $this->clinicA ), 'control: the appointment must really exist' );
+            self::assertSame( 1, $this->slot_counters( $slot['id'] )['booked_count'], 'control: the capacity must really be claimed' );
+        } else {
+            // Not a suspension refusal: name the exact reason so this control is never
+            // silently vacuous, and prove the refused call created nothing.
+            self::assertContains(
+                $control_code,
+                [ 'CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED', 'CLINIC_POLICY_VIOLATION', 'CLINIC_VALIDATION_FAILED', 'CLINIC_SLOT_TAKEN' ],
+                'unexpected control refusal code: ' . $control_code
+            );
+            self::assertSame( 0, $this->appointment_count( $this->clinicA ), 'a refused control call must create no appointment' );
+            self::assertSame( 0, $this->slot_counters( $slot['id'] )['booked_count'], 'a refused control call must claim no capacity' );
+        }
 
         \ClinicCore\Application\Scope\ScopeContext::clear();
     }

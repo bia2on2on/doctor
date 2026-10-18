@@ -6,7 +6,7 @@
 ## 1. Functional operations delivered
 
 ### 1.1 Clinic settings update (Organization-scoped)
-- **Authority:** Organization Manager authority only — a durable active `organization_manager` membership for the exact Organization, resolved server-side **per operation** with `DENY > GRANT > Organization-Manager preset`: `cpms_org_clinic_create` (provisioning), `cpms_org_clinic_update` (Clinic settings), `cpms_org_clinic_lifecycle` (suspend/reactivate); management reads are the union of the three. Each capability is independent (a DENY on one neither widens nor narrows the others), authorization is evaluated **before** tenant-supplied input is validated, and neither WordPress Administrator nor Clinic membership implies any of them. Tracked UI gap (not a bypass): the page's Organization dropdown is resolved with `cpms_org_clinic_create`, so an actor granted only the update/lifecycle capability has no page path; service enforcement stays fail-closed. Every request re-checks Organization row lock (`SELECT ... FOR UPDATE`), Organization `active` status, and Clinic→Organization ownership. No first-Clinic fallback, no `clinic_id=1` / `organization_id=1` hardcode, no WP Administrator bypass, no Clinic-membership shortcut.
+- **Authority:** Organization Manager authority only — a durable active `organization_manager` membership for the exact Organization, resolved server-side **per operation** with `DENY > GRANT > Organization-Manager preset`: `cpms_org_clinic_create` (provisioning), `cpms_org_clinic_update` (Clinic settings), `cpms_org_clinic_lifecycle` (suspend/reactivate); management reads are the union of the three. Each capability is independent (a DENY on one neither widens nor narrows the others), authorization is evaluated **before** tenant-supplied input is validated, and neither WordPress Administrator nor Clinic membership implies any of them. The management screen's Organization selector is the **union** of the three capabilities (`management_organizations()`), and profile/lifecycle controls are rendered only when the matching per-capability probe (`can()`) is true, so an actor holding only `cpms_org_clinic_update`/`_lifecycle` reaches the page and sees exactly the controls they may use. Hiding a control is UX only — every write re-authorizes itself server-side. Every request re-checks Organization row lock (`SELECT ... FOR UPDATE`), Organization `active` status, and Clinic→Organization ownership. No first-Clinic fallback, no `clinic_id=1` / `organization_id=1` hardcode, no WP Administrator bypass, no Clinic-membership shortcut.
 - **Allowed fields:** `name` (1–190, Persian RTL), `address` (≤255 nullable), `phone` (≤32 nullable). `organization_id`, `slug`, `timezone`, `created_at`, `status` are preserved. Validation is atomic — any validation failure = zero partial mutation.
 - **Concurrency & idempotency:** Organization + Clinic row locks serialize concurrent edits. Idempotent retry with identical payload returns `noop: true` without a second audit event. Audit failure rolls back the profile mutation in the same transaction.
 - **Audit:** `CLINIC_PROFILE_UPDATED` hash-chained event with actor, org, before/after, clinic as authority clinic. No secrets stored.
@@ -101,11 +101,11 @@ Lifecycle **concurrency** is serialized by the Organization row lock plus `SELEC
 
 | Surface | Respects `cpms_clinics.status = suspended`? | Evidence |
 |---|---|---|
-| Staff/admin write paths that establish trusted scope (`LocationAdminPage`, `StaffManagementPage`, `ClinicianAdminPage`, `CustomRoleDefinitionsPage`, `CpmsSetupWizard`, `DoctorHandwritingPage`) | **Yes** — `TrustedClinicEstablisher::verified_scope()` now fails closed with reason `clinic_suspended` | code in this slice |
+| Staff/admin write paths that establish trusted scope (`LocationAdminPage`, `StaffManagementPage`, `ClinicianAdminPage`, `CustomRoleDefinitionsPage`, `CpmsSetupWizard`, `DoctorHandwritingPage`) | **No — deliberately.** `TrustedClinicEstablisher` is not a lifecycle gate (an earlier blanket `clinic_suspended` block was reverted): existing-care and continuity operations must keep working in a suspended Clinic. Suspension is enforced at the new-demand boundaries listed above instead | code in this slice |
 | Organization-level Clinic administration (this page) | **Yes by design** — the Organization Manager can still list/update/reactivate a suspended Clinic; suspension blocks *operational* Clinic scope, not Organization administration | code in this slice |
 | Backup enumeration | **No, intentionally** — `BackupService` selects all `cpms_clinics` rows so suspended-Clinic history keeps being backed up | pre-existing code, unchanged |
 | Audit history | **No, intentionally** — `cpms_audit_logs` is append-only and never filtered by Clinic status | pre-existing code, unchanged |
-| Public booking shortcode Clinic chooser | **NOT YET** — tracked gap below | pre-existing code, unchanged in this slice |
+| Public booking shortcode Clinic chooser | **Yes** — `PublicBookingShortcode::findClinic()` reads `cpms_clinics.status` and does not advertise a suspended Clinic | code in this slice |
 
 ## 6. Pending / explicitly not claimed
 
@@ -147,6 +147,8 @@ Clinic are refused.
 | Patient self-enrollment (`PatientService::enroll_current_patient()`) | `AND clinic.status = 'active'` inside the locked query | existing 404 parity preserved (no new information leak) |
 | Slot generation sweep (`SlotsGenerateHandler`) | `cl.status = 'active'` join | no new Slots are generated for a suspended Clinic |
 | Booking-selection OTP (`OtpController::requestCode()`) | suspended selected Clinic | `409 CLINIC_SUSPENDED`; selection-less purposes (login, mobile verification) still work |
+| Patient enrollment destinations (`PatientEnrollmentRepository::destination_clinics()`) | `AND c.status = 'active'` in the destination query | a suspended Clinic is never offered by `PatientEnrollmentOptions::for_user()`; it returns after reactivation. Advertisement filtering only — `enroll_current_patient()` stays the server-side authority |
+| Reception slot advertising (`ReceptionPortalController::reception_slots()`) | `cpms_clinics.status` read after the trusted Clinic/Location is resolved | suspended Clinic → the same bounded empty day (HTTP 200, no slots, no reason leaked) used for 0 eligible Locations |
 | Public availability / quote / shortcode | non-locking `clinic_is_suspended()` read at the advertisement boundary | availability → HTTP 200 with `days = []`; quote → `available=false`, `capacity_left=0`; the shortcode does not advertise the Clinic. Non-locking on purpose: every demand-creating path re-checks under the Clinic row lock, so an advertisement read that races a suspension can never produce an appointment |
 
 ### Preserved while `status = suspended` (continuity)
@@ -159,9 +161,18 @@ active one, while a replacement appointment can never be created inside a suspen
 
 ### Locking, atomicity and race behaviour
 - Uniform lock order in every booking transaction: **Clinic row (`FOR UPDATE`) → Slot rows in
-  ascending id order**; `rescheduleAs()` takes the old appointment lock before the Clinic. No path
-  locks a Clinic after a Slot, so a suspension racing a booking cannot form an ABBA deadlock cycle
-  (MySQL would otherwise choose a victim and surface a raw database error).
+  ascending id order**; `rescheduleAs()` takes the old appointment lock before the Clinic, and
+  `createByStaff()` now re-checks the status under the Clinic row lock **inside** its transaction
+  before the Slot lock (its earlier pre-transaction check was unlocked, so a suspension landing
+  between the check and the Slot lock was not serialized). No path locks a Clinic after a Slot, so a
+  suspension racing a booking cannot form an ABBA deadlock cycle (MySQL would otherwise choose a
+  victim and surface a raw database error).
+- Patient self-enrollment uses the **management** order: Organization `FOR UPDATE` → Clinic
+  `FOR UPDATE` (`enroll_current_patient()` previously locked Clinic→Organization through one joined
+  `FOR UPDATE`, the inverse of `set_clinic_status()`/`update_clinic_profile()`). The unlocked
+  `organization_id` candidate read is never trusted: Organization status, Clinic status and the
+  Clinic→Organization relationship are all revalidated under the two locks, and every refusal keeps
+  404 parity.
 - All guarded mutations run inside the existing `db->transactional()` boundary; a denial rolls the
   whole transaction back, and `confirm()`'s compensation handler releases Hold capacity only for
   **non**-suspension failures.
@@ -170,14 +181,16 @@ active one, while a replacement appointment can never be created inside a suspen
   status is already the desired one).
 
 ### Regression coverage
-`tests/Integration/ClinicLifecycleManagementTest.php` (25 DB-backed tests) covers the boundaries
+`tests/Integration/ClinicLifecycleManagementTest.php` (27 DB-backed tests) covers the boundaries
 above, including `testSuspendedClinicIsNotAdvertisedOnPublicAvailabilityAndQuote` (with a real
 active-Location + active-`cpms_schedule` positive control),
 `testSuspendedClinicRejectsNewHoldWithoutCapacitySideEffects`,
 `testSuspendedClinicRefusesConfirmingAnExistingHold`,
 `testSuspendedClinicRefusesPatientAndStaffRescheduleButKeepsExistingAppointment`,
 `testSuspendedClinicRefusesStaffCreatedAppointment`,
-`testSuspendedClinicRefusesNewSelfEnrollmentButKeepsExistingRecords` and
+`testSuspendedClinicRefusesNewSelfEnrollmentButKeepsExistingRecords`,
+`testSuspendedClinicIsNotOfferedAsEnrollmentDestinationAndReturnsAfterReactivation`,
+`testManagerWithCreateDenyKeepsUpdateAndLifecycleUiReachability` and
 `testSuspendedClinicPreservesContinuityAndRefusesNewDemandAtBoundaries`. No test is skipped or marked
 incomplete. Teardown deletes children before parents (`cpms_audit_logs`, holds, appointments,
 slots/schedule before clinicians, then Locations/Clinics/Organizations) so no committed row leaks into

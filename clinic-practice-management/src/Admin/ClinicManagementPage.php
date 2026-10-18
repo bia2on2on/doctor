@@ -63,16 +63,23 @@ final class ClinicManagementPage {
             delete_transient( $notice_key );
         }
 
-        // Organization Manager authority only. This Organization dropdown is resolved
-        // with cpms_org_clinic_create (DENY > GRANT > preset); the Clinic list inside an
-        // Organization is the union of create/update/lifecycle, and every write is
-        // re-authorized per operation in the service. No WP Administrator / Clinic
-        // membership shortcut exists. Tracked UI gap: an actor holding only the
-        // update/lifecycle capability has no path to this page (service stays fail-closed).
-        $organizations = $service->organizations_for_manager( $actor_id, OrganizationClinicProvisioningService::CAPABILITY );
+        // Organization Manager authority only. The dropdown admits an Organization for which
+        // the actor holds ANY of the three independent Clinic capabilities (create / update /
+        // lifecycle), each resolved with its own DENY > GRANT > Organization-Manager preset, so
+        // an explicit DENY on create never erases a GRANT on update or lifecycle. This widens
+        // READ reachability of the management screen only: the controls below are hidden per
+        // capability, every write re-authorizes itself per operation in the service, and no
+        // WordPress Administrator or Clinic-membership shortcut exists.
+        $organizations = $service->management_organizations( $actor_id );
 
         $selected_org_id    = isset( $_GET['organization_id'] ) ? absint( $_GET['organization_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         $selected_clinic_id = isset( $_GET['clinic_id'] ) ? absint( $_GET['clinic_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+
+        // Per-capability UI probes (read-only): controls the actor is not authorized for are
+        // not rendered. Server-side authorization is untouched and stays the only authority
+        // for a write - hiding a button is UX, never the security boundary.
+        $can_update    = $selected_org_id > 0 && $service->can( $actor_id, $selected_org_id, OrganizationClinicProvisioningService::CAPABILITY_PROFILE_UPDATE );
+        $can_lifecycle = $selected_org_id > 0 && $service->can( $actor_id, $selected_org_id, OrganizationClinicProvisioningService::CAPABILITY_LIFECYCLE );
 
         echo '<div class="wrap" dir="rtl"><h1>مدیریت درمانگاه‌ها — تنظیم و چرخهٔ حیات</h1>';
         echo '<p class="description">تنظیم نام/نشانی/تلفن و فعال/غیرفعال‌سازی درمانگاه با اختیار صریح مدیر سازمان برای همان سازمان. افزودن درمانگاه ≠ افزودن شعبه: درمانگاه موجودیت مستقل در سازمان است، شعبه مکان عملیاتی داخل درمانگاه است. غیرفعال‌سازی هیچ پروندهٔ پزشکی، مالی، ممیزی یا پشتیبان را حذف نمی‌کند — فقط پرچم وضعیت تغییر می‌کند.</p>';
@@ -134,16 +141,20 @@ final class ClinicManagementPage {
             $status_badge = $clinic['status'] === 'active' ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>';
             $active       = $clinic['status'] === 'active';
             echo '<tr><td>' . esc_html( $clinic['name'] ) . '</td><td class="ltr">' . esc_html( $clinic['slug'] ) . '</td><td class="ltr">' . esc_html( $clinic['timezone'] ) . '</td><td>' . wp_kses( $status_badge, array( 'span' => array( 'class' => array() ) ) ) . '</td><td>';
-            echo '<a class="button button-small" href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE . '&organization_id=' . $selected_org_id . '&clinic_id=' . $clinic['id'] ) ) . '">تنظیم و چرخهٔ حیات</a> ';
-            // Lifecycle button inline
-            echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline-block;margin-inline-start:6px">';
-            wp_nonce_field( self::NONCE_LIFECYCLE );
-            echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION_LIFECYCLE ) . '">';
-            echo '<input type="hidden" name="organization_id" value="' . esc_attr( (string) $selected_org_id ) . '">';
-            echo '<input type="hidden" name="clinic_id" value="' . esc_attr( (string) $clinic['id'] ) . '">';
-            echo '<input type="hidden" name="active" value="' . esc_attr( $active ? '0' : '1' ) . '">';
-            echo '<button class="button button-small" data-cpms-confirm="' . esc_attr( $active ? 'آیا از غیرفعال‌سازی این درمانگاه اطمینان دارید؟ سابقهٔ پزشکی/مالی/ممیزی حذف نمی‌شود.' : 'فعال‌سازی مجدد درمانگاه؟' ) . '">' . esc_html( $active ? 'غیرفعال‌سازی' : 'فعال‌سازی مجدد' ) . '</button>';
-            echo '</form>';
+            if ( $can_update ) {
+                echo '<a class="button button-small" href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE . '&organization_id=' . $selected_org_id . '&clinic_id=' . $clinic['id'] ) ) . '">تنظیم و چرخهٔ حیات</a> ';
+            }
+            // Lifecycle button inline - rendered only with the lifecycle capability.
+            if ( $can_lifecycle ) {
+                echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline-block;margin-inline-start:6px">';
+                wp_nonce_field( self::NONCE_LIFECYCLE );
+                echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION_LIFECYCLE ) . '">';
+                echo '<input type="hidden" name="organization_id" value="' . esc_attr( (string) $selected_org_id ) . '">';
+                echo '<input type="hidden" name="clinic_id" value="' . esc_attr( (string) $clinic['id'] ) . '">';
+                echo '<input type="hidden" name="active" value="' . esc_attr( $active ? '0' : '1' ) . '">';
+                echo '<button class="button button-small" data-cpms-confirm="' . esc_attr( $active ? 'آیا از غیرفعال‌سازی این درمانگاه اطمینان دارید؟ سابقهٔ پزشکی/مالی/ممیزی حذف نمی‌شود.' : 'فعال‌سازی مجدد درمانگاه؟' ) . '">' . esc_html( $active ? 'غیرفعال‌سازی' : 'فعال‌سازی مجدد' ) . '</button>';
+                echo '</form>';
+            }
             echo '</td></tr>';
         }
         echo '</tbody></table>';
@@ -157,7 +168,10 @@ final class ClinicManagementPage {
                     break;
                 }
             }
-            if ( $clinic_row !== null ) {
+            if ( $clinic_row !== null && ! $can_update ) {
+                echo '<div class="notice notice-info inline"><p>ویرایش تنظیمات این درمانگاه برای این حساب مجاز نیست (مجوز <code>cpms_org_clinic_update</code> لازم است). فهرست و وضعیت درمانگاه‌ها قابل مشاهده است.</p></div>';
+            }
+            if ( $clinic_row !== null && $can_update ) {
                 // Load full row for address/phone
                 $full = App::db()->fetchRow(
                     'SELECT name, address, phone, status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
