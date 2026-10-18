@@ -45,16 +45,20 @@ final class FacilityTypeCatalogTest extends TestCase {
  public function testAdaptiveTypeProfilesCoverEveryCatalogIdWithPersianLabels(): void {
   foreach (FacilityTypeCatalog::all() as $t) {
    $p = FacilityTypeCatalog::type_profile((string) $t['id']);
-   foreach (['unit','clinician','clinicians','name_label'] as $k) {
+   foreach (['unit','clinician','clinicians','name_label','guidance'] as $k) {
     self::assertNotSame('', trim((string) $p[$k]), 'profile '.$k.' for '.$t['id']);
    }
+   self::assertNotContains('users', FacilityTypeCatalog::flow_required_step_ids(FacilityTypeCatalog::resolve_flow((string) $t['id'])), 'reception/finance users step must be explicitly optional for '.$t['id']);
   }
+  self::assertStringContainsString('HIS', FacilityTypeCatalog::type_profile('hospital')['guidance'], 'hospital guidance must name the inpatient/HIS limitation');
+  self::assertContains('کارکنان پذیرش و مالی (اختیاری)', FacilityTypeCatalog::flow_steps('multi_doctor_clinic'));
   self::assertSame('دندانپزشک', FacilityTypeCatalog::type_profile('dental_clinic')['clinician']);
   self::assertSame('مطب', FacilityTypeCatalog::type_profile('doctor_practice')['unit']);
   self::assertSame('بیمارستان', FacilityTypeCatalog::type_profile('hospital')['unit']);
   self::assertStringContainsString('سرپایی', FacilityTypeCatalog::type_profile('hospital')['name_label'], 'hospital identity label must stay outpatient-scoped');
   self::assertSame(FacilityTypeCatalog::type_profile(''), FacilityTypeCatalog::type_profile('unknown'), 'unknown ids fall back to the generic legacy profile');
   self::assertSame('نام کلینیک', FacilityTypeCatalog::type_profile('')['name_label']);
+  self::assertSame('', FacilityTypeCatalog::type_profile('')['guidance'], 'legacy installs get no invented guidance');
  }
  public function testWizardSourceContracts(): void {
   $s = (string) file_get_contents(dirname(__DIR__,3).'/src/Admin/CpmsSetupWizard.php');

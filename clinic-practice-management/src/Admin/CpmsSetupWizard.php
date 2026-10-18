@@ -482,6 +482,7 @@ final class CpmsSetupWizard
         ?>
         <div class="card">
             <h2>کاربران و نقش‌ها</h2>
+            <p class="description" data-cpms-users-step-optional="1">این گام اختیاری است: هیچ کاربر جدیدی اینجا ساخته نمی‌شود و راه‌اندازی بدون آن متوقف نمی‌شود؛ پرسنل پذیرش و مالی را هر زمان که نیاز داشتید اضافه کنید.</p>
             <p>کاربران، نقش‌ها، مجوزهای پیش‌فرض و مجوزهای پیشرفته را می‌توانید از صفحهٔ «کاربران و دسترسی‌ها» مدیریت کنید.</p>
             <p>تعداد کاربران دارای نقش‌های CPMS/ادمین: <strong><?php echo esc_html((string) $users); ?></strong></p>
             <ul>
@@ -514,12 +515,22 @@ final class CpmsSetupWizard
             <?php endif; ?>
         </div>
         <?php self::open_step_form( 'doctors' ); ?>
+        <?php
+        $is_multi_doctor  = self::current_flow() === 'multi_doctor_clinic';
+        $min_clinicians   = $is_multi_doctor ? 2 : 1;
+        $intended_display = max( $min_clinicians, self::intended_clinicians( App::settings() ) );
+        ?>
         <div class="card">
             <p>
                 <label for="cpms_intended_clinicians">تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> موردنظر</label>
-                <input type="number" id="cpms_intended_clinicians" name="intended_clinicians" min="1" max="200" style="max-width:100%;" value="<?php echo esc_attr( (string) max( 1, self::intended_clinicians( App::settings() ) ) ); ?>">
+                <input type="number" id="cpms_intended_clinicians" name="intended_clinicians" min="<?php echo esc_attr( (string) $min_clinicians ); ?>" max="200" style="max-width:100%;" value="<?php echo esc_attr( (string) $intended_display ); ?>">
             </p>
-            <p class="description">این گام فقط وقتی کامل است که دست‌کم به همین تعداد <?php echo esc_html( $facility_profile['clinician'] ); ?> فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.</p>
+            <p class="description">
+                این گام فقط وقتی کامل است که دست‌کم به همین تعداد <?php echo esc_html( $facility_profile['clinician'] ); ?> فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.
+                <?php if ( $is_multi_doctor ) : ?>
+                    برای جریان چندپزشکه، مقدار موردنظر باید دست‌کم ۲ باشد (اعتبارسنجی سمت سرور).
+                <?php endif; ?>
+            </p>
             <?php self::submit_step_form( 'doctors', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -631,7 +642,54 @@ final class CpmsSetupWizard
             <p><a class="button" data-cpms-wizard-action="system" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-system' ) ); ?>">بازکردن جزئیات و ابزارهای سیستم</a></p>
         </div>
         <?php
-        self::form_tag( 'health', 'ادامه' );
+        if ( self::current_flow() === 'hospital_network' ) :
+            ?>
+            <?php self::open_step_form( 'health' ); ?>
+            <div class="card" data-cpms-hospital-outpatient-scope="1">
+                <h2>محدودهٔ پشتیبانی بیمارستان — فقط سرپایی</h2>
+                <div class="notice notice-warning inline" data-cpms-inpatient-unsupported="1">
+                    <p>بخش بستری و سامانهٔ جامع بیمارستانی (HIS) پشتیبانی نمی‌شود؛ این راه‌اندازی فقط درمانگاه‌ها و فرایندهای سرپایی را پوشش می‌دهد و هیچ ماژول بستری ساخته نمی‌شود.</p>
+                </div>
+                <p>
+                    <label for="cpms_outpatient_only_ack" style="display:block;padding:10px;min-height:44px;box-sizing:border-box;">
+                        <input type="checkbox" id="cpms_outpatient_only_ack" name="outpatient_only_ack" value="1" <?php checked( (bool) App::settings()->get( 'setup.outpatient_only_ack', false ) ); ?>>
+                        تأیید می‌کنم این مرکز را فقط برای فرایندهای سرپایی راه‌اندازی می‌کنم و می‌دانم بخش بستری و HIS پشتیبانی نمی‌شود.
+                    </label>
+                </p>
+                <?php self::submit_step_form( 'health', 'ذخیره و ادامه' ); ?>
+            </div>
+            <?php
+            self::close_step_form();
+        else :
+            self::form_tag( 'health', 'ادامه' );
+        endif;
+    }
+
+    /**
+     * Health-step save. For the hospital flow the step is conditional: it
+     * requires an explicit outpatient-only acknowledgment (persisted as a
+     * Clinic-scoped configuration key). For every other flow the health step
+     * stays informational exactly as before. Never destructive: an existing
+     * acknowledgment is preserved; no tenant row is touched.
+     *
+     * @param array<string, mixed> $post
+     *
+     * @return string '' = ok
+     */
+    public static function save_health( Settings $settings, array $post, int $updated_by ): string {
+        if ( self::current_flow() !== 'hospital_network' ) {
+            return '';
+        }
+        $acked = (bool) $settings->get( 'setup.outpatient_only_ack', false );
+        if ( ! $acked && isset( $post['outpatient_only_ack'] ) && (string) $post['outpatient_only_ack'] === '1' ) {
+            $settings->set( 'setup.outpatient_only_ack', true, $updated_by );
+            $acked = true;
+        }
+        if ( ! $acked ) {
+            return 'برای جریان بیمارستان، ادامه فقط با تأیید صریح «فقط فرایندهای سرپایی» ممکن است؛ بخش بستری و HIS پشتیبانی نمی‌شود.';
+        }
+
+        return '';
     }
 
     private static function canonical_clinic_name( Settings $settings ): string {
@@ -695,6 +753,17 @@ final class CpmsSetupWizard
         $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
         $facility_profile = self::current_facility_profile();
         ?>
+        <?php if ( self::current_flow() === 'medical_building' ) : ?>
+            <div class="notice notice-info inline" data-cpms-building-handoff="1" style="margin-bottom:12px;">
+                <p>
+                    <strong>ساختمان پزشکی با چند مطب مستقل:</strong>
+                    این ویزارد فقط همین کلینیکِ دارای محدودهٔ صریح و مجاز را پیکربندی می‌کند و درمانگاه مستقلِ جدید نمی‌سازد؛ هیچ محدودهٔ مستأجری از اینجا حدس زده نمی‌شود.
+                    ایجاد هر کلینیک جدید (اتمی، با ممیزی) فقط با اختیار مدیر سازمان و انتخاب صریح سازمان در «سازمان‌ها → مدیریت سازمان و درمانگاه‌ها» انجام می‌شود.
+                    پس از ایجاد، پیکربندی هر کلینیک با انتخاب صریح همان کلینیک و عضویت معتبر در آن ادامه می‌یابد؛ تکمیل راه‌اندازی ساختمان پزشکی در این ویزارد عمداً مسدود و امن باقی می‌ماند.
+                </p>
+                <p><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-organizations' ) ); ?>">رفتن به «مدیریت سازمان و درمانگاه‌ها»</a></p>
+            </div>
+        <?php endif; ?>
         <div class="card">
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
@@ -765,6 +834,20 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
+        // Cross-admin resumability: the persisted Clinic-scoped selection is
+        // the fallback for an authorized manager without user-meta, so the
+        // facility radio, the flow summary and the hospital/medical-building
+        // disclosures resume identically. Read-only; GET never writes, and a
+        // pre-bootstrap install (no Clinic scope) simply has no selection.
+        try {
+            $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+            if ( FacilityTypeCatalog::is_valid( $stored ) ) {
+                return $stored;
+            }
+        } catch ( \Throwable ) {
+            $stored = ''; // Without Clinic-scoped Settings nothing is selected.
+        }
+
         return '';
     }
 
@@ -798,35 +881,11 @@ final class CpmsSetupWizard
      * @return array{unit:string,clinician:string,clinicians:string,name_label:string}
      */
     private static function current_facility_profile(): array {
-        $facility = self::selected_facility_type();
-        if ( $facility === '' ) {
-            try {
-                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
-                if ( FacilityTypeCatalog::is_valid( $stored ) ) {
-                    $facility = $stored;
-                }
-            } catch ( \Throwable ) {
-                $facility = '';
-            }
-        }
-
-        return FacilityTypeCatalog::type_profile( $facility );
+        return FacilityTypeCatalog::type_profile( self::selected_facility_type() );
     }
 
     private static function current_flow(): string {
-        $facility = self::selected_facility_type();
-        if ( $facility === '' ) {
-            try {
-                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
-                if ( FacilityTypeCatalog::is_valid( $stored ) ) {
-                    $facility = $stored;
-                }
-            } catch ( \Throwable ) {
-                $facility = '';
-            }
-        }
-
-        return FacilityTypeCatalog::resolve_flow( $facility, self::selected_structure() );
+        return FacilityTypeCatalog::resolve_flow( self::selected_facility_type(), self::selected_structure() );
     }
 
     /**
@@ -837,14 +896,7 @@ final class CpmsSetupWizard
      */
     public static function active_steps(): array {
         if ( self::selected_facility_type() === '' ) {
-            try {
-                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
-                if ( ! FacilityTypeCatalog::is_valid( $stored ) ) {
-                    return self::steps();
-                }
-            } catch ( \Throwable ) {
-                return self::steps();
-            }
+            return self::steps();
         }
         $flow     = self::current_flow();
         $ids      = FacilityTypeCatalog::flow_step_ids( $flow );
@@ -929,6 +981,12 @@ final class CpmsSetupWizard
                     }
 
                     return false;
+                case 'health':
+                    if ( self::current_flow() === 'hospital_network' ) {
+                        return (bool) $settings->get( 'setup.outpatient_only_ack', false );
+                    }
+
+                    return in_array( $step_id, self::completed_step_ids( $settings ), true );
                 case 'review':
                     return self::missing_required_steps( $settings ) === [];
                 case 'finish':
@@ -1079,6 +1137,12 @@ final class CpmsSetupWizard
                 }
                 ?>
             </ol>
+            <?php
+            $guidance = FacilityTypeCatalog::type_profile( $facility )['guidance'];
+            if ( $guidance !== '' ) :
+                ?>
+                <p class="description" data-cpms-facility-guidance="<?php echo esc_attr( $facility ); ?>"><?php echo esc_html( $guidance ); ?></p>
+            <?php endif; ?>
             <?php if ( $flow === 'hospital_network' ) : ?>
                 <div class="notice notice-warning inline" data-cpms-inpatient-unsupported="1"><p>بخش بستری و سامانهٔ جامع بیمارستانی پشتیبانی نمی‌شود؛ این راه‌اندازی فقط درمانگاه‌ها و فرایندهای سرپایی را پوشش می‌دهد.</p></div>
             <?php endif; ?>
@@ -1191,6 +1255,9 @@ final class CpmsSetupWizard
                 break;
             case 'sms':
                 $error = self::saveSms($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                break;
+            case 'health':
+                $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
                 break;
             case 'finish':
                 $error = self::saveFinish($settings, (int) get_current_user_id());
