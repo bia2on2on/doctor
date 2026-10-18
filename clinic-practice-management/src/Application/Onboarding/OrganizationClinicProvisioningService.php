@@ -457,7 +457,7 @@ final class OrganizationClinicProvisioningService {
         $overrides = $this->db->$read_all(
             'SELECT capability, effect FROM ' . $this->db->table( 'cpms_organization_membership_capabilities' )
             . ' WHERE membership_id = %d',
-            [(int) $membership['id']]
+            [ (int) $membership['id'] ]
         );
         foreach ( $overrides as $override ) {
             if ( $override['capability'] === $permission && $override['effect'] === 'deny' ) {

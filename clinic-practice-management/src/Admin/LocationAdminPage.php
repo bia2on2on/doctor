@@ -264,9 +264,9 @@ final class LocationAdminPage
      *
      * @return array{error:string, location_id:int, noop:bool}
      */
-    public static function upsertLocation( array $in, int $updatedBy ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
+    public static function upsertLocation( array $in, int $updated_by ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
-        if ( $updatedBy <= 0 || ! is_user_logged_in() || (int) get_current_user_id() !== $updatedBy ) {
+        if ( $updated_by <= 0 || ! is_user_logged_in() || (int) get_current_user_id() !== $updated_by ) {
             return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'location_id' => 0, 'noop' => false];
         }
 
@@ -274,7 +274,7 @@ final class LocationAdminPage
             ? (int) $in['clinic_id']
             : null;
 
-        $authorization = self::authorize_location_write( $updatedBy, $requested_clinic_id );
+        $authorization = self::authorize_location_write( $updated_by, $requested_clinic_id );
         if ( $authorization['error'] !== '' ) {
             return ['error' => $authorization['error'], 'location_id' => 0, 'noop' => false];
         }
@@ -284,7 +284,7 @@ final class LocationAdminPage
         try {
             if ( $mode === 'update' ) {
                 $result = App::locationService()->updateLocation(
-                    $updatedBy,
+                    $updated_by,
                     $authorization['clinic_id'],
                     (int) ($in['location_id'] ?? 0),
                     [
@@ -294,7 +294,7 @@ final class LocationAdminPage
                 );
             } else {
                 $result = App::locationService()->createLocation(
-                    $updatedBy,
+                    $updated_by,
                     $authorization['clinic_id'],
                     [
                         'name' => (string) ($in['name'] ?? ''),

@@ -189,8 +189,8 @@ final class LocationService
         }
 
         // ---- mutation: فقط name/timezone/updated_at ----
-        $before_name = (string) ($current['name'] ?? '');
-        $before_timezone = (string) ($current['timezone'] ?? '');
+        $before_name     = (string) ( $current['name'] ?? '' );
+        $before_timezone = (string) ( $current['timezone'] ?? '' );
 
         // ---- no-op صریح: مقادیر یکسان = بدون update، بدون تغییر updated_at و
         // بدون success-audit گمراه‌کننده. «0 affected rows» هرگز نشانهٔ گم‌شدن
@@ -227,13 +227,13 @@ final class LocationService
             $location_id,
             $trusted_clinic_id,
             [
-                'location.name' => $before_name,
+                'location.name'     => $before_name,
                 'location.timezone' => $before_timezone,
             ],
             [
-                'location.name' => $name,
-                'location.timezone' => $timezone,
-                'location.updated_at' => (string) ($row['updated_at'] ?? $now),
+                'location.name'       => $name,
+                'location.timezone'   => $timezone,
+                'location.updated_at' => (string) ( $row['updated_at'] ?? $now ),
             ],
             ['op' => 'location_update']
         );

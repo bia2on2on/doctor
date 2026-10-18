@@ -188,11 +188,11 @@ final class LocationRepository
             'cpms_locations',
             [
                 'clinic_id'  => $clinic_id,
-                'name' => $name,
-                'slug' => $slug,
-                'timezone' => $timezone,
+                'name'       => $name,
+                'slug'       => $slug,
+                'timezone'   => $timezone,
                 'is_primary' => 0,
-                'is_active' => 1,
+                'is_active'  => 1,
                 'created_at' => $now_sql,
                 'updated_at' => $now_sql,
             ]
