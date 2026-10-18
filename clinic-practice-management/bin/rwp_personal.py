@@ -3,7 +3,7 @@ import json
 from urllib.parse import parse_qs, urlparse
 
 
-def run_personal(page, check, goto_admin, wp_eval, shot):
+def run_personal(page, check, goto_admin, wp_eval, shot, clinic_id):
     def visit(path, name):
         return goto_admin(page, 'personal', path, 'personal-' + name)
 
@@ -30,9 +30,20 @@ echo 'PERSONAL_DB=' . wp_json_encode($data) . PHP_EOL;
 
     # The existing harness has selected doctor_practice and established the
     # same administrator's manager membership using the real bootstrap form.
-    # No clinician, Location or schedule fixture is used for this journey.
+    # Location scope is then selected through its native Clinic selector (no
+    # single-Clinic fallback); no clinician, Location or schedule fixture is used.
     loc_name = 'مکان پذیرش شخصی'
     visit('admin.php?page=cpms-locations', 'location-create')
+    clinic_form = page.locator('form:has(select#cpms_location_clinic)')
+    clinic_selector = clinic_form.locator('select[name="clinic_id"]')
+    clinic_option = clinic_selector.locator('option[value="' + str(int(clinic_id)) + '"]')
+    check('personal.location.explicit_clinic_selector', clinic_form.count() == 1 and clinic_option.count() == 1)
+    clinic_selector.select_option(str(int(clinic_id)))
+    submit(clinic_form)
+    check(
+        'personal.location.explicit_clinic_applied',
+        parse_qs(urlparse(page.url).query).get('clinic_id') == [str(int(clinic_id))],
+    )
     form = page.locator('form:has(input[name="action"][value="cpms_location_save"]):has(input[name="mode"][value="create"])')
     check('personal.location.real_create_form', form.count() == 1)
     form.locator('input[name="name"]').fill(loc_name)
@@ -41,7 +52,7 @@ echo 'PERSONAL_DB=' . wp_json_encode($data) . PHP_EOL;
     submit(form)
     data = snap()
     locations = [x for x in data['cpms_locations'] if x['name'] == loc_name]
-    check('personal.location.persisted', len(locations) == 1 and locations[0]['timezone'] == 'Asia/Tehran' and int(locations[0]['is_active']) == 1)
+    check('personal.location.persisted', len(locations) == 1 and int(locations[0]['clinic_id']) == int(clinic_id) and locations[0]['timezone'] == 'Asia/Tehran' and int(locations[0]['is_active']) == 1)
     loc_id = int(locations[0]['id'])
     submit(step('locations'))
 

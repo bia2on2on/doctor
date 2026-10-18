@@ -113,6 +113,42 @@ final class CustomRoleManagementServiceTest extends WP_UnitTestCase
         self::assertSame(['Alpha role'], array_column($listing['definitions'], 'display_name'));
     }
 
+    public function testCustomRoleDefinitionManagementRequiresAnExplicitClinicEvenForSoleMembership(): void
+    {
+        $db = App::db();
+        $beforeAudit = (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE clinic_id = %d AND resource_type = %s',
+            [ $this->clinicA, CustomRoleManagementService::RESOURCE_TYPE ]
+        );
+
+        try {
+            // Caller-controlled invalid role data must not be inspected before
+            // the required tenant selector is established.
+            $this->service()->create( $this->managerUserId, null, '', '', [ 'not-a-capability' ] );
+            self::fail( 'a missing Clinic selector must be denied before definition validation' );
+        } catch ( ScopeRequiredException $exception ) {
+            self::assertSame( 'CLINIC_SCOPE_REQUIRED', $exception->apiCode() );
+            self::assertSame( 400, $exception->httpStatus() );
+        }
+
+        try {
+            $this->service()->list_definitions( $this->managerUserId, null );
+            self::fail( 'a missing Clinic selector must also deny definition lookup' );
+        } catch ( ScopeRequiredException $exception ) {
+            self::assertSame( 'CLINIC_SCOPE_REQUIRED', $exception->apiCode() );
+        }
+
+        self::assertSame( [], ( new CustomRoleRepository( $db ) )->list_definitions( $this->clinicA ) );
+        self::assertSame(
+            $beforeAudit,
+            (int) $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE clinic_id = %d AND resource_type = %s',
+                [ $this->clinicA, CustomRoleManagementService::RESOURCE_TYPE ]
+            ),
+            'a missing selector must not create or audit a definition, even for a sole Clinic member'
+        );
+    }
+
     public function testAuthorizedManagerCreatesClinicLocalDefinitionThatResolvesInThatClinicOnly(): void
     {
         $created = $this->service()->create(

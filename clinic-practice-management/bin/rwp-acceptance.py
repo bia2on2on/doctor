@@ -1258,16 +1258,20 @@ with sync_playwright() as p:
                 selected = shortcode_field.evaluate("el => el.selectionStart === 0 && el.selectionEnd === el.value.length")
                 check("admin.cpms-shortcodes.manual_copy_fallback", selected, "textarea selected for keyboard fallback")
 
-        # Tampered selectors never become authority or trigger Clinic enumeration.
+        # A forged URL id must leave this no-fallback selector blank and withhold
+        # the shortcode; the previous page's authorized choice must not carry over.
         status, tampered_body = goto_admin(
             page, "admin", "tools.php?page=cpms-shortcodes&clinic_id=2147483647", "cpms-shortcodes-tampered-id"
         )
+        tampered_selector = page.locator('#cpms_shortcode_clinic')
         tampered_field = page.locator('[data-cpms-shortcode]')
-        tampered_value = tampered_field.input_value() if tampered_field.count() else ''
+        tampered_selection = tampered_selector.input_value() if tampered_selector.count() == 1 else None
         check("admin.cpms-shortcodes.tampered_id_not_used",
-              status == 200 and tampered_value == f'[cpms_public_booking clinic_id="{fixture_clinic_id}"]'
+              status == 200 and tampered_selector.count() == 1 and tampered_selection == ''
+              and tampered_selector.locator('option[value="2147483647"]').count() == 0
+              and tampered_field.count() == 0
               and 'clinic_id="2147483647"' not in (tampered_body or ""),
-              "arbitrary Clinic id in the URL cannot select or generate an unauthorized shortcode")
+              "forged Clinic id is not selected or offered; the shortcode stays withheld until explicit authorized selection")
 
         # CPMS (فنی و لاگ) — شمارش جداول
         status, body = goto_admin(page, "admin", "tools.php?page=cpms-settings", "cpms-settings")

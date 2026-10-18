@@ -69,6 +69,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'staff_doc_1',
             'display_name' => 'دکتر تست',
@@ -90,6 +91,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'staff_auto_1',
             'display_name' => 'منشی خودکار',
@@ -110,6 +112,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'evil_admin',
             'display_name' => 'کاربر غیرمجاز',
@@ -126,6 +129,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'weak_user',
             'display_name' => 'رمز ضعیف',
@@ -142,6 +146,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'bad username!',
             'display_name' => 'نام کاربری بد',
@@ -157,6 +162,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'upd_user',
             'display_name' => 'کاربر ویرایش',
@@ -168,6 +174,7 @@ final class StaffManagementTest extends WP_UnitTestCase
         $uid = (int) get_user_by('login', 'upd_user')->ID;
 
         $r2 = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'update',
             'user_id' => $uid,
             'display_name' => 'کاربر ویرایش جدید',
@@ -187,6 +194,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'sec_toggle',
             'display_name' => 'منشی تست',
@@ -198,14 +206,14 @@ final class StaffManagementTest extends WP_UnitTestCase
         $uid = (int) get_user_by('login', 'sec_toggle')->ID;
 
         // غیرفعال
-        $d = StaffManagementPage::toggleUser($uid, 'deactivate', $adminId);
+        $d = StaffManagementPage::toggleUser($uid, 'deactivate', $adminId, $this->clinicId);
         $this->assertSame('', $d['error'], 'غیرفعال‌سازی نباید خطا بدهد');
         $u = get_userdata($uid);
         $this->assertContains('subscriber', (array) $u->roles, 'نقش CPMS موقتاً به subscriber تغییر می‌کند');
         $this->assertSame(RolesAndCapabilities::ROLE_SECRETARY, (string) get_user_meta($uid, 'cpms_previous_role', true), 'نقش قبلی در usermeta حفظ شود');
 
         // فعال‌سازی مجدد
-        $a = StaffManagementPage::toggleUser($uid, 'activate', $adminId);
+        $a = StaffManagementPage::toggleUser($uid, 'activate', $adminId, $this->clinicId);
         $this->assertSame('', $a['error']);
         $u2 = get_userdata($uid);
         $this->assertContains(RolesAndCapabilities::ROLE_SECRETARY, (array) $u2->roles, 'نقش قبلی باید بازگردد');
@@ -215,7 +223,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     public function testCannotDeactivateAdmin(): void
     {
         $adminId = $this->makeAdmin();
-        $r = StaffManagementPage::toggleUser($adminId, 'deactivate', $adminId);
+        $r = StaffManagementPage::toggleUser($adminId, 'deactivate', $adminId, $this->clinicId);
 
         $this->assertStringContainsString('قابل مدیریت نیست', $r['error']);
         $u = get_userdata($adminId);
@@ -228,6 +236,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'staff_acc_g',
             'display_name' => 'حسابدار جدید',
@@ -251,6 +260,7 @@ final class StaffManagementTest extends WP_UnitTestCase
     {
         $adminId = $this->makeAdmin();
         $r = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicId,
             'mode' => 'create',
             'username' => 'staff_mgr_g',
             'display_name' => 'مدیر جدید',
@@ -273,7 +283,7 @@ final class StaffManagementTest extends WP_UnitTestCase
         cpms_test_seed_membership($mgrId, $this->clinicId, RolesAndCapabilities::ROLE_MANAGER);
         wp_set_current_user($mgrId);
 
-        $r = StaffManagementPage::toggleUser($mgrId, 'deactivate', $mgrId);
+        $r = StaffManagementPage::toggleUser($mgrId, 'deactivate', $mgrId, $this->clinicId);
         $this->assertStringContainsString('خودتان', $r['error'], 'غیرفعال‌سازی حساب خود باید رد شود (جلوگیری از قفل‌شدن)');
         $this->assertContains(RolesAndCapabilities::ROLE_MANAGER, (array) get_userdata($mgrId)->roles);
     }
