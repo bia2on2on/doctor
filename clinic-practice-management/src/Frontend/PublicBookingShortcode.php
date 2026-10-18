@@ -319,9 +319,10 @@ final class PublicBookingShortcode
         // Narrow naming ignore for the established camelCase parameter of this method;
         // no security sniff is suppressed by it.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $requested_clinic_id = (int) $clinicId;
         $clinic_status = App::db()->fetchValue(
             'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
-            [ $clinicId ]
+            [ $requested_clinic_id ]
         );
         if ( $clinic_status !== null && (string) $clinic_status === 'suspended' ) {
             return null;
