@@ -259,11 +259,66 @@ jobs:
       - name: Run focused custom-role migrations on MariaDB 11.4.13
         env:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
+          phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-mariadb.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-mariadb.log || phpunit_status=$?
+          # Sanitized stage + error-category evidence, mirrored onto the PR because
+          # raw job logs and artifact blobs are unreachable for some reviewers.
+          # Deliberately bounded: PHPUnit exit code, JUnit case count and exception
+          # CLASS names only - never SQL, credentials, PHI, identifiers or raw
+          # exception messages. Purely additive: the strict verdict below is
+          # unchanged and the original PHPUnit exit code is propagated verbatim.
+          if [ "$phpunit_status" -ne 0 ]; then
+            python3 - "$phpunit_status" <<'PY' || true
+          import os
+          import subprocess
+          import sys
+          import xml.etree.ElementTree as ET
+
+          status = sys.argv[1]
+          categories = {}
+          cases_total = 0
+          try:
+              cases = ET.parse('/tmp/custom-role-mariadb-junit.xml').getroot().findall('.//testcase')
+              cases_total = len(cases)
+              for case in cases:
+                  for tag in ('error', 'failure'):
+                      node = case.find(tag)
+                      if node is not None:
+                          category = (node.get('type') or tag).split('\\')[-1]
+                          categories[category] = categories.get(category, 0) + 1
+          except Exception:
+              categories['junit_unavailable'] = 1
+
+          summary = ' '.join('{}={}'.format(k, v) for k, v in sorted(categories.items())) or 'none'
+          body = (
+              '### MariaDB archival migration - sanitized error categories '
+              '(run {}, attempt {})\n'
+              '```\n'
+              'stage=focused_custom_role_mariadb phpunit_exit={} junit_cases={}\n'
+              'error_categories={}\n'
+              '```\n'
+          ).format(
+              os.environ.get('GITHUB_RUN_ID', '?'),
+              os.environ.get('GITHUB_RUN_ATTEMPT', '?'),
+              status,
+              cases_total,
+              summary,
+          )
+          pr = os.environ.get('PR_NUMBER', '')
+          if pr:
+              subprocess.run(['gh', 'pr', 'comment', pr, '--body', body], check=False)
+          else:
+              print(body)
+          PY
+            echo "::error::MariaDB archival migration suite did not pass (PHPUnit exit $phpunit_status)."
+            exit "$phpunit_status"
+          fi
           if ! grep -qE '^(OK \(|OK, but)' /tmp/custom-role-mariadb.log; then
             echo '::error::MariaDB migration suite did not finish with a passing PHPUnit summary.'
             exit 1

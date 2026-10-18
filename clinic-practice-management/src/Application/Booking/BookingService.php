@@ -441,8 +441,6 @@ final class BookingService
         }
 
         $clinicId = $this->requireClinician($clinicianId);
-        // New demand (public/patient path): a suspended Clinic accepts no new hold.
-        $this->assertClinicAcceptingNewDemand($clinicId);
 
         // B1 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
         $settings = $this->settingsFor($clinicId);
@@ -496,9 +494,10 @@ final class BookingService
 
         $hasPatientCol = $this->holdsHasPatientIdColumn();
         $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt, $patientIdToPersist, $hasPatientCol): void {
-            // Suspension/booking race: re-read the Clinic status under the Clinic
-            // row lock, inside this transaction, before any capacity is claimed.
-            $this->assertClinicAcceptingNewDemand((int) $slot['clinic_id'], true);
+            // New demand (public/patient path) + suspension/booking race: the Clinic
+            // status is read under the Clinic row lock, inside this transaction,
+            // before any capacity is claimed.
+            $this->assert_clinic_accepting_new_demand( (int) $slot['clinic_id'], true );
 
             if (!$this->slots->atomicHold((int) $slot['id'])) {
                 // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
@@ -763,7 +762,7 @@ final class BookingService
                     }
                     // A confirmation creates a genuinely new appointment: new demand,
                     // revalidated under the Clinic row lock after the slot lock.
-                    $this->assertClinicAcceptingNewDemand( $hold_clinic_id, true );
+                    $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
                     // The final DST decision is made on the locked persisted Slot
                     // before a new Patient, link, or audit can be created.
                     $this->assert_slot_has_bookable_local_time( $slot );
@@ -1019,9 +1018,6 @@ final class BookingService
             throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
         $idemClinicId = (int) $scopeAppt['clinic_id'];
-        // A reschedule creates a NEW appointment row: new demand, so a suspended
-        // Clinic refuses it (cancelling the existing appointment stays allowed).
-        $this->assertClinicAcceptingNewDemand($idemClinicId);
 
         $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $actorUserId, $appointmentId, $idemClinicId);
         if ($check['is_replay']) {
@@ -1221,7 +1217,7 @@ final class BookingService
         // بی‌صدا به Clinic خانه در حالت چندکلینیکی.
         $trusted_clinic_id = $this->trustedClinicIdForStaff();
         // Staff-created appointments are new demand too (no staff/Organization bypass).
-        $this->assertClinicAcceptingNewDemand($trusted_clinic_id);
+        $this->assert_clinic_accepting_new_demand( $trusted_clinic_id );
         if ( ! $this->memberships->clinician_participates_in( $clinician_id, $trusted_clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404 );
         }
@@ -1836,20 +1832,20 @@ final class BookingService
      * Missing/legacy rows (no status value) never become a blanket denial here; an
      * invalid Clinic id is handled by the caller's own fail-closed scope check.
      */
-    private function assertClinicAcceptingNewDemand(int $clinicId, bool $for_update = false): void
-    {
-        if ($clinicId <= 0) {
+    private function assert_clinic_accepting_new_demand( int $clinic_id, bool $for_update = false ): void {
+
+        if ( $clinic_id <= 0 ) {
             return;
         }
 
-        $sql = 'SELECT status FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1';
-        if ($for_update) {
+        $sql = 'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1';
+        if ( $for_update ) {
             $sql .= ' FOR UPDATE';
         }
-        $status = $this->db->fetchValue($sql, [$clinicId]);
+        $status = $this->db->fetchValue( $sql, [ $clinic_id ] );
 
-        if ($status !== null && (string) $status === 'suspended') {
-            throw BookingException::of('CLINIC_SUSPENDED', 'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود؛ برای نوبت‌های موجود با پذیرش تماس بگیرید', 409);
+        if ( $status !== null && (string) $status === 'suspended' ) {
+            throw BookingException::of( 'CLINIC_SUSPENDED', 'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود؛ برای نوبت‌های موجود با پذیرش تماس بگیرید', 409 );
         }
     }
 

@@ -12,7 +12,7 @@ use RuntimeException;
 /** Organization-scoped Clinic creation; this authority never grants Clinic/PHI access. */
 final class OrganizationClinicProvisioningService {
 
-    public const CAPABILITY            = 'cpms_org_clinic_create';
+    public const CAPABILITY = 'cpms_org_clinic_create';
 
     /**
      * Organization-scoped capability: Clinic profile updates (name/address/phone).
@@ -28,7 +28,7 @@ final class OrganizationClinicProvisioningService {
      * (suspend / reactivate). Suspension never grants broader access: it only stops
      * genuinely new demand at the booking/enrollment/slot-generation boundaries.
      */
-    public const CAPABILITY_LIFECYCLE = 'cpms_org_clinic_lifecycle';
+    public const CAPABILITY_LIFECYCLE  = 'cpms_org_clinic_lifecycle';
     public const MEMBERSHIP_CAPABILITY = 'cpms_org_membership_manage';
     public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
 
@@ -554,7 +554,7 @@ final class OrganizationClinicProvisioningService {
                     $errors['phone'] = 'تلفن حداکثر ۳۲ کاراکتر است';
                 }
                 if ( $errors !== [] ) {
-                    throw new InvalidArgumentException( 'invalid clinic profile attributes: ' . json_encode( $errors, JSON_UNESCAPED_UNICODE ) );
+                    throw new InvalidArgumentException( 'invalid clinic profile attributes: ' . wp_json_encode( $errors, JSON_UNESCAPED_UNICODE ) );
                 }
 
                 $old_name    = (string) ( $current['name'] ?? '' );
@@ -579,7 +579,7 @@ final class OrganizationClinicProvisioningService {
                     ];
                 }
 
-                $now = $this->db->nowUtcSql();
+                $now     = $this->db->nowUtcSql();
                 $updated = $this->db->update(
                     'cpms_clinics',
                     [
@@ -677,14 +677,14 @@ final class OrganizationClinicProvisioningService {
                     ];
                 }
 
-                $now = $this->db->nowUtcSql();
+                $now     = $this->db->nowUtcSql();
                 $updated = $this->db->update(
                     'cpms_clinics',
                     [
-                        'status'                           => $desired,
-                        'status_updated_at'                => $now,
-                        'status_updated_by_wp_user_id'     => $actor_id,
-                        'updated_at'                       => $now,
+                        'status'                       => $desired,
+                        'status_updated_at'            => $now,
+                        'status_updated_by_wp_user_id' => $actor_id,
+                        'updated_at'                   => $now,
                     ],
                     ['id' => $clinic_id, 'organization_id' => $organization_id],
                     true

@@ -19,12 +19,12 @@ use ClinicCore\Bootstrap\App;
  */
 final class ClinicManagementPage {
 
-    public const PAGE = 'cpms-clinic-management';
-    public const ACTION_UPDATE   = 'cpms_update_organization_clinic';
-    public const ACTION_LIFECYCLE = 'cpms_clinic_lifecycle';
-    private const NONCE_UPDATE   = 'cpms_update_organization_clinic';
-    private const NONCE_LIFECYCLE = 'cpms_clinic_lifecycle';
-    private const NOTICE_KEY     = 'cpms_clinic_management_notice';
+    public const PAGE              = 'cpms-clinic-management';
+    public const ACTION_UPDATE     = 'cpms_update_organization_clinic';
+    public const ACTION_LIFECYCLE  = 'cpms_clinic_lifecycle';
+    private const NONCE_UPDATE     = 'cpms_update_organization_clinic';
+    private const NONCE_LIFECYCLE  = 'cpms_clinic_lifecycle';
+    private const NOTICE_KEY       = 'cpms_clinic_management_notice';
 
     public static function register(): void {
 
@@ -65,7 +65,7 @@ final class ClinicManagementPage {
         // by this slice, and no WP Administrator / Clinic membership shortcut exists.
         $organizations = $service->organizations_for_manager( $actor_id, OrganizationClinicProvisioningService::CAPABILITY );
 
-        $selected_org_id = isset( $_GET['organization_id'] ) ? absint( $_GET['organization_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+        $selected_org_id    = isset( $_GET['organization_id'] ) ? absint( $_GET['organization_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
         $selected_clinic_id = isset( $_GET['clinic_id'] ) ? absint( $_GET['clinic_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 
         echo '<div class="wrap" dir="rtl"><h1>مدیریت درمانگاه‌ها — تنظیم و چرخهٔ حیات</h1>';
@@ -125,12 +125,9 @@ final class ClinicManagementPage {
 
         echo '<table class="widefat striped" role="presentation"><thead><tr><th>نام</th><th>شناسه</th><th>منطقهٔ زمانی</th><th>وضعیت</th><th>عملیات</th></tr></thead><tbody>';
         foreach ( $clinics as $clinic ) {
-            $status_badge = wp_kses(
-                $clinic['status'] === 'active' ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>',
-                [ 'span' => [ 'class' => [] ] ]
-            );
-            $active = $clinic['status'] === 'active';
-            echo '<tr><td>' . esc_html( $clinic['name'] ) . '</td><td class="ltr">' . esc_html( $clinic['slug'] ) . '</td><td class="ltr">' . esc_html( $clinic['timezone'] ) . '</td><td>' . $status_badge . '</td><td>';
+            $status_badge = $clinic['status'] === 'active' ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>';
+            $active       = $clinic['status'] === 'active';
+            echo '<tr><td>' . esc_html( $clinic['name'] ) . '</td><td class="ltr">' . esc_html( $clinic['slug'] ) . '</td><td class="ltr">' . esc_html( $clinic['timezone'] ) . '</td><td>' . wp_kses( $status_badge, array( 'span' => array( 'class' => array() ) ) ) . '</td><td>';
             echo '<a class="button button-small" href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE . '&organization_id=' . $selected_org_id . '&clinic_id=' . $clinic['id'] ) ) . '">تنظیم و چرخهٔ حیات</a> ';
             // Lifecycle button inline
             echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="display:inline-block;margin-inline-start:6px">';
