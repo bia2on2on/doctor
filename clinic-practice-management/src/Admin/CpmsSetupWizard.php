@@ -145,7 +145,11 @@ final class CpmsSetupWizard
             }
         }
         $step = $steps[$index];
-        $isComplete = (bool) $settings->get(self::COMPLETE_KEY, false);
+        // Truthful completion state: the historical setup.completed flag is
+        // preserved in storage, but the banner/indicator only claims
+        // completion when the CURRENT flow supports provisioning and every
+        // CURRENT required step is verifiably complete.
+        $isComplete = self::current_flow_is_complete( $settings );
 
         // GET is strictly read-only: rendering must never persist settings
         // or audit rows (a former setup.started_at write here is what made
@@ -516,8 +520,8 @@ final class CpmsSetupWizard
         </div>
         <?php self::open_step_form( 'doctors' ); ?>
         <?php
-        $is_multi_doctor  = self::current_flow() === 'multi_doctor_clinic';
-        $min_clinicians   = $is_multi_doctor ? 2 : 1;
+        $min_clinicians   = self::flow_min_clinicians();
+        $is_multi_doctor  = $min_clinicians >= 2;
         $intended_display = max( $min_clinicians, self::intended_clinicians( App::settings() ) );
         ?>
         <div class="card">
@@ -528,7 +532,7 @@ final class CpmsSetupWizard
             <p class="description">
                 این گام فقط وقتی کامل است که دست‌کم به همین تعداد <?php echo esc_html( $facility_profile['clinician'] ); ?> فعال واقعاً ثبت شده باشد؛ اعلام عدد به‌تنهایی کافی نیست.
                 <?php if ( $is_multi_doctor ) : ?>
-                    برای جریان چندپزشکه، مقدار موردنظر باید دست‌کم ۲ باشد (اعتبارسنجی سمت سرور).
+                    برای جریان‌های چندارائه‌دهنده (درمانگاه چندپزشکه و شبکهٔ سرپایی بیمارستان)، مقدار موردنظر باید دست‌کم ۲ باشد (اعتبارسنجی سمت سرور).
                 <?php endif; ?>
             </p>
             <?php self::submit_step_form( 'doctors', 'ذخیره و ادامه' ); ?>
@@ -677,17 +681,23 @@ final class CpmsSetupWizard
      * @return string '' = ok
      */
     public static function save_health( Settings $settings, array $post, int $updated_by ): string {
+        // Defense in depth: same Clinic-local CONFIG gate as every other
+        // wizard write, before any flow or payload inspection.
+        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
         if ( self::current_flow() !== 'hospital_network' ) {
             return '';
         }
-        $acked = (bool) $settings->get( 'setup.outpatient_only_ack', false );
-        if ( ! $acked && isset( $post['outpatient_only_ack'] ) && (string) $post['outpatient_only_ack'] === '1' ) {
-            $settings->set( 'setup.outpatient_only_ack', true, $updated_by );
-            $acked = true;
+        // Fresh-acknowledgment semantics: EVERY submission must carry the
+        // affirmative check on the current POST; a previously stored true
+        // flag is never a substitute (it is additionally reset whenever the
+        // type/structure selection changes or progress is restarted). A
+        // rejected submission never destroys the stored historical value.
+        if ( ! isset( $post['outpatient_only_ack'] ) || (string) $post['outpatient_only_ack'] !== '1' ) {
+            return 'برای جریان بیمارستان، ثبت این گام فقط با تأیید صریح و تازهٔ «فقط فرایندهای سرپایی» در همین فرم ممکن است؛ بخش بستری و HIS پشتیبانی نمی‌شود.';
         }
-        if ( ! $acked ) {
-            return 'برای جریان بیمارستان، ادامه فقط با تأیید صریح «فقط فرایندهای سرپایی» ممکن است؛ بخش بستری و HIS پشتیبانی نمی‌شود.';
-        }
+        $settings->set( 'setup.outpatient_only_ack', true, $updated_by );
 
         return '';
     }
@@ -789,14 +799,28 @@ final class CpmsSetupWizard
 
     private static function renderFinish(Settings $settings): void
     {
-        $clinic_name  = self::canonical_clinic_name( $settings );
-        $doctor_count = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
-        $ready        = $clinic_name !== '' && $doctor_count > 0;
+        $clinic_name      = self::canonical_clinic_name( $settings );
+        $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $facility_chosen  = self::facility_selected( $settings );
+        $supports_flow    = FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() );
+        $missing_now      = $facility_chosen ? self::missing_required_steps( $settings ) : [];
+        $stored_completed = (bool) $settings->get( self::COMPLETE_KEY, false );
+        // Same invariant as the header banner and step indicator: the stored
+        // historical flag is preserved, but the card only claims readiness
+        // when the CURRENT flow genuinely satisfies it.
+        $ready            = $facility_chosen
+            ? ( $supports_flow && $missing_now === [] )
+            : ( $clinic_name !== '' && $doctor_count > 0 );
         ?>
-        <div class="card">
+        <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
             <h2>شروع عملیات کلینیک</h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
+            <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
+                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تکمیل راه‌اندازی برای ساختمان/مجتمع پزشکی در این ویزارد به‌شکل ایمن مسدود است؛ ایجاد درمانگاه مستقل فقط از طریق اختیار صریح مدیر سازمان انجام می‌شود.<?php if ( $stored_completed ) : ?> تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.<?php endif; ?></p>
+            <?php elseif ( $facility_chosen && $missing_now !== [] ) : ?>
+                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ پیش‌نیازهای الزامی جریان فعلی برآورده نشده است: <?php echo esc_html( implode( '، ', $missing_now ) ); ?>.<?php if ( $stored_completed ) : ?> تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.<?php endif; ?></p>
+                <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php else : ?>
                 <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات کلینیک + یک پزشک فعال) برآورده نشده است.</p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
@@ -884,6 +908,45 @@ final class CpmsSetupWizard
         return FacilityTypeCatalog::type_profile( self::selected_facility_type() );
     }
 
+    /**
+     * Whether any facility selection exists (per-admin meta or persisted
+     * Clinic-scoped settings). Legacy installs without one keep their
+     * previous wizard semantics untouched.
+     */
+    private static function facility_selected( Settings $settings ): bool {
+        return self::selected_facility_type() !== ''
+            || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+    }
+
+    /**
+     * Truthful current-flow completion for display (banner, finish-step
+     * indicator, finish card): stored flag AND — when a facility selection
+     * exists — the current flow supports provisioning and every current
+     * required step is verifiably complete. The stored flag itself is never
+     * erased here; evolution keeps tenant and settings history intact.
+     */
+    private static function current_flow_is_complete( Settings $settings ): bool {
+        if ( ! (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+            return false;
+        }
+        if ( ! self::facility_selected( $settings ) ) {
+            return true;
+        }
+
+        return FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() )
+            && self::missing_required_steps( $settings ) === [];
+    }
+
+    /**
+     * Minimum real clinicians for the CURRENT flow: multi-provider flows
+     * (multi-doctor clinic and the hospital outpatient network) need at
+     * least 2; the dedicated doctor practice needs 1. No other clinical
+     * requirement is invented.
+     */
+    private static function flow_min_clinicians(): int {
+        return in_array( self::current_flow(), [ 'multi_doctor_clinic', 'hospital_network' ], true ) ? 2 : 1;
+    }
+
     private static function current_flow(): string {
         return FacilityTypeCatalog::resolve_flow( self::selected_facility_type(), self::selected_structure() );
     }
@@ -967,8 +1030,14 @@ final class CpmsSetupWizard
                     $clinic_id = (int) App::scope()->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext public property
                     $actual    = count( App::clinicianRepository()->listAll( $clinic_id, false ) );
                     $intended  = self::intended_clinicians( $settings );
+                    $flow_min  = self::flow_min_clinicians();
                     if ( $intended <= 0 ) {
-                        $intended = self::current_flow() === 'multi_doctor_clinic' ? 2 : 1;
+                        $intended = $flow_min;
+                    } elseif ( self::facility_selected( $settings ) ) {
+                        // A stale intended count from a previous single-provider
+                        // flow must not understate the current multi-provider
+                        // flow's requirement (displayed min and validation agree).
+                        $intended = max( $intended, $flow_min );
                     }
 
                     return $actual >= $intended;
@@ -990,7 +1059,7 @@ final class CpmsSetupWizard
                 case 'review':
                     return self::missing_required_steps( $settings ) === [];
                 case 'finish':
-                    return (bool) $settings->get( self::COMPLETE_KEY, false );
+                    return self::current_flow_is_complete( $settings );
                 default:
                     return in_array( $step_id, self::completed_step_ids( $settings ), true );
             }
@@ -1031,10 +1100,15 @@ final class CpmsSetupWizard
      * @param array<string, mixed> $post
      */
     public static function save_doctors( Settings $settings, array $post, int $updated_by ): string {
-        $flow = self::current_flow();
-        $raw  = $post['intended_clinicians'] ?? null;
+        // Defense in depth: the same Clinic-local CONFIG gate every other
+        // wizard write enforces, even when this method is called directly.
+        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+        $flow_min = self::flow_min_clinicians();
+        $raw      = $post['intended_clinicians'] ?? null;
         if ( $raw === null || ! is_scalar( $raw ) || trim( (string) $raw ) === '' ) {
-            if ( $flow === 'multi_doctor_clinic' ) {
+            if ( $flow_min >= 2 ) {
                 return 'تعداد پزشکان موردنظر را مشخص کنید.';
             }
             $settings->set( 'setup.intended_clinicians', 1, $updated_by );
@@ -1045,8 +1119,10 @@ final class CpmsSetupWizard
         if ( $intended < 1 || $intended > 200 ) {
             return 'تعداد پزشکان باید بین ۱ تا ۲۰۰ باشد.';
         }
-        if ( $flow === 'multi_doctor_clinic' && $intended < 2 ) {
-            return 'برای درمانگاه چندپزشکه، تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.';
+        if ( $intended < $flow_min ) {
+            return self::current_flow() === 'hospital_network'
+                ? 'بیمارستان (فقط محدودهٔ سرپایی) یک جریان چندارائه‌دهنده است: تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.'
+                : 'برای درمانگاه چندپزشکه، تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.';
         }
         $settings->set( 'setup.intended_clinicians', $intended, $updated_by );
 
@@ -1069,6 +1145,9 @@ final class CpmsSetupWizard
         if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
             wp_die( 'ساختار نامعتبر است', 400 );
         }
+        if ( ! FacilityTypeCatalog::structure_is_compatible( $facility, $structure ) ) {
+            wp_die( FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure ), 400 );
+        }
         $uid = (int) get_current_user_id();
         update_user_meta( $uid, 'cpms_onboarding_facility_type', $facility );
         update_user_meta( $uid, 'cpms_onboarding_structure', $structure );
@@ -1086,6 +1165,24 @@ final class CpmsSetupWizard
     }
 
     private static function render_facility_picker_form( string $action_url, string $action, string $nonce_action, string $submit ): void {
+        // Compatibility policy (single source of truth: FacilityTypeCatalog)
+        // is enforced in the UI and again by server validation. Without JS
+        // the incompatible options stay disabled for the current selection;
+        // the server never trusts the submitted combination.
+        $picker_type    = self::selected_facility_type();
+        $structure_keys = array_keys( FacilityTypeCatalog::structures() );
+        $policy         = [];
+        foreach ( array_merge( [ '' ], array_column( FacilityTypeCatalog::all(), 'id' ) ) as $tid ) {
+            $blocked = [];
+            foreach ( $structure_keys as $sk ) {
+                if ( ! FacilityTypeCatalog::structure_is_compatible( $tid, $sk ) ) {
+                    $blocked[] = $sk;
+                }
+            }
+            if ( $blocked !== [] ) {
+                $policy[ $tid ] = $blocked;
+            }
+        }
         ?>
         <div class="card" style="max-width:900px;">
             <h2>چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟</h2>
@@ -1108,15 +1205,37 @@ final class CpmsSetupWizard
                     <?php endforeach; ?>
                 </fieldset>
                 <p><label for="cpms_structure">ساختار مجموعه</label>
-                <select id="cpms_structure" name="structure" style="max-width:100%;">
+                <select id="cpms_structure" name="structure" style="max-width:100%;" data-cpms-structure-policy="<?php echo esc_attr( (string) wp_json_encode( $policy ) ); ?>">
                     <option value="">متناسب با نوع مرکز</option>
                     <?php foreach ( FacilityTypeCatalog::structures() as $k => $label ) : ?>
-                        <option value="<?php echo esc_attr( $k ); ?>" <?php selected( self::selected_structure(), $k ); ?>><?php echo esc_html( $label ); ?></option>
+                        <option value="<?php echo esc_attr( $k ); ?>" <?php selected( self::selected_structure(), $k ); ?> <?php disabled( ! FacilityTypeCatalog::structure_is_compatible( $picker_type, $k ) ); ?>><?php echo esc_html( $label ); ?></option>
                     <?php endforeach; ?>
                 </select></p>
+                <p class="description">ساختار باید با نوع مرکز سازگار باشد: بیمارستان فقط با ساختار «بیمارستان یا شبکهٔ درمانی» (یا «متناسب با نوع مرکز») راه‌اندازی می‌شود تا گام سلامت و تأیید «فقط سرپایی» هرگز حذف نشود؛ ساختار «بیمارستان یا شبکهٔ درمانی» نیز فقط برای نوع بیمارستان قابل انتخاب است. اعتبارسنجی سمت سرور مستقل از این فرم انجام می‌شود.</p>
                 <p class="submit"><button type="submit" class="button button-primary button-large"><?php echo esc_html( $submit ); ?></button></p>
             </form>
         </div>
+        <script>
+        (function () {
+            var sel = document.getElementById('cpms_structure');
+            if (!sel || !sel.getAttribute('data-cpms-structure-policy')) { return; }
+            var policy = JSON.parse(sel.getAttribute('data-cpms-structure-policy'));
+            function applyPolicy() {
+                var checked = document.querySelector('input[name="facility_type"]:checked');
+                var blocked = checked ? (policy[checked.value] || []) : (policy[''] || []);
+                Array.prototype.forEach.call(sel.options, function (opt) {
+                    if (opt.value === '') { opt.disabled = false; return; }
+                    opt.disabled = blocked.indexOf(opt.value) !== -1;
+                });
+                var current = sel.options[sel.selectedIndex];
+                if (current && current.disabled) { sel.value = ''; }
+            }
+            Array.prototype.forEach.call(document.querySelectorAll('input[name="facility_type"]'), function (radio) {
+                radio.addEventListener('change', applyPolicy);
+            });
+            applyPolicy();
+        }());
+        </script>
         <?php
     }
 
@@ -1167,6 +1286,12 @@ final class CpmsSetupWizard
     }
 
     public static function save_facility( Settings $settings, array $post, int $updated_by ): string {
+        // Defense in depth: the same Clinic-local CONFIG gate every other
+        // wizard write enforces (the pre-bootstrap entry point is the
+        // separate manage_options + nonce handler save_facility_selection).
+        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
         $facility = isset( $post['facility_type'] ) && is_string( $post['facility_type'] ) ? sanitize_key( $post['facility_type'] ) : '';
         if ( ! FacilityTypeCatalog::is_valid( $facility ) ) {
             return 'نوع مرکز نامعتبر است.';
@@ -1175,6 +1300,15 @@ final class CpmsSetupWizard
         if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
             return 'ساختار مجموعه نامعتبر است.';
         }
+        // Compatibility policy (same source of truth as the picker UI):
+        // a hospital can never be downgraded to a flow that would skip the
+        // outpatient-only disclosure/health step/acknowledgment, and the
+        // hospital-network structure is reserved for the hospital type.
+        if ( ! FacilityTypeCatalog::structure_is_compatible( $facility, $structure ) ) {
+            return FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure );
+        }
+        $prev_type      = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
+        $prev_structure = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
         // Safe configuration evolution: the selection may be revisited at
         // any time (including after completion — the established acceptance
         // journey evolves a finished practice setup into a multi-doctor
@@ -1184,6 +1318,14 @@ final class CpmsSetupWizard
         // never silently deleted, and invalid input never writes anything.
         $settings->set( 'setup.facility_type', $facility, $updated_by );
         $settings->set( 'setup.facility_structure', $structure, $updated_by );
+        if ( $prev_type !== $facility || $prev_structure !== $structure ) {
+            // Stale-acknowledgment prevention: the outpatient-only
+            // acknowledgment is bound to the concrete type/structure
+            // selection; on any change it must be freshly re-affirmed.
+            // Config-scope only — clinical, financial and tenant history
+            // are preserved untouched.
+            $settings->set( 'setup.outpatient_only_ack', false, $updated_by );
+        }
         if ( $updated_by > 0 ) {
             update_user_meta( $updated_by, 'cpms_onboarding_facility_type', $facility );
             update_user_meta( $updated_by, 'cpms_onboarding_structure', $structure );
@@ -1298,6 +1440,20 @@ final class CpmsSetupWizard
         exit;
     }
 
+    /**
+     * Progress-only reset (explicit restart): the wizard points to the start
+     * again and flow-bound readiness state (completion flag and the
+     * outpatient-only acknowledgment) is cleared so a stale acknowledgment
+     * can never be reused after a restart. Clinical, financial and tenant
+     * data and settings history are never touched — only wizard-scope keys
+     * are written.
+     */
+    public static function reset_progress( Settings $settings, int $uid ): void {
+        $settings->set( 'setup.current_step', 'welcome', $uid );
+        $settings->set( self::COMPLETE_KEY, false, $uid );
+        $settings->set( 'setup.outpatient_only_ack', false, $uid );
+    }
+
     public static function restart(): void
     {
         if (!current_user_can(RolesAndCapabilities::CONFIG)
@@ -1312,8 +1468,7 @@ final class CpmsSetupWizard
         }
 
         $settings = App::settings();
-        $settings->set('setup.current_step', 'welcome', (int) get_current_user_id());
-        $settings->set(self::COMPLETE_KEY, false, (int) get_current_user_id());
+        self::reset_progress( $settings, (int) get_current_user_id() );
         set_transient(self::NOTICE_KEY, 'راه‌اندازی از نو شروع شد.', 60);
         wp_safe_redirect(admin_url('admin.php?page=cpms-wizard'));
         exit;
@@ -1522,7 +1677,7 @@ final class CpmsSetupWizard
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
-        $facility_selected = self::selected_facility_type() !== '' || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+        $facility_selected = self::facility_selected( $settings );
         if ( $facility_selected ) {
             if ( ! FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() ) ) {
                 return 'این مرحلهٔ ویزارد هنوز درمانگاه‌های مستقل را به‌صورت تطبیقی راه‌اندازی نمی‌کند. مدیر سازمانِ دارای عضویت صریح می‌تواند درمانگاه را از صفحهٔ «سازمان‌ها و درمانگاه‌ها» ایجاد کند؛ برای ادامهٔ پیکربندی هر درمانگاه، انتخاب صریح محدوده لازم است.';

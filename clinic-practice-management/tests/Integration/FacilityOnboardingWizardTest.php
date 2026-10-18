@@ -34,7 +34,10 @@ final class FacilityOnboardingWizardTest extends WP_UnitTestCase {
  }
  public function testFacilityStepRendersAllPersianTypesRtlAndAdaptiveNotices(): void {
   $uid=$this->authorize();
-  update_user_meta($uid,'cpms_onboarding_facility_type','hospital'); update_user_meta($uid,'cpms_onboarding_structure','medical_building');
+  // medical_building structure is only compatible with non-hospital types (the
+  // compatibility policy protects the hospital outpatient-only flow); 'other' is
+  // the sanctioned way to hand-craft the building flow for this render contract.
+  update_user_meta($uid,'cpms_onboarding_facility_type','other'); update_user_meta($uid,'cpms_onboarding_structure','medical_building');
   $prev=$_GET; $_GET['step']='facility'; ob_start();
   try { CpmsSetupWizard::render(); $html=(string)ob_get_contents(); } finally { ob_end_clean(); $_GET=$prev; }
   self::assertStringContainsString('چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟',$html);

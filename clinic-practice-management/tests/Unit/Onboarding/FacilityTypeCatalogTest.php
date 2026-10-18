@@ -60,6 +60,31 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertSame('نام کلینیک', FacilityTypeCatalog::type_profile('')['name_label']);
   self::assertSame('', FacilityTypeCatalog::type_profile('')['guidance'], 'legacy installs get no invented guidance');
  }
+ public function testStructureCompatibilityPolicyProtectsHospitalOutpatientScope(): void {
+  // '' (type default) is always compatible; unknown structures never are.
+  foreach (array_keys(FacilityTypeCatalog::structures()) as $k) {
+   self::assertTrue(FacilityTypeCatalog::structure_is_compatible('hospital', ''), 'hospital + type-default structure stays valid');
+   self::assertFalse(FacilityTypeCatalog::structure_is_compatible('hospital', 'forged'), 'unknown structures are refused: '.$k);
+  }
+  self::assertTrue(FacilityTypeCatalog::structure_is_compatible('hospital', 'hospital_network'));
+  foreach (['single','multi_doctor','medical_building'] as $bad) {
+   self::assertFalse(FacilityTypeCatalog::structure_is_compatible('hospital', $bad), 'a hospital must never accept '.$bad.' — that would skip the outpatient-only health step');
+   self::assertStringContainsString('سازگار نیست', FacilityTypeCatalog::structure_incompatibility_message('hospital', $bad));
+  }
+  self::assertFalse(FacilityTypeCatalog::structure_is_compatible('general_clinic', 'hospital_network'), 'the hospital-network structure is reserved for the hospital type');
+  self::assertNotSame('', FacilityTypeCatalog::structure_incompatibility_message('general_clinic', 'hospital_network'));
+  self::assertTrue(FacilityTypeCatalog::structure_is_compatible('general_clinic', 'multi_doctor'));
+  self::assertTrue(FacilityTypeCatalog::structure_is_compatible('other', 'medical_building'));
+  // Defense in depth: resolve_flow silently ignores incompatible overrides —
+  // a selected hospital ALWAYS keeps hospital_network (disclosure + ack step).
+  foreach (['single','multi_doctor','medical_building','forged'] as $bad) {
+   self::assertSame('hospital_network', FacilityTypeCatalog::resolve_flow('hospital', $bad), 'hospital flow can never be downgraded by structure '.$bad);
+  }
+  self::assertSame('multi_doctor_clinic', FacilityTypeCatalog::resolve_flow('general_clinic', 'hospital_network'));
+  self::assertSame('simple_practice', FacilityTypeCatalog::resolve_flow('doctor_practice', 'single'));
+  self::assertSame('medical_building', FacilityTypeCatalog::resolve_flow('other', 'medical_building'));
+  self::assertSame('hospital_network', FacilityTypeCatalog::resolve_flow('hospital', ''));
+ }
  public function testWizardSourceContracts(): void {
   $s = (string) file_get_contents(dirname(__DIR__,3).'/src/Admin/CpmsSetupWizard.php');
   self::assertStringContainsString('چه نوع مرکز یا مجموعه درمانی می‌خواهید راه‌اندازی کنید؟', $s);

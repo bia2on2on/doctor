@@ -113,7 +113,53 @@ final class FacilityTypeCatalog {
         ];
     }
 
+    /**
+     * Facility-type/structure compatibility policy — the single source of
+     * truth for the picker UI (disabled options), both save endpoints and
+     * flow resolution:
+     *  - '' (auto: matches the type) is always compatible;
+     *  - an unknown structure is never compatible;
+     *  - 'hospital_network' is compatible ONLY with the hospital type;
+     *  - the hospital type is compatible ONLY with 'hospital_network' or '' —
+     *    so a selected hospital can never be downgraded to a flow that skips
+     *    the outpatient-only disclosure, the health step or the explicit
+     *    acknowledgment ('single'/'multi_doctor'/'medical_building' are refused).
+     * Multi-Clinic medical_building provisioning stays fail-closed elsewhere.
+     */
+    public static function structure_is_compatible( string $facility_id, string $structure ): bool {
+        if ( $structure === '' ) {
+            return true;
+        }
+        if ( ! isset( self::structures()[ $structure ] ) ) {
+            return false;
+        }
+        $is_hospital = ( $facility_id === 'hospital' );
+        if ( $structure === 'hospital_network' ) {
+            return $is_hospital;
+        }
+
+        return ! $is_hospital;
+    }
+
+    /**
+     * Persian refusal message for an incompatible type/structure pair.
+     */
+    public static function structure_incompatibility_message( string $facility_id, string $structure ): string {
+        if ( $facility_id === 'hospital' ) {
+            return 'ساختار انتخاب‌شده با بیمارستان سازگار نیست: بیمارستان فقط با ساختار «بیمارستان یا شبکهٔ درمانی» (یا پیش‌فرض همان نوع مرکز) راه‌اندازی می‌شود و جریان‌های مطب/درمانگاه/ساختمان پزشکی محدودیت «فقط سرپایی» را دور نمی‌زنند.';
+        }
+
+        return 'ساختار «بیمارستان یا شبکهٔ درمانی» فقط برای نوع مرکز بیمارستان قابل انتخاب است؛ برای این نوع مرکز، ساختار نامعتبر یا نامتناسب است.';
+    }
+
     public static function resolve_flow( string $facility_id, string $structure = '' ): string {
+        // Defense in depth: an incompatible override (e.g. hand-crafted
+        // user-meta hospital+single) is ignored, never resolved — a selected
+        // hospital always keeps the hospital_network flow and its outpatient
+        // safety steps. Save endpoints additionally refuse the combination.
+        if ( $structure !== '' && ! self::structure_is_compatible( $facility_id, $structure ) ) {
+            $structure = '';
+        }
         if ( $structure === 'medical_building' ) {
             return 'medical_building';
         }

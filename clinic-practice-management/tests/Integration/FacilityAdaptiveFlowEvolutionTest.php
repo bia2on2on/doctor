@@ -32,7 +32,20 @@ use WP_UnitTestCase;
  *    the sanctioned acceptance journey) only touch config/user-meta, never tenant rows
  *    (Clinic/Location/Membership/Clinician) and never silently delete the completion marker;
  *  - missing_required_steps is accurate after cross-flow evolution (exactly the genuinely
- *    unmet steps of the new flow, and empty after the real acknowledgment is saved).
+ *    unmet steps of the new flow, and empty after the real acknowledgment is saved);
+ *  - type/structure compatibility policy: a hospital can never be paired with a structure
+ *    that would skip the outpatient-only disclosure/health step/acknowledgment (server
+ *    validation, picker UI and resolve_flow defense in depth all agree);
+ *  - fresh-acknowledgment semantics: save_health validates the affirmative check on the
+ *    CURRENT submission — a stored true flag is never a substitute, it is reset on any
+ *    type/structure change and on progress restart, and rejected submissions never
+ *    destroy stored history (clinical/financial/tenant data untouched throughout);
+ *  - truthful completion state: the historical setup.completed flag is preserved in
+ *    storage, but banner, finish-step indicator and finish card display completion only
+ *    when the CURRENT flow supports provisioning and every CURRENT required step is
+ *    verifiably complete (doctor_practice → general_clinic → hospital → medical_building);
+ *  - defense in depth: the public save_facility/save_doctors/save_health methods enforce
+ *    the same Clinic-local CONFIG gate as every other wizard write.
  */
 final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
  protected function setUp(): void { parent::setUp(); App::migrations()->migrate(); Settings::flushCache(); App::resetScope(); ScopeContext::clear(); }
@@ -131,6 +144,20 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
   $err = CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'2'],$uid);
   self::assertSame('',$err);
   self::assertSame(2, CpmsSetupWizard::intended_clinicians(App::settings()));
+  // Hospital outpatient network: same multi-provider minimum, aligned with the displayed input min.
+  update_user_meta($uid,'cpms_onboarding_facility_type','hospital'); update_user_meta($uid,'cpms_onboarding_structure','hospital_network');
+  $err = CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'1'],$uid);
+  self::assertNotSame('',$err,'hospital flow must reject an intended count below the displayed minimum of 2');
+  self::assertStringContainsString('دست‌کم ۲',$err);
+  self::assertSame(2, CpmsSetupWizard::intended_clinicians(App::settings()), 'the rejected hospital save leaves the stored count untouched');
+  $html = $this->renderStep('doctors');
+  self::assertStringContainsString('min="2"',$html,'hospital doctors input min must match the server-side ≥2 validation');
+  self::assertStringContainsString('دست‌کم ۲',$html);
+  self::assertSame('', CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'2'],$uid),'positive control: intended 2 is valid for the hospital flow');
+  // Positive control: the single-provider practice flow accepts 1 (displayed min = 1).
+  update_user_meta($uid,'cpms_onboarding_facility_type','doctor_practice'); update_user_meta($uid,'cpms_onboarding_structure','single');
+  self::assertSame('', CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'1'],$uid),'positive control: intended 1 is valid for the doctor-practice flow');
+  self::assertSame(1, CpmsSetupWizard::intended_clinicians(App::settings()));
   self::assertSame($before,$this->tenantSnapshot(),'doctors-step saves never touch tenant rows');
  }
  public function testHospitalFlowRendersOutpatientOnlyDisclosureAndRequiresExplicitAcknowledgment(): void {
@@ -192,17 +219,19 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
  public function testStoredStructureIsResumableForAnotherAuthorizedAdminWithoutWrites(): void {
   $uid = $this->authorize();
   $clinicId = (int) App::scope()->clinicId;
-  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'general_clinic','structure'=>'hospital_network'],$uid));
-  self::assertSame('hospital_network',(string)App::settings()->get('setup.facility_structure'));
-  self::assertContains('health', array_column(CpmsSetupWizard::active_steps(),'id'), 'the selecting admin sees the stored adaptive flow');
+  // medical_building is only compatible with non-hospital types under the
+  // compatibility policy; 'other' + medical_building is the sanctioned combo.
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'other','structure'=>'medical_building'],$uid));
+  self::assertSame('medical_building',(string)App::settings()->get('setup.facility_structure'));
+  self::assertSame(['facility','clinic','locations','review','finish'], array_column(CpmsSetupWizard::active_steps(),'id'), 'the selecting admin sees the stored adaptive flow');
   $other = self::factory()->user->create(['role'=>'administrator']);
   $this->switchActorWithMembership($other, $clinicId);
-  $steps = array_column(CpmsSetupWizard::active_steps(),'id');
-  self::assertContains('health',$steps,'stored structure must drive the same adaptive flow for every authorized manager');
-  self::assertContains('clinic',$steps);
+  self::assertSame(['facility','clinic','locations','review','finish'], array_column(CpmsSetupWizard::active_steps(),'id'), 'stored structure must drive the same adaptive flow for every authorized manager');
+  $html = $this->renderStep('review');
+  self::assertStringContainsString('data-cpms-multi-clinic-blocked',$html,'the stored medical-building structure drives the fail-closed disclosure for the other admin');
   self::assertSame('',(string) get_user_meta($other,'cpms_onboarding_facility_type',true),'reading the flow must never write user-meta for the other admin');
   self::assertSame('',(string) get_user_meta($other,'cpms_onboarding_structure',true));
-  self::assertSame('general_clinic',(string)App::settings()->get('setup.facility_type'));
+  self::assertSame('other',(string)App::settings()->get('setup.facility_type'));
  }
  public function testPostBootstrapWizardWriteDeniedForAdminWithoutActiveMembershipAndNoClinicInference(): void {
   $uid = $this->authorize();
@@ -273,18 +302,25 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
   self::assertSame('', $ref->invoke(null, App::settings(), $uid));
   self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false));
   // Cross-flow evolution to hospital: completion marker and tenant rows survive untouched,
-  // and the missing-step report is exactly the genuinely unmet step of the new flow.
+  // and the missing-step report is exactly the genuinely unmet steps of the new flow.
+  // The hospital outpatient network is multi-provider, so the single clinician from the
+  // doctor-practice phase no longer satisfies the doctors step (displayed min = 2).
   $before = $this->tenantSnapshot();
   self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$uid));
   self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false));
   self::assertSame($before,$this->tenantSnapshot());
-  self::assertSame(['سلامت سیستم'], CpmsSetupWizard::missing_required_steps(App::settings()), 'only the outpatient-acknowledged health step is genuinely missing after evolution');
+  self::assertSame(['پزشکان','سلامت سیستم'], CpmsSetupWizard::missing_required_steps(App::settings()), 'doctors must be re-verified against the hospital multi-provider minimum and the health step needs a fresh acknowledgment');
   self::assertFalse(CpmsSetupWizard::step_is_complete('review', App::settings()), 'review must not claim readiness while a required step is unmet');
+  // Positive control: satisfy the doctors step for real (second clinician + intended 2).
+  App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک دوم']);
+  self::assertSame('', CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'2'],$uid));
+  $afterDoctors = $this->tenantSnapshot();
+  self::assertSame(['سلامت سیستم'], CpmsSetupWizard::missing_required_steps(App::settings()), 'only the outpatient-acknowledged health step remains genuinely missing');
   self::assertNotSame('', CpmsSetupWizard::save_health(App::settings(), [], $uid));
   self::assertSame('', CpmsSetupWizard::save_health(App::settings(), ['outpatient_only_ack'=>'1'], $uid));
   self::assertSame([], CpmsSetupWizard::missing_required_steps(App::settings()));
   self::assertTrue(CpmsSetupWizard::step_is_complete('review', App::settings()));
-  self::assertSame($before,$this->tenantSnapshot(),'the whole evolution path never touched tenant rows');
+  self::assertSame($afterDoctors,$this->tenantSnapshot(),'after the intentional clinician addition the evolution path never touched tenant rows again');
  }
  public function testInvalidFacilityOrStructureIsRejectedWithNoPartialWrite(): void {
   $uid = $this->authorize();
@@ -355,5 +391,177 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
   self::assertFalse((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false));
   self::assertSame($before,$this->tenantSnapshot(),'the refused finish must not create or alter any Clinic row');
   self::assertFalse(FacilityTypeCatalog::flow_supports_provisioning('medical_building'));
+ }
+ public function testHospitalStructureOverrideCanNeverBypassOutpatientSafety(): void {
+  $uid = $this->authorize();
+  $before = $this->tenantSnapshot();
+  // Server-side refusals for every downgrade attempt: no config, no meta, no tenant writes.
+  foreach ([['hospital','single'],['hospital','multi_doctor'],['hospital','medical_building'],['general_clinic','hospital_network']] as $combo) {
+   $err = CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>$combo[0],'structure'=>$combo[1]],$uid);
+   self::assertNotSame('',$err,'incompatible combination must be refused: '.$combo[0].'+'.$combo[1]);
+   self::assertStringContainsString('سازگار نیست',$err,'the refusal explains the compatibility policy in Persian');
+  }
+  self::assertSame('',(string)(App::settings()->get('setup.facility_type','')??''),'refused saves must not write config');
+  self::assertSame('',(string)(App::settings()->get('setup.facility_structure','')??''));
+  self::assertSame('',(string) get_user_meta($uid,'cpms_onboarding_facility_type',true));
+  self::assertSame('',(string) get_user_meta($uid,'cpms_onboarding_structure',true));
+  self::assertSame($before,$this->tenantSnapshot(),'refusals never touch tenant rows');
+  // Positive controls: the compatible hospital selections persist.
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$uid));
+  self::assertSame('hospital',(string)App::settings()->get('setup.facility_type'));
+  self::assertSame('hospital_network',(string)App::settings()->get('setup.facility_structure'));
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>''],$uid),'the type-default structure stays valid for a hospital');
+  // Defense in depth: hand-crafted meta can never downgrade the hospital flow —
+  // resolve_flow ignores the incompatible override, so disclosure + health + ack stay.
+  update_user_meta($uid,'cpms_onboarding_facility_type','hospital'); update_user_meta($uid,'cpms_onboarding_structure','single');
+  $html = $this->renderStep('facility');
+  self::assertStringContainsString('data-cpms-onboarding-flow="hospital_network"',$html,'an incompatible stored structure never resolves away from the hospital flow');
+  self::assertStringContainsString('data-cpms-inpatient-unsupported',$html);
+  // Picker UI: incompatible structures are disabled for the selected hospital; the compatible one is not.
+  self::assertSame(1, preg_match('/value="single"[^>]*disabled/', $html), 'single structure must render disabled for a hospital');
+  self::assertSame(1, preg_match('/value="multi_doctor"[^>]*disabled/', $html));
+  self::assertSame(1, preg_match('/value="medical_building"[^>]*disabled/', $html));
+  self::assertSame(0, preg_match('/value="hospital_network"[^>]*disabled/', $html), 'the compatible structure must stay selectable');
+  self::assertStringContainsString('data-cpms-structure-policy',$html,'the picker carries the machine-readable compatibility policy');
+  self::assertStringContainsString('ساختار باید با نوع مرکز سازگار باشد',$html);
+  $html = $this->renderStep('health');
+  self::assertStringContainsString('name="outpatient_only_ack"',$html,'the outpatient-only acknowledgment can never be skipped by a structure override');
+  self::assertStringContainsString('data-cpms-hospital-outpatient-scope="1"',$html);
+  self::assertFalse(CpmsSetupWizard::step_is_complete('health', App::settings()));
+  // The pre-bootstrap endpoint enforces the same policy (manage_options + nonce only).
+  $prev = $_POST;
+  $_POST = ['action'=>'cpms_wizard_facility','_wpnonce'=>wp_create_nonce('cpms_wizard_facility'),'facility_type'=>'hospital','structure'=>'single'];
+  try {
+   CpmsSetupWizard::save_facility_selection();
+   self::fail('the pre-bootstrap endpoint must refuse a hospital downgrade too');
+  } catch (\WPDieException $e) {
+   self::assertStringContainsString('سازگار نیست',$e->getMessage());
+  }
+  $_POST = $prev;
+  self::assertSame('single',(string) get_user_meta($uid,'cpms_onboarding_structure',true),'the refused pre-bootstrap save must not rewrite meta');
+  self::assertSame($before,$this->tenantSnapshot());
+ }
+ public function testSaveHealthRequiresFreshAffirmativeAckAndStaleAckIsReset(): void {
+  $uid = $this->authorize();
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$uid));
+  // Unchecked submission: refused, nothing persisted.
+  $err = CpmsSetupWizard::save_health(App::settings(), [], $uid);
+  self::assertNotSame('',$err);
+  self::assertStringContainsString('تأیید',$err,'the refusal demands a fresh explicit acknowledgment');
+  self::assertSame(false,(bool)App::settings()->get('setup.outpatient_only_ack',false));
+  self::assertFalse(CpmsSetupWizard::step_is_complete('health', App::settings()));
+  // Affirmative fresh POST: accepted (positive control).
+  self::assertSame('', CpmsSetupWizard::save_health(App::settings(), ['outpatient_only_ack'=>'1'], $uid));
+  self::assertTrue((bool)App::settings()->get('setup.outpatient_only_ack',false));
+  self::assertTrue(CpmsSetupWizard::step_is_complete('health', App::settings()));
+  // A stored true is never a substitute for the fresh affirmative POST.
+  self::assertNotSame('', CpmsSetupWizard::save_health(App::settings(), ['outpatient_only_ack'=>'0'], $uid));
+  self::assertNotSame('', CpmsSetupWizard::save_health(App::settings(), [], $uid));
+  // A rejected resubmission never destroys the stored historical value (non-destructive).
+  self::assertTrue((bool)App::settings()->get('setup.outpatient_only_ack',false),'rejected submissions must not wipe the stored acknowledgment');
+  // Changing the type/structure resets the stale acknowledgment — config-scope only.
+  $before = $this->tenantSnapshot();
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'general_clinic','structure'=>'multi_doctor'],$uid));
+  self::assertSame(false,(bool)App::settings()->get('setup.outpatient_only_ack',false),'a stale acknowledgment must never survive a type/structure change');
+  self::assertSame($before,$this->tenantSnapshot(),'the ack reset is config-scope only — tenant rows untouched');
+  // Returning to the hospital requires a fresh acknowledgment again.
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>''],$uid));
+  self::assertFalse(CpmsSetupWizard::step_is_complete('health', App::settings()));
+  self::assertNotSame('', CpmsSetupWizard::save_health(App::settings(), [], $uid));
+  self::assertSame('', CpmsSetupWizard::save_health(App::settings(), ['outpatient_only_ack'=>'1'], $uid));
+  self::assertTrue(CpmsSetupWizard::step_is_complete('health', App::settings()));
+  // Progress restart clears flow-bound state but never tenant/clinical history.
+  App::settings()->set(CpmsSetupWizard::COMPLETE_KEY, true, $uid);
+  $mid = $this->tenantSnapshot();
+  CpmsSetupWizard::reset_progress(App::settings(), $uid);
+  self::assertSame(false,(bool)App::settings()->get('setup.outpatient_only_ack',false),'restart must clear the acknowledgment so it can never be reused stale');
+  self::assertFalse((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false));
+  self::assertSame('welcome',(string)(App::settings()->get('setup.current_step','')??''));
+  self::assertSame('hospital',(string)App::settings()->get('setup.facility_type'),'restart never erases the persisted facility selection');
+  self::assertSame($mid,$this->tenantSnapshot(),'restart is progress-only: clinical/financial/tenant rows preserved');
+ }
+ public function testTruthfulCompletionStateAcrossFlowEvolutionIsDisplayedOnlyWhenCurrentlyTrue(): void {
+  $uid = $this->authorize(); $clinicId = (int) App::scope()->clinicId; global $wpdb;
+  // Build a genuinely completed doctor-practice setup with real data.
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'doctor_practice','structure'=>'single'],$uid));
+  self::assertSame('', CpmsSetupWizard::saveClinic(App::settings(),['clinic_name'=>'مطب کامل'],$uid));
+  $locs = App::locationRepository()->listForClinic($clinicId);
+  if ($locs===[]) { App::locationRepository()->create($clinicId,'مکان اصلی','main-'.wp_generate_password(6,false,false),'Asia/Tehran', gmdate('Y-m-d H:i:s')); $locs = App::locationRepository()->listForClinic($clinicId); }
+  $wpdb->query('SET FOREIGN_KEY_CHECKS=0'); $wpdb->query('DELETE FROM '.$wpdb->prefix.'cpms_clinicians WHERE clinic_id='.$clinicId); $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
+  App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک کامل']);
+  $clinicians = App::clinicianRepository()->listAll($clinicId,false);
+  $wpdb->query($wpdb->prepare('INSERT IGNORE INTO '.$wpdb->prefix.'cpms_schedule (clinic_id,clinician_id,location_id,day_of_week,start_time,end_time,is_active,created_at,updated_at) VALUES (%d,%d,%d,1,%s,%s,1,NOW(),NOW())',$clinicId,(int)$clinicians[0]['id'],(int)$locs[0]['id'],'09:00:00','12:00:00'));
+  self::assertSame('', CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'1'],$uid));
+  self::assertSame('', CpmsSetupWizard::saveBooking(App::settings(),['duration'=>'20','capacity'=>'1','lead'=>'2','future'=>'60','cancel'=>'24'],$uid));
+  CpmsSetupWizard::mark_step_completed(App::settings(),'booking',$uid);
+  $ref = new \ReflectionMethod(CpmsSetupWizard::class,'saveFinish'); $ref->setAccessible(true);
+  self::assertSame('', $ref->invoke(null, App::settings(), $uid));
+  $banner = '✅ راه‌اندازی تکمیل شده است';
+  // Positive control: a genuinely complete flow displays completion everywhere.
+  self::assertTrue(CpmsSetupWizard::step_is_complete('finish', App::settings()));
+  self::assertStringContainsString($banner, $this->renderStep('review'),'the header banner reflects a truthful completion');
+  self::assertStringContainsString('data-cpms-finish-ready="1"', $this->renderStep('finish'));
+  // 1) Evolve to a multi-doctor clinic: history preserved, current flow honestly incomplete.
+  $before = $this->tenantSnapshot();
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'general_clinic','structure'=>'multi_doctor'],$uid));
+  self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false),'the historical completion flag is preserved in storage');
+  self::assertSame(['پزشکان'], CpmsSetupWizard::missing_required_steps(App::settings()));
+  self::assertFalse(CpmsSetupWizard::step_is_complete('finish', App::settings()),'completion must not be displayed while the current flow is unmet');
+  self::assertStringNotContainsString($banner, $this->renderStep('review'),'the banner must not claim a completion the current flow does not satisfy');
+  $html = $this->renderStep('finish');
+  self::assertStringContainsString('data-cpms-finish-ready="0"',$html);
+  self::assertStringContainsString('data-cpms-stale-completion="1"',$html,'the finish card discloses the preserved historical flag honestly');
+  self::assertStringContainsString('پزشکان',$html);
+  self::assertSame($before,$this->tenantSnapshot());
+  // Restore real readiness: a second clinician + intended 2 → completion is truthful again.
+  App::clinicianRepository()->create($clinicId,['full_name'=>'پزشک دوم']);
+  self::assertSame('', CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'2'],$uid));
+  self::assertSame([], CpmsSetupWizard::missing_required_steps(App::settings()));
+  self::assertTrue(CpmsSetupWizard::step_is_complete('finish', App::settings()));
+  self::assertStringContainsString($banner, $this->renderStep('review'),'positive control: the banner returns as soon as readiness is genuinely true again');
+  // 2) Evolve to the hospital: the stale ack was reset → health genuinely missing; doctors already ≥2.
+  $mid = $this->tenantSnapshot();
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$uid));
+  self::assertSame(false,(bool)App::settings()->get('setup.outpatient_only_ack',false),'evolution resets the stale acknowledgment');
+  self::assertSame(['سلامت سیستم'], CpmsSetupWizard::missing_required_steps(App::settings()));
+  self::assertFalse(CpmsSetupWizard::step_is_complete('finish', App::settings()));
+  self::assertStringNotContainsString($banner, $this->renderStep('review'));
+  self::assertNotSame('', CpmsSetupWizard::save_health(App::settings(), [], $uid),'a fresh explicit acknowledgment is required on the current submission');
+  self::assertSame('', CpmsSetupWizard::save_health(App::settings(), ['outpatient_only_ack'=>'1'], $uid));
+  self::assertTrue(CpmsSetupWizard::step_is_complete('finish', App::settings()));
+  self::assertStringContainsString($banner, $this->renderStep('review'));
+  self::assertSame($mid,$this->tenantSnapshot());
+  // 3) Evolve to a medical building: never complete, never erased, fail-closed finish.
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'other','structure'=>'medical_building'],$uid));
+  self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false),'the historical flag survives every evolution');
+  self::assertFalse(CpmsSetupWizard::step_is_complete('finish', App::settings()),'the building flow never displays completion in this wizard');
+  self::assertStringNotContainsString($banner, $this->renderStep('review'));
+  $html = $this->renderStep('finish');
+  self::assertStringContainsString('data-cpms-finish-ready="0"',$html);
+  self::assertStringContainsString('data-cpms-stale-completion="1"',$html);
+  self::assertNotSame('', $ref->invoke(null, App::settings(), $uid),'building completion stays fail-closed');
+  self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false),'the refused finish must not erase the historical flag');
+  self::assertSame($mid,$this->tenantSnapshot(),'the whole evolution path never touched tenant rows after the intentional clinician additions');
+ }
+ public function testPublicSaveMethodsDenyActorWithoutClinicLocalConfig(): void {
+  $uid = $this->authorize();
+  self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'general_clinic','structure'=>''],$uid));
+  $before = $this->tenantSnapshot();
+  $outsider = self::factory()->user->create(['role'=>'administrator']);
+  wp_set_current_user($outsider);
+  // Defense in depth: the same Clinic-local CONFIG gate every other wizard write
+  // enforces, checked BEFORE any flow inspection or payload processing.
+  $err = CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$outsider);
+  self::assertStringContainsString('عضویت فعال',$err,'save_facility must enforce the Clinic-local CONFIG gate');
+  self::assertSame('general_clinic',(string)App::settings()->get('setup.facility_type'),'the denied save must not write config');
+  $err = CpmsSetupWizard::save_doctors(App::settings(),['intended_clinicians'=>'5'],$outsider);
+  self::assertStringContainsString('عضویت فعال',$err);
+  self::assertSame(0, CpmsSetupWizard::intended_clinicians(App::settings()),'the denied save_doctors must not write the count');
+  $err = CpmsSetupWizard::save_health(App::settings(),['outpatient_only_ack'=>'1'],$outsider);
+  self::assertStringContainsString('عضویت فعال',$err,'the auth gate fires even on a non-hospital flow (gate precedes flow logic)');
+  self::assertSame(false,(bool)App::settings()->get('setup.outpatient_only_ack',false),'the denied save_health must not write the acknowledgment');
+  self::assertSame('',(string) get_user_meta($outsider,'cpms_onboarding_facility_type',true));
+  self::assertSame('',(string) get_user_meta($outsider,'cpms_onboarding_structure',true));
+  self::assertSame($before,$this->tenantSnapshot(),'denied saves never touch tenant rows');
  }
 }
