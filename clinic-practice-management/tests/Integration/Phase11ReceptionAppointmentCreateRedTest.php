@@ -1007,6 +1007,45 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
     /**
      * @param array<string, int> $fx
      */
+    /**
+     * Clinic lifecycle at the real reception slot boundary (GET /staff/portal/reception/slots):
+     * an active Clinic advertises its genuinely inserted bookable slot, a suspended Clinic
+     * advertises none through the same bounded empty read (HTTP 200, no reason leaked), and
+     * reactivation restores advertisement. Staff scope, nonce, membership and Location
+     * resolution are the established harness - nothing is bypassed.
+     */
+    public function testSuspendedClinicAdvertisesNoReceptionSlotsWhileActiveControlDoes(): void
+    {
+        $tomorrow = gmdate( 'Y-m-d', time() + DAY_IN_SECONDS );
+        $fx       = $this->stage( 'lifecycle1' );
+        $this->seedMembership( $fx['secretary'], $fx['clinic'], 'cpms_secretary' );
+        wp_set_current_user( $fx['secretary'] );
+        $slot = $this->insertSlot( $fx['clinic'], $fx['locA'], $fx['c1'], $tomorrow, '09:00:00' );
+
+        // POSITIVE CONTROL (active Clinic): the real endpoint really advertises the slot.
+        $active = $this->dispatch( 'GET', self::SLOTS, [ 'clinician_id' => $fx['c1'], 'date' => $tomorrow ], $this->scopeHeaders( $fx['clinic'], $fx['locA'] ) );
+        self::assertSame( 200, $active->get_status(), 'control: an active Clinic slot read succeeds - ' . $this->errCode( $active ) );
+        self::assertContains( $slot, $this->slotIds( $active ), 'control: the active Clinic really advertises its bookable slot' );
+
+        // Suspend through the persisted lifecycle column (migration 0029).
+        App::db()->query(
+            'UPDATE ' . App::db()->table( 'cpms_clinics' ) . ' SET status = %s WHERE id = %d',
+            [ 'suspended', (int) $fx['clinic'] ]
+        );
+
+        $suspended = $this->dispatch( 'GET', self::SLOTS, [ 'clinician_id' => $fx['c1'], 'date' => $tomorrow ], $this->scopeHeaders( $fx['clinic'], $fx['locA'] ) );
+        self::assertSame( 200, $suspended->get_status(), 'a suspended Clinic keeps the bounded empty read (HTTP 200, no reason leaked) - ' . $this->errCode( $suspended ) );
+        self::assertSame( [], $this->slotIds( $suspended ), 'a suspended Clinic must advertise no bookable reception slot' );
+
+        // Reactivation restores advertisement (no sticky cache, no permanent blackout).
+        App::db()->query(
+            'UPDATE ' . App::db()->table( 'cpms_clinics' ) . ' SET status = %s WHERE id = %d',
+            [ 'active', (int) $fx['clinic'] ]
+        );
+        $restored = $this->dispatch( 'GET', self::SLOTS, [ 'clinician_id' => $fx['c1'], 'date' => $tomorrow ], $this->scopeHeaders( $fx['clinic'], $fx['locA'] ) );
+        self::assertContains( $slot, $this->slotIds( $restored ), 'the slot must be advertised again after reactivation' );
+    }
+
     private function slots(array $fx, int $clinicianId, ?int $locationId, ?string $date): WP_REST_Response
     {
         $params = ['clinician_id' => $clinicianId];

@@ -753,23 +753,17 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             $control_code = $e->errorCode;
         }
         self::assertNotSame( 'CLINIC_SUSPENDED', $control_code, 'control: an active Clinic is never refused for suspension' );
-        if ( null === $control_code ) {
-            // The staff path is fully authorized in this fixture, so prove REAL creation:
-            // an appointment row and the capacity it claims. This is what makes the
-            // suspended refusal above meaningful rather than a fixture that can never book.
-            self::assertSame( 1, $this->appointment_count( $this->clinicA ), 'control: the appointment must really exist' );
-            self::assertSame( 1, $this->slot_counters( $slot['id'] )['booked_count'], 'control: the capacity must really be claimed' );
-        } else {
-            // Not a suspension refusal: name the exact reason so this control is never
-            // silently vacuous, and prove the refused call created nothing.
-            self::assertContains(
-                $control_code,
-                [ 'CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED', 'CLINIC_POLICY_VIOLATION', 'CLINIC_VALIDATION_FAILED', 'CLINIC_SLOT_TAKEN' ],
-                'unexpected control refusal code: ' . $control_code
-            );
-            self::assertSame( 0, $this->appointment_count( $this->clinicA ), 'a refused control call must create no appointment' );
-            self::assertSame( 0, $this->slot_counters( $slot['id'] )['booked_count'], 'a refused control call must claim no capacity' );
-        }
+        // A whitelisted non-suspension refusal is NOT equivalent to a successful booking, so the
+        // control is unconditional: the fixture really satisfies every staff precondition
+        // (clinicians.clinic_id + is_active = participation, active linked Patient in the same
+        // Clinic, bound explicit Clinic scope, open Slot with capacity, staff min-lead = 0), and
+        // the assertion therefore demands a real appointment and a real capacity increment. Any
+        // refusal prints its exact code instead of being tolerated.
+        self::assertNull( $control_code, 'control: staff creation must really succeed in an active Clinic; refusal code was: ' . (string) $control_code );
+        self::assertIsArray( $control_view, 'control: a successful staff creation returns the appointment view' );
+        self::assertSame( 1, $this->appointment_count( $this->clinicA ), 'control: the appointment must really exist' );
+        self::assertSame( 1, $this->slot_counters( $slot['id'] )['booked_count'], 'control: the capacity must really be claimed' );
+        self::assertGreaterThan( 0, $this->latest_appointment_id( $this->clinicA ), 'control: the created appointment is persisted' );
 
         \ClinicCore\Application\Scope\ScopeContext::clear();
     }

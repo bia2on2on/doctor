@@ -199,6 +199,44 @@ final class PatientEnrollmentOptionsTest extends WP_UnitTestCase
         return $this->options()->for_user( $user > 0 ? $user : $this->user );
     }
 
+    /**
+     * Clinic lifecycle at the published-options boundary: a suspended Clinic must disappear
+     * from PatientEnrollmentOptions::for_user() and return after reactivation, while the
+     * verified-identity requirement, license eligibility and cross-Organization privacy stay
+     * exactly as they were. Uses the real verified identity fixture from setUp(), so this is
+     * the endpoint-facing projection, not only the repository query.
+     */
+    public function testSuspendedClinicIsNotPublishedAsDestinationAndReturnsAfterReactivation(): void
+    {
+        $db = App::db();
+
+        $before = $this->for_user();
+        $this->assertSame( PatientEnrollmentOptions::STATE_ELIGIBLE, $before['state'], 'control: the verified identity is eligible before suspension' );
+        $names_before = array_column( $before['clinics'], 'name' );
+        $this->assertContains( 'Destination A', $names_before, 'control: an active destination Clinic is published' );
+        $this->assertNotContains( 'Foreign Clinic Secret', $names_before, 'cross-Organization privacy is unchanged by this test' );
+
+        $db->query(
+            'UPDATE ' . $db->table( 'cpms_clinics' ) . ' SET status = %s WHERE id = %d',
+            [ 'suspended', (int) $this->destination ]
+        );
+
+        $during = $this->for_user();
+        $names_during = array_column( $during['clinics'] ?? [], 'name' );
+        $this->assertNotContains( 'Destination A', $names_during, 'a suspended Clinic must not be offered as an enrollment destination' );
+        $this->assertNotContains( 'Foreign Clinic Secret', $names_during, 'a suspended sibling must never widen publication to another Organization' );
+        $this->assertSame( [], $during['clinics'] ?? [], 'with its only destination suspended, no Clinic is published (no fallback, no existence oracle)' );
+
+        $db->query(
+            'UPDATE ' . $db->table( 'cpms_clinics' ) . ' SET status = %s WHERE id = %d',
+            [ 'active', (int) $this->destination ]
+        );
+
+        $after = $this->for_user();
+        $this->assertSame( PatientEnrollmentOptions::STATE_ELIGIBLE, $after['state'], 'eligibility is restored with the Clinic, not by weakening a check' );
+        $this->assertContains( 'Destination A', array_column( $after['clinics'], 'name' ), 'the destination must return after reactivation' );
+    }
+
     public function testOnlyAuthorizedUnenrolledDestinationClinicsArePublished(): void
     {
         $result = $this->for_user();
