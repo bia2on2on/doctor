@@ -50,7 +50,7 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
                 [$this->clinic_membership_id]
             );
         }
-        if ($this->organization_id > 0) {
+        if ( $this->organization_id > 0 ) {
             App::db()->query(
                 'DELETE FROM ' . App::db()->table('cpms_organizations') . ' WHERE id = %d',
                 [$this->organization_id]
@@ -182,6 +182,13 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
         self::assertTrue(mkdir($directory, 0700));
         $go_file = $directory . '/go';
         $workers = [];
+        // The bootstrap workers are independent processes: they can only read
+        // committed rows, while this test's fixture (the administrator, the two
+        // targets and the organization) is still inside the test transaction.
+        // Commit the fixture so the workers can see it. The finally block
+        // below removes it again, because WP's tear_down() can no longer roll
+        // it back.
+        App::db()->wpdb()->query( 'COMMIT' );
         try {
             $workers[] = $this->launch_bootstrap_worker($this->target_id, $directory . '/ready-a', $go_file);
             $workers[] = $this->launch_bootstrap_worker($other_target_id, $directory . '/ready-b', $go_file);
@@ -224,10 +231,47 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
                     }
                 }
             }
+            $this->purge_committed_bootstrap_fixture($other_target_id);
+            App::db()->wpdb()->query( 'COMMIT' );
             foreach (glob($directory . '/*') ?: [] as $file) {
                 unlink($file);
             }
             rmdir($directory);
+        }
+    }
+
+    /**
+     * Remove the fixture this test had to commit for the independent workers.
+     */
+    private function purge_committed_bootstrap_fixture(int $other_target_id): void
+    {
+        if ($this->organization_id > 0) {
+            // The winning worker provisioned a Clinic for the organization, and
+            // the Clinic references the organization, so it goes first.
+            App::db()->query(
+                'DELETE FROM ' . App::db()->table('cpms_clinic_memberships')
+                . ' WHERE clinic_id IN (SELECT id FROM ' . App::db()->table('cpms_clinics') . ' WHERE organization_id = %d)',
+                [$this->organization_id]
+            );
+            App::db()->query(
+                'DELETE FROM ' . App::db()->table('cpms_clinics') . ' WHERE organization_id = %d',
+                [$this->organization_id]
+            );
+            App::db()->query(
+                'DELETE FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND resource_id = %d',
+                ['ORGANIZATION_MANAGER_BOOTSTRAPPED', $this->organization_id]
+            );
+            // The membership rows cascade with the organization.
+            App::db()->query(
+                'DELETE FROM ' . App::db()->table('cpms_organizations') . ' WHERE id = %d',
+                [$this->organization_id]
+            );
+        }
+
+        foreach ( [ $this->admin_id, $this->target_id, $other_target_id ] as $user_id ) {
+            if ( $user_id > 0 ) {
+                wp_delete_user($user_id);
+            }
         }
     }
 
