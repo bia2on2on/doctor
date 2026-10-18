@@ -67,14 +67,34 @@ final class OtpController extends RestBase
             // Phase 8 Slice 2 — Clinicِ Challenge فقط از دادهٔ persisted مشتق
             // می‌شود (A2 با انتخابِ preserved). Tamper/ناسازگاری: 404/422
             // تثبیت‌شده، صفر Challenge، صفر SMS.
-            $clinicId = $this->resolveSelectionClinic($request);
+            $clinic_id = $this->resolveSelectionClinic( $request );
+
+            // Clinic lifecycle policy - new-demand initiation boundary. A challenge
+            // derived from a persisted booking selection (clinician/slot) exists only
+            // to start a NEW booking, so a suspended Clinic must not initiate it.
+            // A challenge WITHOUT a selection (login / mobile verification used to
+            // reach existing appointments and records) is continuity and stays
+            // allowed: suspension never blocks access to existing care.
+            if ( $clinic_id !== null && $clinic_id > 0 ) {
+                $clinic_status = App::db()->fetchValue(
+                    'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [ $clinic_id ]
+                );
+                if ( $clinic_status !== null && (string) $clinic_status === 'suspended' ) {
+                    return $this->error(
+                        'CLINIC_SUSPENDED',
+                        409,
+                        'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود'
+                    );
+                }
+            }
 
             $result = $this->otp->request(
                 (string) $request->get_param('mobile'),
                 (string) $request->get_param('purpose'),
                 null,
                 $this->clientIp($request),
-                $clinicId
+                $clinic_id
             );
 
             return $this->success($result, 200);

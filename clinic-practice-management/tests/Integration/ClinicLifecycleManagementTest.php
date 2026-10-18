@@ -80,6 +80,12 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
 
         foreach ( [$this->clinicA, $this->clinicB] as $cid ) {
             if ( $cid > 0 ) {
+                // Booking fixtures created by the suspension tests must go before the
+                // Clinic rows, otherwise the InnoDB FKs (holds/appointments/clinicians
+                // -> clinics) reject the Clinic delete and tearDown cascades.
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_slot_holds' ) . ' WHERE clinic_id = %d', [$cid] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d', [$cid] );
+                $db->query( 'DELETE FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_slots' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule_exceptions' ) . ' WHERE clinic_id = %d', [$cid] );
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d', [$cid] );
@@ -153,6 +159,212 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             'created_at' => $now,
             'updated_at' => $now,
         ] );
+    }
+
+    /**
+     * Bookable fixture inside one Clinic: an active clinician plus future open
+     * slots. Mirrors the proven BookingFlowTest column set so the negative tests
+     * below fail only because of Clinic suspension, never because of the fixture.
+     *
+     * @return array{clinician_id:int, slots:list<array{id:int, slot_date:string, slot_time:string}>}
+     */
+    private function make_bookable_fixture( int $clinic_id, int $slot_count = 3 ): array {
+        $db  = App::db();
+        $now = $db->nowUtcSql();
+
+        $db->insert( 'cpms_clinicians', [
+            'clinic_id'  => $clinic_id,
+            'full_name'  => 'پزشک تست چرخه حیات ' . bin2hex( random_bytes( 2 ) ),
+            'is_active'  => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ] );
+        $clinician_id = (int) $db->wpdb_last_insert_id();
+
+        $location_id = (int) $db->fetchValue(
+            'SELECT id FROM ' . $db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1',
+            [ $clinic_id ]
+        );
+
+        $slots = [];
+        for ( $i = 1; $i <= $slot_count; $i++ ) {
+            $slot_date = gmdate( 'Y-m-d', time() + ( $i + 1 ) * 86400 );
+            $slot_time = sprintf( '%02d:30:00', 9 + $i );
+            $db->insert( 'cpms_schedule_slots', [
+                'clinic_id'     => $clinic_id,
+                'location_id'   => $location_id > 0 ? $location_id : null,
+                'clinician_id'  => $clinician_id,
+                'slot_date'     => $slot_date,
+                'slot_time'     => $slot_time,
+                'duration_min'  => 20,
+                'capacity'      => 1,
+                'booked_count'  => 0,
+                'held_count'    => 0,
+                'is_open'       => 1,
+                'created_at'    => $now,
+                'updated_at'    => $now,
+            ] );
+            $slots[] = [
+                'id'        => (int) $db->wpdb_last_insert_id(),
+                'slot_date' => $slot_date,
+                'slot_time' => $slot_time,
+            ];
+        }
+
+        return [ 'clinician_id' => $clinician_id, 'slots' => $slots ];
+    }
+
+    private function slot_counters( int $slot_id ): array {
+        $row = App::db()->fetchRow(
+            'SELECT held_count, booked_count, is_open FROM ' . App::db()->table( 'cpms_schedule_slots' ) . ' WHERE id = %d',
+            [ $slot_id ]
+        );
+        return [
+            'held_count'   => (int) ( $row['held_count'] ?? 0 ),
+            'booked_count' => (int) ( $row['booked_count'] ?? 0 ),
+            'is_open'      => (int) ( $row['is_open'] ?? 0 ),
+        ];
+    }
+
+    // ============ Suspension: public advertisement + new-demand denial (DB-backed) ============
+
+    /**
+     * Item: public availability/quote must not advertise new bookable demand for a
+     * suspended Clinic, and must advertise it again after reactivation. The control
+     * assertion on the active Clinic proves the fixture is genuinely bookable, so a
+     * denial below can only come from the lifecycle status.
+     */
+    public function testSuspendedClinicIsNotAdvertisedOnPublicAvailabilityAndQuote(): void {
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set( 'booking.min_lead_hours', 2 );
+        App::settings()->set( 'booking.max_future_days', 60 );
+        App::settings()->set( 'booking.hold_ttl_sec', 600 );
+
+        $fixture        = $this->make_bookable_fixture( $this->clinicA );
+        $clinician_id   = $fixture['clinician_id'];
+        $first_slot     = $fixture['slots'][0];
+        $booking        = App::bookingService();
+
+        // CONTROL (active Clinic): real availability and real capacity are advertised.
+        $availability_active = $booking->availability( $clinician_id );
+        self::assertGreaterThan( 0, count( $availability_active['days'] ), 'active Clinic must advertise bookable days' );
+        $quote_active = $booking->quote( $clinician_id, $first_slot['slot_date'], $first_slot['slot_time'], $first_slot['id'] );
+        self::assertTrue( (bool) $quote_active['available'], 'active Clinic must quote the slot as available' );
+
+        wp_set_current_user( $this->managerA );
+        $deact = App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+        self::assertSame( 'suspended', $deact['status'] );
+
+        // SUSPENDED: nothing is advertised (public fail-closed shape, no error leak).
+        $availability_suspended = $booking->availability( $clinician_id );
+        self::assertSame( [], $availability_suspended['days'], 'suspended Clinic must advertise no bookable days' );
+        $quote_suspended = $booking->quote( $clinician_id, $first_slot['slot_date'], $first_slot['slot_time'], $first_slot['id'] );
+        self::assertFalse( (bool) $quote_suspended['available'], 'suspended Clinic must not quote capacity' );
+        self::assertSame( 0, (int) $quote_suspended['capacity_left'] );
+
+        // Slot rows are untouched by advertisement reads.
+        $counters = $this->slot_counters( $first_slot['id'] );
+        self::assertSame( 0, $counters['held_count'] );
+        self::assertSame( 0, $counters['booked_count'] );
+
+        wp_set_current_user( $this->managerA );
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
+        $availability_after = $booking->availability( $clinician_id );
+        self::assertGreaterThan( 0, count( $availability_after['days'] ), 'reactivation must restore advertisement' );
+    }
+
+    /**
+     * Item: a suspended Clinic must reject a genuinely new hold at the authoritative
+     * server boundary, with zero capacity side effects, and accept it again after
+     * reactivation (transactional serialization: the status is re-read under the
+     * Clinic row lock inside the hold transaction).
+     */
+    public function testSuspendedClinicRejectsNewHoldWithoutCapacitySideEffects(): void {
+        \ClinicCore\Settings\Settings::flushCache();
+        App::settings()->set( 'booking.min_lead_hours', 2 );
+        App::settings()->set( 'booking.max_future_days', 60 );
+        App::settings()->set( 'booking.hold_ttl_sec', 600 );
+
+        $fixture      = $this->make_bookable_fixture( $this->clinicA );
+        $clinician_id = $fixture['clinician_id'];
+        $slot_a       = $fixture['slots'][0];
+        $slot_b       = $fixture['slots'][1];
+        $booking      = App::bookingService();
+        $patient_user = self::factory()->user->create( [ 'role' => 'subscriber' ] );
+        wp_set_current_user( $patient_user );
+
+        // CONTROL (active Clinic): the hold boundary really works with this fixture.
+        $booking->hold( $patient_user, $clinician_id, $slot_a['slot_date'], $slot_a['slot_time'], $slot_a['id'] );
+        self::assertSame( 1, $this->slot_counters( $slot_a['id'] )['held_count'], 'control hold must claim capacity' );
+
+        wp_set_current_user( $this->managerA );
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+
+        // NEGATIVE (suspended Clinic): new hold refused, zero capacity claimed.
+        wp_set_current_user( $patient_user );
+        try {
+            $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'] );
+            self::fail( 'suspended Clinic must refuse a new hold' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED', $e->errorCode );
+            self::assertSame( 409, $e->httpStatus );
+        }
+        self::assertSame( 0, $this->slot_counters( $slot_b['id'] )['held_count'], 'refused hold must claim no capacity' );
+        self::assertSame( 0, $this->slot_counters( $slot_b['id'] )['booked_count'] );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d', [ $this->clinicA ] ),
+            'refused hold must create no appointment'
+        );
+
+        // CONTINUITY: the pre-suspension hold row is untouched by the denial.
+        self::assertSame( 1, $this->slot_counters( $slot_a['id'] )['held_count'] );
+
+        // Reactivation restores new demand at the same boundary.
+        wp_set_current_user( $this->managerA );
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
+        wp_set_current_user( $patient_user );
+        $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'] );
+        self::assertSame( 1, $this->slot_counters( $slot_b['id'] )['held_count'], 'reactivated Clinic must accept a new hold' );
+    }
+
+    /**
+     * Item: a suspended Clinic must not accept NEW patient self-enrollment, while an
+     * already-enrolled patient's existing record stays readable (continuity).
+     */
+    public function testSuspendedClinicRefusesNewSelfEnrollmentButKeepsExistingRecords(): void {
+        wp_set_current_user( $this->managerA );
+        $existing_patients = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE clinic_id = %d',
+            [ $this->clinicA ]
+        );
+        self::assertGreaterThan( 0, $existing_patients, 'fixture seeds durable history before suspension' );
+
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
+
+        $patient_user = self::factory()->user->create( [ 'role' => 'cpms_patient' ] );
+        wp_set_current_user( $patient_user );
+        try {
+            App::patientService()->enroll_current_patient( $this->clinicA, [ 'first_name' => 'تست', 'last_name' => 'تعلیق' ] );
+            self::fail( 'suspended Clinic must refuse new self-enrollment' );
+        } catch ( \ClinicCore\Domain\Booking\BookingException $e ) {
+            // 404 parity with an unlinked Clinic: suspension is not an existence oracle.
+            self::assertSame( 404, $e->httpStatus );
+        }
+        self::assertSame(
+            $existing_patients,
+            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', [ $this->clinicA ] ),
+            'refused enrollment must create no patient row'
+        );
+
+        // CONTINUITY: existing history stays readable under its original authorization.
+        self::assertGreaterThan(
+            0,
+            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE clinic_id = %d AND status = %s', [ $this->clinicA, 'active' ] )
+        );
+
+        wp_set_current_user( $this->managerA );
+        App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
     }
 
     // ============ Tests: Clinic settings update ============

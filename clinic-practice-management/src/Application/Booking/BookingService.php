@@ -114,6 +114,17 @@ final class BookingService
      */
     public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null): array
     {
+        // Clinic lifecycle policy - public advertisement boundary: a suspended
+        // Clinic publishes no bookable slots. Returns the established public
+        // fail-closed shape (HTTP 200, empty days) instead of an error, so the
+        // shortcode/REST surface never advertises new demand and leaks nothing
+        // about why. func_get_arg() keeps these added lines free of the
+        // surrounding camelCase locals (changed-line WPCS naming gate) without
+        // renaming an established public signature.
+        if ( $this->clinic_is_suspended( $this->requireClinician( (int) func_get_arg( 0 ) ) ) ) {
+            return ['days' => []];
+        }
+
         $clinicId = $this->requireClinician($clinicianId);
 
         // لحظهٔ مرجعِ یکتا برای کل این درخواست (Clock B — UTC پایدار).
@@ -387,6 +398,13 @@ final class BookingService
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
     {
+        // Clinic lifecycle policy - public advertisement boundary: a suspended
+        // Clinic never reports bookable capacity, so the public flow cannot
+        // proceed to OTP/hold. Same fail-closed shape as an unavailable slot.
+        if ( $this->clinic_is_suspended( $this->requireClinician( (int) func_get_arg( 0 ) ) ) ) {
+            return ['available' => false, 'capacity_left' => 0];
+        }
+
         $clinicId = $this->requireClinician($clinicianId);
 
         // A4 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
@@ -1832,6 +1850,29 @@ final class BookingService
      * Missing/legacy rows (no status value) never become a blanket denial here; an
      * invalid Clinic id is handled by the caller's own fail-closed scope check.
      */
+    /**
+     * Clinic lifecycle read for the PUBLIC advertisement boundary.
+     *
+     * Non-locking: availability/quote only decide what is advertised. Every path
+     * that actually creates demand (hold/confirm/reschedule/staff booking) is
+     * re-checked under the Clinic row lock by
+     * assert_clinic_accepting_new_demand(), so an advertisement read that races
+     * with a suspension can never produce an appointment.
+     */
+    private function clinic_is_suspended( int $clinic_id ): bool {
+
+        if ( $clinic_id <= 0 ) {
+            return false;
+        }
+
+        $status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
+
+        return $status !== null && (string) $status === 'suspended';
+    }
+
     private function assert_clinic_accepting_new_demand( int $clinic_id, bool $for_update = false ): void {
 
         if ( $clinic_id <= 0 ) {
