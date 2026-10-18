@@ -2,6 +2,26 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — Post-onboarding Clinic & Location management slice (2026-10-18)
+
+### Added
+- Migration `2026_10_18_0029_clinic_lifecycle.php`: `cpms_clinics.status` (`active`/`suspended`, NOT NULL DEFAULT `active`), `status_updated_at`, `status_updated_by_wp_user_id`, index `idx_clinic_org_status`. Idempotent, forward-only, no data destruction.
+- `OrganizationClinicProvisioningService::update_clinic_profile()`, `set_clinic_status()`, `clinics_for_organization()` — Organization-scoped Clinic settings update and lifecycle, row-locked, transactional, hash-chain audited, idempotent.
+- `ClinicCore\Admin\ClinicManagementPage` — native Classic RTL Persian admin screen (*سازمان‌ها → مدیریت درمانگاه‌ها*) with explicit Organization/Clinic selectors, nonce protection and safe Persian notices.
+- `tests/Integration/ClinicLifecycleManagementTest.php` — 18 DB-backed tests (negative permissions, cross-tenant isolation, lifecycle idempotency, historical continuity, audit atomicity, facility catalogue).
+- `docs/post-onboarding-clinic-location-management.md` — slice contract, enforcement matrix, unsupported transitions and tracked gaps.
+
+### Changed
+- `TrustedClinicEstablisher` fails closed for a suspended Clinic (`CLINIC_SCOPE_UNAVAILABLE`, reason `clinic_suspended`); Organization administration of that Clinic remains available to the authorized Organization Manager.
+- Schema-head pins updated in `MigrationTest`, `MariaDb1011CompatibilityTest`, `CustomRoleDisplayNameMigrationTest`, `CustomRoleMigrationSafetyTest`, `FinanceAuthorizationPolicyRegressionTest`, `Phase2SchemaTest`; `CustomRoleArchivalMigrationTest` rollback helper now steps 0029 → 0028 → 0027.
+
+### Security
+- No new Organization capability name: Clinic administration reuses the existing `cpms_org_clinic_create` authority (`DENY > GRANT > preset`). No WP Administrator bypass, no first-row auto-selection, no cross-Clinic PHI. Suspension preserves medical, financial, audit and backup history.
+
+### Not delivered (tracked)
+- Public booking chooser does not yet honour `status = suspended`; two-process lifecycle race test; real-browser cross-Clinic patient enrollment and Administrator bootstrap coverage; facility-type transitions and inpatient/HIS.
+- Tests were not executed locally (no PHP interpreter in the agent workspace); CI is the execution evidence.
+
 ## [Unreleased] — ثبت پذیرش/بستن رسمی C9 با تصمیم صریح مالک (فقط مستندات — 2026-09-11)
 
 **وضعیت: ‏C9 = CLOSED.** پیاده‌سازیِ محدودشدهٔ C9 از طریق **PR #23 — MERGED** در

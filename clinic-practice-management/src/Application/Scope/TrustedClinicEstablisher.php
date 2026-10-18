@@ -97,12 +97,12 @@ final class TrustedClinicEstablisher {
 
 		$read   = $for_update ? 'fetchRowForUpdate' : 'fetchRow';
 		$clinic = $this->db->$read(
-			'SELECT c.id, c.organization_id, o.status AS organization_status
+			'SELECT c.id, c.organization_id, o.status AS organization_status, COALESCE(c.status, %s) AS clinic_status
 			   FROM ' . $this->db->table( 'cpms_clinics' ) . ' c
 			   INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id
 			  WHERE c.id = %d
 			  LIMIT 1',
-			[ $clinic_id ]
+			['active', $clinic_id]
 		);
 		if ( $for_update && $this->db->wpdb()->last_error !== '' ) {
 			throw new \RuntimeException( 'trusted Clinic locking read failed' );
@@ -112,6 +112,9 @@ final class TrustedClinicEstablisher {
 		}
 		if ( 'active' !== (string) ( $clinic['organization_status'] ?? '' ) ) {
 			$this->unavailable( 'organization' );
+		}
+		if ( 'active' !== (string) ( $clinic['clinic_status'] ?? 'active' ) ) {
+			$this->unavailable( 'clinic_suspended' );
 		}
 
 		$organization_id = (int) $clinic['organization_id'];

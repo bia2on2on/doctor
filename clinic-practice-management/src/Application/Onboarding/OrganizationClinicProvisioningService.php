@@ -473,4 +473,267 @@ final class OrganizationClinicProvisioningService {
         // Organization Manager preset is Organization-scoped only; Clinic AuthorizationService is untouched.
         return true;
     }
+
+    /**
+     * Post-onboarding Clinic settings update under explicit Organization authority.
+     *
+     * Only name/address/phone/updated_at may mutate; organization_id/slug/timezone/created_at/status are preserved.
+     * Uses Organization row lock, validates ownership, fail-closed on validation/auth, audit on real change only.
+     *
+     * @param array<string,mixed> $input {name, address, phone}
+     * @return array{clinic_id:int, name:string, address:?string, phone:?string, updated_at:string, noop:bool, audit_id:int|null}
+     */
+    public function update_clinic_profile( int $actor_id, int $organization_id, int $clinic_id, array $input ): array {
+
+        if ( $actor_id <= 0 || $organization_id <= 0 || $clinic_id <= 0 ) {
+            throw new InvalidArgumentException( 'invalid clinic update context' );
+        }
+
+        $raw_name    = $input['name'] ?? null;
+        $raw_address = $input['address'] ?? null;
+        $raw_phone   = $input['phone'] ?? null;
+
+        $name    = is_string( $raw_name ) ? trim( $raw_name ) : ( is_scalar( $raw_name ) ? trim( (string) $raw_name ) : '' );
+        $address = $raw_address === null ? null : trim( (string) $raw_address );
+        $phone   = $raw_phone === null ? null : trim( (string) $raw_phone );
+        if ( $address === '' ) {
+            $address = null;
+        }
+        if ( $phone === '' ) {
+            $phone = null;
+        }
+
+        $errors = [];
+        if ( $name === '' ) {
+            $errors['name'] = 'نام کلینیک الزامی است';
+        } elseif ( mb_strlen( $name ) > 190 ) {
+            $errors['name'] = 'نام کلینیک حداکثر ۱۹۰ کاراکتر است';
+        }
+        if ( $address !== null && mb_strlen( $address ) > 255 ) {
+            $errors['address'] = 'آدرس حداکثر ۲۵۵ کاراکتر است';
+        }
+        if ( $phone !== null && mb_strlen( $phone ) > 32 ) {
+            $errors['phone'] = 'تلفن حداکثر ۳۲ کاراکتر است';
+        }
+        if ( $errors !== [] ) {
+            throw new InvalidArgumentException( 'invalid clinic profile attributes: ' . json_encode( $errors, JSON_UNESCAPED_UNICODE ) );
+        }
+
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $clinic_id, $name, $address, $phone ): array {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [$organization_id]
+                );
+                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY ) ) {
+                    throw new RuntimeException( 'organization clinic update denied' );
+                }
+
+                $current = $this->db->fetchRowForUpdate(
+                    'SELECT id, organization_id, slug, timezone, created_at, updated_at, name, address, phone, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [$clinic_id]
+                );
+                if ( $current === null || (int) $current['organization_id'] !== $organization_id ) {
+                    throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                $old_name    = (string) ( $current['name'] ?? '' );
+                $old_address = $current['address'] !== null ? (string) $current['address'] : null;
+                $old_phone   = $current['phone'] !== null ? (string) $current['phone'] : null;
+                if ( $old_address === '' ) {
+                    $old_address = null;
+                }
+                if ( $old_phone === '' ) {
+                    $old_phone = null;
+                }
+
+                if ( $old_name === $name && $old_address === $address && $old_phone === $phone ) {
+                    return [
+                        'clinic_id'  => $clinic_id,
+                        'name'       => $old_name,
+                        'address'    => $old_address,
+                        'phone'      => $old_phone,
+                        'updated_at' => (string) ( $current['updated_at'] ?? '' ),
+                        'noop'       => true,
+                        'audit_id'   => null,
+                    ];
+                }
+
+                $now = $this->db->nowUtcSql();
+                $updated = $this->db->update(
+                    'cpms_clinics',
+                    [
+                        'name'       => $name,
+                        'address'    => $address,
+                        'phone'      => $phone,
+                        'updated_at' => $now,
+                    ],
+                    ['id' => $clinic_id],
+                    true
+                );
+                if ( $updated !== 1 ) {
+                    throw new RuntimeException( 'clinic profile update failed' );
+                }
+
+                $after = $this->db->fetchRow(
+                    'SELECT updated_at, organization_id, slug, timezone, created_at, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [$clinic_id]
+                );
+                if ( $after === null || (int) $after['organization_id'] !== $organization_id || (string) $after['slug'] !== (string) $current['slug'] || (string) $after['timezone'] !== (string) $current['timezone'] || (string) $after['created_at'] !== (string) $current['created_at'] ) {
+                    throw new RuntimeException( 'clinic protected columns mutated' );
+                }
+
+                $audit_id = $this->audit->log(
+                    'CLINIC_PROFILE_UPDATED',
+                    ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
+                    'clinic',
+                    $clinic_id,
+                    null,
+                    ['clinic.name' => $old_name, 'clinic.address' => $old_address, 'clinic.phone' => $old_phone],
+                    ['clinic.name' => $name, 'clinic.address' => $address, 'clinic.phone' => $phone, 'clinic.updated_at' => $now],
+                    ['op' => 'clinic_profile_update', 'organization_id' => $organization_id],
+                    $clinic_id
+                );
+
+                return [
+                    'clinic_id'  => $clinic_id,
+                    'name'       => $name,
+                    'address'    => $address,
+                    'phone'      => $phone,
+                    'updated_at' => $now,
+                    'noop'       => false,
+                    'audit_id'   => $audit_id,
+                ];
+            }
+        );
+    }
+
+    /**
+     * Secure Clinic activation/deactivation with history preservation.
+     *
+     * Uses Organization row lock to serialize lifecycle writes. Clinic must belong to
+     * Organization and Organization must be active. No medical/financial/audit/backup rows are removed.
+     * Idempotent when already in desired state (no second audit event). Concurrency is serialized via
+     * Clinic row lock; audit failure rolls back the status mutation.
+     *
+     * @return array{clinic_id:int, status:string, noop:bool, audit_id:int|null}
+     */
+    public function set_clinic_status( int $actor_id, int $organization_id, int $clinic_id, bool $active ): array {
+
+        if ( $actor_id <= 0 || $organization_id <= 0 || $clinic_id <= 0 ) {
+            throw new InvalidArgumentException( 'invalid clinic lifecycle context' );
+        }
+        $desired = $active ? 'active' : 'suspended';
+
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $clinic_id, $active, $desired ): array {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [$organization_id]
+                );
+                if ( $organization === null || (string) $organization['status'] !== 'active' || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY ) ) {
+                    throw new RuntimeException( 'organization clinic lifecycle denied' );
+                }
+
+                $current = $this->db->fetchRowForUpdate(
+                    'SELECT id, organization_id, status, name, slug FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [$clinic_id]
+                );
+                if ( $current === null || (int) $current['organization_id'] !== $organization_id ) {
+                    throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                $before = (string) ( $current['status'] ?? 'active' );
+                // Backward compatibility: older rows without status column default to active inside migration; here treat null as active.
+                if ( $before === '' ) {
+                    $before = 'active';
+                }
+                if ( $before === $desired ) {
+                    return [
+                        'clinic_id' => $clinic_id,
+                        'status'    => $desired,
+                        'noop'      => true,
+                        'audit_id'  => null,
+                    ];
+                }
+
+                $now = $this->db->nowUtcSql();
+                $updated = $this->db->update(
+                    'cpms_clinics',
+                    [
+                        'status'                           => $desired,
+                        'status_updated_at'                => $now,
+                        'status_updated_by_wp_user_id'     => $actor_id,
+                        'updated_at'                       => $now,
+                    ],
+                    ['id' => $clinic_id, 'organization_id' => $organization_id],
+                    true
+                );
+                if ( $updated !== 1 ) {
+                    throw new RuntimeException( 'clinic lifecycle update failed' );
+                }
+
+                $audit_id = $this->audit->log(
+                    $active ? 'CLINIC_REACTIVATED' : 'CLINIC_DEACTIVATED',
+                    ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
+                    'clinic',
+                    $clinic_id,
+                    null,
+                    ['clinic.status' => $before],
+                    ['clinic.status' => $desired, 'clinic.status_updated_at' => $now],
+                    ['op' => $active ? 'clinic_reactivate' : 'clinic_deactivate', 'organization_id' => $organization_id],
+                    $clinic_id
+                );
+
+                // Verify readback preserves organization/clinic invariants after commit
+                $readback = $this->db->fetchRow(
+                    'SELECT organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [$clinic_id]
+                );
+                if ( $readback === null || (int) $readback['organization_id'] !== $organization_id || (string) $readback['status'] !== $desired ) {
+                    throw new RuntimeException( 'clinic lifecycle readback failed' );
+                }
+
+                return [
+                    'clinic_id' => $clinic_id,
+                    'status'    => $desired,
+                    'noop'      => false,
+                    'audit_id'  => $audit_id,
+                ];
+            }
+        );
+    }
+
+    /**
+     * List Clinics directly via Organization authority (no Clinic membership needed).
+     *
+     * @return list<array{id:int, organization_id:int, name:string, slug:string, timezone:string, status:string}>
+     */
+    public function clinics_for_organization( int $actor_id, int $organization_id ): array {
+
+        if ( $actor_id <= 0 || $organization_id <= 0 ) {
+            return [];
+        }
+        if ( ! $this->authorized( $actor_id, $organization_id, false, self::CAPABILITY ) ) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT id, organization_id, name, slug, timezone, COALESCE(status, %s) AS status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE organization_id = %d ORDER BY status, name, id',
+            ['active', $organization_id]
+        );
+
+        $out = [];
+        foreach ( $rows as $row ) {
+            $out[] = [
+                'id'              => (int) $row['id'],
+                'organization_id' => (int) $row['organization_id'],
+                'name'            => (string) $row['name'],
+                'slug'            => (string) $row['slug'],
+                'timezone'        => (string) $row['timezone'],
+                'status'          => (string) ( $row['status'] ?? 'active' ),
+            ];
+        }
+
+        return $out;
+    }
 }
