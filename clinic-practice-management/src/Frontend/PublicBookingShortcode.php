@@ -312,6 +312,22 @@ final class PublicBookingShortcode
             return null;
         }
 
+        // Clinic lifecycle policy - public surface: a suspended Clinic advertises no
+        // clinicians and no bookable slots, so the shortcode renders its established
+        // "not available" state instead of a browse list. Existing appointment access
+        // happens on authenticated surfaces and is unaffected.
+        // Narrow naming ignore for the established camelCase parameter of this method;
+        // no security sniff is suppressed by it.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $requested_clinic_id = (int) $clinicId;
+        $clinic_status       = App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $requested_clinic_id ]
+        );
+        if ( $clinic_status !== null && (string) $clinic_status === 'suspended' ) {
+            return null;
+        }
+
         // Defence in depth: ردیف باید همان Clinicِ درخواستی باشد.
         return (int) ($row['id'] ?? 0) === $clinicId ? $row : null;
     }

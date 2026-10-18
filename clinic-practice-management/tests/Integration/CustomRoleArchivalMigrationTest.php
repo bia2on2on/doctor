@@ -27,9 +27,9 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         try {
-            // Restore the fully migrated schema (0028 included) for every later
-            // test class. Leaving 0028 pending here would make the next class
-            // re-apply it while the WP temporary-table rewrite is active.
+            // Restore the fully migrated schema (0028/0029 included) for every later
+            // test class. Leaving them pending here would make the next class
+            // re-apply them while the WP temporary-table rewrite is active.
             $this->withRealTables(static fn (): array => App::migrations()->migrate());
         } finally {
             parent::tearDown();
@@ -57,9 +57,14 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
 
         try {
             $applied = App::migrations()->migrate();
-            if (App::migrations()->currentVersion() === '2026_10_18_0028') {
-                App::migrations()->rollbackOne();
-                $applied = array_values(array_diff($applied, ['2026_10_18_0028']));
+            // Later independent migrations (0029 Clinic lifecycle, 0028 Organization
+            // memberships) sit above this focused contract; roll them back so
+            // rollbackOne() targets 0027 and currentVersion() is 0027.
+            foreach (['2026_10_18_0029', '2026_10_18_0028'] as $later_version) {
+                if (App::migrations()->currentVersion() === $later_version) {
+                    App::migrations()->rollbackOne();
+                    $applied = array_values(array_diff($applied, [$later_version]));
+                }
             }
 
             return $applied;

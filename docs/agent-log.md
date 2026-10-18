@@ -834,3 +834,138 @@ extracted `run:` blocks.
 - Local validation: `git diff --check` PASS; `bin/tenant-tripwire.py` PASS (reported only six pre-existing comment/documentation notices). `bin/authorization-coverage-guard.py` was invoked without its required CI artifact arguments and exited 2 (not a valid guard run). PHP/PHPUnit/Composer are absent in this environment (`php: command not found`), so PHP lint, unit, integration, database concurrency, and rollback tests could not be executed locally. Do not interpret test source as passing evidence.
 
 - Draft PR #244 is open on the authorized branch. CI at head `82bdd3fcc818ef81d8603a478f771d150c8f5c26`: PHP unit matrix, PHPStan, tenant tripwire, and release-artifact policy PASS. WPCS changed-code gate FAIL (409 added-line violations); integration gate FAILs in its focused custom-role migration step and authorization-coverage outputs are absent. Multiple browser/closure/staging/upgrade jobs also fail. GitHub Actions log/artifact downloads failed from this sandbox due the runner result host being unreachable; no claim is made about the causes of those remaining failures. The initial CI run also exposed an App syntax error, fixed in commit `0591cc0`; latest PHPStan passed. Draft is intentionally not merge-ready.
+
+### [2026-10-18 UTC] — Post-onboarding Clinic & Location management slice (branch `arena/70ce8b8e-doctor`, Draft PR)
+
+- **مبنای شروع:** `bia2on2on/doctor`، شاخهٔ `arena/70ce8b8e-doctor` از `ce1a967807d5e7ddcbabe045606c1ff78162a048` (= merge PR #244)؛ درخت کار پاک. هیچ `reset/clean/rebase/force-push` انجام نشد.
+- **دامنهٔ تحویل:** مدیریت پس‌از‌راه‌اندازی Clinic (ویرایش تنظیمات + چرخهٔ حیات `active ⇄ suspended`) با همان اختیار موجود مدیر سازمان؛ تمایز صریح «افزودن درمانگاه» (Organization-scoped) از «افزودن شعبه» (Clinic-scoped، موجود)؛ صفحهٔ Classic RTL بومی `سازمان‌ها → مدیریت درمانگاه‌ها`.
+- **تغییرات:** migration جدید `2026_10_18_0029_clinic_lifecycle.php` (ستون‌های `status`/`status_updated_at`/`status_updated_by_wp_user_id` روی `cpms_clinics` + ایندکس `idx_clinic_org_status`، idempotent)؛ `OrganizationClinicProvisioningService::update_clinic_profile()` و `set_clinic_status()` و `clinics_for_organization()`؛ `ClinicManagementPage`؛ `TrustedClinicEstablisher` حالا Clinic معلق را fail-closed رد می‌کند (`clinic_suspended`).
+- **مرزهای امنیتی حفظ‌شده:** بدون capability سازمانی جدید (همان `cpms_org_clinic_create` با `DENY > GRANT > preset`)، بدون انتخاب خودکار اولین Clinic/Organization، بدون bypass مدیر وردپرس، بدون دسترسی PHI بین‌کلینیکی؛ تعلیق هیچ دادهٔ پزشکی/مالی/ممیزی/پشتیبان را حذف نمی‌کند.
+- **تست‌ها:** `tests/Integration/ClinicLifecycleManagementTest.php` (۱۸ تست DB-backed) + به‌روزرسانی pinهای schema-head در ۷ فایل تست موجود.
+- **صداقت اجرا:** در این sandbox هیچ مفسر PHP وجود ندارد (`php` یافت نشد)؛ **هیچ تستی محلی اجرا نشد** و هیچ نتیجهٔ PASS اعلام نمی‌شود. تست‌ها برای اجرای CI کامیت شده‌اند.
+- **موارد tracked/انجام‌نشده:** احترام به `status=suspended` در انتخابگر نوبت‌دهی عمومی؛ تست رقابت دو‌فرایندی برای چرخهٔ حیات Clinic؛ پوشش مرورگر واقعی برای ثبت‌نام بین‌کلینیکی بیمار و bootstrap مدیر سازمان؛ انتقال خودکار نوع مرکز و جریان بستری/HIS.
+
+## Clinic lifecycle suspension — implemented safety contract (2026-10-18, PR #245)
+
+**Scope-gate decision (reversal recorded).** `TrustedClinicEstablisher` does **not** gate on
+`cpms_clinics.status`. An earlier blanket `clinic_suspended` scope block was reverted because it broke
+continuity: a suspended Clinic must keep read access to existing clinical records, medical files,
+treatment completion, existing appointments, finance settlement/refunds, reports, export, backup and
+recovery. Suspension is enforced **operation-by-operation at new-demand boundaries** instead
+(`BookingService` hold/confirm/rescheduleAs/createByStaff, patient self-enrollment, slot generation,
+public availability/quote/shortcode advertisement, booking-selection OTP). The full refused-vs-preserved
+matrix lives in [`docs/post-onboarding-clinic-location-management.md`](post-onboarding-clinic-location-management.md).
+
+**Authorization model.** Clinic administration resolves a per-operation Organization capability with
+`DENY > GRANT > Organization-Manager preset`: `cpms_org_clinic_create` (provisioning),
+`cpms_org_clinic_update` (settings), `cpms_org_clinic_lifecycle` (suspend/reactivate); management reads
+are the union. Capabilities are independent (a DENY on one neither widens nor narrows another) and
+authorization is evaluated **before** tenant-supplied input validation, so a denied actor learns nothing
+about the target row. Audit events: `CLINIC_PROFILE_UPDATED`, `CLINIC_DEACTIVATED`, `CLINIC_REACTIVATED`.
+Matrix: [`docs/permissions/permission-matrix.md`](permissions/permission-matrix.md).
+
+**Invariants established from executed evidence, not assumption.**
+1. A `CLINIC_SUSPENDED` denial is **side-effect-free**. `confirm()`'s compensation handler caught
+   `Throwable` and released the pre-existing Hold plus its claimed capacity for *any* failure, including
+   a policy denial; it now releases only for non-suspension failures and always frees the Idempotency key
+   so the patient can retry after reactivation.
+2. Uniform lock order in every booking transaction: **Clinic row (`FOR UPDATE`) → Slot rows ascending by
+   id**; `rescheduleAs()` locks the old appointment before the Clinic. Previously `hold()` locked
+   Clinic→Slot while `confirm()` locked Slot→Clinic — an ABBA cycle introduced by this slice, now removed.
+   Advertisement reads stay non-locking on purpose because every demand-creating path re-checks under the
+   Clinic row lock.
+3. `rescheduleAs()` is the single shared implementation behind both the patient and the staff reschedule
+   path, so guarding it once closes both. The **destination** Clinic must be active (a replacement
+   appointment is new demand) while the source Clinic is not gated (leaving/cancelling a suspended Clinic
+   stays allowed).
+4. Public advertisement fail-closes without leaking a reason: availability → HTTP 200 `days = []`, quote →
+   `available=false`/`capacity_left=0`, the shortcode does not advertise, OTP → 409 only for
+   booking-selection purposes.
+5. `availability()` fail-closes to `days = []` unless the Clinic has an **active Location with a valid
+   `timezone`** and the clinician has **active `cpms_schedule` rows** (`defaultAvailabilityWindow`,
+   `location_details_map`, `locationTimezoneMap`). Fixtures that omit them produce a *vacuous* positive
+   control — the lifecycle fixture now seeds both, which is why the active-Clinic control asserts real
+   advertised days.
+
+**Bypass review (bounded, read-only).** All appointment creation in `src/` happens at exactly three
+`BookingService` sites (confirm, rescheduleAs, createByStaff) and all three are guarded; the staff REST
+surface (`ReceptionPortalController`) delegates to `createByStaff()` / `rescheduleByStaff()` /
+`cancelByStaff()` rather than writing appointments itself, and `VisitService` walk-in/queue creation
+creates visits, not appointments — so no direct-service, patient, staff, REST or public booking path
+creates new demand in a suspended Clinic. No new speculative tests were added for already-covered paths.
+
+**CI evidence (executed, not inferred).** Head `6c7c0c0` first reached
+`stage=full_integration_suite phpunit_exit=0 tests=1952 assertions=56134 failures=0 errors=0 skipped=0
+failing_tests_capped_20=none error_categories=none` (run 39122572352) while WPCS still failed on
+re-indented lines; head `1fba27c` (naming-sniff ignores + one alignment fix, no logic change) passed
+**both** Integration and WPCS (run 39123514332). Earlier in the arc, nine stale `2026_10_18_0028`
+schema-head pins were reconciled to `0029` (strict assertions preserved) and two `ScopeRequiredException`
+fixture errors were fixed by binding the explicit Clinic scope **before** any settings/service resolution
+on a multi-Clinic install. No `markTestIncomplete`/`markTestSkipped` fallback is used anywhere in these
+tests, and no count/warning/failure gate was relaxed.
+
+**Scoped follow-ups (explicitly NOT done here).**
+- *Canonical Clinic profile validation + repository reuse.* Clinic create, settings update and lifecycle
+  still validate/persist through three separate paths inside `OrganizationClinicProvisioningService`
+  (with `ClinicProfileService` a fourth). Consolidation is a refactor that needs its own characterization
+  tests; bundling it into a security change was judged riskier than documenting it.
+  `cpms_org_clinic_create`, while the Clinic list is the union of the three capabilities — an actor
+  granted only `cpms_org_clinic_update`/`_lifecycle` has no UI path. Service enforcement is correct and
+  fail-closed, so this is a UX/authorization-surface gap, not a bypass.
+- *Two-connection race test* for suspend-vs-hold/confirm across real MySQL connections: the lock order is
+  implemented and reviewed, but not yet proven with a two-process wait-edge test.
+
+### Independent-review corrections and reporting accuracy (2026-10-18, second pass)
+
+The independent Security/Architecture/Product review rejected the previously green head and named four
+real defects; all four are now implemented, and the two behavior-specific tests that were missing exist
+against the real boundaries:
+
+1. **Enrollment destinations.** `PatientEnrollmentRepository::destination_clinics()` filters
+   `c.status = 'active'`. Covered end-to-end through the published projection, not just the query:
+   `PatientEnrollmentOptionsTest::testSuspendedClinicIsNotPublishedAsDestinationAndReturnsAfterReactivation`
+   uses the file's genuine verified-identity + license fixture, asserts `STATE_ELIGIBLE` and
+   `Destination A` published while active, **no** Clinic published while suspended (empty list, no
+   fallback, no existence oracle), cross-Organization privacy unchanged (`Foreign Clinic Secret` never
+   appears), and publication restored after reactivation.
+2. **Management UI authority.** The Organization selector is the union of the three capabilities
+   (`management_organizations()`) and control visibility is driven by the read-only per-capability probe
+   (`can()`), so `DENY(create)` never erases `GRANT(update)`/`GRANT(lifecycle)`. Covered by
+   `ClinicLifecycleManagementTest::testManagerWithCreateDenyKeepsUpdateAndLifecycleUiReachability`,
+   which asserts selector reachability, the three per-capability probe results, **real successful**
+   profile update and suspension through the page boundaries, and that a WordPress Administrator with no
+   Organization membership resolves to no Organization and no capability. The previously documented
+   "management-page reachability" follow-up is therefore **resolved and removed** from the follow-up list.
+3. **Staff booking race.** `createByStaff()` re-checks the status under the Clinic row lock **inside** its
+   transaction before any Slot lock (the earlier pre-transaction check was unlocked), and
+   `ReceptionPortalController::reception_slots()` no longer advertises slots for a suspended Clinic —
+   covered against the real REST endpoint by
+   `Phase11ReceptionAppointmentCreateRedTest::testSuspendedClinicAdvertisesNoReceptionSlotsWhileActiveControlDoes`
+   (active control proves the genuinely inserted slot **is** advertised through the established
+   nonce/scope/membership harness; suspended returns HTTP 200 with an empty slot list; reactivation
+   restores it).
+4. **Enrollment lock order.** `enroll_current_patient()` now takes Organization `FOR UPDATE` → Clinic
+   `FOR UPDATE`, matching `set_clinic_status()`/`update_clinic_profile()`. The unlocked `organization_id`
+   read is a lock candidate only; Organization status, Clinic status and the Clinic→Organization
+   relationship are revalidated under the locks, and every refusal keeps 404 parity.
+   *Evidence vs inference:* the ordering is evidenced by reading both code paths; the absence of a
+   remaining ABBA cycle among booking, management and enrollment paths is **inference** from that
+   reading — no two-connection wait-edge test exists yet (still a scoped follow-up).
+
+**Positive control strengthened.** `testSuspendedClinicRefusesStaffCreatedAppointment` no longer accepts a
+whitelisted non-suspension refusal as a pass: the control now demands a real appointment row and a real
+`booked_count` increment in the active Clinic (the fixture satisfies participation via
+`clinicians.clinic_id` + `is_active`, an active linked Patient in the same Clinic, a bound explicit Clinic
+scope, an open Slot with capacity and staff min-lead 0), and any refusal prints its exact code.
+
+**Reporting accuracy — PHPUnit totals.** The `stage=full_integration_suite` line quotes the *sanitized
+JUnit window* the workflow parses from the tail of the log, which **undercounts** the real run (for
+example `tests=1952 assertions=56134` for a run whose terminal summary was `Tests: 2062, Assertions:
+60715`). The authoritative totals are the terminal summary / JUnit root-suite figures in the
+"Integration completion evidence" comment. Never quote the sanitized window as the full test total; the
+authoritative signals from it are `phpunit_exit`, `failures`, `errors`, `skipped` and the failing-test
+identifiers.
+
+**Still open (scoped, not done):** two-connection suspend-vs-booking wait-edge test; canonical Clinic
+profile validation / `ClinicRepository` consolidation across the create, settings-update and lifecycle
+paths (plus `ClinicProfileService`); improving the log sanitizer so the reported totals are the true ones.

@@ -19,7 +19,7 @@ $baselinePath = getenv('UPGRADE_FIXTURE_PATH');
 // Schema reached by the PINNED PREVIOUS source at seed time.
 $expectedPreviousVersion = '2026_09_26_0023';
 // Schema the CANDIDATE artifact must reach after migrating forward.
-$expectedCandidateVersion = '2026_10_18_0028';
+$expectedCandidateVersion = '2026_10_18_0029';
 /*
  * Reviewed additive schema evolution of the CANDIDATE over the pinned previous
  * release — the only shared-table drift this upgrade may introduce. Migration
@@ -29,7 +29,11 @@ $expectedCandidateVersion = '2026_10_18_0028';
  */
 $expectedAdditiveColumns = [
     'cpms_clinics' => [
-        'first_setup_claimed_at' => ['type' => 'datetime(3)', 'nullable' => 'YES'],
+        'first_setup_claimed_at'         => ['type' => 'datetime(3)', 'nullable' => 'YES'],
+        // Migration 2026_10_18_0029 — post-onboarding Clinic lifecycle (additive only).
+        'status'                         => ['type' => "enum('active','suspended')", 'nullable' => 'NO'],
+        'status_updated_at'              => ['type' => 'datetime(3)', 'nullable' => 'YES'],
+        'status_updated_by_wp_user_id'   => ['type' => 'bigint unsigned', 'nullable' => 'YES'],
     ],
 ];
 require_once __DIR__ . '/upgrade-path-schema-compare.php';

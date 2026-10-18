@@ -113,6 +113,12 @@ final class TrustedClinicEstablisher {
 		if ( 'active' !== (string) ( $clinic['organization_status'] ?? '' ) ) {
 			$this->unavailable( 'organization' );
 		}
+		// Clinic lifecycle (cpms_clinics.status) is deliberately NOT a scope gate: a
+		// suspended Clinic must keep read/continuity access to existing clinical
+		// records, medical files, treatment completion, existing appointments, finance
+		// settlement and refunds, reports, export, backup and recovery. Suspension is
+		// enforced operation-by-operation at the new-demand boundaries
+		// (BookingService, patient self-enrollment, slot generation).
 
 		$organization_id = (int) $clinic['organization_id'];
 		$scope           = ClinicScope::forClinic( $clinic_id )->withOrganization( $organization_id );

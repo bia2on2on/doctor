@@ -197,17 +197,17 @@ jobs:
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root || { echo 'PLUGIN NOT ACTIVE'; exit 1; }
           echo "installed from official ZIP built at ${PRODUCING_SHA:-$GITHUB_SHA} (not a source mount)"
 
-      - name: Verify migration 0028 + no PHP fatal + admin reachable
+      - name: Verify migration 0029 + no PHP fatal + admin reachable
         id: migrations
         run: |
           set -euo pipefail
           mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot "$DB_NAME" -e "SELECT version, applied_at FROM wp_cpms_schema_migrations ORDER BY version;" | tee /tmp/fp/schema-migrations.txt
-          grep -q '2026_10_18_0028' /tmp/fp/schema-migrations.txt || { echo 'migration 0028 missing'; exit 1; }
+          grep -q '2026_10_18_0029' /tmp/fp/schema-migrations.txt || { echo 'migration 0029 missing'; exit 1; }
           cat > /tmp/fp/check-schema.php <<'PHPEOF'
           <?php
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_10_18_0028' ? 0 : 1);
+          exit($v === '2026_10_18_0029' ? 0 : 1);
           PHPEOF
           wp eval-file /tmp/fp/check-schema.php --path="$WP_DIR" --allow-root
           if [ -f "$WP_DIR/wp-content/debug.log" ]; then

@@ -1041,6 +1041,19 @@ final class ReceptionPortalController extends RestBase {
 			return $this->success( $this->empty_slot_day( $clinician_id ) );
 		}
 
+		// Clinic lifecycle policy: a suspended Clinic advertises no bookable Slot on the
+		// reception surface either. Same bounded empty read as the 0-eligible-Location and
+		// unusable-timezone branches (HTTP 200, empty day, no reason leaked). Advertisement
+		// filtering only - createByStaff()/rescheduleByStaff() re-check the status under the
+		// Clinic row lock, so a suspension racing this read cannot produce an appointment.
+		$clinic_status = (string) App::db()->fetchValue(
+			'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+			[ $clinic_id ]
+		);
+		if ( 'active' !== $clinic_status ) {
+			return $this->success( $this->empty_slot_day( $clinician_id ) );
+		}
+
 		// Doctor selector: eligible for the trusted Clinic AND the trusted
 		// Location through the delivered Slice 4 contract; home-Clinic metadata
 		// never authorizes a reception booking.

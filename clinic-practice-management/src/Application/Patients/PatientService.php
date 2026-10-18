@@ -270,13 +270,39 @@ final class PatientService
         try {
             return $this->db->transactional(
                 function () use ( $clinic_id, $fields, $user ): array {
+                    // Lock order matches the Organization Clinic management writes
+                    // (set_clinic_status / update_clinic_profile): Organization row FIRST,
+                    // then the Clinic row. The previous single joined SELECT ... FOR UPDATE
+                    // was Clinic-driven - the inverse order - so a suspension racing a
+                    // self-enrollment could form an ABBA deadlock cycle.
+                    //
+                    // The unlocked candidate read below is NEVER trusted: it only names the
+                    // Organization to lock. Organization status, Clinic status and the
+                    // Clinic -> Organization relationship are all (re)validated under the two
+                    // row locks, and every refusal keeps 404 parity with an unlinked Clinic
+                    // (no existence oracle).
+                    $candidate_organization_id = (int) $this->db->fetchValue(
+                        'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                        [ $clinic_id ]
+                    );
+                    if ( $candidate_organization_id <= 0 ) {
+                        throw $this->linked_patient_not_found();
+                    }
+                    $organization = $this->db->fetchRowForUpdate(
+                        'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                        [ $candidate_organization_id ]
+                    );
+                    if ( $organization === null || 'active' !== (string) $organization['status'] ) {
+                        throw $this->linked_patient_not_found();
+                    }
                     $clinic = $this->db->fetchRowForUpdate(
-                        'SELECT clinic.id, clinic.organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' clinic' .
-                        ' INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' organization ON organization.id = clinic.organization_id' .
-                        ' WHERE clinic.id = %d AND organization.status = %s',
+                        // Clinic lifecycle policy: a suspended Clinic accepts no NEW
+                        // self-enrollment, revalidated on the Clinic row lock that serializes
+                        // this enrollment against a concurrent suspension.
+                        'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND status = %s LIMIT 1',
                         [ $clinic_id, 'active' ]
                     );
-                    if ( $clinic === null ) {
+                    if ( $clinic === null || (int) $clinic['organization_id'] !== (int) $organization['id'] ) {
                         throw $this->linked_patient_not_found();
                     }
                     // Serialize verification and enrollment with changes to this
