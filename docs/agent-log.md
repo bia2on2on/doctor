@@ -1021,10 +1021,32 @@ Authorization receipt 2026-10-18T18:26:38Z; head before batch `13bf677` (26/26 g
 
 ### [2026-10-18 23:52 UTC] — PR #248 exact-head CI follow-up and WPCS correction (Draft, unmerged)
 
-- **Remote verification:** live `main` remains `66e12a439d7713019848e61b018def09d874b9aa`; PR #248 is OPEN/Draft against `main`, remote head `963490b8581e78d534de1cf549210813c23c636c`. Exact-head check suite completed all 26 contexts: 24 pass, 2 fail, 0 pending.
-- **Integration:** run `39177318844`, job `117822704803`, PASS: 2,105 tests / 61,865 assertions / 0 failures / 0 errors / 0 skipped. The completion-guard evidence is authoritative; all regression changes described in the 23:37 entry were exercised in this run. AuthorizationService focused coverage also passed at 71.26% measured line coverage; this is not a security-correctness claim. The process-fresh REST bootstrap probe returned “NO RED” (scope-neutral at this head), not a failure.
-- **WPCS:** run `39177318844`, job `117822557226`, failed only on 11 `VariableNotSnakeCase` findings in the newly moved post-lock reschedule validation using legacy camelCase variables/parameters (`$newClinicId`, `$newSlot`, `$newLocationTz`, `$newDate`, `$newTime`, `$minLead`, `$newSettings`). The local uncommitted correction adds narrowly scoped PHPCS ignores for those legacy-name lines and renames the new timezone local to `$new_location_tz`; booking logic is unchanged. It has not yet been checked in CI.
-- **Responsive smoke:** run `39177316344`, job `117822624002`, failed with one annotated Staff Portal Reception case: `reception-queue-states-desktop-1366` timed out in `Locator.wait_for` after 10 seconds. The job comment separately reports 10 Apache PHP fatal-error lines but supplies no messages, so those are unattributed. The Doctor Portal real-browser step itself passed at 390, 768, and 1366 widths. Its evidence confirms explicit Clinic+Location selection in singleton flows and separate Location A/B queues (`leak=0`) after an unselected bootstrap. Reception behavior is outside this slice; no Reception/enrollment/management acceptance or product path was modified.
-- **Other checks:** the remaining 24 contexts passed, including Staging Gate (13m48s), Upgrade, Release Artifact, PHPStan, Tenant Tripwire, Unit Tests PHP 8.1–8.4, both First-practice browser contexts, Real WP Acceptance, Closure, and coexistence variants.
-- **Local verification after the WPCS correction:** PHP `php-parser` successfully parsed `BookingService.php` using an isolated temporary npm install (the package was not present in the checkout); Python `py_compile`, `git diff --check`, and added-line length scan (≤160 columns) passed. Local PHPUnit/WordPress runtime, PHPStan, WPCS, and browser runs remain unavailable; CI is the runtime evidence.
-- **Next action:** commit and push the WPCS correction to the fixed branch, let its exact-head suite run, use the annotations if anything else fails, and then refresh the PR body to report the latest head/results. PR remains Draft/unmerged; no self-approval or merge.
+
+- - **Remote verification:** live `main` remains `66e12a439d7713019848e61b018def09d874b9aa`; PR #248 is OPEN/Draft against `main`,
+  remote head `963490b8581e78d534de1cf549210813c23c636c`. Exact-head check suite completed all 26 contexts: 24 pass, 2 fail, 0
+  pending.
+- - **Integration:** run `39177318844`, job `117822704803`, PASS: 2,105 tests / 61,865 assertions / 0 failures / 0 errors / 0
+  skipped. The completion-guard evidence is authoritative; all regression changes described in the 23:37 entry were exercised in
+  this run. AuthorizationService focused coverage also passed at 71.26% measured line coverage; this is not a security-correctness
+  claim. The process-fresh REST bootstrap probe returned “NO RED” (scope-neutral at this head), not a failure.
+- - **WPCS:** run `39177318844`, job `117822557226`, failed only on 11 `VariableNotSnakeCase` findings in the newly moved
+  post-lock reschedule validation using legacy camelCase variables/parameters (`$newClinicId`, `$newSlot`, `$newLocationTz`,
+  `$newDate`, `$newTime`, `$minLead`, `$newSettings`). The local uncommitted correction adds narrowly scoped PHPCS ignores for
+  those legacy-name lines and renames the new timezone local to `$new_location_tz`; booking logic is unchanged. It has not yet
+  been checked in CI.
+- - **Responsive smoke:** run `39177316344`, job `117822624002`, failed with one annotated Staff Portal Reception case:
+  `reception-queue-states-desktop-1366` timed out in `Locator.wait_for` after 10 seconds. The job comment separately reports 10
+  Apache PHP fatal-error lines but supplies no messages, so those are unattributed. The Doctor Portal real-browser step itself
+  passed at 390, 768, and 1366 widths. Its evidence confirms explicit Clinic+Location selection in singleton flows and separate
+  Location A/B queues (`leak=0`) after an unselected bootstrap. Reception behavior is outside this slice; no
+  Reception/enrollment/management acceptance or product path was modified.
+- - **Other checks:** the remaining 24 contexts passed, including Staging Gate (13m48s), Upgrade, Release Artifact, PHPStan,
+  Tenant Tripwire, Unit Tests PHP 8.1–8.4, both First-practice browser contexts, Real WP Acceptance, Closure, and coexistence
+  variants.
+- - **Local verification after the WPCS correction:** PHP `php-parser` successfully parsed `BookingService.php` using an isolated
+  temporary npm install (the package was not present in the checkout); Python `py_compile`, `git diff --check`, and added-line
+  length scan (≤160 columns) passed. Local PHPUnit/WordPress runtime, PHPStan, WPCS, and browser runs remain unavailable; CI is
+  the runtime evidence.
+- - **Next action:** commit and push the WPCS correction to the fixed branch, let its exact-head suite run, use the annotations if
+  anything else fails, and then refresh the PR body to report the latest head/results. PR remains Draft/unmerged; no self-approval
+  or merge.
