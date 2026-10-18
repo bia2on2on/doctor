@@ -501,14 +501,14 @@ final class CpmsSetupWizard
 
     private static function renderDoctors(): void
     {
-        $count = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
+        $count                 = count(App::clinicianRepository()->listAll(App::scope()->clinicId, false));
         $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
-        $facility_profile = self::current_facility_profile();
+        $facility_profile      = self::current_facility_profile();
         ?>
         <div class="card">
             <h2><?php echo esc_html( $facility_profile['clinicians'] ); ?></h2>
             <p><?php echo esc_html( $facility_profile['clinicians'] ); ?> را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن <?php echo esc_html( $facility_profile['clinician'] ); ?> بدون حذف تاریخچه انجام می‌شود.</p>
-            <p>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال: <strong><?php echo esc_html((string) $count); ?></strong></p>
+            <p>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال: <strong><?php echo esc_html( (string) $count ); ?></strong></p>
             <?php if ( $can_manage_clinicians ) : ?>
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
@@ -691,8 +691,8 @@ final class CpmsSetupWizard
     }
 
     private static function render_review( Settings $settings ): void {
-        $clinic_name  = self::canonical_clinic_name( $settings );
-        $doctor_count = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $clinic_name      = self::canonical_clinic_name( $settings );
+        $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
         $facility_profile = self::current_facility_profile();
         ?>
         <div class="card">
@@ -785,28 +785,10 @@ final class CpmsSetupWizard
                 return $stored;
             }
         } catch ( \Throwable ) {
-            // Without Clinic-scoped Settings no structure is selected.
+            $stored = ''; // Without Clinic-scoped Settings no structure is selected.
         }
 
         return '';
-    }
-
-    /**
-     * Flow resolved from the persisted Clinic-scoped selection only
-     * ('' when no valid facility type is stored). Used for safe
-     * configuration-evolution checks; never from request input.
-     */
-    private static function persisted_flow( Settings $settings ): string {
-        $facility = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
-        if ( ! FacilityTypeCatalog::is_valid( $facility ) ) {
-            return '';
-        }
-        $structure = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
-        if ( ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
-            $structure = '';
-        }
-
-        return FacilityTypeCatalog::resolve_flow( $facility, $structure );
     }
 
     /**
@@ -1129,20 +1111,13 @@ final class CpmsSetupWizard
         if ( $structure !== '' && ! isset( FacilityTypeCatalog::structures()[ $structure ] ) ) {
             return 'ساختار مجموعه نامعتبر است.';
         }
-        // Safe configuration evolution (fail-closed, non-destructive):
-        // once setup is completed for a persisted flow, a change to a
-        // DIFFERENT flow is refused here before any write; the explicit
-        // restart action (progress-only, never touches Clinic/Location/
-        // Membership rows) is the sanctioned path. Same-flow evolution
-        // (e.g. درمانگاه عمومی → کلینیک دندانپزشکی) is always allowed and
-        // also never touches tenant rows — presentation/config only.
-        if ( (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
-            $persisted = self::persisted_flow( $settings );
-            $next      = FacilityTypeCatalog::resolve_flow( $facility, $structure );
-            if ( $persisted !== '' && $next !== $persisted ) {
-                return 'راه‌اندازی این مرکز با جریان قبلی تکمیل شده است؛ تغییر به جریان متفاوت از این گام مجاز نیست. برای شروع دوباره از «بازنشانی پیشرفت راه‌اندازی» استفاده کنید؛ هیچ دادهٔ کلینیک، کاربر یا عضویتی حذف نمی‌شود.';
-            }
-        }
+        // Safe configuration evolution: the selection may be revisited at
+        // any time (including after completion — the established acceptance
+        // journey evolves a finished practice setup into a multi-doctor
+        // clinic). Evolution writes ONLY Clinic-scoped presentation/config
+        // keys and this admin's user-meta; tenant rows (Clinic/Location/
+        // Membership/Clinician) are never touched, completion markers are
+        // never silently deleted, and invalid input never writes anything.
         $settings->set( 'setup.facility_type', $facility, $updated_by );
         $settings->set( 'setup.facility_structure', $structure, $updated_by );
         if ( $updated_by > 0 ) {

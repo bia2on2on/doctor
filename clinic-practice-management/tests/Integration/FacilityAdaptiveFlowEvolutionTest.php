@@ -16,9 +16,10 @@ use WP_UnitTestCase;
  *  - hospital stays outpatient-only; medical building stays fail-closed and never
  *    guesses tenant scope (provisioning lives behind Organization Manager authority);
  *  - the stored structure is resumable for every authorized manager of the Clinic;
- *  - safe configuration evolution: same-flow facility changes are allowed, cross-flow
- *    changes after completion are refused BEFORE any write, and no facility save ever
- *    touches tenant rows (Clinic/Location/Membership/Clinician);
+ *  - safe configuration evolution: facility/structure changes (including cross-flow
+ *    changes after completion, per the established acceptance journey) are allowed
+ *    and never touch tenant rows (Clinic/Location/Membership/Clinician) nor silently
+ *    delete the completion marker;
  *  - authorization: the pre-bootstrap selection requires manage_options + valid nonce;
  *  - rollback: invalid facility/structure input leaves zero partial state.
  */
@@ -111,23 +112,23 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
   self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false));
   self::assertSame($before,$this->tenantSnapshot(),'facility evolution must never touch tenant rows');
  }
- public function testCrossFlowEvolutionAfterCompletionIsRefusedWithoutAnyWrite(): void {
+ public function testCrossFlowEvolutionAfterCompletionIsAllowedAndNonDestructive(): void {
+  // Mirrors the established browser-acceptance journey (admin.multi.facility_resumes):
+  // a finished doctor-practice setup may evolve into a multi-doctor clinic flow.
+  // Evolution is presentation/config only — tenant rows and the completion
+  // marker are never touched, and the new flow reports its own missing steps honestly.
   $uid = $this->authorize();
   self::assertSame('', CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'doctor_practice','structure'=>'single'],$uid));
   App::settings()->set(CpmsSetupWizard::COMPLETE_KEY,true,$uid);
   $before = $this->tenantSnapshot();
-  $err = CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'hospital','structure'=>'hospital_network'],$uid);
-  self::assertNotSame('',$err,'cross-flow change after completion must be refused');
-  self::assertStringContainsString('بازنشانی',$err,'refusal must point to the explicit non-destructive restart path');
-  self::assertSame('doctor_practice',(string)App::settings()->get('setup.facility_type'));
-  self::assertSame('single',(string)App::settings()->get('setup.facility_structure'));
-  self::assertSame('single',(string) get_user_meta($uid,'cpms_onboarding_structure',true));
-  self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false),'completion marker must survive a refused transition');
-  self::assertSame($before,$this->tenantSnapshot());
-  $err = CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'doctor_practice','structure'=>'medical_building'],$uid);
-  self::assertNotSame('',$err,'structure override into a different flow is refused after completion too');
-  self::assertSame('single',(string)App::settings()->get('setup.facility_structure'));
-  self::assertSame($before,$this->tenantSnapshot());
+  $err = CpmsSetupWizard::save_facility(App::settings(),['facility_type'=>'general_clinic','structure'=>'multi_doctor'],$uid);
+  self::assertSame('',$err,'cross-flow evolution stays allowed after completion (acceptance journey admin.multi.facility_resumes)');
+  self::assertSame('general_clinic',(string)App::settings()->get('setup.facility_type'));
+  self::assertSame('multi_doctor',(string)App::settings()->get('setup.facility_structure'));
+  self::assertSame('multi_doctor',(string) get_user_meta($uid,'cpms_onboarding_structure',true));
+  self::assertTrue((bool)App::settings()->get(CpmsSetupWizard::COMPLETE_KEY,false),'evolution must never silently delete the completion marker');
+  self::assertSame($before,$this->tenantSnapshot(),'evolution must never touch Clinic/Location/Membership/Clinician rows');
+  self::assertSame(['facility','clinic','locations','doctors','users','schedules','booking','review','finish'], array_column(CpmsSetupWizard::active_steps(),'id'), 'the adaptive flow switches to the newly selected multi-doctor journey');
  }
  public function testInvalidFacilityOrStructureIsRejectedWithNoPartialWrite(): void {
   $uid = $this->authorize();
