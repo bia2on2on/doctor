@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -70,6 +71,29 @@ final class DoctorPortalController extends RestBase {
 				],
 			]
 		);
+
+		// Doctor Portal queue actions use this Portal boundary too, rather than
+		// the legacy shared /visits/{id}/... surface. That makes explicit Clinic
+		// and Location selection, clinician ownership, and scoped capability
+		// checks unavoidable for daily-workflow mutations.
+		foreach ( [ 'call', 'recall', 'start', 'skip' ] as $event ) {
+			$cap = 'start' === $event ? RolesAndCapabilities::CONSULT_START : RolesAndCapabilities::QUEUE_CALL;
+			register_rest_route(
+				self::NS,
+				'/doctor/portal/visits/(?P<id>\\d+)/' . $event,
+				[
+					[
+						'methods'             => WP_REST_Server::CREATABLE,
+						'callback'            => fn( WP_REST_Request $r ) => $this->workspace_doctor_action( $r, $event ),
+						'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, $cap ),
+						'args'                => [
+							'reason' => [ 'required' => false, 'type' => 'string' ],
+							'room'   => [ 'required' => false, 'type' => 'string' ],
+						],
+					],
+				]
+			);
+		}
 
 		// Phase 10 Slice 3 — Visit Workspace (portal-specific authority boundary).
 		// These adapter routes add the Doctor Portal guard in front of the
@@ -524,9 +548,42 @@ final class DoctorPortalController extends RestBase {
 		if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
 			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor not linked to active clinician', [ 'status' => 403 ] );
 		}
-		$active_clinics = $this->memberships->active_clinic_ids_for_user( (int) $user->ID );
-		if ( [] === $active_clinics ) {
-			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'No active clinic membership', [ 'status' => 403 ] );
+		$clinic_id = $this->explicit_request_id( $r, 'X-CPMS-Clinic-Id', 'clinic_id' );
+		if ( null === $clinic_id ) {
+			if ( $this->has_request_selector( $r, 'X-CPMS-Clinic-Id', 'clinic_id' ) ) {
+				return $this->error(
+					'CLINIC_VALIDATION_FAILED',
+					422,
+					'Invalid clinic id.',
+					[ 'field' => 'clinic_id' ]
+				);
+			}
+			return $this->error(
+				'CLINIC_SCOPE_REQUIRED',
+				400,
+				'Clinic scope required',
+				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
+			);
+		}
+		if ( ! App::authorization_service()->can( (int) $user->ID, $clinic_id, $cap ) ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		$location_id = $this->explicit_request_id( $r, 'X-CPMS-Location-Id', 'location_id' );
+		if ( null === $location_id ) {
+			if ( $this->has_request_selector( $r, 'X-CPMS-Location-Id', 'location_id' ) ) {
+				return $this->error(
+					'CLINIC_VALIDATION_FAILED',
+					422,
+					'Invalid location id.',
+					[ 'field' => 'location_id' ]
+				);
+			}
+			return $this->error(
+				'CLINIC_SCOPE_REQUIRED',
+				400,
+				'Location scope required',
+				[ 'field' => 'location_id', 'reason' => 'location_required' ]
+			);
 		}
 		return true;
 	}
@@ -632,6 +689,20 @@ final class DoctorPortalController extends RestBase {
 	 * Complaint policy (422), state machine (409 on repeat/wrong state),
 	 * history and audit. No extra audit and no finance side effect here.
 	 */
+	private function workspace_doctor_action( WP_REST_Request $r, string $event ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+
+		$body = array_intersect_key( $this->workspace_body( $r ), array_flip( [ 'reason', 'room' ] ) );
+
+		return $this->workspace_wrap(
+			fn() => App::visitService()->transition( (int) wp_get_current_user()->ID, $visit_id, $event, $body )
+		);
+	}
+
 	private function workspace_complete_consultation( WP_REST_Request $r ): WP_REST_Response|WP_Error {
 		$visit_id = (int) $r['id'];
 		$guard    = $this->workspace_authorize_visit( $visit_id );
@@ -866,10 +937,9 @@ final class DoctorPortalController extends RestBase {
 	 * Server-derived Doctor Portal authority WITHOUT a Visit selector:
 	 * trusted Clinic (established scope), server-derived clinician identity
 	 * (clinician<->WP-user mapping; client input is never authority) and the
-	 * CURRENT operational Location under the established strict 0/1/N policy
-	 * (0 => fail closed, 1 => auto-resolution, N>1 => explicit eligible
-	 * Location required — never a first/primary/global fallback,
-	 * foreign/inactive/unassigned => fail closed).
+	 * CURRENT operational Location under the explicit-selection policy
+	 * (every cardinality requires a selector; never a sole/primary/global
+	 * fallback; foreign/inactive/unassigned => fail closed).
 	 *
 	 * @param int $clinic_id    Out: trusted Clinic id.
 	 * @param int $clinician_id Out: server-derived clinician id.
@@ -885,6 +955,13 @@ final class DoctorPortalController extends RestBase {
 			unset( $e );
 			return new WP_Error( 'CLINIC_SCOPE_REQUIRED', 'Clinic scope required', [ 'status' => 400 ] );
 		}
+		if ( $scope->source !== ClinicScope::SOURCE_EXPLICIT ) {
+			return new WP_Error(
+				'CLINIC_SCOPE_REQUIRED',
+				'Explicit Clinic scope required',
+				[ 'status' => 400, 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
+			);
+		}
 		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 
 		// 2) Server-derived clinician identity — never client-provided.
@@ -899,7 +976,9 @@ final class DoctorPortalController extends RestBase {
 		}
 		$clinician_id = (int) $derived;
 
-		// 3) Trusted operational Location — Doctor Portal 0/1/N policy.
+		// 3) Trusted operational Location — explicit in every case, even when
+		// the clinician has exactly one eligible Location. Never infer a sole or
+		// primary Location from membership metadata.
 		$eligible = array_map(
 			static fn( array $loc ): int => (int) $loc['id'],
 			$this->eligible_locations_for_clinic( $clinic_id, $user_id )
@@ -909,20 +988,17 @@ final class DoctorPortalController extends RestBase {
 		}
 		$selected = $scope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
 		if ( null === $selected ) {
-			if ( 1 !== count( $eligible ) ) {
-				// N>1 without explicit Location => REQUIRED; never guess the first.
-				return new WP_Error(
-					'CLINIC_SCOPE_REQUIRED',
-					'Location scope required: multiple eligible locations',
-					[
-						'status' => 400,
-						'field'  => 'location_id',
-						'reason' => 'location_required',
-					]
-				);
-			}
-			$selected = $eligible[0];
-		} elseif ( ! in_array( $selected, $eligible, true ) ) {
+			return new WP_Error(
+				'CLINIC_SCOPE_REQUIRED',
+				'Location scope required: explicit Location selection',
+				[
+					'status' => 400,
+					'field'  => 'location_id',
+					'reason' => 'location_required',
+				]
+			);
+		}
+		if ( ! in_array( $selected, $eligible, true ) ) {
 			// Foreign/inactive/unassigned explicit Location => fail closed.
 			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
 		}
@@ -936,10 +1012,10 @@ final class DoctorPortalController extends RestBase {
 	 * boundary in front of the shared E7/E8 behavior.
 	 *
 	 * Authority = authenticated WP user + server-derived active clinician
-	 * identity + active trusted Clinic + trusted operational Location
-	 * (0 eligible => fail closed, 1 => auto-resolution, N>1 => explicit
-	 * Location required, foreign/inactive/unassigned => fail closed) + Visit
-	 * owned by that clinician and located at that Location.
+	 * identity + explicitly selected trusted Clinic + explicitly selected,
+	 * eligible operational Location (no sole/primary inference; foreign,
+	 * inactive or unassigned selectors fail closed) + Visit owned by that
+	 * clinician and located at that Location.
 	 *
 	 * Raw visit_id/location_id remain selectors only; every foreign Visit
 	 * selector fails non-enumerating with the established repository
@@ -1014,136 +1090,219 @@ final class DoctorPortalController extends RestBase {
 		$user_id = (int) ( $user->ID ?? 0 );
 		$db      = App::db();
 
-		$clinician_row = $db->fetchRow( // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
-			'SELECT id, full_name, clinic_id FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+		$clinician_row = $db->fetchRow(
+			'SELECT id, full_name FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
 			[ $user_id ]
 		);
 		$clinician_id   = $clinician_row ? (int) $clinician_row['id'] : 0;
 		$clinician_name = $clinician_row ? (string) $clinician_row['full_name'] : '';
+		$clinics        = $this->eligible_portal_clinics( $user_id, $clinician_id );
 
-		$memberships = $this->memberships->active_for_user( $user_id );
-		$clinics     = [];
-		foreach ( $memberships as $m ) {
-			$clinics[] = [
-				'id'              => (int) $m['clinic_id'],
-				'name'            => (string) ( $m['clinic_name'] ?? 'Clinic ' . $m['clinic_id'] ),
-				'slug'            => (string) ( $m['clinic_slug'] ?? '' ),
-				'organization_id' => 0,
-			];
+		$selected_clinic_id   = $this->explicit_request_id( $r, 'X-CPMS-Clinic-Id', 'clinic_id' );
+		$selected_location_id = $this->explicit_request_id( $r, 'X-CPMS-Location-Id', 'location_id' );
+		if ( null === $selected_clinic_id && $this->has_request_selector( $r, 'X-CPMS-Location-Id', 'location_id' ) ) {
+			return $this->error(
+				'CLINIC_VALIDATION_FAILED',
+				422,
+				'Location cannot establish Clinic.',
+				[ 'field' => 'location_id' ]
+			);
 		}
 
 		$current_clinic       = null;
 		$current_location     = null;
-		$selected_clinic_id   = null;
-		$selected_location_id = null;
-
-		if ( 1 === count( $clinics ) ) {
-			$selected_clinic_id = $clinics[0]['id'];
-			$current_clinic     = $clinics[0];
-		} else {
-			try {
-				$scope                = App::scope();
-				$selected_clinic_id   = $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-				$selected_location_id = $scope->locationId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-				foreach ( $clinics as $c ) {
-					if ( $c['id'] === $selected_clinic_id ) {
-						$current_clinic = $c;
-						break;
-					}
-				}
-				if ( null !== $selected_location_id ) {
-					$loc_row = $db->fetchRow(
-						'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
-						[ $selected_location_id ]
-					);
-					if ( $loc_row ) {
-						$current_location = [
-							'id'         => (int) $loc_row['id'],
-							'name'       => (string) $loc_row['name'],
-							'slug'       => (string) $loc_row['slug'],
-							'timezone'   => (string) $loc_row['timezone'],
-							'is_primary' => (int) $loc_row['is_primary'] === 1,
-							'is_active'  => (int) $loc_row['is_active'] === 1,
-						];
-					}
-				}
-			} catch ( \Throwable $e ) {
-				unset( $e );
-			}
-		}
-
-		$eligible_locations = [];
+		$eligible_locations   = [];
 		if ( null !== $selected_clinic_id ) {
-			$eligible_locations = $this->eligible_locations_for_clinic( $selected_clinic_id, $user_id );
-			if ( 1 === count( $eligible_locations ) ) {
-				$selected_location_id = $eligible_locations[0]['id'];
-				$current_location     = $eligible_locations[0];
-			}
-		}
-
-		$data = [
-			'doctor'             => [ // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-				'wp_user_id'     => $user_id,
-				'clinician_id'   => $clinician_id,
-				'clinician_name' => $clinician_name,
-				'display_name'   => (string) $user->display_name,
-			],
-			'clinics'            => $clinics, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-			'current_clinic'     => $current_clinic, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-			'current_location'   => $current_location, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-			'selected_clinic_id' => $selected_clinic_id, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-			'selected_location_id' => $selected_location_id,
-			'eligible_locations' => $eligible_locations, // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- legacy alignment, keep readability
-		];
-
-		return $this->success( $data );
-	}
-
-	private function clinics( WP_REST_Request $r ): WP_REST_Response|WP_Error {
-		$user_id     = (int) wp_get_current_user()->ID;
-		$memberships = $this->memberships->active_for_user( $user_id );
-		$clinics     = [];
-		foreach ( $memberships as $m ) {
-			$clinics[] = [
-				'id'   => (int) $m['clinic_id'],
-				'name' => (string) ( $m['clinic_name'] ?? 'Clinic ' . $m['clinic_id'] ),
-				'slug' => (string) ( $m['clinic_slug'] ?? '' ),
-			];
-		}
-		return $this->success( [ 'clinics' => $clinics ] );
-	}
-
-	private function locations( WP_REST_Request $r ): WP_REST_Response|WP_Error {
-		$user    = wp_get_current_user(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
-		$user_id = (int) ( $user->ID ?? 0 ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
-		$clinic_id = (int) $r->get_param( 'clinic_id' );
-
-		if ( $clinic_id <= 0 ) {
-			try {
-				$scope     = App::scope();
-				$clinic_id = $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
-			} catch ( \Throwable $e ) {
-				$active = $this->memberships->active_clinic_ids_for_user( $user_id );
-				if ( 1 === count( $active ) ) {
-					$clinic_id = $active[0];
-				} else {
-					return $this->error( 'CLINIC_SCOPE_REQUIRED', 400, 'Clinic scope required for locations', [ 'field' => 'clinic_id' ] );
+			foreach ( $clinics as $clinic ) {
+				if ( (int) $clinic['id'] === $selected_clinic_id ) {
+					$current_clinic = $clinic;
+					break;
 				}
 			}
+			if ( null === $current_clinic ) {
+				return $this->error(
+					'CLINIC_SCOPE_UNAVAILABLE',
+					403,
+					'Trusted clinic context is not available.',
+					[ 'reason' => 'membership' ]
+				);
+			}
+			$eligible_locations = $this->eligible_locations_for_clinic( $selected_clinic_id, $user_id );
 		}
 
-		if ( null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
-			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'No membership for clinic', [ 'reason' => 'membership' ] );
+		if ( null !== $selected_location_id ) {
+			foreach ( $eligible_locations as $location ) {
+				if ( (int) $location['id'] === $selected_location_id ) {
+					$current_location = $location;
+					break;
+				}
+			}
+			if ( null === $current_location ) {
+				return $this->error(
+					'CLINIC_SCOPE_UNAVAILABLE',
+					403,
+					'Trusted clinic context is not available.',
+					[ 'reason' => 'location' ]
+				);
+			}
 		}
-
-		$locations = $this->eligible_locations_for_clinic( $clinic_id, $user_id );
 
 		return $this->success(
 			[
-				'locations' => $locations,
+				'doctor' => [
+					'wp_user_id'     => $user_id,
+					'clinician_id'   => $clinician_id,
+					'clinician_name' => $clinician_name,
+					'display_name'   => (string) $user->display_name,
+				],
+				'clinics'              => $clinics,
+				'current_clinic'       => $current_clinic,
+				'current_location'     => $current_location,
+				'selected_clinic_id'   => $selected_clinic_id,
+				'selected_location_id' => $selected_location_id,
+				'eligible_locations'   => $eligible_locations,
+			]
+		);
+	}
+
+	private function clinics( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		unset( $r );
+		$user_id      = (int) wp_get_current_user()->ID;
+		$clinician_id = $this->memberships->active_clinician_id_for_wp_user( $user_id );
+
+		return $this->success( [ 'clinics' => $this->eligible_portal_clinics( $user_id, (int) ( $clinician_id ?? 0 ) ) ] );
+	}
+
+	private function locations( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id   = (int) ( wp_get_current_user()->ID ?? 0 );
+		$clinic_id = $this->explicit_request_id( $r, 'X-CPMS-Clinic-Id', 'clinic_id' );
+		if ( null === $clinic_id ) {
+			if ( $this->has_request_selector( $r, 'X-CPMS-Clinic-Id', 'clinic_id' ) ) {
+				return $this->error(
+					'CLINIC_VALIDATION_FAILED',
+					422,
+					'Invalid clinic id.',
+					[ 'field' => 'clinic_id' ]
+				);
+			}
+			return $this->error(
+				'CLINIC_SCOPE_REQUIRED',
+				400,
+				'Clinic scope required for locations',
+				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
+			);
+		}
+
+		$clinician_id = $this->memberships->active_clinician_id_for_wp_user( $user_id );
+		$clinics      = $this->eligible_portal_clinics( $user_id, (int) ( $clinician_id ?? 0 ) );
+		$authorized   = false;
+		foreach ( $clinics as $clinic ) {
+			if ( (int) $clinic['id'] === $clinic_id ) {
+				$authorized = true;
+				break;
+			}
+		}
+		if ( ! $authorized ) {
+			return $this->error(
+				'CLINIC_SCOPE_UNAVAILABLE',
+				403,
+				'Trusted clinic context is not available.',
+				[ 'reason' => 'membership' ]
+			);
+		}
+
+		return $this->success(
+			[
+				'locations' => $this->eligible_locations_for_clinic( $clinic_id, $user_id ),
 				'clinic_id' => $clinic_id,
 			]
 		);
+	}
+
+	/**
+	 * Clinic choices are the intersection of active durable memberships,
+	 * active Organization scopes, clinician participation, and scoped Portal
+	 * authority. AuthorizationService is the only capability resolver, so an
+	 * explicit membership DENY always wins over the Doctor role preset.
+	 *
+	 * @return list<array{id:int,name:string,slug:string,organization_id:int}>
+	 */
+	private function eligible_portal_clinics( int $user_id, int $clinician_id ): array {
+		if ( $user_id <= 0 || $clinician_id <= 0 ) {
+			return [];
+		}
+		$memberships = $this->memberships->active_for_user( $user_id );
+		$clinic_ids  = array_values(
+			array_unique(
+				array_filter(
+					array_map( static fn( array $m ): int => (int) ( $m['clinic_id'] ?? 0 ), $memberships ),
+					static fn( int $id ): bool => $id > 0
+				)
+			)
+		);
+		if ( $clinic_ids === [] ) {
+			return [];
+		}
+
+		$placeholders = implode( ',', array_fill( 0, count( $clinic_ids ), '%d' ) );
+		$org_rows     = App::db()->fetchAll(
+			'SELECT c.id, c.organization_id, o.status AS organization_status FROM ' . App::db()->table( 'cpms_clinics' ) . ' c'
+			. ' INNER JOIN ' . App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+			. " WHERE c.id IN ({$placeholders})",
+			$clinic_ids
+		);
+		$organizations = [];
+		foreach ( is_array( $org_rows ) ? $org_rows : [] as $row ) {
+			$organizations[(int) $row['id']] = $row;
+		}
+
+		$authorized = [];
+		$authorization = App::authorization_service();
+		foreach ( $memberships as $membership ) {
+			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
+			$org       = $organizations[$clinic_id] ?? null;
+			if ( $clinic_id <= 0 || $org === null || (string) $org['organization_status'] !== 'active' ) {
+				continue;
+			}
+			if ( ! $this->memberships->clinician_participates_in( $clinician_id, $clinic_id ) ) {
+				continue;
+			}
+			if (
+				! $authorization->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_READ )
+				|| ! $authorization->can( $user_id, $clinic_id, RolesAndCapabilities::MEDICAL_READ )
+			) {
+				continue;
+			}
+			$authorized[] = [
+				'id'              => $clinic_id,
+				'name'            => (string) ( $membership['clinic_name'] ?? 'Clinic ' . $clinic_id ),
+				'slug'            => (string) ( $membership['clinic_slug'] ?? '' ),
+				'organization_id' => (int) $org['organization_id'],
+			];
+		}
+
+		return $authorized;
+	}
+
+	private function explicit_request_id( WP_REST_Request $r, string $header, string $param ): ?int {
+		$raw = $r->get_header( $header );
+		if ( null === $raw || '' === $raw ) {
+			$raw = $r->get_param( $param );
+		}
+		if ( is_int( $raw ) && $raw > 0 ) {
+			return $raw;
+		}
+		if ( is_string( $raw ) && preg_match( '/^[1-9][0-9]{0,18}$/', $raw ) === 1 ) {
+			return (int) $raw;
+		}
+
+		return null;
+	}
+
+	private function has_request_selector( WP_REST_Request $r, string $header, string $param ): bool {
+		return $this->explicit_request_id( $r, $header, $param ) !== null
+			|| $r->get_header( $header ) !== null
+			|| $r->get_param( $param ) !== null;
 	}
 
 	/**

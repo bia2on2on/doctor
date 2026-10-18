@@ -187,6 +187,16 @@ final class RestClinicContext
             return false;
         }
 
+        // Doctor Portal context bootstrap is deliberately unscoped: it returns
+        // only Clinic choices the doctor is already authorized to use. Do not
+        // let the generic single-membership resolver silently choose a Clinic
+        // before the doctor has made that selection. Every operational Portal
+        // route validates an explicit Clinic selector in its own permission or
+        // handler boundary before reading tenant data.
+        if ( self::is_doctor_portal_route( $route ) && ! self::has_explicit_clinic_selector( $request ) ) {
+            return false;
+        }
+
         $method = strtoupper($request->get_method());
 
         $skip = [
@@ -283,6 +293,20 @@ final class RestClinicContext
             ['field' => $field],
             422
         );
+    }
+
+    private static function is_doctor_portal_route( string $route ): bool
+    {
+        return preg_match( '#^/clinic/v1/(?:doctor/today|doctor/portal(?:/|$))#', $route ) === 1;
+    }
+
+    private static function has_explicit_clinic_selector( WP_REST_Request $request ): bool
+    {
+        $header = $request->get_header( 'X-CPMS-Clinic-Id' );
+        $param  = $request->get_param( 'clinic_id' );
+
+        return ( is_scalar( $header ) && trim( (string) $header ) !== '' )
+            || ( is_scalar( $param ) && trim( (string) $param ) !== '' );
     }
 
     private static function current_user_is_staff( WP_REST_Request $request ): bool

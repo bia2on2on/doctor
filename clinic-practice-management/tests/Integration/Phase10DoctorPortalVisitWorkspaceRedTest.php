@@ -20,7 +20,7 @@
  *   authenticated WP user
  *   + server-derived clinician identity
  *   + active trusted Clinic
- *   + trusted operational Location (0=>fail closed, 1=>auto, N>1=>explicit required,
+ *   + explicitly selected trusted operational Location (every cardinality;
  *     foreign/inactive/unassigned=>fail closed)
  *   + Visit owned by that clinician and at that Location
  *   = authorized.
@@ -489,7 +489,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         self::assertArrayNotHasKey('eligible_location_ids', $rawNoLoc, 'G7.E: must not leak eligible IDs');
         self::assertArrayNotHasKey('eligible', $rawNoLoc, 'G7.E: must not leak eligible IDs');
 
-        // With explicit trusted Location, portal succeeds (and auto-resolution with 1 location also succeeds).
+        // With explicit trusted Location, portal succeeds.
         $headersWithLoc = $this->scopeHeaders($fxMulti['clinic'], $fxMulti['location']);
         $rWithLoc = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitMulti), [], $headersWithLoc);
         self::assertSame(200, $rWithLoc->get_status(), 'G7.E: Portal with explicit trusted Location succeeds');
@@ -499,13 +499,34 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $rNoteNoLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitMulti), $noteBody, $headersNoLoc);
         self::assertSame(400, $rNoteNoLoc->get_status(), 'G7.E: Portal note create N>1 without Location requires 400');
 
-        // Single-location clinic auto-resolution must still succeed without explicit header (prove 1=>auto).
+        // A sole Location is still not selected implicitly.
         $fxSingle = $this->makePortalStage('g7s');
         $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g7s_patient');
         $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         wp_set_current_user($fxSingle['doctor']);
-        $rSingleNoHeader = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $this->scopeHeaders($fxSingle['clinic'], null));
-        self::assertSame(200, $rSingleNoHeader->get_status(), 'G7.E: Single location auto-resolution succeeds without explicit header');
+        $singleNoLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], null)
+        );
+        self::assertSame(
+            400,
+            $singleNoLocation->get_status(),
+            'G7.E: Sole Location without explicit selection is rejected'
+        );
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($singleNoLocation));
+        $singleWithLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], $fxSingle['location'])
+        );
+        self::assertSame(
+            200,
+            $singleWithLocation->get_status(),
+            'G7.E: Sole Location with explicit selection succeeds'
+        );
 
         // F. forged/foreign/inactive/unassigned Location cannot create authority.
 

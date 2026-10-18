@@ -25,9 +25,8 @@
  *   authenticated WP user + doctor role + cpms_rec_create
  *   + server-derived active clinician identity
  *   + active trusted Clinic
- *   + trusted operational Location (0 eligible => fail closed, 1 => auto
- *     resolution, N>1 => explicit trusted Location REQUIRED, foreign/inactive/
- *     unassigned => fail closed; never guess the first Location)
+ *   + explicitly selected trusted operational Location (every cardinality;
+ *     foreign/inactive/unassigned => fail closed; never guess a sole/first Location)
  *   + Visit owned by that clinician at that Clinic/Location.
  * Cross-doctor / foreign-Clinic / foreign-Location Visit selectors fail
  * non-enumerating (404 CLINIC_NOT_FOUND); a foreign Clinic selector header
@@ -387,17 +386,31 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         $this->gate(200, $rWithLoc, 'G3.B: explicit trusted Location authoring succeeds');
         self::assertNotSame([], $this->recommendationRowsForVisit($visitMulti), 'G3.B: row persisted with the trusted Location');
 
-        // C. Exactly 1 eligible Location => auto-resolution allowed (no Location header).
+        // C. Even one eligible Location must be selected explicitly.
         $fxSingle = $this->makePortalStage('g3s');
         $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g3s_patient');
         $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         wp_set_current_user($fxSingle['doctor']);
-        $rSingle = $this->dispatch('POST', '/' . sprintf(self::PORTAL_FU_CREATE, $visitSingle), [
+        $followUpBody = [
             'is_needed' => true,
             'suggested_date' => '2026-04-10',
             'reason' => 'پیگیری G3',
-        ], $this->scopeHeaders($fxSingle['clinic'], null));
-        $this->gate(200, $rSingle, 'G3.C: single eligible Location auto-resolution succeeds');
+        ];
+        $rSingleNoLoc = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_FU_CREATE, $visitSingle),
+            $followUpBody,
+            $this->scopeHeaders($fxSingle['clinic'], null)
+        );
+        $this->gate(400, $rSingleNoLoc, 'G3.C: sole eligible Location without selection is rejected');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rSingleNoLoc));
+        $rSingle = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_FU_CREATE, $visitSingle),
+            $followUpBody,
+            $this->scopeHeaders($fxSingle['clinic'], $fxSingle['location'])
+        );
+        $this->gate(200, $rSingle, 'G3.C: explicit sole Location authoring succeeds');
 
         // D. 0 eligible Locations => fail closed.
         $fxZero = $this->makePortalStage('g3z');

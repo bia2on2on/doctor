@@ -4,16 +4,18 @@
  *
  * Owner decision FINAL (2026-09-23):
  * After trusted Clinic scope established, operational Location must be explicitly and securely resolved.
- * - 0 eligible Locations => fail closed / no Today or Queue data (scope without location)
- * - 1 eligible => auto-resolution allowed (scope with that single location)
- * - N>1 eligible => explicit Location selection REQUIRED — no first/primary fallback
+ * - 0 eligible Locations => empty Today/Queue projection (no tenant data)
+ * - 1 or more eligible => explicit Location selection REQUIRED — no sole/first/primary fallback
  * - foreign/inactive/unassigned => fail closed using existing trusted-scope error contract (CLINIC_SCOPE_UNAVAILABLE 403)
  * - raw location_id selector only, NEVER authority
- * Authority = auth WP user + active Clinic membership + trusted Clinic + eligible persisted Location assignment + explicit when N>1 = trusted operational Location
+ * Authority = authenticated WP user + active Clinic membership + explicitly
+ * trusted Clinic + eligible Location assignment + explicit operational Location
  * Selected Location = source of truth for today meaning, timezone, Today summary, Live Queue filtering
  *
  * Reuses: RestClinicContext (X-CPMS-Clinic-Id / X-CPMS-Location-Id), TrustedClinicEstablisher, ScopeContext/ClinicScope, membership_locations, MembershipRepository
- * Error-contract: use existing CLINIC_SCOPE_REQUIRED 400 with field location_id reason location_required for N>1, CLINIC_SCOPE_UNAVAILABLE 403 for foreign/inactive/unassigned, CLINIC_VALIDATION_FAILED 422 for invalid
+ * Error-contract: omitted Location => CLINIC_SCOPE_REQUIRED 400 with field
+ * location_id/reason location_required; foreign/inactive => UNAVAILABLE 403;
+ * invalid selectors => VALIDATION_FAILED 422.
  * No new canonical LOCATION_SCOPE_REQUIRED.
  *
  * Operational day: persisted eligible Location IANA timezone + current instant (via VisitService::nowUtc seam + filter cpms_visit_now_utc) => Y-m-d, no Clinic/WP/PHP/browser/Tehran/first fallback, no frozen gmdate
@@ -101,6 +103,97 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertNotNull($url, 'Phase 10 A: independent Doctor Portal frontend entry must exist (WP Page + template_include 99 + plugin-owned full-doc shell). Head='.$this->headSha());
         $html = $this->renderPortal($fx['doctor'], $url);
         $this->assertDoctorShell($html);
+    }
+
+    public function testDoctorPortalRequiresExplicitClinicAndLocationEvenWhenSole(): void
+    {
+        $fx = $this->makeDoctor('EXPLICIT');
+        wp_set_current_user($fx['doctor']);
+
+        // Bootstrap remains unscoped and lists only a clinician's authorized Clinic choices.
+        $context = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/context');
+        self::assertSame(200, $context->get_status());
+        $contextData = $this->payload($context);
+        self::assertNull($contextData['current_clinic'] ?? null, 'Bootstrap must not infer a sole Clinic');
+        self::assertNull($contextData['current_location'] ?? null, 'Bootstrap must not infer a sole Location');
+        self::assertContains($fx['clinic'], array_map('intval', array_column($contextData['clinics'] ?? [], 'id')));
+
+        // A Location selector cannot establish a Clinic; operational routes require both explicit selectors.
+        $noClinic = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/today');
+        self::assertSame(400, $noClinic->get_status());
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($noClinic));
+        App::replaceExplicitScope(null);
+        try {
+            App::visitService()->todayForDoctorPortal($fx['doctor']);
+            self::fail('Doctor Portal service must not consult a system-single Clinic fallback');
+        } catch (\ClinicCore\Domain\Visits\VisitException $ex) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode);
+            self::assertSame('clinic_id', $ex->data['field'] ?? '');
+        }
+        $clinicOnly = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/today', [], [
+
+            'X-CPMS-Clinic-Id' => (string) $fx['clinic'],
+        ]);
+        self::assertSame(400, $clinicOnly->get_status(), 'Sole eligible Location is not inferred');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($clinicOnly));
+
+        $scopedToday = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+            'X-CPMS-Location-Id' => (string) $fx['location'],
+        ]);
+        self::assertSame(200, $scopedToday->get_status());
+        self::assertSame($fx['location'], (int) ($this->payload($scopedToday)['location_id'] ?? 0));
+
+        $noClinicLocations = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/locations');
+        self::assertSame(400, $noClinicLocations->get_status());
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($noClinicLocations));
+        $locations = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/locations', [
+            'clinic_id' => $fx['clinic'],
+        ]);
+        self::assertSame(200, $locations->get_status());
+        $locationIds = array_map(
+            'intval',
+            array_column($this->payload($locations)['locations'] ?? [], 'id')
+        );
+        self::assertSame([$fx['location']], $locationIds);
+
+        // WP Administrator alone does not become a clinical actor.
+        $admin = $this->makeUser('portal_admin', 'administrator');
+        wp_set_current_user($admin);
+        $adminContext = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/context');
+        self::assertSame(403, $adminContext->get_status());
+        $adminToday = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+            'X-CPMS-Location-Id' => (string) $fx['location'],
+        ]);
+        self::assertSame(403, $adminToday->get_status());
+
+        // Explicit membership DENY remains stronger than the Doctor role preset.
+        $denied = $this->makeDoctor('DENY');
+        $membershipId = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table('cpms_clinic_memberships')
+                . ' WHERE wp_user_id = %d AND clinic_id = %d AND status = %s LIMIT 1',
+            [ $denied['doctor'], $denied['clinic'], 'active' ]
+        );
+        self::assertGreaterThan(0, $membershipId);
+        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::QUEUE_READ, 'deny');
+        wp_set_current_user($denied['doctor']);
+        $deniedContext = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/context');
+        self::assertSame(200, $deniedContext->get_status());
+        $deniedClinicIds = array_map(
+            'intval',
+            array_column($this->payload($deniedContext)['clinics'] ?? [], 'id')
+        );
+        self::assertNotContains($denied['clinic'], $deniedClinicIds);
+        $deniedToday = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id'   => (string) $denied['clinic'],
+            'X-CPMS-Location-Id' => (string) $denied['location'],
+        ]);
+        self::assertSame(
+            403,
+            $deniedToday->get_status(),
+            'Explicit Clinic DENY wins over role preset on the operational path'
+        );
     }
 
     // B — doctor identity fail-closed — backend guard PASS
@@ -277,7 +370,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         try { $today0 = App::visitService()->today($doctor0); } finally { App::replaceExplicitScope(null); }
         self::assertSame([], $today0['queue'], 'F: 0 eligible => no queue data (fail-closed)');
 
-        // 1 eligible Location — shared establisher does NOT auto-bind (pre-PR behavior), portal does
+        // One eligible Location still requires explicit selection at the Doctor Portal boundary.
         $org1 = $this->insertOrg('F Org1 '.bin2hex(random_bytes(2)));
         $clinic1 = $this->insertClinicInOrg('F Clinic1', 'f-clinic1-'.bin2hex(random_bytes(2)), $org1, self::TZ_K);
         $loc1 = $this->insertLocation($clinic1, 'Single Loc', 'f-loc-single-'.bin2hex(random_bytes(2)), self::TZ_K, 1);
@@ -286,18 +379,32 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         cpms_test_seed_membership($doctor1, $clinic1, 'cpms_doctor');
         $scope1 = $establisher->establish($doctor1, $clinic1, null);
         self::assertSame($clinic1, $scope1->clinicId, 'F: shared establisher 1 eligible without explicit Location => Clinic scope established (no auto-bind in shared)');
-        // Shared does NOT auto-bind single Location — it returns without Location (pre-PR)
-        self::assertNull($scope1->locationId, 'F: shared establisher does NOT auto-bind single Location (portal boundary does)');
+        self::assertNull($scope1->locationId, 'F: shared establisher never infers single Location');
 
-        // Portal auto-resolution for 1 eligible — via VisitService todayForDoctorPortal
+        // Portal rejects an omitted Location for one eligible Location, then
+        // succeeds once the trusted scope carries the explicit selection.
         wp_set_current_user($doctor1);
         \ClinicCore\Bootstrap\App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic($clinic1));
+        try {
+            try {
+                \ClinicCore\Bootstrap\App::visitService()->todayForDoctorPortal($doctor1);
+                self::fail('F: portal one-location scope without explicit Location must require selection');
+            } catch (\ClinicCore\Domain\Visits\VisitException $ex) {
+                self::assertSame('CLINIC_SCOPE_REQUIRED', $ex->errorCode);
+                self::assertSame('location_id', $ex->data['field'] ?? '');
+            }
+        } finally {
+            \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
+        }
+        \ClinicCore\Bootstrap\App::replaceExplicitScope(
+            \ClinicCore\Application\Scope\ClinicScope::forClinic($clinic1, $loc1)
+        );
         try {
             $today1 = \ClinicCore\Bootstrap\App::visitService()->todayForDoctorPortal($doctor1);
         } finally {
             \ClinicCore\Bootstrap\App::replaceExplicitScope(null);
         }
-        self::assertSame($loc1, $today1['location_id'], 'F: portal 1 eligible => auto-resolves to single Location');
+        self::assertSame($loc1, $today1['location_id'], 'F: explicit one-location selection succeeds');
 
         // N>1 without explicit Location — shared establisher must NOT force REQUIRED (Blocker 1 regression)
         wp_set_current_user($doctor);
@@ -576,7 +683,11 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         }
 
         $rHidden = $this->dispatch('GET', '/'.self::REST_NS.'/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) $clinic]);
-        self::assertSame(400, $rHidden->get_status(), 'I: existing /doctor/today still requires Location when N>1');
+        self::assertSame(
+            400,
+            $rHidden->get_status(),
+            'I: /doctor/today requires explicit Location when multiple are eligible'
+        );
         $hiddenBody = wp_json_encode($rHidden->get_data());
         self::assertIsString($hiddenBody);
         self::assertStringNotContainsString('Mina OwnDay', $hiddenBody);
@@ -728,6 +839,18 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertStringNotContainsString('id="wpadminbar"', $html);
         self::assertStringNotContainsString('id="adminmenu"', $html);
         self::assertStringNotContainsString('id="wpfooter"', $html);
+        self::assertStringContainsString(
+            'state.selectedClinicId = data.selected_clinic_id ? Number(data.selected_clinic_id) : null;',
+            $html,
+            'Clinic selection is never inferred from membership cardinality'
+        );
+        self::assertStringContainsString(
+            'state.selectedLocationId = data.selected_location_id ? Number(data.selected_location_id) : null;',
+            $html,
+            'Location selection is never inferred from membership cardinality'
+        );
+        self::assertStringNotContainsString('state.clinics.length===1', $html);
+        self::assertStringNotContainsString('state.locations.length===1', $html);
         self::assertTrue((bool)preg_match('/\bdir=["\']rtl["\']/i', $html));
         $cfgs = $this->configPayloads($html);
         self::assertCount(1, $cfgs);

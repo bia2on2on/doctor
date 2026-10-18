@@ -675,7 +675,10 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         $visitA = $this->seedVisit(self::CLINIC_A, $this->locA, $clinicianA, $patA);
         $visitB = $this->seedVisit(self::CLINIC_B, $this->locB, $clinicianA, $patB);
 
-        $resA = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_A]);
+        $resA = $this->call('GET', self::NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_A,
+            'X-CPMS-Location-Id' => (string) $this->locA,
+        ]);
         $this->assertSame(200, $resA->get_status(), $this->body($resA));
         $this->assertContains($visitA, $this->queueIds($resA));
         $this->assertNotContains($visitB, $this->queueIds($resA), 'ویزیتِ همان پزشک در Clinic دیگر نباید union شود');
@@ -693,7 +696,10 @@ final class ClinicTenantIsolationTest extends WP_UnitTestCase
         // خاصیت امنیتیِ اصلیِ این تست (OWN-doctor scope نباید Clinicها را union
         // کند) دست‌نخورده و اکنون در **هر دو** جهت صریح asserts می‌شود؛ به‌علاوه
         // «فقط همان یک ردیف» تضمین می‌کند نه union رخ داده و نه دامنهٔ کل مطب.
-        $resB = $this->call('GET', self::NS . '/doctor/today', [], ['X-CPMS-Clinic-Id' => (string) self::CLINIC_B]);
+        $resB = $this->call('GET', self::NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id' => (string) self::CLINIC_B,
+            'X-CPMS-Location-Id' => (string) $this->locB,
+        ]);
         $this->assertSame(200, $resB->get_status(), $this->body($resB));
         $this->assertContains(
             $visitB,

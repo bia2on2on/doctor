@@ -4,7 +4,8 @@
  *
  * Slice: Call / Start / Recall / Skip on the Doctor Portal, reusing the
  * EXISTING queue state machine (VisitMachine V4/V6/V5/V7/V8, doctor actor)
- * and the EXISTING REST routes (POST /clinic/v1/visits/{id}/{call,recall,start,skip}).
+ * and the established VisitService state machine. The Portal uses a specific
+ * adapter route; legacy /visits routes remain covered for compatibility.
  *
  * Live context (verified, not assumed):
  * - Phase 10 = IN PROGRESS; Phase 10 Slice 1 = CLOSED via PR #113
@@ -31,9 +32,9 @@
  *  7. Secretary observability after doctor CALL (history + /rt/queue +
  *     QUEUE_CALLED + room contract + bounded fields).
  *
- * Product code: smallest GREEN — Location check in the existing mutation guard
- * plus state-appropriate queue-row controls reusing the existing routes and
- * machine. No migration. No new route. No new state.
+ * Product code: Doctor Portal adapter adds explicit Clinic+Location, clinician,
+ * and visit ownership guards before reusing the existing transition service.
+ * No migration. Legacy shared queue routes remain intact.
  */
 
 declare(strict_types=1);
@@ -154,6 +155,77 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
         $rSkipC = $this->dispatch('POST', '/' . self::REST_NS . '/visits/' . $vSkipC . '/skip', ['reason' => 'عدم پاسخ پس از فراخوان'], $headers);
         self::assertSame(200, $rSkipC->get_status(), 'G1: skip from called works');
         self::assertSame('skipped', $this->payload($rSkipC)['status']);
+    }
+
+    public function testDoctorPortalQueueActionsRequireExplicitScopeAndEnforceLocationOwnership(): void
+    {
+        $fx = $this->makePortalStage('portal_adapter');
+        wp_set_current_user($fx['doctor']);
+        $patient = $this->insertPatient($fx['clinic'], 'portal_adapter_own');
+        $visit = $this->insertVisit(
+            $patient,
+            $fx['clinician'],
+            $fx['clinic'],
+            $fx['location'],
+            'waiting'
+        );
+        $base = '/' . self::REST_NS . '/doctor/portal/visits/' . $visit;
+
+        $noClinic = $this->dispatch('POST', $base . '/call', [], [
+            'X-CPMS-Location-Id' => (string) $fx['location'],
+        ]);
+        self::assertSame(400, $noClinic->get_status(), 'Portal actions do not infer Clinic from Location');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($noClinic));
+
+        $clinicOnly = $this->dispatch('POST', $base . '/call', [], $this->scopeHeaders($fx['clinic']));
+        self::assertSame(400, $clinicOnly->get_status(), 'Portal actions do not infer a sole Location');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($clinicOnly));
+        self::assertSame(
+            'waiting',
+            (string) $this->findVisit($visit)['status'],
+            'Missing scope has no state-machine side effect'
+        );
+
+        $validHeaders = $this->scopeHeaders($fx['clinic'], $fx['location']);
+        $called = $this->dispatch('POST', $base . '/call', [], $validHeaders);
+        self::assertSame(200, $called->get_status(), 'Explicit Clinic+Location permits the owned queue action');
+        self::assertSame('called', $this->payload($called)['status'] ?? null);
+
+        // A Doctor cannot mutate another Location's visit using the current Location selector.
+        $otherLocation = $this->insertLocation($fx['clinic'], 'Portal adapter other', self::TZ_TEHRAN, 0);
+        $otherPatient = $this->insertPatient($fx['clinic'], 'portal_adapter_other');
+        $otherVisit = $this->insertVisit(
+            $otherPatient,
+            $fx['clinician'],
+            $fx['clinic'],
+            $otherLocation,
+            'waiting'
+        );
+        $wrongLocation = $this->dispatch(
+            'POST',
+            '/' . self::REST_NS . '/doctor/portal/visits/' . $otherVisit . '/call',
+            [],
+            $validHeaders
+        );
+        self::assertSame(404, $wrongLocation->get_status(), 'Cross-Location visit denial is non-enumerating');
+        self::assertSame('CLINIC_NOT_FOUND', $this->errCode($wrongLocation));
+        self::assertSame(
+            'waiting',
+            (string) $this->findVisit($otherVisit)['status'],
+            'Cross-Location denial is side-effect free'
+        );
+
+        $rightLocation = $this->dispatch(
+            'POST',
+            '/' . self::REST_NS . '/doctor/portal/visits/' . $otherVisit . '/call',
+            [],
+            $this->scopeHeaders($fx['clinic'], $otherLocation)
+        );
+        self::assertSame(
+            200,
+            $rightLocation->get_status(),
+            'Explicit eligible alternate Location permits its own visit'
+        );
     }
 
     // ============ Group 2 — invalid transitions + recall limit + skip reason ============
@@ -491,8 +563,11 @@ final class Phase10DoctorPortalQueueActionsRedTest extends WP_UnitTestCase
                 $missing[] = $action . ' control for ' . $states;
             }
         }
-        if (!str_contains($ui, '/visits/')) {
-            $missing[] = 'POST wiring to existing /visits/{id}/{action} routes';
+        if (!str_contains($ui, "'/doctor/portal/visits/'")) {
+            $missing[] = 'POST wiring to Doctor Portal /doctor/portal/visits/{id}/{action} adapter routes';
+        }
+        if (str_contains($ui, 'state.clinics.length===1') || str_contains($ui, 'state.locations.length===1')) {
+            $missing[] = 'UI must not auto-select a sole Clinic or Location';
         }
         if (!str_contains($ui, 'X-WP-Nonce') || !str_contains($ui, 'X-CPMS-Clinic-Id') || !str_contains($ui, 'X-CPMS-Location-Id')) {
             $missing[] = 'nonce + Clinic/Location selector headers on mutation wiring';

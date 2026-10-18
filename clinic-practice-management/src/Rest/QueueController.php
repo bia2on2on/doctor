@@ -6,6 +6,7 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Visits\VisitException;
 use WP_Error;
 use WP_REST_Request;
@@ -168,7 +169,7 @@ final class QueueController extends RestBase {
 				[
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_READ, fn() => $this->visits->todayForDoctorPortal( $this->userId( $r ) ) ),
-					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permDoctorPortal( $r ),
 				],
 			]
 		);
@@ -180,7 +181,7 @@ final class QueueController extends RestBase {
 				[
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->guard( $r, RolesAndCapabilities::QUEUE_READ, fn() => $this->visits->todayForDoctorPortal( $this->userId( $r ) ) ),
-					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permDoctorPortal( $r ),
 				],
 			]
 		);
@@ -256,7 +257,7 @@ final class QueueController extends RestBase {
 				[
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->rtQueuePortal( $r ),
-					'permission_callback' => fn( WP_REST_Request $r ) => $this->permCap( $r, RolesAndCapabilities::QUEUE_READ ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->permDoctorPortal( $r ),
 					'args'                => [
 						'since' => [
 							'required'          => false,
@@ -268,6 +269,71 @@ final class QueueController extends RestBase {
 				],
 			]
 		);
+	}
+
+	private function permDoctorPortal( WP_REST_Request $r ): bool|WP_Error {
+		$base = $this->permCap( $r, RolesAndCapabilities::QUEUE_READ );
+		if ( $base instanceof WP_Error ) {
+			return $base;
+		}
+		$user = wp_get_current_user();
+		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
+			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
+		}
+		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'Doctor role required' );
+		}
+		$clinician_id = App::db()->fetchValue(
+			'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+			[ (int) $user->ID ]
+		);
+		if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'Doctor not linked to active clinician' );
+		}
+
+		$selectorError = $this->requireExplicitPortalClinic( $r );
+		return $selectorError instanceof WP_Error ? $selectorError : true;
+	}
+
+	private function requireExplicitPortalClinic( WP_REST_Request $r ): ?WP_Error {
+		$route        = (string) $r->get_route();
+		$portalRoutes = [
+			'/' . self::NS . '/doctor/today',
+			'/' . self::NS . '/doctor/portal/today',
+			'/' . self::NS . '/doctor/portal/rt/queue',
+		];
+		if ( ! in_array( $route, $portalRoutes, true ) ) {
+			return null;
+		}
+		$raw = $r->get_header( 'X-CPMS-Clinic-Id' );
+		if ( null === $raw || '' === $raw ) {
+			$raw = $r->get_param( 'clinic_id' );
+		}
+		if ( null === $raw || '' === $raw || false === $raw ) {
+			return $this->error(
+				'CLINIC_SCOPE_REQUIRED',
+				400,
+				'Clinic scope required',
+				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
+			);
+		}
+		$isValidId = ( is_int( $raw ) && $raw > 0 )
+			|| ( is_string( $raw ) && preg_match( '/^[1-9][0-9]{0,18}$/', $raw ) === 1 );
+		if ( ! $isValidId ) {
+			return $this->error(
+				'CLINIC_VALIDATION_FAILED',
+				422,
+				'Invalid clinic id.',
+				[ 'field' => 'clinic_id' ]
+			);
+		}
+		$clinicId = (int) $raw;
+		$userId = (int) wp_get_current_user()->ID;
+		if ( ! App::authorization_service()->can( $userId, $clinicId, RolesAndCapabilities::QUEUE_READ ) ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+
+		return null;
 	}
 
 	private function doctorAction( WP_REST_Request $r, string $event ): WP_REST_Response|WP_Error {
@@ -376,6 +442,10 @@ final class QueueController extends RestBase {
 		$perm = $this->requireCap( $cap );
 		if ( $perm instanceof WP_Error ) {
 			return $perm;
+		}
+		$portalContext = $this->requireExplicitPortalClinic( $r );
+		if ( $portalContext instanceof WP_Error ) {
+			return $portalContext;
 		}
 		$scoped = $this->requireClinicPermission( $cap );
 		if ( $scoped instanceof WP_Error ) {

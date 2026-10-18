@@ -177,12 +177,16 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     <div class="cpms-doc-selector" data-role="clinic-selector-wrap" hidden>
                         <label for="cpms-doc-clinic-select">مطب</label>
                         <select id="cpms-doc-clinic-select" data-role="clinic-select"><option value="">انتخاب مطب…</option></select>
-                        <p class="description" data-role="clinic-hint">چند مطب فعال دارید — یکی را انتخاب کنید.</p>
+                        <p class="description" data-role="clinic-hint">
+                            برای ادامه، مطب را انتخاب کنید.
+                        </p>
                     </div>
                     <div class="cpms-doc-selector" data-role="location-selector-wrap" hidden>
                         <label for="cpms-doc-location-select">شعبه</label>
                         <select id="cpms-doc-location-select" data-role="location-select"><option value="">انتخاب شعبه…</option></select>
-                        <p class="description" data-role="location-hint">چند شعبه واجد شرایط دارید — یکی را انتخاب کنید. بدون انتخاب، داده‌ای نمایش داده نمی‌شود.</p>
+                        <p class="description" data-role="location-hint">
+                            شعبه را انتخاب کنید؛ انتخاب خودکار انجام نمی‌شود.
+                        </p>
                     </div>
                     </div>
                 </section>
@@ -609,6 +613,8 @@ if ( !CFG.is_doctor ) return;
 var state = {
     clinics: [],
     locations: [],
+    locationsLoaded: false,
+    doctor: null,
     selectedClinicId: null,
     selectedLocationId: null,
     today: null,
@@ -680,46 +686,76 @@ function renderContext(doctor, clinic, location){
 function renderClinicSelector(){
     var wrap = qs('[data-role="clinic-selector-wrap"]');
     var sel = qs('[data-role="clinic-select"]');
+    var noData = qs('[data-role="no-data"]');
     if ( !wrap || !sel ) return;
-    if ( state.clinics.length <= 1 ) {
+    if ( state.clinics.length === 0 ) {
         hide(wrap);
-        if ( state.clinics.length === 1 ) {
-            state.selectedClinicId = state.clinics[0].id;
+        if ( noData ) {
+            var message = noData.querySelector('p');
+            if ( message ) {
+                message.textContent = 'هیچ مطب فعالی با دسترسی مجاز پیدا نشد.';
+            }
+            show(noData);
         }
         return;
     }
     show(wrap);
     sel.innerHTML = '<option value="">انتخاب مطب…</option>' + state.clinics.map(function(c){
-        return '<option value="' + c.id + '"' + (String(c.id)===String(state.selectedClinicId)?' selected':'') + '>' + esc(c.name) + '</option>';
+        return '<option value="' + c.id + '">' + esc(c.name) + '</option>';
     }).join('');
+    sel.value = state.selectedClinicId ? String(state.selectedClinicId) : '';
 }
 
 function renderLocationSelector(){
     var wrap = qs('[data-role="location-selector-wrap"]');
     var sel = qs('[data-role="location-select"]');
+    var noData = qs('[data-role="no-data"]');
     if ( !wrap || !sel ) return;
     if ( !state.selectedClinicId ) {
         hide(wrap);
+        sel.innerHTML = '<option value="">انتخاب شعبه…</option>';
+        sel.value = '';
+        hide(noData);
+        return;
+    }
+    if ( !state.locationsLoaded ) {
+        hide(wrap);
+        hide(noData);
         return;
     }
     if ( state.locations.length === 0 ) {
         hide(wrap);
-        var noData = qs('[data-role="no-data"]');
+        var message = noData ? noData.querySelector('p') : null;
+        if ( message ) {
+            message.textContent = 'برای این مطب شعبه فعالی در دسترس نیست.';
+        }
         show(noData);
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
         hide(qs('[data-role="appointments-section"]'));
-        return;
-    }
-    if ( state.locations.length === 1 ) {
-        hide(wrap);
-        state.selectedLocationId = state.locations[0].id;
+        hide(qs('[data-role="rx-history-section"]'));
         return;
     }
     show(wrap);
+    hide(noData);
     sel.innerHTML = '<option value="">انتخاب شعبه…</option>' + state.locations.map(function(l){
-        return '<option value="' + l.id + '"' + (String(l.id)===String(state.selectedLocationId)?' selected':'') + '>' + esc(l.name) + ' (' + esc(l.timezone) + ')</option>';
+        return '<option value="' + l.id + '">' + esc(l.name) + ' (' + esc(l.timezone) + ')</option>';
     }).join('');
+    sel.value = state.selectedLocationId ? String(state.selectedLocationId) : '';
+}
+
+function renderSelectedContext(){
+    var clinic = null;
+    var location = null;
+    state.clinics.some(function(item){
+        if ( String(item.id) === String(state.selectedClinicId) ) { clinic = item; return true; }
+        return false;
+    });
+    state.locations.some(function(item){
+        if ( String(item.id) === String(state.selectedLocationId) ) { location = item; return true; }
+        return false;
+    });
+    renderContext(state.doctor, clinic, location);
 }
 
 function renderToday(){
@@ -897,7 +933,8 @@ function doQueueAction(visitId, action){
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
-    api('POST', '/visits/' + encodeURIComponent(String(visitId)) + '/' + action, body, headers).then(function(r){
+    var actionPath = '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/' + action;
+    api('POST', actionPath, body, headers).then(function(r){
         if ( r.status === 200 ) {
             loadTodayAndQueue();
             return;
@@ -2163,55 +2200,58 @@ function loadContext(){
         }
         var data = (r.body && r.body.data) || r.body || {};
         state.clinics = data.clinics || [];
-        var doctor = data.doctor || null;
-        var currentClinic = data.current_clinic || null;
-        var currentLocation = data.current_location || null;
-        if ( data.selected_clinic_id ) state.selectedClinicId = data.selected_clinic_id;
-        else if ( currentClinic ) state.selectedClinicId = currentClinic.id;
-        else if ( state.clinics.length===1 ) state.selectedClinicId = state.clinics[0].id;
-
+        state.locations = [];
+        state.locationsLoaded = false;
+        state.doctor = data.doctor || null;
+        // Only a selector explicitly present on the request may seed state.
+        // Membership count and primary flags are never an implicit selection.
+        state.selectedClinicId = data.selected_clinic_id ? Number(data.selected_clinic_id) : null;
+        state.selectedLocationId = data.selected_location_id ? Number(data.selected_location_id) : null;
         renderClinicSelector();
+        renderLocationSelector();
+        renderSelectedContext();
 
-        if ( state.selectedClinicId ) {
-            return loadLocations(state.selectedClinicId).then(function(){
-                if ( state.locations.length===1 ) state.selectedLocationId = state.locations[0].id;
-                else if ( data.selected_location_id ) state.selectedLocationId = data.selected_location_id;
-                else if ( currentLocation ) state.selectedLocationId = currentLocation.id;
-
-                renderLocationSelector();
-                renderContext(doctor, currentClinic, currentLocation);
-
-                if ( state.selectedClinicId && state.selectedLocationId ) {
-                    // Phase 13 Slice 2 — the bounded history is scope-driven, never polled:
-                    // it is read once per established/changed Clinic+Location scope.
-                    return loadTodayAndQueue().then(loadRxHistory);
-                }
+        if ( !state.selectedClinicId ) return Promise.resolve();
+        return loadLocations(state.selectedClinicId).then(function(){
+            var selectedLocationEligible = state.locations.some(function(location){
+                return String(location.id) === String(state.selectedLocationId);
             });
-        } else {
-            renderContext(doctor, null, null);
-        }
+            if ( state.selectedLocationId && !selectedLocationEligible ) {
+                state.selectedLocationId = null;
+            }
+            renderLocationSelector();
+            renderSelectedContext();
+            if ( state.selectedClinicId && state.selectedLocationId ) {
+                // The bounded history is read once per explicit Clinic+Location scope.
+                return loadTodayAndQueue().then(loadRxHistory);
+            }
+        });
     }).catch(function(e){
         showError(e.message || 'خطا');
     });
 }
 
 function loadLocations(clinicId){
-    return api('GET', '/doctor/portal/locations?clinic_id=' + encodeURIComponent(clinicId)).then(function(r){
+    var requestedClinic = String(clinicId);
+    return api('GET', '/doctor/portal/locations?clinic_id=' + encodeURIComponent(requestedClinic)).then(function(r){
         if ( r.status!==200 ) throw new Error('خطا در دریافت شعبه‌ها');
+        if ( String(state.selectedClinicId) !== requestedClinic ) return;
         var data = (r.body && r.body.data) || r.body || {};
         state.locations = data.locations || [];
+        state.locationsLoaded = true;
     });
 }
 
 function loadTodayAndQueue(){
     if ( !state.selectedClinicId || !state.selectedLocationId ) return Promise.resolve();
+    var requestedClinic = state.selectedClinicId;
     var requestedLocation = state.selectedLocationId;
     var headers = {
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
     return api('GET', '/doctor/today', null, headers).then(function(r){
-        if ( state.selectedLocationId !== requestedLocation ) return;
+        if ( state.selectedClinicId !== requestedClinic || state.selectedLocationId !== requestedLocation ) return;
         if ( r.status===400 ) {
             var body = r.body || {};
             var code = body.code || '';
@@ -2250,8 +2290,11 @@ function pollQueue(){
         'X-CPMS-Clinic-Id': String(state.selectedClinicId),
         'X-CPMS-Location-Id': String(state.selectedLocationId)
     };
+    var requestedClinic = state.selectedClinicId;
+    var requestedLocation = state.selectedLocationId;
     var since = state.lastEventId || 0;
-    api('GET', '/rt/queue?since=' + encodeURIComponent(since), null, headers).then(function(r){
+    api('GET', '/doctor/portal/rt/queue?since=' + encodeURIComponent(since), null, headers).then(function(r){
+        if ( state.selectedClinicId !== requestedClinic || state.selectedLocationId !== requestedLocation ) return;
         if ( r.status===304 ) return;
         if ( r.status!==200 ) return;
         var data = (r.body && r.body.data) || r.body || {};
@@ -2423,21 +2466,25 @@ document.addEventListener('change', function(ev){
         state.selectedClinicId = val ? parseInt(val,10) : null;
         state.selectedLocationId = null;
         state.locations = [];
+        state.locationsLoaded = false;
         state.today = null;
         state.queue = [];
+        state.lastEventId = 0;
         closeWorkspace();
         hide(qs('[data-role="today-section"]'));
         hide(qs('[data-role="queue-section"]'));
+        hide(qs('[data-role="appointments-section"]'));
         hide(qs('[data-role="rx-history-section"]'));
         hide(qs('[data-role="no-data"]'));
+        renderLocationSelector();
+        renderSelectedContext();
         if ( state.selectedClinicId ) {
-            loadLocations(state.selectedClinicId).then(function(){
+            var requestedClinic = state.selectedClinicId;
+            loadLocations(requestedClinic).then(function(){
+                if ( state.selectedClinicId !== requestedClinic ) return;
                 renderLocationSelector();
-                if ( state.locations.length===1 ) {
-                    state.selectedLocationId = state.locations[0].id;
-                    loadTodayAndQueue().then(loadRxHistory);
-                }
-            });
+                renderSelectedContext();
+            }).catch(function(e){ showError(e.message || 'خطا در دریافت شعبه‌ها'); });
         }
         return;
     }
@@ -2445,11 +2492,14 @@ document.addEventListener('change', function(ev){
     if ( locSel ) {
         var v = locSel.value;
         state.selectedLocationId = v ? parseInt(v,10) : null;
+        state.lastEventId = 0;
         closeWorkspace();
+        renderSelectedContext();
         if ( state.selectedLocationId ) {
             loadTodayAndQueue().then(loadRxHistory);
         } else {
             state.today = null;
+            state.queue = [];
             state.rxHistory = [];
             state.rxHistoryHasMore = false;
             hide(qs('[data-role="today-section"]'));
