@@ -357,7 +357,7 @@ final class App
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
         FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
         \ClinicCore\Admin\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning
-        \ClinicCore\Admin\ClinicManagementPage::register(); // Post-onboarding — Clinic settings & lifecycle (Org-scoped, history-preserving) — Organization-scoped provisioning
+        \ClinicCore\Admin\ClinicManagementPage::register(); // Post-onboarding — Clinic settings & lifecycle (Organization-scoped, history-preserving)
         LocationAdminPage::register(); // Phase 4 — شعبه‌ها (Location master data: create + name/timezone update)
 
         SettingsAdmin::register();
