@@ -10,10 +10,13 @@ use ClinicCore\Bootstrap\App;
 /**
  * Post-onboarding Clinic settings & lifecycle — Organization-scoped, RTL Classic.
  *
- * Authority: the EXISTING Organization Manager authority only — a durable active
- * `organization_manager` membership for the exact Organization, resolved through
- * `cpms_org_clinic_create` with DENY > GRANT > preset. This slice introduces no new
- * Organization capability name and no WP Administrator / Clinic-membership shortcut.
+ * Authority: Organization Manager authority only — a durable active
+ * `organization_manager` membership for the exact Organization. Each operation resolves
+ * its OWN Organization capability with DENY > GRANT > Organization-Manager preset:
+ * `cpms_org_clinic_create` (provisioning), `cpms_org_clinic_update` (Clinic settings),
+ * `cpms_org_clinic_lifecycle` (active/suspended). Management reads are the union of the
+ * three; every write is re-authorized per operation inside the service. No WP
+ * Administrator / Clinic-membership shortcut.
  * No first-Clinic auto-selection, no cross-Clinic PHI. Medical, financial, audit and
  * backup history is preserved on suspend — only the Clinic status flag changes.
  */
@@ -60,9 +63,12 @@ final class ClinicManagementPage {
             delete_transient( $notice_key );
         }
 
-        // Existing Organization Manager authority only: cpms_org_clinic_create
-        // (DENY > GRANT > preset). No new Organization capability name is introduced
-        // by this slice, and no WP Administrator / Clinic membership shortcut exists.
+        // Organization Manager authority only. This Organization dropdown is resolved
+        // with cpms_org_clinic_create (DENY > GRANT > preset); the Clinic list inside an
+        // Organization is the union of create/update/lifecycle, and every write is
+        // re-authorized per operation in the service. No WP Administrator / Clinic
+        // membership shortcut exists. Tracked UI gap: an actor holding only the
+        // update/lifecycle capability has no path to this page (service stays fail-closed).
         $organizations = $service->organizations_for_manager( $actor_id, OrganizationClinicProvisioningService::CAPABILITY );
 
         $selected_org_id    = isset( $_GET['organization_id'] ) ? absint( $_GET['organization_id'] ) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
