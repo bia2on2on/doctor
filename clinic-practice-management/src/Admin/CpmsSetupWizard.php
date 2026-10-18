@@ -808,7 +808,7 @@ final class CpmsSetupWizard
         // Same invariant as the header banner and step indicator: the stored
         // historical flag is preserved, but the card only claims readiness
         // when the CURRENT flow genuinely satisfies it.
-        $ready = $facility_chosen
+        $ready      = $facility_chosen
             ? ( $supports_flow && $missing_now === [] )
             : ( $clinic_name !== '' && $doctor_count > 0 );
         $stale_note = '';
