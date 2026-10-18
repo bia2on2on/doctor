@@ -22,22 +22,22 @@ use RuntimeException;
  */
 final class LocationRepository
 {
-    public function __construct(private readonly CpmsDb $db)
+    public function __construct( private readonly CpmsDb $db )
     {
     }
 
     /**
      * @return array<string,mixed>|null
      */
-    public function find(int $locationId): ?array
+    public function find( int $location_id ): ?array
     {
-        if ($locationId <= 0) {
+        if ( $location_id <= 0 ) {
             return null;
         }
 
         $row = $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_locations') . ' WHERE id = %d LIMIT 1',
-            [$locationId]
+            'SELECT * FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            [$location_id]
         );
 
         $this->assertNoSqlError();
@@ -50,16 +50,16 @@ final class LocationRepository
      *
      * @return array<string,mixed>|null
      */
-    public function findForUpdate(int $locationId, int $clinicId): ?array
+    public function find_for_update( int $location_id, int $clinic_id ): ?array
     {
-        if ($locationId <= 0 || $clinicId <= 0) {
+        if ( $location_id <= 0 || $clinic_id <= 0 ) {
             return null;
         }
 
         $row = $this->db->fetchRowForUpdate(
-            'SELECT * FROM ' . $this->db->table('cpms_locations')
+            'SELECT * FROM ' . $this->db->table( 'cpms_locations' )
             . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
-            [$locationId, $clinicId]
+            [$location_id, $clinic_id]
         );
         $this->assertNoSqlError();
 
@@ -67,16 +67,16 @@ final class LocationRepository
     }
 
     /** @return int number of active Locations in the Clinic */
-    public function activeCountForClinic(int $clinicId): int
+    public function active_count_for_clinic( int $clinic_id ): int
     {
-        if ($clinicId <= 0) {
+        if ( $clinic_id <= 0 ) {
             return 0;
         }
 
         $count = $this->db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_locations')
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_locations' )
             . ' WHERE clinic_id = %d AND is_active = 1',
-            [$clinicId]
+            [$clinic_id]
         );
         $this->assertNoSqlError();
 
@@ -86,16 +86,16 @@ final class LocationRepository
     /**
      * Conditional lifecycle write. Caller holds the Clinic and Location locks.
      */
-    public function setActive(int $locationId, int $clinicId, bool $active, int $expected, string $nowSql): int
+    public function set_active( int $location_id, int $clinic_id, bool $active, int $expected, string $now_sql ): int
     {
         $changed = $this->db->update(
             'cpms_locations',
-            ['is_active' => $active ? 1 : 0, 'updated_at' => $nowSql],
-            ['id' => $locationId, 'clinic_id' => $clinicId, 'is_active' => $expected]
+            ['is_active' => $active ? 1 : 0, 'updated_at' => $now_sql],
+            ['id' => $location_id, 'clinic_id' => $clinic_id, 'is_active' => $expected]
         );
         $this->assertNoSqlError();
-        if ($changed === false) {
-            throw new RuntimeException('location lifecycle update failed');
+        if ( $changed === false ) {
+            throw new RuntimeException( 'location lifecycle update failed' );
         }
 
         return (int) $changed;
@@ -106,15 +106,15 @@ final class LocationRepository
      *
      * @return array<string,mixed>|null
      */
-    public function findBySlug(int $clinicId, string $slug): ?array
+    public function findBySlug( int $clinic_id, string $slug ): ?array
     {
-        if ($clinicId <= 0 || $slug === '') {
+        if ( $clinic_id <= 0 || $slug === '' ) {
             return null;
         }
 
         $row = $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_locations') . ' WHERE clinic_id = %d AND slug = %s LIMIT 1',
-            [$clinicId, $slug]
+            'SELECT * FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND slug = %s LIMIT 1',
+            [$clinic_id, $slug]
         );
 
         $this->assertNoSqlError();
@@ -128,20 +128,20 @@ final class LocationRepository
      *
      * بیگانه/ناموجود/غیرفعال همگی null برمی‌گردانند (پاریتِ «یافت نشد» — هیچ
      * تفکیکی در پاسخ افشا نمی‌شود)؛ سندهای کلینیکیِ Location هرگز از payload
-     * یا Clinicِ خانهٔ پزشک نمی‌آید — $clinicId فقط از Scope مورد اعتماد سرویس.
+     * یا Clinicِ خانهٔ پزشک نمی‌آید — $clinic_id فقط از Scope مورد اعتماد سرویس.
      *
      * @return array<string,mixed>|null
      */
-    public function findActiveForClinic(int $clinicId, int $locationId): ?array
+    public function findActiveForClinic( int $clinic_id, int $location_id ): ?array
     {
-        if ($clinicId <= 0 || $locationId <= 0) {
+        if ( $clinic_id <= 0 || $location_id <= 0 ) {
             return null;
         }
 
         $row = $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_locations') .
+            'SELECT * FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
-            [$locationId, $clinicId]
+            [$location_id, $clinic_id]
         );
 
         $this->assertNoSqlError();
@@ -152,16 +152,16 @@ final class LocationRepository
     /**
      * @return list<array<string,mixed>>
      */
-    public function listForClinic(int $clinicId): array
+    public function listForClinic( int $clinic_id ): array
     {
-        if ($clinicId <= 0) {
+        if ( $clinic_id <= 0 ) {
             return [];
         }
 
         $rows = $this->db->fetchAll(
-            'SELECT * FROM ' . $this->db->table('cpms_locations') .
+            'SELECT * FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE clinic_id = %d ORDER BY is_primary DESC, id ASC LIMIT 500',
-            [$clinicId]
+            [$clinic_id]
         );
 
         $this->assertNoSqlError();
@@ -178,32 +178,32 @@ final class LocationRepository
      * @return int id ردیف ساخته‌شده
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function create(int $clinicId, string $name, string $slug, string $timezone, string $nowSql): int
+    public function create( int $clinic_id, string $name, string $slug, string $timezone, string $now_sql ): int
     {
-        if ($clinicId <= 0) {
-            throw new RuntimeException('invalid trusted clinic id for location create');
+        if ( $clinic_id <= 0 ) {
+            throw new RuntimeException( 'invalid trusted clinic id for location create' );
         }
 
-        $ok = $this->db->insert('cpms_locations', [
-            'clinic_id' => $clinicId,
+        $ok = $this->db->insert( 'cpms_locations', [
+            'clinic_id' => $clinic_id,
             'name' => $name,
             'slug' => $slug,
             'timezone' => $timezone,
             'is_primary' => 0,
             'is_active' => 1,
-            'created_at' => $nowSql,
-            'updated_at' => $nowSql,
-        ]);
+            'created_at' => $now_sql,
+            'updated_at' => $now_sql,
+        ] );
 
-        if (!$ok) {
-            throw new RuntimeException('location insert failed');
+        if ( ! $ok ) {
+            throw new RuntimeException( 'location insert failed' );
         }
 
         $this->assertNoSqlError();
 
         $id = $this->db->wpdb_last_insert_id();
-        if ($id <= 0) {
-            throw new RuntimeException('location insert id unavailable');
+        if ( $id <= 0 ) {
+            throw new RuntimeException( 'location insert id unavailable' );
         }
 
         return $id;
@@ -215,10 +215,10 @@ final class LocationRepository
      * @return int affected rows (0 = no-op یا not-found — تمایز با check وجودِ قبلی سرویس)
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function updateProfile(int $locationId, string $name, string $timezone, string $nowSql): int
+    public function updateProfile( int $location_id, string $name, string $timezone, string $now_sql ): int
     {
-        if ($locationId <= 0) {
-            throw new RuntimeException('invalid location id');
+        if ( $location_id <= 0 ) {
+            throw new RuntimeException( 'invalid location id' );
         }
 
         $affected = $this->db->update(
@@ -226,9 +226,9 @@ final class LocationRepository
             [
                 'name' => $name,
                 'timezone' => $timezone,
-                'updated_at' => $nowSql,
+                'updated_at' => $now_sql,
             ],
-            ['id' => $locationId]
+            ['id' => $location_id]
         );
 
         $this->assertNoSqlError();
@@ -244,8 +244,8 @@ final class LocationRepository
     private function assertNoSqlError(): void
     {
         $error = $this->db->wpdb()->last_error;
-        if (is_string($error) && $error !== '') {
-            throw new RuntimeException('cpms_locations query failed: ' . $error);
+        if ( is_string( $error ) && $error !== '' ) {
+            throw new RuntimeException( 'cpms_locations query failed: ' . $error );
         }
     }
 }

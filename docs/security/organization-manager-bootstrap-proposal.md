@@ -1,26 +1,29 @@
-# Organization Manager bootstrap prerequisite — proposal for Owner approval
+# Organization Manager bootstrap — Owner decision and implementation contract
 
-**Status:** Proposed; not approved; implementation remains fail-closed.
+**Decision status:** Approved by the Owner on 2026-10-18 for Draft PR #244. This supersedes the previous proposal requiring an external ownership-verification authority. `manage_options` is authorized only for the narrowly scoped first-Organization-Manager bootstrap described here.
 
-## Why WordPress-local signals are insufficient
+## Approved authority
 
-The current installation can identify a WP user and an Organization row, but it cannot establish that the user is the beneficial owner or an authorized delegate of that Organization. `manage_options`, first-practice self-attestation, existing Clinic Manager membership, existing Clinic users, license activation, and a submitted Organization ID are not independently verified ownership evidence. No automatic promotion is permitted.
+A currently authenticated WordPress Administrator may explicitly activate the first Organization Manager for one specifically selected, active Organization and one specifically selected, existing WordPress user. No first Organization, user, or manager is inferred or automatically selected. Installation, upgrade, login, and ordinary requests never perform this operation.
 
-## Proposed trust ceremony
+The administrator must submit a valid action nonce and an explicit final confirmation. The server rechecks the current actor's `manage_options` capability and identity, exact Organization, Organization lifecycle, target-user existence, existing Organization memberships, and absence of manager assignments that would make the initial designation conflicting or ambiguous.
 
-Add an out-of-band, vendor-verified Organization ownership claim. A CPMS trusted identity/operations authority (not the WP installation) verifies the customer and issues a one-time, short-lived, signed bootstrap assertion containing a stable Organization identifier, intended WP account identity, issuance/expiry, nonce, and key identifier. The signed assertion is delivered to the verified customer through the verified channel and entered by an already authenticated WP user. The plugin verifies signature against pinned public keys, expiry, nonce uniqueness, exact Organization binding, and intended account binding, then atomically consumes the nonce, creates the first active Organization Manager membership, records the signing key/assertion digest and actor in tamper-evident audit, and commits. Any check or audit failure rolls back.
+## Narrow effect and non-effects
 
-The assertion must contain no patient/clinical data or reusable secret. The raw assertion is not written to logs/audit; only a non-reversible digest, issuer/key id, claim id, timestamps, Organization id, actor id, and outcome are recorded. Replays, wrong-Organization claims, expired claims, account mismatch, suspended Organization, bad signature, duplicate claim, and chain-write failure fail closed. Key rotation and revocation are handled by the trusted issuer; local verification accepts only currently trusted keys.
+The operation creates only one active `organization_manager` Organization membership with the acting Administrator recorded as creator. It must not change WordPress roles, add Clinic membership or Location assignment, create capability overrides, create Clinician records, or grant clinical, financial, PHI, Clinic, or Location capabilities. Administrator status is not an AuthorizationService bypass. In particular, it does not override explicit Organization DENY for ordinary Organization operations or Clinic DENY for Clinic-scoped operations.
 
-## Required Owner decisions before implementation
+## Persistence and audit contract
 
-1. **Trust owner:** Which legal/product entity verifies customer ownership and issues the assertion? Is that authority operationally available and accountable?
-2. **Identity proof:** What customer verification evidence and assurance level are required? How is the receiving WP identity bound (verified email, strong-auth user ID, or another approved binding)?
-3. **Organization identity:** Which immutable Organization identifier is authoritative across a migrated legacy install, replacement domain, and database restore? Existing numeric ids/slugs are not globally trusted identifiers.
-4. **Signing/key operations:** Who controls signing keys, rotation, emergency revocation, audit retention, and issuance monitoring?
-5. **Recovery:** What support process handles lost owner accounts, organization transfer, ownership dispute, and no remaining active manager? Do not permit a WordPress Administrator override as recovery.
-6. **Bootstrap timing:** Is bootstrap allowed only for newly verified customers, or may legacy customers receive a new assertion after manual verification?
+- Lock the selected Organization row before checking or creating the initial assignment.
+- Serialize same-Organization bootstrap attempts. Exactly one valid first assignment can be established.
+- The exact retry for the same active manager is an idempotent no-op and does not append another bootstrap audit event. A different target, suspended/inactive assignment, any other manager row, or other conflicting target assignment fails closed; bootstrap does not silently replace or reactivate assignments.
+- Insert the membership and `ORGANIZATION_MANAGER_BOOTSTRAPPED` hash-chained audit event in the same transaction. Audit persistence failure rolls back the membership. The audit identifies the Administrator actor, selected Organization, target user, and narrow authority source; it stores no nonce or other request secret.
+- After bootstrap, Organization Manager grants/revocations use the existing Organization-scoped capability policy (`DENY > GRANT > Manager preset`) and row-lock-protected last-active-manager invariant. No Administrator override is added to those ordinary operations.
 
-## Implementation gates
+## Classic admin surface
 
-Until these decisions and the trusted issuer exist, `bootstrap_owner()` remains closed and the admin UI must state that Organization setup is pending verification. No signed-token parser or local self-attestation is a substitute for an approved issuer. After approval, add threat-model review, key-management runbook, one-time-claim schema/indexes, server/domain verification service, audit rollback, replay/concurrency tests, and end-to-end verified bootstrap acceptance before enabling the user-facing ceremony.
+A WordPress Administrator receives a Classic RTL admin form with no default Organization or user selection, explicit selectors, required confirmation, nonce protection, server-side capability checks, and safe Persian success/error messages. Suspended Organizations are visible as unavailable and are rejected by the domain service. The form does not provision Clinics or grant ordinary powers.
+
+## Required evidence before release
+
+DB-backed tests must cover authorized bootstrap, non-Administrator denial and forged actor IDs, forged Organization/user IDs, invalid nonce and missing confirmation, suspended Organizations, exact duplicate idempotency, conflicting/ambiguous assignment refusal, concurrent competing submissions, cross-Organization isolation, absence of implicit Clinic/clinical/financial grants, audit rollback and hash-chain integrity, and last-active-manager protection after bootstrap. Full CI and independent security/product acceptance remain mandatory. PR #244 stays Draft and unmerged until those gates pass.

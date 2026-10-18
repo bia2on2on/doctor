@@ -161,7 +161,7 @@ final class CpmsDb
      * @param array<string, mixed> $data
      * @param array<string, mixed> $where
      */
-    public function update(string $table, array $data, array $where): int
+    public function update( string $table, array $data, array $where, bool $throw_on_error = false ): int
     {
         $profile_start = RequestProfiler::query_start();
         $result = $this->wpdb->update(
@@ -172,6 +172,10 @@ final class CpmsDb
             array_fill(0, count($where), '%s')
         );
         RequestProfiler::query_end( $profile_start );
+        if ( false === $result && $throw_on_error ) {
+            $error = '' !== $this->wpdb->last_error ? $this->wpdb->last_error : 'unknown error';
+            throw new RuntimeException( 'Database update failed: ' . $error );
+        }
         $this->ensureNoSqlError();
 
         return (int) $result;

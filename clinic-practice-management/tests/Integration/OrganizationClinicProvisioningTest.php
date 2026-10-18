@@ -176,7 +176,7 @@ final class OrganizationClinicProvisioningTest extends WP_UnitTestCase
         }
     }
 
-    public function testLastOrganizationManagerCannotBeRevokedAndBootstrapRemainsClosed(): void
+    public function testLastOrganizationManagerCannotBeRevoked(): void
     {
         $this->manager($this->actor, $this->org);
         try {
@@ -189,13 +189,6 @@ final class OrganizationClinicProvisioningTest extends WP_UnitTestCase
             self::fail('last manager removed');
         } catch (RuntimeException $exception) {
             self::assertStringContainsString('last active', $exception->getMessage());
-        }
-
-        try {
-            App::organization_clinic_provisioning_service()->bootstrap_owner($this->actor, $this->org);
-            self::fail('bootstrap unexpectedly opened');
-        } catch (RuntimeException $exception) {
-            self::assertStringContainsString('verified ownership evidence', $exception->getMessage());
         }
     }
 }
