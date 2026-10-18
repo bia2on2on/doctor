@@ -145,11 +145,12 @@ final class FacilityTypeCatalog {
      * Persian refusal message for an incompatible type/structure pair.
      */
     public static function structure_incompatibility_message( string $facility_id, string $structure ): string {
+        $label = (string) ( self::structures()[ $structure ] ?? $structure );
         if ( $facility_id === 'hospital' ) {
-            return 'ساختار انتخاب‌شده با بیمارستان سازگار نیست: بیمارستان فقط با ساختار «بیمارستان یا شبکهٔ درمانی» (یا پیش‌فرض همان نوع مرکز) راه‌اندازی می‌شود و جریان‌های مطب/درمانگاه/ساختمان پزشکی محدودیت «فقط سرپایی» را دور نمی‌زنند.';
+            return 'ساختار «' . $label . '» با بیمارستان سازگار نیست: بیمارستان فقط با ساختار «بیمارستان یا شبکهٔ درمانی» (یا پیش‌فرض همان نوع مرکز) راه‌اندازی می‌شود و جریان‌های مطب/درمانگاه/ساختمان پزشکی محدودیت «فقط سرپایی» را دور نمی‌زنند.';
         }
 
-        return 'ساختار «بیمارستان یا شبکهٔ درمانی» فقط برای نوع مرکز بیمارستان قابل انتخاب است؛ برای این نوع مرکز، ساختار نامعتبر یا نامتناسب است.';
+        return 'ساختار «' . $label . '» با این نوع مرکز سازگار نیست: ساختار «بیمارستان یا شبکهٔ درمانی» فقط برای نوع مرکز بیمارستان قابل انتخاب است.';
     }
 
     public static function resolve_flow( string $facility_id, string $structure = '' ): string {

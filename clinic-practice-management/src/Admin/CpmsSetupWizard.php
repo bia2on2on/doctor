@@ -144,12 +144,12 @@ final class CpmsSetupWizard
                 $index = self::stepIndexById( $requested_step );
             }
         }
-        $step = $steps[$index];
+        $step = $steps[ $index ];
         // Truthful completion state: the historical setup.completed flag is
         // preserved in storage, but the banner/indicator only claims
         // completion when the CURRENT flow supports provisioning and every
         // CURRENT required step is verifiably complete.
-        $isComplete = self::current_flow_is_complete( $settings );
+        $is_complete = self::current_flow_is_complete( $settings );
 
         // GET is strictly read-only: rendering must never persist settings
         // or audit rows (a former setup.started_at write here is what made
@@ -167,7 +167,7 @@ final class CpmsSetupWizard
                 <div class="notice <?php echo str_starts_with($notice, 'خطا') ? 'notice-error' : 'notice-success'; ?> is-dismissible"><p><?php echo esc_html($notice); ?></p></div>
             <?php endif; ?>
 
-            <?php if ($isComplete) : ?>
+            <?php if ( $is_complete ) : ?>
                 <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — کلینیک برای شروع عملیات آماده است.</p></div>
             <?php endif; ?>
 
@@ -808,18 +808,24 @@ final class CpmsSetupWizard
         // Same invariant as the header banner and step indicator: the stored
         // historical flag is preserved, but the card only claims readiness
         // when the CURRENT flow genuinely satisfies it.
-        $ready            = $facility_chosen
+        $ready = $facility_chosen
             ? ( $supports_flow && $missing_now === [] )
             : ( $clinic_name !== '' && $doctor_count > 0 );
+        $stale_note = '';
+        if ( $stored_completed ) {
+            $stale_note = $supports_flow
+                ? ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.'
+                : ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.';
+        }
         ?>
         <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
             <h2>شروع عملیات کلینیک</h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
             <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
-                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تکمیل راه‌اندازی برای ساختمان/مجتمع پزشکی در این ویزارد به‌شکل ایمن مسدود است؛ ایجاد درمانگاه مستقل فقط از طریق اختیار صریح مدیر سازمان انجام می‌شود.<?php if ( $stored_completed ) : ?> تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.<?php endif; ?></p>
+                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تکمیل راه‌اندازی برای ساختمان/مجتمع پزشکی در این ویزارد به‌شکل ایمن مسدود است؛ ایجاد درمانگاه مستقل فقط از طریق اختیار صریح مدیر سازمان انجام می‌شود.<?php echo esc_html( $stale_note ); ?></p>
             <?php elseif ( $facility_chosen && $missing_now !== [] ) : ?>
-                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ پیش‌نیازهای الزامی جریان فعلی برآورده نشده است: <?php echo esc_html( implode( '، ', $missing_now ) ); ?>.<?php if ( $stored_completed ) : ?> تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.<?php endif; ?></p>
+                <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ پیش‌نیازهای الزامی جریان فعلی برآورده نشده است: <?php echo esc_html( implode( '، ', $missing_now ) ); ?>.<?php echo esc_html( $stale_note ); ?></p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php else : ?>
                 <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات کلینیک + یک پزشک فعال) برآورده نشده است.</p>
@@ -1146,7 +1152,7 @@ final class CpmsSetupWizard
             wp_die( 'ساختار نامعتبر است', 400 );
         }
         if ( ! FacilityTypeCatalog::structure_is_compatible( $facility, $structure ) ) {
-            wp_die( FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure ), 400 );
+            wp_die( esc_html( FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure ) ), 400 );
         }
         $uid = (int) get_current_user_id();
         update_user_meta( $uid, 'cpms_onboarding_facility_type', $facility );
