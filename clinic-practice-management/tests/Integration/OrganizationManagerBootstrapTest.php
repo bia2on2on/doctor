@@ -202,11 +202,15 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
             }
             self::assertCount(1, array_filter($outcomes, static fn (string $outcome): bool => $outcome === 'RESULT:CREATED'));
             self::assertCount(1, array_filter($outcomes, static fn (string $outcome): bool => $outcome === 'RESULT:CONFLICT'));
-            self::assertSame(1, (int) App::db()->fetchValue(
-                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_organization_memberships')
-                . ' WHERE organization_id = %d AND role_key = %s AND status = %s',
+            // The workers committed in their own processes, so this connection's
+            // REPEATABLE READ snapshot predates them. A locking read returns the
+            // latest committed version, which is what this test verifies.
+            $winning_memberships = App::db()->fetchAll(
+                'SELECT id FROM ' . App::db()->table('cpms_organization_memberships')
+                . ' WHERE organization_id = %d AND role_key = %s AND status = %s FOR UPDATE',
                 [$this->organization_id, 'organization_manager', 'active']
-            ));
+            );
+            self::assertCount(1, $winning_memberships, 'exactly one active manager membership must survive the race');
             self::assertSame(1, $this->bootstrap_audit_count(), 'only the winning initial assignment is audited');
             self::assertTrue(App::audit()->verifyChain(1000)['ok']);
         } finally {
@@ -462,11 +466,15 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
 
     private function bootstrap_audit_count(): int
     {
-        return (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs')
-            . ' WHERE action = %s AND resource_id = %d',
+        // Locking read: rows committed by another process (the concurrent
+        // bootstrap workers) are not part of this connection's snapshot.
+        $rows = App::db()->fetchAll(
+            'SELECT id FROM ' . App::db()->table('cpms_audit_logs')
+            . ' WHERE action = %s AND resource_id = %d FOR UPDATE',
             ['ORGANIZATION_MANAGER_BOOTSTRAPPED', $this->organization_id]
         );
+
+        return count($rows);
     }
 
     /** @return array<string,mixed>|null */
