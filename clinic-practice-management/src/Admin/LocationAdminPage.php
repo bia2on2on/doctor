@@ -116,8 +116,8 @@ final class LocationAdminPage
                         <tr>
                             <td data-label="نام"><?php echo esc_html( (string) $r['name'] ); ?></td>
                             <td data-label="شناسه"><span class="ltr"><?php echo esc_html( (string) $r['slug'] ); ?></span></td>
-                            <td data-label="آدرس"><?php echo esc_html( (string) ( $r['address'] ?? '' ) ) ?: '—'; ?></td>
-                            <td data-label="تلفن"><span class="ltr"><?php echo esc_html( (string) ( $r['phone'] ?? '' ) ) ?: '—'; ?></span></td>
+                            <td data-label="آدرس"><?php echo esc_html( '' !== (string) ( $r['address'] ?? '' ) ? (string) $r['address'] : '—' ); ?></td>
+                            <td data-label="تلفن"><span class="ltr"><?php echo esc_html( '' !== (string) ( $r['phone'] ?? '' ) ? (string) $r['phone'] : '—' ); ?></span></td>
                             <td data-label="منطقهٔ زمانی"><span class="ltr"><?php echo esc_html( (string) $r['timezone'] ); ?></span></td>
                             <td data-label="اصلی"><?php echo (int) $r['is_primary'] === 1 ? '<span class="cpms-badge cpms-ok">اصلی</span>' : '—'; ?></td>
                             <td data-label="وضعیت"><?php echo (int) $r['is_active'] === 1 ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
@@ -212,12 +212,12 @@ final class LocationAdminPage
         check_admin_referer( self::NONCE_ACTION );
 
         $in = [
-            'mode' => isset( $_POST['mode'] ) ? wp_unslash( $_POST['mode'] ) : 'create',
-            'clinic_id' => isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] ) ? absint( wp_unslash( (string) $_POST['clinic_id'] ) ) : null, // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+            'mode'        => isset( $_POST['mode'] ) ? wp_unslash( $_POST['mode'] ) : 'create',
+            'clinic_id'   => isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] ) ? absint( wp_unslash( (string) $_POST['clinic_id'] ) ) : null, // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             'location_id' => isset( $_POST['location_id'] ) ? wp_unslash( $_POST['location_id'] ) : 0,
-            'name' => isset( $_POST['name'] ) ? wp_unslash( $_POST['name'] ) : '',
-            'slug' => isset( $_POST['slug'] ) ? wp_unslash( $_POST['slug'] ) : '',
-            'timezone' => isset( $_POST['timezone'] ) ? wp_unslash( $_POST['timezone'] ) : '',
+            'name'        => isset( $_POST['name'] ) ? wp_unslash( $_POST['name'] ) : '',
+            'slug'        => isset( $_POST['slug'] ) ? wp_unslash( $_POST['slug'] ) : '',
+            'timezone'    => isset( $_POST['timezone'] ) ? wp_unslash( $_POST['timezone'] ) : '',
         ];
         // Preserve existing optional profile values for older/partial clients
         // that omit the field. An explicitly submitted empty string clears it.
@@ -245,8 +245,8 @@ final class LocationAdminPage
         }
         check_admin_referer( self::LIFECYCLE_NONCE_ACTION );
 
-        $actor_user_id = (int) get_current_user_id();
-        $raw_clinic_id = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
+        $actor_user_id       = (int) get_current_user_id();
+        $raw_clinic_id       = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
             ? wp_unslash( (string) $_POST['clinic_id'] )
             : null;
         $requested_clinic_id = $raw_clinic_id !== null ? absint( $raw_clinic_id ) : null;
@@ -255,9 +255,9 @@ final class LocationAdminPage
         $authorization = self::authorize_location_write( $actor_user_id, $requested_clinic_id );
         if ( $authorization['error'] === '' ) {
             $raw_location_id = isset( $_POST['location_id'] ) ? wp_unslash( $_POST['location_id'] ) : 0;
-            $location_id = is_scalar( $raw_location_id ) ? absint( (string) $raw_location_id ) : 0;
-            $raw_active = isset( $_POST['active'] ) ? wp_unslash( $_POST['active'] ) : '';
-            $active_value = self::sanitizeTextInput( $raw_active );
+            $location_id     = is_scalar( $raw_location_id ) ? absint( (string) $raw_location_id ) : 0;
+            $raw_active      = isset( $_POST['active'] ) ? wp_unslash( $_POST['active'] ) : '';
+            $active_value    = self::sanitize_text_input( $raw_active );
 
             if ( $active_value === '0' || $active_value === '1' ) {
                 try {
@@ -299,7 +299,7 @@ final class LocationAdminPage
             return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'location_id' => 0, 'clinic_id' => 0, 'noop' => false];
         }
 
-        $raw_clinic_id = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
+        $raw_clinic_id       = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
         $requested_clinic_id = $raw_clinic_id !== null && is_scalar( $raw_clinic_id )
             ? absint( (string) $raw_clinic_id )
             : null;
@@ -311,25 +311,25 @@ final class LocationAdminPage
 
         // Sanitize and validate caller-controlled profile values only after the
         // requested Clinic has passed its durable authorization check.
-        $mode_raw = $in['mode'] ?? 'create';
-        $mode = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
-        $name = self::sanitizeTextInput( $in['name'] ?? '' );
-        $slug = self::sanitizeTextInput( $in['slug'] ?? '' );
-        $timezone = self::sanitizeTextInput( $in['timezone'] ?? '' );
+        $mode_raw        = $in['mode'] ?? 'create';
+        $mode            = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
+        $name            = self::sanitize_text_input( $in['name'] ?? '' );
+        $slug            = self::sanitize_text_input( $in['slug'] ?? '' );
+        $timezone        = self::sanitize_text_input( $in['timezone'] ?? '' );
         $location_raw_id = $in['location_id'] ?? 0;
-        $location_id = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
+        $location_id     = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
 
         try {
             if ( $mode === 'update' ) {
                 $update_input = [
-                    'name' => $name,
+                    'name'     => $name,
                     'timezone' => $timezone,
                 ];
                 if ( array_key_exists( 'address', $in ) ) {
-                    $update_input['address'] = self::sanitizeTextInput( $in['address'] );
+                    $update_input['address'] = self::sanitize_text_input( $in['address'] );
                 }
                 if ( array_key_exists( 'phone', $in ) ) {
-                    $update_input['phone'] = self::sanitizeTextInput( $in['phone'] );
+                    $update_input['phone'] = self::sanitize_text_input( $in['phone'] );
                 }
                 $result = App::locationService()->updateLocation(
                     $updated_by,
@@ -342,10 +342,10 @@ final class LocationAdminPage
                     $updated_by,
                     $authorization['clinic_id'],
                     [
-                        'name' => $name,
-                        'slug' => $slug,
-                        'address' => array_key_exists( 'address', $in ) ? self::sanitizeTextInput( $in['address'] ) : null,
-                        'phone' => array_key_exists( 'phone', $in ) ? self::sanitizeTextInput( $in['phone'] ) : null,
+                        'name'     => $name,
+                        'slug'     => $slug,
+                        'address'  => array_key_exists( 'address', $in ) ? self::sanitize_text_input( $in['address'] ) : null,
+                        'phone'    => array_key_exists( 'phone', $in ) ? self::sanitize_text_input( $in['phone'] ) : null,
                         'timezone' => $timezone,
                     ]
                 );
@@ -398,7 +398,7 @@ final class LocationAdminPage
     }
 
     /** Sanitize a string only; preserve invalid shapes for fail-closed domain validation. */
-    private static function sanitizeTextInput( mixed $value ): mixed {
+    private static function sanitize_text_input( mixed $value ): mixed {
         return is_string( $value ) ? sanitize_text_field( $value ) : $value;
     }
 
@@ -454,7 +454,7 @@ final class LocationAdminPage
      */
     private static function formClinicId(): int
     {
-        if ( ! isset( $_GET['clinic_id'] ) || ! is_scalar( $_GET['clinic_id'] ) ) {
+        if ( ! isset( $_GET['clinic_id'] ) || ! is_scalar( $_GET['clinic_id'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only Clinic selector; write authorization is rechecked
             return 0;
         }
         $requested = absint( wp_unslash( (string) $_GET['clinic_id'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only

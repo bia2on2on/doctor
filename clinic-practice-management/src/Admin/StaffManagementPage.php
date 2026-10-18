@@ -147,128 +147,130 @@ final class StaffManagementPage
                     </tbody>
                 </table>
             <?php elseif ( $clinic_id > 0 ) : ?>
-                <?php echo CpmsUi::emptyState('👥', 'هنوز پرسنلی ثبت نشده', 'کاربران و عضویت‌های Clinic انتخاب‌شده را از فرم پایین اضافه کنید. administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id)); ?>
+                <?php echo wp_kses_post( CpmsUi::emptyState( '👥', 'هنوز پرسنلی ثبت نشده', 'کاربران و عضویت‌های Clinic انتخاب‌شده را از فرم پایین اضافه کنید. administrator از این‌جا قابل تغییر نیست.', 'افزودن کاربر', admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id ) ) ); ?>
             <?php endif; ?>
 
             <?php if ( $clinic_id > 0 ) : ?>
-            <?php $edit = self::edit_target( $clinic_id ); ?>
-            <h2><?php echo $edit !== null ? 'ویرایش کاربر' : 'افزودن کاربر'; ?></h2>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-                <?php wp_nonce_field(self::NONCE_ACTION); ?>
-                <input type="hidden" name="action" value="cpms_staff_save">
-                <input type="hidden" name="mode" value="<?php echo $edit !== null ? 'update' : 'create'; ?>">
-                <input type="hidden" name="user_id" value="<?php echo $edit !== null ? (int) $edit['id'] : 0; ?>">
-                <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
-
-                <table class="form-table" role="presentation">
-                    <?php if ($edit === null) : ?>
-                        <tr><th><label for="u_login">نام کاربری (ورود)</label></th><td><input type="text" id="u_login" name="username" class="regular-text" required value=""></td></tr>
-                    <?php else : ?>
-                        <tr><th>نام کاربری</th><td><?php echo esc_html((string) $edit['login']); ?> <code>(ثابت)</code></td></tr>
-                    <?php endif; ?>
-                    <tr><th><label for="u_disp">نام نمایشی</label></th><td><input type="text" id="u_disp" name="display_name" class="regular-text" required value="<?php echo esc_attr($edit !== null ? (string) $edit['display_name'] : ''); ?>"></td></tr>
-                    <tr><th><label for="u_email">ایمیل</label></th><td><input type="email" id="u_email" name="email" class="regular-text" required value="<?php echo esc_attr($edit !== null ? (string) $edit['email'] : ''); ?>"></td></tr>
-                    <tr><th><label for="u_role">نقش CPMS</label></th>
-                        <td><select id="u_role" name="role">
-                            <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
-                                <option value="" selected><?php echo esc_html( '— حفظ نقش سفارشی فعلی: ' . (string) $edit['role_label'] . ' (بدون تغییر عضویت و بدون تغییر نقش WordPress) —' ); ?></option>
-                            <?php endif; ?>
-                            <?php foreach ($roles as $slug => $label) : ?>
-                                <option value="<?php echo esc_attr($slug); ?>" <?php selected($edit === null ? '' : (string) $edit['role'], $slug); ?>><?php echo esc_html($label); ?></option>
-                            <?php endforeach; ?>
-                        </select>
-                            <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
-                                <p class="description">این کارمند در این Clinic یک نقش سفارشی دارد. با گزینهٔ بالا فقط نام/ایمیل/رمز تغییر می‌کند؛ اگر یکی از نقش‌های CPMS را انتخاب کنید، انتساب سفارشی با همان نقش داخلی جایگزین می‌شود.</p>
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <tr><th><label for="u_password">رمز عبور</label></th>
-                        <td>
-                            <input type="password" id="u_password" name="password" class="regular-text" autocomplete="new-password" value="">
-                            <p class="description">برای «افزودن» خالی بگذارید تا رمز قوی تصادفی ساخته و یک‌بار نمایش داده شود؛ یا رمز دلخواه (حداقل ۱۰ کاراکتر شامل حرف و عدد) وارد کنید. رمز هرگز به‌صورت plaintext ذخیره نمی‌شود.</p>
-                        </td>
-                    </tr>
-                </table>
-                <p class="submit"><button type="submit" class="button button-primary"><?php echo $edit !== null ? 'ذخیره تغییرات' : 'افزودن کاربر'; ?></button>
-                <?php if ($edit !== null) : ?><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id)); ?>">انصراف</a><?php endif; ?>
-                </p>
-            </form>
-
-            <?php if ( $clinic_id > 0 ) : ?>
-                <h2>افزودن کاربر موجود به این Clinic</h2>
-                <p class="description">شناسهٔ عددی WordPress حساب موجود را وارد کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
+                <?php $edit = self::edit_target( $clinic_id ); ?>
+                <h2><?php echo $edit !== null ? 'ویرایش کاربر' : 'افزودن کاربر'; ?></h2>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field(self::NONCE_ACTION); ?>
                     <input type="hidden" name="action" value="cpms_staff_save">
-                    <input type="hidden" name="mode" value="attach_existing">
+                    <input type="hidden" name="mode" value="<?php echo $edit !== null ? 'update' : 'create'; ?>">
+                    <input type="hidden" name="user_id" value="<?php echo $edit !== null ? (int) $edit['id'] : 0; ?>">
                     <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
-                    <table class="form-table" role="presentation">
-                        <tr><th><label for="cpms_existing_user">شناسهٔ حساب WordPress موجود</label></th>
-                            <td>
-                                <input type="number" id="cpms_existing_user" name="existing_user_id" min="1" step="1" required>
-                                <p class="description">شناسهٔ پایدار کاربر را از حساب موجود بردارید؛ جست‌وجوی موبایل یا merge خودکار انجام نمی‌شود.</p>
-                            </td>
-                        </tr>
-                        <tr><th><label for="cpms_existing_role">نقش عضویت در این Clinic</label></th>
-                            <td>
-                                <select id="cpms_existing_role" name="role" required>
-                                    <?php foreach ($roles as $slug => $label) : ?>
-                                        <option value="<?php echo esc_attr($slug); ?>"><?php echo esc_html($label); ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <p class="description">نقش این عضویت به‌صورت Clinic-scoped اعمال می‌شود؛ Membership با مجوز یکی نیست.</p>
-                            </td>
-                        </tr>
-                    </table>
-                    <p class="submit"><button type="submit" class="button button-primary">افزودن کاربر موجود</button></p>
-                </form>
-            <?php endif; ?>
 
-            <?php if ( [] !== $assignable['definitions'] && [] !== $assignable['members'] ) : ?>
-                <h2 id="cpms-staff-role-assignment">انتساب نقش سفارشی Clinic</h2>
-                <p class="description">
-                    این انتساب فقط روی «عضویت همین Clinic» اثر می‌گذارد: نقش سراسری WordPress تغییر نمی‌کند، پروفایل حرفه‌ای (پزشک) دست‌نخورده
-                    می‌ماند و ردیف‌های GRANT/DENY عضویت جابه‌جا نمی‌شوند. فقط نقش‌های سفارشیِ <strong>فعالِ همین Clinic</strong> و فقط تا سقف
-                    اختیار مؤثر شما قابل انتساب‌اند. بازگردانی به نقش داخلی از همان فرم «ویرایش» این صفحه (انتخاب یکی از نقش‌های CPMS) انجام می‌شود.
-                </p>
-                <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
-                    <?php wp_nonce_field( self::NONCE_ASSIGN ); ?>
-                    <input type="hidden" name="action" value="cpms_staff_assign_custom_role">
-                    <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
                     <table class="form-table" role="presentation">
-                        <tr><th><label for="cpms_assign_target">کارمند موجود (عضویت فعال)</label></th>
-                            <td>
-                                <select id="cpms_assign_target" name="target_user_id" required>
-                                    <?php foreach ( $assignable['members'] as $member ) : ?>
-                                        <option value="<?php echo (int) $member['id']; ?>"><?php echo esc_html( (string) $member['label'] ); ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <p class="description">فقط عضویت‌های فعال همین Clinic؛ این عمل هیچ عضویت، حساب WordPress یا پروفایل حرفه‌ای تازه‌ای نمی‌سازد.</p>
+                        <?php if ( $edit === null ) : ?>
+                            <tr><th><label for="u_login">نام کاربری (ورود)</label></th><td><input type="text" id="u_login" name="username" class="regular-text" required value=""></td></tr>
+                        <?php else : ?>
+                            <tr><th>نام کاربری</th><td><?php echo esc_html( (string) $edit['login'] ); ?> <code>(ثابت)</code></td></tr>
+                        <?php endif; ?>
+                        <tr><th><label for="u_disp">نام نمایشی</label></th><td><input type="text" id="u_disp" name="display_name" class="regular-text" required value="<?php echo esc_attr( $edit !== null ? (string) $edit['display_name'] : '' ); ?>"></td></tr>
+                        <tr><th><label for="u_email">ایمیل</label></th><td><input type="email" id="u_email" name="email" class="regular-text" required value="<?php echo esc_attr( $edit !== null ? (string) $edit['email'] : '' ); ?>"></td></tr>
+                        <tr><th><label for="u_role">نقش CPMS</label></th>
+                            <td><select id="u_role" name="role">
+                                <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
+                                    <option value="" selected><?php echo esc_html( '— حفظ نقش سفارشی فعلی: ' . (string) $edit['role_label'] . ' (بدون تغییر عضویت و بدون تغییر نقش WordPress) —' ); ?></option>
+                                <?php endif; ?>
+                                <?php foreach ( $roles as $slug => $label ) : ?>
+                                    <option value="<?php echo esc_attr( $slug ); ?>" <?php selected( $edit === null ? '' : (string) $edit['role'], $slug ); ?>><?php echo esc_html( $label ); ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                                <?php if ( $edit !== null && '' !== (string) ( $edit['membership_role'] ?? '' ) && ! in_array( (string) $edit['membership_role'], array_keys( $roles ), true ) ) : ?>
+                                    <p class="description">این کارمند در این Clinic یک نقش سفارشی دارد. با گزینهٔ بالا فقط نام/ایمیل/رمز تغییر می‌کند؛ اگر یکی از نقش‌های CPMS را انتخاب کنید، انتساب سفارشی با همان نقش داخلی جایگزین می‌شود.</p>
+                                <?php endif; ?>
                             </td>
                         </tr>
-                        <tr><th><label for="cpms_assign_role">نقش سفارشی</label></th>
+                        <tr><th><label for="u_password">رمز عبور</label></th>
                             <td>
-                                <select id="cpms_assign_role" name="custom_role_key" required>
-                                    <?php foreach ( $assignable['definitions'] as $definition ) : ?>
-                                        <?php
-                                        $cpms_definition_label  = ( null !== $definition['display_name'] && '' !== $definition['display_name'] )
-                                            ? (string) $definition['display_name']
-                                            : (string) $definition['role_key'];
-                                        $cpms_definition_effect = $definition['empty']
-                                            ? 'بدون هیچ مجوزی — فقط برچسب عضویت؛ هیچ دسترسی‌ای ایجاد نمی‌کند'
-                                            : 'مجوزها: ' . implode( ', ', $definition['capabilities'] );
-                                        ?>
-                                        <option value="<?php echo esc_attr( (string) $definition['role_key'] ); ?>"><?php echo esc_html( $cpms_definition_label . ' — ' . $cpms_definition_effect ); ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                                <p class="description">نقش‌هایی که مجوزی خارج از اختیار مؤثر شما در این Clinic دارند در این فهرست نمایش داده نمی‌شوند و انتساب آن‌ها رد می‌شود.</p>
+                                <input type="password" id="u_password" name="password" class="regular-text" autocomplete="new-password" value="">
+                                <p class="description">برای «افزودن» خالی بگذارید تا رمز قوی تصادفی ساخته و یک‌بار نمایش داده شود؛ یا رمز دلخواه (حداقل ۱۰ کاراکتر شامل حرف و عدد) وارد کنید. رمز هرگز به‌صورت plaintext ذخیره نمی‌شود.</p>
                             </td>
                         </tr>
                     </table>
-                    <p class="submit"><button type="submit" class="button button-primary">انتساب نقش سفارشی</button></p>
+                    <p class="submit"><button type="submit" class="button button-primary"><?php echo $edit !== null ? 'ذخیره تغییرات' : 'افزودن کاربر'; ?></button>
+                    <?php if ( $edit !== null ) : ?>
+                        <a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id ) ); ?>">انصراف</a>
+                    <?php endif; ?>
+                    </p>
                 </form>
-            <?php endif; ?>
-            <?php self::render_suspended_reassignment( $clinic_id, $assignable ); ?>
+
+                <?php if ( $clinic_id > 0 ) : ?>
+                    <h2>افزودن کاربر موجود به این Clinic</h2>
+                    <p class="description">شناسهٔ عددی WordPress حساب موجود را وارد کنید. این عملیات حساب WordPress یا پروفایل حرفه‌ای جدید نمی‌سازد؛ فقط عضویت همین کاربر را در Clinic انتخاب‌شده ایجاد می‌کند.</p>
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( self::NONCE_ACTION ); ?>
+                        <input type="hidden" name="action" value="cpms_staff_save">
+                        <input type="hidden" name="mode" value="attach_existing">
+                        <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
+                        <table class="form-table" role="presentation">
+                            <tr><th><label for="cpms_existing_user">شناسهٔ حساب WordPress موجود</label></th>
+                                <td>
+                                    <input type="number" id="cpms_existing_user" name="existing_user_id" min="1" step="1" required>
+                                    <p class="description">شناسهٔ پایدار کاربر را از حساب موجود بردارید؛ جست‌وجوی موبایل یا merge خودکار انجام نمی‌شود.</p>
+                                </td>
+                            </tr>
+                            <tr><th><label for="cpms_existing_role">نقش عضویت در این Clinic</label></th>
+                                <td>
+                                    <select id="cpms_existing_role" name="role" required>
+                                        <?php foreach ( $roles as $slug => $label ) : ?>
+                                            <option value="<?php echo esc_attr( $slug ); ?>"><?php echo esc_html( $label ); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description">نقش این عضویت به‌صورت Clinic-scoped اعمال می‌شود؛ Membership با مجوز یکی نیست.</p>
+                                </td>
+                            </tr>
+                        </table>
+                        <p class="submit"><button type="submit" class="button button-primary">افزودن کاربر موجود</button></p>
+                    </form>
+                <?php endif; ?>
+
+                <?php if ( [] !== $assignable['definitions'] && [] !== $assignable['members'] ) : ?>
+                    <h2 id="cpms-staff-role-assignment">انتساب نقش سفارشی Clinic</h2>
+                    <p class="description">
+                        این انتساب فقط روی «عضویت همین Clinic» اثر می‌گذارد: نقش سراسری WordPress تغییر نمی‌کند، پروفایل حرفه‌ای (پزشک) دست‌نخورده
+                        می‌ماند و ردیف‌های GRANT/DENY عضویت جابه‌جا نمی‌شوند. فقط نقش‌های سفارشیِ <strong>فعالِ همین Clinic</strong> و فقط تا سقف
+                        اختیار مؤثر شما قابل انتساب‌اند. بازگردانی به نقش داخلی از همان فرم «ویرایش» این صفحه (انتخاب یکی از نقش‌های CPMS) انجام می‌شود.
+                    </p>
+                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+                        <?php wp_nonce_field( self::NONCE_ASSIGN ); ?>
+                        <input type="hidden" name="action" value="cpms_staff_assign_custom_role">
+                        <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
+                        <table class="form-table" role="presentation">
+                            <tr><th><label for="cpms_assign_target">کارمند موجود (عضویت فعال)</label></th>
+                                <td>
+                                    <select id="cpms_assign_target" name="target_user_id" required>
+                                        <?php foreach ( $assignable['members'] as $member ) : ?>
+                                            <option value="<?php echo (int) $member['id']; ?>"><?php echo esc_html( (string) $member['label'] ); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description">فقط عضویت‌های فعال همین Clinic؛ این عمل هیچ عضویت، حساب WordPress یا پروفایل حرفه‌ای تازه‌ای نمی‌سازد.</p>
+                                </td>
+                            </tr>
+                            <tr><th><label for="cpms_assign_role">نقش سفارشی</label></th>
+                                <td>
+                                    <select id="cpms_assign_role" name="custom_role_key" required>
+                                        <?php foreach ( $assignable['definitions'] as $definition ) : ?>
+                                            <?php
+                                            $cpms_definition_label  = ( null !== $definition['display_name'] && '' !== $definition['display_name'] )
+                                                ? (string) $definition['display_name']
+                                                : (string) $definition['role_key'];
+                                            $cpms_definition_effect = $definition['empty']
+                                                ? 'بدون هیچ مجوزی — فقط برچسب عضویت؛ هیچ دسترسی‌ای ایجاد نمی‌کند'
+                                                : 'مجوزها: ' . implode( ', ', $definition['capabilities'] );
+                                            ?>
+                                            <option value="<?php echo esc_attr( (string) $definition['role_key'] ); ?>"><?php echo esc_html( $cpms_definition_label . ' — ' . $cpms_definition_effect ); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description">نقش‌هایی که مجوزی خارج از اختیار مؤثر شما در این Clinic دارند در این فهرست نمایش داده نمی‌شوند و انتساب آن‌ها رد می‌شود.</p>
+                                </td>
+                            </tr>
+                        </table>
+                        <p class="submit"><button type="submit" class="button button-primary">انتساب نقش سفارشی</button></p>
+                    </form>
+                <?php endif; ?>
+                <?php self::render_suspended_reassignment( $clinic_id, $assignable ); ?>
             <?php else : ?>
                 <div class="notice notice-info"><p>برای ادامه، Clinic را صریحاً از فهرست بالا انتخاب کنید. فرم‌های افزودن و انتساب نقش تا انتخاب صریح غیرفعال می‌مانند.</p></div>
             <?php endif; ?>
@@ -316,16 +318,16 @@ final class StaffManagementPage
         // current_user_can() is not Clinic authorization; the scoped write guard below is authoritative.
         check_admin_referer(self::NONCE_ACTION);
 
-        $raw_mode = isset( $_POST['mode'] ) ? wp_unslash( $_POST['mode'] ) : 'create';
-        $mode = is_string( $raw_mode ) ? sanitize_key( $raw_mode ) : 'create';
-        $mode = in_array( $mode, [ 'update', 'attach_existing' ], true ) ? $mode : 'create';
-        $raw_clinic_id = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
+        $raw_mode         = isset( $_POST['mode'] ) ? wp_unslash( $_POST['mode'] ) : 'create';
+        $mode             = is_string( $raw_mode ) ? sanitize_key( $raw_mode ) : 'create';
+        $mode             = in_array( $mode, [ 'update', 'attach_existing' ], true ) ? $mode : 'create';
+        $raw_clinic_id    = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
             ? absint( wp_unslash( (string) $_POST['clinic_id'] ) )
             : null;
-        $raw_user_id = isset( $_POST['user_id'] ) && is_scalar( $_POST['user_id'] )
+        $raw_user_id      = isset( $_POST['user_id'] ) && is_scalar( $_POST['user_id'] )
             ? absint( wp_unslash( (string) $_POST['user_id'] ) )
             : 0;
-        $actor_user_id = (int) get_current_user_id();
+        $actor_user_id    = (int) get_current_user_id();
         $preauthorization = self::authorize_staff_write(
             $actor_user_id,
             $raw_clinic_id,
@@ -337,16 +339,16 @@ final class StaffManagementPage
         } else {
             // Sanitize user-controlled profile values only after the requested
             // Clinic (and durable target membership for updates) is authorized.
-            $in = [
-                'mode' => $mode,
-                'user_id' => $raw_user_id,
+            $in     = [
+                'mode'             => $mode,
+                'user_id'          => $raw_user_id,
                 'existing_user_id' => isset( $_POST['existing_user_id'] ) && is_scalar( $_POST['existing_user_id'] ) ? absint( wp_unslash( (string) $_POST['existing_user_id'] ) ) : 0,
-                'clinic_id' => $raw_clinic_id,
-                'username' => isset( $_POST['username'] ) && is_string( $_POST['username'] ) ? sanitize_user( wp_unslash( $_POST['username'] ), true ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-                'display_name' => isset( $_POST['display_name'] ) && is_string( $_POST['display_name'] ) ? sanitize_text_field( wp_unslash( $_POST['display_name'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-                'email' => isset( $_POST['email'] ) && is_string( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-                'role' => isset( $_POST['role'] ) && is_string( $_POST['role'] ) ? sanitize_key( wp_unslash( $_POST['role'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
-                'password' => isset( $_POST['password'] ) && is_scalar( $_POST['password'] ) ? (string) wp_unslash( $_POST['password'] ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                'clinic_id'        => $raw_clinic_id,
+                'username'         => isset( $_POST['username'] ) && is_string( $_POST['username'] ) ? sanitize_user( wp_unslash( $_POST['username'] ), true ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                'display_name'     => isset( $_POST['display_name'] ) && is_string( $_POST['display_name'] ) ? sanitize_text_field( wp_unslash( $_POST['display_name'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                'email'            => isset( $_POST['email'] ) && is_string( $_POST['email'] ) ? sanitize_email( wp_unslash( $_POST['email'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                'role'             => isset( $_POST['role'] ) && is_string( $_POST['role'] ) ? sanitize_key( wp_unslash( $_POST['role'] ) ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
+                'password'         => isset( $_POST['password'] ) && is_scalar( $_POST['password'] ) ? (string) wp_unslash( $_POST['password'] ) : '', // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
             ];
             $result = self::upsertUser( $in, $actor_user_id );
         }
@@ -355,26 +357,26 @@ final class StaffManagementPage
             : ($result['generated'] !== '' ? 'کاربر ثبت شد. رمز یک‌باره: ' . $result['generated'] . ' (این رمز فقط همین حالا نمایش داده می‌شود — آن را به کاربر بدهید.)' : 'ذخیره شد.');
         set_transient(self::NOTICE_KEY, $notice, 60);
         $redirect_clinic_id = (int) ( $raw_clinic_id ?? 0 );
-        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max(0, $redirect_clinic_id)));
+        wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max( 0, $redirect_clinic_id ) ) );
         exit;
     }
 
     public static function toggle(): void
     {
         $raw_user_id = isset( $_GET['user_id'] ) && is_scalar( $_GET['user_id'] ) ? wp_unslash( (string) $_GET['user_id'] ) : '0';
-        $user_id = absint( $raw_user_id );
+        $user_id     = absint( $raw_user_id );
         if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer( 'cpms_staff_toggle_' . $user_id );
 
-        $raw_state = isset( $_GET['state'] ) ? wp_unslash( $_GET['state'] ) : '';
-        $state = is_string( $raw_state ) ? $raw_state : '';
+        $raw_state     = isset( $_GET['state'] ) ? wp_unslash( $_GET['state'] ) : '';
+        $state         = is_string( $raw_state ) ? $raw_state : '';
         $raw_clinic_id = isset( $_GET['clinic_id'] ) && is_scalar( $_GET['clinic_id'] ) ? wp_unslash( (string) $_GET['clinic_id'] ) : null;
-        $clinic_id = $raw_clinic_id !== null ? absint( $raw_clinic_id ) : null;
-        $result    = self::toggleUser( $user_id, $state, (int) get_current_user_id(), $clinic_id );
+        $clinic_id     = $raw_clinic_id !== null ? absint( $raw_clinic_id ) : null;
+        $result        = self::toggleUser( $user_id, $state, (int) get_current_user_id(), $clinic_id );
         set_transient(self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : 'وضعیت کاربر به‌روزرسانی شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max(0, (int) $clinic_id)));
+        wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max( 0, (int) $clinic_id ) ) );
         exit;
     }
 
@@ -387,23 +389,23 @@ final class StaffManagementPage
     public static function sendPasswordReset(): void
     {
         $raw_user_id = isset( $_GET['user_id'] ) && is_scalar( $_GET['user_id'] ) ? wp_unslash( (string) $_GET['user_id'] ) : '0';
-        $user_id = absint( $raw_user_id );
+        $user_id     = absint( $raw_user_id );
         if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
         check_admin_referer( 'cpms_staff_password_' . $user_id );
 
         $raw_clinic_id = isset( $_GET['clinic_id'] ) && is_scalar( $_GET['clinic_id'] ) ? wp_unslash( (string) $_GET['clinic_id'] ) : null;
-        $clinic_id = $raw_clinic_id !== null ? absint( $raw_clinic_id ) : null;
-        $result    = self::initiatePasswordReset( $user_id, (int) get_current_user_id(), $clinic_id );
+        $clinic_id     = $raw_clinic_id !== null ? absint( $raw_clinic_id ) : null;
+        $result        = self::initiatePasswordReset( $user_id, (int) get_current_user_id(), $clinic_id );
         if ($result['error'] !== '') {
             set_transient(self::NOTICE_KEY, 'خطا: ' . $result['error'], 60);
-            wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max(0, (int) $clinic_id)));
+            wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max( 0, (int) $clinic_id ) ) );
             exit;
         }
 
         set_transient(self::NOTICE_KEY, 'لینک بازنشانی/تنظیم رمز برای «' . $result['display_name'] . '» ایمیل شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max(0, (int) $clinic_id)));
+        wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . max( 0, (int) $clinic_id ) ) );
         exit;
     }
 
@@ -465,10 +467,10 @@ final class StaffManagementPage
         if ( $mode_raw === 'attach_existing' ) {
             return self::attachExistingUser( $in, $updated_by );
         }
-        $mode = $mode_raw === 'update' ? 'update' : 'create';
-        $raw_user_id = $in['user_id'] ?? 0;
-        $user_id = is_scalar( $raw_user_id ) ? absint( (string) $raw_user_id ) : 0;
-        $raw_clinic_id = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
+        $mode                = $mode_raw === 'update' ? 'update' : 'create';
+        $raw_user_id         = $in['user_id'] ?? 0;
+        $user_id             = is_scalar( $raw_user_id ) ? absint( (string) $raw_user_id ) : 0;
+        $raw_clinic_id       = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
         $requested_clinic_id = $raw_clinic_id !== null && is_scalar( $raw_clinic_id )
             ? absint( (string) $raw_clinic_id )
             : null;
@@ -487,11 +489,11 @@ final class StaffManagementPage
 
         // Convert/validate caller-controlled profile fields only after the actor
         // has durable authority for the explicitly selected Clinic and target.
-        $username = is_string( $in['username'] ?? null ) ? trim( $in['username'] ) : '';
+        $username     = is_string( $in['username'] ?? null ) ? trim( $in['username'] ) : '';
         $display_name = is_string( $in['display_name'] ?? null ) ? trim( $in['display_name'] ) : '';
-        $email = is_string( $in['email'] ?? null ) ? $in['email'] : '';
-        $role = is_string( $in['role'] ?? null ) ? trim( $in['role'] ) : '';
-        $password = is_string( $in['password'] ?? null ) ? $in['password'] : '';
+        $email        = is_string( $in['email'] ?? null ) ? $in['email'] : '';
+        $role         = is_string( $in['role'] ?? null ) ? trim( $in['role'] ) : '';
+        $password     = is_string( $in['password'] ?? null ) ? $in['password'] : '';
 
         $clinic_id         = $authorization['clinic_id'];
         $target_membership = $authorization['target_membership'];
@@ -621,11 +623,11 @@ final class StaffManagementPage
             return ['error' => 'کاربر احراز هویت‌شده برای این عملیات معتبر نیست.', 'generated' => '', 'user_id' => 0];
         }
 
-        $raw_clinic_id = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
+        $raw_clinic_id       = array_key_exists( 'clinic_id', $in ) ? $in['clinic_id'] : null;
         $requested_clinic_id = $raw_clinic_id !== null && is_scalar( $raw_clinic_id )
             ? absint( (string) $raw_clinic_id )
             : null;
-        $authorization = self::authorize_staff_write( $updated_by, $requested_clinic_id );
+        $authorization       = self::authorize_staff_write( $updated_by, $requested_clinic_id );
         if ($authorization['error'] !== '') {
             return ['error' => $authorization['error'], 'generated' => '', 'user_id' => 0];
         }
@@ -808,11 +810,11 @@ final class StaffManagementPage
         $raw_target_user_id = isset( $_POST['target_user_id'] ) && is_scalar( $_POST['target_user_id'] )
             ? absint( wp_unslash( (string) $_POST['target_user_id'] ) )
             : 0;
-        $raw_clinic_id = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
+        $raw_clinic_id      = isset( $_POST['clinic_id'] ) && is_scalar( $_POST['clinic_id'] )
             ? absint( wp_unslash( (string) $_POST['clinic_id'] ) )
             : null;
-        $raw_role_key = isset( $_POST['custom_role_key'] ) ? wp_unslash( $_POST['custom_role_key'] ) : '';
-        $role_key = is_string( $raw_role_key ) ? sanitize_key( $raw_role_key ) : '';
+        $raw_role_key       = isset( $_POST['custom_role_key'] ) ? wp_unslash( $_POST['custom_role_key'] ) : '';
+        $role_key           = is_string( $raw_role_key ) ? sanitize_key( $raw_role_key ) : '';
 
         $result = self::write_custom_role_assignment( $raw_target_user_id, $role_key, (int) get_current_user_id(), $raw_clinic_id, $suspended_only );
         set_transient( self::NOTICE_KEY, $result['error'] !== '' ? 'خطا: ' . $result['error'] : $result['notice'], 60 );
@@ -941,8 +943,8 @@ final class StaffManagementPage
     private static function authorize_staff_write( int $actor_user_id, ?int $requested_clinic_id, ?int $target_user_id = null ): array {
         if ( $actor_user_id <= 0 || $requested_clinic_id === null || $requested_clinic_id <= 0 ) {
             return [
-                'error' => 'Clinic را برای مدیریت پرسنل و نقش‌ها صریحاً انتخاب کنید.',
-                'clinic_id' => 0,
+                'error'             => 'Clinic را برای مدیریت پرسنل و نقش‌ها صریحاً انتخاب کنید.',
+                'clinic_id'         => 0,
                 'target_membership' => null,
             ];
         }
@@ -1017,7 +1019,7 @@ final class StaffManagementPage
     {
         // No implicit/unique-membership context for a management page: the user
         // must choose the Clinic in the selector before any staff/role forms appear.
-        if ( ! isset( $_GET['clinic_id'] ) || ! is_scalar( $_GET['clinic_id'] ) ) {
+        if ( ! isset( $_GET['clinic_id'] ) || ! is_scalar( $_GET['clinic_id'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only Clinic selector; write authorization is rechecked
             return 0;
         }
         $requested = absint( wp_unslash( (string) $_GET['clinic_id'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- display selector only

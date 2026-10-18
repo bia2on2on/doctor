@@ -59,17 +59,17 @@ final class LocationService
         try {
             return $this->db->transactional(
                 function () use ( $actor_user_id, $trusted_clinic_id, $input ): array {
-                    $this->lockClinicContext( $trusted_clinic_id );
+                    $this->lock_clinic_context( $trusted_clinic_id );
                     $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
-                    $name     = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
-                    $slug_raw = is_string( $input['slug'] ?? null ) ? $input['slug'] : '';
-                    $slug     = self::sanitize_slug( $slug_raw );
-                    $timezone = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
+                    $name        = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
+                    $slug_raw    = is_string( $input['slug'] ?? null ) ? $input['slug'] : '';
+                    $slug        = self::sanitize_slug( $slug_raw );
+                    $timezone    = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
                     $raw_address = $input['address'] ?? null;
                     $raw_phone   = $input['phone'] ?? null;
-                    $address = is_string( $raw_address ) ? trim( $raw_address ) : null;
-                    $phone   = is_string( $raw_phone ) ? trim( $raw_phone ) : null;
+                    $address     = is_string( $raw_address ) ? trim( $raw_address ) : null;
+                    $phone       = is_string( $raw_phone ) ? trim( $raw_phone ) : null;
                     if ( $address === '' ) {
                         $address = null;
                     }
@@ -116,8 +116,8 @@ final class LocationService
                         );
                     }
 
-                    $now = $this->db->nowUtcSql();
-                    $location_id = $this->locations->create(
+                    $now         = $this->db->nowUtcSql();
+                    $location_id = $this->locations->create_with_profile(
                         $trusted_clinic_id,
                         $name,
                         $slug,
@@ -126,13 +126,13 @@ final class LocationService
                         $timezone,
                         $now
                     );
-                    $row = $this->read_back( $location_id );
+                    $row         = $this->read_back( $location_id );
 
                     if ( (int) ( $row['clinic_id'] ?? 0 ) !== $trusted_clinic_id
                         || (string) ( $row['name'] ?? '' ) !== $name
                         || (string) ( $row['slug'] ?? '' ) !== $slug
-                        || self::nullableValue( $row['address'] ?? null ) !== $address
-                        || self::nullableValue( $row['phone'] ?? null ) !== $phone
+                        || self::nullable_value( $row['address'] ?? null ) !== $address
+                        || self::nullable_value( $row['phone'] ?? null ) !== $phone
                         || (string) ( $row['timezone'] ?? '' ) !== $timezone
                         || (int) ( $row['is_primary'] ?? 1 ) !== 0
                         || (int) ( $row['is_active'] ?? 0 ) !== 1
@@ -149,14 +149,14 @@ final class LocationService
                         null,
                         null,
                         [
-                            'name' => $name,
-                            'slug' => $slug,
-                            'address' => $address,
-                            'phone' => $phone,
-                            'timezone' => $timezone,
-                            'clinic_id' => $trusted_clinic_id,
+                            'name'       => $name,
+                            'slug'       => $slug,
+                            'address'    => $address,
+                            'phone'      => $phone,
+                            'timezone'   => $timezone,
+                            'clinic_id'  => $trusted_clinic_id,
                             'is_primary' => 0,
-                            'is_active' => 1,
+                            'is_active'  => 1,
                         ],
                         ['op' => 'location_create'],
                         $trusted_clinic_id
@@ -181,14 +181,13 @@ final class LocationService
      * @return array{location_id:int, clinic_id:int, name:string, slug:string, address:?string, phone:?string, timezone:string, is_primary:int, is_active:int, created_at:string, updated_at:string, noop:bool}
      * @throws LocationException
      */
-    public function updateLocation( int $actor_user_id, int $trusted_clinic_id, int $location_id, array $input ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
-    {
+    public function updateLocation( int $actor_user_id, int $trusted_clinic_id, int $location_id, array $input ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
         $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
         try {
             return $this->db->transactional(
                 function () use ( $actor_user_id, $trusted_clinic_id, $location_id, $input ): array {
-                    $this->lockClinicContext( $trusted_clinic_id );
+                    $this->lock_clinic_context( $trusted_clinic_id );
                     $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
                     $current = $location_id > 0 ? $this->locations->find_for_update( $location_id, $trusted_clinic_id ) : null;
@@ -200,12 +199,12 @@ final class LocationService
                         throw LocationException::of( LocationException::LIFECYCLE_CONFLICT, 'ویرایش محل اصلی از این صفحه مجاز نیست.', 409 );
                     }
 
-                    $name     = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
-                    $timezone = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
+                    $name        = is_string( $input['name'] ?? null ) ? trim( $input['name'] ) : '';
+                    $timezone    = is_string( $input['timezone'] ?? null ) ? trim( $input['timezone'] ) : '';
                     $raw_address = array_key_exists( 'address', $input ) ? $input['address'] : ( $current['address'] ?? null );
                     $raw_phone   = array_key_exists( 'phone', $input ) ? $input['phone'] : ( $current['phone'] ?? null );
-                    $address = is_string( $raw_address ) ? trim( $raw_address ) : null;
-                    $phone   = is_string( $raw_phone ) ? trim( $raw_phone ) : null;
+                    $address     = is_string( $raw_address ) ? trim( $raw_address ) : null;
+                    $phone       = is_string( $raw_phone ) ? trim( $raw_phone ) : null;
                     if ( $address === '' ) {
                         $address = null;
                     }
@@ -239,23 +238,23 @@ final class LocationService
                     }
 
                     $before = [
-                        'name' => (string) ( $current['name'] ?? '' ),
-                        'address' => self::nullableValue( $current['address'] ?? null ),
-                        'phone' => self::nullableValue( $current['phone'] ?? null ),
+                        'name'     => (string) ( $current['name'] ?? '' ),
+                        'address'  => self::nullable_value( $current['address'] ?? null ),
+                        'phone'    => self::nullable_value( $current['phone'] ?? null ),
                         'timezone' => (string) ( $current['timezone'] ?? '' ),
                     ];
-                    $after = [
-                        'name' => $name,
-                        'address' => $address,
-                        'phone' => $phone,
+                    $after  = [
+                        'name'     => $name,
+                        'address'  => $address,
+                        'phone'    => $phone,
                         'timezone' => $timezone,
                     ];
                     if ( $before === $after ) {
                         return $this->result_row( $current, true );
                     }
 
-                    $now = $this->db->nowUtcSql();
-                    $changed = $this->locations->updateProfile(
+                    $now     = $this->db->nowUtcSql();
+                    $changed = $this->locations->update_profile_for_clinic(
                         $location_id,
                         $trusted_clinic_id,
                         $name,
@@ -275,8 +274,8 @@ final class LocationService
                         || (int) ( $row['is_active'] ?? 0 ) !== (int) ( $current['is_active'] ?? 0 )
                         || (string) ( $row['created_at'] ?? '' ) !== (string) ( $current['created_at'] ?? '' )
                         || (string) ( $row['name'] ?? '' ) !== $name
-                        || self::nullableValue( $row['address'] ?? null ) !== $address
-                        || self::nullableValue( $row['phone'] ?? null ) !== $phone
+                        || self::nullable_value( $row['address'] ?? null ) !== $address
+                        || self::nullable_value( $row['phone'] ?? null ) !== $phone
                         || (string) ( $row['timezone'] ?? '' ) !== $timezone
                     ) {
                         throw LocationException::of( LocationException::QUERY_FAILED, 'ستون‌های محل پس از ذخیره با انتظار سازگار نبودند.', 500 );
@@ -323,7 +322,7 @@ final class LocationService
         try {
             return $this->db->transactional(
                 function () use ( $actor_user_id, $trusted_clinic_id, $location_id, $active ): array {
-                    $this->lockClinicContext( $trusted_clinic_id );
+                    $this->lock_clinic_context( $trusted_clinic_id );
                     $this->guard_actor_and_scope( $actor_user_id, $trusted_clinic_id );
 
                     $current = $this->locations->find_for_update( $location_id, $trusted_clinic_id );
@@ -349,7 +348,7 @@ final class LocationService
                         );
                     }
 
-                    $now = $this->db->nowUtcSql();
+                    $now     = $this->db->nowUtcSql();
                     $changed = $this->locations->set_active(
                         $location_id,
                         $trusted_clinic_id,
@@ -394,8 +393,7 @@ final class LocationService
      * The unlocked Organization id is only a candidate and is rechecked after
      * both durable rows have been locked.
      */
-    private function lockClinicContext( int $clinic_id ): void
-    {
+    private function lock_clinic_context( int $clinic_id ): void {
         $candidate = $this->db->fetchRow(
             'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [$clinic_id]
@@ -431,8 +429,7 @@ final class LocationService
         }
     }
 
-    private static function nullableValue( mixed $value ): ?string
-    {
+    private static function nullable_value( mixed $value ): ?string {
         if ( $value === null ) {
             return null;
         }
@@ -494,18 +491,18 @@ final class LocationService
     private function result_row( array $row, bool $noop ): array
     {
         return [
-            'location_id' => (int) ($row['id'] ?? 0),
-            'clinic_id' => (int) ($row['clinic_id'] ?? 0),
-            'name' => (string) ($row['name'] ?? ''),
-            'slug' => (string) ($row['slug'] ?? ''),
-            'address' => self::nullableValue( $row['address'] ?? null ),
-            'phone' => self::nullableValue( $row['phone'] ?? null ),
-            'timezone' => (string) ($row['timezone'] ?? ''),
-            'is_primary' => (int) ($row['is_primary'] ?? 0),
-            'is_active' => (int) ($row['is_active'] ?? 0),
-            'created_at' => (string) ($row['created_at'] ?? ''),
-            'updated_at' => (string) ($row['updated_at'] ?? ''),
-            'noop' => $noop,
+            'location_id' => (int) ( $row['id'] ?? 0 ),
+            'clinic_id'   => (int) ( $row['clinic_id'] ?? 0 ),
+            'name'        => (string) ( $row['name'] ?? '' ),
+            'slug'        => (string) ( $row['slug'] ?? '' ),
+            'address'     => self::nullable_value( $row['address'] ?? null ),
+            'phone'       => self::nullable_value( $row['phone'] ?? null ),
+            'timezone'    => (string) ( $row['timezone'] ?? '' ),
+            'is_primary'  => (int) ( $row['is_primary'] ?? 0 ),
+            'is_active'   => (int) ( $row['is_active'] ?? 0 ),
+            'created_at'  => (string) ( $row['created_at'] ?? '' ),
+            'updated_at'  => (string) ( $row['updated_at'] ?? '' ),
+            'noop'        => $noop,
         ];
     }
 

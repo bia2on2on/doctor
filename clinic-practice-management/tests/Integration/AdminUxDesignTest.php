@@ -33,7 +33,7 @@ final class AdminUxDesignTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        unset($_GET['page'], $_GET['clinician_id']);
+        unset($_GET['page'], $_GET['clinician_id'], $_GET['clinic_id']);
         wp_set_current_user(0);
         // The scoped-manager fixture below establishes an explicit App scope
         // (in-memory singleton state that a DB rollback does NOT undo). Without
@@ -105,11 +105,16 @@ final class AdminUxDesignTest extends WP_UnitTestCase
         $this->assertStringContainsString('افزودن اولین پزشک', $html);
     }
 
-    public function testStaffListShowsEmptyState(): void
+    public function testStaffListShowsClinicSelectionRequiredState(): void
     {
+        // This administrator has no Clinic membership, so the management page
+        // must not misrepresent the unauthorized/unselected state as an empty list.
+        unset($_GET['clinic_id']);
         $html = $this->render(fn () => StaffManagementPage::render());
-        $this->assertStringContainsString('cpms-empty', $html);
-        $this->assertStringContainsString('هنوز پرسنلی ثبت نشده', $html);
+        $this->assertStringContainsString('Clinic را صریحاً از فهرست بالا انتخاب کنید', $html);
+        $this->assertStringContainsString('عضویت فعال و مجوز Clinic-scoped', $html);
+        $this->assertStringNotContainsString('name="action" value="cpms_staff_save"', $html);
+        $this->assertStringNotContainsString('cpms_staff_assign_custom_role', $html);
     }
 
     private function renderRoles(): string

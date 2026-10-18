@@ -178,8 +178,18 @@ final class LocationRepository
      * @return int id ردیف ساخته‌شده
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function create( int $clinic_id, string $name, string $slug, ?string $address, ?string $phone, string $timezone, string $now_sql ): int
+    public function create( int $clinic_id, string $name, string $slug, string $timezone, string $now_sql ): int
     {
+        return $this->create_with_profile( $clinic_id, $name, $slug, null, null, $timezone, $now_sql );
+    }
+
+    /**
+     * ساخت Location با profile؛ ورودی‌های جدید پس از حفظ امضای create قبلی اضافه شده‌اند.
+     *
+     * @return int id ردیف ساخته‌شده
+     * @throws RuntimeException روی خطای SQL (fail-closed)
+     */
+    public function create_with_profile( int $clinic_id, string $name, string $slug, ?string $address, ?string $phone, string $timezone, string $now_sql ): int {
         if ( $clinic_id <= 0 ) {
             throw new RuntimeException( 'invalid trusted clinic id for location create' );
         }
@@ -215,14 +225,14 @@ final class LocationRepository
     }
 
     /**
-     * به‌روزرسانی profile قابل‌ویرایش؛ tenant، slug، وضعیت و زمان ایجاد immutable می‌مانند.
+     * به‌روزرسانی فقط name/timezone/updated_at.
      *
      * @return int affected rows (0 = no-op یا not-found — تمایز با check وجودِ قبلی سرویس)
      * @throws RuntimeException روی خطای SQL (fail-closed)
      */
-    public function updateProfile( int $location_id, int $clinic_id, string $name, ?string $address, ?string $phone, string $timezone, string $now_sql ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
+    public function updateProfile( int $location_id, string $name, string $timezone, string $now_sql ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy public method name: renaming it is a cross-file API change to code outside this PR, so it stays as published.
     {
-        if ( $location_id <= 0 || $clinic_id <= 0 ) {
+        if ( $location_id <= 0 ) {
             throw new RuntimeException( 'invalid location id' );
         }
 
@@ -230,12 +240,41 @@ final class LocationRepository
             'cpms_locations',
             [
                 'name' => $name,
-                'address' => $address,
-                'phone' => $phone,
                 'timezone' => $timezone,
                 'updated_at' => $now_sql,
             ],
-            ['id' => $location_id, 'clinic_id' => $clinic_id]
+            ['id' => $location_id]
+        );
+
+        $this->assertNoSqlError();
+
+        return $affected;
+    }
+
+    /**
+     * به‌روزرسانی scoped profile قابل‌ویرایش؛ tenant، slug، وضعیت و زمان ایجاد immutable می‌مانند.
+     *
+     * @return int affected rows (0 = no-op یا not-found — تمایز با check وجودِ قبلی سرویس)
+     * @throws RuntimeException روی خطای SQL (fail-closed)
+     */
+    public function update_profile_for_clinic( int $location_id, int $clinic_id, string $name, ?string $address, ?string $phone, string $timezone, string $now_sql ): int {
+        if ( $location_id <= 0 || $clinic_id <= 0 ) {
+            throw new RuntimeException( 'invalid location id' );
+        }
+
+        $affected = $this->db->update(
+            'cpms_locations',
+            [
+                'name'       => $name,
+                'address'    => $address,
+                'phone'      => $phone,
+                'timezone'   => $timezone,
+                'updated_at' => $now_sql,
+            ],
+            [
+                'id'        => $location_id,
+                'clinic_id' => $clinic_id,
+            ]
         );
 
         $this->assertNoSqlError();
