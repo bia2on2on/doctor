@@ -30,7 +30,14 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
             // Restore the fully migrated schema (0028 included) for every later
             // test class. Leaving 0028 pending here would make the next class
             // re-apply it while the WP temporary-table rewrite is active.
-            $this->withRealTables(static fn (): array => App::migrations()->migrate());
+            $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
+            if ( in_array( '2026_10_18_0028', $applied, true ) ) {
+                // The restore ran real DDL, so the ledger row that records 0028
+                // was written after MySQL's implicit commit and is still
+                // uncommitted. Commit it, otherwise WP's tear_down() rolls it
+                // back and the next test class sees 0028 as pending.
+                $this->commitPendingLedgerRow();
+            }
         } finally {
             parent::tearDown();
         }
