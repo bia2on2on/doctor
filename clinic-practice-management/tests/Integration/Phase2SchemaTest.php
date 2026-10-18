@@ -154,7 +154,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         // ارتقا
         $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         self::assertContains('2026_09_09_0010', $applied);
-        self::assertSame('2026_10_18_0028', App::migrations()->currentVersion());
+        self::assertSame('2026_10_18_0029', App::migrations()->currentVersion());
 
         // داده دست‌نخورده
         $survived = $this->db()->fetchValue(

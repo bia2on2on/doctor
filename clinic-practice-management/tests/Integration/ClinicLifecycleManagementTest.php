@@ -244,6 +244,11 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         $clinician_id   = $fixture['clinician_id'];
         $first_slot     = $fixture['slots'][0];
         $booking        = App::bookingService();
+        // Multi-Clinic install: bind the explicit Clinic scope for the booking boundary
+        // under test (established idiom in ExportClinicIsolationTest /
+        // InstallationSettingsTest), so a denial below can only come from the lifecycle
+        // status and never from scope resolution.
+        \ClinicCore\Application\Scope\ScopeContext::set( \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA ) );
 
         // CONTROL (active Clinic): real availability and real capacity are advertised.
         $availability_active = $booking->availability( $clinician_id );
@@ -271,6 +276,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
         $availability_after = $booking->availability( $clinician_id );
         self::assertGreaterThan( 0, count( $availability_after['days'] ), 'reactivation must restore advertisement' );
+        \ClinicCore\Application\Scope\ScopeContext::clear();
     }
 
     /**
@@ -290,6 +296,11 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         $slot_a       = $fixture['slots'][0];
         $slot_b       = $fixture['slots'][1];
         $booking      = App::bookingService();
+        // Multi-Clinic install: bind the explicit Clinic scope for the booking boundary
+        // under test (established idiom in ExportClinicIsolationTest /
+        // InstallationSettingsTest), so a denial below can only come from the lifecycle
+        // status and never from scope resolution.
+        \ClinicCore\Application\Scope\ScopeContext::set( \ClinicCore\Application\Scope\ClinicScope::forClinic( $this->clinicA ) );
         $patient_user = self::factory()->user->create( [ 'role' => 'subscriber' ] );
         wp_set_current_user( $patient_user );
 
@@ -326,6 +337,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         wp_set_current_user( $patient_user );
         $booking->hold( $patient_user, $clinician_id, $slot_b['slot_date'], $slot_b['slot_time'], $slot_b['id'] );
         self::assertSame( 1, $this->slot_counters( $slot_b['id'] )['held_count'], 'reactivated Clinic must accept a new hold' );
+        \ClinicCore\Application\Scope\ScopeContext::clear();
     }
 
     /**
