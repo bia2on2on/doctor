@@ -1135,6 +1135,7 @@ final class BookingService
                 // Rescheduling carries the existing Patient into its replacement;
                 // never let a patient-owned Appointment or its PHI move across
                 // Clinic boundaries without a separate, Clinic-local patient flow.
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
                 if ( $newClinicId !== (int) $appt['clinic_id'] ) {
                     throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
                 }
@@ -1177,12 +1178,15 @@ final class BookingService
                 // The destination Clinic lock already held above serializes this
                 // check with Location deactivation/reactivation; reject before
                 // releasing the existing booking or claiming destination capacity.
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
                 $this->assert_active_location_for_booking( (int) $newSlot['location_id'], $newClinicId );
 
                 // Final timezone/window validation follows all lock waits, using
                 // the persisted destination Location and Clinic policy.
-                $newLocationTz = $this->resolveLocationTimezone( (int) $newSlot['location_id'], $newClinicId );
-                $this->assertWindowWithTimezone( $newDate, $newTime, $newLocationTz, $minLead, $newSettings );
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+                $new_location_tz = $this->resolveLocationTimezone( (int) $newSlot['location_id'], $newClinicId );
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+                $this->assertWindowWithTimezone( $newDate, $newTime, $new_location_tz, $minLead, $newSettings );
 
                 $dup = $this->appointments->findActiveForPatientSlot((int) $appt['patient_id'], $newSlotId, self::ACTIVE_STATUSES);
                 if ($dup !== null && (int) $dup['id'] !== $appointmentId) {
