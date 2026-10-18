@@ -756,7 +756,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $localAppt = $this->insertAppointment($clinicK, $locK, 'I-K-'.bin2hex(random_bytes(2)), $patientK, $clinicianK, $this->insertSlot($clinicK, $locK, $clinicianK, self::FIXED_K_DATE, '08:05:00'), self::FIXED_K_DATE, '08:05:00', 0);
         $utcAppt = $this->insertAppointment($clinicK, $locK, 'I-UTC-'.bin2hex(random_bytes(2)), $patientK, $clinicianK, $this->insertSlot($clinicK, $locK, $clinicianK, self::FIXED_UTC_DATE, '08:25:00'), self::FIXED_UTC_DATE, '08:25:00', 0);
         wp_set_current_user($doctorK);
-        App::replaceExplicitScope(ClinicScope::forClinic($clinicK));
+        App::replaceExplicitScope(ClinicScope::forClinic($clinicK, $locK));
         try {
             $todayK = App::visitService()->todayForDoctorPortal($doctorK);
         } finally {

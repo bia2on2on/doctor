@@ -281,7 +281,11 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
 
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
 
-        self::assertNull($this->capturedRestClinicId, 'Portal authorization denies before tenant scope is established');
+        self::assertSame(
+            $this->clinics['B'],
+            $this->capturedRestClinicId,
+            'Clinic B scope is established before handler denial'
+        );
         self::assertSame(403, $response->get_status(), 'a Doctor Portal actor without a clinician identity is denied');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
         self::assertGreaterThan(0, $otherVisit['id'], 'control: a Clinic-B Visit existed but stayed undisclosed');
@@ -304,7 +308,11 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
 
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
 
-        self::assertNull($this->capturedRestClinicId, 'Portal authorization denies before tenant scope is established');
+        self::assertSame(
+            $this->clinics['B'],
+            $this->capturedRestClinicId,
+            'Clinic B scope is established before handler denial'
+        );
         self::assertSame(403, $response->get_status(), 'an inactive clinician identity cannot enter Doctor Portal');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
     }
@@ -341,7 +349,7 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
         self::assertNull($this->capturedRestClinicId, 'authorization rejects B before scope establishment');
         self::assertSame(403, $response->get_status(), 'suspended B participation denies Doctor Portal access');
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($response));
 
         // Service-level proof: even with a legitimately established Clinic-B
         // scope, suspended participation resolves to the empty scope.

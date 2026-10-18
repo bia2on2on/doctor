@@ -632,7 +632,7 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
             'G5 fixture: exactly one active clinician row for the doctor fixture.'
         );
 
-        // ---- 1 eligible Location ⇒ auto-resolution allowed; timezone is the trusted Location's. ----
+        // ---- Explicitly selected eligible Location; timezone is Location-local. ----
         wp_set_current_user($doctorId);
         $locations = $this->dispatch('GET', '/' . self::PORTAL_LOCATIONS, ['clinic_id' => $clinicId]);
         self::assertSame(200, $locations->get_status(), 'G5: doctor locations route reachable.');
@@ -645,10 +645,27 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
         $patientId = $this->insertPatient($clinicId, 'g5');
         $visitId   = $this->insertVisit($patientId, (int) $fx['clinician'], $clinicId, $locationId, 'in_consultation');
 
-        $single = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
-        self::assertSame(200, $single->get_status(), 'G5: 1 eligible Location ⇒ auto-resolution allowed (existing doctor contract).');
+        $singleNoLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitId),
+            [],
+            $this->scopeHeaders($clinicId, null)
+        );
+        self::assertSame(
+            400,
+            $singleNoLocation->get_status(),
+            'G5: singleton Location still requires explicit selection.'
+        );
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($singleNoLocation));
+        $single = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitId),
+            [],
+            $this->scopeHeaders($clinicId, $locationId)
+        );
+        self::assertSame(200, $single->get_status(), 'G5: explicit singleton Location authorizes.');
 
-        // ---- N>1 eligible Locations ⇒ explicit trusted Location REQUIRED (never guess the first). ----
+        // ---- Every Location cardinality requires an explicit trusted selector. ----
         $secondLocation = $this->insertLocation($clinicId, 'G5 Second Loc', self::TZ_TEHRAN, 0);
         self::assertGreaterThan(0, $secondLocation, 'G5 fixture: second Location persisted.');
 

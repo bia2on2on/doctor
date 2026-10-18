@@ -393,7 +393,7 @@ final class Phase10StaffPortalVisitCompleteRedTest extends WP_UnitTestCase
         $this->gate(200, $rWithLoc, 'G3.B: explicit trusted Location Complete succeeds');
         self::assertSame('consultation_completed', $this->visitStatus($visitMulti), 'G3.B: persisted with the trusted Location');
 
-        // C. Exactly 1 eligible Location => auto-resolution (no Location header).
+        // C. A singleton Location still requires explicit selection.
         $fxSingle = $this->makePortalStage('g3s');
         $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g3s_patient');
         $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
@@ -402,8 +402,23 @@ final class Phase10StaffPortalVisitCompleteRedTest extends WP_UnitTestCase
         $visitSingle2 = $this->insertVisit($patientSingle2, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         $this->insertNote($visitSingle2, $patientSingle2, $fxSingle['clinician'], $fxSingle['clinic'], 'chief_complaint', 'patient_visible', 0, $fxSingle['doctor']);
         wp_set_current_user($fxSingle['doctor']);
-        $rSingle = $this->dispatch('POST', '/' . sprintf(self::PORTAL_COMPLETE, $visitSingle), [], $this->scopeHeaders($fxSingle['clinic'], null));
-        $this->gate(200, $rSingle, 'G3.C: single eligible Location auto-resolution succeeds');
+        $beforeSingle = $this->snapshot($visitSingle);
+        $rSingleNoLoc = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_COMPLETE, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], null)
+        );
+        $this->gate(400, $rSingleNoLoc, 'G3.C: singleton Location without selection is rejected');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($rSingleNoLoc));
+        self::assertSame($beforeSingle, $this->snapshot($visitSingle), 'G3.C: missing selector has no mutation effect');
+        $rSingle = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_COMPLETE, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], $fxSingle['location'])
+        );
+        $this->gate(200, $rSingle, 'G3.C: explicit singleton Location permits completion');
 
         // D. Explicit Location of a FOREIGN Clinic => fail closed.
         $foreignOrg = $this->insertOrg('G3 Foreign Org');

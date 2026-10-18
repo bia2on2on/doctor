@@ -162,12 +162,12 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$path = '/clinic/v1/doctor/portal/visits/' . $fx['visit'] . '/handwriting';
 		$db = \ClinicCore\Bootstrap\App::db();
 		$db->update( 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $fx['location'] ] );
-		$zero = $this->call_portal( 'GET', $path, $fx );
+		$zero = $this->call_portal( 'GET', $path, $fx, $fx['location'] );
 		self::assertSame( 403, $zero->get_status() );
 		self::assertSame( 'location', $zero->get_data()['data']['reason'] ?? '' );
 		$db->update( 'cpms_locations', [ 'is_active' => 1 ], [ 'id' => $fx['location'] ] );
-		$one = $this->call_portal( 'GET', $path, $fx );
-		self::assertSame( 200, $one->get_status(), 'Exactly one Location auto-resolves.' );
+		$one = $this->call_portal( 'GET', $path, $fx, $fx['location'] );
+		self::assertSame( 200, $one->get_status(), 'Explicitly selected eligible Location permits the read.' );
 		$now = $db->nowUtcSql();
 		self::assertTrue( $db->insert( 'cpms_locations', [ 'clinic_id' => $fx['clinic'], 'name' => 'Second', 'slug' => 'second-' . bin2hex( random_bytes( 4 ) ), 'timezone' => 'Asia/Tehran', 'is_primary' => 0, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now ] ) );
 		global $wpdb;

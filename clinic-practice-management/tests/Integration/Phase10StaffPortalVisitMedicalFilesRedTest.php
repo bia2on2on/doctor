@@ -522,15 +522,35 @@ final class Phase10StaffPortalVisitMedicalFilesRedTest extends WP_UnitTestCase
         $rowB = $this->fileRow((int) ($this->payload($rWithLoc)['id'] ?? 0));
         self::assertSame($visitMulti, $rowB['visit_id'] === null ? null : (int) $rowB['visit_id'], 'G3.B: file bound to the authorized Visit');
 
-        // C. Exactly 1 eligible Location => auto-resolution (no Location header).
+        // C. A singleton Location still requires explicit selection.
         $fxSingle = $this->makePortalStage('g3s');
         $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g3s_patient');
         $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         $patientSingle2 = $this->insertPatient($fxSingle['clinic'], 'g3s_patient2');
         $visitSingle2 = $this->insertVisit($patientSingle2, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         wp_set_current_user($fxSingle['doctor']);
-        $rSingle = $this->dispatch('POST', '/' . sprintf(self::PORTAL_FILES_UPLOAD, $visitSingle), ['category' => 'document'], $this->scopeHeaders($fxSingle['clinic'], null), 'valid', $this->makeUploadedFile('g3s.pdf', $this->pdfContent()));
-        $this->gate(201, $rSingle, 'G3.C: single eligible Location auto-resolution succeeds');
+        $singleRowsBefore = $this->fileCountForPatient($patientSingle);
+        $singleObjectsBefore = $this->storageFileCount();
+        $rSingleNoLoc = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_FILES_UPLOAD, $visitSingle),
+            ['category' => 'document'],
+            $this->scopeHeaders($fxSingle['clinic'], null),
+            'valid',
+            $this->makeUploadedFile('g3s-no-location.pdf', $this->pdfContent())
+        );
+        $this->gate(400, $rSingleNoLoc, 'G3.C: singleton Location without selection is rejected');
+        self::assertSame($singleRowsBefore, $this->fileCountForPatient($patientSingle));
+        self::assertSame($singleObjectsBefore, $this->storageFileCount());
+        $rSingle = $this->dispatch(
+            'POST',
+            '/' . sprintf(self::PORTAL_FILES_UPLOAD, $visitSingle),
+            ['category' => 'document'],
+            $this->scopeHeaders($fxSingle['clinic'], $fxSingle['location']),
+            'valid',
+            $this->makeUploadedFile('g3s-ok.pdf', $this->pdfContent())
+        );
+        $this->gate(201, $rSingle, 'G3.C: explicit singleton Location upload succeeds');
 
         // D. Explicit Location of a FOREIGN Clinic => fail closed.
         $foreignOrg = $this->insertOrg('G3 Foreign Org');
