@@ -1033,7 +1033,8 @@ final class ReceptionPortalController extends RestBase {
 		}
 
 		$clinic_id     = (int) $resolved['clinic_id'];
-		$location_id   = (int) $resolved['location_id'];		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
+		$location_id   = (int) $resolved['location_id'];
+		$location_zone = $this->operational_timezone( (string) ( $resolved['timezone'] ?? '' ), $location_id, $clinic_id );
 		if ( null === $location_zone ) {
 			// Same bounded empty read as 0 eligible Locations; an unusable
 			// persisted timezone must never select UTC or another Location.
