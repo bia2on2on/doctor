@@ -362,7 +362,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, true );
     }
 
-    public function testSuspendedClinicKeepsContinuityWhileNewDemandIsRefusedAtBoundaries(): void {
+    public function testSuspendedClinicBlocksTrustedClinicEstablishmentButOrgManagementStillWorks(): void {
         wp_set_current_user( $this->managerA );
         App::organization_clinic_provisioning_service()->set_clinic_status( $this->managerA, $this->orgA, $this->clinicA, false );
 
