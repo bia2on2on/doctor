@@ -278,7 +278,7 @@ def run_unverified_patient_enrollment(page, check, wp_eval_php, base_url, out_di
     )
     check(
         "classic.enrollment.unverified.state_rendered",
-        page.locator('[data-role="patient-enrollment-section"][data-state="unverified"]').count() == 1
+        page.locator('[data-role="enrollment-section"][data-state="unverified"]').count() == 1
         and page.locator('[data-role="patient-enrollment-form"]').count() == 0
         and page.locator('[data-role="enrollment-clinic"]').count() == 0,
         "unverified patient sees reception guidance and zero Clinic selector",
@@ -330,7 +330,7 @@ def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir,
         resp is not None and resp.status == 200,
         f"HTTP {resp.status if resp else 0}",
     )
-    section = page.locator('[data-role="patient-enrollment-section"][data-state="eligible"]')
+    section = page.locator('[data-role="enrollment-section"][data-state="eligible"]')
     form = page.locator('[data-role="patient-enrollment-form"]')
     clinic_select = form.locator('[data-role="enrollment-clinic"]')
     check(
@@ -361,7 +361,7 @@ def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir,
     err_box = form.locator('[data-role="enrollment-error"]')
     check(
         "classic.enrollment.verified.missing_clinic_blocked",
-        not err_box.is_hidden() and "مرکز مقصد" in err_box.inner_text(),
+        not err_box.is_hidden() and "یک مرکز را از فهرست انتخاب کنید" in err_box.inner_text(),
         err_box.inner_text().strip(),
     )
 
@@ -414,19 +414,21 @@ def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir,
 
     page.wait_for_selector('[data-role="enrollment-success"]:not([hidden])', timeout=15000)
     page.screenshot(path=f"{out_dir}/screenshots/classic-patient-enrolled.png", full_page=True)
-    success_text = form.locator('[data-role="enrollment-success"]').inner_text().strip()
+    success_text = page.locator('[data-role="enrollment-success"]').inner_text().strip()
+    mrn_text = page.locator('[data-role="enrollment-mrn"]').inner_text().strip()
     check(
         "classic.enrollment.verified.browser_submit_succeeded",
-        "پروندهٔ شما در این مرکز ایجاد شد" in success_text,
-        success_text,
+        "پروندهٔ محلی شما ثبت شد" in success_text and mrn_text != "",
+        f"mrn={mrn_text}",
     )
 
-    # Verify the Patient Portal record selector refreshed and now lists both Clinic records
-    record_selector = page.locator('[data-role="profile-record-selector"]')
+    # Reload the portal and verify enrollment state transitions to no_destination and multi-record profile selector is rendered
+    page.reload(wait_until="domcontentloaded")
     check(
         "classic.enrollment.verified.profile_selector_refreshed",
-        record_selector.count() == 1 and not record_selector.is_hidden(),
-        "multi-record selector revealed after cross-Clinic enrollment without page reload",
+        page.locator('[data-role="enrollment-section"][data-state="no_destination"]').count() == 1
+        and page.locator('[data-role="profile-record-select"]').count() == 1,
+        "after reload, enrollment state is no_destination and multi-record profile selector is rendered",
     )
 
     # Verify DB persistence, non-import of source medical_history, and audit hash chain
