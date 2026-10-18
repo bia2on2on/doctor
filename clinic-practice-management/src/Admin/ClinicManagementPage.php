@@ -19,12 +19,12 @@ use ClinicCore\Bootstrap\App;
  */
 final class ClinicManagementPage {
 
-    public const PAGE              = 'cpms-clinic-management';
-    public const ACTION_UPDATE     = 'cpms_update_organization_clinic';
-    public const ACTION_LIFECYCLE  = 'cpms_clinic_lifecycle';
-    private const NONCE_UPDATE     = 'cpms_update_organization_clinic';
-    private const NONCE_LIFECYCLE  = 'cpms_clinic_lifecycle';
-    private const NOTICE_KEY       = 'cpms_clinic_management_notice';
+    public const PAGE             = 'cpms-clinic-management';
+    public const ACTION_UPDATE    = 'cpms_update_organization_clinic';
+    public const ACTION_LIFECYCLE = 'cpms_clinic_lifecycle';
+    private const NONCE_UPDATE    = 'cpms_update_organization_clinic';
+    private const NONCE_LIFECYCLE = 'cpms_clinic_lifecycle';
+    private const NOTICE_KEY      = 'cpms_clinic_management_notice';
 
     public static function register(): void {
 
