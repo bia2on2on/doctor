@@ -123,6 +123,12 @@ final class OrganizationManagerBootstrapPage
         if ( ! is_user_logged_in() || ! current_user_can( 'manage_options' ) ) {
             wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
         }
+        // Verify the nonce at the entry point, before any request data is read.
+        // check_admin_referer() with $die = false keeps the explicit 403 body
+        // while still failing closed on a missing or forged nonce.
+        if ( ! check_admin_referer( self::NONCE_ACTION, '_wpnonce', false ) ) {
+            wp_die( esc_html__( 'درخواست معتبر نیست یا تأیید صریح انجام نشده است.', 'cpms' ), 403 );
+        }
         $actor_id = (int) get_current_user_id();
         if ( ! self::valid_bootstrap_request( $actor_id, $_POST ) ) {
             wp_die( esc_html__( 'درخواست معتبر نیست یا تأیید صریح انجام نشده است.', 'cpms' ), 403 );

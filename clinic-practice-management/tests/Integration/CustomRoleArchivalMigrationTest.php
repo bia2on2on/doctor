@@ -21,13 +21,16 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        $this->withRealTables(fn (): array => $this->migrateThroughArchivalVersion());
+        $this->migrateThroughArchivalVersion();
     }
 
     protected function tearDown(): void
     {
         try {
-            $this->withRealTables(fn (): array => $this->migrateThroughArchivalVersion());
+            // Restore the fully migrated schema (0028 included) for every later
+            // test class. Leaving 0028 pending here would make the next class
+            // re-apply it while the WP temporary-table rewrite is active.
+            $this->withRealTables(static fn (): array => App::migrations()->migrate());
         } finally {
             parent::tearDown();
         }
@@ -38,17 +41,31 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
      * Organization migration is present. The production runner still applies
      * 0028; this test immediately rolls it back so rollbackOne targets 0027.
      *
+     * The WP test suite rewrites CREATE TABLE into CREATE TEMPORARY TABLE while
+     * a test transaction is open. Migration 0028 creates two tables that carry
+     * FOREIGN KEY clauses, and InnoDB refuses a FOREIGN KEY on a temporary
+     * table (errno 150) — so every point that can (re-)apply 0028 must run
+     * with those two rewrite callbacks suspended. This helper owns that
+     * window itself, because it is also called directly from test bodies
+     * (not only from setUp/tearDown).
+     *
      * @return list<string>
      */
     private function migrateThroughArchivalVersion(): array
     {
-        $applied = App::migrations()->migrate();
-        if (App::migrations()->currentVersion() === '2026_10_18_0028') {
-            App::migrations()->rollbackOne();
-            $applied = array_values(array_diff($applied, ['2026_10_18_0028']));
-        }
+        $this->suspendWpTempTableRewrites();
 
-        return $applied;
+        try {
+            $applied = App::migrations()->migrate();
+            if (App::migrations()->currentVersion() === '2026_10_18_0028') {
+                App::migrations()->rollbackOne();
+                $applied = array_values(array_diff($applied, ['2026_10_18_0028']));
+            }
+
+            return $applied;
+        } finally {
+            $this->restoreWpTempTableRewrites();
+        }
     }
 
     public function testFreshInstallHasTerminalEnumAndNoArchivedAtColumn(): void

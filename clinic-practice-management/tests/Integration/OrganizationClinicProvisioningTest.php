@@ -8,9 +8,13 @@ use ClinicCore\Bootstrap\App;
 use RuntimeException;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/RealTableMigrations.php';
+
 /** Real database integration coverage for the Organization provisioning boundary. */
 final class OrganizationClinicProvisioningTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     private int $org = 0;
     private int $actor = 0;
     private string $org_status = 'active';
@@ -22,7 +26,11 @@ final class OrganizationClinicProvisioningTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        App::migrations()->migrate();
+        // Migration 0028 creates FOREIGN KEY bearing tables; the WP test suite
+        // rewrites CREATE TABLE into CREATE TEMPORARY TABLE while the test
+        // transaction is open and InnoDB refuses a FOREIGN KEY on a temporary
+        // table (errno 150). Run the migration with those rewrites suspended.
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
         $this->org = (int) (App::db()->fetchValue(
             'SELECT id FROM ' . App::db()->table('cpms_organizations') . ' ORDER BY id LIMIT 1'
         ) ?? 0);

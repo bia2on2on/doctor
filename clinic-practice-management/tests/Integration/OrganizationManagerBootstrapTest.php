@@ -11,9 +11,13 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use RuntimeException;
 use WP_UnitTestCase;
 
+require_once __DIR__ . '/RealTableMigrations.php';
+
 /** Database-backed tests for the Owner-approved, narrow initial-manager bootstrap. */
 final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     private int $organization_id = 0;
     private int $admin_id = 0;
     private int $target_id = 0;
@@ -25,7 +29,11 @@ final class OrganizationManagerBootstrapTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
-        App::migrations()->migrate();
+        // Migration 0028 creates FOREIGN KEY bearing tables; the WP test suite
+        // rewrites CREATE TABLE into CREATE TEMPORARY TABLE while the test
+        // transaction is open and InnoDB refuses a FOREIGN KEY on a temporary
+        // table (errno 150). Run the migration with those rewrites suspended.
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
         App::resetScope();
         $this->admin_id = self::factory()->user->create(['role' => 'administrator']);
         $this->target_id = self::factory()->user->create(['role' => 'subscriber']);

@@ -131,7 +131,7 @@ final class LocationAdminPage
                     </tbody>
                 </table>
             <?php else : ?>
-                <?php echo CpmsUi::emptyState( '🏢', 'فقط شعبهٔ اصلی وجود دارد', 'شعبه‌های این Clinic این‌جا فهرست می‌شوند. شعبهٔ اصلی توسط راه‌اندازی ساخته شده است و از این صفحه قابل ویرایش نیست.', 'افزودن شعبه', admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>
+                <?php echo wp_kses_post( CpmsUi::emptyState( '🏢', 'فقط شعبهٔ اصلی وجود دارد', 'شعبه‌های این Clinic این‌جا فهرست می‌شوند. شعبهٔ اصلی توسط راه‌اندازی ساخته شده است و از این صفحه قابل ویرایش نیست.', 'افزودن شعبه', admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ) ); ?>
             <?php endif; ?>
 
             <?php if ( $clinic_id > 0 ) : ?>

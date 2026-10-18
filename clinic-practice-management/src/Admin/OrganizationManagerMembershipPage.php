@@ -87,7 +87,7 @@ final class OrganizationManagerMembershipPage
         echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" class="cpms-org-manager-grant">';
         wp_nonce_field( self::NONCE_ACTION );
         echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '">';
-        echo '<input type="hidden" name="organization_id" value="' . $organization_id . '">';
+        echo '<input type="hidden" name="organization_id" value="' . esc_attr( (string) $organization_id ) . '">';
         echo '<input type="hidden" name="active" value="1">';
         $select_id = 'cpms-org-manager-target-' . $organization_id;
         echo '<label for="' . esc_attr( $select_id ) . '">کاربر موردنظر برای اعطای نقش</label> ';
@@ -107,8 +107,8 @@ final class OrganizationManagerMembershipPage
         echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" class="cpms-org-manager-action">';
         wp_nonce_field( self::NONCE_ACTION );
         echo '<input type="hidden" name="action" value="' . esc_attr( self::ACTION ) . '">';
-        echo '<input type="hidden" name="organization_id" value="' . $organization_id . '">';
-        echo '<input type="hidden" name="target_user_id" value="' . $user_id . '">';
+        echo '<input type="hidden" name="organization_id" value="' . esc_attr( (string) $organization_id ) . '">';
+        echo '<input type="hidden" name="target_user_id" value="' . esc_attr( (string) $user_id ) . '">';
         echo '<input type="hidden" name="active" value="' . ($active ? '1' : '0') . '">';
         echo '<button type="submit" class="button button-small">' . esc_html( $label ) . '</button></form>';
     }
