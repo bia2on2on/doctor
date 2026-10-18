@@ -17,7 +17,33 @@ Covers:
 """
 
 import json
+import re
 from urllib.parse import parse_qs, urlparse
+
+EXPECTED_HTTP_DENIAL_CONSOLE_RE = re.compile(
+    r"Failed to load resource: the server responded with a status of (?:400|401|403|404)\b"
+)
+
+
+def _with_expected_http_denial(console_errors, fn):
+    """Run an intentional negative HTTP probe (400/401/403/404) without letting
+    Chromium's expected network status line contaminate the global console gate.
+
+    Mirrors `assert_denied` in `rwp-acceptance.py`, narrowed further so any
+    non-status console error (e.g. TypeError/ReferenceError/500) or any pageerror
+    remains in the global list and fails acceptance.
+    """
+    if console_errors is None:
+        return fn()
+    before_c = len(console_errors)
+    try:
+        return fn()
+    finally:
+        tail = console_errors[before_c:]
+        del console_errors[before_c:]
+        for entry in tail:
+            if not EXPECTED_HTTP_DENIAL_CONSOLE_RE.search(str(entry[1])):
+                console_errors.append(entry)
 
 
 def setup_classic_submission_fixtures(wp_eval_php, check):
@@ -232,26 +258,33 @@ echo 'CLASSIC_FX=' . wp_json_encode([
     return fx
 
 
-def _post_form_in_browser(page, action_url, fields):
+def _post_form_in_browser(page, action_url, fields, console_errors=None, expect_http_denial=False):
     """Submit a real HTML form POST from the active browser session and wait for navigation."""
-    with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
-        page.evaluate(
-            """([url, entries]) => {
-                const f = document.createElement('form');
-                f.method = 'post';
-                f.action = url;
-                for (const [k, v] of entries) {
-                    const input = document.createElement('input');
-                    input.type = 'hidden';
-                    input.name = k;
-                    input.value = String(v);
-                    f.appendChild(input);
-                }
-                document.body.appendChild(f);
-                f.submit();
-            }""",
-            [action_url, list(fields.items())],
-        )
+    def _do_post():
+        with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+            page.evaluate(
+                """([url, entries]) => {
+                    const f = document.createElement('form');
+                    f.method = 'post';
+                    f.action = url;
+                    for (const [k, v] of entries) {
+                        const input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = k;
+                        input.value = String(v);
+                        f.appendChild(input);
+                    }
+                    document.body.appendChild(f);
+                    f.submit();
+                }""",
+                [action_url, list(fields.items())],
+            )
+        page.wait_for_timeout(150)
+
+    if expect_http_denial:
+        _with_expected_http_denial(console_errors, _do_post)
+    else:
+        _do_post()
 
 
 def _submit_form_bypassing_confirm(page, form):
@@ -266,7 +299,21 @@ def _submit_form_bypassing_confirm(page, form):
         form.locator("button").first.click()
 
 
-def run_unverified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir, fx):
+def _has_cpms_admin_assets(page):
+    """Return True iff body.cpms-admin, cpms-admin.css, and cpms-admin.js are present in DOM."""
+    return bool(
+        page.evaluate(
+            """() => {
+                const hasBody = document.body && document.body.classList.contains('cpms-admin');
+                const hasJs = !!document.querySelector('script[src*="cpms-admin.js"]');
+                const hasCss = !!document.querySelector('link[href*="cpms-admin.css"]');
+                return Boolean(hasBody && hasJs && hasCss);
+            }"""
+        )
+    )
+
+
+def run_unverified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """1a. Unverified patient sees no destination Clinic names and cannot self-enroll."""
     resp = page.goto(fx["portal_url"], wait_until="domcontentloaded")
     page.screenshot(path=f"{out_dir}/screenshots/classic-patient-unverified.png", full_page=True)
@@ -290,30 +337,32 @@ def run_unverified_patient_enrollment(page, check, wp_eval_php, base_url, out_di
     )
 
     # Direct REST POST attempt by unverified patient with valid REST nonce -> 404 parity
-    rest_probe = page.evaluate(
-        """async (clinicId) => {
-            const cfgEl = document.querySelector('.cpms-patient-portal__config');
-            const cfg = cfgEl ? JSON.parse(cfgEl.textContent || '{}') : {};
-            const root = String(cfg.rest_root || '').replace(/\\/+$/, '');
-            const sep = root.includes('?') ? '&' : '?';
-            const url = root + '/patient/enroll';
-            const res = await fetch(url, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-WP-Nonce': String(cfg.nonce || ''),
-                },
-                body: JSON.stringify({
-                    clinic_id: clinicId,
-                    first_name: 'کاربر',
-                    last_name: 'تأییدنشده',
-                    mobile: '09120001122',
-                }),
-            });
-            return { status: res.status };
-        }""",
-        int(fx["dest_clinic_id"]),
+    rest_probe = _with_expected_http_denial(
+        console_errors,
+        lambda: page.evaluate(
+            """async (clinicId) => {
+                const cfgEl = document.querySelector('.cpms-patient-portal__config');
+                const cfg = cfgEl ? JSON.parse(cfgEl.textContent || '{}') : {};
+                const root = String(cfg.rest_root || '').replace(/\\/+$/, '');
+                const url = root + '/patient/enroll';
+                const res = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-WP-Nonce': String(cfg.nonce || ''),
+                    },
+                    body: JSON.stringify({
+                        clinic_id: clinicId,
+                        first_name: 'کاربر',
+                        last_name: 'تأییدنشده',
+                        mobile: '09120001122',
+                    }),
+                });
+                return { status: res.status };
+            }""",
+            int(fx["dest_clinic_id"]),
+        ),
     )
     check(
         "classic.enrollment.unverified.post_denied_404",
@@ -322,7 +371,7 @@ def run_unverified_patient_enrollment(page, check, wp_eval_php, base_url, out_di
     )
 
 
-def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir, fx):
+def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """1b. Verified patient cross-Clinic self-enrollment browser submission & security boundaries."""
     resp = page.goto(fx["portal_url"], wait_until="domcontentloaded")
     check(
@@ -367,32 +416,35 @@ def run_verified_patient_enrollment(page, check, wp_eval_php, base_url, out_dir,
 
     # Security probes against POST /clinic/v1/patient/enroll from the real browser session:
     # (1) missing nonce -> 401/403, (2) forged ID -> 404, (3) foreign Org Clinic -> 404, (4) suspended Clinic -> 404
-    probes = page.evaluate(
-        """async ({ destId, foreignId, suspendedId }) => {
-            const cfg = JSON.parse(document.querySelector('.cpms-patient-portal__config').textContent || '{}');
-            const url = String(cfg.rest_root || '').replace(/\\/+$/, '') + '/patient/enroll';
-            const post = async (headers, body) => {
-                const r = await fetch(url, {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
-                    body: JSON.stringify(body),
-                });
-                return r.status;
-            };
-            const payload = (cid) => ({ clinic_id: cid, first_name: 'سارا', last_name: 'محمدی', mobile: '09128887766' });
-            const noNonce = await post({}, payload(destId));
-            const badNonce = await post({ 'X-WP-Nonce': 'forged-nonce-value' }, payload(destId));
-            const forgedId = await post({ 'X-WP-Nonce': cfg.nonce }, payload(2147483647));
-            const foreignClinic = await post({ 'X-WP-Nonce': cfg.nonce }, payload(foreignId));
-            const suspendedClinic = await post({ 'X-WP-Nonce': cfg.nonce }, payload(suspendedId));
-            return { noNonce, badNonce, forgedId, foreignClinic, suspendedClinic };
-        }""",
-        {
-            "destId": int(fx["dest_clinic_id"]),
-            "foreignId": int(fx["foreign_enroll_clinic_id"]),
-            "suspendedId": int(fx["suspended_clinic_id"]),
-        },
+    probes = _with_expected_http_denial(
+        console_errors,
+        lambda: page.evaluate(
+            """async ({ destId, foreignId, suspendedId }) => {
+                const cfg = JSON.parse(document.querySelector('.cpms-patient-portal__config').textContent || '{}');
+                const url = String(cfg.rest_root || '').replace(/\\/+$/, '') + '/patient/enroll';
+                const post = async (headers, body) => {
+                    const r = await fetch(url, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: Object.assign({ 'Content-Type': 'application/json' }, headers),
+                        body: JSON.stringify(body),
+                    });
+                    return r.status;
+                };
+                const payload = (cid) => ({ clinic_id: cid, first_name: 'سارا', last_name: 'محمدی', mobile: '09128887766' });
+                const noNonce = await post({}, payload(destId));
+                const badNonce = await post({ 'X-WP-Nonce': 'forged-nonce-value' }, payload(destId));
+                const forgedId = await post({ 'X-WP-Nonce': cfg.nonce }, payload(2147483647));
+                const foreignClinic = await post({ 'X-WP-Nonce': cfg.nonce }, payload(foreignId));
+                const suspendedClinic = await post({ 'X-WP-Nonce': cfg.nonce }, payload(suspendedId));
+                return { noNonce, badNonce, forgedId, foreignClinic, suspendedClinic };
+            }""",
+            {
+                "destId": int(fx["dest_clinic_id"]),
+                "foreignId": int(fx["foreign_enroll_clinic_id"]),
+                "suspendedId": int(fx["suspended_clinic_id"]),
+            },
+        ),
     )
     check(
         "classic.enrollment.verified.nonce_enforced",
@@ -480,28 +532,34 @@ echo 'ENROLL_DB=' . wp_json_encode([
     )
 
     # Duplicate enrollment attempt for the same destination Clinic -> 400
-    dup_status = page.evaluate(
-        """async (destId) => {
-            const cfg = JSON.parse(document.querySelector('.cpms-patient-portal__config').textContent || '{}');
-            const url = String(cfg.rest_root || '').replace(/\\/+$/, '') + '/patient/enroll';
-            const r = await fetch(url, {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': cfg.nonce },
-                body: JSON.stringify({ clinic_id: destId, first_name: 'سارا', last_name: 'محمدی', mobile: '09128887766' }),
-            });
-            return r.status;
-        }""",
-        int(fx["dest_clinic_id"]),
+    dup_status = _with_expected_http_denial(
+        console_errors,
+        lambda: page.evaluate(
+            """async (destId) => {
+                const cfg = JSON.parse(document.querySelector('.cpms-patient-portal__config').textContent || '{}');
+                const url = String(cfg.rest_root || '').replace(/\\/+$/, '') + '/patient/enroll';
+                const r = await fetch(url, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json', 'X-WP-Nonce': cfg.nonce },
+                    body: JSON.stringify({ clinic_id: destId, first_name: 'سارا', last_name: 'محمدی', mobile: '09128887766' }),
+                });
+                return r.status;
+            }""",
+            int(fx["dest_clinic_id"]),
+        ),
     )
     check("classic.enrollment.verified.duplicate_rejected_400", dup_status == 400, f"HTTP {dup_status}")
 
 
-def run_non_admin_bootstrap_denial(page, check, wp_eval_php, base_url, out_dir, fx):
+def run_non_admin_bootstrap_denial(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """2a. Non-Administrator is denied on Organization Manager bootstrap GET and POST."""
-    resp = page.goto(
-        f"{base_url}/wp-admin/options-general.php?page=cpms-organization-manager-bootstrap",
-        wait_until="domcontentloaded",
+    resp = _with_expected_http_denial(
+        console_errors,
+        lambda: page.goto(
+            f"{base_url}/wp-admin/options-general.php?page=cpms-organization-manager-bootstrap",
+            wait_until="domcontentloaded",
+        ),
     )
     body = page.content()
     check(
@@ -522,6 +580,8 @@ def run_non_admin_bootstrap_denial(page, check, wp_eval_php, base_url, out_dir, 
             "target_user_id": int(fx["org_manager_uid"]),
             "confirm_bootstrap": "1",
         },
+        console_errors=console_errors,
+        expect_http_denial=True,
     )
     cnt_raw = wp_eval_php(
         f"""
@@ -534,7 +594,7 @@ echo 'BOOT_CNT=' . $n . PHP_EOL;
     check("classic.bootstrap.non_admin_post_zero_mutation", cnt == 0, f"memberships={cnt}")
 
 
-def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_dir, fx):
+def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """2b. Pure WP Administrator B4 boundary + real-browser Organization Manager bootstrap."""
     org_id = int(fx["bootstrap_org_id"])
     target_uid = int(fx["org_manager_uid"])
@@ -589,7 +649,7 @@ def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_
     # (b) missing confirmation -> 403 / wp_die ("درخواست معتبر نیست یا تأیید صریح انجام نشده است.")
     # (c) forged organization_id -> error notice ("خطا: فعال‌سازی انجام نشد")
     # (d) forged target_user_id -> error notice ("خطا: فعال‌سازی انجام نشد")
-    for probe_name, fields, expected_marker in [
+    for probe_name, fields, expected_marker, is_http_403 in [
         (
             "forged_nonce",
             {
@@ -600,6 +660,7 @@ def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_
                 "confirm_bootstrap": "1",
             },
             None,
+            True,
         ),
         (
             "missing_confirmation",
@@ -610,6 +671,7 @@ def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_
                 "target_user_id": target_uid,
             },
             "درخواست معتبر نیست یا تأیید صریح انجام نشده است",
+            True,
         ),
         (
             "forged_organization_id",
@@ -621,6 +683,7 @@ def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_
                 "confirm_bootstrap": "1",
             },
             "خطا: فعال‌سازی انجام نشد",
+            False,
         ),
         (
             "forged_target_user_id",
@@ -632,9 +695,16 @@ def run_admin_bootstrap_and_b4_boundary(page, check, wp_eval_php, base_url, out_
                 "confirm_bootstrap": "1",
             },
             "خطا: فعال‌سازی انجام نشد",
+            False,
         ),
     ]:
-        _post_form_in_browser(page, f"{base_url}/wp-admin/admin-post.php", fields)
+        _post_form_in_browser(
+            page,
+            f"{base_url}/wp-admin/admin-post.php",
+            fields,
+            console_errors=console_errors,
+            expect_http_denial=is_http_403,
+        )
         probe_body = page.content()
         ok = (
             ("مدیر اولیهٔ سازمان با موفقیت فعال شد" not in probe_body)
@@ -761,13 +831,18 @@ echo 'POST_BOOT=' . wp_json_encode([
     )
 
 
-def run_org_manager_clinic_lifecycle(page, check, wp_eval_php, base_url, out_dir, fx):
+def run_org_manager_clinic_lifecycle(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """3a. Bootstrapped Organization Manager provisions Clinic + edits profile (Iran province/city) + suspends/reactivates (B1 + B2)."""
     org_id = int(fx["bootstrap_org_id"])
     foreign_org_id = int(fx["foreign_mgmt_org_id"])
 
     # --- Step 1: Provision a new Clinic + primary Location on `cpms-organizations` ---
     page.goto(f"{base_url}/wp-admin/admin.php?page=cpms-organizations", wait_until="domcontentloaded")
+    check(
+        "classic.geography.assets_enqueued_on_organizations",
+        _has_cpms_admin_assets(page),
+        "body.cpms-admin, cpms-admin.css, and cpms-admin.js loaded on cpms-organizations",
+    )
     prov_form = page.locator('form:has(input[name="action"][value="cpms_provision_organization_clinic"])')
     check("classic.org_mgr.provision_form_rendered", prov_form.count() == 1, f"url={page.url}")
 
@@ -808,6 +883,8 @@ def run_org_manager_clinic_lifecycle(page, check, wp_eval_php, base_url, out_dir
             "slug": "forged-foreign-clinic",
             "timezone": "Asia/Tehran",
         },
+        console_errors=console_errors,
+        expect_http_denial=True,
     )
     check(
         "classic.org_mgr.cross_org_provision_denied",
@@ -830,6 +907,8 @@ def run_org_manager_clinic_lifecycle(page, check, wp_eval_php, base_url, out_dir
             "address_city": "شیراز",
             "address": "خیابان اول",
         },
+        console_errors=console_errors,
+        expect_http_denial=True,
     )
     check(
         "classic.geography.mismatched_province_city_provision_denied",
@@ -842,13 +921,14 @@ def run_org_manager_clinic_lifecycle(page, check, wp_eval_php, base_url, out_dir
     prov_form = page.locator('form:has(input[name="action"][value="cpms_provision_organization_clinic"])')
     prov_form.locator("select#org").select_option(str(org_id))
     prov_form.locator('select[name="address_province"]').select_option("اصفهان")
-    # Progressive enhancement check: optgroup for اصفهان is active while تهران optgroup is disabled
+    # Progressive enhancement check: optgroup and options for اصفهان are active while تهران optgroup/options are disabled
     isfahan_enabled = prov_form.locator('select[name="address_city"] optgroup[data-province="اصفهان"]').evaluate("el => !el.disabled")
+    kashan_opt_enabled = prov_form.locator('select[name="address_city"] option[value="کاشان"]').evaluate("el => !el.disabled")
     tehran_disabled = prov_form.locator('select[name="address_city"] optgroup[data-province="تهران"]').evaluate("el => el.disabled")
     check(
         "classic.geography.progressive_city_filtering_offline",
-        bool(isfahan_enabled) and bool(tehran_disabled),
-        f"isfahan_enabled={isfahan_enabled} tehran_disabled={tehran_disabled}",
+        bool(isfahan_enabled) and bool(kashan_opt_enabled) and bool(tehran_disabled),
+        f"isfahan_enabled={isfahan_enabled} kashan_opt_enabled={kashan_opt_enabled} tehran_disabled={tehran_disabled}",
     )
     prov_form.locator('select[name="address_city"]').select_option("کاشان")
     prov_form.locator('input[name="name"]').fill("درمانگاه پذیرش کاشان")
@@ -922,6 +1002,11 @@ echo 'PROV_DB=' . wp_json_encode([
     # --- Step 2: Post-onboarding Clinic Management (`cpms-clinic-management` — B1 & B2) ---
     page.goto(f"{base_url}/wp-admin/admin.php?page=cpms-clinic-management", wait_until="domcontentloaded")
     check(
+        "classic.geography.assets_enqueued_on_clinic_management",
+        _has_cpms_admin_assets(page),
+        "body.cpms-admin, cpms-admin.css, and cpms-admin.js loaded on cpms-clinic-management",
+    )
+    check(
         "classic.clinic_mgmt.requires_explicit_org_selection",
         "لطفاً ابتدا سازمان را به‌صورت صریح انتخاب کنید" in page.content()
         and page.locator("select#cpms_cm_org").input_value() == "",
@@ -963,9 +1048,33 @@ echo 'PROV_DB=' . wp_json_encode([
         f"province={pre_prov!r} city={pre_city!r}",
     )
 
-    # Update Clinic profile to خراسان رضوی / مشهد via the real browser form
+    # Province-only address round-trip in the browser: change province to یزد and leave city blank ("")
+    edit_form.locator('select[name="address_province"]').select_option("یزد")
+    with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+        edit_form.locator("button.button-primary").click()
+
+    edit_form = page.locator('form:has(input[name="action"][value="cpms_update_organization_clinic"])')
+    prov_only_prov = edit_form.locator('select[name="address_province"]').input_value() if edit_form.count() else ""
+    prov_only_city = edit_form.locator('select[name="address_city"]').input_value() if edit_form.count() else ""
+    prov_only_addr = edit_form.locator("input#cm_address").input_value() if edit_form.count() else ""
+    check(
+        "classic.geography.clinic_province_only_roundtrip_edit",
+        prov_only_prov == "یزد"
+        and prov_only_city == ""
+        and prov_only_addr == "یزد، خیابان امیرکبیر، پلاک ۱۰",
+        f"province={prov_only_prov!r} city={prov_only_city!r} addr={prov_only_addr!r}",
+    )
+
+    # Update Clinic profile from province-only (یزد) to خراسان رضوی / مشهد via the real browser form
     edit_form.locator("input#cm_name").fill("درمانگاه تخصصی مشهد")
     edit_form.locator('select[name="address_province"]').select_option("خراسان رضوی")
+    mashhad_opt_enabled = edit_form.locator('select[name="address_city"] option[value="مشهد"]').evaluate("el => !el.disabled")
+    yazd_opt_disabled = edit_form.locator('select[name="address_city"] option[value="یزد"]').evaluate("el => el.disabled")
+    check(
+        "classic.geography.clinic_edit_dynamic_province_enables_city",
+        bool(mashhad_opt_enabled) and bool(yazd_opt_disabled),
+        f"mashhad_opt_enabled={mashhad_opt_enabled} yazd_opt_disabled={yazd_opt_disabled}",
+    )
     edit_form.locator('select[name="address_city"]').select_option("مشهد")
     edit_form.locator("input#cm_address").fill("بلوار وکیل‌آباد، پلاک ۱۵")
     edit_form.locator("input#cm_phone").fill("05138889900")
@@ -1094,7 +1203,7 @@ echo 'REACT_DB=' . wp_json_encode([
     )
 
 
-def run_clinic_manager_location_lifecycle(page, check, wp_eval_php, base_url, out_dir, fx):
+def run_clinic_manager_location_lifecycle(page, check, wp_eval_php, base_url, out_dir, fx, console_errors=None):
     """3b. Clinic Manager (`cpms_manager`) Location create, edit (Iran province/city), primary protection, and lifecycle (B3)."""
     clinic_id = int(fx.get("provisioned_clinic_id") or 0)
     primary_loc_id = int(fx.get("provisioned_primary_loc_id") or 0)
@@ -1102,6 +1211,11 @@ def run_clinic_manager_location_lifecycle(page, check, wp_eval_php, base_url, ou
 
     # Visit cpms-locations without clinic_id -> explicit selection required, no write form
     page.goto(f"{base_url}/wp-admin/admin.php?page=cpms-locations", wait_until="domcontentloaded")
+    check(
+        "classic.geography.assets_enqueued_on_locations",
+        _has_cpms_admin_assets(page),
+        "body.cpms-admin, cpms-admin.css, and cpms-admin.js loaded on cpms-locations",
+    )
     clinic_select = page.locator("select#cpms_location_clinic")
     offered_clinics = clinic_select.locator("option").evaluate_all("els => els.map(e => e.getAttribute('value') || '')")
     check(
@@ -1194,6 +1308,13 @@ echo 'LOC_NEW=' . wp_json_encode($loc, JSON_UNESCAPED_UNICODE) . PHP_EOL;
     # Update the second Location to گیلان / رشت via the real browser form
     upd_form.locator("input#loc_edit_name").fill("شعبه دوم رشت")
     upd_form.locator('select[name="address_province"]').select_option("گیلان")
+    rasht_opt_enabled = upd_form.locator('select[name="address_city"] option[value="رشت"]').evaluate("el => !el.disabled")
+    shiraz_opt_disabled = upd_form.locator('select[name="address_city"] option[value="شیراز"]').evaluate("el => el.disabled")
+    check(
+        "classic.geography.location_edit_dynamic_province_enables_city",
+        bool(rasht_opt_enabled) and bool(shiraz_opt_disabled),
+        f"rasht_opt_enabled={rasht_opt_enabled} shiraz_opt_disabled={shiraz_opt_disabled}",
+    )
     upd_form.locator('select[name="address_city"]').select_option("رشت")
     upd_form.locator("input#loc_edit_address").fill("میدان شهرداری، پلاک ۵")
     with page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
@@ -1217,6 +1338,8 @@ echo 'LOC_NEW=' . wp_json_encode($loc, JSON_UNESCAPED_UNICODE) . PHP_EOL;
             "location_id": primary_loc_id,
             "active": "0",
         },
+        console_errors=console_errors,
+        expect_http_denial=True,
     )
     check(
         "classic.location_mgmt.primary_deactivation_denied",

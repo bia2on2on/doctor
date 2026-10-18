@@ -181,6 +181,18 @@
           var mismatch = selectedProvince !== '' && groupProvince !== selectedProvince;
           group.hidden = mismatch;
           group.disabled = mismatch;
+          if (!mismatch) {
+            group.removeAttribute('hidden');
+            group.removeAttribute('disabled');
+          }
+          Array.prototype.forEach.call(group.querySelectorAll('option'), function (opt) {
+            opt.hidden = mismatch;
+            opt.disabled = mismatch;
+            if (!mismatch) {
+              opt.removeAttribute('hidden');
+              opt.removeAttribute('disabled');
+            }
+          });
         });
         if (resetOnMismatch) {
           var currentOption = citySelect.options[citySelect.selectedIndex];

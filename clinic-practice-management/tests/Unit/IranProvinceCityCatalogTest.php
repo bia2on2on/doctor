@@ -74,21 +74,94 @@ final class IranProvinceCityCatalogTest extends TestCase {
         self::assertSame( '', IranProvinceCityCatalog::normalize_persian_text( "\xFF\xFE" ) );
     }
 
-    public function testNeverDefaultsToTehranAndPreservesLegacyAddressesUnchanged(): void {
+    public function testNeverDefaultsToTehranAndPreservesHistoricalFreeTextAddresses(): void {
         $empty_parsed = IranProvinceCityCatalog::parse_address( null );
         self::assertSame( '', $empty_parsed['province'] );
         self::assertSame( '', $empty_parsed['city'] );
         self::assertSame( '', $empty_parsed['detail'] );
 
-        $legacy_tehran_street = 'تهران، خیابان آزادی، پلاک ۱۲';
-        $parsed_legacy        = IranProvinceCityCatalog::parse_address( $legacy_tehran_street );
-        self::assertSame( '', $parsed_legacy['province'], 'Must not treat street name as a city.' );
-        self::assertSame( '', $parsed_legacy['city'] );
-        self::assertSame( $legacy_tehran_street, $parsed_legacy['raw'] );
+        // Historical free-text address without any province prefix:
+        // neither province nor city is selected, and raw text is preserved verbatim.
+        $historical_free_text = 'خیابان ولیعصر، بالاتر از میدان ونک، پلاک ۱۲';
+        $parsed_free_text     = IranProvinceCityCatalog::parse_address( $historical_free_text );
+        self::assertSame( '', $parsed_free_text['province'] );
+        self::assertSame( '', $parsed_free_text['city'] );
+        self::assertSame( $historical_free_text, $parsed_free_text['detail'] );
+        self::assertSame( $historical_free_text, $parsed_free_text['raw'] );
 
-        $preserved = IranProvinceCityCatalog::resolve_submitted_address( $legacy_tehran_street, '', '' );
-        self::assertSame( $legacy_tehran_street, $preserved );
+        $preserved_free_text = IranProvinceCityCatalog::resolve_submitted_address( $historical_free_text, '', '' );
+        self::assertSame( $historical_free_text, $preserved_free_text );
+
+        // Province-prefixed historical address without a selected city:
+        // province is recognized for round-trip editing, city remains '' (never defaults to Tehran),
+        // and when submitted with empty selectors, the stored string is preserved untouched.
+        $province_street = 'تهران، خیابان آزادی، پلاک ۱۲';
+        $parsed_prov     = IranProvinceCityCatalog::parse_address( $province_street );
+        self::assertSame( 'تهران', $parsed_prov['province'] );
+        self::assertSame( '', $parsed_prov['city'], 'Must never silently default to a city.' );
+        self::assertSame( 'خیابان آزادی، پلاک ۱۲', $parsed_prov['detail'] );
+        self::assertSame( $province_street, $parsed_prov['raw'] );
+
+        $preserved_prov = IranProvinceCityCatalog::resolve_submitted_address( $province_street, '', '' );
+        self::assertSame( $province_street, $preserved_prov );
         self::assertNull( IranProvinceCityCatalog::resolve_submitted_address( '   ', '', '' ) );
+    }
+
+    public function testProvinceOnlyAddressRoundTripAndEditing(): void {
+        // 1. Compose a province-only address with detail.
+        $composed = IranProvinceCityCatalog::resolve_submitted_address(
+            'بلوار وکیل‌آباد، پلاک ۱۵',
+            'خراسان رضوی',
+            ''
+        );
+        self::assertSame( 'خراسان رضوی، بلوار وکیل‌آباد، پلاک ۱۵', $composed );
+
+        // 2. Parse back: province is recognized, city stays empty (never defaults to Mashhad).
+        $parsed = IranProvinceCityCatalog::parse_address( $composed );
+        self::assertSame( 'خراسان رضوی', $parsed['province'] );
+        self::assertSame( '', $parsed['city'] );
+        self::assertSame( 'بلوار وکیل‌آباد، پلاک ۱۵', $parsed['detail'] );
+
+        // 3. Re-submitting the province-only address with the same province is idempotent.
+        $resubmitted = IranProvinceCityCatalog::resolve_submitted_address(
+            $composed,
+            'خراسان رضوی',
+            ''
+        );
+        self::assertSame( $composed, $resubmitted );
+
+        // 4. Changing province on a province-only address replaces the old province without duplication.
+        $re_provinced = IranProvinceCityCatalog::resolve_submitted_address(
+            $composed,
+            'مازندران',
+            ''
+        );
+        self::assertSame( 'مازندران، بلوار وکیل‌آباد، پلاک ۱۵', $re_provinced );
+
+        // 5. Adding a city to a province-only address inserts the city cleanly.
+        $with_city = IranProvinceCityCatalog::resolve_submitted_address(
+            $composed,
+            'خراسان رضوی',
+            'نیشابور'
+        );
+        self::assertSame( 'خراسان رضوی، نیشابور، بلوار وکیل‌آباد، پلاک ۱۵', $with_city );
+
+        // 6. Clearing the city on a province+city address leaves province + detail cleanly.
+        $cleared_city = IranProvinceCityCatalog::resolve_submitted_address(
+            $with_city,
+            'خراسان رضوی',
+            ''
+        );
+        self::assertSame( 'خراسان رضوی، بلوار وکیل‌آباد، پلاک ۱۵', $cleared_city );
+
+        // 7. Bare province without detail round-trips cleanly.
+        $bare = IranProvinceCityCatalog::resolve_submitted_address( '', 'یزد', '' );
+        self::assertSame( 'یزد', $bare );
+        $parsed_bare = IranProvinceCityCatalog::parse_address( $bare );
+        self::assertSame( 'یزد', $parsed_bare['province'] );
+        self::assertSame( '', $parsed_bare['city'] );
+        self::assertSame( '', $parsed_bare['detail'] );
+        self::assertSame( 'یزد', IranProvinceCityCatalog::resolve_submitted_address( $bare, 'یزد', '' ) );
     }
 
     public function testComposesParsesAndUpdatesAddressIdempotently(): void {

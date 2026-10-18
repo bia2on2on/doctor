@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\AddressSelectorField;
 use ClinicCore\Admin\ClinicManagementPage;
+use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\LocationAdminPage;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -79,9 +80,40 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
     }
 
     protected function tearDown(): void {
+        unset( $_GET['page'] );
+        wp_dequeue_script( 'cpms-admin' );
+        wp_dequeue_style( 'cpms-admin' );
         wp_set_current_user( 0 );
         App::resetScope();
         parent::tearDown();
+    }
+
+    public function testCpmsAssetsRecognizesAndEnqueuesOnOrganizationClinicAndLocationPages(): void {
+        foreach ( [ 'cpms-organizations', 'cpms-clinic-management', 'cpms-locations' ] as $slug ) {
+            wp_dequeue_script( 'cpms-admin' );
+            wp_dequeue_style( 'cpms-admin' );
+            $_GET['page'] = $slug;
+
+            self::assertTrue( CpmsAssets::isCpmsPage(), "Page {$slug} must be recognized by CpmsAssets." );
+            self::assertStringContainsString( 'cpms-admin', CpmsAssets::bodyClass( 'wp-admin' ), "Page {$slug} must receive cpms-admin body class." );
+
+            CpmsAssets::enqueue();
+            self::assertTrue( wp_script_is( 'cpms-admin', 'enqueued' ), "cpms-admin.js must be enqueued on {$slug}." );
+            self::assertTrue( wp_style_is( 'cpms-admin', 'enqueued' ), "cpms-admin.css must be enqueued on {$slug}." );
+        }
+
+        // Pages without geography/admin-JS controls remain excluded from the scoped allowlist.
+        foreach ( [ 'cpms-organization-manager-bootstrap', 'cpms-organization-managers', 'cpms-not-a-page' ] as $non_asset_slug ) {
+            wp_dequeue_script( 'cpms-admin' );
+            wp_dequeue_style( 'cpms-admin' );
+            $_GET['page'] = $non_asset_slug;
+
+            self::assertFalse( CpmsAssets::isCpmsPage(), "Page {$non_asset_slug} must not be in CpmsAssets allowlist." );
+            self::assertSame( 'wp-admin', CpmsAssets::bodyClass( 'wp-admin' ) );
+            CpmsAssets::enqueue();
+            self::assertFalse( wp_script_is( 'cpms-admin', 'enqueued' ) );
+            self::assertFalse( wp_style_is( 'cpms-admin', 'enqueued' ) );
+        }
     }
 
     public function testAddressSelectorFieldRendersOfflineCatalogWithoutTehranDefault(): void {
@@ -98,12 +130,29 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         self::assertStringContainsString( 'کهگیلویه و بویراحمد', $html );
         self::assertStringNotContainsString( 'value="تهران" selected', $html, 'Must never default to Tehran.' );
 
+        // Province + city pre-selection.
         ob_start();
         AddressSelectorField::render( 'اصفهان، کاشان، خیابان امیرکبیر، پلاک ۱۰', 'test_selected' );
         $selected_html = (string) ob_get_clean();
 
         self::assertStringContainsString( '<option value="اصفهان" selected>', $selected_html );
         self::assertStringContainsString( '<option value="کاشان" data-province="اصفهان" selected>', $selected_html );
+
+        // Province-only stored address: province is pre-selected, city remains unselected (no default city).
+        ob_start();
+        AddressSelectorField::render( 'خراسان رضوی، بلوار وکیل‌آباد، پلاک ۱۵', 'test_prov_only' );
+        $prov_only_html = (string) ob_get_clean();
+
+        self::assertStringContainsString( '<option value="خراسان رضوی" selected>', $prov_only_html );
+        self::assertStringContainsString( 'data-selected-city=""', $prov_only_html );
+        self::assertStringNotContainsString( 'data-province="خراسان رضوی" selected>', $prov_only_html );
+
+        // Historical free-text address without province: neither province nor city is selected.
+        ob_start();
+        AddressSelectorField::render( 'خیابان ولیعصر، کوچه سوم، پلاک ۸', 'test_free_text' );
+        $free_text_html = (string) ob_get_clean();
+
+        self::assertStringNotContainsString( ' selected>', $free_text_html );
     }
 
     public function testClinicAndLocationFormsComposeAndValidateIranProvinceAndCityAndPreserveLegacyAddress(): void {
@@ -131,6 +180,46 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         );
         self::assertSame( 'اصفهان، کاشان، خیابان امیرکبیر، پلاک ۱۰', $stored_clinic_addr );
 
+        // 1b. Province-only Clinic profile update and round-trip edit to another province without duplication.
+        $prov_only_res = ClinicManagementPage::update_clinic_for_test(
+            [
+                'organization_id'  => $this->org_id,
+                'clinic_id'        => $this->clinic_id,
+                'name'             => 'درمانگاه جغرافیا',
+                'address'          => $stored_clinic_addr,
+                'address_province' => 'یزد',
+                'address_city'     => '',
+                'phone'            => '03535550000',
+            ],
+            $this->org_mgr_id
+        );
+        self::assertSame( '', $prov_only_res['error'] );
+        $stored_prov_only = (string) $db->fetchValue(
+            'SELECT address FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            [ $this->clinic_id ]
+        );
+        self::assertSame( 'یزد، خیابان امیرکبیر، پلاک ۱۰', $stored_prov_only );
+
+        // Editing the province-only address to another province replaces 'یزد' cleanly.
+        $prov_switch_res = ClinicManagementPage::update_clinic_for_test(
+            [
+                'organization_id'  => $this->org_id,
+                'clinic_id'        => $this->clinic_id,
+                'name'             => 'درمانگاه جغرافیا',
+                'address'          => $stored_prov_only,
+                'address_province' => 'کرمان',
+                'address_city'     => '',
+                'phone'            => '03435550000',
+            ],
+            $this->org_mgr_id
+        );
+        self::assertSame( '', $prov_switch_res['error'] );
+        $stored_prov_switch = (string) $db->fetchValue(
+            'SELECT address FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            [ $this->clinic_id ]
+        );
+        self::assertSame( 'کرمان، خیابان امیرکبیر، پلاک ۱۰', $stored_prov_switch );
+
         // 2. Forged cross-province city is rejected fail-closed without mutating stored address.
         $bad_clinic = ClinicManagementPage::update_clinic_for_test(
             [
@@ -146,7 +235,7 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         );
         self::assertNotSame( '', $bad_clinic['error'] );
         self::assertSame(
-            'اصفهان، کاشان، خیابان امیرکبیر، پلاک ۱۰',
+            'کرمان، خیابان امیرکبیر، پلاک ۱۰',
             (string) $db->fetchValue( 'SELECT address FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', [ $this->clinic_id ] )
         );
 
@@ -174,6 +263,26 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         );
         self::assertSame( 'خراسان رضوی، مشهد، بلوار وکیل‌آباد، پلاک ۱۵', $loc_addr );
 
+        // 3b. Historical free-text Location address is preserved verbatim when province/city selectors are empty.
+        $free_text_loc = LocationAdminPage::upsertLocation(
+            [
+                'mode'             => 'update',
+                'clinic_id'        => $this->clinic_id,
+                'location_id'      => $created_loc['location_id'],
+                'name'             => 'شعبه دوم مشهد',
+                'address'          => 'خیابان ولیعصر، بالاتر از میدان ونک، پلاک ۱۲',
+                'address_province' => '',
+                'address_city'     => '',
+                'timezone'         => 'Asia/Tehran',
+            ],
+            $this->loc_mgr_id
+        );
+        self::assertSame( '', $free_text_loc['error'] );
+        self::assertSame(
+            'خیابان ولیعصر، بالاتر از میدان ونک، پلاک ۱۲',
+            (string) $db->fetchValue( 'SELECT address FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d', [ $created_loc['location_id'] ] )
+        );
+
         // Forged province on Location update is rejected fail-closed.
         $bad_loc = LocationAdminPage::upsertLocation(
             [
@@ -190,7 +299,7 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         );
         self::assertNotSame( '', $bad_loc['error'] );
         self::assertSame(
-            'خراسان رضوی، مشهد، بلوار وکیل‌آباد، پلاک ۱۵',
+            'خیابان ولیعصر، بالاتر از میدان ونک، پلاک ۱۲',
             (string) $db->fetchValue( 'SELECT address FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d', [ $created_loc['location_id'] ] )
         );
     }

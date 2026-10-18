@@ -353,9 +353,15 @@ final class IranProvinceCityCatalog {
     /**
      * Parse an existing stored address into optional recognized (province, city) prefix + detail.
      *
-     * Backwards compatibility: if the stored address does not start with a recognized
-     * "<Province>، <City>" pair from the catalog, `province` and `city` remain empty strings
-     * and the entire stored address is preserved in `detail` and `raw`.
+     * Backwards compatibility:
+     *  - Recognizes "<Province>، <City>، <Detail>", "<Province>، <City>", "<Province>، <Detail>",
+     *    and "<Province>" when "<Province>" is a canonical Persian province name from the catalog.
+     *  - Never silently selects a default city or province: if a stored address has a valid
+     *    province without a recognized city of that province, `city` remains `""` and the
+     *    remaining text is preserved in `detail`.
+     *  - If the stored address does not start with a recognized Persian province name from the
+     *    catalog, `province` and `city` remain empty strings and the entire stored address is
+     *    preserved in `detail` and `raw`.
      *
      * @return array{province:string, city:string, detail:string, raw:string}
      */
@@ -365,16 +371,32 @@ final class IranProvinceCityCatalog {
             return [ 'province' => '', 'city' => '', 'detail' => '', 'raw' => '' ];
         }
 
-        $parts = preg_split( '/\s*(?:،|,)\s*/u', $raw, 3 );
-        if ( is_array( $parts ) && count( $parts ) >= 2 ) {
-            $candidate_province = self::find_province( $parts[0] );
-            $candidate_city     = self::normalize_city_token( $parts[1] );
+        $first_split        = preg_split( '/\s*(?:،|,)\s*/u', $raw, 2 );
+        $first_token        = is_array( $first_split ) && isset( $first_split[0] ) ? $first_split[0] : $raw;
+        $remainder          = is_array( $first_split ) && isset( $first_split[1] ) ? self::normalize_persian_text( $first_split[1] ) : '';
+        $candidate_province = self::find_province_by_persian_name( $first_token );
+
+        if ( $candidate_province !== null ) {
+            if ( $remainder === '' ) {
+                return [
+                    'province' => $candidate_province['name'],
+                    'city'     => '',
+                    'detail'   => '',
+                    'raw'      => $raw,
+                ];
+            }
+
+            $second_split   = preg_split( '/\s*(?:،|,)\s*/u', $remainder, 2 );
+            $second_token   = is_array( $second_split ) && isset( $second_split[0] ) ? $second_split[0] : $remainder;
+            $candidate_city = self::normalize_city_token( $second_token );
+
             if (
-                $candidate_province !== null
-                && $candidate_city !== ''
+                $candidate_city !== ''
                 && in_array( $candidate_city, $candidate_province['cities'], true )
             ) {
-                $detail = isset( $parts[2] ) ? self::normalize_persian_text( $parts[2] ) : '';
+                $detail = is_array( $second_split ) && isset( $second_split[1] )
+                    ? self::normalize_persian_text( $second_split[1] )
+                    : '';
 
                 return [
                     'province' => $candidate_province['name'],
@@ -383,6 +405,13 @@ final class IranProvinceCityCatalog {
                     'raw'      => $raw,
                 ];
             }
+
+            return [
+                'province' => $candidate_province['name'],
+                'city'     => '',
+                'detail'   => $remainder,
+                'raw'      => $raw,
+            ];
         }
 
         return [
@@ -444,26 +473,10 @@ final class IranProvinceCityCatalog {
         }
 
         $parsed = self::parse_address( $address );
-        if ( $parsed['province'] !== '' && $parsed['city'] !== '' ) {
+        if ( $parsed['province'] !== '' ) {
             $detail = $parsed['detail'];
         } else {
             $detail = $address;
-            if ( $city_name !== '' ) {
-                $prefix_with_comma = $province_name . '، ' . $city_name . '،';
-                $prefix_exact      = $province_name . '، ' . $city_name;
-                if ( str_starts_with( $detail, $prefix_with_comma ) ) {
-                    $detail = self::normalize_persian_text( (string) mb_substr( $detail, mb_strlen( $prefix_with_comma ) ) );
-                } elseif ( $detail === $prefix_exact ) {
-                    $detail = '';
-                }
-            } else {
-                $province_with_comma = $province_name . '،';
-                if ( str_starts_with( $detail, $province_with_comma ) ) {
-                    $detail = self::normalize_persian_text( (string) mb_substr( $detail, mb_strlen( $province_with_comma ) ) );
-                } elseif ( $detail === $province_name ) {
-                    $detail = '';
-                }
-            }
         }
 
         $prefix   = $city_name !== '' ? $province_name . '، ' . $city_name : $province_name;
@@ -474,6 +487,34 @@ final class IranProvinceCityCatalog {
         }
 
         return $composed;
+    }
+
+    /**
+     * Match a province by canonical Persian name (or "استان <نام>"), never by ASCII slug,
+     * so free-text stored addresses are only parsed when prefixed by an official Persian province.
+     *
+     * @return array{slug:string, name:string, capital:string, cities:list<string>}|null
+     */
+    private static function find_province_by_persian_name( string $candidate ): ?array {
+        $needle = self::normalize_persian_text( $candidate );
+        if ( $needle === '' ) {
+            return null;
+        }
+
+        if ( str_starts_with( $needle, 'استان ' ) ) {
+            $without_prefix = self::normalize_persian_text( (string) mb_substr( $needle, 6 ) );
+            if ( $without_prefix !== '' ) {
+                $needle = $without_prefix;
+            }
+        }
+
+        foreach ( self::PROVINCES as $province ) {
+            if ( $province['name'] === $needle ) {
+                return $province;
+            }
+        }
+
+        return null;
     }
 
     private static function normalize_city_token( string $city ): string {
