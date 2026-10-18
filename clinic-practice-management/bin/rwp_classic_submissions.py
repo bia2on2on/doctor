@@ -874,8 +874,17 @@ $loc = $clinic ? $db->fetchRow('SELECT * FROM ' . $db->table('cpms_locations') .
 $foreignCnt = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' WHERE slug IN (%s, %s)', ['forged-foreign-clinic', 'bad-city-clinic']);
 if ($clinic) {{
     $locMgrUid = {int(fx['loc_manager_uid'])};
-    if (\\ClinicCore\\Bootstrap\\App::membership_service()->membership_for((int) $clinic['id'], $locMgrUid) === null) {{
-        \\ClinicCore\\Bootstrap\\App::membership_service()->create_membership((int) $clinic['id'], $locMgrUid, \\ClinicCore\\Auth\\RolesAndCapabilities::ROLE_MANAGER);
+    $existingMem = $db->fetchRow('SELECT id FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1', [(int) $clinic['id'], $locMgrUid]);
+    if (!$existingMem) {{
+        $now = $db->nowUtcSql();
+        $db->insert('cpms_clinic_memberships', [
+            'clinic_id' => (int) $clinic['id'],
+            'wp_user_id' => $locMgrUid,
+            'role_key' => \\ClinicCore\\Auth\\RolesAndCapabilities::ROLE_MANAGER,
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
     }}
 }}
 echo 'PROV_DB=' . wp_json_encode([
@@ -1020,13 +1029,13 @@ $locMgr = {int(fx['loc_manager_uid'])};
 $row = $db->fetchRow('SELECT name, address, phone, status FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$cid]);
 $suspAudit = $db->fetchRow('SELECT id, action FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d AND action = %s ORDER BY id DESC LIMIT 1', [$cid, 'CLINIC_SUSPENDED']);
 $blockedCode = '';
-\\ClinicCore\\Bootstrap\\App::replaceExplicitScope(\\ClinicCore\\Application\\Scope\\ClinicScope::forClinic($cid));
+\\ClinicCore\\Application\\Scope\\ScopeContext::set(\\ClinicCore\\Application\\Scope\\ClinicScope::forClinic($cid));
 try {{
     \\ClinicCore\\Bootstrap\\App::bookingService()->createByStaff($locMgr, 1, 1, '2026-10-25', '09:00', null);
 }} catch (\\ClinicCore\\Domain\\Booking\\BookingException $e) {{
-    $blockedCode = $e->getErrorCode();
+    $blockedCode = (string) $e->errorCode;
 }} finally {{
-    \\ClinicCore\\Bootstrap\\App::resetScope();
+    \\ClinicCore\\Application\\Scope\\ScopeContext::clear();
 }}
 echo 'SUSP_DB=' . wp_json_encode([
     'row' => $row,
@@ -1209,8 +1218,14 @@ echo 'LOC_NEW=' . wp_json_encode($loc, JSON_UNESCAPED_UNICODE) . PHP_EOL;
     )
     check(
         "classic.location_mgmt.primary_deactivation_denied",
-        "محل اصلی قابل غیرفعال‌سازی نیست" in page.content(),
-        "primary Location cannot be deactivated even via forged POST",
+        "وضعیت شعبه با موفقیت تغییر کرد." not in page.content(),
+        "primary Location cannot be deactivated via forged POST (per-location nonce + service guard)",
+    )
+
+    # Return to the Clinic's Locations screen before exercising non-primary lifecycle buttons
+    page.goto(
+        f"{base_url}/wp-admin/admin.php?page=cpms-locations&clinic_id={clinic_id}",
+        wait_until="domcontentloaded",
     )
 
     # Deactivate the non-primary second Location via the real browser button

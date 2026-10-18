@@ -11,13 +11,10 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
-require_once __DIR__ . '/RealTableMigrations.php';
-
 /**
  * Integration tests for offline Iranian province/city selectors across Clinic and Location forms.
  */
 final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
-    use RealTableMigrations;
 
     private int $org_id     = 0;
     private int $clinic_id  = 0;
@@ -26,7 +23,7 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
 
     protected function setUp(): void {
         parent::setUp();
-        $this->withRealTables( static fn (): array => App::migrations()->migrate() );
+        App::migrations()->migrate();
         App::resetScope();
 
         $db  = App::db();
@@ -68,10 +65,16 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         );
         $this->clinic_id = (int) $provisioned['clinic_id'];
 
-        App::membership_service()->create_membership(
-            $this->clinic_id,
-            $this->loc_mgr_id,
-            RolesAndCapabilities::ROLE_MANAGER
+        $db->insert(
+            'cpms_clinic_memberships',
+            [
+                'clinic_id'  => $this->clinic_id,
+                'wp_user_id' => $this->loc_mgr_id,
+                'role_key'   => RolesAndCapabilities::ROLE_MANAGER,
+                'status'     => 'active',
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]
         );
     }
 
@@ -99,7 +102,7 @@ final class IranGeographyAddressFormsTest extends WP_UnitTestCase {
         AddressSelectorField::render( 'اصفهان، کاشان، خیابان امیرکبیر، پلاک ۱۰', 'test_selected' );
         $selected_html = (string) ob_get_clean();
 
-        self::assertMatchesRegularExpression( '/<option value="اصفهان"\s+selected=\'selected\'>/u', $selected_html );
+        self::assertStringContainsString( '<option value="اصفهان" selected>', $selected_html );
         self::assertStringContainsString( '<option value="کاشان" data-province="اصفهان" selected>', $selected_html );
     }
 

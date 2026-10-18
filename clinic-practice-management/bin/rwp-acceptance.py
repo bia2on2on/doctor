@@ -1057,7 +1057,7 @@ def resolve_portal_url(page_slug):
     Under Plain Permalinks (empty permalink_structure), WordPress routes pages
     by ?page_id=N rather than ?pagename=slug.
     """
-    wp_dir = os.environ.get("WP_DIR", "/home/runner/rwp")
+    wp_dir = os.environ.get("WP_DIR", "/home/runner/rwp") or "/home/runner/rwp"
     if wp_dir and os.path.exists(wp_dir):
         try:
             php = (
@@ -1076,6 +1076,20 @@ def resolve_portal_url(page_slug):
         except Exception:
             pass
     return f"{BASE}/?pagename={page_slug}"
+
+
+def wp_eval_php(code):
+    """Execute PHP code inside WordPress via WP-CLI and return stdout."""
+    wp_dir = os.environ.get("WP_DIR", "/home/runner/rwp") or "/home/runner/rwp"
+    res = subprocess.run(
+        ["wp", "eval", code, f"--path={wp_dir}", "--allow-root"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if res.returncode != 0:
+        raise RuntimeError(f"wp eval failed (rc={res.returncode}): {res.stderr[:240]}")
+    return res.stdout
 
 
 def patient_portal_otp_login_surface(browser):
