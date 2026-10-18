@@ -524,7 +524,7 @@ final class VisitService
      */
     public function todayForDoctorPortal( int $actor_user_id, ?int $clinician_id = null ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->doctorPortalClinicId();
+        $clinic_id          = $this->doctor_portal_clinic_id();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
@@ -681,7 +681,7 @@ final class VisitService
      */
     public function eventsSinceForDoctorPortal( int $actor_user_id, int $since_event_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->doctorPortalClinicId();
+        $clinic_id          = $this->doctor_portal_clinic_id();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
@@ -740,7 +740,7 @@ final class VisitService
      */
     public function lastEventIdForDoctorPortal( int $actor_user_id ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->doctorPortalClinicId();
+        $clinic_id          = $this->doctor_portal_clinic_id();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
@@ -1475,13 +1475,12 @@ final class VisitService
      * The system-single Clinic resolver remains available to other legacy
      * workflows, but cannot select a clinical tenant on behalf of a doctor.
      */
-    private function doctorPortalClinicId(): int
-    {
+    private function doctor_portal_clinic_id(): int {
         $scope = ScopeContext::tryGet();
         if (
             $scope === null
             || $scope->source !== ClinicScope::SOURCE_EXPLICIT
-            || $scope->clinicId <= 0
+            || $scope->clinicId <= 0 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope retains its published property name.
         ) {
             throw VisitException::of(
                 'CLINIC_SCOPE_REQUIRED',
@@ -1491,7 +1490,7 @@ final class VisitService
             );
         }
 
-        return (int) $scope->clinicId;
+        return (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope retains its published property name.
     }
 
     /**

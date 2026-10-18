@@ -1090,7 +1090,7 @@ final class DoctorPortalController extends RestBase {
 		$user_id = (int) ( $user->ID ?? 0 );
 		$db      = App::db();
 
-		$clinician_row = $db->fetchRow(
+		$clinician_row  = $db->fetchRow(
 			'SELECT id, full_name FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
 			[ $user_id ]
 		);
@@ -1109,9 +1109,9 @@ final class DoctorPortalController extends RestBase {
 			);
 		}
 
-		$current_clinic       = null;
-		$current_location     = null;
-		$eligible_locations   = [];
+		$current_clinic     = null;
+		$current_location   = null;
+		$eligible_locations = [];
 		if ( null !== $selected_clinic_id ) {
 			foreach ( $clinics as $clinic ) {
 				if ( (int) $clinic['id'] === $selected_clinic_id ) {
@@ -1149,7 +1149,7 @@ final class DoctorPortalController extends RestBase {
 
 		return $this->success(
 			[
-				'doctor' => [
+				'doctor'               => [
 					'wp_user_id'     => $user_id,
 					'clinician_id'   => $clinician_id,
 					'clinician_name' => $clinician_name,
@@ -1244,8 +1244,8 @@ final class DoctorPortalController extends RestBase {
 			return [];
 		}
 
-		$placeholders = implode( ',', array_fill( 0, count( $clinic_ids ), '%d' ) );
-		$org_rows     = App::db()->fetchAll(
+		$placeholders  = implode( ',', array_fill( 0, count( $clinic_ids ), '%d' ) );
+		$org_rows      = App::db()->fetchAll(
 			'SELECT c.id, c.organization_id, o.status AS organization_status FROM ' . App::db()->table( 'cpms_clinics' ) . ' c'
 			. ' INNER JOIN ' . App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
 			. " WHERE c.id IN ({$placeholders})",
@@ -1253,14 +1253,14 @@ final class DoctorPortalController extends RestBase {
 		);
 		$organizations = [];
 		foreach ( is_array( $org_rows ) ? $org_rows : [] as $row ) {
-			$organizations[(int) $row['id']] = $row;
+			$organizations[ (int) $row['id'] ] = $row;
 		}
 
 		$authorized = [];
 		$authorization = App::authorization_service();
 		foreach ( $memberships as $membership ) {
 			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
-			$org       = $organizations[$clinic_id] ?? null;
+			$org       = $organizations[ $clinic_id ] ?? null;
 			if ( $clinic_id <= 0 || $org === null || (string) $org['organization_status'] !== 'active' ) {
 				continue;
 			}

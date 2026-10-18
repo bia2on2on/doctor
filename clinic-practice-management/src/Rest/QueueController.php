@@ -291,18 +291,18 @@ final class QueueController extends RestBase {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'Doctor not linked to active clinician' );
 		}
 
-		$selectorError = $this->requireExplicitPortalClinic( $r );
-		return $selectorError instanceof WP_Error ? $selectorError : true;
+		$selector_error = $this->requireExplicitPortalClinic( $r );
+		return $selector_error instanceof WP_Error ? $selector_error : true;
 	}
 
 	private function requireExplicitPortalClinic( WP_REST_Request $r ): ?WP_Error {
-		$route        = (string) $r->get_route();
-		$portalRoutes = [
+		$route          = (string) $r->get_route();
+		$portal_routes = [
 			'/' . self::NS . '/doctor/today',
 			'/' . self::NS . '/doctor/portal/today',
 			'/' . self::NS . '/doctor/portal/rt/queue',
 		];
-		if ( ! in_array( $route, $portalRoutes, true ) ) {
+		if ( ! in_array( $route, $portal_routes, true ) ) {
 			return null;
 		}
 		$raw = $r->get_header( 'X-CPMS-Clinic-Id' );
@@ -317,9 +317,9 @@ final class QueueController extends RestBase {
 				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
 			);
 		}
-		$isValidId = ( is_int( $raw ) && $raw > 0 )
+		$is_valid_id = ( is_int( $raw ) && $raw > 0 )
 			|| ( is_string( $raw ) && preg_match( '/^[1-9][0-9]{0,18}$/', $raw ) === 1 );
-		if ( ! $isValidId ) {
+		if ( ! $is_valid_id ) {
 			return $this->error(
 				'CLINIC_VALIDATION_FAILED',
 				422,
@@ -327,9 +327,9 @@ final class QueueController extends RestBase {
 				[ 'field' => 'clinic_id' ]
 			);
 		}
-		$clinicId = (int) $raw;
-		$userId = (int) wp_get_current_user()->ID;
-		if ( ! App::authorization_service()->can( $userId, $clinicId, RolesAndCapabilities::QUEUE_READ ) ) {
+		$clinic_id = (int) $raw;
+		$user_id   = (int) wp_get_current_user()->ID;
+		if ( ! App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_READ ) ) {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
 
@@ -443,9 +443,9 @@ final class QueueController extends RestBase {
 		if ( $perm instanceof WP_Error ) {
 			return $perm;
 		}
-		$portalContext = $this->requireExplicitPortalClinic( $r );
-		if ( $portalContext instanceof WP_Error ) {
-			return $portalContext;
+		$portal_context = $this->requireExplicitPortalClinic( $r );
+		if ( $portal_context instanceof WP_Error ) {
+			return $portal_context;
 		}
 		$scoped = $this->requireClinicPermission( $cap );
 		if ( $scoped instanceof WP_Error ) {

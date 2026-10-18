@@ -295,13 +295,11 @@ final class RestClinicContext
         );
     }
 
-    private static function is_doctor_portal_route( string $route ): bool
-    {
+    private static function is_doctor_portal_route( string $route ): bool {
         return preg_match( '#^/clinic/v1/(?:doctor/today|doctor/portal(?:/|$))#', $route ) === 1;
     }
 
-    private static function has_explicit_clinic_selector( WP_REST_Request $request ): bool
-    {
+    private static function has_explicit_clinic_selector( WP_REST_Request $request ): bool {
         $header = $request->get_header( 'X-CPMS-Clinic-Id' );
         $param  = $request->get_param( 'clinic_id' );
 
