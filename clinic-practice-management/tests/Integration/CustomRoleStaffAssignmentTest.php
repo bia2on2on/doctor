@@ -351,6 +351,29 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
         self::assertSame(['sr_read'], array_column($this->service()->assignable_definitions($this->managerUserId, $this->clinicA)['definitions'], 'role_key'));
     }
 
+    public function testCustomRoleManagementRequiresExplicitClinicSelection(): void
+    {
+        $this->definitions()->create($this->managerUserId, $this->clinicA, 'sr_explicit', 'Explicit scope role', ['cpms_patient_read']);
+        $beforeRole = (string) $this->membership($this->clinicA, $this->secretaryUserId)['role_key'];
+
+        try {
+            $this->service()->assign($this->managerUserId, null, $this->secretaryUserId, 'sr_explicit');
+            self::fail('custom-role assignment must not infer the actor\'s sole active Clinic membership');
+        } catch (ScopeRequiredException $exception) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $exception->apiCode());
+        }
+
+        try {
+            $this->service()->assignable_definitions($this->managerUserId, null);
+            self::fail('custom-role options must not infer a Clinic either');
+        } catch (ScopeRequiredException $exception) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $exception->apiCode());
+        }
+
+        self::assertSame($beforeRole, (string) $this->membership($this->clinicA, $this->secretaryUserId)['role_key'], 'missing explicit Clinic context produces no assignment');
+        self::assertSame(0, $this->auditCount(CustomRoleAssignmentService::AUDIT_ASSIGNED), 'missing context produces no assignment audit');
+    }
+
     public function testMembershipDenyAndGrantRowsSurviveReassignmentAndKeepPrecedence(): void
     {
         $this->definitions()->create($this->managerUserId, $this->clinicA, 'sr_matrix', 'Matrix role', ['cpms_patient_read', 'cpms_search']);
@@ -502,6 +525,7 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
         self::assertStringContainsString('انتساب نقش سفارشی', $html);
 
         // Manageability of the membership-only assignee through the existing flow.
+        wp_set_current_user( $this->managerUserId );
         $updated = StaffManagementPage::upsertUser([
             'mode' => 'update',
             'user_id' => $this->membershipOnlyUserId,
@@ -561,6 +585,7 @@ final class CustomRoleStaffAssignmentTest extends WP_UnitTestCase
     {
         $login = 'sr_builtin_' . bin2hex(random_bytes(2));
         $created = StaffManagementPage::upsertUser([
+            'clinic_id' => $this->clinicA,
             'mode' => 'create',
             'username' => $login,
             'display_name' => 'Built-in Secretary',

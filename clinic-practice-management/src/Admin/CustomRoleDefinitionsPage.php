@@ -342,7 +342,8 @@ final class CustomRoleDefinitionsPage {
 		echo '<form method="get" action="' . esc_url( admin_url( 'admin.php' ) ) . '" style="margin:12px 0">';
 		echo '<input type="hidden" name="page" value="' . esc_attr( self::PAGE_SLUG ) . '">';
 		echo '<label for="cpms-custom-role-clinic">' . esc_html__( 'Clinic', 'cpms' ) . '</label> ';
-		echo '<select name="cpms_clinic_id" id="cpms-custom-role-clinic">';
+		echo '<select name="cpms_clinic_id" id="cpms-custom-role-clinic" required>';
+		echo '<option value="" ' . selected( 0, $clinic_id, false ) . '>' . esc_html__( '— انتخاب Clinic —', 'cpms' ) . '</option>';
 
 		foreach ( $choices as $choice ) {
 			echo '<option value="' . esc_attr( (string) $choice['clinic_id'] ) . '" ' . selected( $clinic_id, $choice['clinic_id'], false ) . '>';
@@ -602,8 +603,9 @@ final class CustomRoleDefinitionsPage {
 
 	/**
 	 * Display-only selector value: restricted to Clinics the actor may actually
-	 * manage, so an arbitrary value cannot even be selected in the UI. The
-	 * service still re-validates it against persistence on every use.
+	 * manage, so an arbitrary value cannot even be selected in the UI. An empty,
+	 * missing, or unauthorized selector stays empty; no sole-membership/first-row
+	 * fallback is allowed. The service still re-validates it against persistence on every use.
 	 *
 	 * @param list<array{clinic_id:int, clinic_name:string}> $choices
 	 */
@@ -619,7 +621,7 @@ final class CustomRoleDefinitionsPage {
 			}
 		}
 
-		return (int) $choices[0]['clinic_id'];
+		return 0;
 	}
 
 	private static function requested_clinic_id(): int {

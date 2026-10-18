@@ -23,15 +23,15 @@
 - **Transaction safety:** Organization row lock + Clinic `FOR UPDATE` lock, conditional update with expected organization match, hash-chained audit `CLINIC_DEACTIVATED` / `CLINIC_REACTIVATED`, verification readback, idempotent noop on already-desired status without duplicate audit.
 - **Admin UX:** Per-clinic *غیرفعال‌سازی / فعال‌سازی مجدد* button with explicit confirmation message stating history is preserved.
 
-### 1.3 Additional Location creation — explicitly authorized Clinic
+### 1.3 Additional Location management — explicitly authorized Clinic
 - **Authority:** Clinic-scoped `cpms_config` capability via existing `LocationAdminPage` + `LocationService`. Every write re-establishes trusted Clinic from persistence (`TrustedClinicEstablisher`) and re-checks Clinic-scoped authorization; `clinic_id` from request is selector only.
-- **UX:** *شعبه‌ها و محل‌ها* shows an explicit Clinic selector (no first-Clinic auto-selection, no `clinic_id=1`). Doctor may add a second practice Location after setup; treatment center may add another Clinic via the Organization flow above. The page distinguishes the two: **“افزودن درمانگاه” = Clinic inside Organization (Org-managed, with primary Location atomically)** vs **“افزودن شعبه” = Location inside a Clinic (Clinic-scoped, non-primary, timezone-aware)**.
-- **Safety already delivered (Phase 4):** CREATE always `is_primary=0, is_active=1`, UPDATE only `name/timezone`, slug/owner preserved, enumeration parity for not-found vs foreign, IANA timezone validation without fallback, audit `LOCATION_CREATED/UPDATED/DEACTIVATED/REACTIVATED`.
+- **UX:** *شعبه‌ها و محل‌ها* shows an explicit Clinic selector (no first-Clinic auto-selection, no `clinic_id=1`). The selected Clinic's Location list supports profile edit and deactivate/reactivate for non-primary Locations; the primary Location stays active and outside this edit form. Doctor may add a second practice Location after setup; treatment center may add another Clinic via the Organization flow above. The page distinguishes the two: **“افزودن درمانگاه” = Clinic inside Organization (Org-managed, with primary Location atomically)** vs **“افزودن شعبه” = Location inside a Clinic (Clinic-scoped, non-primary, timezone-aware)**.
+- **Safety delivered in this slice:** CREATE always `is_primary=0, is_active=1`; UPDATE is Clinic-scoped and may change only `name`, `timezone`, `address`, and `phone`, with omitted optional fields preserved and slug/ownership untouched. Missing or invalid Clinic selection is denied rather than inferred from a sole membership. Not-found/foreign Location enumeration remains indistinguishable; timezone validation is IANA-only with no fallback. Create, profile update, deactivate, and reactivate are transactional with hash-chained audit (`LOCATION_CREATED/UPDATED/DEACTIVATED/REACTIVATED`); audit failure rolls the Location mutation back.
 
 ### 1.4 Role / membership management
 - Reuses existing layers:
   - **Organization managers:** `سازمان‌ها → مدیران سازمان` (Org-scoped, last-active-manager protection, row lock, audit).
-  - **Clinic staff:** `کاربران و دسترسی‌ها` (`StaffManagementPage`) and `نقش‌های سفارشی Clinic-local` (`CustomRoleDefinitionsPage`) — Clinic-scoped, `AuthorizationService` DENY>GRANT>preset, assignment is membership-only reassignment for suspended members.
+  - **Clinic staff:** `کاربران و دسترسی‌ها` (`StaffManagementPage`) and `نقش‌های سفارشی Clinic-local` (`CustomRoleDefinitionsPage`) — Clinic-scoped, `AuthorizationService` DENY>GRANT>preset. Staff and custom-role assignment/definition operations require the Clinic selector explicitly; a sole membership never supplies an implicit default. Assignment remains a membership-only reassignment for suspended members.
 - No WP Administrator clinical authority: Administrator status is not an `AuthorizationService` bypass; explicit DENY in either layer wins.
 - Cross-Clinic PHI: Clinic isolation preserved — Clinic A never reads Clinic B medical records (`canForObject` owner check, 404 on ownership mismatch).
 
@@ -40,7 +40,7 @@
 | Boundary | Enforcement |
 |---|---|
 | Organization Manager ≠ Clinic membership/PHI | Provisioning creates Clinic + primary Location only; no `cpms_clinic_memberships`, no `membership_locations`, no clinician row, no capability override |
-| No auto-selection | Every Organization and Clinic selector has empty default `— انتخاب —`; server never falls back to first row |
+| No auto-selection | Every Organization and Clinic selector has empty default `— انتخاب —`; the Location, staff, and custom-role management screens also require an explicit Clinic even for sole memberships; server never falls back to the first/only row |
 | No WP Admin bypass | `manage_options` is only checked for the narrow first-manager bootstrap; all Org/Clinic operations require explicit durable memberships |
 | Cross-Clinic PHI | `AuthorizationService::canForObject`, `TrustedClinicEstablisher`, per-Clinic repository ownership checks; tests assert Clinic A actor cannot read Clinic B patient/appointment |
 | Capability precedence | Org: `explicit DENY > explicit GRANT > Manager preset > deny`. Clinic: same via `AuthorizationService` |
@@ -92,6 +92,13 @@ New: `tests/Integration/ClinicLifecycleManagementTest.php` (18 tests, real MySQL
 | Audit atomicity / no orphan mutation | `testDeniedLifecycleLeavesNoAuditRowAndNoStatusChange` |
 | Explicit-selector admin boundary | `testClinicManagementPageRejectsNoSelectionAndRespectsExplicitAuthorization` |
 | Facility catalogue unchanged | `testTwelveTypeFacilityCatalogIsPreservedAndInpatientRemainsUnsupported` |
+
+Additional regression coverage for this post-onboarding management slice:
+- `tests/Integration/Phase4LocationMasterDataTest.php`: address/phone create/update and masked audit evidence; explicit Clinic selection; authorization-before-validation denial; schedule, appointment, visit, clinical note/version, invoice and payment preservation after Location deactivation; audit-failure rollback for create/profile/lifecycle.
+- `tests/Integration/StaffManagementAuthorizationTest.php`: no-selector UI and write denial, including a sole active membership, plus explicit-selector positive controls.
+- `tests/Integration/CustomRoleStaffAssignmentTest.php`: missing Clinic selector denied for both assignment and assignable-role lookup without membership or audit mutation.
+- `tests/Integration/CustomRoleManagementServiceTest.php` and `CustomRoleArchivalTest.php`: custom-role definition service/UI also require an explicit Clinic; a sole membership is not selected implicitly.
+- `tests/Unit/Admin/PublicShortcodeAdminPageTest.php`: the read-only shortcode helper also requires explicit Clinic selection and no longer infers a sole membership.
 
 Updated (schema-head pins only, required by the new migration `2026_10_18_0029`): `MigrationTest`, `MariaDb1011CompatibilityTest`, `CustomRoleDisplayNameMigrationTest`, `CustomRoleMigrationSafetyTest`, `FinanceAuthorizationPolicyRegressionTest`, `Phase2SchemaTest`, `CustomRoleArchivalMigrationTest` (rollback helper now steps back through 0029 → 0028 → 0027).
 

@@ -53,10 +53,6 @@ final class PublicShortcodeAdminPage {
 				break;
 			}
 		}
-		if ( 0 === $clinic_id && 1 === count( $clinic_choices ) ) {
-			$clinic_id = (int) $clinic_choices[0]['clinic_id'];
-		}
-
 		$registered_tags = self::registered_cpms_shortcodes();
 		?>
 		<div class="wrap" dir="rtl">
@@ -78,6 +74,10 @@ final class PublicShortcodeAdminPage {
 				</form>
 			<?php else : ?>
 				<div class="notice notice-warning"><p>برای نمایش کد وابسته به Clinic، علاوه بر دسترسی مدیریت وردپرس، عضویت فعال و مجوز پیکربندی همان Clinic لازم است.</p></div>
+			<?php endif; ?>
+
+			<?php if ( $clinic_choices !== array() && $clinic_id <= 0 ) : ?>
+				<div class="notice notice-info"><p>برای نمایش کد، Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.</p></div>
 			<?php endif; ?>
 
 			<?php if ( $clinic_id > 0 && $registered_tags !== array() ) : ?>

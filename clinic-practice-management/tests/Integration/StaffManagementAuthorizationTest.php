@@ -52,6 +52,16 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         ], $adminId);
 
         self::assertNotSame('', $result['error'], 'global administrator without Clinic membership must be denied');
+        $invalidUnderUnauthorized = StaffManagementPage::upsertUser([
+            'mode' => 'create',
+            'clinic_id' => $clinicId,
+            'username' => '',
+            'display_name' => '',
+            'email' => 'not-an-email',
+            'role' => 'administrator',
+            'password' => 'x',
+        ], $adminId);
+        self::assertSame( $result['error'], $invalidUnderUnauthorized['error'], 'authorization denial takes precedence over invalid profile and role fields' );
         self::assertFalse(get_user_by('login', 'staff_authz_admin_target'), 'denied create must not persist a WP user');
     }
 
@@ -131,6 +141,107 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         self::assertSame('cpms_secretary', (string) $targetMembership['role_key']);
     }
 
+    public function testStaffAndRoleFormsRequireExplicitClinicSelection(): void
+    {
+        $clinicId = $this->createClinic('staff-read-no-default');
+        $managerId = $this->makeUser('staff_read_no_default_manager', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($managerId, $clinicId, RolesAndCapabilities::ROLE_MANAGER);
+        $fixture = $this->seedStaffPersonFixture($clinicId, 'staff_read_no_default');
+        wp_set_current_user($managerId);
+
+        $previousGet = $_GET;
+        try {
+            unset($_GET['clinic_id']);
+            $_GET['page'] = StaffManagementPage::PAGE_SLUG;
+            $unselected = $this->renderStaffPage();
+            self::assertStringContainsString('Clinic را صریحاً از فهرست بالا انتخاب کنید', $unselected, 'the sole active membership is not treated as a UI default');
+            self::assertStringNotContainsString($fixture['display_name'], $unselected, 'staff rows stay hidden before Clinic selection');
+            self::assertStringNotContainsString('name="action" value="cpms_staff_save"', $unselected, 'no staff write form is emitted without explicit Clinic selection');
+            self::assertStringNotContainsString('cpms_staff_assign_custom_role', $unselected, 'no custom-role assignment form is emitted without explicit Clinic selection');
+
+            $_GET['clinic_id'] = (string) $clinicId;
+            $selected = $this->renderStaffPage();
+            self::assertStringContainsString($fixture['display_name'], $selected, 'explicitly selected Clinic rows are visible');
+            self::assertStringContainsString('name="action" value="cpms_staff_save"', $selected, 'staff/role forms are available only in explicit scope');
+            self::assertStringContainsString('_wpnonce', $selected, 'staff and role forms include WordPress nonce fields');
+            self::assertStringContainsString('id="u_role"', $selected, 'built-in membership role assignment remains available');
+        } finally {
+            $_GET = $previousGet;
+        }
+    }
+
+    public function testCustomRoleAssignmentRejectsInvalidNonceBeforeMembershipMutation(): void
+    {
+        $clinicId = $this->createClinic( 'staff-invalid-assignment-nonce' );
+        $managerId = $this->makeUser( 'staff_invalid_nonce_manager', RolesAndCapabilities::ROLE_MANAGER );
+        cpms_test_seed_membership( $managerId, $clinicId, RolesAndCapabilities::ROLE_MANAGER );
+        $targetId = $this->makeUser( 'staff_invalid_nonce_target', RolesAndCapabilities::ROLE_SECRETARY );
+        cpms_test_seed_membership( $targetId, $clinicId, RolesAndCapabilities::ROLE_SECRETARY );
+        wp_set_current_user( $managerId );
+
+        $roleKey = 'sin_nonce_' . bin2hex( random_bytes( 2 ) );
+        App::custom_role_management_service()->create( $managerId, $clinicId, $roleKey, 'Nonce test role', [ 'cpms_patient_read' ] );
+        $beforeMembership = App::membership_service()->membership_for( $clinicId, $targetId );
+        self::assertNotNull( $beforeMembership );
+        $db = App::db();
+        $auditBefore = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE clinic_id = %d', [ $clinicId ] );
+
+        $oldPost    = $_POST;
+        $oldRequest = $_REQUEST;
+        $_POST      = [
+            'clinic_id'       => (string) $clinicId,
+            'target_user_id'  => (string) $targetId,
+            'custom_role_key' => $roleKey,
+            '_wpnonce'        => 'invalid-staff-assignment-nonce',
+        ];
+        $_REQUEST = $_POST;
+        $dieFilter = static fn ( $handler ) => static function ( $message ): void {
+            throw new \RuntimeException( 'staff assignment nonce denied' );
+        };
+        add_filter( 'wp_die_handler', $dieFilter );
+        try {
+            try {
+                StaffManagementPage::assign_custom_role();
+                self::fail( 'invalid custom-role assignment nonce must stop the handler' );
+            } catch ( \RuntimeException $exception ) {
+                self::assertSame( 'staff assignment nonce denied', $exception->getMessage() );
+            }
+        } finally {
+            remove_filter( 'wp_die_handler', $dieFilter );
+            $_POST    = $oldPost;
+            $_REQUEST = $oldRequest;
+        }
+
+        self::assertSame( (string) $beforeMembership['role_key'], (string) App::membership_service()->membership_for( $clinicId, $targetId )['role_key'], 'nonce denial preserves the membership role' );
+        self::assertSame( $auditBefore, (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE clinic_id = %d', [ $clinicId ] ), 'nonce denial emits no assignment audit event' );
+    }
+
+    public function testStaffWritesRejectMissingClinicEvenForUniqueMembership(): void
+    {
+        $clinicId = $this->createClinic('staff-authz-no-default');
+        $managerId = $this->makeUser('staff_authz_no_default_manager', RolesAndCapabilities::ROLE_MANAGER);
+        cpms_test_seed_membership($managerId, $clinicId, RolesAndCapabilities::ROLE_MANAGER);
+        $targetId = $this->makeUser('staff_authz_no_default_target', RolesAndCapabilities::ROLE_SECRETARY);
+        cpms_test_seed_membership($targetId, $clinicId, RolesAndCapabilities::ROLE_SECRETARY);
+        wp_set_current_user($managerId);
+
+        $create = StaffManagementPage::upsertUser([
+            'mode' => 'create',
+            'username' => 'staff_authz_no_default_new',
+            'display_name' => 'No default Clinic target',
+            'email' => 'staff-authz-no-default-new@test.local',
+            'role' => RolesAndCapabilities::ROLE_SECRETARY,
+            'password' => 'StrongPass123',
+        ], $managerId);
+        self::assertNotSame('', $create['error'], 'write without Clinic selector is denied');
+        self::assertStringContainsString('صریحاً انتخاب کنید', $create['error']);
+        self::assertFalse(get_user_by('login', 'staff_authz_no_default_new'), 'no user is created under an inferred Clinic');
+
+        $toggle = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId);
+        self::assertNotSame('', $toggle['error'], 'membership status write without Clinic selector is denied');
+        self::assertSame('active', (string) App::membership_service()->membership_for($clinicId, $targetId)['status'], 'no inferred-context mutation occurred');
+    }
+
     public function testManagerCannotToggleTargetMembershipInAnotherClinic(): void
     {
         $clinicA = $this->createClinic('staff-authz-toggle-a');
@@ -141,10 +252,9 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         cpms_test_seed_membership($targetId, $clinicB, 'cpms_secretary');
         wp_set_current_user($managerId);
 
-        // The current public helper has no Clinic parameter, so this proves the
-        // existing unique-membership path cannot silently treat the target as
-        // belonging to the actor's Clinic.
-        $result = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId);
+        // The explicitly selected Clinic A is only actor context: it cannot
+        // authorize a mutation when durable target membership belongs to Clinic B.
+        $result = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId, $clinicA);
 
         self::assertNotSame('', $result['error'], 'cross-clinic toggle must be denied');
         self::assertContains('cpms_secretary', (array) get_userdata($targetId)->roles);
@@ -206,11 +316,11 @@ final class StaffManagementAuthorizationTest extends WP_UnitTestCase
         cpms_test_seed_membership($targetId, $clinicId, 'cpms_secretary');
         wp_set_current_user($managerId);
 
-        $deactivate = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId);
+        $deactivate = StaffManagementPage::toggleUser($targetId, 'deactivate', $managerId, $clinicId);
         self::assertSame('', $deactivate['error']);
         self::assertSame('suspended', (string) App::membership_service()->membership_for($clinicId, $targetId)['status']);
 
-        $activate = StaffManagementPage::toggleUser($targetId, 'activate', $managerId);
+        $activate = StaffManagementPage::toggleUser($targetId, 'activate', $managerId, $clinicId);
         self::assertSame('', $activate['error']);
         self::assertSame('active', (string) App::membership_service()->membership_for($clinicId, $targetId)['status']);
     }

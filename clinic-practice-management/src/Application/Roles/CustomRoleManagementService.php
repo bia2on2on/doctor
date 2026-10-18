@@ -504,14 +504,18 @@ final class CustomRoleManagementService {
     // ================= internals =================
 
     /**
-     * Resolve the trusted Clinic and require effective management authority.
+     * Resolve the explicitly selected trusted Clinic and require effective management authority.
+     * No sole-membership or first-Clinic fallback is permitted for role management.
      *
-     * @throws ScopeRequiredException unauthenticated / no durable membership / unknown Clinic / inactive Organization
+     * @throws ScopeRequiredException unauthenticated / missing Clinic selector / no durable membership / unknown Clinic / inactive Organization
      * @throws \ClinicCore\Application\Authorization\AuthorizationException suspended membership or denied permission
      */
     private function require_management_authority( int $actor_wp_user_id, ?int $requested_clinic_id, bool $for_update = false ): int {
         if ( $actor_wp_user_id <= 0 ) {
             throw new ScopeRequiredException( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'reason' => 'unauthenticated' ], 403 );
+        }
+        if ( $requested_clinic_id === null || $requested_clinic_id <= 0 ) {
+            throw new ScopeRequiredException( 'CLINIC_SCOPE_REQUIRED', 'An explicit Clinic selection is required.', [ 'reason' => 'explicit_clinic_required' ], 400 );
         }
 
         // The selector is validated against durable persistence; it is never

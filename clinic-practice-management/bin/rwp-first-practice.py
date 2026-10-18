@@ -712,7 +712,7 @@ with sync_playwright() as p:
             # Complete the personal-practice journey before changing facility
             # type for the existing multi-doctor regression journey.
             from rwp_personal import run_personal
-            run_personal(admin_page, check, goto_admin, wp_eval, shot)
+            run_personal(admin_page, check, goto_admin, wp_eval, shot, clinic_id)
 
             # --- Journey B: multi-doctor Clinic with real clinicians ---
             goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-multi")

@@ -1047,23 +1047,29 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         }
         self::assertTrue($found, 'an authorized Clinic-local manager must have a reachable management-page entry');
 
-        ob_start();
-        CustomRoleDefinitionsPage::render();
-        $html = (string) ob_get_clean();
-        self::assertStringContainsString('cpms_custom_role_deactivate', $html);
-        self::assertStringNotContainsString('cpms_custom_role_reactivate', $html, 'an active definition offers deactivation, not reactivation');
-        self::assertStringContainsString('عضویت', $html, 'the explanation must say that existing staff assignments are retained');
-        self::assertStringContainsString('confirm', $html);
-        self::assertStringContainsString('_wpnonce', $html);
-        self::assertStringContainsString('version', strtolower($html));
-        self::assertStringContainsString('cpms_search', $html);
+        $oldGet = $_GET;
+        $_GET['cpms_clinic_id'] = (string) $this->clinicA;
+        try {
+            ob_start();
+            CustomRoleDefinitionsPage::render();
+            $html = (string) ob_get_clean();
+            self::assertStringContainsString('cpms_custom_role_deactivate', $html);
+            self::assertStringNotContainsString('cpms_custom_role_reactivate', $html, 'an active definition offers deactivation, not reactivation');
+            self::assertStringContainsString('عضویت', $html, 'the explanation must say that existing staff assignments are retained');
+            self::assertStringContainsString('confirm', $html);
+            self::assertStringContainsString('_wpnonce', $html);
+            self::assertStringContainsString('version', strtolower($html));
+            self::assertStringContainsString('cpms_search', $html);
 
-        $this->deactivate($this->managerA, $this->clinicA, 'crl_ui', 1);
-        ob_start();
-        CustomRoleDefinitionsPage::render();
-        $inactiveHtml = (string) ob_get_clean();
-        self::assertStringContainsString('غیرفعال', $inactiveHtml);
-        self::assertStringContainsString('cpms_custom_role_reactivate', $inactiveHtml);
+            $this->deactivate($this->managerA, $this->clinicA, 'crl_ui', 1);
+            ob_start();
+            CustomRoleDefinitionsPage::render();
+            $inactiveHtml = (string) ob_get_clean();
+            self::assertStringContainsString('غیرفعال', $inactiveHtml);
+            self::assertStringContainsString('cpms_custom_role_reactivate', $inactiveHtml);
+        } finally {
+            $_GET = $oldGet;
+        }
     }
 
     public function testInvalidStatusNonceStopsTheAdminActionBeforeMutation(): void
