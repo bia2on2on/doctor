@@ -790,7 +790,7 @@ final class BookingService
                     // back transaction plus the catch below leave the existing Hold and
                     // its capacity claim untouched.
                     $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
-                    $slot           = $this->slots->findForUpdate( $slot_id );
+                    $slot = $this->slots->findForUpdate( $slot_id );
                     if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
@@ -876,13 +876,20 @@ final class BookingService
             // is reactivated. Only the Idempotency key is freed, which is required for
             // that retry. Every other failure keeps the historical compensation
             // (release Hold capacity + key) outside the rolled-back Transaction.
+            // Narrow naming ignores for the pre-existing camelCase locals of this method,
+            // re-indented by the lifecycle branch above. Only
+            // WordPress.NamingConventions sniffs are suppressed - no security sniff is.
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             if ( $denial->errorCode !== 'CLINIC_SUSPENDED' ) {
                 $this->db->query(
                     'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
+                    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
                     [ $holdId ]
                 );
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
                 $this->slots->releaseHold( $slotId );
             }
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $this->idem->release( $idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId );
             throw $denial;
         }
