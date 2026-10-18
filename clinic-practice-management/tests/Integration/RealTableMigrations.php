@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
-use ClinicCore\Bootstrap\App;
-
 /**
  * Real-Table Migration Lifecycle — Phase 2 (زیرساخت تست، نه production).
  *
@@ -58,24 +56,6 @@ trait RealTableMigrations
         } finally {
             $this->restoreWpTempTableRewrites();
         }
-    }
-
-    /**
-     * Commit the currently open test transaction.
-     *
-     * The test bootstrap rewrites '/*cpms*/ COMMIT' into a harmless no-op once a
-     * real DDL has been executed, because real DDL implicitly commits in MySQL and
-     * destroys the enclosing savepoints. A migration that creates real tables
-     * therefore writes its ledger row *after* that implicit commit, in a fresh
-     * transaction that nobody commits. WP's tear_down() then rolls that
-     * transaction back, the ledger loses the row, and the next test class sees
-     * the migration as pending again — and re-applies it while the
-     * temporary-table rewrite is active, where InnoDB refuses the FOREIGN KEY
-     * (errno 1215). This commits the ledger row explicitly.
-     */
-    private function commitPendingLedgerRow(): void
-    {
-        App::db()->wpdb()->query( 'COMMIT' );
     }
 
     /**

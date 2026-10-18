@@ -128,7 +128,7 @@ final class OrganizationManagerBootstrapPage {
         // Verify the nonce at the entry point, before any request data is read.
         // check_admin_referer() with $die = false keeps the explicit 403 body
         // while still failing closed on a missing or forged nonce.
-        if ( ! check_admin_referer( self::NONCE_ACTION, '_wpnonce', false ) ) {
+        if ( ! check_admin_referer( self::NONCE_ACTION, '_wpnonce' ) ) {
             wp_die( esc_html__( 'درخواست معتبر نیست یا تأیید صریح انجام نشده است.', 'cpms' ), 403 );
         }
         $actor_id = (int) get_current_user_id();
