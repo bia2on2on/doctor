@@ -601,6 +601,8 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $planBefore = get_option($option);
         $staff = $this->makeUser('fs_susp_staff', 'subscriber');
         $doctor = $this->makeUser('fs_susp_doc', 'subscriber');
+        $planAudits = $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION);
+        self::assertGreaterThan(0, $planAudits, 'Organization-level plan changes (identity, scope, sites, Clinics) are audited');
 
         App::db()->update('cpms_organizations', ['status' => 'suspended'], ['id' => $this->org]);
         $listed = array_map(static fn (array $org): int => (int) $org['id'], $service->organizations($this->actor));
@@ -624,10 +626,15 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $staff));
         self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $doctor));
         self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']), 'held Clinic stays held');
+        self::assertSame($planAudits, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), 'refused steps are not audited as changes');
 
         App::db()->update('cpms_organizations', ['status' => 'active'], ['id' => $this->org]);
         $service->add_site($this->actor, $this->org, 'ساختمان پس از رفع تعلیق', '');
         self::assertCount(2, $service->plan($this->actor, $this->org)['sites'], 'setup resumes after explicit reactivation');
+        self::assertSame($planAudits + 1, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), 'the site change is audited once');
+        $service->add_site($this->actor, $this->org, 'ساختمان پس از رفع تعلیق', '');
+        self::assertCount(2, $service->plan($this->actor, $this->org)['sites'], 'an identical retry adds no site');
+        self::assertSame($planAudits + 1, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), 'an identical retry is not re-audited');
     }
 
     // ------------------------------------------------------------------

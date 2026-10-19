@@ -72,6 +72,9 @@ final class FacilitySetupService {
 
     public const STAFF_AUDIT_ACTION = 'FACILITY_STAFF_ROLE_ASSIGNED';
 
+    /** Organization-level plan change (identity, outpatient scope, sites, Clinic/room records, activation). */
+    public const PLAN_AUDIT_ACTION = 'FACILITY_SETUP_PLAN_CHANGED';
+
     private const MAX_SITES   = 20;
     private const MAX_CLINICS = 50;
     private const MAX_ROOMS   = 50;
@@ -1261,13 +1264,60 @@ final class FacilitySetupService {
                 if ( null === $organization || 'active' !== (string) $organization['status'] ) {
                     throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ تغییری ثبت نشد.' );
                 }
-                $plan               = $change( $this->read_plan( $organization_id ) );
+                $before             = $this->read_plan( $organization_id );
+                $plan               = $change( $before );
                 $plan['updated_at'] = gmdate( 'Y-m-d H:i:s' );
                 $plan['updated_by'] = $actor_id;
                 update_option( self::OPTION_PREFIX . $organization_id, $plan, false );
+                $this->audit_plan_change( $actor_id, $organization_id, $before, $plan );
 
                 return $plan;
             }
+        );
+    }
+
+    /**
+     * Audits a real plan change inside the plan-write transaction (an identical
+     * retry changes nothing and is not re-audited). Organization-level event:
+     * no Clinic scope and no patient data — only which plan sections changed.
+     *
+     * @param array<string, mixed>|null $before
+     * @param array<string, mixed>      $after
+     */
+    private function audit_plan_change( int $actor_id, int $organization_id, ?array $before, array $after ): void {
+        if ( null === $this->audit ) {
+            return;
+        }
+        $changed = [];
+        foreach ( $after as $section => $value ) {
+            if ( 'updated_at' === $section || 'updated_by' === $section ) {
+                continue;
+            }
+            if ( null === $before || ! array_key_exists( $section, $before ) || $before[ $section ] !== $value ) {
+                $changed[] = (string) $section;
+            }
+        }
+        if ( [] === $changed ) {
+            return;
+        }
+        $this->audit->log(
+            self::PLAN_AUDIT_ACTION,
+            [
+                'wp_user_id' => $actor_id,
+                'role'       => 'organization_manager',
+            ],
+            'organization',
+            $organization_id,
+            null,
+            null,
+            [
+                'changed' => $changed,
+                'sites'   => count( (array) ( $after['sites'] ?? [] ) ),
+                'clinics' => count( (array) ( $after['clinics'] ?? [] ) ),
+            ],
+            [ 'op' => 'facility_setup_plan' ],
+            null,
+            true
         );
     }
 }

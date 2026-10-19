@@ -292,7 +292,10 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   - a retry, including after a lost plan write, adopts the existing row (only inside the same Organization or Clinic)
     instead of duplicating it;
   - duplicate names are refused;
-  - the plan (`cpms_facility_setup_plan_{organization}`, non-autoload) is written under the Organization row lock.
+  - the plan (`cpms_facility_setup_plan_{organization}`, non-autoload) is written under the Organization row lock;
+  - every real plan change (identity, outpatient acknowledgment, sites, Clinic/room records, activation) is audited
+    as `FACILITY_SETUP_PLAN_CHANGED` in the same transaction, listing only the changed plan sections; an identical
+    retry is not re-audited.
 - *Organization vs. Clinic authority:*
   - Organization authority never configures a Clinic;
   - steps 5–9 need the actor's own active membership and `cpms_config` in that Clinic;

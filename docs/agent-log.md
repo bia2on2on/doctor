@@ -1298,3 +1298,6 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   posted on PR #253, not in this log.
 - **Still open (documented):** physical sites are plan metadata only; delegated hospital Clinic managers are not
   exercised in the browser path; custom roles and GRANT overrides stay on the existing per-Clinic pages.
+- **Second commit:** Organization-level plan changes (identity, outpatient acknowledgment, sites, Clinic/room records,
+  activation) are audited as `FACILITY_SETUP_PLAN_CHANGED` inside the plan-write transaction (identical retries are
+  not re-audited); covered by the suspended-Organization test.
