@@ -417,14 +417,10 @@ final class ReceptionPortalController extends RestBase {
 		// so they bind a trusted Clinic without demanding a Location selector.
 		// Every operational route (board/arrival/walk-in/booking/...) keeps the
 		// explicit Clinic AND Location requirement.
-		$clinic_only = in_array(
-			$route,
-			[
-				'/clinic/v1/staff/portal/reception/patients/search',
-				'/clinic/v1/staff/portal/reception/patients',
-			],
-			true
-		);
+		// Patient search/create results are Location-neutral (identity is
+		// Clinic-scoped and Location never filters them), but the Reception
+		// boundary still requires an explicit operational Location selector.
+		$clinic_only = false;
 
 		return RestClinicContext::authorize_and_bind_reception_scope(
 			$r,

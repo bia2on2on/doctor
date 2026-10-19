@@ -593,6 +593,10 @@ final class RestClinicContext
 
         // Preserve only bounded, non-sensitive selector-required metadata.
         // Never expose eligible IDs, membership internals, or tenant topology.
+        $reason = $e->data['reason'] ?? null;
+        if ( is_string( $reason ) && '' !== $reason ) {
+            $data['reason'] = $reason;
+        }
         if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             $field      = $e->data['field'] ?? null;
             $reason_val = $e->data['reason'] ?? null;

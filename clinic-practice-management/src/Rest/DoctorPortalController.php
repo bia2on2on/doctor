@@ -409,6 +409,22 @@ final class DoctorPortalController extends RestBase {
 	/** Rebind every selector to the authorized Visit before calling the shared engine service. */
 	private function workspace_handwriting( WP_REST_Request $r, string $operation ): WP_REST_Response|WP_Error {
 		$visit_id = (int) $r['id'];
+		// Handwriting is a live clinical workspace, never a historical
+		// projection: even the exact active Visit cannot keep it at an inactive
+		// Location. The bounded reason is preserved for the portal envelope.
+		$scope       = App::scope();
+		$scope_loc   = (int) ( $scope->locationId ?? 0 );
+		$scope_clinic = (int) $scope->clinicId;
+		$active_loc  = $scope_loc > 0
+			? App::db()->fetchValue(
+				'SELECT id FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+				[ $scope_loc, $scope_clinic ]
+			)
+			: null;
+		if ( null === $active_loc ) {
+			$this->workspace_handwriting_denial( $visit_id, 'location' );
+			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
+		}
 		$guard    = $this->workspace_authorize_visit( $visit_id );
 		if ( $guard instanceof WP_Error ) {
 			$this->workspace_handwriting_denial( $visit_id, $operation );
@@ -1043,12 +1059,16 @@ final class DoctorPortalController extends RestBase {
 
 		$location = $eligible_by_id[ $selected ];
 		if ( ! $location['is_active'] ) {
-			// Only the read-only prescription-history projection may continue at
-			// an inactive Location, and only while this clinician has active
-			// treatment there. Visit Workspace (record/notes/files/handwriting)
-			// always requires a currently active operational Location.
-			$continuity = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
-			if ( ! $active_visit_continuity_only || ! $continuity->has_active_visit_at_location( $clinic_id, $user_id, $selected ) ) {
+			// Inactive Locations stay available only through continuity:
+			//  - the read-only prescription-history projection requires active
+			//    treatment by this clinician at this Location;
+			//  - a Visit Workspace request requires the EXACT selected Visit to
+			//    still be active for this clinician there.
+			$continuity   = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
+			$can_continue = null !== $continuity_visit_id
+				? $continuity->has_active_visit( $clinic_id, $user_id, $selected, $continuity_visit_id )
+				: ( $active_visit_continuity_only && $continuity->has_active_visit_at_location( $clinic_id, $user_id, $selected ) );
+			if ( ! $can_continue ) {
 				return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
 			}
 		}

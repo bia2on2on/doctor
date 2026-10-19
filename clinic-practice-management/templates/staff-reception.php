@@ -558,12 +558,12 @@ $cpms_reception_cfg = [
             locationSelect.value = state.locationId ? String(state.locationId) : '';
             locationSelect.disabled = !state.clinicId || state.locations.length === 0;
         }
-        // Patient search/create is Clinic-scoped and Location-neutral: identity
-        // lookup never filters by operational Location, so it only needs the
-        // trusted Clinic. Arrival/walk-in/booking keep requiring a Location.
+        // Patient search/create is Location-neutral in its RESULTS, but the
+        // Reception boundary still requires an explicit operational Location.
+        var scopeReady = Boolean(state.clinicId && state.locationId);
         ['sr-search-input', 'sr-search-submit', 'sr-create-open'].forEach(function (role) {
             var control = el(role);
-            if (control) { control.disabled = !state.clinicId; }
+            if (control) { control.disabled = !scopeReady; }
         });
 
         var dateNode = el('sr-date');
@@ -1765,7 +1765,7 @@ $cpms_reception_cfg = [
     }
 
     function runSearch(force) {
-        if (!state.clinicId) {
+        if (!state.clinicId || !state.locationId) {
             search.results = [];
             search.selected = null;
             renderSearchResults();
