@@ -420,7 +420,7 @@ final class BookingService
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
-        $slot = $this->resolve_slot_for_booking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        $slot = $this->resolve_slot_for_booking( $clinicId, $clinicianId, $slotDate, $slotTime, $slotId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
         if ($slot === null || (int) $slot['is_open'] !== 1) {
@@ -1964,7 +1964,7 @@ final class BookingService
             // Fail closed — do NOT use LIMIT 1
             throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
                 'matches' => $count,
-                'clinic_id' => $clinic_id,
+                'clinic_id'    => $clinic_id,
                 'clinician_id' => $clinician_id,
                 'slot_date'    => $slot_date,
                 'slot_time'    => $slot_time,
