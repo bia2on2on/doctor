@@ -6,6 +6,7 @@ namespace ClinicCore\Bootstrap;
 
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CustomRoleDefinitionsPage;
+use ClinicCore\Admin\CpmsActivationRedirect;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\Compatibility\WooCommerceAdminAccess;
@@ -354,6 +355,7 @@ final class App
         CpmsAdminMenu::register();
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
+        CpmsActivationRedirect::register(); // Phase 3 — one-shot safe redirect to the wizard on the literal post-activation landing (plugins.php only)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
         FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
         \ClinicCore\Admin\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning
@@ -377,7 +379,7 @@ final class App
         PublicShortcodeAdminPage::register(); // Classic shortcode helper (manage_options + authorized Clinic selector)
     }
 
-    public static function activate(): void
+    public static function activate( bool $network_wide = false ): void
     {
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
@@ -390,6 +392,12 @@ final class App
 
         self::op()->info('CPMS_ACTIVATED');
         self::scheduleRecurringJobs();
+
+        // Phase 3 — arm the one-shot, Administrator-only first-run redirect.
+        // Side-effect-free beyond a short-lived transient: see
+        // CpmsActivationRedirect for every safety gate (network-wide/bulk/
+        // CLI/REST/cron activation, no identifiable human admin, etc.).
+        CpmsActivationRedirect::flag_activation( $network_wide );
     }
 
     public static function deactivate(): void

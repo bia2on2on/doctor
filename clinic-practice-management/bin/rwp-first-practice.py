@@ -227,8 +227,20 @@ $clinicCount = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_
 $admin = get_user_by("login", getenv("ADMIN_USER"));
 $adminRoles = ($admin instanceof WP_User) ? array_values($admin->roles) : [];
 $schema = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+// Raw SQL against the first Clinic row only — deliberately NOT
+// App::settings()/App::scope(), which throw CLINIC_SCOPE_REQUIRED when
+// more than one Clinic exists (exactly the ambiguous multi-Clinic
+// persona this very script also exercises later); db_snapshot() must
+// stay usable at every point in the script regardless of Clinic count.
+$firstClinicId = is_array($clinic) ? (int) $clinic["id"] : 0;
+$completedRaw = $firstClinicId > 0 ? $db->fetchValue(
+    "SELECT value_json FROM " . $db->table("cpms_settings") . " WHERE clinic_id = %d AND `key` = %s",
+    [$firstClinicId, "setup.completed"]
+) : null;
+$setupCompleted = $completedRaw !== null && json_decode((string) $completedRaw, true) === true;
 $payload = [
     "schema" => (string) $schema,
+    "setup_completed" => $setupCompleted,
     "clinic_count" => $clinicCount,
     "clinic_id" => is_array($clinic) ? (int) $clinic["id"] : 0,
     "clinic_name" => is_array($clinic) ? (string) $clinic["name"] : "",
@@ -760,6 +772,230 @@ with sync_playwright() as p:
                       admin_page.locator('input[name="facility_type"][value="general_clinic"]:checked').count() == 1,
                       "multi-doctor facility selection resumes")
 
+        # --- All twelve facility types: real browser selection + the exact
+        # facility-aware "اطلاعات <واحد>" step-2 heading (single source of
+        # truth: FacilityTypeCatalog::step_title()/type_profile()). Two of
+        # the twelve (doctor_practice, general_clinic) already received a
+        # full multi-step journey above (Journeys A/B); this loop gives the
+        # remaining ten REAL browser evidence too — selection, the facility-
+        # aware heading, and interruption/resume — rather than leaving them
+        # only code-inspected or integration-tested. doctor_practice/
+        # general_clinic are included again here as a cheap cross-check that
+        # the loop itself agrees with the dedicated journeys above.
+        FACILITY_UNIT_BY_ID = {
+            "doctor_practice": "مطب",
+            "general_clinic": "درمانگاه",
+            "specialized_clinic": "درمانگاه",
+            "dental_clinic": "کلینیک دندانپزشکی",
+            "diagnostic_center": "مرکز تشخیصی",
+            "rehabilitation_center": "مرکز توانبخشی",
+            "mental_health_center": "مرکز سلامت روان",
+            "specialized_outpatient_center": "مرکز درمان سرپایی",
+            "limited_surgery_center": "مرکز جراحی محدود",
+            "hospital": "مرکز درمانی",
+            "comprehensive_health_center": "مرکز جامع سلامت",
+            "other": "مرکز",
+        }
+        pre_matrix_snapshot = db_snapshot()
+        pre_matrix_clinic_count = int(pre_matrix_snapshot.get("clinic_count") or 0)
+        for facility_id, expected_unit in FACILITY_UNIT_BY_ID.items():
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility",
+                       f"cpms-wizard-facility-matrix-{facility_id}")
+            mform = admin_page.locator('form:has(input[name="facility_type"])')
+            if mform.count() < 1:
+                check(f"admin.facility_matrix.{facility_id}.form_present", False, "facility form missing")
+                continue
+            mform.locator(f'input[name="facility_type"][value="{facility_id}"]').check()
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                mform.locator('button[type="submit"]').first.click()
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=clinic",
+                       f"cpms-wizard-clinic-matrix-{facility_id}")
+            # NOTE: the page also renders a flow-summary card (<h2>{picker
+            # label}</h2>, e.g. "مطب پزشک — انفرادی یا مشترک") ABOVE the
+            # clinic-info card's own <h2>مشخصات ...</h2> — select the
+            # "مشخصات" heading specifically, not simply the first <h2>.
+            heading_loc = admin_page.locator("h2", has_text="مشخصات")
+            heading = heading_loc.first.inner_text() if heading_loc.count() else ""
+            check(f"admin.facility_matrix.{facility_id}.exact_heading",
+                  heading.strip() == f"مشخصات {expected_unit}",
+                  f"got heading={heading!r}, expected={'مشخصات ' + expected_unit!r}")
+            # Interruption/resume: the facility choice must survive a
+            # revisit without a redirect loop and without silently falling
+            # back to a DIFFERENT (incorrect) facility type or Clinic.
+            goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility",
+                       f"cpms-wizard-facility-matrix-resume-{facility_id}")
+            check(f"admin.facility_matrix.{facility_id}.resumes_same_type",
+                  admin_page.locator(f'input[name="facility_type"][value="{facility_id}"]:checked').count() == 1,
+                  "facility selection resumed as the SAME type just chosen (no silent fallback to a different one)")
+        post_matrix_snapshot = db_snapshot()
+        check("admin.facility_matrix.no_incorrect_automatic_clinic_selection",
+              int(post_matrix_snapshot.get("clinic_count") or 0) == pre_matrix_clinic_count,
+              "cycling through all twelve facility types must never auto-create or switch to a different Clinic "
+              f"(before={pre_matrix_clinic_count}, after={post_matrix_snapshot.get('clinic_count')})")
+
+        # --- Hospital-specific: outpatient-only acknowledgment is ENFORCED,
+        # not cosmetic (REAL browser submit attempt, not just code reading). ---
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-hospital")
+        hform = admin_page.locator('form:has(input[name="facility_type"])')
+        if hform.count() >= 1:
+            hform.locator('input[name="facility_type"][value="hospital"]').check()
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                hform.locator('button[type="submit"]').first.click()
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=health", "cpms-wizard-health-hospital")
+        ack_box = admin_page.locator('#cpms_outpatient_only_ack')
+        check("admin.hospital.health_step_renders", ack_box.count() == 1,
+              "outpatient-only acknowledgment checkbox is present for the hospital flow")
+        if ack_box.count() == 1:
+            check("admin.hospital.ack_unchecked_by_default", ack_box.is_checked() is False,
+                  "the acknowledgment must never be pre-checked for the admin")
+            health_form = admin_page.locator('form:has(#cpms_outpatient_only_ack)')
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                health_form.locator('button[type="submit"]').first.click()
+            check("admin.hospital.unchecked_ack_blocks_submission",
+                  query_step(admin_page.url) == "health"
+                  and "تأیید صریح و تازه" in admin_page.content(),
+                  "submitting the health step WITHOUT checking the acknowledgment must be rejected with the exact Persian message")
+            ack_box.check()
+            health_form2 = admin_page.locator('form:has(#cpms_outpatient_only_ack)')
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                health_form2.locator('button[type="submit"]').first.click()
+            check("admin.hospital.checked_ack_progresses",
+                  "تأیید صریح و تازه" not in admin_page.content(),
+                  "checking the acknowledgment and resubmitting must be accepted")
+
+        # --- Medical-building structure: multi-Clinic auto-provisioning
+        # stays explicitly DENIED (fail-closed), verified by actually
+        # reaching the finish step and attempting the real submit, not just
+        # reading the template conditionally. ---
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=facility", "cpms-wizard-facility-medbldg")
+        mb_form = admin_page.locator('form:has(input[name="facility_type"])')
+        if mb_form.count() >= 1:
+            mb_form.locator('input[name="facility_type"][value="other"]').check()
+            if mb_form.locator('select[name="structure"]').count() == 1:
+                mb_form.locator('select[name="structure"]').select_option("medical_building")
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                mb_form.locator('button[type="submit"]').first.click()
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=finish", "cpms-wizard-finish-medbldg")
+        finish_card = admin_page.locator('[data-cpms-finish-ready]')
+        check("admin.medical_building.finish_card_present", finish_card.count() == 1, "finish card renders")
+        if finish_card.count() == 1:
+            check("admin.medical_building.not_ready",
+                  finish_card.get_attribute("data-cpms-finish-ready") == "0",
+                  "medical_building structure must never report finish-ready")
+            check("admin.medical_building.blocked_message_shown",
+                  "به‌شکل ایمن مسدود است" in admin_page.content(),
+                  "the explicit fail-closed denial message must be visible")
+            finish_form = admin_page.locator('form:has(input[name="step"][value="finish"])')
+            pre_finish_snapshot = db_snapshot()
+            if finish_form.count() == 1:
+                with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
+                    finish_form.locator('button[type="submit"]').first.click()
+            post_finish_snapshot = db_snapshot()
+            # NOTE: setup.completed may already be true from the earlier
+            # doctor_practice journey (Journey A) run in this same session —
+            # that historical flag is intentionally preserved by this
+            # product (see docs/onboarding-facility-wizard.md) and is NOT
+            # itself evidence of a bypass. The real assertion is that THIS
+            # blocked submit attempt makes no change at all.
+            check("admin.medical_building.submit_does_not_complete_setup",
+                  post_finish_snapshot.get("setup_completed") == pre_finish_snapshot.get("setup_completed"),
+                  "attempting the real finish submit while blocked must never change setup.completed "
+                  f"(before={pre_finish_snapshot.get('setup_completed')}, after={post_finish_snapshot.get('setup_completed')})")
+
+        # --- Real Jalali date-ENTRY widget: interactive typing + popup pick,
+        # on a REAL calendar-date field reached through an authenticated
+        # admin browser session (the clinician schedule-exception date field
+        # created in Journey B above), not a unit-test stand-in. Exercises
+        # the EXACT regression the independent review reported. ---
+        goto_admin(admin_page, "admin", "admin.php?page=cpms-clinicians", "cpms-clinicians-jalali-listing")
+        manage_link = admin_page.locator('a:has-text("مدیریت برنامه")').first
+        if manage_link.count() == 1:
+            href = manage_link.get_attribute("href") or ""
+            manage_path = href.split("/wp-admin/", 1)[-1] if "/wp-admin/" in href else ""
+            if manage_path:
+                goto_admin(admin_page, "admin", manage_path, "cpms-clinicians-jalali-manage")
+            jalali_field = admin_page.locator('.cpms-jalali-field').first
+            native_date = jalali_field.locator('#cpms-exception-date')
+            jalali_entry = jalali_field.locator('.cpms-jalali-entry')
+            check("admin.jalali_widget.enhanced_on_real_page",
+                  jalali_field.count() == 1 and native_date.count() == 1 and jalali_entry.count() == 1,
+                  "the real page actually loaded the Jalali entry companion wrapping the native date input")
+            if jalali_field.count() == 1 and native_date.count() == 1 and jalali_entry.count() == 1:
+                status_el = jalali_field.locator('.cpms-jalali-status')
+                trigger_btn = jalali_field.locator('.cpms-jalali-trigger')
+
+                # REGRESSION: typing the exact invalid date from the
+                # independent review must block submission and must NEVER
+                # leave a stale/intermediate Gregorian value in the native
+                # input that gets silently committed.
+                jalali_entry.fill("1405/12/30")
+                jalali_entry.blur()
+                admin_page.wait_for_timeout(150)
+                native_value_after_invalid = native_date.input_value()
+                is_valid_after_invalid = admin_page.evaluate(
+                    "document.getElementById('cpms-exception-date').checkValidity()"
+                )
+                check("admin.jalali_widget.invalid_entry_leaves_native_empty",
+                      native_value_after_invalid == "",
+                      f"REGRESSION CHECK: native value after typing invalid 1405/12/30 = {native_value_after_invalid!r} (must stay empty, never a stale committed date)")
+                check("admin.jalali_widget.invalid_entry_blocks_submission",
+                      is_valid_after_invalid is False,
+                      "the native input's constraint validity must be false (blocking submit) while the typed Jalali date is invalid")
+                check("admin.jalali_widget.invalid_entry_status_message",
+                      "معتبر نیست" in (status_el.inner_text() if status_el.count() else ""),
+                      "an accessible Persian status message must explain the invalid day")
+
+                # POSITIVE: a real, valid (leap-Esfand-30) typed date commits
+                # the exact correct Gregorian value and clears the block.
+                jalali_entry.fill("")
+                jalali_entry.fill("1401/12/30")
+                jalali_entry.blur()
+                admin_page.wait_for_timeout(150)
+                native_value_after_valid = native_date.input_value()
+                is_valid_after_valid = admin_page.evaluate(
+                    "document.getElementById('cpms-exception-date').checkValidity()"
+                )
+                check("admin.jalali_widget.valid_entry_commits_exact_gregorian_date",
+                      native_value_after_valid == "2023-03-20",
+                      f"typing 1401/12/30 (a real leap-Esfand-30 date) must commit exactly 2023-03-20, got {native_value_after_valid!r}")
+                check("admin.jalali_widget.valid_entry_unblocks_submission",
+                      is_valid_after_valid is True,
+                      "a confirmed valid typed date must clear the submission block")
+
+                # Popup pick: an independent entry path must also commit a
+                # real, valid date.
+                if trigger_btn.count() == 1:
+                    trigger_btn.click()
+                    day_buttons = admin_page.locator('.cpms-jalali-popup[role="dialog"] .cpms-jalali-day:not(.cpms-jalali-day-empty)')
+                    check("admin.jalali_widget.popup_opens_with_days", day_buttons.count() > 0, "the accessible calendar popup renders real day cells")
+                    if day_buttons.count() > 0:
+                        day_buttons.first.click()
+                        admin_page.wait_for_timeout(150)
+                        popup_native_value = native_date.input_value()
+                        check("admin.jalali_widget.popup_pick_commits_valid_date",
+                              bool(re.match(r"^\d{4}-\d{2}-\d{2}$", popup_native_value or "")),
+                              f"picking a day from the popup must commit a valid Gregorian ISO date, got {popup_native_value!r}")
+        else:
+            check("admin.jalali_widget.manage_link_present", False, "no clinician row with a schedule link was found to exercise the Jalali widget")
+
+        # --- Responsive Persian RTL presentation: the same admin page must
+        # render RTL and without horizontal overflow at a real mobile
+        # viewport (representative check, not an exhaustive device matrix —
+        # the dedicated Responsive-smoke job covers broader viewport
+        # coverage for the public booking surface). ---
+        check("admin.responsive.wrap_is_rtl",
+              admin_page.evaluate("(function(){var w=document.querySelector('.wrap[dir=\"rtl\"]'); return !!w;})()"),
+              "the CPMS admin wrap must declare dir=\"rtl\"")
+        admin_page.set_viewport_size({"width": 390, "height": 844})
+        admin_page.reload(wait_until="domcontentloaded")
+        admin_page.wait_for_timeout(300)
+        overflow = admin_page.evaluate(
+            "document.documentElement.scrollWidth - document.documentElement.clientWidth"
+        )
+        check("admin.responsive.mobile_no_horizontal_overflow",
+              overflow <= 8,
+              f"mobile viewport (390px) horizontal overflow = {overflow}px (must be negligible)")
+        admin_page.set_viewport_size({"width": 1440, "height": 900})
 
         # Replay via UI: form must be gone for the claiming admin.
         status, body = goto_admin(

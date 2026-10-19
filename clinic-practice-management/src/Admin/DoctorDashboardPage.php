@@ -471,6 +471,15 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         '<details class="cpms-doc-section"><summary>📖 سوابق و ویزیت‌های قبلی</summary>' +
             '<ul class="cpms-doc-itemlist">' + pastHtml + '</ul>' +
         '</details>';
+
+        // The real calendar-date follow-up field (#cpms-doc-fu-date) above was
+        // just injected client-side, after the page's initial DOMContentLoaded
+        // Jalali-enhancement pass already ran — it must be enhanced explicitly
+        // now, or it would silently stay a plain native picker with no Jalali
+        // entry/popup companion.
+        if (window.CpmsJalali && typeof window.CpmsJalali.enhanceAll === 'function') {
+            window.CpmsJalali.enhanceAll(view);
+        }
     }
 
     function visitAction(act, id, extra) {

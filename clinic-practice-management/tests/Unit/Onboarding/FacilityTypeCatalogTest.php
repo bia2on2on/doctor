@@ -54,7 +54,7 @@ final class FacilityTypeCatalogTest extends TestCase {
   self::assertContains('کارکنان پذیرش و مالی (اختیاری)', FacilityTypeCatalog::flow_steps('multi_doctor_clinic'));
   self::assertSame('دندانپزشک', FacilityTypeCatalog::type_profile('dental_clinic')['clinician']);
   self::assertSame('مطب', FacilityTypeCatalog::type_profile('doctor_practice')['unit']);
-  self::assertSame('بیمارستان', FacilityTypeCatalog::type_profile('hospital')['unit']);
+  self::assertSame('مرکز درمانی', FacilityTypeCatalog::type_profile('hospital')['unit'], 'hospital unit must be the outpatient-neutral wording, not "بیمارستان" or "کلینیک"');
   self::assertStringContainsString('سرپایی', FacilityTypeCatalog::type_profile('hospital')['name_label'], 'hospital identity label must stay outpatient-scoped');
   self::assertSame(FacilityTypeCatalog::type_profile(''), FacilityTypeCatalog::type_profile('unknown'), 'unknown ids fall back to the generic legacy profile');
   self::assertSame('نام کلینیک', FacilityTypeCatalog::type_profile('')['name_label']);

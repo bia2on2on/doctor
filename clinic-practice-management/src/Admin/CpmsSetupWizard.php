@@ -130,7 +130,7 @@ final class CpmsSetupWizard
         } catch ( ScopeRequiredException ) {
             $guidance = CpmsAdminMenu::ambiguous_clinic_guidance();
             echo '<div class="wrap" dir="rtl">';
-            echo '<h1>' . esc_html__( 'راه‌اندازی کلینیک', 'cpms' ) . '</h1>';
+            echo '<h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
             echo '<div class="notice notice-warning" data-cpms-scope-required="1"><p>';
             echo esc_html( $guidance );
             echo '</p></div></div>';
@@ -157,10 +157,11 @@ final class CpmsSetupWizard
         // migration 0026's conservative backfill consume the first-setup
         // marker for merely-viewed, zero-membership installations).
         ?>
+        <?php $shell_profile = self::current_facility_profile(); ?>
         <div class="wrap" dir="rtl">
-            <h1>راه‌اندازی کلینیک — قدم <?php echo esc_html((string) ($index + 1)); ?> از <?php echo esc_html((string) count($steps)); ?></h1>
+            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?></h1>
             <p class="description">
-                این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، مطب را راه بیندازید.
+                این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، <?php echo esc_html( $shell_profile['unit'] ); ?> را راه بیندازید.
                 پیشرفت شما ذخیره می‌شود و هر زمان می‌توانید ادامه دهید.
             </p>
 
@@ -169,7 +170,7 @@ final class CpmsSetupWizard
             <?php endif; ?>
 
             <?php if ( $is_complete ) : ?>
-                <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — کلینیک برای شروع عملیات آماده است.</p></div>
+                <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — <?php echo esc_html( $shell_profile['unit'] ); ?> برای شروع عملیات آماده است.</p></div>
             <?php endif; ?>
 
             <?php if ( CpmsAdminMenu::is_first_practice_setup_pending() ) : ?>
@@ -434,7 +435,7 @@ final class CpmsSetupWizard
                     <td><input type="text" id="cphone" name="clinic_phone" class="regular-text" value="<?php echo esc_attr($phone); ?>"></td>
                 </tr>
             </table>
-            <p class="description">این اطلاعات فقط برای شناسایی مطب است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری مطب از برنامهٔ کاری پزشکان مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
+            <p class="description">این اطلاعات فقط برای شناسایی <?php echo esc_html( $facility_profile['unit'] ); ?> است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری <?php echo esc_html( $facility_profile['unit'] ); ?> از برنامهٔ کاری <?php echo esc_html( $facility_profile['clinicians'] ); ?> مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
             <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -545,10 +546,11 @@ final class CpmsSetupWizard
     private static function renderSchedules(): void
     {
         $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
+        $schedule_profile      = self::current_facility_profile();
         ?>
         <div class="card">
             <h2>برنامه کاری هفتگی</h2>
-            <p>برنامهٔ هفتگی هر پزشک (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
+            <p>برنامهٔ هفتگی هر <?php echo esc_html( $schedule_profile['clinician'] ); ?> (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
             <?php if ( $can_manage_clinicians ) : ?>
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به تنظیم برنامه</a></p>
             <?php endif; ?>
@@ -729,29 +731,30 @@ final class CpmsSetupWizard
 
         $can_manage_scoped_clinic = ClinicianAdminPage::can_current_user_access_page();
         $first_practice_pending   = CpmsAdminMenu::is_first_practice_setup_pending();
+        $profile                  = self::current_facility_profile();
         ?>
         <ul class="cpms-wizard-prerequisite-actions">
             <?php if ( $clinic_missing ) : ?>
                 <li>
-                    اطلاعات کلینیک ثبت نشده است.
+                    اطلاعات <?php echo esc_html( $profile['unit'] ); ?> ثبت نشده است.
                     <?php if ( $can_manage_scoped_clinic ) : ?>
-                        <a data-cpms-wizard-action="clinic" href="<?php echo esc_url( self::step_url( 'clinic' ) ); ?>">اصلاح مشخصات کلینیک</a>
+                        <a data-cpms-wizard-action="clinic" href="<?php echo esc_url( self::step_url( 'clinic' ) ); ?>">اصلاح مشخصات <?php echo esc_html( $profile['unit'] ); ?></a>
                     <?php elseif ( $first_practice_pending ) : ?>
                         <a data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">راه‌اندازی اولین مطب</a>
                     <?php else : ?>
-                        <span>برای اصلاح، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
+                        <span>برای اصلاح، عضویت فعال در <?php echo esc_html( $profile['unit'] ); ?> و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
                 </li>
             <?php endif; ?>
             <?php if ( $clinicians_missing ) : ?>
                 <li>
-                    پزشک فعالی ثبت نشده است.
+                    <?php echo esc_html( $profile['clinician'] ); ?> فعالی ثبت نشده است.
                     <?php if ( $can_manage_scoped_clinic ) : ?>
-                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">افزودن/مدیریت پزشک</a>
+                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">افزودن/مدیریت <?php echo esc_html( $profile['clinicians'] ); ?></a>
                     <?php elseif ( $first_practice_pending ) : ?>
                         <a data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">ابتدا اولین مطب را راه‌اندازی کنید</a>
                     <?php else : ?>
-                        <span>برای مدیریت پزشکان، عضویت فعال در کلینیک و مجوز پیکربندی لازم است.</span>
+                        <span>برای مدیریت <?php echo esc_html( $profile['clinicians'] ); ?>، عضویت فعال در <?php echo esc_html( $profile['unit'] ); ?> و مجوز پیکربندی لازم است.</span>
                     <?php endif; ?>
                 </li>
             <?php endif; ?>
@@ -791,7 +794,7 @@ final class CpmsSetupWizard
                 </td></tr>
                 <tr><th>دسترسی مدیریت</th><td>cpms_config (مدیر)</td></tr>
             </table>
-            <p>برای تکمیل، اطلاعات کلینیک و دست‌کم یک پزشک فعال لازم است.</p>
+            <p>برای تکمیل، اطلاعات <?php echo esc_html( $facility_profile['unit'] ); ?> و دست‌کم یک <?php echo esc_html( $facility_profile['clinician'] ); ?> فعال لازم است.</p>
             <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
         </div>
         <?php
@@ -818,9 +821,10 @@ final class CpmsSetupWizard
                 ? ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.'
                 : ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.';
         }
+        $finish_profile = self::current_facility_profile();
         ?>
         <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
-            <h2>شروع عملیات کلینیک</h2>
+            <h2>شروع عملیات <?php echo esc_html( $finish_profile['unit'] ); ?></h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
             <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
@@ -829,7 +833,7 @@ final class CpmsSetupWizard
                 <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ پیش‌نیازهای الزامی جریان فعلی برآورده نشده است: <?php echo esc_html( implode( '، ', $missing_now ) ); ?>.<?php echo esc_html( $stale_note ); ?></p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php else : ?>
-                <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات کلینیک + یک پزشک فعال) برآورده نشده است.</p>
+                <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات <?php echo esc_html( $finish_profile['unit'] ); ?> + یک <?php echo esc_html( $finish_profile['clinician'] ); ?> فعال) برآورده نشده است.</p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php endif; ?>
         </div>
@@ -968,6 +972,7 @@ final class CpmsSetupWizard
         if ( self::selected_facility_type() === '' ) {
             return self::steps();
         }
+        $facility = self::selected_facility_type();
         $flow     = self::current_flow();
         $ids      = FacilityTypeCatalog::flow_step_ids( $flow );
         $required = FacilityTypeCatalog::flow_required_step_ids( $flow );
@@ -978,8 +983,14 @@ final class CpmsSetupWizard
         $active = [];
         foreach ( $ids as $id ) {
             if ( isset( $by_id[ $id ] ) ) {
+                // Facility-aware nav/heading wording (single source of truth:
+                // FacilityTypeCatalog::step_title()) — e.g. "اطلاعات مرکز درمانی"
+                // for a hospital instead of the generic "اطلاعات کلینیک", or
+                // "دندانپزشکان" instead of "پزشکان" for a dental clinic. Other
+                // step ids keep their generic title.
                 $step             = $by_id[ $id ];
                 $step['required'] = in_array( $id, $required, true );
+                $step['title']    = FacilityTypeCatalog::step_title( $facility, $id, $step['title'] );
                 $active[]         = $step;
             }
         }
@@ -1083,8 +1094,16 @@ final class CpmsSetupWizard
     public static function missing_required_steps( Settings $settings ): array {
         $required = FacilityTypeCatalog::flow_required_step_ids( self::current_flow() );
         $titles   = [];
-        foreach ( self::steps() as $step ) {
+        // Facility-aware titles (active_steps() already resolves them via
+        // FacilityTypeCatalog::step_title()); self::steps() stays the
+        // fallback source for any id active_steps() does not currently list.
+        foreach ( self::active_steps() as $step ) {
             $titles[ $step['id'] ] = $step['title'];
+        }
+        foreach ( self::steps() as $step ) {
+            if ( ! isset( $titles[ $step['id'] ] ) ) {
+                $titles[ $step['id'] ] = $step['title'];
+            }
         }
         $missing = [];
         foreach ( $required as $id ) {
@@ -1112,11 +1131,12 @@ final class CpmsSetupWizard
         if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
-        $flow_min = self::flow_min_clinicians();
-        $raw      = $post['intended_clinicians'] ?? null;
+        $flow_min   = self::flow_min_clinicians();
+        $clinicians = self::current_facility_profile()['clinicians'];
+        $raw        = $post['intended_clinicians'] ?? null;
         if ( $raw === null || ! is_scalar( $raw ) || trim( (string) $raw ) === '' ) {
             if ( $flow_min >= 2 ) {
-                return 'تعداد پزشکان موردنظر را مشخص کنید.';
+                return 'تعداد ' . $clinicians . ' موردنظر را مشخص کنید.';
             }
             $settings->set( 'setup.intended_clinicians', 1, $updated_by );
 
@@ -1124,12 +1144,12 @@ final class CpmsSetupWizard
         }
         $intended = (int) $raw;
         if ( $intended < 1 || $intended > 200 ) {
-            return 'تعداد پزشکان باید بین ۱ تا ۲۰۰ باشد.';
+            return 'تعداد ' . $clinicians . ' باید بین ۱ تا ۲۰۰ باشد.';
         }
         if ( $intended < $flow_min ) {
             return self::current_flow() === 'hospital_network'
-                ? 'بیمارستان (فقط محدودهٔ سرپایی) یک جریان چندارائه‌دهنده است: تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.'
-                : 'برای درمانگاه چندپزشکه، تعداد پزشکان موردنظر باید دست‌کم ۲ باشد.';
+                ? 'بیمارستان (فقط محدودهٔ سرپایی) یک جریان چندارائه‌دهنده است: تعداد ' . $clinicians . ' موردنظر باید دست‌کم ۲ باشد.'
+                : 'برای درمانگاه چندپزشکه، تعداد ' . $clinicians . ' موردنظر باید دست‌کم ۲ باشد.';
         }
         $settings->set( 'setup.intended_clinicians', $intended, $updated_by );
 
@@ -1512,12 +1532,16 @@ final class CpmsSetupWizard
             }
         }
 
-        // Basic pre-validation to keep error messages consistent with old wizard
+        // Basic pre-validation to keep error messages consistent with old wizard.
+        // Facility-aware unit (e.g. "نام مرکز درمانی الزامی است." for a hospital);
+        // an unknown/empty facility selection keeps the historical generic
+        // "کلینیک" wording.
+        $unit = self::current_facility_profile()['unit'];
         if ($name === '') {
-            return 'نام کلینیک الزامی است.';
+            return 'نام ' . $unit . ' الزامی است.';
         }
         if (mb_strlen($name) > 190) {
-            return 'نام کلینیک حداکثر ۱۹۰ کاراکتر است.';
+            return 'نام ' . $unit . ' حداکثر ۱۹۰ کاراکتر است.';
         }
         if (mb_strlen($address) > 255) {
             return 'آدرس حداکثر ۲۵۵ کاراکتر است.';
@@ -1614,8 +1638,11 @@ final class CpmsSetupWizard
      * Whether the embedded first-practice panel (fresh bootstrap,
      * interrupted-setup recovery, or blocked interrupted setup) applies to
      * the current installation state. Read-only.
+     *
+     * Public: also the single source of truth CpmsActivationRedirect reuses
+     * to decide whether a genuine first-run redirect is still warranted.
      */
-    private static function onboarding_panel_applies(): bool {
+    public static function onboarding_panel_applies(): bool {
         try {
             $setup_service = App::first_practice_setup_service();
 
