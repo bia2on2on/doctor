@@ -1545,8 +1545,21 @@ cm_errors = [e for e in console_errors if is_cpms_url(e[2])]
 pg_errors = [e for e in page_errors if is_cpms_url(e[2])]
 check("browser.no_console_errors", len(cm_errors) == 0,
       f"{len(cm_errors)} console errors on CPMS/admin pages (messages suppressed)")
+
+
+def error_locations(errors):
+    """Privacy-safe locations of browser errors: persona tag, error class and admin page/step only."""
+    where = []
+    for tag, msg, url in errors[:5]:
+        parsed = urlparse(url or "")
+        query = parse_qs(parsed.query)
+        kind = re.sub(r"[^A-Za-z]", "", str(msg).split(":", 1)[0])[:40] or "Error"
+        where.append(f"[{tag}] {kind} {parsed.path} page={query.get('page', [''])[0]} step={query.get('step', [''])[0]}")
+    return ("; at: " + " | ".join(where)) if where else ""
+
+
 check("browser.no_page_errors", len(pg_errors) == 0,
-      f"{len(pg_errors)} page errors on CPMS/admin pages (messages suppressed)")
+      f"{len(pg_errors)} page errors on CPMS/admin pages (messages suppressed)" + error_locations(pg_errors))
 
 failed = [r for r in results if not r[1]]
 with open(f"{OUT}/results.json", "w") as f:

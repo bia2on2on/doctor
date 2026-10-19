@@ -1246,7 +1246,10 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   - Also adds `OrganizationClinicProvisioningService::designate_clinic_manager` (capability
     `cpms_org_clinic_manager_assign`, audited, never overwrites a membership).
   - Adds the wizard link marker `data-cpms-org-facility-journey`.
-  - Adds 10 integration tests in `tests/Integration/FacilitySetupJourneyTest.php`.
+  - Adds 9 integration tests in `tests/Integration/FacilitySetupJourneyTest.php`.
+  - Exact-head CI on `e3a571d`: CI run `39298009440` passed with Integration `OK (2168 tests, 63175 assertions)`
+    (2159 + 9) and 0 failures, errors or skips. First-Practice, Real-WP and the Closure Gate also passed on that head
+    (before the browser journeys were added).
 - **Follow-up commit:** browser journeys in `bin/rwp-first-practice.py` (fixture `facility`).
   - Full hospital setup through the real page: 2 sites, 2 outpatient Clinics, self-designated managers, 2 rooms,
     one shared clinician with separate schedules in both Clinics, booking policy, and review plus activation.
