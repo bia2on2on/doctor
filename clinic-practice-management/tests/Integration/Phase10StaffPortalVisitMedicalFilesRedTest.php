@@ -586,18 +586,21 @@ final class Phase10StaffPortalVisitMedicalFilesRedTest extends WP_UnitTestCase
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($rUnassigned), 'G3.F: established scope denial code');
         self::assertSame(0, $this->fileCountForPatient($patientUnassigned), 'G3.F: unassigned Location stored no file row');
 
-        // G. 0 eligible Locations => fail closed.
-        $fxZero = $this->makePortalStage('g3z');
-        $patientZero = $this->insertPatient($fxZero['clinic'], 'g3z_patient');
-        $visitZero = $this->insertVisit($patientZero, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'in_consultation');
-        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
-        self::assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1', [$fxZero['clinic']]),
-            'G3.fixture: zero eligible Locations really persisted');
-        wp_set_current_user($fxZero['doctor']);
-        $rZero = $this->dispatch('POST', '/' . sprintf(self::PORTAL_FILES_UPLOAD, $visitZero), ['category' => 'document'], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']), 'valid', $this->makeUploadedFile('g3z.pdf', $this->pdfContent()));
-        $this->gateIn([403, 404], $rZero, 'G3.G: zero eligible Locations fails closed');
-        self::assertNotSame('rest_no_route', $this->errCode($rZero), 'G3.G: denial comes from the portal boundary, not a missing route');
-        self::assertSame(0, $this->fileCountForPatient($patientZero), 'G3.G: zero eligible Locations stored no file row');
+        // G. 0 eligible Locations (no active-Visit continuity) => fail closed.
+        $fx_zero = $this->makePortalStage('g3z');
+        $patient_zero = $this->insertPatient($fx_zero['clinic'], 'g3z_patient');
+        $visit_zero = $this->insertVisit($patient_zero, $fx_zero['clinician'], $fx_zero['clinic'], $fx_zero['location'], 'in_consultation');
+        $wpdb->update($wpdb->prefix . 'cpms_visits', ['active' => 0, 'status' => 'checked_out'], ['id' => $visit_zero]);
+        self::assertSame(0, (int) App::db()->fetchValue('SELECT active FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d', [$visit_zero]),
+            'G3.fixture: no active Visit remains to reopen the inactive Location');
+        $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fx_zero['clinic']));
+        self::assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1', [$fx_zero['clinic']]),
+            'G3.fixture: zero active Locations really persisted');
+        wp_set_current_user($fx_zero['doctor']);
+        $r_zero = $this->dispatch('POST', '/' . sprintf(self::PORTAL_FILES_UPLOAD, $visit_zero), ['category' => 'document'], $this->scopeHeaders($fx_zero['clinic'], $fx_zero['location']), 'valid', $this->makeUploadedFile('g3z.pdf', $this->pdfContent()));
+        $this->gateIn([403, 404], $r_zero, 'G3.G: zero eligible Locations fails closed');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($r_zero), 'G3.G: no eligible Location is denied at the portal boundary');
+        self::assertSame(0, $this->fileCountForPatient($patient_zero), 'G3.G: zero eligible Locations stored no file row');
         self::assertSame($rowsSingle2, $this->fileCountForPatient($patientSingle2), 'G3.D/E: denied Locations left no file rows');
     }
 
