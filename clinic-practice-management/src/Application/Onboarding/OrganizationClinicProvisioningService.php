@@ -794,14 +794,18 @@ final class OrganizationClinicProvisioningService {
      * The first-setup marker of the Clinic is consumed (monotonic) because the Clinic
      * now has administration evidence. Membership + marker + audit commit together.
      *
+     * Authorize before identifying: only the caller's own context is validated up
+     * front. Nothing about the TARGET user (id shape or existence) is evaluated
+     * until the exact cpms_org_clinic_manager_assign authority (DENY > GRANT >
+     * preset) and the Clinic's ownership are established under the Organization row
+     * lock, so a caller without that authority receives the same refusal for an
+     * existing, a nonexistent and an invalid user id (no account enumeration).
+     *
      * @return array{clinic_id:int, membership_id:int, noop:bool, audit_id:int|null}
      */
     public function designate_clinic_manager( int $actor_id, int $organization_id, int $clinic_id, int $target_user_id ): array {
-        if ( $actor_id <= 0 || $organization_id <= 0 || $clinic_id <= 0 || $target_user_id <= 0 ) {
+        if ( $actor_id <= 0 || $organization_id <= 0 || $clinic_id <= 0 ) {
             throw new InvalidArgumentException( 'invalid clinic manager designation context' );
-        }
-        if ( false === get_userdata( $target_user_id ) ) {
-            throw new InvalidArgumentException( 'clinic manager user not found' );
         }
 
         return $this->db->transactional(
@@ -824,6 +828,12 @@ final class OrganizationClinicProvisioningService {
                 );
                 if ( null === $clinic || (int) $clinic['organization_id'] !== $organization_id ) {
                     throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                // Only an authorized caller reaches the target identity (read-only
+                // lookup; no WordPress write happens inside this transaction).
+                if ( $target_user_id <= 0 || false === get_userdata( $target_user_id ) ) {
+                    throw new InvalidArgumentException( 'clinic manager user not found' );
                 }
 
                 $existing = $this->db->fetchRowForUpdate(

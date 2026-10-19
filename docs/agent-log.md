@@ -1369,3 +1369,40 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   from two tabs of the same session, dispatching both clicks before awaiting either navigation, and a failure in this
   journey is recorded as a failed check without aborting the remaining facility checks. The cause of the `fetch()`
   refusal was not diagnosed.
+
+## [2026-10-19 22:10 UTC] — PR #253 pre-merge security hardening S1–S3 (Draft, unmerged)
+
+- **Start (verified live):** branch `arena/a4b51631-doctor` at `de1e8da` (clean, equal to remote; no stashes); base
+  `main` `b7ae469` unchanged; PR #253 Draft, mergeable, 26/26 exact-head checks green. The brief expected head
+  `b800dc1`; that commit is an ancestor of the live head (later commits: staff step, plan audit, admin-entry
+  readiness, all-or-nothing Clinic/room creation, browser race checks), so the review line numbers were stale.
+- **S2 — fail-closed hold:** `create_held_clinic()` swallowed every exception from the hold
+  (`set_clinic_status(…, false)`) and recorded `held = false`, which could commit an active, bookable Clinic before
+  activation. The catch-all is removed: a refused or failed hold (or a readback that is not `suspended`) now throws
+  `hold_failed` inside the plan transaction, so the Clinic, its primary Location, their audit rows and the plan entry
+  roll back together and the same request key retries cleanly.
+- **S1 — atomic clinician step:** `assign_clinician()` created the profile before checking the membership state
+  (a suspended membership left a new profile behind), ran profile, membership and Location writes in separate
+  transactions, merged the Location set without a lock (concurrent assignments of one professional to two Clinics
+  could drop one Clinic's Locations) and wrote no audit row. It now runs as one transaction under the Organization
+  row lock (Organization → Clinic → membership → profile); every refusal precedes the first write; the new profile id
+  is read back through the unique account link; the merged Location set is read back before commit; and
+  `CLINICIAN_CREATED` / `FACILITY_CLINICIAN_ASSIGNED` audit rows commit with the change (an identical retry writes
+  nothing). The existing services' nested transactions become savepoints of the one `App::db()` transaction; the
+  only WordPress call inside it is the read-only account lookup inside `create_membership()`.
+- **S3 — authorize before identifying:** `designate_clinic_manager()` resolved the target account before checking
+  `cpms_org_clinic_manager_assign`, and the facility step checked only `cpms_org_clinic_create`, so an Organization
+  Manager with an explicit DENY could tell existing from nonexistent accounts. The facility step now asserts the
+  exact capability first, and the Organization service evaluates the target only after authority and Clinic
+  ownership are established under the Organization row lock.
+- **Lower-severity review items:** room address persistence verified (rooms already pass their site address to
+  `LocationService::createLocation`, which persists and reads it back) and now asserted; duplicate Clinic/room name
+  checks already run against the locked plan since `20fcf53`; Clinic-scoped wizard steps still require Organization
+  authority — documented as a follow-up (opening the Organization plan to Clinic-only managers would disclose the
+  other independent Clinics).
+- **Tests:** four new integration tests (injected hold failure in two forms, injected failure of the last clinician
+  write, suspended membership before any profile, enumeration-safe manager designation) plus two room-address
+  assertions; existing tests unchanged. No new browser journey: concurrency of the clinician step rests on the
+  Organization row lock and is not driven by a real parallel-request test.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
+  PR #253, not in this log.

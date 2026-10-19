@@ -281,6 +281,12 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
 
 - New Clinics are held suspended (the existing lifecycle control: no new demand) until the consolidated review is
   ready and activation is explicitly confirmed.
+- The hold fails closed: it runs through `OrganizationClinicProvisioningService::set_clinic_status` inside the same
+  transaction as the Clinic, its primary Location and its plan entry, followed by a status readback. If the hold is
+  refused or fails (lifecycle authority withdrawn, Organization no longer active, update or readback failure), the
+  whole step rolls back and reports `hold_failed`: no Clinic, Location, audit row or plan entry is committed, so a
+  Clinic is never committed active (bookable) before activation and the setup never records an unheld Clinic. The
+  same request key then retries cleanly.
 - Setup and Location management continue while a Clinic is held, as documented in
   `post-onboarding-clinic-location-management.md`.
 
@@ -311,6 +317,27 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   - inactive Locations and suspended memberships fail closed;
   - a suspended Organization refuses every step (reads included) and changes nothing; setup resumes after
     explicit reactivation.
+- *Manager designation (step 4) — authorize before identifying:*
+  - the exact `cpms_org_clinic_manager_assign` authority (DENY > GRANT > preset) and the Clinic's ownership are
+    established, under the Organization row lock, before anything about the target user is evaluated;
+  - a caller without that authority (explicit DENY, another Organization) gets the same refusal for an existing
+    account, a nonexistent account and an invalid id, on the page and in both services, so it cannot probe which
+    accounts exist; a foreign Clinic is refused as not found before the target is resolved;
+  - only an authorized caller is told that the chosen account does not exist.
+- *Clinicians (step 6) — one atomic step:*
+  - the whole step runs in one transaction under the Organization row lock (lock order Organization → Clinic →
+    membership → profile, as in the plan and schedule writes); the nested service writes are savepoints of it;
+  - every refusal — including a suspended (or otherwise inactive) existing membership, which is never re-activated
+    or overwritten — happens before the first write, so a refused step never leaves a profile behind;
+  - the one professional profile per account is adopted only inside the same Organization; a new profile's id is
+    read back through the unique account link;
+  - the Location set stays additive across Clinics; it is read, merged and replaced under the same lock and then
+    read back, so concurrent assignments of one professional serialize instead of overwriting each other, and a
+    silently incomplete replacement never commits;
+  - audit rows commit with the change: `CLINICIAN_CREATED` for a new profile and `FACILITY_CLINICIAN_ASSIGNED`
+    (resource `clinic_membership`) for a new membership or a changed Location set, listing only that Clinic's
+    Locations; any failure rolls back the profile, the membership, the Location rows and these audit rows
+    together (the hash chain stays continuous); an identical retry is a no-op without an audit row.
 - *Staff roles (step 7):*
   - only the built-in staff roles are offered (manager and clinician have their own steps; custom roles stay
     on the existing per-Clinic page);
@@ -342,7 +369,12 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
 
 **Tests and browser evidence**
 
-- `tests/Integration/FacilitySetupJourneyTest.php` (integration).
+- `tests/Integration/FacilitySetupJourneyTest.php` (integration), including injected-failure regressions: a failing
+  hold (exception, and an update that matches no row) leaves no Clinic, no active Clinic, no plan entry and no audit
+  row and keeps the audit chain valid; a failing Location write at the end of the clinician step leaves no profile,
+  membership, Location association or audit row, and the retry is audited exactly once; a suspended membership is
+  refused before any profile is written; and unauthorized manager designation (explicit DENY, foreign Organization,
+  foreign Clinic) returns one refusal for existing, nonexistent and invalid user ids.
 - `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup (including a
   location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
   explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,
@@ -357,3 +389,9 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
   independent Clinic, and gets no Organization setup.
 - **Known limitation:** the hospital journey designates the Organization Manager as manager of each outpatient Clinic.
   Delegated per-Clinic managers are exercised in the browser only in the medical-building hand-off above.
+- **Known limitation (follow-up):** steps 5–9 of this Organization setup also require Organization authority, so a
+  delegated Clinic manager without it completes their Clinic on that Clinic's own existing pages (for example
+  «پزشکان» and «کاربران و دسترسی‌ها») rather than in this wizard. Opening the Organization plan to Clinic-only managers
+  would disclose the other (independent) Clinics of the Organization and is deliberately not done here.
+- Room Locations persist the address of their chosen site (asserted in the hospital journey test); duplicate Clinic
+  and room names are checked against the locked plan in the same transaction as the write (see above).

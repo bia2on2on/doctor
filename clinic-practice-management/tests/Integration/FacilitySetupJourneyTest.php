@@ -125,6 +125,8 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertSame((int) $clinicA['clinic_id'], $this->locationClinic((int) $roomA1['location_id']));
         self::assertSame((int) $clinicA['clinic_id'], $this->locationClinic((int) $roomA2['location_id']));
         self::assertSame((int) $clinicB['clinic_id'], $this->locationClinic((int) $roomB1['location_id']));
+        self::assertSame('تهران، خیابان یک', $this->locationAddress((int) $roomA1['location_id']), 'a room Location persists the address of its chosen site');
+        self::assertSame('تهران، خیابان دو', $this->locationAddress((int) $roomB1['location_id']), 'a room at another site persists that site address');
 
         // One professional, two Clinics: one profile, explicit membership in B.
         $doctor = $this->makeUser('fs_doctor', 'subscriber');
@@ -738,6 +740,272 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Pre-merge hardening: fail-closed hold, atomic clinician step,
+    // authorize-before-identify manager designation
+    // ------------------------------------------------------------------
+
+    public function testAFailedClinicHoldFailsClosedSoNoActiveBookableClinicEscapes(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinics = App::db()->table('cpms_clinics');
+        $isHold = static fn (string $sql): bool => 1 === preg_match('/^\s*UPDATE\s+`?' . preg_quote($clinics, '/') . '`?\s+SET\s+`?status`?\s*=\s*\'suspended\'/i', $sql);
+        $injections = [
+            // The lifecycle UPDATE raises (a database failure surfaced as an exception).
+            'exception' => static function (string $sql) use ($isHold): string {
+                if ($isHold($sql)) {
+                    throw new \RuntimeException('injected hold failure');
+                }
+
+                return $sql;
+            },
+            // The lifecycle UPDATE silently matches no row (no exception anywhere).
+            'no_row' => static fn (string $sql): string => $isHold($sql) ? (string) preg_replace('/\bWHERE\b/i', 'WHERE 1 = 0 AND', $sql, 1) : $sql,
+        ];
+        $provisioned = $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION);
+        $deactivated = $this->auditCount('CLINIC_DEACTIVATED');
+        $planChanges = $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION);
+        $nothingEscaped = function (string $label) use ($service, $provisioned, $deactivated, $planChanges): void {
+            self::assertSame(0, $this->clinicCount($this->org), $label . ': no Clinic survives a failed hold');
+            self::assertSame(0, (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics') . ' WHERE organization_id = %d AND COALESCE(status, %s) = %s',
+                [$this->org, 'active', 'active']
+            ), $label . ': no active (bookable) Clinic escapes');
+            self::assertSame([], $service->plan($this->actor, $this->org)['clinics'], $label . ': the setup never records an unheld Clinic');
+            self::assertSame($provisioned, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION), $label . ': provisioning audit rolled back');
+            self::assertSame($deactivated, $this->auditCount('CLINIC_DEACTIVATED'), $label);
+            self::assertSame($planChanges, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), $label);
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label . ': audit hash chain intact after the rollback');
+        };
+
+        $key = FacilitySetupService::new_request_key();
+        foreach ($injections as $label => $inject) {
+            add_filter('query', $inject);
+            try {
+                $this->assertRefused('hold_failed', fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ));
+            } finally {
+                remove_filter('query', $inject);
+            }
+            $nothingEscaped($label);
+        }
+
+        // The page path reports an error notice and leaves nothing behind either.
+        $fields = ['request_key' => $key, 'clinic_name' => 'درمانگاه نگه‌داشته', 'site_key' => $site, 'timezone' => self::TZ];
+        $field = static fn (string $name): string => (string) ($fields[$name] ?? '');
+        add_filter('query', $injections['exception']);
+        try {
+            self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'clinic', $field, []));
+        } finally {
+            remove_filter('query', $injections['exception']);
+        }
+        $nothingEscaped('page');
+
+        // Once holding works, the same request creates exactly one held Clinic.
+        $clinic = $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ);
+        self::assertSame(1, $this->clinicCount($this->org));
+        self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']), 'held: no new demand before explicit activation');
+        self::assertTrue((bool) $clinic['held']);
+        self::assertSame($provisioned + 1, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION));
+        self::assertSame($deactivated + 1, $this->auditCount('CLINIC_DEACTIVATED'), 'the hold is audited through the lifecycle service');
+        self::assertSame((int) $clinic['clinic_id'], (int) $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ)['clinic_id'], 'a retry adopts it');
+        self::assertSame(1, $this->clinicCount($this->org));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    public function testAFailedClinicianAssignmentLeavesNoPartialStateAndTheRetryIsAuditedExactlyOnce(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه اتمی', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $room = $service->add_room($this->actor, $this->org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق اتمی', $site);
+        $doctor = $this->makeUser('fs_atomic_doc', 'subscriber');
+        $login = (string) get_userdata($doctor)->user_login;
+        $links = App::db()->table('cpms_clinician_locations');
+        // The LAST write of the step fails: profile and membership were already written.
+        $failLink = static function (string $sql) use ($links): string {
+            if (1 === preg_match('/^\s*INSERT\s+INTO\s+`?' . preg_quote($links, '/') . '`?\s/i', $sql)) {
+                throw new \RuntimeException('injected clinician location failure');
+            }
+
+            return $sql;
+        };
+        $created = $this->auditCount('CLINICIAN_CREATED');
+        $assigned = $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION);
+        $nothingLeft = function (string $label) use ($clinic, $doctor, $created, $assigned): void {
+            self::assertSame(0, $this->profileCount($doctor), $label . ': no partial clinician profile');
+            self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $doctor), $label . ': no partial membership');
+            self::assertSame(0, $this->clinicianLinkCount((int) $clinic['clinic_id']), $label . ': no partial Location association');
+            self::assertSame($created, $this->auditCount('CLINICIAN_CREATED'), $label . ': no audit row for a rolled-back profile');
+            self::assertSame($assigned, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION), $label);
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label . ': audit hash chain intact after the rollback');
+        };
+
+        add_filter('query', $failLink);
+        try {
+            $service->assign_clinician($this->actor, $this->org, $clinic['key'], $doctor, 'دکتر اتمی', [$room['key']]);
+            self::fail('the injected failure must surface');
+        } catch (\RuntimeException $e) {
+            self::assertSame('injected clinician location failure', $e->getMessage());
+        } finally {
+            remove_filter('query', $failLink);
+        }
+        $nothingLeft('service');
+
+        $fields = ['clinic_key' => $clinic['key'], 'user_login' => $login, 'full_name' => 'دکتر اتمی'];
+        $field = static fn (string $name): string => (string) ($fields[$name] ?? '');
+        add_filter('query', $failLink);
+        try {
+            self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'clinician', $field, [$room['key']]));
+        } finally {
+            remove_filter('query', $failLink);
+        }
+        $nothingLeft('page');
+
+        // The retry succeeds exactly once and is audited; an identical retry is a no-op.
+        $first = $service->assign_clinician($this->actor, $this->org, $clinic['key'], $doctor, 'دکتر اتمی', [$room['key']]);
+        self::assertTrue($first['profile_created']);
+        self::assertTrue($first['membership_created']);
+        self::assertFalse($first['noop']);
+        self::assertSame(1, $this->profileCount($doctor));
+        $membership = App::membership_service()->membership_for((int) $clinic['clinic_id'], $doctor);
+        self::assertNotNull($membership);
+        self::assertSame('active', (string) $membership['status']);
+        self::assertSame(RolesAndCapabilities::ROLE_DOCTOR, (string) $membership['role_key']);
+        self::assertSame([(int) $room['location_id']], App::membership_service()->clinician_location_ids($first['clinician_id']));
+        self::assertSame($created + 1, $this->auditCount('CLINICIAN_CREATED'));
+        self::assertSame($assigned + 1, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION));
+
+        $again = $service->assign_clinician($this->actor, $this->org, $clinic['key'], $doctor, 'دکتر اتمی', [$room['key']]);
+        self::assertTrue($again['noop'], 'an identical retry writes nothing');
+        self::assertSame($first['clinician_id'], $again['clinician_id']);
+        self::assertSame(1, $this->profileCount($doctor));
+        self::assertSame(1, $this->clinicianLinkCount((int) $clinic['clinic_id']));
+        self::assertSame($created + 1, $this->auditCount('CLINICIAN_CREATED'), 'no second audit row for a no-op');
+        self::assertSame($assigned + 1, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION));
+
+        $row = App::db()->fetchRow(
+            'SELECT resource_type, resource_id, clinic_id, after_json FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s ORDER BY id DESC LIMIT 1',
+            [FacilitySetupService::CLINICIAN_AUDIT_ACTION]
+        );
+        self::assertNotNull($row);
+        self::assertSame('clinic_membership', (string) $row['resource_type']);
+        self::assertSame((int) $membership['id'], (int) $row['resource_id']);
+        self::assertSame((int) $clinic['clinic_id'], (int) $row['clinic_id']);
+        $after = json_decode((string) $row['after_json'], true);
+        self::assertSame([(int) $room['location_id']], $after['location_ids'], 'the audit row lists this Clinic\'s Locations');
+        self::assertTrue($after['membership_created']);
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    public function testASuspendedMembershipIsRefusedBeforeAnyProfileIsWritten(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه تعلیق', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $doctor = $this->makeUser('fs_susp_first', 'subscriber');
+        $membershipId = App::membership_service()->create_membership((int) $clinic['clinic_id'], $doctor, RolesAndCapabilities::ROLE_DOCTOR);
+        App::membership_service()->suspend_membership($membershipId);
+        $created = $this->auditCount('CLINICIAN_CREATED');
+        $assigned = $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION);
+
+        $this->assertRefused('membership_suspended', fn () => $service->assign_clinician($this->actor, $this->org, $clinic['key'], $doctor, 'دکتر معلق', ['primary']));
+        self::assertSame(0, $this->profileCount($doctor), 'the suspended membership is detected before any profile is created');
+        self::assertSame(0, $this->clinicianLinkCount((int) $clinic['clinic_id']));
+        $row = App::membership_service()->membership_for((int) $clinic['clinic_id'], $doctor);
+        self::assertNotNull($row);
+        self::assertSame('suspended', (string) $row['status'], 'never re-activated implicitly');
+        self::assertSame(RolesAndCapabilities::ROLE_DOCTOR, (string) $row['role_key']);
+        self::assertSame($created, $this->auditCount('CLINICIAN_CREATED'));
+        self::assertSame($assigned, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION));
+    }
+
+    public function testUnauthorizedManagerDesignationNeverRevealsWhetherTheTargetUserExists(): void
+    {
+        $service = FacilitySetupPage::service();
+        $provisioning = App::organization_clinic_provisioning_service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه کاوش', $site, self::TZ);
+        $existing = $this->makeUser('fs_probe_target', 'subscriber');
+        $existingLogin = (string) get_userdata($existing)->user_login;
+        $missing = 2147483000;
+        self::assertFalse(get_userdata($missing), 'precondition: no such user');
+        $designated = $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION);
+        $notice = fn (string $clinicKey, string $login): string => FacilitySetupPage::dispatch(
+            $this->actor,
+            $this->org,
+            'manager',
+            static fn (string $name): string => (string) (['clinic_key' => $clinicKey, 'user_login' => $login][$name] ?? ''),
+            []
+        );
+
+        // 1) Explicit DENY of cpms_org_clinic_manager_assign: one refusal for an existing
+        //    user, a nonexistent user and invalid ids — service, Organization service, page.
+        $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'deny');
+        $messages = [];
+        foreach ([$existing, $missing, 0, -7] as $target) {
+            $messages[] = $this->refusalMessage('denied', fn () => $service->designate_manager($this->actor, $this->org, $clinic['key'], $target));
+            self::assertSame(
+                \RuntimeException::class . ': organization clinic manager designation denied',
+                $this->provisioningRefusal(fn () => $provisioning->designate_clinic_manager($this->actor, $this->org, (int) $clinic['clinic_id'], $target)),
+                'DENY is decided before the target user is evaluated'
+            );
+        }
+        self::assertCount(1, array_unique($messages), 'identical refusal text for every target');
+        $deniedNotice = $notice($clinic['key'], $existingLogin);
+        self::assertStringStartsWith('خطا', $deniedNotice);
+        self::assertSame($deniedNotice, $notice($clinic['key'], 'fs_no_such_login_' . bin2hex(random_bytes(3))));
+        self::assertSame($deniedNotice, $notice($clinic['key'], 'nobody_' . bin2hex(random_bytes(3)) . '@fs.test'));
+
+        // 2) Foreign Organization (the actor is not its manager): one refusal for every target.
+        $otherManager = $this->makeUser('fs_probe_other', 'subscriber');
+        $this->orgManager($otherManager, $this->otherOrg);
+        $other = FacilitySetupPage::service();
+        $other->start($otherManager, $this->otherOrg, 'other', 'medical_building', 'سازمان دیگر');
+        $other->add_site($otherManager, $this->otherOrg, 'ساختمان دیگر', '');
+        $foreignSite = $other->plan($otherManager, $this->otherOrg)['sites'][0]['key'];
+        $foreign = $other->add_clinic($otherManager, $this->otherOrg, FacilitySetupService::new_request_key(), 'درمانگاه بیگانه', $foreignSite, self::TZ);
+        foreach ([$existing, $missing, 0] as $target) {
+            $this->assertRefused('denied', fn () => $service->designate_manager($this->actor, $this->otherOrg, $foreign['key'], $target));
+            self::assertSame(
+                \RuntimeException::class . ': organization clinic manager designation denied',
+                $this->provisioningRefusal(fn () => $provisioning->designate_clinic_manager($this->actor, $this->otherOrg, (int) $foreign['clinic_id'], $target))
+            );
+        }
+
+        // 3) Authorized in its own Organization but naming a foreign Clinic: refused as
+        //    not found before the target user is evaluated.
+        $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'grant');
+        foreach ([$existing, $missing, 0] as $target) {
+            $this->assertRefused('not_found', fn () => $service->designate_manager($this->actor, $this->org, $foreign['key'], $target));
+            self::assertSame(
+                \RuntimeException::class . ': clinic not found in organization',
+                $this->provisioningRefusal(fn () => $provisioning->designate_clinic_manager($this->actor, $this->org, (int) $foreign['clinic_id'], $target))
+            );
+        }
+        self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $existing));
+        self::assertNull(App::membership_service()->membership_for((int) $foreign['clinic_id'], $existing));
+        self::assertSame($designated, $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION), 'no refused attempt wrote anything');
+
+        // 4) Authorized behavior is preserved: unknown or invalid users are reported as
+        //    such only to an authorized caller, and a real user is designated (audited).
+        foreach ([$missing, 0, -7] as $target) {
+            $this->assertRefused('user_not_found', fn () => $service->designate_manager($this->actor, $this->org, $clinic['key'], $target));
+        }
+        self::assertStringStartsWith('خطا', $notice($clinic['key'], 'fs_no_such_login_' . bin2hex(random_bytes(3))));
+        self::assertNotSame($deniedNotice, $notice($clinic['key'], 'fs_no_such_login_' . bin2hex(random_bytes(3))), 'an authorized caller gets the specific reason');
+        $result = $service->designate_manager($this->actor, $this->org, $clinic['key'], $existing);
+        self::assertFalse($result['noop']);
+        self::assertSame($designated + 1, $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -826,6 +1094,46 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $user->set_role($role);
 
         return $userId;
+    }
+
+    private function refusalMessage(string $reason, callable $operation): string
+    {
+        try {
+            $operation();
+            self::fail('expected refusal: ' . $reason);
+        } catch (FacilitySetupException $e) {
+            self::assertSame($reason, $e->reason(), $e->getMessage());
+
+            return $e->getMessage();
+        }
+    }
+
+    private function provisioningRefusal(callable $operation): string
+    {
+        try {
+            $operation();
+            self::fail('expected the Organization service to refuse');
+        } catch (\InvalidArgumentException | \RuntimeException $e) {
+            return get_class($e) . ': ' . $e->getMessage();
+        }
+    }
+
+    private function profileCount(int $userId): int
+    {
+        return (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id = %d', [$userId]);
+    }
+
+    private function clinicianLinkCount(int $clinicId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinician_locations') . ' cl JOIN ' . App::db()->table('cpms_locations') . ' l ON l.id = cl.location_id WHERE l.clinic_id = %d',
+            [$clinicId]
+        );
+    }
+
+    private function locationAddress(int $locationId): string
+    {
+        return (string) App::db()->fetchValue('SELECT address FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d', [$locationId]);
     }
 
     private function auditCount(string $action): int

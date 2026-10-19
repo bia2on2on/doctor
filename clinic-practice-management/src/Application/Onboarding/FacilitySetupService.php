@@ -72,6 +72,9 @@ final class FacilitySetupService {
 
     public const STAFF_AUDIT_ACTION = 'FACILITY_STAFF_ROLE_ASSIGNED';
 
+    /** Clinician step: new doctor membership and/or changed Location set of one Clinic. */
+    public const CLINICIAN_AUDIT_ACTION = 'FACILITY_CLINICIAN_ASSIGNED';
+
     /** Organization-level plan change (identity, outpatient scope, sites, Clinic/room records, activation). */
     public const PLAN_AUDIT_ACTION = 'FACILITY_SETUP_PLAN_CHANGED';
 
@@ -372,12 +375,22 @@ final class FacilitySetupService {
         }
 
         // Hold new demand until the consolidated review + explicit activation.
-        $held = false;
+        // Fail closed: this runs inside the plan transaction, so a refused or failed
+        // hold (lifecycle authority withdrawn, Organization no longer active, update
+        // or readback failure) aborts the step and rolls back the new Clinic, its
+        // primary Location and their audit rows. A Clinic that is not verifiably held
+        // is never committed, never recorded in the plan and never treated as held.
         try {
-            $this->provisioning->set_clinic_status( $actor_id, $organization_id, $clinic_id, false );
-            $held = true;
-        } catch ( Throwable $e ) {
-            $held = false;
+            $hold = $this->provisioning->set_clinic_status( $actor_id, $organization_id, $clinic_id, false );
+        } catch ( InvalidArgumentException | RuntimeException $e ) {
+            throw new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
+        }
+        $status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
+            [ $clinic_id, $organization_id ]
+        );
+        if ( 'suspended' !== (string) $hold['status'] || 'suspended' !== (string) $status ) {
+            throw new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
         }
 
         $entry = [
@@ -388,7 +401,7 @@ final class FacilitySetupService {
             'site_key'    => (string) $site['key'],
             'clinic_id'   => $clinic_id,
             'location_id' => $location_id,
-            'held'        => $held,
+            'held'        => true,
             'rooms'       => [],
         ];
 
@@ -401,6 +414,11 @@ final class FacilitySetupService {
      * @return array{clinic_id:int, membership_id:int, noop:bool, audit_id:int|null}
      */
     public function designate_manager( int $actor_id, int $organization_id, string $clinic_key, int $target_user_id ): array {
+        // Authorize before identifying: the EXACT manager-assignment authority
+        // (DENY > GRANT > preset) and the Clinic's place in this Organization's plan
+        // are established before anything about the target user is evaluated, so a
+        // caller without that authority cannot tell existing from nonexistent users.
+        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER );
         $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
         $entry = $this->clinic_entry( $organization_id, $clinic_key );
 
@@ -531,8 +549,20 @@ final class FacilitySetupService {
      * memberships are never re-roled or re-activated here. Location assignment is
      * additive: assignments in other Clinics are preserved.
      *
+     * Atomic: the whole step runs in ONE transaction under the Organization row lock
+     * (lock order Organization → Clinic → membership → profile, as in the plan and
+     * schedule writes). Every check that can refuse — including the state of an
+     * existing membership — runs before the first write; the nested service writes
+     * are savepoints of this transaction; the audit rows (CLINICIAN_CREATED for a new
+     * profile, CLINICIAN_AUDIT_ACTION for a new membership or a changed Location set)
+     * commit with the change. Any failure rolls everything back, so no partial
+     * profile, membership or Location association survives, a retry starts clean,
+     * and concurrent assignments of the same professional serialize instead of
+     * overwriting each other's Locations. An identical retry is a no-op (no write,
+     * no audit row).
+     *
      * @param list<string> $room_keys Plan room keys; 'primary' = the Clinic's primary Location.
-     * @return array{clinician_id:int, profile_created:bool, membership_created:bool, location_ids:list<int>}
+     * @return array{clinician_id:int, profile_created:bool, membership_created:bool, location_ids:list<int>, noop:bool}
      */
     public function assign_clinician( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $full_name, array $room_keys ): array {
         $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
@@ -543,18 +573,71 @@ final class FacilitySetupService {
             throw new FacilitySetupException( 'user_not_found', 'کاربر انتخاب‌شده یافت نشد.' );
         }
         $location_ids = $this->room_location_ids( $entry, $room_keys );
+        $full_name    = trim( $full_name );
+        if ( mb_strlen( $full_name ) > 190 ) {
+            throw new FacilitySetupException( 'invalid_clinician', 'نام کامل پزشک حداکثر ۱۹۰ نویسه است؛ چیزی ثبت نشد.' );
+        }
 
-        $profile         = $this->db->fetchRow(
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $clinic_id, $wp_user_id, $full_name, $location_ids ): array {
+                return $this->assign_clinician_locked( $actor_id, $organization_id, $clinic_id, $wp_user_id, $full_name, $location_ids );
+            }
+        );
+    }
+
+    /**
+     * Body of assign_clinician(); runs only inside its transaction.
+     *
+     * @param list<int> $location_ids Requested Locations of this Clinic (validated).
+     * @return array{clinician_id:int, profile_created:bool, membership_created:bool, location_ids:list<int>, noop:bool}
+     */
+    private function assign_clinician_locked( int $actor_id, int $organization_id, int $clinic_id, int $wp_user_id, string $full_name, array $location_ids ): array {
+        $organization = $this->db->fetchRowForUpdate(
+            'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+            [ $organization_id ]
+        );
+        if ( null === $organization || 'active' !== (string) $organization['status'] ) {
+            throw new FacilitySetupException( 'denied', 'برای این سازمان اختیار سازمانی لازم را ندارید؛ نقش مدیر وردپرس به‌تنهایی کافی نیست.' );
+        }
+        $owner = $this->db->fetchRowForUpdate(
+            'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
+        if ( null === $owner || (int) $owner['organization_id'] !== $organization_id ) {
+            throw new FacilitySetupException( 'not_found', 'درمانگاه انتخاب‌شده در راه‌اندازی این سازمان نیست.' );
+        }
+
+        // Existing membership state first — before any write. A suspended (or any
+        // non-active) membership is refused, never re-activated or overwritten.
+        $membership = $this->db->fetchRowForUpdate(
+            'SELECT id, role_key, status FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1',
+            [ $clinic_id, $wp_user_id ]
+        );
+        if ( null !== $membership && 'active' !== (string) $membership['status'] ) {
+            throw new FacilitySetupException( 'membership_suspended', 'عضویت این کاربر در این درمانگاه تعلیق است؛ فعال‌سازی دوباره فقط در «کاربران و دسترسی‌ها» و به‌صورت صریح انجام می‌شود.' );
+        }
+
+        // The ONE professional profile: adopted only inside the same Organization.
+        $profile = $this->db->fetchRowForUpdate(
             'SELECT id, clinic_id FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d LIMIT 1',
             [ $wp_user_id ]
         );
+        if ( null !== $profile ) {
+            $home_org = (int) ( $this->db->fetchValue(
+                'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                [ (int) $profile['clinic_id'] ]
+            ) ?? 0 );
+            if ( $home_org !== $organization_id ) {
+                throw new FacilitySetupException( 'cross_organization', 'پروفایل حرفه‌ای این کاربر به سازمان دیگری تعلق دارد؛ اشتراک میان سازمان‌ها پشتیبانی نمی‌شود.' );
+            }
+        } elseif ( '' === $full_name ) {
+            throw new FacilitySetupException( 'invalid_clinician', 'نام کامل پزشک برای ساخت پروفایل حرفه‌ای الزامی است.' );
+        }
+
+        // Writes start here; any failure below rolls back the whole step.
         $profile_created = false;
         if ( null === $profile ) {
-            $full_name = trim( $full_name );
-            if ( '' === $full_name || mb_strlen( $full_name ) > 190 ) {
-                throw new FacilitySetupException( 'invalid_clinician', 'نام کامل پزشک برای ساخت پروفایل حرفه‌ای الزامی است.' );
-            }
-            $clinician_id    = $this->clinicians->create(
+            $this->clinicians->create(
                 $clinic_id,
                 [
                     'full_name'  => $full_name,
@@ -562,43 +645,98 @@ final class FacilitySetupService {
                     'is_active'  => 1,
                 ]
             );
+            // Authoritative id by the unique user link (never a stale insert id).
+            $clinician_id    = (int) ( $this->db->fetchValue(
+                'SELECT id FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d LIMIT 1',
+                [ $wp_user_id ]
+            ) ?? 0 );
             $profile_created = true;
         } else {
             $clinician_id = (int) $profile['id'];
-            $home_org     = (int) ( $this->db->fetchValue(
-                'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
-                [ (int) $profile['clinic_id'] ]
-            ) ?? 0 );
-            if ( $home_org !== $organization_id ) {
-                throw new FacilitySetupException( 'cross_organization', 'پروفایل حرفه‌ای این کاربر به سازمان دیگری تعلق دارد؛ اشتراک میان سازمان‌ها پشتیبانی نمی‌شود.' );
-            }
         }
         if ( $clinician_id <= 0 ) {
-            throw new FacilitySetupException( 'failed', 'ساخت پروفایل پزشک انجام نشد.' );
+            throw new FacilitySetupException( 'failed', 'ساخت پروفایل پزشک انجام نشد؛ هیچ بخشی از این گام ثبت نشد.' );
         }
 
-        $membership         = $this->membership_rows->find( $clinic_id, $wp_user_id );
         $membership_created = false;
+        $membership_id      = null !== $membership ? (int) $membership['id'] : 0;
+        $role_key           = null !== $membership ? (string) $membership['role_key'] : RolesAndCapabilities::ROLE_DOCTOR;
         if ( null === $membership ) {
             try {
-                $this->membership_service->create_membership( $clinic_id, $wp_user_id, RolesAndCapabilities::ROLE_DOCTOR, 'clinic', $actor_id );
-                $membership_created = true;
+                $membership_id = $this->membership_service->create_membership( $clinic_id, $wp_user_id, RolesAndCapabilities::ROLE_DOCTOR, 'clinic', $actor_id );
             } catch ( MembershipException $e ) {
-                throw new FacilitySetupException( 'membership_failed', 'عضویت پزشک در این درمانگاه ایجاد نشد.' );
+                throw new FacilitySetupException( 'membership_failed', 'عضویت پزشک در این درمانگاه ایجاد نشد؛ هیچ بخشی از این گام ثبت نشد.' );
             }
-        } elseif ( 'active' !== (string) $membership['status'] ) {
-            throw new FacilitySetupException( 'membership_suspended', 'عضویت این کاربر در این درمانگاه تعلیق است؛ فعال‌سازی دوباره فقط در «کاربران و دسترسی‌ها» و به‌صورت صریح انجام می‌شود.' );
+            $membership_created = true;
         }
 
-        $merged  = array_values( array_unique( array_merge( $this->membership_service->clinician_location_ids( $clinician_id ), $location_ids ) ) );
-        $primary = $this->membership_service->primary_clinician_location_id( $clinician_id );
-        if ( null === $primary || ! in_array( $primary, $merged, true ) ) {
-            $primary = $location_ids[0];
+        // Additive Location set, read and replaced under the same locks.
+        $before         = $this->sorted_ids( $this->membership_service->clinician_location_ids( $clinician_id ) );
+        $primary_before = $this->membership_service->primary_clinician_location_id( $clinician_id );
+        $merged         = $this->sorted_ids( array_merge( $before, $location_ids ) );
+        $primary        = ( null === $primary_before || ! in_array( $primary_before, $merged, true ) ) ? $location_ids[0] : $primary_before;
+        $changed        = $merged !== $before || $primary !== $primary_before;
+        if ( $changed ) {
+            try {
+                $this->membership_service->assign_clinician_locations( $clinician_id, $merged, $primary );
+            } catch ( MembershipException $e ) {
+                throw new FacilitySetupException( 'assignment_conflict', 'تخصیص مکان فقط برای درمانگاه‌هایی ممکن است که پزشک در آن‌ها عضویت فعال دارد.' );
+            }
+            // Readback: a silently incomplete replacement must never commit.
+            $after = $this->sorted_ids( $this->membership_service->clinician_location_ids( $clinician_id ) );
+            if ( $after !== $merged || $this->membership_service->primary_clinician_location_id( $clinician_id ) !== $primary ) {
+                throw new FacilitySetupException( 'assignment_failed', 'تخصیص مکان‌های پزشک کامل ثبت نشد؛ هیچ بخشی از این گام ثبت نشد.' );
+            }
         }
-        try {
-            $this->membership_service->assign_clinician_locations( $clinician_id, $merged, $primary );
-        } catch ( MembershipException $e ) {
-            throw new FacilitySetupException( 'assignment_conflict', 'تخصیص مکان فقط برای درمانگاه‌هایی ممکن است که پزشک در آن‌ها عضویت فعال دارد.' );
+
+        if ( null !== $this->audit && $profile_created ) {
+            $this->audit->log(
+                'CLINICIAN_CREATED',
+                [
+                    'wp_user_id' => $actor_id,
+                    'role'       => 'clinic_config',
+                ],
+                'clinician',
+                $clinician_id,
+                null,
+                null,
+                [
+                    'wp_user_id'     => $wp_user_id,
+                    'home_clinic_id' => $clinic_id,
+                ],
+                [
+                    'op'              => 'facility_clinician_assign',
+                    'organization_id' => $organization_id,
+                ],
+                $clinic_id
+            );
+        }
+        if ( null !== $this->audit && ( $membership_created || $changed ) ) {
+            $here = $this->clinic_location_ids( $clinic_id );
+            $this->audit->log(
+                self::CLINICIAN_AUDIT_ACTION,
+                [
+                    'wp_user_id' => $actor_id,
+                    'role'       => 'clinic_config',
+                ],
+                'clinic_membership',
+                $membership_id,
+                null,
+                [ 'location_ids' => array_values( array_intersect( $before, $here ) ) ],
+                [
+                    'wp_user_id'         => $wp_user_id,
+                    'clinician_id'       => $clinician_id,
+                    'role_key'           => $role_key,
+                    'membership_created' => $membership_created,
+                    'location_ids'       => array_values( array_intersect( $merged, $here ) ),
+                ],
+                [
+                    'op'              => 'facility_clinician_assign',
+                    'organization_id' => $organization_id,
+                    'profile_created' => $profile_created,
+                ],
+                $clinic_id
+            );
         }
 
         return [
@@ -606,7 +744,33 @@ final class FacilitySetupService {
             'profile_created'    => $profile_created,
             'membership_created' => $membership_created,
             'location_ids'       => $location_ids,
+            'noop'               => ! $profile_created && ! $membership_created && ! $changed,
         ];
+    }
+
+    /**
+     * @param array<int|string, mixed> $ids
+     * @return list<int>
+     */
+    private function sorted_ids( array $ids ): array {
+        $ids = array_values( array_unique( array_map( 'intval', $ids ) ) );
+        sort( $ids );
+
+        return $ids;
+    }
+
+    /**
+     * Location ids of one Clinic (audit rows of a Clinic never list another Clinic's Locations).
+     *
+     * @return list<int>
+     */
+    private function clinic_location_ids( int $clinic_id ): array {
+        $rows = $this->db->fetchAll(
+            'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
+            [ $clinic_id ]
+        );
+
+        return $this->sorted_ids( array_column( $rows, 'id' ) );
     }
 
     /**
