@@ -340,7 +340,11 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         $zr    = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $zero['c1']], $this->scopeHeaders($zero['clinic']));
         self::assertSame(400, $zr->get_status(), 'A3: zero-eligible Clinic-only slot read requires explicit Location selection');
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zr), 'A3: missing Location is rejected before returning slots');
-        self::assertSame([], $this->slotIds($zr), 'A3: no slots are disclosed without explicit Location');
+        self::assertStringNotContainsString(
+            '"slots"',
+            (string) wp_json_encode($zr->get_data()),
+            'A3: no slots are disclosed without explicit Location'
+        );
         $zw = $this->dispatch('POST', self::APPTS, [
             'patient_id' => $pz, 'clinician_id' => $zero['c1'], 'slot_id' => $zslot,
         ], $this->scopeHeaders($zero['clinic']));

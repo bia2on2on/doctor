@@ -534,19 +534,24 @@ final class BookingService
                 $min_lead,
                 $settings
             ): void {
-                // New demand takes Organization -> Clinic -> Location -> Slot/capacity.
+                // New demand takes Organization -> Clinic -> Slot -> Location/capacity.
+                // Slot before Location is the established booking order: the
+                // independent staff-create race test requires the Slot lock to be
+                // held while the actor blocks on the Location row, and every other
+                // booking path follows the same order so no ABBA cycle exists.
                 $this->lock_booking_tenant_prefix( (int) $slot['clinic_id'] );
-                $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $slot['location_id'], (int) $slot['clinic_id'] );
-                $locked_slot        = $this->slots->findForUpdate( (int) $slot['id'] );
+                $locked_slot = $this->slots->findForUpdate( (int) $slot['id'] );
                 if (
                     $locked_slot === null
                     || (int) ( $locked_slot['clinic_id'] ?? 0 ) !== (int) $slot['clinic_id']
                     || (int) ( $locked_slot['location_id'] ?? 0 ) !== (int) $slot['location_id']
                     || (int) ( $locked_slot['clinician_id'] ?? 0 ) !== (int) $slot['clinician_id']
                     || (int) ( $locked_slot['is_open'] ?? 0 ) !== 1
+                    || (string) $this->normalize_slot_time( (string) ( $locked_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slotTime )
                 ) {
                     throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات انتخابی دیگر قابل رزرو نیست', 409 );
                 }
+                $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $slot['location_id'], (int) $slot['clinic_id'] );
                 $this->assertWindowWithTimezone(
                     (string) $locked_slot['slot_date'],
                     (string) $locked_slot['slot_time'],
@@ -827,7 +832,6 @@ final class BookingService
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
                     $this->lock_booking_tenant_prefix( $hold_clinic_id );
-                    $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $candidate_slot['location_id'], $hold_clinic_id );
 
                     $locked_hold = $this->db->fetchRowForUpdate(
                         'SELECT * FROM ' . $this->db->table( 'cpms_slot_holds' ) . ' WHERE id = %d AND token = %s LIMIT 1',
@@ -853,6 +857,8 @@ final class BookingService
                     ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
+                    // Location follows the Slot in every booking transaction.
+                    $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $candidate_slot['location_id'], $hold_clinic_id );
                     // The final DST decision is made on the locked persisted Slot
                     // before a new Patient, link, audit, or capacity write.
                     if ( BookingWindow::slotUtcInstant( (string) $slot['slot_date'], (string) $slot['slot_time'], $locked_location_tz ) === null ) {
@@ -1160,9 +1166,12 @@ final class BookingService
                     $actor,
                     $idem_clinic_id
                 ): array {
-                    // The source Clinic is already authorized by the preflight above;
-                    // lock Organization -> Clinic before the Appointment or any Slot.
-                    $this->lock_booking_tenant_prefix( $idem_clinic_id );
+                    // The source Appointment row is the outermost lock: check-in
+                    // locks the Patient and Appointment before it inserts a Visit, and
+                    // that insert takes a shared FK lock on the Clinic row. Taking the
+                    // Organization/Clinic prefix first inverts that pair and produces a
+                    // genuine deadlock, so the tenant prefix is acquired only after the
+                    // source Appointment is locked and authorized.
                     $appt = $this->appointments->findForUpdate( $appointment_id );
                     if (
                         $appt === null
@@ -1218,9 +1227,11 @@ final class BookingService
                         throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
                     }
 
-                    // The Organization -> Clinic prefix was locked before the source
-                    // Appointment. Cross-Clinic replacements are denied above, so these
-                    // locks serialize the destination lifecycle without moving PHI.
+                    // Cross-Clinic replacements are denied above, so locking the
+                    // source Clinic's lifecycle prefix now serializes the destination
+                    // lifecycle without moving PHI. The source Appointment is already
+                    // locked, so check-in cannot deadlock against this order.
+                    $this->lock_booking_tenant_prefix( $idem_clinic_id );
 
                     // Resolve new destination slot unambiguously (exact id preferred)
                     $new_slot = $this->resolveSlotForBooking( $new_clinic_id, $new_clinician_id, $new_date, $new_time, $new_slot_id );
@@ -1235,11 +1246,8 @@ final class BookingService
                     $min_lead = $actor === 'staff' ? 0 : (int) $new_settings->get('booking.min_lead_hours', 2);
                     $new_slot_id = (int) $new_slot['id'];
 
-                    // Lock the active destination Location before either Slot/capacity row.
-                    // LocationService uses the same Organization -> Clinic -> Location prefix.
-                    $new_location_tz = $this->resolve_location_timezone_for_update( (int) $new_slot['location_id'], $new_clinic_id );
-
-                    // Lock both Slots in ascending id order after the tenant lifecycle rows.
+                    // Lock both Slots in ascending id order after the tenant lifecycle
+                    // rows; the Location lock follows the Slot locks (established order).
                     [$first, $second] = $old_slot_id < $new_slot_id ? [ $old_slot_id, $new_slot_id ] : [ $new_slot_id, $old_slot_id ];
                     $first_slot       = $this->slots->findForUpdate( $first );
                     $second_slot      = $second === $first ? $first_slot : $this->slots->findForUpdate( $second );
@@ -1254,11 +1262,14 @@ final class BookingService
                         || (int) ( $locked_new_slot['location_id'] ?? 0 ) !== (int) $new_slot['location_id']
                         || (int) ( $locked_new_slot['is_open'] ?? 0 ) !== 1
                         || (string) ( $locked_new_slot['slot_date'] ?? '' ) !== $new_date
-                        || substr( (string) ( $locked_new_slot['slot_time'] ?? '' ), 0, 8 ) !== substr( $new_time, 0, 8 )
+                        || $this->normalize_slot_time( (string) ( $locked_new_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $new_time )
                     ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد دیگر در دسترس نیست', 409 );
                     }
                     $new_slot = $locked_new_slot;
+
+                    // Location follows the Slot locks in every booking transaction.
+                    $new_location_tz = $this->resolve_location_timezone_for_update( (int) $new_slot['location_id'], $new_clinic_id );
 
                     // Final timezone/window validation follows all lock waits, using
                     // the persisted destination Slot, Location, and Clinic policy.
@@ -1432,14 +1443,12 @@ final class BookingService
                     $trusted_clinic_id,
                     $settings
                 ): array {
-                    // New demand takes Organization -> Clinic -> Location ->
-                    // Slot/capacity. This same prefix is used by LocationService, so
-                    // a lifecycle transition cannot interleave with the final booking.
+                    // New demand takes Organization -> Clinic -> Slot ->
+                    // Location/capacity. This same tenant prefix is used by
+                    // LocationService, so a lifecycle transition cannot interleave
+                    // with the final booking. The Slot lock is acquired before the
+                    // Location lock (the established booking order).
                     $this->lock_booking_tenant_prefix( $trusted_clinic_id );
-                    $locked_location_tz = $this->resolve_location_timezone_for_update(
-                        (int) $resolved_slot['location_id'],
-                        $trusted_clinic_id
-                    );
 
                     $slot = $this->slots->findForUpdate( (int) $resolved_slot['id'] );
                     if (
@@ -1449,10 +1458,14 @@ final class BookingService
                         || (int) ( $slot['location_id'] ?? 0 ) !== (int) $resolved_slot['location_id']
                         || (int) ( $slot['is_open'] ?? 0 ) !== 1
                         || (string) ( $slot['slot_date'] ?? '' ) !== $slot_date
-                        || substr( (string) ( $slot['slot_time'] ?? '' ), 0, 8 ) !== substr( $slot_time, 0, 8 )
+                        || $this->normalize_slot_time( (string) ( $slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slot_time )
                     ) {
                         throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404 );
                     }
+                    $locked_location_tz = $this->resolve_location_timezone_for_update(
+                        (int) $slot['location_id'],
+                        $trusted_clinic_id
+                    );
                     $this->assertWindowWithTimezone(
                         (string) $slot['slot_date'],
                         (string) $slot['slot_time'],
@@ -1905,10 +1918,10 @@ final class BookingService
             if ((int) $slot['clinician_id'] !== $clinicianId) {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422);
             }
-            if ((string) $slot['slot_date'] !== $slotDate || substr((string) $slot['slot_time'], 0, 8) !== substr($slotTime, 0, 8)) {
+            if ((string) $slot['slot_date'] !== $slotDate || $this->normalize_slot_time((string) $slot['slot_time']) !== $this->normalize_slot_time($slotTime)) {
                 // Allow H:i vs H:i:s normalization but require date/time match if both supplied
-                $normRequested = substr($slotDate . ' ' . $slotTime, 0, 19);
-                $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
+                $normRequested = substr($slotDate . ' ' . $this->normalize_slot_time($slotTime), 0, 19);
+                $normSlot = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time((string) $slot['slot_time']);
                 if (substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
                 }
@@ -1934,6 +1947,26 @@ final class BookingService
         }
 
         return $all[0];
+    }
+
+    /**
+     * Canonical HH:MM:SS comparison key. Persisted slots are TIME values
+     * ("09:00:00"), while browser/REST callers legitimately send "09:00"; both
+     * forms must denote the same slot and must never be compared as raw
+     * strings.
+     */
+    private function normalize_slot_time( string $time ): string {
+        $time = trim( $time );
+        if ( preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/', $time, $matches ) !== 1 ) {
+            return $time;
+        }
+
+        return sprintf(
+            '%02d:%02d:%02d',
+            (int) $matches[1],
+            (int) $matches[2],
+            isset( $matches[3] ) ? (int) $matches[3] : 0
+        );
     }
 
     private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours, Settings $settings): void

@@ -567,6 +567,14 @@ final class DoctorPortalController extends RestBase {
 				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
 			);
 		}
+		// Establish the trusted Clinic boundary BEFORE capability evaluation: a
+		// foreign/unavailable Clinic is the established CLINIC_SCOPE_UNAVAILABLE
+		// envelope, never a capability oracle. No Location is validated here yet,
+		// so an endpoint capability DENY still precedes Location validation.
+		$clinic_scope = RestClinicContext::verify_doctor_portal_clinic( (int) $user->ID, $clinic_id );
+		if ( $clinic_scope instanceof WP_Error ) {
+			return $clinic_scope;
+		}
 		if ( ! App::authorization_service()->can( (int) $user->ID, $clinic_id, $cap ) ) {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
@@ -1035,11 +1043,12 @@ final class DoctorPortalController extends RestBase {
 
 		$location = $eligible_by_id[ $selected ];
 		if ( ! $location['is_active'] ) {
-			$continuity   = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
-			$can_continue = null !== $continuity_visit_id
-				? $continuity->has_active_visit( $clinic_id, $user_id, $selected, $continuity_visit_id )
-				: ( $active_visit_continuity_only && $continuity->has_active_visit_at_location( $clinic_id, $user_id, $selected ) );
-			if ( ! $can_continue ) {
+			// Only the read-only prescription-history projection may continue at
+			// an inactive Location, and only while this clinician has active
+			// treatment there. Visit Workspace (record/notes/files/handwriting)
+			// always requires a currently active operational Location.
+			$continuity = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
+			if ( ! $active_visit_continuity_only || ! $continuity->has_active_visit_at_location( $clinic_id, $user_id, $selected ) ) {
 				return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
 			}
 		}

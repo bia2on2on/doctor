@@ -262,7 +262,11 @@ final class Phase11ReceptionWalkInRedTest extends WP_UnitTestCase
         $zl = $this->dispatch('GET', self::CLINICIANS, [], $this->scopeHeaders($zero['clinic']));
         self::assertSame(400, $zl->get_status(), 'W3: zero-eligible Clinic-only clinician read requires an explicit Location');
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zl), 'W3: missing Location is rejected before the read');
-        self::assertSame([], $this->clinicianIds($zl), 'W3: no doctors are disclosed without explicit Location');
+        self::assertStringNotContainsString(
+            '"clinicians"',
+            (string) wp_json_encode($zl->get_data()),
+            'W3: no doctors are disclosed without explicit Location'
+        );
         $zw = $this->dispatch('POST', self::WALK_IN, ['patient_id' => $pz, 'clinician_id' => $zero['c1']], $this->scopeHeaders($zero['clinic']));
         self::assertSame(400, $zw->get_status(), 'W3: zero eligible ⇒ unscoped walk-in fails closed');
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zw), 'W3: missing Location denial envelope');

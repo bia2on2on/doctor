@@ -95,7 +95,8 @@ final class RestClinicContext
         WP_REST_Request $request,
         int $user_id,
         array $permissions,
-        bool $allow_unscoped_context = false
+        bool $allow_unscoped_context = false,
+        bool $allow_missing_location = false
     ): bool|WP_Error {
         try {
             $ids = self::extractIds( $request );
@@ -139,7 +140,7 @@ final class RestClinicContext
             return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'دسترسی ندارید', [ 'status' => 403 ] );
         }
 
-        if ( null === $ids['location_id'] && ! $allow_unscoped_context ) {
+        if ( null === $ids['location_id'] && ! $allow_unscoped_context && ! $allow_missing_location ) {
             return self::toError(
                 new ScopeRequiredException(
                     'CLINIC_SCOPE_REQUIRED',
@@ -364,16 +365,24 @@ final class RestClinicContext
             $request->get_param('clinic_id'),
             'clinic_id'
         );
-        // Report and export routes are Clinic-wide and expose no Location filter.
-        // Ignore a stale operational-Location header so deactivation does not
-        // block authorized historical Clinic reports/exports.
-        $location = self::is_clinic_wide_report_route( (string) $request->get_route() )
-            ? null
+        // Schedule configuration sends the target Location as an operational
+        // BODY field; it is validated by ScheduleService (not-found parity), so
+        // it must not be mistaken for a tenant scope selector. An explicit
+        // X-CPMS-Location-Id header still binds scope normally.
+        $location = preg_match( '#^/clinic/v1/config/schedules(?:/|$)#', (string) $request->get_route() ) === 1
+            ? self::combine( $request->get_header( 'X-CPMS-Location-Id' ), null, 'location_id' )
             : self::combine(
                 $request->get_header( 'X-CPMS-Location-Id' ),
                 $request->get_param( 'location_id' ),
                 'location_id'
             );
+        // Reports/exports are Clinic-wide: a stale selector for an inactive
+        // Location of the SAME Clinic must not suppress an authorized read.
+        // Foreign, malformed and absent-Clinic selectors keep their established
+        // validation and denial envelopes.
+        if ( null !== $location && self::is_clinic_wide_report_route( (string) $request->get_route() ) ) {
+            $location = self::report_location_selector( $clinic, $location );
+        }
 
         return [
             'clinic_id' => $clinic,
@@ -441,6 +450,45 @@ final class RestClinicContext
 
     private static function is_clinic_wide_report_route( string $route ): bool {
         return preg_match( '#^/clinic/v1/reports(?:/|$)#', $route ) === 1;
+    }
+
+    /**
+     * Keep the explicit report selector unless it names an INACTIVE Location
+     * that durably belongs to the requested Clinic. In that one case the
+     * Clinic-wide report keeps working (the Location is not a report filter);
+     * every other selector keeps normal trusted-context validation.
+     */
+    private static function report_location_selector( ?int $clinic_id, int $location_id ): ?int {
+        if ( null === $clinic_id || $clinic_id <= 0 || $location_id <= 0 ) {
+            return $location_id;
+        }
+
+        $row = App::db()->fetchRow(
+            'SELECT clinic_id, is_active FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            [ $location_id ]
+        );
+        if ( null === $row || (int) ( $row['clinic_id'] ?? 0 ) !== $clinic_id ) {
+            return $location_id;
+        }
+
+        return 1 === (int) ( $row['is_active'] ?? 0 ) ? $location_id : null;
+    }
+
+    /**
+     * Verify the Doctor Portal Clinic boundary (active membership + durable
+     * Clinic/Organization) WITHOUT binding a request scope. Endpoint capability
+     * authorization runs after this check and before any Location validation,
+     * so tenant existence is never disclosed ahead of capability denial.
+     */
+    public static function verify_doctor_portal_clinic( int $user_id, int $clinic_id ): bool|WP_Error {
+        try {
+            ( new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ) )
+                ->establish_for_doctor_portal( $user_id, $clinic_id, null );
+        } catch ( ScopeRequiredException $e ) {
+            return self::toError( $e );
+        }
+
+        return true;
     }
 
     private static function doctor_portal_visit_id( string $route ): ?int {

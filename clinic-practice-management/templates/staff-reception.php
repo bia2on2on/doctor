@@ -522,33 +522,48 @@ $cpms_reception_cfg = [
             .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
     }
 
+    function setSelectOptions(select, signature, html) {
+        // Rebuilding a <select> destroys its live selection. Only rebuild when
+        // the option set actually changed, so periodic board refreshes can never
+        // reset an explicit user selection (or swallow its change event).
+        if (!select) { return; }
+        if (select.getAttribute('data-options-signature') !== signature) {
+            select.innerHTML = html;
+            select.setAttribute('data-options-signature', signature);
+        }
+    }
+
     function renderScope() {
         var clinicSelect = el('sr-clinic-select');
         if (clinicSelect) {
+            var clinicSignature = 'c:' + state.clinics.map(function (clinic) { return clinic.id; }).join(',');
             var clinicHtml = '<option value="">— انتخاب کلینیک —</option>';
             for (var c = 0; c < state.clinics.length; c += 1) {
                 clinicHtml += '<option value="' + escapeHtml(state.clinics[c].id) + '">' + escapeHtml(state.clinics[c].name || ('کلینیک ' + state.clinics[c].id)) + '</option>';
             }
-            clinicSelect.innerHTML = clinicHtml;
+            setSelectOptions(clinicSelect, clinicSignature, clinicHtml);
             clinicSelect.value = state.clinicId ? String(state.clinicId) : '';
         }
 
         var locationSelect = el('sr-location-select');
         if (locationSelect) {
+            var locationSignature = 'l:' + (state.clinicId ? '1' : '0') + ':' + state.locations.map(function (loc) { return loc.id; }).join(',');
             var locationHtml = state.clinicId
                 ? '<option value="">— انتخاب موقعیت عملیاتی —</option>'
                 : '<option value="">— ابتدا کلینیک را انتخاب کنید —</option>';
             for (var i = 0; i < state.locations.length; i += 1) {
                 locationHtml += '<option value="' + escapeHtml(state.locations[i].id) + '">' + escapeHtml(state.locations[i].name || ('موقعیت ' + state.locations[i].id)) + '</option>';
             }
-            locationSelect.innerHTML = locationHtml;
+            setSelectOptions(locationSelect, locationSignature, locationHtml);
             locationSelect.value = state.locationId ? String(state.locationId) : '';
             locationSelect.disabled = !state.clinicId || state.locations.length === 0;
         }
-        var scopeReady = Boolean(state.clinicId && state.locationId);
+        // Patient search/create is Clinic-scoped and Location-neutral: identity
+        // lookup never filters by operational Location, so it only needs the
+        // trusted Clinic. Arrival/walk-in/booking keep requiring a Location.
         ['sr-search-input', 'sr-search-submit', 'sr-create-open'].forEach(function (role) {
             var control = el(role);
-            if (control) { control.disabled = !scopeReady; }
+            if (control) { control.disabled = !state.clinicId; }
         });
 
         var dateNode = el('sr-date');
@@ -723,7 +738,18 @@ $cpms_reception_cfg = [
     }
 
     function renderBoard(data) {
-        if (!state.clinicId || !state.locationId || Number(data.location_id || 0) !== Number(state.locationId)) {
+        if (!state.clinicId || !state.locationId) {
+            return;
+        }
+        var boardLocation = Number(data.location_id || 0);
+        if (boardLocation !== 0 && boardLocation !== Number(state.locationId)) {
+            return;
+        }
+        if (boardLocation === 0) {
+            // Fail-closed empty board (no operational day yet): show the
+            // explicit empty state, never the "select scope" placeholder.
+            doctorsIndex(data);
+            renderAppointments([]);
             return;
         }
         doctorsIndex(data);
@@ -1739,7 +1765,7 @@ $cpms_reception_cfg = [
     }
 
     function runSearch(force) {
-        if (!state.clinicId || !state.locationId) {
+        if (!state.clinicId) {
             search.results = [];
             search.selected = null;
             renderSearchResults();

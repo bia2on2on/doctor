@@ -21,9 +21,14 @@
  *   - authentication + secretary role + ACTIVE Clinic membership; membership
  *     alone is not permission (clinic-scoped capabilities via
  *     RestBase::requireClinicPermission).
- *   - operational Location policy: 0 eligible ⇒ fail closed / no reception
- *     data and no mutation; 1 eligible ⇒ auto-resolution allowed; N>1 ⇒
- *     explicit Location REQUIRED (never a first-Location fallback).
+ *   - operational Location policy: every reception operation and read requires
+ *     an EXPLICIT eligible Location selector. 0 eligible ⇒ fail closed with no
+ *     reception data and no mutation; 1 eligible ⇒ it still must be selected
+ *     deliberately (no singleton auto-resolution); N>1 ⇒ the same explicit
+ *     requirement. There is never a first/primary/global Location fallback.
+ *     A Clinic header without a Location answers 400 CLINIC_SCOPE_REQUIRED
+ *     (reason=location_required); an ineligible/foreign/inactive Location
+ *     answers the non-enumerating 403 CLINIC_SCOPE_UNAVAILABLE.
  *   - raw clinic/location/appointment ids are selectors only: cross-Clinic and
  *     cross-Location appointment selectors fail closed with the canonical
  *     non-enumerating fingerprint before any durable change.
@@ -405,13 +410,28 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
 
-		$is_context = '/clinic/v1/staff/portal/reception/context' === (string) $r->get_route();
+		$route      = (string) $r->get_route();
+		$is_context = '/clinic/v1/staff/portal/reception/context' === $route;
+		// Patient identity is Clinic-scoped: the read-only search and the
+		// patient-create form never filter or persist by operational Location,
+		// so they bind a trusted Clinic without demanding a Location selector.
+		// Every operational route (board/arrival/walk-in/booking/...) keeps the
+		// explicit Clinic AND Location requirement.
+		$clinic_only = in_array(
+			$route,
+			[
+				'/clinic/v1/staff/portal/reception/patients/search',
+				'/clinic/v1/staff/portal/reception/patients',
+			],
+			true
+		);
 
 		return RestClinicContext::authorize_and_bind_reception_scope(
 			$r,
 			(int) $user->ID,
 			$caps,
-			$is_context
+			$is_context,
+			$clinic_only
 		);
 	}
 

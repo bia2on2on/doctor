@@ -191,9 +191,8 @@ final class TrustedClinicEstablisher {
 		}
 
 		if ( $allow_doctor_portal_continuity ) {
-			$portal_locations = new DoctorPortalLocationEligibility( $this->db, $this->memberships );
-			$eligible_ids     = $portal_locations->eligible_location_ids( $clinic_id, $wp_user_id );
-			if ( ! in_array( $location_id, $eligible_ids, true ) ) {
+			$scope_mode = (string) ( $membership['scope_mode'] ?? 'clinic' );
+			if ( 'location' === $scope_mode && ! in_array( $location_id, array_map( 'intval', $this->memberships->location_ids_for( (int) $membership['id'] ) ), true ) ) {
 				$this->unavailable( 'location' );
 			}
 
@@ -202,7 +201,21 @@ final class TrustedClinicEstablisher {
 				' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
 				[ $location_id, $clinic_id ]
 			);
-			if ( null === $active && null !== $portal_visit_id && ! $portal_locations->has_active_visit( $clinic_id, $wp_user_id, $location_id, $portal_visit_id ) ) {
+			// An ACTIVE Location binds on Clinic membership alone. The stricter
+			// 0/1/N + clinician-identity policy belongs to the endpoint boundary,
+			// so a denied doctor still gets a bound trusted Clinic (and the
+			// documented capability denial) instead of a tenant-scope denial.
+			if ( null !== $active ) {
+				return $scope->withLocation( $location_id );
+			}
+
+			// Inactive Locations remain available only through the narrow
+			// continuity policy (active Visit there for this clinician).
+			$portal_locations = new DoctorPortalLocationEligibility( $this->db, $this->memberships );
+			if ( ! in_array( $location_id, $portal_locations->eligible_location_ids( $clinic_id, $wp_user_id ), true ) ) {
+				$this->unavailable( 'location' );
+			}
+			if ( null !== $portal_visit_id && ! $portal_locations->has_active_visit( $clinic_id, $wp_user_id, $location_id, $portal_visit_id ) ) {
 				$this->unavailable( 'location' );
 			}
 
