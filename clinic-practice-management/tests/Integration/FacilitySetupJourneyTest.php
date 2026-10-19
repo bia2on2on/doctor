@@ -1192,7 +1192,25 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $existing = $this->makeUser('fs_handler_target', 'subscriber');
         $existingLogin = (string) get_userdata($existing)->user_login;
         wp_set_current_user($this->actor);
-        $post = function (string $login) use ($clinic): string {
+        // Every users-table query that mentions the submitted login/email counts as
+        // a target lookup; the user cache is cleared first so a cached mapping can
+        // never hide one.
+        global $wpdb;
+        $usersTable = preg_quote($wpdb->users, '/');
+        $probe = '';
+        $lookups = 0;
+        $spy = static function (string $sql) use (&$probe, &$lookups, $usersTable): string {
+            if ('' !== $probe && str_contains($sql, $probe) && 1 === preg_match('/\bFROM\s+`?' . $usersTable . '`?(\s|$)/i', $sql)) {
+                ++$lookups;
+            }
+
+            return $sql;
+        };
+        $post = function (string $login) use ($clinic, $existing, $spy, &$probe, &$lookups): string {
+            clean_user_cache($existing);
+            $probe = $login;
+            $lookups = 0;
+            add_filter('query', $spy);
             $_POST = [
                 '_wpnonce' => wp_create_nonce(FacilitySetupPage::NONCE),
                 'organization_id' => (string) $this->org,
@@ -1214,29 +1232,73 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
                 self::assertSame('redirect intercepted', $e->getMessage());
             } finally {
                 remove_filter('wp_redirect', $intercept);
+                remove_filter('query', $spy);
                 $_POST = [];
                 $_REQUEST = [];
+                $probe = '';
             }
 
             return (string) get_transient('cpms_facility_notice_' . $this->actor);
         };
 
         // Explicit DENY: the real admin request boundary answers identically for an
-        // existing login, an unknown login and an unknown email.
+        // existing login, an unknown login and an unknown email — and never looks
+        // the submitted account up at all.
         $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'deny');
-        $notices = [
-            $post($existingLogin),
-            $post('fs_no_such_login_' . bin2hex(random_bytes(3))),
-            $post('nobody_' . bin2hex(random_bytes(3)) . '@fs.test'),
-        ];
+        $notices = [];
+        foreach ([$existingLogin, 'fs_no_such_login_' . bin2hex(random_bytes(3)), 'nobody_' . bin2hex(random_bytes(3)) . '@fs.test'] as $login) {
+            $notices[] = $post($login);
+            self::assertSame(0, $lookups, 'no target-account lookup before authorization: ' . $login);
+        }
         self::assertStringStartsWith('خطا', $notices[0]);
         self::assertCount(1, array_unique($notices), 'identical admin response for existing and nonexistent accounts');
         self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $existing));
 
-        // Authorized again: the same handler designates the real account.
+        // Authorized again: the same handler looks the account up (positive control
+        // for the lookup probe) and designates it.
         $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'grant');
         self::assertStringStartsNotWith('خطا', $post($existingLogin));
+        self::assertGreaterThan(0, $lookups, 'the authorized request resolves the account (the probe detects lookups)');
         self::assertNotNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $existing));
+    }
+
+    public function testRoomCreationRevalidatesClinicOwnershipUnderTheOrganizationLock(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه مالکیت', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $db = App::db();
+        $clinicId = (int) $clinic['clinic_id'];
+        $locationCount = static fn (): int => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', [$clinicId]);
+        $locationsBefore = $locationCount();
+        $planBefore = $service->plan($this->actor, $this->org)['clinics'];
+
+        // The unlocked pre-check passes; then, right before the step takes the
+        // Organization row lock (same connection, inside the step's transaction),
+        // the Clinic stops belonging to this Organization.
+        $orgLock = '/^\s*SELECT\s+id,\s*status\s+FROM\s+`?' . preg_quote($db->table('cpms_organizations'), '/') . '`?\s+WHERE\s+id\s*=\s*' . $this->org . '\s.*FOR\s+UPDATE/is';
+        $moved = false;
+        $move = function (string $sql) use (&$moved, $orgLock, $db, $clinicId): string {
+            if (!$moved && 1 === preg_match($orgLock, $sql)) {
+                $moved = true;
+                $db->query('UPDATE ' . $db->table('cpms_clinics') . ' SET organization_id = %d WHERE id = %d', [$this->otherOrg, $clinicId]);
+            }
+
+            return $sql;
+        };
+        add_filter('query', $move);
+        try {
+            $this->assertRefused('not_found', fn () => $service->add_room($this->actor, $this->org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق مالکیت', $site));
+        } finally {
+            remove_filter('query', $move);
+        }
+        self::assertTrue($moved, 'the ownership change happened inside the locked step');
+        self::assertSame($this->org, (int) $db->fetchValue('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]), 'the refused step rolled the change back with it');
+        self::assertSame($locationsBefore, $locationCount(), 'no Location was written for a Clinic outside the Organization');
+        self::assertSame($planBefore, $service->plan($this->actor, $this->org)['clinics'], 'the plan is unchanged');
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
     // ------------------------------------------------------------------

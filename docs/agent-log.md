@@ -1431,3 +1431,21 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   separate hold UPDATE) was replaced, because that UPDATE no longer exists; its assertions are kept and extended.
 - **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
   PR #253, not in this log.
+
+## [2026-10-19 23:40 UTC] — PR #253 blocking-defect closure check (Draft, unmerged)
+
+- **Start (verified live):** head `7fdc4cd` (clean, equal to remote, no stashes), base `main` `b7ae469`, 26/26 green.
+  The brief reported head `a5a84cd` — an ancestor 6 commits back — and asked again for S1, S2, S3 and the
+  concurrent-manager fix. Those fixes are on the live head (`20fcf53`, `2adfd54`, `e98f6e8`, `7fdc4cd`).
+- **Correction to the previous entry:** the first CI run of the two-connection test (`e98f6e8`) failed, and the
+  failure cascaded into later Integration tests; `7fdc4cd` fixed the test harness (see its commit message).
+- **Gaps found against the exact wording and fixed here:**
+  - S3: the admin page resolved the submitted login/email *before* the service checked
+    `cpms_org_clinic_manager_assign` (responses were identical, but a lookup still happened). New
+    `FacilitySetupService::authorize_manager_designation()` runs first on the page; `designate_manager()` uses it
+    too. The handler test now proves zero users-table lookups for an unauthorized request (positive control with
+    GRANT).
+  - Concurrency: room creation re-checked Clinic ownership only indirectly. `create_room()` now locks the Clinic
+    row with the Organization condition under the Organization lock and refuses with `not_found`; a test moves the
+    Clinic to another Organization inside the locked step and proves nothing is written.
+- **Local validation only:** php-wasm `-l`, WPCS replica 0 violations. Exact-head CI evidence is posted on PR #253.

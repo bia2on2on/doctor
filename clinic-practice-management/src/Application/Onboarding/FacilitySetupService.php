@@ -408,18 +408,31 @@ final class FacilitySetupService {
     }
 
     /**
+     * Step 4 authorization, without touching any target identity: the EXACT
+     * manager-assignment authority (cpms_org_clinic_manager_assign, DENY > GRANT >
+     * preset), Organization authority, and the Clinic's place in this
+     * Organization's plan. Callers that resolve a login or email (the admin page)
+     * run this BEFORE that lookup; designate_manager() runs it again first.
+     *
+     * @return array<string, mixed> The Clinic's plan entry.
+     */
+    public function authorize_manager_designation( int $actor_id, int $organization_id, string $clinic_key ): array {
+        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER );
+        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+
+        return $this->clinic_entry( $organization_id, $clinic_key );
+    }
+
+    /**
      * Step 4 — explicit Clinic manager designation (Organization authority).
      *
      * @return array{clinic_id:int, membership_id:int, noop:bool, audit_id:int|null}
      */
     public function designate_manager( int $actor_id, int $organization_id, string $clinic_key, int $target_user_id ): array {
-        // Authorize before identifying: the EXACT manager-assignment authority
-        // (DENY > GRANT > preset) and the Clinic's place in this Organization's plan
-        // are established before anything about the target user is evaluated, so a
-        // caller without that authority cannot tell existing from nonexistent users.
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER );
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
-        $entry = $this->clinic_entry( $organization_id, $clinic_key );
+        // Authorize before identifying: nothing about the target user is evaluated
+        // before this passes, so a caller without the authority cannot tell
+        // existing from nonexistent users.
+        $entry = $this->authorize_manager_designation( $actor_id, $organization_id, $clinic_key );
 
         try {
             return $this->provisioning->designate_clinic_manager( $actor_id, $organization_id, (int) $entry['clinic_id'], $target_user_id );
@@ -496,10 +509,17 @@ final class FacilitySetupService {
      * @return array<string, mixed> The room entry.
      */
     private function create_room( int $actor_id, int $organization_id, int $clinic_id, string $request_key, string $name, array $site ): array {
-        $timezone = (string) ( $this->db->fetchValue(
-            'SELECT timezone FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
+        // Ownership revalidated under the Organization row lock, in Organization →
+        // Clinic → Location order: the Clinic row is locked and must still belong to
+        // this Organization before any Location is written.
+        $clinic = $this->db->fetchRowForUpdate(
+            'SELECT id, timezone FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
             [ $clinic_id, $organization_id ]
-        ) ?? '' );
+        );
+        if ( null === $clinic ) {
+            throw new FacilitySetupException( 'not_found', 'درمانگاه انتخاب‌شده دیگر به این سازمان تعلق ندارد؛ چیزی ایجاد نشد.' );
+        }
+        $timezone = (string) $clinic['timezone'];
         $slug     = 'room-' . substr( hash( 'sha256', $clinic_id . ':' . $request_key ), 0, 12 );
 
         $location_id = 0;

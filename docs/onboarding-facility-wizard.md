@@ -306,6 +306,8 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
     run against the locked plan, and the Clinic (with its primary Location and hold) or room Location is written
     together with its plan entry. Concurrent submissions for one Organization therefore serialize, a duplicate name
     cannot slip past a stale check, and a failure at any point leaves no Clinic or Location outside the plan;
+  - room creation re-checks Clinic ownership under that lock (Organization → Clinic → Location order): the Clinic
+    row is locked and must still belong to the Organization before its Location is written (`not_found` otherwise);
   - the plan (a WordPress option) is read straight from the database — under the Organization row lock with a
     locking read inside a step — and never from the object cache, which is not transactional; the plan write is
     verified by a readback before commit (a skipped or partial write rolls the step back); the cached option is
@@ -331,7 +333,10 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   - a caller without that authority (explicit DENY, another Organization) gets the same refusal for an existing
     account, a nonexistent account and an invalid id, on the page and in both services, so it cannot probe which
     accounts exist; a foreign Clinic is refused as not found before the target is resolved;
-  - only an authorized caller is told that the chosen account does not exist.
+  - only an authorized caller is told that the chosen account does not exist;
+  - on the admin page the submitted login/email is resolved only after
+    `FacilitySetupService::authorize_manager_designation()` has passed, so an unauthorized request never looks the
+    account up at all (verified in the tests by watching the users-table queries).
 - *Clinicians (step 6) — one atomic step:*
   - the whole step runs in one transaction under the Organization row lock (lock order Organization → Clinic →
     membership → profile, as in the plan and schedule writes); the nested service writes are savepoints of it;

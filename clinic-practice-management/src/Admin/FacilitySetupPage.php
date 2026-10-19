@@ -278,6 +278,9 @@ final class FacilitySetupPage {
                     $entry = $service->add_clinic( $actor_id, $organization_id, $field( 'request_key' ), $field( 'clinic_name' ), $field( 'site_key' ), $field( 'timezone' ) );
                     return 'درمانگاه «' . (string) $entry['name'] . '» با مکان اصلی ایجاد شد و تا فعال‌سازی نهایی پذیرش نوبت جدید ندارد.';
                 case 'manager':
+                    // Authorize before identifying: the login/email is resolved only
+                    // after the exact manager-assignment authority is proven.
+                    $service->authorize_manager_designation( $actor_id, $organization_id, $field( 'clinic_key' ) );
                     $result = $service->designate_manager( $actor_id, $organization_id, $field( 'clinic_key' ), self::user_id_from( $field( 'user_login' ) ) );
                     return $result['noop'] ? 'این کاربر از قبل مدیر فعال همین درمانگاه است؛ تغییری لازم نبود.' : 'مدیر درمانگاه به‌صورت صریح تعیین شد.';
                 case 'room':
