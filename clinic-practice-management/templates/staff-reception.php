@@ -821,10 +821,12 @@ $cpms_reception_cfg = [
             return Promise.resolve();
         }
         var generation = scopeGeneration;
+        setBoardBusy(true);
         return api('/staff/portal/reception/board').then(function (result) {
             if (result.stale || generation !== scopeGeneration) {
                 return;
             }
+            setBoardBusy(false);
             if (!result.ok) {
                 var code = errorCodeOf(result.body);
                 if (code === 'CLINIC_SCOPE_REQUIRED') {
@@ -840,6 +842,7 @@ $cpms_reception_cfg = [
                 }
                 return;
             }
+            setBoardBusy(false);
             renderBoard(payloadOf(result.body));
             // Keep durable success/status messages across silent refreshes. A
             // silent success may clear only a NON-sticky error (e.g. a network
@@ -850,6 +853,7 @@ $cpms_reception_cfg = [
             }
         }).catch(function () {
             if (generation === scopeGeneration) {
+                setBoardBusy(false);
                 setStatus('خطای شبکه هنگام دریافت تختهٔ پذیرش.', 'error');
             }
         });
@@ -1558,6 +1562,49 @@ $cpms_reception_cfg = [
         return Boolean(state.busy || cancelBusy || createBusy || (reschedule && reschedule.busy) || (walkin && walkin.busy) || (book && book.busy));
     }
 
+    // The board carries an explicit busy marker for the current document so a
+    // scope switch is never observed as a settled empty board: rows are cleared
+    // synchronously (no stale Location rows may ever look like the new
+    // Location's data) and the marker drops only when the response is applied.
+    function setBoardBusy(busy) {
+        var body = el('sr-appointments-body');
+        if (!body) {
+            return;
+        }
+        if (busy) {
+            body.setAttribute('data-board-busy', '1');
+        } else {
+            body.removeAttribute('data-board-busy');
+        }
+    }
+
+    function clearLocationPresentation() {
+        // Same-Clinic Location switch: the Clinic-scoped patient search and the
+        // selected patient identity are NOT Clinic-dependent secrets and must
+        // survive. Only Location-specific operational state is invalidated
+        // (board/queue/upcoming rows, statistics, operational day, appointment
+        // picks, clinician/slot lists and reschedule state).
+        upcomingSeq += 1;
+        rescheduleAbort();
+        var appointments = el('sr-appointments-body');
+        if (appointments) {
+            appointments.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">در حال بارگذاری نوبت‌های این موقعیت…</td></tr>';
+        }
+        var queue = el('sr-queue-body');
+        if (queue) { queue.innerHTML = '<tr><td colspan="3" class="cpms-sr-empty">در حال بارگذاری صف این موقعیت…</td></tr>'; }
+        var upcomingRows = el('sr-upcoming-rows');
+        if (upcomingRows) { upcomingRows.innerHTML = ''; }
+        var upcomingState = el('sr-upcoming-state');
+        if (upcomingState) { upcomingState.textContent = 'در حال بارگذاری…'; }
+        var stats = el('sr-stats');
+        if (stats) { stats.hidden = true; }
+        var cancelRows = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        for (var i = 0; i < cancelRows.length; i += 1) { cancelRows[i].hidden = true; }
+        state.date = null;
+        setBoardBusy(true);
+        renderScope();
+    }
+
     function clearTenantPresentation() {
         upcomingSeq += 1;
         if (search.timer) {
@@ -1646,7 +1693,7 @@ $cpms_reception_cfg = [
             state.locationId = locationId;
             var selectedLocation = state.locations.find(function (loc) { return loc.id === locationId; });
             state.locationName = selectedLocation ? selectedLocation.name : '';
-            clearTenantPresentation();
+            clearLocationPresentation();
             if (!state.clinicId || !state.locationId) {
                 setStatus(state.clinicId ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : 'ابتدا کلینیک را انتخاب کنید.', null);
                 return;

@@ -484,6 +484,23 @@ def select_reception_scope(page):
         raise RuntimeError("sole eligible Location must remain unselected after Clinic selection")
 
 
+def wait_board_settled(page, timeout=15000):
+    """Wait until the board for the CURRENT scope has applied its response.
+
+    A scope switch clears the rows synchronously (no stale Location rows are
+    ever presented as the new Location's data), so a row-count wait alone can
+    observe the in-flight state. The board exposes an explicit busy marker for
+    exactly this transition; it drops when the response is applied.
+    """
+    page.wait_for_function(
+        """() => {
+            const body = document.querySelector('[data-role="sr-appointments-body"]');
+            return !!body && body.getAttribute('data-board-busy') !== '1';
+        }""",
+        timeout=timeout,
+    )
+
+
 def wait_rows_count(page, expected, timeout=15000):
     page.wait_for_function(
         """(n) => document.querySelectorAll('[data-role="sr-row"]').length === n""",
@@ -724,7 +741,7 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         stage = "empty"
         select_location(page, PUB["loc_tokyo"])
         wait_rows_count(page, 0)
-        wait_status_contains(page, "")  # settle
+        wait_board_settled(page)
         empty_text = (page.locator('[data-role="sr-appointments-body"]').inner_text() or "")
         if "ثبت نشده" not in empty_text:
             raise RuntimeError(f"empty Location must render the empty state, got {empty_text[:80]}")
