@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 
 /**
  * Post-onboarding Clinic settings & lifecycle — Organization-scoped, RTL Classic.
@@ -185,7 +186,9 @@ final class ClinicManagementPage {
                 echo '<input type="hidden" name="clinic_id" value="' . esc_attr( (string) $selected_clinic_id ) . '">';
                 echo '<table class="form-table"><tbody>';
                 echo '<tr><th><label for="cm_name">نام درمانگاه *</label></th><td><input id="cm_name" name="name" required maxlength="190" class="regular-text" value="' . esc_attr( (string) ( $full['name'] ?? '' ) ) . '"></td></tr>';
-                echo '<tr><th><label for="cm_address">نشانی</label></th><td><input id="cm_address" name="address" maxlength="255" class="regular-text" value="' . esc_attr( (string) ( $full['address'] ?? '' ) ) . '"><p class="description">حداکثر ۲۵۵ نویسه؛ خالی = بدون نشانی.</p></td></tr>';
+                echo '<tr><th><label for="cm_address">نشانی</label></th><td>';
+                AddressSelectorField::render( (string) ( $full['address'] ?? '' ), 'cm_address', 'address_province', 'address_city', 'cm_address' );
+                echo '<input id="cm_address" name="address" maxlength="255" class="regular-text" value="' . esc_attr( (string) ( $full['address'] ?? '' ) ) . '"><p class="description">حداکثر ۲۵۵ نویسه؛ انتخاب استان/شهر از فهرست آفلاین ۳۱ استان ایران اختیاری است؛ خالی = بدون نشانی.</p></td></tr>';
                 echo '<tr><th><label for="cm_phone">تلفن</label></th><td><input id="cm_phone" name="phone" maxlength="32" class="regular-text ltr" value="' . esc_attr( (string) ( $full['phone'] ?? '' ) ) . '"><p class="description">حداکثر ۳۲ نویسه.</p></td></tr>';
                 echo '<tr><th>شناسه (slug)</th><td class="ltr">' . esc_html( $clinic_row['slug'] ) . ' <code>(غیرقابل تغییر — کلید یکتا)</code></td></tr>';
                 echo '<tr><th>منطقهٔ زمانی</th><td class="ltr">' . esc_html( $clinic_row['timezone'] ) . ' <code>(ثابت — حقیقت عملیاتی شعبه‌ها از Location است)</code></td></tr>';
@@ -216,12 +219,14 @@ final class ClinicManagementPage {
         }
         check_admin_referer( self::NONCE_UPDATE );
 
-        $actor_id        = (int) get_current_user_id();
-        $organization_id = isset( $_POST['organization_id'] ) ? absint( $_POST['organization_id'] ) : 0;
-        $clinic_id       = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
-        $name            = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
-        $address         = array_key_exists( 'address', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
-        $phone           = array_key_exists( 'phone', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
+        $actor_id         = (int) get_current_user_id();
+        $organization_id  = isset( $_POST['organization_id'] ) ? absint( $_POST['organization_id'] ) : 0;
+        $clinic_id        = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
+        $name             = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
+        $address          = array_key_exists( 'address', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+        $address_province = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
+        $address_city     = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $phone            = array_key_exists( 'phone', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
 
         // Normalize empty to null for phone/address handling inside service (it does too)
         if ( $address === '' ) {
@@ -232,6 +237,9 @@ final class ClinicManagementPage {
         }
 
         try {
+            if ( $address !== null || $address_province !== '' || $address_city !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            }
             $result = App::organization_clinic_provisioning_service()->update_clinic_profile(
                 $actor_id,
                 $organization_id,
@@ -296,13 +304,19 @@ final class ClinicManagementPage {
         $org_id    = (int) ( $in['organization_id'] ?? 0 );
         $clinic_id = (int) ( $in['clinic_id'] ?? 0 );
         try {
+            $address          = array_key_exists( 'address', $in ) && $in['address'] !== null ? (string) $in['address'] : null;
+            $address_province = isset( $in['address_province'] ) ? (string) $in['address_province'] : '';
+            $address_city     = isset( $in['address_city'] ) ? (string) $in['address_city'] : '';
+            if ( $address_province !== '' || $address_city !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            }
             $res = App::organization_clinic_provisioning_service()->update_clinic_profile(
                 $actor_id,
                 $org_id,
                 $clinic_id,
                 [
                     'name'    => (string) ( $in['name'] ?? '' ),
-                    'address' => array_key_exists( 'address', $in ) ? $in['address'] : null,
+                    'address' => $address,
                     'phone'   => array_key_exists( 'phone', $in ) ? $in['phone'] : null,
                 ]
             );
