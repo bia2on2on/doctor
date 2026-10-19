@@ -258,7 +258,7 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
 | 4 Clinic manager | explicit user (may be self) | a distinct explicit manager per Clinic | Organization (`cpms_org_clinic_manager_assign`) |
 | 5 Rooms | Locations of that Clinic | same | the actor's own Clinic membership + `cpms_config` |
 | 6 Clinicians | one profile per user; other Clinics get an explicit `cpms_doctor` membership; additive Location assignment | — (each Clinic's own manager) | Clinic |
-| 7 Staff roles | handoff to «کاربران و دسترسی‌ها» with an explicit `clinic_id` (existing GRANT/DENY UI) | — | Clinic |
+| 7 Staff roles | reception (`cpms_secretary`) or finance (`cpms_accountant`) membership; explicit access scope: the whole Clinic, or an explicit subset of its active Locations (location-scoped membership); optional explicit DENY rows from the role preset only; the per-Clinic «کاربران و دسترسی‌ها» link stays for later changes | — | Clinic |
 | 8 Weekly schedules | per clinician × Clinic × Location via `ScheduleService` | — | Clinic |
 | 9 Booking policy | per Clinic, same keys/bounds as the wizard booking step | — | Clinic |
 | 10 Review + activation | live-row review; explicit confirmation | same | Organization (lifecycle) |
@@ -299,7 +299,21 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   - WordPress Administrator status grants nothing;
   - DENY wins for every Organization capability;
   - existing memberships are never overwritten or reactivated;
-  - inactive Locations and suspended memberships fail closed.
+  - inactive Locations and suspended memberships fail closed;
+  - a suspended Organization refuses every step (reads included) and changes nothing; setup resumes after
+    explicit reactivation.
+- *Staff roles (step 7):*
+  - only the built-in staff roles are offered (manager and clinician have their own steps; custom roles stay
+    on the existing per-Clinic page);
+  - a WordPress Administrator account is not a staff account and is refused;
+  - Location-scoped access uses the existing membership model (`scope_mode = location` +
+    `cpms_membership_locations`), enforced by `TrustedClinicEstablisher` at every staff entry point;
+  - DENY rows can only remove capabilities of the chosen role preset (DENY > GRANT > preset); the step never
+    writes a GRANT, so it cannot widen access;
+  - membership, Location scope and DENY rows are written in one transaction (no Clinic-wide window after a
+    partial failure) and audited as `FACILITY_STAFF_ROLE_ASSIGNED`;
+  - an identical retry is a no-op; any other existing membership (role, status, scope or overrides differ) is
+    refused, never overwritten or reactivated.
 - *Out of scope:* inpatient wards, beds, inpatient OR and HIS are excluded.
 
 **Dates.** The journey has no calendar-date fields: weekly schedules use weekdays and times, and the booking policy
@@ -308,7 +322,9 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
 **Tests and browser evidence**
 
 - `tests/Integration/FacilitySetupJourneyTest.php` (integration).
-- `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup, forged Organization,
+- `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup (including a
+  location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
+  explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,
   WordPress Administrator and subscriber refusal, and 390px RTL.
 - **Known limitation:** the hospital journey designates the Organization Manager as manager of each outpatient Clinic.
   Delegated per-Clinic managers are supported but not exercised in the browser hospital path.

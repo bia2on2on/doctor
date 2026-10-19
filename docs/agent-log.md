@@ -1268,3 +1268,33 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   - physical sites are plan metadata only;
   - staff roles are a handoff to the existing per-Clinic page;
   - delegated hospital Clinic managers are supported but not exercised in the browser path.
+
+### [2026-10-19 18:46 UTC] — PR #253 continuation: real staff-role step and Location switching evidence (Draft, unmerged)
+
+- **Start:** branch `arena/a4b51631-doctor` at `b800dc1` (clean, equal to remote); base `main` `b7ae469` unchanged;
+  PR #253 Draft/OPEN/MERGEABLE with 26/26 exact-head checks green (verified live).
+- **Scope:** closes the main gap reported for `b800dc1` — hospital step "staff roles with explicit Clinic/Location
+  permissions" was only a handoff link.
+  - `FacilitySetupService::assign_staff()` plus a read-only `clinic_staff()` roster.
+    - Built-in reception/finance roles only.
+    - Explicit access scope: the whole Clinic, or an explicit subset of its active Locations (existing
+      location-scoped membership model).
+    - Optional DENY rows, limited to the role preset; the step never writes a GRANT.
+    - One transaction for membership, Location scope and DENY rows; audited as `FACILITY_STAFF_ROLE_ASSIGNED`.
+    - An identical retry is a no-op; other existing memberships are refused, never overwritten or reactivated.
+  - `FacilitySetupPage`: the staff step is now a real form, with no preselected Clinic, role, scope, room or DENY.
+    The per-Clinic link to «کاربران و دسترسی‌ها» is kept. The review shows location-scoped staff counts.
+  - 2 new integration tests in `tests/Integration/FacilitySetupJourneyTest.php`:
+    - staff roles (scope, DENY precedence, forged/inactive rooms, WordPress Administrator refusal, retries, no
+      overwrite, audit, dispatcher and render);
+    - a suspended Organization refuses every step without mutation until reactivated.
+  - Browser (`bin/rwp-first-practice.py`):
+    - hospital staff step: refused room of the other Clinic, a location-scoped reception role with one DENY, and a
+      no-op retry, with live DB facts;
+    - explicit Clinic → Location switching for the shared clinician on the «پزشکان» page;
+    - the 390px RTL check now also covers the staff step.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`, and
+  `acceptance-isolation-check.py`. PHPUnit, MySQL and Chromium are not available locally; exact-head CI evidence is
+  posted on PR #253, not in this log.
+- **Still open (documented):** physical sites are plan metadata only; delegated hospital Clinic managers are not
+  exercised in the browser path; custom roles and GRANT overrides stay on the existing per-Clinic pages.

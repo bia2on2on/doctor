@@ -16,6 +16,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Membership\MembershipException;
+use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
@@ -40,10 +41,12 @@ use Throwable;
  *    OrganizationClinicProvisioningService::provision() (Organization authority);
  *  - each Clinic's manager is designated explicitly (Organization authority,
  *    cpms_org_clinic_manager_assign) — never inferred, never implicit;
- *  - consultation rooms, clinicians, weekly schedules and the booking policy are
- *    Clinic-scoped writes. They require the actor's own ACTIVE membership + CONFIG
- *    in that Clinic (AuthorizationService, DENY > GRANT > preset); Organization
- *    authority alone never configures a Clinic and never reads its patients.
+ *  - consultation rooms, clinicians, staff roles (explicit Clinic-wide or
+ *    Location-scoped access, DENY-only overrides), weekly schedules and the
+ *    booking policy are Clinic-scoped writes. They require the actor's own
+ *    ACTIVE membership + CONFIG in that Clinic (AuthorizationService, DENY >
+ *    GRANT > preset); Organization authority alone never configures a Clinic
+ *    and never reads its patients.
  *
  * Reliability: every create is idempotent per server-issued request key (a
  * deterministic slug is derived from it, so a retry after a lost response adopts
@@ -57,6 +60,17 @@ final class FacilitySetupService {
 
     /** @var list<string> */
     public const FLOWS = [ 'hospital_network', 'medical_building' ];
+
+    /**
+     * Built-in staff roles assignable by the staff step (reception, finance).
+     * Clinic managers come from the Organization designation step, clinicians
+     * from the clinician step; custom roles stay in the existing management page.
+     *
+     * @var list<string>
+     */
+    public const STAFF_ROLES = [ RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_ACCOUNTANT ];
+
+    public const STAFF_AUDIT_ACTION = 'FACILITY_STAFF_ROLE_ASSIGNED';
 
     private const MAX_SITES   = 20;
     private const MAX_CLINICS = 50;
@@ -74,7 +88,8 @@ final class FacilitySetupService {
         private readonly MembershipRepository $membership_rows,
         private readonly ClinicianRepository $clinicians,
         private readonly ScheduleService $schedules,
-        private readonly SettingsFactory $settings
+        private readonly SettingsFactory $settings,
+        private readonly ?AuditLogger $audit = null
     ) {
     }
 
@@ -544,6 +559,174 @@ final class FacilitySetupService {
     }
 
     /**
+     * Step 6b — staff role with explicit Clinic/Location permissions (Clinic authority).
+     *
+     * Only the built-in staff roles (reception, finance) are assignable here. The
+     * access scope is an explicit choice: the whole Clinic, or an explicit subset of
+     * that Clinic's ACTIVE Locations (location-scoped membership). Optional explicit
+     * DENY rows may only narrow the role preset (DENY > GRANT > preset); this step
+     * never writes a GRANT, so it can never widen access beyond the preset. The
+     * membership, its Location scope and its DENY rows are written in ONE
+     * transaction, so a failure never leaves a Clinic-wide membership behind. An
+     * existing membership is never overwritten: an identical retry is a no-op and
+     * any other existing row (role, status, scope or overrides differ) is refused.
+     *
+     * @param list<string> $room_keys Plan room keys ('primary' = primary Location); only with $access = 'locations'.
+     * @param list<string> $deny_caps Capabilities of the role preset to DENY explicitly.
+     * @return array{membership_id:int, noop:bool, scope_mode:string, location_ids:list<int>, denied:list<string>}
+     */
+    public function assign_staff( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $role_key, string $access, array $room_keys, array $deny_caps ): array {
+        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $entry     = $this->clinic_entry( $organization_id, $clinic_key );
+        $clinic_id = (int) $entry['clinic_id'];
+        $this->clinic_scope( $actor_id, $clinic_id );
+        if ( ! in_array( $role_key, self::STAFF_ROLES, true ) ) {
+            throw new FacilitySetupException( 'invalid_role', 'نقش کارکنان باید صریحاً از نقش‌های پذیرش یا مالی انتخاب شود؛ مدیر و پزشک در گام‌های خودشان تعیین می‌شوند.' );
+        }
+        $user = $wp_user_id > 0 ? get_userdata( $wp_user_id ) : false;
+        if ( false === $user || in_array( 'administrator', (array) $user->roles, true ) ) {
+            throw new FacilitySetupException( 'user_not_eligible', 'کاربر انتخاب‌شده یافت نشد یا برای نقش کارکنان این درمانگاه قابل انتخاب نیست؛ چیزی ثبت نشد.' );
+        }
+
+        if ( 'clinic' === $access ) {
+            if ( [] !== $room_keys ) {
+                throw new FacilitySetupException( 'invalid_access', 'برای دسترسی به کل درمانگاه اتاقی انتخاب نکنید؛ برای محدودسازی، «فقط مکان‌های انتخاب‌شده» را برگزینید.' );
+            }
+            $location_ids = [];
+        } elseif ( 'locations' === $access ) {
+            $location_ids = $this->room_location_ids( $entry, $room_keys );
+            sort( $location_ids );
+        } else {
+            throw new FacilitySetupException( 'invalid_access', 'محدودهٔ دسترسی (کل درمانگاه یا مکان‌های مشخص) باید صریحاً انتخاب شود.' );
+        }
+
+        $preset = RolesAndCapabilities::capsMap( $role_key );
+        $denied = [];
+        foreach ( $deny_caps as $capability ) {
+            $capability = (string) $capability;
+            if ( true !== ( $preset[ $capability ] ?? null ) ) {
+                throw new FacilitySetupException( 'invalid_capability', 'فقط مجوزهای موجود در همان نقش را می‌توان صریحاً منع (DENY) کرد؛ چیزی ثبت نشد.' );
+            }
+            $denied[] = $capability;
+        }
+        $denied = array_values( array_unique( $denied ) );
+        sort( $denied );
+        $scope_mode = [] === $location_ids ? 'clinic' : 'location';
+
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $clinic_id, $wp_user_id, $role_key, $scope_mode, $location_ids, $denied ): array {
+                $owner = $this->db->fetchRowForUpdate(
+                    'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [ $clinic_id ]
+                );
+                if ( null === $owner || (int) $owner['organization_id'] !== $organization_id ) {
+                    throw new FacilitySetupException( 'not_found', 'درمانگاه انتخاب‌شده در راه‌اندازی این سازمان نیست.' );
+                }
+                $existing = $this->db->fetchRowForUpdate(
+                    'SELECT id, role_key, scope_mode, status FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1',
+                    [ $clinic_id, $wp_user_id ]
+                );
+                if ( null !== $existing ) {
+                    $membership_id = (int) $existing['id'];
+                    if ( $this->staff_membership_matches( $existing, $role_key, $scope_mode, $location_ids, $denied ) ) {
+                        return [
+                            'membership_id' => $membership_id,
+                            'noop'          => true,
+                            'scope_mode'    => $scope_mode,
+                            'location_ids'  => $location_ids,
+                            'denied'        => $denied,
+                        ];
+                    }
+                    throw new FacilitySetupException( 'membership_exists', 'این کاربر از قبل عضویتی (با نقش، وضعیت یا محدودهٔ دیگر) در این درمانگاه دارد؛ عضویت موجود بازنویسی نمی‌شود و باید در «کاربران و دسترسی‌ها» همان درمانگاه بررسی شود.' );
+                }
+
+                try {
+                    $membership_id = $this->membership_service->create_membership( $clinic_id, $wp_user_id, $role_key, 'clinic', $actor_id );
+                    if ( 'location' === $scope_mode ) {
+                        $this->membership_service->set_scope_mode( $membership_id, 'location', $location_ids );
+                    }
+                    foreach ( $denied as $capability ) {
+                        $this->membership_service->set_capability( $membership_id, $capability, 'deny' );
+                    }
+                } catch ( MembershipException $e ) {
+                    throw new FacilitySetupException( 'membership_failed', 'عضویت کارکنان ایجاد نشد؛ هیچ بخشی از آن ثبت نشد.' );
+                }
+
+                if ( null !== $this->audit ) {
+                    $this->audit->log(
+                        self::STAFF_AUDIT_ACTION,
+                        [
+                            'wp_user_id' => $actor_id,
+                            'role'       => 'clinic_config',
+                        ],
+                        'clinic_membership',
+                        $membership_id,
+                        null,
+                        null,
+                        [
+                            'wp_user_id'   => $wp_user_id,
+                            'role_key'     => $role_key,
+                            'scope_mode'   => $scope_mode,
+                            'location_ids' => $location_ids,
+                            'denied'       => $denied,
+                        ],
+                        [
+                            'op'              => 'facility_staff_assign',
+                            'organization_id' => $organization_id,
+                        ],
+                        $clinic_id
+                    );
+                }
+
+                return [
+                    'membership_id' => $membership_id,
+                    'noop'          => false,
+                    'scope_mode'    => $scope_mode,
+                    'location_ids'  => $location_ids,
+                    'denied'        => $denied,
+                ];
+            }
+        );
+    }
+
+    /**
+     * Staff memberships of one plan Clinic (actor's own Clinic-authorized view only).
+     *
+     * @return list<array{wp_user_id:int, login:string, role_key:string, status:string, scope_mode:string, locations:int, denied:int}>
+     */
+    public function clinic_staff( int $actor_id, int $organization_id, string $clinic_key ): array {
+        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $entry     = $this->clinic_entry( $organization_id, $clinic_key );
+        $clinic_id = (int) $entry['clinic_id'];
+        $this->clinic_scope( $actor_id, $clinic_id );
+
+        $rows = $this->db->fetchAll(
+            'SELECT m.id, m.wp_user_id, m.role_key, m.status, m.scope_mode,'
+            . ' (SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_membership_locations' ) . ' ml WHERE ml.membership_id = m.id) AS locations,'
+            . ' (SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_membership_capabilities' ) . ' mc WHERE mc.membership_id = m.id AND mc.effect = %s) AS denied'
+            . ' FROM ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m'
+            . ' WHERE m.clinic_id = %d AND m.role_key IN (%s, %s)'
+            . ' ORDER BY m.id LIMIT 200',
+            [ 'deny', $clinic_id, RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_ACCOUNTANT ]
+        );
+        $out  = [];
+        foreach ( $rows as $row ) {
+            $user  = get_userdata( (int) $row['wp_user_id'] );
+            $out[] = [
+                'wp_user_id' => (int) $row['wp_user_id'],
+                'login'      => false === $user ? '' : (string) $user->user_login,
+                'role_key'   => (string) $row['role_key'],
+                'status'     => (string) $row['status'],
+                'scope_mode' => (string) $row['scope_mode'],
+                'locations'  => (int) $row['locations'],
+                'denied'     => (int) $row['denied'],
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
      * Step 7 — one weekly schedule row for a clinician at one room of one Clinic.
      *
      * The Clinic scope is established for THIS actor (active membership + CONFIG)
@@ -802,7 +985,7 @@ final class FacilitySetupService {
     /**
      * Live, non-PHI readiness facts of one Clinic.
      *
-     * @return array{managers:int, active_locations:int, scheduled_clinicians:int, schedule_rows:int, staff:int, booking_policy:bool}
+     * @return array{managers:int, active_locations:int, scheduled_clinicians:int, schedule_rows:int, staff:int, staff_location_scope:int, booking_policy:bool}
      */
     private function clinic_summary( int $clinic_id ): array {
         $memberships = $this->db->table( 'cpms_clinic_memberships' );
@@ -813,6 +996,10 @@ final class FacilitySetupService {
         $staff       = (int) ( $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $memberships . ' WHERE clinic_id = %d AND status = %s AND role_key NOT IN (%s, %s)',
             [ $clinic_id, 'active', OrganizationClinicProvisioningService::CLINIC_MANAGER_ROLE_KEY, RolesAndCapabilities::ROLE_DOCTOR ]
+        ) ?? 0 );
+        $scoped      = (int) ( $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $memberships . ' WHERE clinic_id = %d AND status = %s AND scope_mode = %s AND role_key NOT IN (%s, %s)',
+            [ $clinic_id, 'active', 'location', OrganizationClinicProvisioningService::CLINIC_MANAGER_ROLE_KEY, RolesAndCapabilities::ROLE_DOCTOR ]
         ) ?? 0 );
         $locations   = (int) ( $this->db->fetchValue(
             'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND is_active = 1',
@@ -837,6 +1024,7 @@ final class FacilitySetupService {
             'scheduled_clinicians' => $scheduled,
             'schedule_rows'        => $rows,
             'staff'                => $staff,
+            'staff_location_scope' => $scoped,
             'booking_policy'       => $booking,
         ];
     }
@@ -869,6 +1057,36 @@ final class FacilitySetupService {
         }
 
         return $scope;
+    }
+
+    /**
+     * Whether an existing membership row is exactly the requested staff state
+     * (identical retry). Anything else is a different membership and is refused.
+     *
+     * @param array<string, mixed> $existing
+     * @param list<int>            $location_ids
+     * @param list<string>         $denied
+     */
+    private function staff_membership_matches( array $existing, string $role_key, string $scope_mode, array $location_ids, array $denied ): bool {
+        if ( 'active' !== (string) $existing['status'] || (string) $existing['role_key'] !== $role_key || (string) $existing['scope_mode'] !== $scope_mode ) {
+            return false;
+        }
+        $membership_id = (int) $existing['id'];
+        $current       = array_map( 'intval', $this->membership_service->membership_location_ids( $membership_id ) );
+        sort( $current );
+        if ( $current !== $location_ids ) {
+            return false;
+        }
+        $overrides = [];
+        foreach ( $this->membership_service->capabilities_for( $membership_id ) as $row ) {
+            if ( 'deny' !== (string) $row['effect'] ) {
+                return false;
+            }
+            $overrides[] = (string) $row['capability'];
+        }
+        sort( $overrides );
+
+        return $overrides === $denied;
     }
 
     private function room_refusal( LocationException $e ): FacilitySetupException {

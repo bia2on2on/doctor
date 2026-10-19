@@ -405,7 +405,7 @@ if ($kind === "reset_unclaimed") {
         $wpdb->insert($db->table("cpms_organization_memberships"), ["organization_id" => $orgId, "wp_user_id" => (int) $mgr->ID, "role_key" => "organization_manager", "status" => "active", "created_by_wp_user_id" => (int) $mgr->ID, "created_at" => $now, "updated_at" => $now]);
         $out[] = $key . "=" . $orgId;
     }
-    foreach (["doctor" => "fpfacdoc", "mgra" => "fpfacmgra", "mgrb" => "fpfacmgrb"] as $key => $prefix) {
+    foreach (["doctor" => "fpfacdoc", "mgra" => "fpfacmgra", "mgrb" => "fpfacmgrb", "staff" => "fpfacstaff"] as $key => $prefix) {
         $login = $prefix . bin2hex(random_bytes(2));
         $uid = wp_create_user($login, wp_generate_password(24), $login . "@acc.local");
         if (is_wp_error($uid)) { fwrite(STDERR, "user create failed\n"); exit(1); }
@@ -439,10 +439,43 @@ foreach ($clinics as $c) {
 }
 $profiles = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinicians") . " c INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = c.clinic_id WHERE k.organization_id = %d", [$org]);
 $scheduleClinics = (int) $db->fetchValue("SELECT COUNT(DISTINCT s.clinic_id) FROM " . $db->table("cpms_schedule") . " s INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = s.clinic_id WHERE k.organization_id = %d", [$org]);
-echo "clinics=" . count($clinics) . " active=" . $active . " locations=" . $locations . " schedules=" . $schedules . " schedule_clinics=" . $scheduleClinics . " managers=" . $managers . " actor_members=" . $actorMembers . " profiles=" . $profiles . PHP_EOL;
+$staffJoin = " INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = m.clinic_id WHERE k.organization_id = %d AND m.role_key IN (%s, %s)";
+$staffArgs = [$org, "cpms_secretary", "cpms_accountant"];
+$staff = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " m" . $staffJoin, $staffArgs);
+$staffScoped = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " m" . $staffJoin . " AND m.scope_mode = %s AND m.status = %s", array_merge($staffArgs, ["location", "active"]));
+$staffLocations = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_membership_locations") . " ml INNER JOIN " . $db->table("cpms_clinic_memberships") . " m ON m.id = ml.membership_id" . $staffJoin, $staffArgs);
+$staffDenies = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_membership_capabilities") . " mc INNER JOIN " . $db->table("cpms_clinic_memberships") . " m ON m.id = mc.membership_id" . $staffJoin . " AND mc.effect = %s", array_merge($staffArgs, ["deny"]));
+echo "clinics=" . count($clinics) . " active=" . $active . " locations=" . $locations . " schedules=" . $schedules . " schedule_clinics=" . $scheduleClinics . " managers=" . $managers . " actor_members=" . $actorMembers . " profiles=" . $profiles . " staff=" . $staff . " staff_scoped=" . $staffScoped . " staff_locations=" . $staffLocations . " staff_denies=" . $staffDenies . PHP_EOL;
 '''
     out = wp_eval(code, {"FP_ORG": str(org_id)})
     return dict(tok.split("=", 1) for tok in (out or "").split() if "=" in tok)
+
+
+def facility_clinic_locations(org_id):
+    """Active Location ids per Clinic of one Organization (live DB), for switch checks."""
+    code = r'''
+$org = (int) getenv("FP_ORG");
+$db = \ClinicCore\Bootstrap\App::db();
+$out = [];
+foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d ORDER BY id", [$org]) as $c) {
+    $ids = [];
+    foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_locations") . " WHERE clinic_id = %d AND is_active = 1 ORDER BY id", [(int) $c["id"]]) as $l) {
+        $ids[] = (int) $l["id"];
+    }
+    $out[] = (int) $c["id"] . ":" . implode(",", $ids);
+}
+echo "FP_LAYOUT=" . implode(";", $out) . PHP_EOL;
+'''
+    layout = {}
+    for line in (wp_eval(code, {"FP_ORG": str(org_id)}) or "").splitlines():
+        if not line.startswith("FP_LAYOUT="):
+            continue
+        for part in line.split("=", 1)[1].split(";"):
+            if ":" in part:
+                clinic, locs = part.split(":", 1)
+                if clinic.isdigit():
+                    layout[int(clinic)] = sorted(int(x) for x in locs.split(",") if x.isdigit())
+    return layout
 
 
 def body_has(body, needle):
@@ -568,7 +601,41 @@ def run_hospital_facility_journey(page, tag, org, fac):
 
     goto_admin(page, tag, facility_url(org, "staff"), "facility-hospital-staff")
     check(f"{tag}.hospital.staff_handoff", page.locator('a[href*="page=cpms-staff"][href*="clinic_id="]').count() == 2,
-          "staff roles/permissions handed off per explicitly selected Clinic")
+          "post-onboarding staff management stays available per explicitly selected Clinic")
+    staff_form = page.locator('form[data-cpms-facility-form="staff"]')
+    check(f"{tag}.hospital.staff_explicit_choices",
+          staff_form.count() == 1 and page.locator("#cpms_facility_staff_role").input_value() == ""
+          and page.locator("#cpms_facility_staff_clinic").input_value() == ""
+          and staff_form.locator("input:checked").count() == 0,
+          "Clinic, staff role, access scope, rooms and DENY all start without a default")
+    staff_login = fac.get("staff", "")
+    key_a = keys[0] if keys else ""
+    key_b = keys[1] if len(keys) > 1 else ""
+
+    def fill_staff(room_group_key):
+        page.select_option("#cpms_facility_staff_clinic", index=1)
+        page.fill("#cpms_facility_user_login", staff_login)
+        page.select_option("#cpms_facility_staff_role", "cpms_secretary")
+        page.check('form[data-cpms-facility-form="staff"] input[name="access"][value="locations"]')
+        page.locator(f'[data-cpms-staff-room-group="{room_group_key}"] input[name="room_keys[]"]:not([value="primary"])').first.check()
+        page.check('form[data-cpms-facility-form="staff"] input[name="deny_caps[]"][value="cpms_invoice_void"]')
+
+    fill_staff(key_b)
+    check(f"{tag}.hospital.staff_foreign_room_refused",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-forged") == "error",
+          "a room of the other Clinic is refused for this Clinic's staff role; nothing is written")
+    fill_staff(key_a)
+    check(f"{tag}.hospital.staff_location_scoped",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-1") == "ok",
+          "reception role limited to one explicitly chosen room, with one explicit DENY")
+    fill_staff(key_a)
+    check(f"{tag}.hospital.staff_retry_noop",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-retry") == "ok",
+          "an identical retry is a no-op (no duplicate membership)")
+    roster = page.locator(f'[data-cpms-facility-staff-roster="{key_a}"]')
+    check(f"{tag}.hospital.staff_roster",
+          roster.count() == 1 and bool(staff_login) and staff_login in (roster.inner_text() or ""),
+          "the live staff roster of the chosen Clinic shows the new location-scoped role")
 
     goto_admin(page, tag, facility_url(org, "schedules"), "facility-hospital-schedules")
     for index, day, start, end in ((1, "1", "08:00", "12:00"), (2, "3", "14:00", "18:00")):
@@ -595,6 +662,38 @@ def run_hospital_facility_journey(page, tag, org, fac):
     check(f"{tag}.hospital.activate", facility_submit(page, tag, "activate", "facility-hospital-activated") == "ok",
           "explicit activation after review")
     check(f"{tag}.hospital.activated_marker", page.locator('[data-cpms-facility-activated="1"]').count() == 1, "activation recorded")
+
+
+def run_facility_location_switch_journey(page, tag, org):
+    """Explicit Clinic → Location switching on the post-onboarding Clinicians page.
+
+    For the clinician shared by both hospital Clinics: each explicitly chosen Clinic
+    lists the clinician, its manage link keeps that explicit Clinic, and the Location
+    selector offers exactly that Clinic's active Locations — switching the Clinic
+    switches the Location set, and no Location is offered in both Clinics.
+    """
+    layout = facility_clinic_locations(org)
+    check(f"{tag}.switch.layout", len(layout) == 2 and all(len(v) == 2 for v in layout.values()),
+          " ".join(f"clinic{i}:{len(v)}" for i, v in enumerate(layout.values(), 1)))
+    offered = {}
+    for index, clinic_id in enumerate(sorted(layout), 1):
+        goto_admin(page, tag, f"admin.php?page=cpms-clinicians&clinic_id={clinic_id}", f"facility-switch-clinicians-{index}")
+        manage = page.locator('a:has-text("مدیریت برنامه")')
+        href = (manage.first.get_attribute("href") or "") if manage.count() else ""
+        explicit = parse_qs(urlparse(href).query).get("clinic_id", [""])[0] == str(clinic_id)
+        path = href.split("/wp-admin/", 1)[-1] if "/wp-admin/" in href else ""
+        check(f"{tag}.switch.clinic_{index}.shared_clinician_listed", bool(path) and explicit,
+              "the shared clinician is listed in this Clinic and its manage link keeps the explicit Clinic")
+        if not path:
+            continue
+        goto_admin(page, tag, path, f"facility-switch-manage-{index}")
+        values = {int(v) for v in facility_option_values(page, 'select[name="location_id"]') if v.isdigit()}
+        offered[clinic_id] = values
+        check(f"{tag}.switch.clinic_{index}.own_locations_only", values == set(layout[clinic_id]),
+              f"offered={len(values)} expected={len(layout[clinic_id])} (only this Clinic's active Locations)")
+    ids = sorted(offered)
+    check(f"{tag}.switch.locations_disjoint", len(ids) == 2 and not (offered[ids[0]] & offered[ids[1]]),
+          "switching the Clinic switches the Location set; no Location is offered in both Clinics")
 
 
 def run_building_facility_journey(page, tag, org, fac):
@@ -1469,6 +1568,7 @@ with sync_playwright() as p:
         fac_page = fac_ctx.new_page()
         if login(fac_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "facility-org-manager"):
             run_hospital_facility_journey(fac_page, "facility-org-manager", hospital_org, fac)
+            run_facility_location_switch_journey(fac_page, "facility-org-manager", hospital_org)
             run_building_facility_journey(fac_page, "facility-org-manager", building_org, fac)
             goto_admin(fac_page, "facility-org-manager", f"{FACILITY_PAGE}&organization_id=2147483647", "facility-forged-org")
             check("facility.forged_organization_denied",
@@ -1484,6 +1584,10 @@ with sync_playwright() as p:
               and facts.get("schedules") == "2" and facts.get("schedule_clinics") == "2"
               and facts.get("managers") == "2" and facts.get("profiles") == "1",
               " ".join(f"{k}={v}" for k, v in sorted(facts.items())))
+        check("facility.hospital.db_staff_location_scope",
+              facts.get("staff") == "1" and facts.get("staff_scoped") == "1"
+              and facts.get("staff_locations") == "1" and facts.get("staff_denies") == "1",
+              " ".join(f"{k}={v}" for k, v in sorted(facts.items()) if k.startswith("staff")))
         facts = facility_db_facts(building_org)
         check("facility.building.db_entities",
               facts.get("clinics") == "2" and facts.get("active") == "2" and facts.get("locations") == "2"
@@ -1525,7 +1629,7 @@ with sync_playwright() as p:
         fac_mob_page = fac_mob_ctx.new_page()
         if login(fac_mob_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "facility-org-manager-mobile"):
             for step, shot_name in (("review", "facility-review-mobile"), ("clinicians", "facility-clinicians-mobile"),
-                                    ("schedules", "facility-schedules-mobile")):
+                                    ("staff", "facility-staff-mobile"), ("schedules", "facility-schedules-mobile")):
                 goto_admin(fac_mob_page, "facility-org-manager-mobile", facility_url(hospital_org, step), shot_name)
                 rtl = fac_mob_page.locator('.wrap[dir="rtl"]').count() >= 1
                 overflow = fac_mob_page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")

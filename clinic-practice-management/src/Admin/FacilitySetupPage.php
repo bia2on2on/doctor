@@ -7,6 +7,7 @@ namespace ClinicCore\Admin;
 use ClinicCore\Application\Onboarding\FacilitySetupException;
 use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
@@ -26,7 +27,27 @@ final class FacilitySetupPage {
     public const ACTION = 'cpms_facility_setup';
     public const NONCE  = 'cpms_facility_setup';
 
-    private const OPS = [ 'start', 'ack', 'site', 'clinic', 'manager', 'room', 'clinician', 'schedule', 'booking', 'activate' ];
+    private const OPS = [ 'start', 'ack', 'site', 'clinic', 'manager', 'room', 'clinician', 'staff', 'schedule', 'booking', 'activate' ];
+
+    /**
+     * Staff roles offered by the staff step (labels); the service re-validates.
+     */
+    private const STAFF_ROLE_LABELS = [
+        RolesAndCapabilities::ROLE_SECRETARY  => 'منشی / پذیرش',
+        RolesAndCapabilities::ROLE_ACCOUNTANT => 'حسابدار / امور مالی',
+    ];
+
+    /**
+     * Explicit DENY choices (only narrow a role preset; never a GRANT).
+     */
+    private const STAFF_DENY_LABELS = [
+        RolesAndCapabilities::INVOICE_ADJUST => 'اصلاح مبلغ فاکتور (حساس)',
+        RolesAndCapabilities::INVOICE_VOID   => 'ابطال فاکتور (حساس)',
+        RolesAndCapabilities::PAYMENT_VOID   => 'ابطال پرداخت (حساس — فقط نقش مالی)',
+        RolesAndCapabilities::EXPORT         => 'خروجی CSV (حساس — فقط نقش مالی)',
+        RolesAndCapabilities::FILE_READ      => 'مشاهدهٔ فایل پزشکی (فقط نقش پذیرش)',
+        RolesAndCapabilities::PATIENT_UPDATE => 'ویرایش اطلاعات بیمار (فقط نقش پذیرش)',
+    ];
 
     private const DAYS = [ 'شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه' ];
 
@@ -52,7 +73,8 @@ final class FacilitySetupPage {
             new MembershipRepository( App::db() ),
             App::clinicianRepository(),
             App::scheduleService(),
-            App::settingsFactory()
+            App::settingsFactory(),
+            App::audit()
         );
     }
 
@@ -180,7 +202,7 @@ final class FacilitySetupPage {
                 self::render_clinicians( $actor_id, $organization_id, (array) $plan );
                 break;
             case 'staff':
-                self::render_staff( $actor_id, $organization_id );
+                self::render_staff( $actor_id, $organization_id, (array) $plan );
                 break;
             case 'schedules':
                 self::render_schedules( $actor_id, $organization_id, (array) $plan );
@@ -210,8 +232,9 @@ final class FacilitySetupPage {
             return isset( $_POST[ $key ] ) && is_scalar( $_POST[ $key ] ) ? sanitize_text_field( wp_unslash( (string) $_POST[ $key ] ) ) : '';
         };
         $room_keys       = isset( $_POST['room_keys'] ) && is_array( $_POST['room_keys'] ) ? array_values( array_map( 'sanitize_key', wp_unslash( $_POST['room_keys'] ) ) ) : [];
+        $deny_caps       = isset( $_POST['deny_caps'] ) && is_array( $_POST['deny_caps'] ) ? array_values( array_map( 'sanitize_key', wp_unslash( $_POST['deny_caps'] ) ) ) : [];
 
-        $notice = self::dispatch( $actor_id, $organization_id, $op, $field, $room_keys );
+        $notice = self::dispatch( $actor_id, $organization_id, $op, $field, $room_keys, $deny_caps );
         set_transient( 'cpms_facility_notice_' . $actor_id, $notice, 120 );
 
         $args = [
@@ -228,8 +251,9 @@ final class FacilitySetupPage {
      *
      * @param callable(string): string $field
      * @param list<string>             $room_keys
+     * @param list<string>             $deny_caps
      */
-    public static function dispatch( int $actor_id, int $organization_id, string $op, callable $field, array $room_keys ): string {
+    public static function dispatch( int $actor_id, int $organization_id, string $op, callable $field, array $room_keys, array $deny_caps = [] ): string {
         if ( ! in_array( $op, self::OPS, true ) ) {
             return 'خطا: عملیات نامعتبر است.';
         }
@@ -257,6 +281,14 @@ final class FacilitySetupPage {
                 case 'clinician':
                     $result = $service->assign_clinician( $actor_id, $organization_id, $field( 'clinic_key' ), self::user_id_from( $field( 'user_login' ) ), $field( 'full_name' ), $room_keys );
                     return $result['profile_created'] ? 'پروفایل پزشک ساخته و به این درمانگاه و اتاق‌ها تخصیص داده شد.' : 'پزشک موجود با عضویت صریح به این درمانگاه و اتاق‌ها تخصیص داده شد.';
+                case 'staff':
+                    $result = $service->assign_staff( $actor_id, $organization_id, $field( 'clinic_key' ), self::user_id_from( $field( 'user_login' ) ), $field( 'role_key' ), $field( 'access' ), $room_keys, $deny_caps );
+                    if ( $result['noop'] ) {
+                        return 'همین نقش و محدودهٔ دسترسی از قبل برای این کاربر ثبت شده است؛ تغییری لازم نبود.';
+                    }
+                    return 'location' === $result['scope_mode']
+                        ? 'نقش کارکنان فقط برای ' . count( $result['location_ids'] ) . ' مکان انتخاب‌شده ثبت شد (منع صریح: ' . count( $result['denied'] ) . ').'
+                        : 'نقش کارکنان برای کل این درمانگاه ثبت شد (منع صریح: ' . count( $result['denied'] ) . ').';
                 case 'schedule':
                     $input  = [
                         'day_of_week'              => (int) $field( 'day_of_week' ),
@@ -469,21 +501,61 @@ final class FacilitySetupPage {
         self::close_form( 'تخصیص پزشک' );
     }
 
-    private static function render_staff( int $actor_id, int $organization_id ): void {
-        echo '<p class="description">نقش‌های پذیرش/مالی و مجوزهای صریح GRANT/DENY در صفحهٔ موجود «کاربران و دسترسی‌ها» و «نقش‌های سفارشی» هر درمانگاه با انتخاب صریح همان درمانگاه مدیریت می‌شود (DENY همیشه بر GRANT مقدم است). این گام در همین صفحه فرم جداگانه ندارد؛ تعداد کارکنان فعال هر درمانگاه در بازبینی نمایش داده می‌شود.</p>';
-        $review = self::safe_review( $actor_id, $organization_id );
-        if ( null === $review ) {
+    /**
+     * @param array<string, mixed> $plan
+     */
+    private static function render_staff( int $actor_id, int $organization_id, array $plan ): void {
+        echo '<p class="description">نقش کارکنان (پذیرش یا مالی) برای یک درمانگاهِ صریحاً انتخاب‌شده ثبت می‌شود. محدودهٔ دسترسی نیز صریح است: کل درمانگاه یا فقط مکان‌های انتخاب‌شده. منع صریح (DENY) فقط دامنهٔ نقش را محدود می‌کند و همیشه بر GRANT مقدم است؛ این گام هیچ مجوز اضافه‌ای (GRANT) نمی‌دهد. عضویت موجود هرگز بازنویسی نمی‌شود.</p>';
+        if ( ! self::require_clinics( $plan ) ) {
             return;
         }
-        echo '<ul>';
-        foreach ( $review['clinics'] as $clinic ) {
-            echo '<li data-cpms-facility-staff="' . esc_attr( (string) $clinic['key'] ) . '">' . esc_html( (string) $clinic['name'] ) . ' — کارکنان فعال (غیر از مدیر و پزشک): ' . esc_html( (string) $clinic['staff'] );
-            if ( $clinic['can_configure'] ) {
-                echo ' — <a href="' . esc_url( add_query_arg( [ 'clinic_id' => (int) $clinic['clinic_id'] ], admin_url( 'admin.php?page=' . StaffManagementPage::PAGE_SLUG ) ) ) . '">مدیریت کارکنان این درمانگاه</a>';
+        $service = self::service();
+        foreach ( $plan['clinics'] as $clinic ) {
+            echo '<div data-cpms-facility-staff-roster="' . esc_attr( (string) $clinic['key'] ) . '"><strong>' . esc_html( (string) $clinic['name'] ) . ':</strong> ';
+            try {
+                $rows = $service->clinic_staff( $actor_id, $organization_id, (string) $clinic['key'] );
+            } catch ( FacilitySetupException $e ) {
+                echo '<span class="description" data-cpms-facility-staff-denied="1">دسترسی پیکربندی در این درمانگاه ندارید؛ کارکنان آن را مدیر همان درمانگاه تعیین می‌کند.</span></div>';
+                continue;
             }
-            echo '</li>';
+            if ( [] === $rows ) {
+                echo '<span>هنوز نقش کارکنانی ثبت نشده است.</span>';
+            }
+            $labels = [];
+            foreach ( $rows as $row ) {
+                $scope    = 'location' === $row['scope_mode'] ? $row['locations'] . ' مکان' : 'کل درمانگاه';
+                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' );
+            }
+            echo esc_html( implode( '، ', $labels ) );
+            echo ' — <a href="' . esc_url( add_query_arg( [ 'clinic_id' => (int) $clinic['clinic_id'] ], admin_url( 'admin.php?page=' . StaffManagementPage::PAGE_SLUG ) ) ) . '">مدیریت کارکنان این درمانگاه</a></div>';
         }
-        echo '</ul>';
+
+        self::open_form( $organization_id, 'staff', 'staff' );
+        self::clinic_select( $plan, 'cpms_facility_staff_clinic' );
+        self::text_input( 'user_login', 'نام کاربری یا ایمیل کارمند', 100, true );
+        echo '<p><label for="cpms_facility_staff_role">نقش</label><br><select id="cpms_facility_staff_role" name="role_key" required style="max-width:100%;"><option value="">انتخاب صریح نقش</option>';
+        foreach ( self::STAFF_ROLE_LABELS as $role_key => $label ) {
+            echo '<option value="' . esc_attr( $role_key ) . '">' . esc_html( $label ) . '</option>';
+        }
+        echo '</select></p>';
+        echo '<fieldset><legend>محدودهٔ دسترسی (انتخاب صریح)</legend>';
+        echo '<label style="display:block;"><input type="radio" name="access" value="clinic" required> کل همین درمانگاه</label>';
+        echo '<label style="display:block;"><input type="radio" name="access" value="locations"> فقط مکان‌های انتخاب‌شدهٔ زیر</label>';
+        foreach ( $plan['clinics'] as $clinic ) {
+            echo '<div data-cpms-staff-room-group="' . esc_attr( (string) $clinic['key'] ) . '"><strong>' . esc_html( (string) $clinic['name'] ) . '</strong>';
+            echo '<label style="display:block;"><input type="checkbox" name="room_keys[]" value="primary"> مکان اصلی</label>';
+            foreach ( $clinic['rooms'] as $room ) {
+                echo '<label style="display:block;"><input type="checkbox" name="room_keys[]" value="' . esc_attr( (string) $room['key'] ) . '"> ' . esc_html( (string) $room['name'] ) . '</label>';
+            }
+            echo '</div>';
+        }
+        echo '<p class="description">فقط مکان‌های همان درمانگاهی که بالا انتخاب کرده‌اید پذیرفته می‌شود؛ مکان درمانگاه دیگر یا مکان غیرفعال رد می‌شود.</p></fieldset>';
+        echo '<fieldset><legend>منع صریح (DENY) — اختیاری</legend>';
+        foreach ( self::STAFF_DENY_LABELS as $capability => $label ) {
+            echo '<label style="display:block;"><input type="checkbox" name="deny_caps[]" value="' . esc_attr( $capability ) . '"> ' . esc_html( $label ) . '</label>';
+        }
+        echo '<p class="description">فقط مجوزی که در نقش انتخاب‌شده وجود دارد قابل منع است؛ در غیر این صورت هیچ چیزی ثبت نمی‌شود.</p></fieldset>';
+        self::close_form( 'ثبت نقش کارکنان' );
     }
 
     /**
@@ -566,7 +638,7 @@ final class FacilitySetupPage {
             echo '<li>مدیران فعال: ' . esc_html( (string) $clinic['managers'] ) . '</li>';
             echo '<li>مکان‌های فعال: ' . esc_html( (string) $clinic['active_locations'] ) . '</li>';
             echo '<li>پزشکان دارای برنامه: ' . esc_html( (string) $clinic['scheduled_clinicians'] ) . ' — ردیف‌های برنامهٔ هفتگی: ' . esc_html( (string) $clinic['schedule_rows'] ) . '</li>';
-            echo '<li>کارکنان فعال دیگر: ' . esc_html( (string) $clinic['staff'] ) . '</li>';
+            echo '<li>کارکنان فعال دیگر: ' . esc_html( (string) $clinic['staff'] ) . ' — محدود به مکان‌های مشخص: ' . esc_html( (string) $clinic['staff_location_scope'] ) . '</li>';
             echo '<li>سیاست رزرو: ' . esc_html( $clinic['booking_policy'] ? 'ثبت شده' : 'ثبت نشده' ) . '</li>';
             echo '</ul>';
             if ( $clinic['can_configure'] ) {

@@ -9,8 +9,11 @@ use ClinicCore\Application\Onboarding\FacilitySetupException;
 use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService;
 use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
@@ -440,6 +443,194 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Step 6 — staff roles with explicit Clinic/Location permissions
+    // ------------------------------------------------------------------
+
+    public function testStaffRolesCarryExplicitClinicOrLocationScopeDenyOnlyOverridesAndNeverOverwrite(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $a = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه کارکنان الف', $site, self::TZ);
+        $b = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه کارکنان ب', $site, self::TZ);
+        $secretary = $this->makeUser('fs_staff_sec', 'subscriber');
+        $staffAuditBefore = $this->auditCount(FacilitySetupService::STAFF_AUDIT_ACTION);
+
+        // Organization authority alone configures no Clinic staff.
+        $this->assertRefused('clinic_denied', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        $service->designate_manager($this->actor, $this->org, $a['key'], $this->actor);
+        $service->designate_manager($this->actor, $this->org, $b['key'], $this->actor);
+        $roomA = $service->add_room($this->actor, $this->org, $a['key'], FacilitySetupService::new_request_key(), 'اتاق پذیرش الف', $site);
+        $roomB = $service->add_room($this->actor, $this->org, $b['key'], FacilitySetupService::new_request_key(), 'اتاق پذیرش ب', $site);
+
+        // Every choice is explicit; anything outside the role preset or this Clinic writes nothing.
+        foreach ([RolesAndCapabilities::ROLE_MANAGER, RolesAndCapabilities::ROLE_DOCTOR, RolesAndCapabilities::ROLE_PATIENT, 'administrator', ''] as $role) {
+            $this->assertRefused('invalid_role', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, $role, 'clinic', [], []));
+        }
+        $this->assertRefused('invalid_access', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, '', [], []));
+        $this->assertRefused('invalid_access', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [$roomA['key']], []));
+        $this->assertRefused('invalid_room', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [], []));
+        $this->assertRefused('invalid_room', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomB['key']], []));
+        $this->assertRefused('invalid_capability', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomA['key']], [RolesAndCapabilities::CONFIG]));
+        $this->assertRefused('invalid_capability', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomA['key']], [RolesAndCapabilities::PAYMENT_VOID]));
+        $wpAdmin = $this->makeUser('fs_staff_wpadmin', 'administrator');
+        $this->assertRefused('user_not_eligible', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $wpAdmin, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        $this->assertRefused('user_not_eligible', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], 0, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        $this->assertRefused('not_found', fn () => $service->assign_staff($this->actor, $this->org, 'c-forged', $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        self::assertNull(App::membership_service()->membership_for((int) $a['clinic_id'], $secretary), 'refusals wrote nothing');
+        self::assertNull(App::membership_service()->membership_for((int) $a['clinic_id'], $wpAdmin), 'a WordPress Administrator is not a staff account');
+
+        // Location-scoped reception with one explicit DENY, written atomically and audited.
+        $result = $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomA['key']], [RolesAndCapabilities::INVOICE_VOID]);
+        self::assertFalse($result['noop']);
+        self::assertSame('location', $result['scope_mode']);
+        self::assertSame([(int) $roomA['location_id']], $result['location_ids']);
+        self::assertSame([RolesAndCapabilities::INVOICE_VOID], $result['denied']);
+        $membership = App::membership_service()->membership_for((int) $a['clinic_id'], $secretary);
+        self::assertNotNull($membership);
+        self::assertSame((int) $membership['id'], $result['membership_id']);
+        self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, (string) $membership['role_key']);
+        self::assertSame('location', (string) $membership['scope_mode']);
+        self::assertSame('active', (string) $membership['status']);
+        self::assertSame([(int) $roomA['location_id']], App::membership_service()->membership_location_ids((int) $membership['id']));
+        self::assertSame(
+            [['capability' => RolesAndCapabilities::INVOICE_VOID, 'effect' => 'deny']],
+            array_map(static fn (array $row): array => ['capability' => (string) $row['capability'], 'effect' => (string) $row['effect']], App::membership_service()->capabilities_for((int) $membership['id']))
+        );
+        self::assertSame($staffAuditBefore + 1, $this->auditCount(FacilitySetupService::STAFF_AUDIT_ACTION));
+
+        $authz = App::authorization_service();
+        self::assertFalse($authz->can($secretary, (int) $a['clinic_id'], RolesAndCapabilities::INVOICE_VOID), 'explicit DENY beats the role preset');
+        self::assertTrue($authz->can($secretary, (int) $a['clinic_id'], RolesAndCapabilities::APPT_CREATE), 'the rest of the preset applies');
+        self::assertFalse($authz->can($secretary, (int) $a['clinic_id'], RolesAndCapabilities::CONFIG), 'no widening beyond the preset');
+        self::assertFalse($authz->can($secretary, (int) $b['clinic_id'], RolesAndCapabilities::APPT_READ), 'no access in the other Clinic');
+        $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
+        self::assertSame((int) $a['clinic_id'], $establisher->establish($secretary, (int) $a['clinic_id'], (int) $roomA['location_id'])->clinicId);
+        try {
+            $establisher->establish($secretary, (int) $a['clinic_id'], (int) $a['location_id']);
+            self::fail('a location-scoped staff member must not bind to an unassigned Location');
+        } catch (ScopeRequiredException $e) {
+            self::assertNotSame('', $e->getMessage());
+        }
+
+        // Identical retry is a no-op; any different request is refused and nothing is overwritten.
+        $retry = $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomA['key']], [RolesAndCapabilities::INVOICE_VOID]);
+        self::assertTrue($retry['noop']);
+        self::assertSame((int) $membership['id'], $retry['membership_id']);
+        self::assertSame($staffAuditBefore + 1, $this->auditCount(FacilitySetupService::STAFF_AUDIT_ACTION), 'a no-op retry is not re-audited');
+        $this->assertRefused('membership_exists', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], [RolesAndCapabilities::INVOICE_VOID]));
+        $this->assertRefused('membership_exists', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_ACCOUNTANT, 'locations', [$roomA['key']], [RolesAndCapabilities::INVOICE_VOID]));
+        $this->assertRefused('membership_exists', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $secretary, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomA['key']], []));
+        $this->assertRefused('membership_exists', fn () => $service->assign_staff($this->actor, $this->org, $a['key'], $this->actor, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        $after = App::membership_service()->membership_for((int) $a['clinic_id'], $secretary);
+        self::assertSame(RolesAndCapabilities::ROLE_SECRETARY, (string) $after['role_key']);
+        self::assertSame('location', (string) $after['scope_mode']);
+        self::assertSame(OrganizationClinicProvisioningService::CLINIC_MANAGER_ROLE_KEY, (string) App::membership_service()->membership_for((int) $a['clinic_id'], $this->actor)['role_key'], 'the manager membership is never re-roled');
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d AND wp_user_id = %d',
+            [(int) $a['clinic_id'], $secretary]
+        ));
+
+        // Clinic-wide finance role in the other Clinic: no clinical access, no Location rows.
+        $accountant = $this->makeUser('fs_staff_acc', 'subscriber');
+        $wide = $service->assign_staff($this->actor, $this->org, $b['key'], $accountant, RolesAndCapabilities::ROLE_ACCOUNTANT, 'clinic', [], []);
+        self::assertSame('clinic', $wide['scope_mode']);
+        self::assertSame([], App::membership_service()->membership_location_ids($wide['membership_id']));
+        self::assertTrue($authz->can($accountant, (int) $b['clinic_id'], RolesAndCapabilities::FINANCE_READ));
+        self::assertFalse($authz->can($accountant, (int) $b['clinic_id'], RolesAndCapabilities::PATIENT_READ), 'the finance preset carries no clinical access');
+        self::assertFalse($authz->can($accountant, (int) $a['clinic_id'], RolesAndCapabilities::FINANCE_READ), 'no access in the first Clinic');
+
+        // A suspended staff membership is never silently re-activated by a retry.
+        App::membership_service()->suspend_membership($wide['membership_id']);
+        $this->assertRefused('membership_exists', fn () => $service->assign_staff($this->actor, $this->org, $b['key'], $accountant, RolesAndCapabilities::ROLE_ACCOUNTANT, 'clinic', [], []));
+        self::assertSame('suspended', (string) App::membership_service()->membership_for((int) $b['clinic_id'], $accountant)['status']);
+
+        // An inactive Location is refused for a location-scoped role.
+        App::locationService()->set_active($this->actor, (int) $b['clinic_id'], (int) $roomB['location_id'], false);
+        $reception = $this->makeUser('fs_staff_rec', 'subscriber');
+        $this->assertRefused('inactive_location', fn () => $service->assign_staff($this->actor, $this->org, $b['key'], $reception, RolesAndCapabilities::ROLE_SECRETARY, 'locations', [$roomB['key']], []));
+        self::assertNull(App::membership_service()->membership_for((int) $b['clinic_id'], $reception));
+
+        // Live review and the actor's own roster reflect the real rows.
+        $review = $service->review($this->actor, $this->org);
+        $byClinic = [];
+        foreach ($review['clinics'] as $clinic) {
+            $byClinic[(int) $clinic['clinic_id']] = $clinic;
+        }
+        self::assertSame(1, $byClinic[(int) $a['clinic_id']]['staff']);
+        self::assertSame(1, $byClinic[(int) $a['clinic_id']]['staff_location_scope']);
+        self::assertSame(0, $byClinic[(int) $b['clinic_id']]['staff'], 'a suspended membership is not counted as active staff');
+        $roster = $service->clinic_staff($this->actor, $this->org, $a['key']);
+        self::assertCount(1, $roster);
+        self::assertSame('location', $roster[0]['scope_mode']);
+        self::assertSame(1, $roster[0]['locations']);
+        self::assertSame(1, $roster[0]['denied']);
+
+        // The admin-post dispatcher path and the rendered step are explicit (no preselection).
+        $front = $this->makeUser('fs_staff_front', 'subscriber');
+        $frontLogin = (string) get_userdata($front)->user_login;
+        $fields = ['clinic_key' => $a['key'], 'user_login' => $frontLogin, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY, 'access' => 'locations'];
+        $field = static fn (string $key): string => (string) ($fields[$key] ?? '');
+        self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'staff', $field, [$roomB['key']], []));
+        self::assertNull(App::membership_service()->membership_for((int) $a['clinic_id'], $front));
+        self::assertStringStartsNotWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'staff', $field, ['primary'], [RolesAndCapabilities::FILE_READ]));
+        self::assertSame('location', (string) App::membership_service()->membership_for((int) $a['clinic_id'], $front)['scope_mode']);
+
+        wp_set_current_user($this->actor);
+        $_GET = ['page' => FacilitySetupPage::PAGE, 'organization_id' => (string) $this->org, 'step' => 'staff'];
+        ob_start();
+        FacilitySetupPage::render();
+        $html = (string) ob_get_clean();
+        self::assertStringContainsString('data-cpms-facility-form="staff"', $html);
+        self::assertStringContainsString('<option value="">انتخاب صریح نقش</option>', $html);
+        self::assertStringContainsString('name="access" value="clinic" required>', $html);
+        self::assertStringNotContainsString('checked', $html, 'no access scope, room or DENY is pre-selected');
+        self::assertStringNotContainsString('selected', $html, 'no Clinic or role is pre-selected');
+        self::assertStringContainsString('data-cpms-facility-staff-roster="' . $a['key'] . '"', $html);
+        self::assertStringNotContainsString('value="' . RolesAndCapabilities::ROLE_MANAGER . '"', $html, 'the manager role is not offered by the staff step');
+    }
+
+    public function testSuspendedOrganizationRefusesEveryFacilityStepWithoutMutationUntilReactivated(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه تعلیق', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $option = FacilitySetupService::OPTION_PREFIX . $this->org;
+        $planBefore = get_option($option);
+        $staff = $this->makeUser('fs_susp_staff', 'subscriber');
+        $doctor = $this->makeUser('fs_susp_doc', 'subscriber');
+
+        App::db()->update('cpms_organizations', ['status' => 'suspended'], ['id' => $this->org]);
+        $listed = array_map(static fn (array $org): int => (int) $org['id'], $service->organizations($this->actor));
+        self::assertNotContains($this->org, $listed, 'a suspended Organization is not offered');
+        $this->assertRefused('denied', fn () => $service->plan($this->actor, $this->org));
+        $this->assertRefused('denied', fn () => $service->add_site($this->actor, $this->org, 'ساختمان تازه', ''));
+        $this->assertRefused('denied', fn () => $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه تازه', $site, self::TZ));
+        $this->assertRefused('denied', fn () => $service->designate_manager($this->actor, $this->org, $clinic['key'], $staff));
+        $this->assertRefused('denied', fn () => $service->add_room($this->actor, $this->org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق تازه', $site));
+        $this->assertRefused('denied', fn () => $service->assign_clinician($this->actor, $this->org, $clinic['key'], $doctor, 'دکتر تعلیق', ['primary']));
+        $this->assertRefused('denied', fn () => $service->assign_staff($this->actor, $this->org, $clinic['key'], $staff, RolesAndCapabilities::ROLE_SECRETARY, 'clinic', [], []));
+        $this->assertRefused('denied', fn () => $service->save_booking_policy($this->actor, $this->org, $clinic['key'], ['duration' => '20', 'capacity' => '1', 'lead' => '2', 'future' => '60', 'cancel' => '24']));
+        $this->assertRefused('denied', fn () => $service->review($this->actor, $this->org));
+        $this->assertRefused('denied', fn () => $service->activate($this->actor, $this->org, true));
+        $field = static fn (string $key): string => 'site_label' === $key ? 'ساختمان دیگر' : '';
+        self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $field, []));
+
+        self::assertSame($planBefore, get_option($option), 'the plan is unchanged');
+        self::assertSame(1, $this->clinicCount($this->org));
+        self::assertSame(1, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d', [(int) $clinic['clinic_id']]));
+        self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $staff));
+        self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $doctor));
+        self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']), 'held Clinic stays held');
+
+        App::db()->update('cpms_organizations', ['status' => 'active'], ['id' => $this->org]);
+        $service->add_site($this->actor, $this->org, 'ساختمان پس از رفع تعلیق', '');
+        self::assertCount(2, $service->plan($this->actor, $this->org)['sites'], 'setup resumes after explicit reactivation');
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -530,6 +721,11 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         return $userId;
     }
 
+    private function auditCount(string $action): int
+    {
+        return (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s', [$action]);
+    }
+
     private function clinicOrg(int $clinicId): int
     {
         return (int) App::db()->fetchValue('SELECT organization_id FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]);
@@ -563,6 +759,7 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_schedule t WHERE t.clinic_id IN (' . $clinics . ')'); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_clinician_locations t JOIN ' . $p . 'cpms_locations l ON l.id = t.location_id JOIN ' . $p . 'cpms_clinics c ON c.id = l.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
         $wpdb->query('DELETE mc FROM ' . $p . 'cpms_membership_capabilities mc JOIN ' . $p . 'cpms_clinic_memberships m ON m.id = mc.membership_id JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
+        $wpdb->query('DELETE ml FROM ' . $p . 'cpms_membership_locations ml JOIN ' . $p . 'cpms_clinic_memberships m ON m.id = ml.membership_id JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
         $wpdb->query('DELETE m FROM ' . $p . 'cpms_clinic_memberships m JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_clinicians t WHERE t.clinic_id IN (' . $clinics . ')'); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_settings t WHERE t.clinic_id IN (' . $clinics . ')'); // phpcs:ignore
