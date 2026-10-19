@@ -84,8 +84,8 @@ final class SecretaryFinancePage
     <!-- ================= داشبورد (D18) ================= -->
     <div id="cpms-fin-tab-dashboard" class="cpms-fin-tab">
         <div class="cpms-fin-toolbar">
-            <label>از <input type="date" id="cpms-fin-from" dir="ltr"></label>
-            <label>تا <input type="date" id="cpms-fin-to" dir="ltr"></label>
+            <label for="cpms-fin-from">از</label> <input type="date" id="cpms-fin-from" dir="ltr">
+            <label for="cpms-fin-to">تا</label> <input type="date" id="cpms-fin-to" dir="ltr">
             <button type="button" class="button" id="cpms-fin-summary-btn">به‌روزرسانی</button>
         </div>
         <div class="cpms-fin-stats" id="cpms-fin-stats"></div>

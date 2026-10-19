@@ -83,7 +83,13 @@ final class FacilityTypeCatalog {
             'mental_health_center'          => ['unit' => 'مرکز سلامت روان', 'clinician' => 'پزشک/درمانگر', 'clinicians' => 'پزشکان/درمانگران', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز سلامت روان: پرونده‌ها در همان مرز کلینیک و با همان قواعد محرمانگی نگه‌داری می‌شود؛ ویزیت‌ها فقط سرپایی هستند.'],
             'specialized_outpatient_center' => ['unit' => 'مرکز درمان سرپایی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز درمان تخصصی سرپایی: فقط فرایندهای سرپایی پشتیبانی می‌شود؛ برنامه و رزرو را متناسب با همان خدمات ثبت کنید.'],
             'limited_surgery_center'        => ['unit' => 'مرکز جراحی محدود', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز جراحی محدود/سرپایی: اتاق عمل را به‌عنوان مکان ثبت و برنامهٔ سرپایی را تعیین کنید؛ بستری شبانه و HIS پشتیبانی نمی‌شود.'],
-            'hospital'                      => ['unit' => 'بیمارستان', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام بیمارستان (فقط محدودهٔ سرپایی)', 'guidance' => 'بیمارستان: فقط درمانگاه‌های سرپایی و فرایندهای سرپایی پشتیبانی می‌شود؛ بخش بستری و سامانهٔ جامع بیمارستانی (HIS) در این محصول وجود ندارد و در گام سلامت باید صریح تأیید شود.'],
+            // Hospital unit wording is deliberately "مرکز درمانی" (not "بیمارستان" and
+            // not the generic "کلینیک"): the picker label above still says "بیمارستان"
+            // so the administrator knows which real-world type they chose, but every
+            // derived onboarding string (step heading, nav title, validation text)
+            // uses the neutral outpatient-facility wording since this product never
+            // operates an inpatient/HIS hospital — only its outpatient clinics.
+            'hospital'                      => ['unit' => 'مرکز درمانی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز درمانی (فقط محدودهٔ سرپایی)', 'guidance' => 'بیمارستان: فقط درمانگاه‌های سرپایی و فرایندهای سرپایی پشتیبانی می‌شود؛ بخش بستری و سامانهٔ جامع بیمارستانی (HIS) در این محصول وجود ندارد و در گام سلامت باید صریح تأیید شود.'],
             'comprehensive_health_center'   => ['unit' => 'مرکز جامع سلامت', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز جامع سلامت: خدمات بهداشتی و درمانی سرپایی را با مکان‌ها، برنامهٔ کاری و رزرو پوشش دهید.'],
             'other'                         => ['unit' => 'مرکز', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'سایر مراکز: همان گام‌های درمانگاه چندپزشکه با تنظیمات عمومی نمایش داده می‌شود.'],
         ];
@@ -97,6 +103,42 @@ final class FacilityTypeCatalog {
             'name_label' => (string) ( $profile['name_label'] ?? $defaults['name_label'] ),
             'guidance'   => (string) ( $profile['guidance'] ?? $defaults['guidance'] ),
         ];
+    }
+
+    /**
+     * Facility-aware wizard page heading ("راه‌اندازی <واحد>").
+     *
+     * Single source of truth for the top-level wizard title: an empty/unknown
+     * id keeps the previous generic "راه‌اندازی کلینیک" wording so legacy
+     * installations without a facility selection are unaffected.
+     */
+    public static function wizard_heading( string $facility_id ): string {
+        return 'راه‌اندازی ' . self::type_profile( $facility_id )['unit'];
+    }
+
+    /**
+     * Facility-aware title for ONE registered wizard step id.
+     *
+     * This is the single source of truth for step-nav labels, the
+     * "missing required steps" list and prerequisite notices: only the
+     * steps whose generic wording actually names the unit/clinician
+     * ('clinic', 'doctors') are overridden; every other step id keeps its
+     * generic $fallback title unchanged (identical wording for every
+     * facility type, e.g. "مکان‌ها", "برنامه کاری"). An unknown/empty
+     * facility id always returns $fallback, so legacy behaviour before any
+     * facility selection is byte-identical to before this method existed.
+     */
+    public static function step_title( string $facility_id, string $step_id, string $fallback ): string {
+        if ( $facility_id === '' || ! self::is_valid( $facility_id ) ) {
+            return $fallback;
+        }
+        $profile = self::type_profile( $facility_id );
+
+        return match ( $step_id ) {
+            'clinic'  => 'اطلاعات ' . $profile['unit'],
+            'doctors' => $profile['clinicians'],
+            default   => $fallback,
+        };
     }
 
     /**

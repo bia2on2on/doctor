@@ -741,6 +741,36 @@ final class Phase6ScheduleExceptionLocationTest extends WP_UnitTestCase
         $createForm = substr($html, (int) $createFormStart, (int) $createFormEnd - (int) $createFormStart);
         $listing = substr($html, $headingPos, (int) $createFormStart - $headingPos);
 
+        // HTML-validity regression (independent review, Priority 2): the
+        // calendar-date field must never be a DESCENDANT of a <label> — a
+        // <label> nested inside the CPMS admin page's own <label> is invalid
+        // HTML, and it is exactly what happens once cpms-jalali-date.js moves
+        // the native input (plus its own `شمسی:` companion <label>) out of an
+        // enclosing <label for="..."> text wrapper. The real fix is to never
+        // nest the native date <input> inside a <label> in the first place
+        // (use a sibling <label for="id">) — asserted directly on the actual
+        // rendered markup here, not just by code inspection.
+        self::assertMatchesRegularExpression(
+            '/<input[^>]*id="cpms-exception-date"[^>]*>/',
+            $createForm,
+            'the exception date input must carry a stable id for label association'
+        );
+        $dateInputPos = strpos($createForm, 'id="cpms-exception-date"');
+        self::assertNotFalse($dateInputPos, 'precondition: the date input is present');
+        $precedingMarkup = substr($createForm, 0, $dateInputPos);
+        $lastLabelOpen    = strripos($precedingMarkup, '<label');
+        $lastLabelClose   = strripos($precedingMarkup, '</label>');
+        self::assertNotFalse($lastLabelOpen, 'precondition: a <label for="cpms-exception-date"> exists before the input');
+        self::assertTrue(
+            $lastLabelClose !== false && $lastLabelClose > $lastLabelOpen,
+            'the date input must NOT be nested inside the <label> — the <label> must already be closed before the <input> (sibling, not child)'
+        );
+        self::assertStringContainsString(
+            '<label for="cpms-exception-date">',
+            $createForm,
+            'the date field must use an explicit for/id association instead of wrapping the input'
+        );
+
         self::assertStringContainsString(
             'name="location_id"',
             $createForm,

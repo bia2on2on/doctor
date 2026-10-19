@@ -190,6 +190,18 @@ final class CpmsAdminMenu
         if ($screen !== null && $screen instanceof \WP_Screen && $screen->id === 'plugins') {
             return;
         }
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only page-slug check, not a trusted input value.
+        if ( isset( $_GET['page'] ) && sanitize_key( wp_unslash( $_GET['page'] ) ) === CpmsSetupWizard::PAGE_SLUG ) {
+            // Never render (and never consume the one-shot flag) ON the setup
+            // wizard itself: a "install complete, start setup" banner is
+            // redundant while already standing on that exact page, and the
+            // automatic post-activation redirect (CpmsActivationRedirect)
+            // lands the admin here directly -- without this guard, that very
+            // landing would silently burn the one-shot `cpms_onboarding_seen`
+            // transient and the notice would never show again on the
+            // dashboard the admin actually sees afterward.
+            return;
+        }
         $setup_flag = self::setup_completed_flag();
         if ( $setup_flag === true ) {
             return;
