@@ -1695,6 +1695,17 @@ $cpms_reception_cfg = [
             state.locationName = selectedLocation ? selectedLocation.name : '';
             clearLocationPresentation();
             if (!state.clinicId || !state.locationId) {
+                // Deselecting the Location clears Location-dependent state and
+                // leaves no in-flight board promise for this scope.
+                setBoardBusy(false);
+                var clearedBoard = el('sr-appointments-body');
+                if (clearedBoard) {
+                    clearedBoard.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">ابتدا موقعیت عملیاتی را انتخاب کنید.</td></tr>';
+                }
+                var clearedQueue = el('sr-queue-body');
+                if (clearedQueue) {
+                    clearedQueue.innerHTML = '<tr><td colspan="3" class="cpms-sr-empty">ابتدا موقعیت عملیاتی را انتخاب کنید.</td></tr>';
+                }
                 setStatus(state.clinicId ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : 'ابتدا کلینیک را انتخاب کنید.', null);
                 return;
             }
