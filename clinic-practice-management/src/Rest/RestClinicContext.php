@@ -76,6 +76,7 @@ final class RestClinicContext
                 $scope = $establisher->establish( $user_id, $ids['clinic_id'], $ids['location_id'] );
             }
         } catch (ScopeRequiredException $e) {
+            self::audit_handwriting_location_denial($request, $e);
             return self::toError($e);
         }
 
@@ -575,6 +576,35 @@ final class RestClinicContext
             ],
             true
         ) || CustomRolePolicy::is_definable_role_key( $role_key );
+    }
+
+    /**
+     * The visit-workspace handwriting route audits every Location denial exactly
+     * once. A trusted-binder denial returns before the route callback, so the
+     * audit is recorded here, at the point of denial, keyed by a per-request
+     * marker that the controller-level denial path also sets.
+     */
+    private static function audit_handwriting_location_denial( WP_REST_Request $request, ScopeRequiredException $e ): void {
+        if ( 'location' !== (string) ( $e->data['reason'] ?? '' ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            return;
+        }
+        if ( true === $request->get_param( '_cpms_hw_audited' ) ) {
+            return;
+        }
+        if ( ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', (string) $request->get_route(), $matches ) ) {
+            return;
+        }
+        $request->set_param( '_cpms_hw_audited', true );
+        App::audit()->log(
+            'FORBIDDEN_ACCESS_ATTEMPT',
+            [ 'wp_user_id' => get_current_user_id(), 'role' => RolesAndCapabilities::ROLE_DOCTOR ],
+            'handwriting',
+            (int) $matches[1],
+            null,
+            null,
+            null,
+            [ 'operation' => 'location' ]
+        );
     }
 
     private static function toError( ScopeRequiredException $e ): WP_Error { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
