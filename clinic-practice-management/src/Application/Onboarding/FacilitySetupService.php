@@ -75,6 +75,20 @@ final class FacilitySetupService {
     /** Organization-level plan change (identity, outpatient scope, sites, Clinic/room records, activation). */
     public const PLAN_AUDIT_ACTION = 'FACILITY_SETUP_PLAN_CHANGED';
 
+    /**
+     * WordPress capability that opens each built-in role's CPMS screens.
+     *
+     * Admin ENTRY only: the Clinic membership stays the sole source of Clinic
+     * authority, and no facility step changes anyone's WordPress role — an
+     * account without the matching WordPress role is reported, never promoted.
+     */
+    public const ENTRY_CAPABILITIES = [
+        RolesAndCapabilities::ROLE_MANAGER    => RolesAndCapabilities::CONFIG,
+        RolesAndCapabilities::ROLE_DOCTOR     => RolesAndCapabilities::QUEUE_READ,
+        RolesAndCapabilities::ROLE_SECRETARY  => RolesAndCapabilities::QUEUE_READ,
+        RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::FINANCE_READ,
+    ];
+
     private const MAX_SITES   = 20;
     private const MAX_CLINICS = 50;
     private const MAX_ROOMS   = 50;
@@ -94,6 +108,16 @@ final class FacilitySetupService {
         private readonly SettingsFactory $settings,
         private readonly ?AuditLogger $audit = null
     ) {
+    }
+
+    /**
+     * Whether a WordPress account can open the CPMS screens of one built-in role
+     * (admin entry only — never Clinic authority, which stays with the membership).
+     */
+    public static function has_admin_entry( int $wp_user_id, string $role_key ): bool {
+        $capability = self::ENTRY_CAPABILITIES[ $role_key ] ?? '';
+
+        return '' !== $capability && $wp_user_id > 0 && user_can( $wp_user_id, $capability );
     }
 
     /**
@@ -695,7 +719,7 @@ final class FacilitySetupService {
     /**
      * Staff memberships of one plan Clinic (actor's own Clinic-authorized view only).
      *
-     * @return list<array{wp_user_id:int, login:string, role_key:string, status:string, scope_mode:string, locations:int, denied:int}>
+     * @return list<array{wp_user_id:int, login:string, role_key:string, status:string, scope_mode:string, locations:int, denied:int, entry:bool}>
      */
     public function clinic_staff( int $actor_id, int $organization_id, string $clinic_key ): array {
         $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
@@ -723,6 +747,7 @@ final class FacilitySetupService {
                 'scope_mode' => (string) $row['scope_mode'],
                 'locations'  => (int) $row['locations'],
                 'denied'     => (int) $row['denied'],
+                'entry'      => self::has_admin_entry( (int) $row['wp_user_id'], (string) $row['role_key'] ),
             ];
         }
 
@@ -988,7 +1013,7 @@ final class FacilitySetupService {
     /**
      * Live, non-PHI readiness facts of one Clinic.
      *
-     * @return array{managers:int, active_locations:int, scheduled_clinicians:int, schedule_rows:int, staff:int, staff_location_scope:int, booking_policy:bool}
+     * @return array{managers:int, active_locations:int, scheduled_clinicians:int, schedule_rows:int, staff:int, staff_location_scope:int, booking_policy:bool, entry_missing:int, managers_no_entry:int}
      */
     private function clinic_summary( int $clinic_id ): array {
         $memberships = $this->db->table( 'cpms_clinic_memberships' );
@@ -1021,6 +1046,23 @@ final class FacilitySetupService {
             [ $clinic_id, 'booking.duration_default_min' ]
         );
 
+        // Admin-entry readiness (WordPress role), reported per Clinic as counts only.
+        $entry_missing    = 0;
+        $managers_missing = 0;
+        $members          = $this->db->fetchAll(
+            'SELECT wp_user_id, role_key FROM ' . $memberships . ' WHERE clinic_id = %d AND status = %s AND role_key IN (%s, %s, %s, %s)',
+            array_merge( [ $clinic_id, 'active' ], array_keys( self::ENTRY_CAPABILITIES ) )
+        );
+        foreach ( $members as $member ) {
+            if ( self::has_admin_entry( (int) $member['wp_user_id'], (string) $member['role_key'] ) ) {
+                continue;
+            }
+            ++$entry_missing;
+            if ( RolesAndCapabilities::ROLE_MANAGER === (string) $member['role_key'] ) {
+                ++$managers_missing;
+            }
+        }
+
         return [
             'managers'             => $managers,
             'active_locations'     => $locations,
@@ -1029,6 +1071,8 @@ final class FacilitySetupService {
             'staff'                => $staff,
             'staff_location_scope' => $scoped,
             'booking_policy'       => $booking,
+            'entry_missing'        => $entry_missing,
+            'managers_no_entry'    => $managers_missing,
         ];
     }
 

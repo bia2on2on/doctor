@@ -200,6 +200,7 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
 
     public function testMedicalBuildingProvisionsIndependentClinicsWithDistinctManagersAndNoSilentAccess(): void
     {
+        RolesAndCapabilities::register();
         $service = FacilitySetupPage::service();
         $plan = $service->start($this->actor, $this->org, 'other', 'medical_building', 'مجتمع پزشکی آزمون');
         self::assertSame('medical_building', $plan['flow']);
@@ -228,7 +229,31 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         foreach ($review['clinics'] as $clinic) {
             self::assertSame(1, $clinic['managers']);
             self::assertFalse($clinic['can_configure'], 'the Organization Manager is not a member of independent Clinics');
+            self::assertSame(1, $clinic['entry_missing'], 'a subscriber manager is reported without CPMS admin entry');
+            self::assertSame(1, $clinic['managers_no_entry']);
         }
+        foreach ([$managerA, $managerB] as $manager) {
+            self::assertSame(['subscriber'], array_values(get_userdata($manager)->roles), 'designation never changes a WordPress role');
+        }
+        wp_set_current_user($this->actor);
+        $_GET = ['page' => FacilitySetupPage::PAGE, 'organization_id' => (string) $this->org, 'step' => 'review'];
+        ob_start();
+        FacilitySetupPage::render();
+        $html = (string) ob_get_clean();
+        self::assertSame(2, substr_count($html, 'data-cpms-facility-entry-missing="1"'), 'each Clinic shows its admin-entry gap');
+        self::assertStringContainsString('data-cpms-facility-entry-guidance="2"', $html);
+
+        // Technical WordPress step outside CPMS: the matching WordPress role opens the
+        // screens for manager A only, and grants no Clinic authority anywhere.
+        get_userdata($managerA)->add_role(RolesAndCapabilities::ROLE_MANAGER);
+        $byClinic = [];
+        foreach ($service->review($this->actor, $this->org)['clinics'] as $clinic) {
+            $byClinic[(int) $clinic['clinic_id']] = $clinic;
+        }
+        self::assertSame(0, $byClinic[(int) $a['clinic_id']]['entry_missing'], 'manager A can now open the CPMS screens');
+        self::assertSame(1, $byClinic[(int) $b['clinic_id']]['entry_missing'], 'the independent Clinic B is unaffected');
+        self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::CONFIG), 'a WordPress role grants no Clinic authority');
+        self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::PATIENT_READ));
         $service->activate($this->actor, $this->org, true);
         self::assertSame('active', $this->clinicStatus((int) $a['clinic_id']));
         self::assertSame('active', $this->clinicStatus((int) $b['clinic_id']));
@@ -565,6 +590,8 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertSame('location', $roster[0]['scope_mode']);
         self::assertSame(1, $roster[0]['locations']);
         self::assertSame(1, $roster[0]['denied']);
+        self::assertFalse($roster[0]['entry'], 'a subscriber staff account is reported without CPMS admin entry; its WordPress role is untouched');
+        self::assertSame(['subscriber'], array_values(get_userdata($secretary)->roles));
 
         // The admin-post dispatcher path and the rendered step are explicit (no preselection).
         $front = $this->makeUser('fs_staff_front', 'subscriber');

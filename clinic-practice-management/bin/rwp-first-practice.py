@@ -478,6 +478,39 @@ echo "FP_LAYOUT=" . implode(";", $out) . PHP_EOL;
     return layout
 
 
+def facility_prepare_delegated_manager(login_name, org_id, password):
+    """Technical WordPress step OUTSIDE CPMS for one delegated Clinic manager.
+
+    This is what a WordPress administrator does on the Users screen: add the WordPress
+    role that opens the CPMS screens and set a password for this browser session.
+    The facility journey itself never changes a WordPress role; Clinic authority
+    still comes only from the explicit Clinic membership. Returns the manager's own
+    Clinic id(s) and the Organization's other Clinic id(s).
+    """
+    code = r'''
+$user = get_user_by("login", (string) getenv("FP_LOGIN"));
+if (!$user instanceof WP_User) { fwrite(STDERR, "missing delegated manager\n"); exit(1); }
+$roles = implode(",", (array) $user->roles);
+wp_set_password((string) getenv("FP_PASS"), (int) $user->ID);
+$user = new WP_User((int) $user->ID);
+$user->add_role("cpms_manager");
+$db = \ClinicCore\Bootstrap\App::db();
+$org = (int) getenv("FP_ORG");
+$own = [];
+foreach ($db->fetchAll("SELECT m.clinic_id FROM " . $db->table("cpms_clinic_memberships") . " m INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = m.clinic_id WHERE m.wp_user_id = %d AND m.role_key = %s AND m.status = %s AND k.organization_id = %d ORDER BY m.clinic_id", [(int) $user->ID, "cpms_manager", "active", $org]) as $row) {
+    $own[] = (int) $row["clinic_id"];
+}
+$other = [];
+foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d ORDER BY id", [$org]) as $row) {
+    if (!in_array((int) $row["id"], $own, true)) { $other[] = (int) $row["id"]; }
+}
+echo "FP_DELEGATED own=" . implode(",", $own) . " other=" . implode(",", $other) . " roles_before=" . $roles . PHP_EOL;
+'''
+    out = wp_eval(code, {"FP_LOGIN": login_name, "FP_PASS": password, "FP_ORG": str(org_id)}) or ""
+    line = next((ln for ln in out.splitlines() if ln.startswith("FP_DELEGATED ")), "")
+    return dict(tok.split("=", 1) for tok in line.split()[1:] if "=" in tok)
+
+
 def body_has(body, needle):
     return needle in (body or "")
 
@@ -658,6 +691,9 @@ def run_hospital_facility_journey(page, tag, org, fac):
     check(f"{tag}.hospital.review_ready", page.locator('[data-cpms-facility-review="ready"]').count() == 1,
           "consolidated review computed from live rows is ready")
     check(f"{tag}.hospital.review_two_clinics", page.locator("[data-cpms-review-clinic]").count() == 2, "both Clinics reviewed")
+    check(f"{tag}.hospital.review_admin_entry_reported",
+          page.locator("[data-cpms-review-clinic] [data-cpms-facility-entry-missing]").count() == 2,
+          "each Clinic reports which members still lack the WordPress role that opens their CPMS screens")
     page.check('input[name="confirm"]')
     check(f"{tag}.hospital.activate", facility_submit(page, tag, "activate", "facility-hospital-activated") == "ok",
           "explicit activation after review")
@@ -737,6 +773,10 @@ def run_building_facility_journey(page, tag, org, fac):
     check(f"{tag}.building.review_ready", page.locator('[data-cpms-facility-review="ready"]').count() == 1, "review ready")
     check(f"{tag}.building.no_clinic_access_notice", page.locator("[data-cpms-review-no-clinic-access]").count() == 2,
           "no silent Clinic access for the Organization Manager")
+    check(f"{tag}.building.admin_entry_gap_reported",
+          page.locator('[data-cpms-review-clinic] [data-cpms-facility-entry-missing="1"]').count() == 2
+          and page.locator('[data-cpms-facility-entry-guidance="2"]').count() == 1,
+          "each independent Clinic's manager is reported without CPMS admin entry; no WordPress role was changed")
     page.check('input[name="confirm"]')
     check(f"{tag}.building.activate", facility_submit(page, tag, "activate", "facility-building-activated") == "ok", "activation")
 
@@ -1564,12 +1604,30 @@ with sync_playwright() as p:
         building_org = fac.get("building", "")
         check("facility.fixture", hospital_org.isdigit() and building_org.isdigit() and bool(fac.get("doctor")),
               f"hospital={hospital_org} building={building_org}")
+        delegated_own = ""
+        delegated_other = ""
+        delegated_pass = "Fp-Dlg-" + os.urandom(9).hex() + "!"
         fac_ctx = new_persona_context(browser)
         fac_page = fac_ctx.new_page()
         if login(fac_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "facility-org-manager"):
             run_hospital_facility_journey(fac_page, "facility-org-manager", hospital_org, fac)
             run_facility_location_switch_journey(fac_page, "facility-org-manager", hospital_org)
             run_building_facility_journey(fac_page, "facility-org-manager", building_org, fac)
+            # Delegated manager hand-off: only the technical WordPress role is added
+            # outside CPMS; the Clinic membership from the journey is the authority.
+            delegated = facility_prepare_delegated_manager(fac.get("mgra", ""), building_org, delegated_pass)
+            delegated_own = delegated.get("own", "")
+            delegated_other = delegated.get("other", "")
+            check("facility.delegated.technical_wordpress_role",
+                  delegated_own.isdigit() and delegated_other.isdigit() and delegated_own != delegated_other
+                  and "cpms_manager" not in delegated.get("roles_before", "").split(","),
+                  f"own_clinics={len(delegated_own.split(','))} other_clinics={len(delegated_other.split(','))} "
+                  f"wordpress_roles_before={delegated.get('roles_before', '')} (the journey added no WordPress role)")
+            goto_admin(fac_page, "facility-org-manager", facility_url(building_org, "review"), "facility-building-review-entry")
+            check("facility-org-manager.building.admin_entry_after_wordpress_role",
+                  fac_page.locator(f'[data-cpms-review-clinic="{delegated_own}"] [data-cpms-facility-entry-missing="0"]').count() == 1
+                  and fac_page.locator(f'[data-cpms-review-clinic="{delegated_other}"] [data-cpms-facility-entry-missing="1"]').count() == 1,
+                  "only the Clinic whose manager received the WordPress role is ready for admin entry")
             goto_admin(fac_page, "facility-org-manager", f"{FACILITY_PAGE}&organization_id=2147483647", "facility-forged-org")
             check("facility.forged_organization_denied",
                   fac_page.locator('[data-cpms-facility-setup="org-denied"]').count() == 1
@@ -1577,6 +1635,34 @@ with sync_playwright() as p:
                   "a forged Organization id discloses nothing")
         fac_page.close()
         fac_ctx.close()
+
+        fac_dlg_ctx = new_persona_context(browser)
+        fac_dlg_page = fac_dlg_ctx.new_page()
+        if delegated_own.isdigit() and delegated_other.isdigit() and login(
+            fac_dlg_page, fac.get("mgra", ""), delegated_pass, "facility-delegated-manager"
+        ):
+            # Same core user-profile.js race as for the subscriber: let the landing page load.
+            fac_dlg_page.wait_for_load_state("load")
+            fac_dlg_page.wait_for_timeout(800)
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"admin.php?page=cpms-clinicians&clinic_id={delegated_own}", "facility-delegated-own-clinic")
+            check("facility.delegated_manager.own_clinic_managed",
+                  fac_dlg_page.locator(f'[data-cpms-active-clinic="{delegated_own}"]').count() == 1,
+                  "the independent Clinic's own manager manages it after explicit selection")
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"admin.php?page=cpms-clinicians&clinic_id={delegated_other}", "facility-delegated-other-clinic")
+            check("facility.delegated_manager.other_clinic_denied",
+                  fac_dlg_page.locator('[data-cpms-clinic-scope="denied"]').count() == 1
+                  and fac_dlg_page.locator(f'[data-cpms-active-clinic="{delegated_other}"]').count() == 0,
+                  "the other independent Clinic is refused without disclosure")
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"{FACILITY_PAGE}&organization_id={building_org}", "facility-delegated-no-org-setup")
+            check("facility.delegated_manager.no_organization_setup",
+                  fac_dlg_page.locator("[data-cpms-facility-form]").count() == 0
+                  and fac_dlg_page.locator("[data-cpms-facility-flow]").count() == 0,
+                  "Clinic authority is not Organization authority")
+        fac_dlg_page.close()
+        fac_dlg_ctx.close()
 
         facts = facility_db_facts(hospital_org)
         check("facility.hospital.db_entities",

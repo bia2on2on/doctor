@@ -317,6 +317,18 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
     partial failure) and audited as `FACILITY_STAFF_ROLE_ASSIGNED`;
   - an identical retry is a no-op; any other existing membership (role, status, scope or overrides differ) is
     refused, never overwritten or reactivated.
+- *Admin entry vs. authority (WordPress roles):*
+  - Clinic memberships created here (manager, clinician, staff) are the only source of Clinic authority; no facility
+    step adds, removes or replaces a WordPress role — the same rule as attaching an existing account in
+    «کاربران و دسترسی‌ها»;
+  - the CPMS screens themselves still need the matching WordPress role (entry capability: `cpms_config` for
+    managers, `cpms_queue_read` for clinicians and reception, `cpms_finance_read` for finance), so an existing
+    subscriber who received a membership cannot open them yet;
+  - the review therefore reports, per Clinic and as counts only, how many active members (and managers) still lack
+    that WordPress role (`data-cpms-facility-entry-missing`), and the staff roster flags such accounts; this is
+    informational and never blocks activation;
+  - the Clinic's manager assigns the role from «کاربران و دسترسی‌ها» (edit user); for the delegated Clinic manager
+    themself it is a technical WordPress step (Users screen) — a WordPress role still grants no Clinic authority.
 - *Out of scope:* inpatient wards, beds, inpatient OR and HIS are excluded.
 
 **Dates.** The journey has no calendar-date fields: weekly schedules use weekdays and times, and the booking policy
@@ -329,5 +341,9 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
   location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
   explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,
   WordPress Administrator and subscriber refusal, and 390px RTL.
+- Delegated manager hand-off (medical building): the review reports both subscriber managers without admin entry;
+  after the technical WordPress role step (WP-CLI, outside CPMS) only that Clinic turns ready; the delegated manager
+  then logs in, manages their own Clinic on «پزشکان» with an explicit `clinic_id`, is refused for the other
+  independent Clinic, and gets no Organization setup.
 - **Known limitation:** the hospital journey designates the Organization Manager as manager of each outpatient Clinic.
-  Delegated per-Clinic managers are supported but not exercised in the browser hospital path.
+  Delegated per-Clinic managers are exercised in the browser only in the medical-building hand-off above.

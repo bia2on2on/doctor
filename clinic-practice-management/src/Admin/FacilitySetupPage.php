@@ -51,6 +51,11 @@ final class FacilitySetupPage {
 
     private const DAYS = [ 'شنبه', 'یکشنبه', 'دوشنبه', 'سه‌شنبه', 'چهارشنبه', 'پنجشنبه', 'جمعه' ];
 
+    /**
+     * Admin-entry guidance: the facility steps never change a WordPress role.
+     */
+    private const ENTRY_GUIDANCE = 'عضویت درمانگاه تنها منبع اختیار است و این راه‌اندازی نقش وردپرسیِ هیچ کاربری را تغییر نمی‌دهد. حسابی که نقش وردپرسیِ متناظر با نقش درمانگاهی‌اش (مثلاً «مدیر کلینیک»، «پزشک» یا «منشی مطب») را ندارد وارد صفحات CPMS نمی‌شود؛ این نقش را مدیر همان درمانگاه از «کاربران و دسترسی‌ها» (ویرایش کاربر) و برای خودِ مدیر درمانگاه، مدیر فنی وردپرس از صفحهٔ کاربران وردپرس اختصاص می‌دهد.';
+
     public static function menu(): void {
         add_submenu_page(
             OrganizationManagerPage::PAGE,
@@ -524,7 +529,7 @@ final class FacilitySetupPage {
             $labels = [];
             foreach ( $rows as $row ) {
                 $scope    = 'location' === $row['scope_mode'] ? $row['locations'] . ' مکان' : 'کل درمانگاه';
-                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' );
+                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' ) . ( $row['entry'] ? '' : ' — بدون نقش وردپرسیِ ورود' );
             }
             echo esc_html( implode( '، ', $labels ) );
             echo ' — <a href="' . esc_url( add_query_arg( [ 'clinic_id' => (int) $clinic['clinic_id'] ], admin_url( 'admin.php?page=' . StaffManagementPage::PAGE_SLUG ) ) ) . '">مدیریت کارکنان این درمانگاه</a></div>';
@@ -640,6 +645,7 @@ final class FacilitySetupPage {
             echo '<li>پزشکان دارای برنامه: ' . esc_html( (string) $clinic['scheduled_clinicians'] ) . ' — ردیف‌های برنامهٔ هفتگی: ' . esc_html( (string) $clinic['schedule_rows'] ) . '</li>';
             echo '<li>کارکنان فعال دیگر: ' . esc_html( (string) $clinic['staff'] ) . ' — محدود به مکان‌های مشخص: ' . esc_html( (string) $clinic['staff_location_scope'] ) . '</li>';
             echo '<li>سیاست رزرو: ' . esc_html( $clinic['booking_policy'] ? 'ثبت شده' : 'ثبت نشده' ) . '</li>';
+            echo '<li data-cpms-facility-entry-missing="' . esc_attr( (string) $clinic['entry_missing'] ) . '">' . esc_html( self::entry_line( (int) $clinic['entry_missing'], (int) $clinic['managers_no_entry'] ) ) . '</li>';
             echo '</ul>';
             if ( $clinic['can_configure'] ) {
                 $clinic_arg = [ 'clinic_id' => (int) $clinic['clinic_id'] ];
@@ -651,6 +657,10 @@ final class FacilitySetupPage {
                 echo '<p class="description" data-cpms-review-no-clinic-access="' . esc_attr( (string) $clinic['clinic_id'] ) . '">شما در این درمانگاه عضویت پیکربندی ندارید؛ پیکربندی بالینی آن با مدیر خود همان درمانگاه است.</p>';
             }
             echo '</div>';
+        }
+        $entry_gap = array_sum( array_map( static fn ( array $clinic ): int => (int) $clinic['entry_missing'], $review['clinics'] ) );
+        if ( $entry_gap > 0 ) {
+            echo '<div class="notice notice-info inline" data-cpms-facility-entry-guidance="' . esc_attr( (string) $entry_gap ) . '"><p>' . esc_html( self::ENTRY_GUIDANCE ) . '</p></div>';
         }
         if ( [] !== $review['blocking'] ) {
             echo '<div class="notice notice-warning inline" data-cpms-facility-blocking="' . esc_attr( (string) count( $review['blocking'] ) ) . '"><p>موارد باقی‌مانده پیش از فعال‌سازی:</p><ul>';
@@ -670,6 +680,14 @@ final class FacilitySetupPage {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    private static function entry_line( int $missing, int $managers ): string {
+        if ( 0 === $missing ) {
+            return 'ورود به صفحات CPMS: همهٔ اعضای فعال این درمانگاه نقش وردپرسیِ لازم را دارند.';
+        }
+
+        return 'ورود به صفحات CPMS: ' . $missing . ' عضو فعال (از جمله ' . $managers . ' مدیر) نقش وردپرسیِ لازم را ندارند و تا اختصاص آن وارد صفحات نقش خود نمی‌شوند.';
+    }
 
     /**
      * @return array{plan: array<string, mixed>, clinics: list<array<string, mixed>>, blocking: list<string>, ready: bool}|null

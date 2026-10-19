@@ -1301,3 +1301,25 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **Second commit:** Organization-level plan changes (identity, outpatient acknowledgment, sites, Clinic/room records,
   activation) are audited as `FACILITY_SETUP_PLAN_CHANGED` inside the plan-write transaction (identical retries are
   not re-audited); covered by the suspended-Organization test.
+
+## [2026-10-19 19:45 UTC] — PR #253 continuation: admin-entry readiness and delegated-manager hand-off (Draft, unmerged)
+
+- **Start:** the restored sandbox had the local branch ref at the base `b7ae469` with the full PR diff as
+  uncommitted files. The working tree was verified byte-identical (tree `b61f960`) to the pushed head `6d41b7b`;
+  the local ref was fast-forwarded to `6d41b7b` with `git update-ref` (old value checked) and the index re-read.
+  Nothing was reset, cleaned, rebased or force-pushed. Base `main` `b7ae469` unchanged; PR #253 Draft with 26/26
+  exact-head checks green.
+- **Finding:** facility steps create Clinic memberships for existing accounts but (like «کاربران و دسترسی‌ها»
+  attach-existing-user) never change WordPress roles, while CPMS screens are gated by the matching WordPress
+  capability. A subscriber designated as Clinic manager, clinician or staff could therefore not open the CPMS
+  screens, and the review did not say so.
+- **Change:** `FacilitySetupService::ENTRY_CAPABILITIES` / `has_admin_entry()`; the review reports per Clinic
+  (counts only) how many active members and managers lack admin entry, with guidance; the staff roster flags such
+  accounts. Informational only: activation is not blocked and no WordPress role is ever changed by the journey.
+- **Tests:** the medical-building and staff integration tests assert the counts, the rendered markers, that no
+  WordPress role changed, and that a WordPress role added outside CPMS opens entry for that Clinic only while
+  granting no authority in the other Clinic. Browser: the medical-building review flags both managers; after the
+  technical WordPress role step (WP-CLI) only that Clinic is ready; the delegated manager logs in, manages their own
+  Clinic with an explicit `clinic_id`, is refused for the other independent Clinic, and gets no Organization setup.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
+  `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.
