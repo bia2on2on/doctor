@@ -32,6 +32,21 @@ final class OrganizationClinicProvisioningService {
     public const MEMBERSHIP_CAPABILITY = 'cpms_org_membership_manage';
     public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
 
+    /**
+     * Organization-scoped capability: explicitly designate a Clinic manager (the
+     * built-in cpms_manager Clinic membership) for a Clinic of this Organization.
+     *
+     * Least privilege: separate from create/update/lifecycle and resolved with its
+     * own DENY > GRANT > Organization Manager preset precedence. It is the only way
+     * Organization authority touches a Clinic membership, it is never implicit, and
+     * it never re-activates or re-roles an existing (historical) membership.
+     */
+    public const CAPABILITY_CLINIC_MANAGER = 'cpms_org_clinic_manager_assign';
+
+    public const MANAGER_AUDIT_ACTION = 'ORGANIZATION_CLINIC_MANAGER_DESIGNATED';
+
+    public const CLINIC_MANAGER_ROLE_KEY = 'cpms_manager';
+
     public function __construct(
         private readonly CpmsDb $db,
         private readonly AuditLogger $audit
@@ -761,6 +776,128 @@ final class OrganizationClinicProvisioningService {
                     'status'    => $desired,
                     'noop'      => false,
                     'audit_id'  => $audit_id,
+                ];
+            }
+        );
+    }
+
+    /**
+     * Explicit Clinic manager designation under Organization authority.
+     *
+     * Lock order matches the other management writes: Organization row, then the
+     * Clinic row. The Clinic must belong to the Organization (active or suspended:
+     * suspension is a new-demand control, administration continues). The target must
+     * be an existing WordPress user; WordPress Administrator status is irrelevant in
+     * both directions. An existing ACTIVE cpms_manager membership is an idempotent
+     * no-op (no second audit row); any other existing membership (suspended or a
+     * different role) is refused so historical membership state is never overwritten.
+     * The first-setup marker of the Clinic is consumed (monotonic) because the Clinic
+     * now has administration evidence. Membership + marker + audit commit together.
+     *
+     * @return array{clinic_id:int, membership_id:int, noop:bool, audit_id:int|null}
+     */
+    public function designate_clinic_manager( int $actor_id, int $organization_id, int $clinic_id, int $target_user_id ): array {
+        if ( $actor_id <= 0 || $organization_id <= 0 || $clinic_id <= 0 || $target_user_id <= 0 ) {
+            throw new InvalidArgumentException( 'invalid clinic manager designation context' );
+        }
+        if ( false === get_userdata( $target_user_id ) ) {
+            throw new InvalidArgumentException( 'clinic manager user not found' );
+        }
+
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id, $clinic_id, $target_user_id ): array {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [ $organization_id ]
+                );
+                if (
+                    null === $organization
+                    || 'active' !== (string) $organization['status']
+                    || ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY_CLINIC_MANAGER )
+                ) {
+                    throw new RuntimeException( 'organization clinic manager designation denied' );
+                }
+
+                $clinic = $this->db->fetchRowForUpdate(
+                    'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [ $clinic_id ]
+                );
+                if ( null === $clinic || (int) $clinic['organization_id'] !== $organization_id ) {
+                    throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                $existing = $this->db->fetchRowForUpdate(
+                    'SELECT id, role_key, status FROM ' . $this->db->table( 'cpms_clinic_memberships' )
+                    . ' WHERE clinic_id = %d AND wp_user_id = %d LIMIT 1',
+                    [ $clinic_id, $target_user_id ]
+                );
+                if ( null !== $existing ) {
+                    if ( 'active' === (string) $existing['status'] && self::CLINIC_MANAGER_ROLE_KEY === (string) $existing['role_key'] ) {
+                        return [
+                            'clinic_id'     => $clinic_id,
+                            'membership_id' => (int) $existing['id'],
+                            'noop'          => true,
+                            'audit_id'      => null,
+                        ];
+                    }
+                    throw new RuntimeException( 'clinic membership already exists' );
+                }
+
+                $now = $this->db->nowUtcSql();
+                if ( ! $this->db->insert(
+                    'cpms_clinic_memberships',
+                    [
+                        'clinic_id'             => $clinic_id,
+                        'wp_user_id'            => $target_user_id,
+                        'role_key'              => self::CLINIC_MANAGER_ROLE_KEY,
+                        'scope_mode'            => 'clinic',
+                        'status'                => 'active',
+                        'is_primary'            => 0,
+                        'invited_by_wp_user_id' => $actor_id,
+                        'created_at'            => $now,
+                        'updated_at'            => $now,
+                    ]
+                ) ) {
+                    throw new RuntimeException( 'clinic manager membership insert failed' );
+                }
+                $membership_id = $this->db->wpdb_last_insert_id();
+                if ( $membership_id <= 0 ) {
+                    throw new RuntimeException( 'clinic manager membership id unavailable' );
+                }
+
+                $this->db->query(
+                    'UPDATE ' . $this->db->table( 'cpms_clinics' ) . ' SET first_setup_claimed_at = %s'
+                    . ' WHERE id = %d AND first_setup_claimed_at IS NULL',
+                    [ $now, $clinic_id ]
+                );
+
+                $audit_id = $this->audit->log(
+                    self::MANAGER_AUDIT_ACTION,
+                    [
+                        'wp_user_id' => $actor_id,
+                        'role'       => 'organization_manager',
+                    ],
+                    'clinic',
+                    $clinic_id,
+                    null,
+                    null,
+                    [
+                        'membership_id' => (int) $membership_id,
+                        'wp_user_id'    => $target_user_id,
+                        'role_key'      => self::CLINIC_MANAGER_ROLE_KEY,
+                    ],
+                    [
+                        'op'              => 'clinic_manager_designate',
+                        'organization_id' => $organization_id,
+                    ],
+                    $clinic_id
+                );
+
+                return [
+                    'clinic_id'     => $clinic_id,
+                    'membership_id' => (int) $membership_id,
+                    'noop'          => false,
+                    'audit_id'      => (int) $audit_id,
                 ];
             }
         );

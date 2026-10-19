@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Admin;
 
 use ClinicCore\Application\Clinic\ClinicProfileException;
+use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
@@ -1315,7 +1316,10 @@ final class CpmsSetupWizard
                 <div class="notice notice-warning inline" data-cpms-inpatient-unsupported="1"><p>بخش بستری و سامانهٔ جامع بیمارستانی پشتیبانی نمی‌شود؛ این راه‌اندازی فقط درمانگاه‌ها و فرایندهای سرپایی را پوشش می‌دهد.</p></div>
             <?php endif; ?>
             <?php if ( $flow === 'medical_building' ) : ?>
-                <div class="notice notice-info inline" data-cpms-multi-clinic-blocked="1"><p>ایجاد درمانگاه مستقل فقط با عضویت صریح مدیر سازمان و در محدودهٔ همان سازمان مجاز است؛ این اختیار دسترسی بالینی یا مالی ایجاد نمی‌کند. ایجاد درمانگاه: <a href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-organizations' ) ); ?>">مدیریت سازمان و درمانگاه‌ها</a>. گام‌های تطبیقی درمانگاه‌های جدید در این ویزارد هنوز پیاده‌سازی نشده‌اند.</p></div>
+                <div class="notice notice-info inline" data-cpms-multi-clinic-blocked="1"><p>ایجاد درمانگاه مستقل فقط با عضویت صریح مدیر سازمان و در محدودهٔ همان سازمان مجاز است؛ این اختیار دسترسی بالینی یا مالی ایجاد نمی‌کند. ایجاد درمانگاه: <a href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-organizations' ) ); ?>">مدیریت سازمان و درمانگاه‌ها</a>. این ویزارد فقط همین کلینیک را پیکربندی می‌کند؛ ساخت و پیکربندی درمانگاه‌های مستقل در راه‌اندازی سازمانی انجام می‌شود.</p></div>
+            <?php endif; ?>
+            <?php if ( in_array( $flow, FacilitySetupService::FLOWS, true ) ) : ?>
+                <div class="notice notice-info inline" data-cpms-org-facility-journey="1"><p>راه‌اندازی سازمانیِ چنددرمانگاهی (ساختمان‌ها، درمانگاه‌ها، مدیر هر درمانگاه، اتاق‌ها، پزشکان، برنامهٔ هفتگی، سیاست رزرو، بازبینی و فعال‌سازی) با اختیار صریح مدیر سازمان انجام می‌شود: <a href="<?php echo esc_url( admin_url( 'admin.php?page=' . FacilitySetupPage::PAGE ) ); ?>">راه‌اندازی مرکز چنددرمانگاهی</a></p></div>
             <?php endif; ?>
         </div>
         <?php
