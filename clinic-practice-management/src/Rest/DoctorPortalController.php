@@ -428,7 +428,12 @@ final class DoctorPortalController extends RestBase {
 		}
 		$guard    = $this->workspace_authorize_visit( $visit_id );
 		if ( $guard instanceof WP_Error ) {
-			$this->workspace_handwriting_denial( $visit_id, $operation, $r );
+			// A guard denial whose bounded reason is the operational Location is a
+			// Location-scope denial: it must be audited as such, not as the route
+			// operation, so the bounded reason and the audit agree.
+			$guard_reason = (string) ( $guard->get_error_data()['reason'] ?? '' );
+			$denial_kind  = 'CLINIC_SCOPE_UNAVAILABLE' === $guard->get_error_code() && 'location' === $guard_reason ? 'location' : $operation;
+			$this->workspace_handwriting_denial( $visit_id, $denial_kind, $r );
 			return $guard;
 		}
 
