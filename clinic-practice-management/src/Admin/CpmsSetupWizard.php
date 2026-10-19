@@ -158,7 +158,7 @@ final class CpmsSetupWizard
         // marker for merely-viewed, zero-membership installations).
         ?>
         <div class="wrap" dir="rtl">
-            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html((string) ($index + 1)); ?> از <?php echo esc_html((string) count($steps)); ?></h1>
+            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?></h1>
             <p class="description">
                 این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، مطب را راه بیندازید.
                 پیشرفت شما ذخیره می‌شود و هر زمان می‌توانید ادامه دهید.
@@ -980,13 +980,13 @@ final class CpmsSetupWizard
         $active = [];
         foreach ( $ids as $id ) {
             if ( isset( $by_id[ $id ] ) ) {
-                $step             = $by_id[ $id ];
-                $step['required'] = in_array( $id, $required, true );
                 // Facility-aware nav/heading wording (single source of truth:
                 // FacilityTypeCatalog::step_title()) — e.g. "اطلاعات بیمارستان
                 // (فقط سرپایی)" for a hospital instead of the generic
                 // "اطلاعات کلینیک", or "دندانپزشکان" instead of "پزشکان" for a
                 // dental clinic. Other step ids keep their generic title.
+                $step             = $by_id[ $id ];
+                $step['required'] = in_array( $id, $required, true );
                 $step['title']    = FacilityTypeCatalog::step_title( $facility, $id, $step['title'] );
                 $active[]         = $step;
             }

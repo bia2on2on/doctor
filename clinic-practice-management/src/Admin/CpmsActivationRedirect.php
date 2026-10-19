@@ -30,13 +30,12 @@ namespace ClinicCore\Admin;
  *  - A clear route back to the wizard always remains available from the
  *    CPMS admin menu regardless of this one-shot redirect's outcome.
  */
-final class CpmsActivationRedirect
-{
+final class CpmsActivationRedirect {
+
     private const TRANSIENT = 'cpms_activation_redirect_uid';
 
-    public static function register(): void
-    {
-        add_action('admin_init', [self::class, 'maybe_redirect'], 20);
+    public static function register(): void {
+        add_action( 'admin_init', [ self::class, 'maybe_redirect' ], 20 );
     }
 
     /**
@@ -44,37 +43,36 @@ final class CpmsActivationRedirect
      * Deliberately as small and side-effect-free as possible: it only
      * arms a short-lived, single-admin flag; it never decides to redirect.
      */
-    public static function flag_activation(bool $network_wide): void
-    {
-        if ($network_wide) {
+    public static function flag_activation( bool $network_wide ): void {
+        if ( $network_wide ) {
             // Network-wide activation has no single "the admin who activated
             // it" — never force any one site admin into the wizard for it.
             return;
         }
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only detection of WordPress's own bulk-activation request shape, not a trusted input value.
-        if (isset($_GET['activate-multi'])) {
+        if ( isset( $_GET['activate-multi'] ) ) {
             // WordPress bulk "activate selected plugins": no single plugin's
             // onboarding should hijack that shared admin screen.
             return;
         }
-        if (\function_exists('wp_doing_cron') && wp_doing_cron()) {
+        if ( \function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
             return;
         }
-        if (\defined('WP_CLI') && WP_CLI) {
+        if ( \defined( 'WP_CLI' ) && WP_CLI ) {
             return;
         }
-        if (\defined('REST_REQUEST') && REST_REQUEST) {
+        if ( \defined( 'REST_REQUEST' ) && REST_REQUEST ) {
             return;
         }
 
         $uid = (int) get_current_user_id();
-        if ($uid <= 0) {
+        if ( $uid <= 0 ) {
             // No identifiable human admin in this request (e.g. programmatic
             // activation from a deploy script) — nothing safe to redirect.
             return;
         }
 
-        set_transient(self::TRANSIENT, $uid, 60);
+        set_transient( self::TRANSIENT, $uid, 60 );
     }
 
     /**
@@ -82,67 +80,66 @@ final class CpmsActivationRedirect
      * every safety condition holds. Always deletes the transient so a
      * single observation — redirect or not — can never repeat or loop.
      */
-    public static function maybe_redirect(): void
-    {
-        if (\function_exists('wp_doing_ajax') && wp_doing_ajax()) {
+    public static function maybe_redirect(): void {
+        if ( \function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) {
             return;
         }
-        if (\function_exists('wp_doing_cron') && wp_doing_cron()) {
+        if ( \function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
             return;
         }
-        if (\defined('REST_REQUEST') && REST_REQUEST) {
+        if ( \defined( 'REST_REQUEST' ) && REST_REQUEST ) {
             return;
         }
-        if (\defined('WP_CLI') && WP_CLI) {
+        if ( \defined( 'WP_CLI' ) && WP_CLI ) {
             return;
         }
-        if (\defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        if ( \defined( 'DOING_AUTOSAVE' ) && DOING_AUTOSAVE ) {
             return;
         }
-        if (\defined('IFRAME_REQUEST') && IFRAME_REQUEST) {
+        if ( \defined( 'IFRAME_REQUEST' ) && IFRAME_REQUEST ) {
             return;
         }
 
-        $flagged_uid = get_transient(self::TRANSIENT);
-        if ($flagged_uid === false) {
+        $flagged_uid = get_transient( self::TRANSIENT );
+        if ( false === $flagged_uid ) {
             return;
         }
         // One-shot: delete immediately, before any further check, so no
         // later request (redirect taken or not) can ever observe it again.
-        delete_transient(self::TRANSIENT);
+        delete_transient( self::TRANSIENT );
 
         // No redundant is_admin() gate: admin_init only ever fires inside
         // wp-admin itself (same reasoning as CpmsAssets::isCpmsPage()), and
         // an explicit is_admin() check here would make this method untestable
         // under WP_UnitTestCase, where WP_ADMIN is never defined.
-        if (!current_user_can('manage_options')) {
+        if ( ! current_user_can( 'manage_options' ) ) {
             return;
         }
-        if ((int) get_current_user_id() !== (int) $flagged_uid) {
+        if ( (int) get_current_user_id() !== (int) $flagged_uid ) {
             // Only the exact Administrator who activated the plugin is ever
             // redirected; a different concurrently logged-in admin is not.
             return;
         }
 
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only page-slug check to avoid a redirect loop; not a trusted input value.
-        $current_page = isset($_GET['page']) ? sanitize_key(wp_unslash($_GET['page'])) : '';
-        if ($current_page === CpmsSetupWizard::PAGE_SLUG) {
+        $current_page = isset( $_GET['page'] ) ? sanitize_key( wp_unslash( $_GET['page'] ) ) : '';
+        if ( CpmsSetupWizard::PAGE_SLUG === $current_page ) {
             return;
         }
 
         global $pagenow;
-        if (\in_array($pagenow, ['update.php', 'update-core.php', 'async-upload.php'], true)) {
+        if ( \in_array( $pagenow, [ 'update.php', 'update-core.php', 'async-upload.php' ], true ) ) {
             // Never interrupt an in-flight plugin/theme update or upload flow.
             return;
         }
 
         // Single source of truth shared with the wizard's own embedded panel:
         // only redirect while first-run attention is genuinely still needed.
-        if (!CpmsSetupWizard::onboarding_panel_applies()) {
+        if ( ! CpmsSetupWizard::onboarding_panel_applies() ) {
             return;
         }
 
-        wp_safe_redirect(admin_url('admin.php?page=' . CpmsSetupWizard::PAGE_SLUG));
+        wp_safe_redirect( admin_url( 'admin.php?page=' . CpmsSetupWizard::PAGE_SLUG ) );
         exit;
     }
 }

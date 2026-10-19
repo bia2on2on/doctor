@@ -79,8 +79,8 @@ final class CpmsAssets
         // Jalali-equivalent companion next to every real calendar-date input
         // on CPMS admin screens. Never touches weekday/time-range scheduling
         // inputs (see cpms-jalali-date.js docblock for the exact boundary).
-        wp_enqueue_style('cpms-jalali-date', $base . '/assets/css/cpms-jalali-date.css', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev');
-        wp_enqueue_script('cpms-jalali-date', $base . '/assets/js/cpms-jalali-date.js', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', true);
+        wp_enqueue_style( 'cpms-jalali-date', $base . '/assets/css/cpms-jalali-date.css', [], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev' );
+        wp_enqueue_script( 'cpms-jalali-date', $base . '/assets/js/cpms-jalali-date.js', [], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', true );
     }
 
     /** body class اسکوپِ CSS — فقط در صفحات CPMS. */

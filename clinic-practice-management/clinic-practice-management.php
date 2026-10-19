@@ -68,7 +68,7 @@ if (!function_exists('cpms_session_id')) {
 register_activation_hook(__FILE__, [App::class, 'activate']);
 // Safe one-shot first-launch redirect (Administrator-only, state-aware, no
 // network/bulk-activation interference — see CpmsActivationRedirect docblock).
-register_activation_hook(__FILE__, [\ClinicCore\Admin\CpmsActivationRedirect::class, 'flag_activation']);
+register_activation_hook( __FILE__, [ \ClinicCore\Admin\CpmsActivationRedirect::class, 'flag_activation' ] );
 register_deactivation_hook(__FILE__, [App::class, 'deactivate']);
 
 App::boot();
