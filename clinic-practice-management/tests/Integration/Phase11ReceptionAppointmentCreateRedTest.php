@@ -1163,9 +1163,10 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
      */
     private function slotIds(WP_REST_Response $res): array
     {
-        if ($res->get_status() !== 200) {
-            return [-1];
-        }
+        // Denial envelopes carry no rows. Reading whatever the envelope holds
+        // (instead of short-circuiting on the status code) keeps the assertion
+        // meaningful in both directions: a 400 that leaked Slot rows still
+        // yields their ids and fails, while a fail-closed 400 yields [].
         $ids = [];
         foreach ((array) ($this->payload($res)['slots'] ?? []) as $row) {
             $ids[] = (int) ((array) $row)['slot_id'];

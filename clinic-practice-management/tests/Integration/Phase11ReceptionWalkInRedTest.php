@@ -784,9 +784,8 @@ final class Phase11ReceptionWalkInRedTest extends WP_UnitTestCase
      */
     private function clinicianIds(WP_REST_Response $res): array
     {
-        if ($res->get_status() !== 200) {
-            return [-1];
-        }
+        // Denial envelopes carry no rows; read the envelope so a 400 that
+        // leaked clinician rows still fails the assertion.
         $ids = [];
         foreach ((array) ($this->payload($res)['clinicians'] ?? []) as $row) {
             $ids[] = (int) ((array) $row)['id'];

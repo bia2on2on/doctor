@@ -567,9 +567,6 @@ final class DoctorPortalController extends RestBase {
 				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
 			);
 		}
-		if ( ! App::authorization_service()->can( (int) $user->ID, $clinic_id, $cap ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
-		}
 		$location_id = $this->explicit_request_id( $r, 'X-CPMS-Location-Id', 'location_id' );
 		if ( null === $location_id ) {
 			if ( $this->has_request_selector( $r, 'X-CPMS-Location-Id', 'location_id' ) ) {
@@ -587,12 +584,23 @@ final class DoctorPortalController extends RestBase {
 				[ 'field' => 'location_id', 'reason' => 'location_required' ]
 			);
 		}
-		return RestClinicContext::bind_doctor_portal_scope_after_authorization(
+		// Location eligibility is evaluated before the capability probe so an
+		// explicit inactive/foreign Location keeps its stable scope-denial
+		// contract instead of being masked by CLINIC_PERMISSION_DENIED. The
+		// capability itself is still enforced below, before any handler runs.
+		$bound = RestClinicContext::bind_doctor_portal_scope_after_authorization(
 			$r,
 			(int) $user->ID,
 			$clinic_id,
 			$location_id
 		);
+		if ( $bound instanceof WP_Error ) {
+			return $bound;
+		}
+		if ( ! App::authorization_service()->can( (int) $user->ID, $clinic_id, $cap ) ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		return $bound;
 	}
 
 	/**
