@@ -76,7 +76,7 @@ final class RestClinicContext
                 $scope = $establisher->establish( $user_id, $ids['clinic_id'], $ids['location_id'] );
             }
         } catch (ScopeRequiredException $e) {
-            self::audit_handwriting_location_denial($request, $e);
+            self::audit_handwriting_location_denial( $request, $e );
             return self::toError($e);
         }
 

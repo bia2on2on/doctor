@@ -483,7 +483,7 @@ final class BookingService
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
             // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
             // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
-            $this->assertWindow($slotDate, $slotTime, $min_lead, $settings);
+            $this->assertWindow( $slotDate, $slotTime, $min_lead, $settings );
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
@@ -518,7 +518,7 @@ final class BookingService
 
         $ttl = (int) $settings->get('booking.hold_ttl_sec', 600);
         $token = self::uuid4();
-        $expires_at = (new \DateTimeImmutable('+ ' . $ttl . ' seconds', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.000');
+        $expires_at = ( new \DateTimeImmutable( '+ ' . $ttl . ' seconds', new \DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d H:i:s.000' );
 
         $has_patient_col = $this->holdsHasPatientIdColumn();
         $wp_user_id      = (int) func_get_arg( 0 );
@@ -1126,13 +1126,13 @@ final class BookingService
         ?int $new_slot_id,
         string $actor
     ): array {
-        if (!is_string($idem_key) || $idem_key === '') {
+        if ( !is_string( $idem_key ) || $idem_key === '' ) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
         // C6: دامنهٔ کلید = کلینیک نوبت (پیش از claim خوانده می‌شود)
         $scope_appt = $this->appointments->find( $appointment_id );
-        if ($scope_appt === null) {
+        if ( $scope_appt === null ) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
         $idem_clinic_id = (int) $scope_appt['clinic_id'];
@@ -1342,7 +1342,7 @@ final class BookingService
                 }
             );
         } catch (Throwable $e) {
-            $this->idem->release($idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id);
+            $this->idem->release( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
             throw $this->toBookingException($e);
         }
 
@@ -1373,7 +1373,7 @@ final class BookingService
 
         $patient = $this->patients->find( (int) $old_appt['patient_id'] );
         if ($patient !== null) {
-            $this->sendAppointmentSms(SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $new_appt);
+            $this->sendAppointmentSms( SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $new_appt );
         }
 
         return $response;
@@ -1936,8 +1936,8 @@ final class BookingService
             }
             if ( (string) $slot['slot_date'] !== $slotDate || $this->normalize_slot_time( (string) $slot['slot_time'] ) !== $this->normalize_slot_time( $slotTime ) ) {
                 // Allow H:i vs H:i:s normalization but require date/time match if both supplied
-                $normRequested = substr($slotDate . ' ' . $this->normalize_slot_time($slotTime), 0, 19);
-                $normSlot = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time((string) $slot['slot_time']);
+                $normRequested = substr( $slotDate . ' ' . $this->normalize_slot_time( $slotTime ), 0, 19 );
+                $normSlot = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time( (string) $slot['slot_time'] );
                 if (substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
                 }

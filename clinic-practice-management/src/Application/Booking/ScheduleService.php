@@ -101,7 +101,7 @@ final class ScheduleService
          *      فقط از Scope مورد اعتمادِ درخواست.
          */
         $location_id = $this->intField( $fields, 'location_id' );
-        if ($this->locations->findActiveForClinic( $clinic_id, $location_id ) === null) {
+        if ( $this->locations->findActiveForClinic( $clinic_id, $location_id ) === null ) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'محل یافت نشد', 404);
         }
 
@@ -231,7 +231,7 @@ final class ScheduleService
 
         $updated = (array) $this->schedules->find($id);
         $view = $this->scheduleView($updated);
-        $this->audit( 'SCHEDULE_UPDATED', $actor_user_id, 'schedule', $id, null, $this->scheduleView($current), $view );
+        $this->audit( 'SCHEDULE_UPDATED', $actor_user_id, 'schedule', $id, null, $this->scheduleView( $current ), $view );
         $this->op->info(
             'config.schedule_updated',
             [

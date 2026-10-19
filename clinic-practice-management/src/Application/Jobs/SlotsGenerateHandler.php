@@ -111,8 +111,8 @@ final class SlotsGenerateHandler
 
         $generated = 0;
         foreach ($clinicians as $clinician) {
-            $home_clinic_id = (int) ($clinician['clinic_id'] ?? 0);
-            if ($home_clinic_id <= 0) {
+            $home_clinic_id = (int) ( $clinician['clinic_id'] ?? 0 );
+            if ( $home_clinic_id <= 0 ) {
                 $this->op->warning('SLOTS_GEN_SKIP_NO_CLINIC', ['clinician_id' => $clinician['clinician_id'] ?? 0]);
                 continue;
             }
@@ -121,9 +121,9 @@ final class SlotsGenerateHandler
             // authoritative and is served only through the profile's home Clinic
             // (compat) or a durable ACTIVE membership. Anything else fails closed
             // for this row only — no fallback to the home Clinic, no guessing.
-            $schedule_clinic_id = (int) ($clinician['schedule_clinic_id'] ?? 0);
-            $has_membership = ($clinician['schedule_membership_id'] ?? null) !== null;
-            if ($schedule_clinic_id <= 0 || ($schedule_clinic_id !== $home_clinic_id && !$has_membership)) {
+            $schedule_clinic_id = (int) ( $clinician['schedule_clinic_id'] ?? 0 );
+            $has_membership = ( $clinician['schedule_membership_id'] ?? null ) !== null;
+            if ( $schedule_clinic_id <= 0 || ( $schedule_clinic_id !== $home_clinic_id && !$has_membership ) ) {
                 $this->op->warning('SLOTS_GEN_SKIP_CLINIC_MISMATCH', [
                     'clinician_id' => $clinician['clinician_id'],
                     'clinician_clinic_id' => $home_clinic_id,
@@ -141,9 +141,9 @@ final class SlotsGenerateHandler
             // Schedule.location_id is durable/NOT NULL (migration 0013). An explicit
             // persisted Location is NEVER overridden or silently replaced by the
             // primary Location: a broken reference fails closed for this row.
-            $schedule_location_id = (int) ($clinician['location_id'] ?? 0);
-            $joined_location_id = (int) ($clinician['loc_id'] ?? 0);
-            if ($schedule_location_id <= 0 || $joined_location_id !== $schedule_location_id) {
+            $schedule_location_id = (int) ( $clinician['location_id'] ?? 0 );
+            $joined_location_id = (int) ( $clinician['loc_id'] ?? 0 );
+            if ( $schedule_location_id <= 0 || $joined_location_id !== $schedule_location_id ) {
                 $this->op->warning('SLOTS_GEN_SKIP_LOCATION_INVALID', [
                     'clinician_id' => $clinician['clinician_id'],
                     'clinic_id' => $clinic_id,
@@ -153,8 +153,8 @@ final class SlotsGenerateHandler
             }
 
             // Location must belong to the SAME authoritative Clinic as the row.
-            $location_clinic_id = (int) ($clinician['location_clinic_id'] ?? 0);
-            if ($location_clinic_id !== $clinic_id) {
+            $location_clinic_id = (int) ( $clinician['location_clinic_id'] ?? 0 );
+            if ( $location_clinic_id !== $clinic_id ) {
                 $this->op->warning('SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH', [
                     'clinician_id' => $clinician['clinician_id'],
                     'schedule_clinic_id' => $clinic_id,
@@ -177,8 +177,8 @@ final class SlotsGenerateHandler
             }
 
             // Validated IANA timezone — no fallback to Clinic/WordPress/PHP timezone.
-            $location_tz = $this->locationTimezone((string) ($clinician['location_timezone'] ?? ''));
-            if ($location_tz === null) {
+            $location_tz = $this->locationTimezone( (string)  ( $clinician['location_timezone'] ?? '' ) );
+            if ( $location_tz === null ) {
                 $this->op->warning('SLOTS_GEN_SKIP_LOCATION_TZ_INVALID', [
                     'clinician_id' => $clinician['clinician_id'],
                     'clinic_id' => $clinic_id,
@@ -213,7 +213,7 @@ final class SlotsGenerateHandler
                     continue;
                 }
             } else {
-                $horizon = $this->horizonForClinic($clinic_id);
+                $horizon = $this->horizonForClinic( $clinic_id );
                 if ($horizon === null) {
                     // Settings failure for this Clinic — fail-closed for this Clinic only,
                     // do NOT use another Clinic's horizon and do NOT fail entire sweep.
@@ -228,10 +228,10 @@ final class SlotsGenerateHandler
             // → Clinic → Clinician → Schedule → Location in the shared lock order.
             $slot_candidates = [];
             for ($day = 1; $day <= $horizon; $day++) {
-                $date_obj = $anchor->add(new DateInterval('P' . $day . 'D'));
-                $date = $date_obj->format('Y-m-d');
+                $date_obj = $anchor->add( new DateInterval( 'P' . $day . 'D' ) );
+                $date = $date_obj->format( 'Y-m-d' );
                 try {
-                    $slots = $this->generateDaySlots($clinician, $clinic_id, $date, $date_obj, $location_id);
+                    $slots = $this->generateDaySlots( $clinician, $clinic_id, $date, $date_obj, $location_id );
                 } catch (DomainException $e) {
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
