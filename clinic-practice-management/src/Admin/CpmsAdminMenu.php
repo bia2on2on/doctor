@@ -191,7 +191,7 @@ final class CpmsAdminMenu
             return;
         }
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only page-slug check, not a trusted input value.
-        if (isset($_GET['page']) && sanitize_key(wp_unslash($_GET['page'])) === CpmsSetupWizard::PAGE_SLUG) {
+        if ( isset( $_GET['page'] ) && sanitize_key( wp_unslash( $_GET['page'] ) ) === CpmsSetupWizard::PAGE_SLUG ) {
             // Never render (and never consume the one-shot flag) ON the setup
             // wizard itself: a "install complete, start setup" banner is
             // redundant while already standing on that exact page, and the
