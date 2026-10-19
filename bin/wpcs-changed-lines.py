@@ -49,8 +49,8 @@ and never lets a collection failure look like "nothing to check":
   * every file the discovery step reports must actually be inspected: the
     per-file diff must exit 0 and must contain that file's own diff header,
     so an unresolved pathspec cannot silently contribute zero lines;
-  * the parsed `@@` ranges must agree with `git diff --numstat`'s
-    independently measured added-line count for that file.
+  * the parsed `@@` ranges must agree with `git diff --numstat --unified=0`'s
+    independently measured added-line count for that file (same diff context).
 
 An empty added-lines set is therefore only produced when it is *proven*: every
 inspected file either contributed no added line at all (deletion-only /
@@ -86,6 +86,10 @@ EXCLUDED_DIR_RE = re.compile(r"(^|/)(vendor|tests|node_modules)/")
 # `git diff -U0` hunk header: the new-side range is exactly the added lines
 # (unified format with zero context lines).
 HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
+
+# `--numstat --unified=0` emits the numstat row followed by patch text; only
+# this tabular row is the independent count used by the consistency guard.
+NUMSTAT_ROW_RE = re.compile(r"^(?P<added>-|\d+)\t(?:-|\d+)\t.*$")
 
 DIFF_HEADER_PREFIX = "diff --git "
 
@@ -144,21 +148,27 @@ def parse_added_lines(diff_text: str) -> List[int]:
 
 
 def numstat_added(root: str, baseline: str, repo_path: str) -> Optional[int]:
-    """Independently measured added-line count for one file (None = binary)."""
-    proc = git(["diff", "--numstat", "--diff-filter=ACMRT", f"{baseline}...HEAD",
-                "--", repo_path], cwd=root)
-    rows = [row for row in proc.stdout.splitlines() if row.strip()]
+    """Independently measure one file's additions using the hunk parser's diff mode."""
+    # Git can choose different line alignment for `--numstat` with its default
+    # context than for `-U0` (the hunks used by parse_added_lines). A real
+    # ScheduleService diff had 295 default-context additions but 297 in -U0
+    # hunks. Keep the independent count on the same zero-context diff, then
+    # extract its single numstat record from the patch text Git also emits.
+    proc = git(["diff", "--numstat", "--unified=0", "--diff-filter=ACMRT",
+                f"{baseline}...HEAD", "--", repo_path], cwd=root)
+    rows = [match for line in proc.stdout.splitlines()
+            if (match := NUMSTAT_ROW_RE.match(line)) is not None]
     if len(rows) != 1:
         raise CollectorError(
-            f"expected exactly one --numstat row for {repo_path!r}, got {len(rows)}"
+            f"expected exactly one --numstat -U0 row for {repo_path!r}, got {len(rows)}"
         )
-    added = rows[0].split("\t")[0]
+    added = rows[0].group("added")
     if added == "-":
         return None
     try:
         return int(added)
     except ValueError as exc:  # pragma: no cover - defensive
-        raise CollectorError(f"unparsable --numstat added count {added!r}") from exc
+        raise CollectorError(f"unparsable --numstat -U0 added count {added!r}") from exc
 
 
 def verify_inspection_consistency(repo_path: str, declared_added: Optional[int],
@@ -166,8 +176,9 @@ def verify_inspection_consistency(repo_path: str, declared_added: Optional[int],
     """
     The collector's fail-closed invariant.
 
-    `git --numstat` measures the added lines independently of the `@@` hunk
-    ranges, so the two must agree. This is what distinguishes
+    `git diff --numstat --unified=0` reports additions independently of the
+    parsed `@@` ranges, using the same zero-context diff mode, so the two must
+    agree. This is what distinguishes
 
       * "no added PHP lines legitimately exist" (numstat 0, parsed 0) — e.g. a
         deletion-only change, which must NOT fail, from
@@ -182,7 +193,7 @@ def verify_inspection_consistency(repo_path: str, declared_added: Optional[int],
     if declared_added != len(parsed_lines):
         raise CollectorError(
             f"added-line collection is inconsistent for {repo_path!r}: "
-            f"`git diff --numstat` reports {declared_added} added line(s) but the "
+            f"`git diff --numstat --unified=0` reports {declared_added} added line(s) but the "
             f"parsed -U0 hunk ranges yielded {len(parsed_lines)} — the collector "
             f"did not see the changed file's added lines"
         )
@@ -298,7 +309,7 @@ def collect(baseline: str, files_out: str, added_out: str,
     if result.inspections and result.declared_added_total > 0 and not result.added_keys:
         raise CollectorError(
             f"{len(result.inspections)} changed PHP file(s) with "
-            f"{result.declared_added_total} added line(s) per --numstat produced an empty "
+            f"{result.declared_added_total} added line(s) per --numstat -U0 produced an empty "
             f"added-line set"
         )
 
@@ -612,6 +623,57 @@ def test_collector_failure_cannot_silently_pass(base: Path) -> None:
            f"positive control added-line metadata wrong: {_read_lines(base / 'plain-added.txt')}")
 
 
+def test_numstat_uses_zero_context_and_reads_only_its_record(base: Path) -> None:
+    """The independent count uses -U0 and ignores the patch text Git appends."""
+    numstat_row = "297\t92\tplugin/src/ScheduleService.php"
+    hunk_text = (
+        "diff --git a/plugin/src/ScheduleService.php b/plugin/src/ScheduleService.php\n"
+        "--- a/plugin/src/ScheduleService.php\n"
+        "+++ b/plugin/src/ScheduleService.php\n"
+        "@@ -0,0 +1,297 @@\n"
+        + "".join(f"+added_{line};\n" for line in range(297))
+    )
+    combined_output = f"{numstat_row}\n\n{hunk_text}"
+    original_git = globals()["git"]
+    calls: List[Sequence[str]] = []
+
+    def fake_git(args: Sequence[str], cwd: Optional[str] = None, check: bool = True,
+                 env: Optional[dict] = None) -> subprocess.CompletedProcess:
+        calls.append(list(args))
+        return subprocess.CompletedProcess(["git", *args], 0, combined_output, "")
+
+    try:
+        globals()["git"] = fake_git
+        declared = numstat_added("/repo", "baseline", "plugin/src/ScheduleService.php")
+    finally:
+        globals()["git"] = original_git
+
+    _check(len(calls) == 1, f"numstat invoked git {len(calls)} times, expected once")
+    _check("--numstat" in calls[0] and "--unified=0" in calls[0],
+           f"numstat did not use the same zero-context mode as hunk parsing: {calls[0]}")
+    parsed = parse_added_lines(hunk_text)
+    _check(declared == len(parsed) == 297,
+           f"numstat/hunk counts disagree: declared={declared}, parsed={len(parsed)}")
+    verify_inspection_consistency("plugin/src/ScheduleService.php", declared, parsed)
+
+    # The consistency guard must still reject a missing or duplicated record.
+    for output in ("", f"{numstat_row}\n{numstat_row}\n"):
+        def malformed_git(args: Sequence[str], cwd: Optional[str] = None,
+                          check: bool = True, env: Optional[dict] = None,
+                          _output: str = output) -> subprocess.CompletedProcess:
+            return subprocess.CompletedProcess(["git", *args], 0, _output, "")
+
+        try:
+            globals()["git"] = malformed_git
+            numstat_added("/repo", "baseline", "plugin/src/ScheduleService.php")
+        except CollectorError:
+            pass
+        else:
+            raise SelfTestFailure("numstat accepted a missing or duplicated table row")
+        finally:
+            globals()["git"] = original_git
+
+
 def test_nothing_in_scope_is_a_green_no_op(base: Path) -> None:
     """Unchanged policy: no in-scope PHP change is a green no-op, not a failure."""
     repo = _fixture_init(base, "empty-scope")
@@ -662,6 +724,8 @@ SELF_TESTS = (
      test_added_violating_line_is_collected),
     ("deletion-only / no-added-line changes never falsely fail", test_deletion_only_change_does_not_fail),
     ("collector/path failure cannot silently become a valid PASS", test_collector_failure_cannot_silently_pass),
+    ("numstat uses zero-context mode and ignores appended patch text",
+     test_numstat_uses_zero_context_and_reads_only_its_record),
     ("no in-scope PHP change stays a green no-op", test_nothing_in_scope_is_a_green_no_op),
 )
 
