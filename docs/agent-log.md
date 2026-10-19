@@ -1233,3 +1233,35 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **`4cd69d2`**: on multi-Clinic installs, a Clinic-dependent health probe now renders a dedicated informational notice (`data-cpms-health-scope="required"`). Before, it reused the generic health-error notice, whose literal "Critical Error" text misreported a scope requirement as a failure and would trip the harness's critical-error detector. The local WPCS replica still reports 0 violations.
 - Exact-head CI results for the final head are reported on PR #253 only after the runs complete.
 - **Correction (17:10 UTC):** commit `17c0e79` contained **16** tests in `MultiClinicAdminPagesTest`, not 15 as first written in the docs. Head `e8351dd` (24 tests) passed the full Integration suite: CI run `39290307489`, `OK (2159 tests, 63000 assertions)`, with 0 failures, errors or skips. Both First-Practice browser jobs (MySQL 8.4.11 and MariaDB 11.4.13), both Real-WP acceptance prefixes, WPCS, PHPStan, Unit 8.1–8.4, the Closure Gate, Tripwire, Upgrade and Release Artifact also passed on that head.
+
+### [2026-10-19 17:30 UTC] — PR #253 continuation: top-down Organization facility setup (Draft, unmerged)
+
+- **Scope:** this session delivers the Organization-level journey that the earlier PR #253 slices left unimplemented.
+  - **Hospital outpatient network:** facility type first; then identity and outpatient-only acknowledgment, physical
+    sites, repeatable Clinics, Clinic managers, rooms (Locations), clinicians, staff handoff, weekly schedules,
+    booking policy, and review plus activation.
+  - **Medical building:** independent Clinics, each with a distinct explicit manager.
+  - **Unchanged:** the simple-practice seven-step wizard.
+- **`e3a571d`:** `FacilitySetupService`, `FacilitySetupException` and `FacilitySetupPage` (`cpms-facility-setup`).
+  - Also adds `OrganizationClinicProvisioningService::designate_clinic_manager` (capability
+    `cpms_org_clinic_manager_assign`, audited, never overwrites a membership).
+  - Adds the wizard link marker `data-cpms-org-facility-journey`.
+  - Adds 10 integration tests in `tests/Integration/FacilitySetupJourneyTest.php`.
+- **Follow-up commit:** browser journeys in `bin/rwp-first-practice.py` (fixture `facility`).
+  - Full hospital setup through the real page: 2 sites, 2 outpatient Clinics, self-designated managers, 2 rooms,
+    one shared clinician with separate schedules in both Clinics, booking policy, and review plus activation.
+  - Full medical-building setup with two distinct managers.
+  - Negative checks: Organization Manager refused for Clinic configuration, forged Organization, WordPress
+    Administrator without membership, and subscriber.
+  - 390px RTL overflow checks.
+  - Live DB facts are asserted through WP-CLI.
+- **Local validation only:**
+  - php-wasm `-l`;
+  - the WPCS replica (0 violations on added lines);
+  - `py_compile`;
+  - `acceptance-isolation-check.py`.
+  - PHPUnit, MySQL and Chromium are not available locally, so test and browser results come from exact-head CI.
+- **Known limitations, documented in `docs/onboarding-facility-wizard.md`:**
+  - physical sites are plan metadata only;
+  - staff roles are a handoff to the existing per-Clinic page;
+  - delegated hospital Clinic managers are supported but not exercised in the browser path.

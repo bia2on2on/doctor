@@ -242,5 +242,73 @@ The two paragraphs above in this same document (the ones headed "an activation r
 
 **Single-Clinic installs** behave exactly as before.
 
-**Not yet implemented:** the Organization-level hospital and medical-building journey inside the wizard (repeatable
-Clinic creation, rooms, consolidated review). The provisioning entry point remains «مدیریت سازمان و درمانگاه‌ها».
+**Organization-level journey:** see the next section. The per-Clinic wizard links hospital and medical-building flows
+to it (`data-cpms-org-facility-journey="1"`). Existing markers and the «مدیریت سازمان و درمانگاه‌ها» entry point stay.
+
+### Top-down Organization facility setup — hospital outpatient network and medical building (PR #253)
+
+Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمانگاهی» (`admin.php?page=cpms-facility-setup`), service:
+`FacilitySetupService`. The facility type is chosen first and adapts the remaining steps:
+
+| Step | Hospital (outpatient only) | Medical building | Authority |
+|---|---|---|---|
+| 1 Facility type + identity | `hospital` → `hospital_network`; explicit outpatient-only acknowledgment | type + structure `medical_building` | Organization (`cpms_org_clinic_create` + `cpms_org_clinic_lifecycle`) |
+| 2 Physical sites | 1..20 sites | same | Organization |
+| 3 Clinics (repeatable) | outpatient Clinics | independent Clinics | Organization (create + lifecycle) |
+| 4 Clinic manager | explicit user (may be self) | a distinct explicit manager per Clinic | Organization (`cpms_org_clinic_manager_assign`) |
+| 5 Rooms | Locations of that Clinic | same | the actor's own Clinic membership + `cpms_config` |
+| 6 Clinicians | one profile per user; other Clinics get an explicit `cpms_doctor` membership; additive Location assignment | — (each Clinic's own manager) | Clinic |
+| 7 Staff roles | handoff to «کاربران و دسترسی‌ها» with an explicit `clinic_id` (existing GRANT/DENY UI) | — | Clinic |
+| 8 Weekly schedules | per clinician × Clinic × Location via `ScheduleService` | — | Clinic |
+| 9 Booking policy | per Clinic, same keys/bounds as the wizard booking step | — | Clinic |
+| 10 Review + activation | live-row review; explicit confirmation | same | Organization (lifecycle) |
+
+**Entities and boundaries**
+
+- Clinics are created by `OrganizationClinicProvisioningService::provision` and always belong to the chosen
+  Organization; each has its primary Location at the chosen site.
+- Rooms are created by `LocationService::createLocation` inside their Clinic.
+- No new tenant layer is added: Organization → Clinic → Location is unchanged.
+
+**Physical sites (documented limitation)**
+
+- A site is descriptive metadata in the setup plan (label + address).
+- Its address is copied onto the Locations created at that site.
+- It is not a Clinic, not a Location and not a tenant boundary.
+- There is no site entity outside the plan.
+
+**Holding and activation**
+
+- New Clinics are held suspended (the existing lifecycle control: no new demand) until the consolidated review is
+  ready and activation is explicitly confirmed.
+- Setup and Location management continue while a Clinic is held, as documented in
+  `post-onboarding-clinic-location-management.md`.
+
+**Retry, resume and authority**
+
+- *Idempotency and resume:*
+  - every create form carries a server-issued `request_key`;
+  - Clinic and room slugs derive from it deterministically;
+  - a retry, including after a lost plan write, adopts the existing row (only inside the same Organization or Clinic)
+    instead of duplicating it;
+  - duplicate names are refused;
+  - the plan (`cpms_facility_setup_plan_{organization}`, non-autoload) is written under the Organization row lock.
+- *Organization vs. Clinic authority:*
+  - Organization authority never configures a Clinic;
+  - steps 5–9 need the actor's own active membership and `cpms_config` in that Clinic;
+  - WordPress Administrator status grants nothing;
+  - DENY wins for every Organization capability;
+  - existing memberships are never overwritten or reactivated;
+  - inactive Locations and suspended memberships fail closed.
+- *Out of scope:* inpatient wards, beds, inpatient OR and HIS are excluded.
+
+**Dates.** The journey has no calendar-date fields: weekly schedules use weekdays and times, and the booking policy
+uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «پزشکان» page.
+
+**Tests and browser evidence**
+
+- `tests/Integration/FacilitySetupJourneyTest.php` (integration).
+- `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup, forged Organization,
+  WordPress Administrator and subscriber refusal, and 390px RTL.
+- **Known limitation:** the hospital journey designates the Organization Manager as manager of each outpatient Clinic.
+  Delegated per-Clinic managers are supported but not exercised in the browser hospital path.
