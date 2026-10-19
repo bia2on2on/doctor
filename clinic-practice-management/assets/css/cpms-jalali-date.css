@@ -1,32 +1,132 @@
 /*
- * CPMS Jalali (Shamsi) date UX — companion display next to native
- * `input[type="date"]` fields on CPMS admin screens (see cpms-jalali-date.js).
- * Scoped under body.cpms-admin so it never leaks into unrelated wp-admin UI.
+ * CPMS Jalali (Shamsi) date UX — a real entry field (typing + accessible
+ * popup calendar) next to native `input[type="date"]` fields on CPMS admin
+ * screens (see cpms-jalali-date.js). Scoped under body.cpms-admin so it
+ * never leaks into unrelated wp-admin UI.
  */
 body.cpms-admin .cpms-jalali-field {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  position: relative;
 }
 
-body.cpms-admin .cpms-jalali-display {
+body.cpms-admin .cpms-jalali-label {
   font-size: 12px;
   color: #50575e;
   white-space: nowrap;
+}
+
+body.cpms-admin .cpms-jalali-entry {
+  width: 9em;
+  text-align: center;
   direction: rtl;
 }
 
-body.cpms-admin .cpms-jalali-display:empty {
+body.cpms-admin .cpms-jalali-entry[aria-invalid="true"] {
+  border-color: #d63638;
+}
+
+body.cpms-admin .cpms-jalali-trigger {
+  line-height: 1;
+  padding: 2px 8px;
+}
+
+body.cpms-admin .cpms-jalali-status {
+  font-size: 12px;
+  color: #d63638;
+  white-space: normal;
+  direction: rtl;
+}
+
+body.cpms-admin .cpms-jalali-status:empty {
   display: none;
+}
+
+body.cpms-admin .cpms-jalali-popup {
+  position: absolute;
+  z-index: 10000;
+  top: 100%;
+  inset-inline-start: 0;
+  margin-top: 4px;
+  background: #fff;
+  border: 1px solid #c3c4c7;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  padding: 8px;
+  direction: rtl;
+  min-width: 220px;
+}
+
+body.cpms-admin .cpms-jalali-popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+  font-weight: 600;
+}
+
+body.cpms-admin .cpms-jalali-nav {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 8px;
+}
+
+body.cpms-admin .cpms-jalali-weekdays,
+body.cpms-admin .cpms-jalali-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+  text-align: center;
+}
+
+body.cpms-admin .cpms-jalali-weekdays span {
+  font-size: 11px;
+  color: #787c82;
+  padding: 2px 0;
+}
+
+body.cpms-admin .cpms-jalali-day {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+body.cpms-admin .cpms-jalali-day:hover {
+  background: #f0f0f1;
+}
+
+body.cpms-admin .cpms-jalali-day:focus {
+  outline: 2px solid #2271b1;
+  outline-offset: -2px;
+}
+
+body.cpms-admin .cpms-jalali-day.is-selected {
+  background: #2271b1;
+  color: #fff;
+  border-color: #2271b1;
+}
+
+body.cpms-admin .cpms-jalali-day-empty {
+  cursor: default;
+  pointer-events: none;
 }
 
 @media (max-width: 782px) {
   body.cpms-admin .cpms-jalali-field {
     width: 100%;
   }
-  body.cpms-admin .cpms-jalali-display {
-    display: block;
+  body.cpms-admin .cpms-jalali-entry {
+    width: 100%;
     margin-top: 2px;
+  }
+  body.cpms-admin .cpms-jalali-popup {
+    min-width: 260px;
   }
 }

@@ -89,7 +89,7 @@ final class FacilityAdaptiveFlowEvolutionTest extends WP_UnitTestCase {
   }
   self::assertSame('دندانپزشک', FacilityTypeCatalog::type_profile('dental_clinic')['clinician']);
   self::assertSame('مطب', FacilityTypeCatalog::type_profile('doctor_practice')['unit']);
-  self::assertSame('بیمارستان', FacilityTypeCatalog::type_profile('hospital')['unit']);
+  self::assertSame('مرکز درمانی', FacilityTypeCatalog::type_profile('hospital')['unit'], 'hospital unit must be the outpatient-neutral wording, not "بیمارستان" or "کلینیک"');
   self::assertStringContainsString('سرپایی', FacilityTypeCatalog::type_profile('hospital')['name_label'], 'hospital identity label must stay outpatient-scoped');
   self::assertStringContainsString('HIS', FacilityTypeCatalog::type_profile('hospital')['guidance'], 'hospital guidance must name the inpatient/HIS limitation explicitly');
   $generic = FacilityTypeCatalog::type_profile('');

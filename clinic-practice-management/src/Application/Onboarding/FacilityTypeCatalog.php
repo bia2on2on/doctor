@@ -83,7 +83,13 @@ final class FacilityTypeCatalog {
             'mental_health_center'          => ['unit' => 'مرکز سلامت روان', 'clinician' => 'پزشک/درمانگر', 'clinicians' => 'پزشکان/درمانگران', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز سلامت روان: پرونده‌ها در همان مرز کلینیک و با همان قواعد محرمانگی نگه‌داری می‌شود؛ ویزیت‌ها فقط سرپایی هستند.'],
             'specialized_outpatient_center' => ['unit' => 'مرکز درمان سرپایی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز درمان تخصصی سرپایی: فقط فرایندهای سرپایی پشتیبانی می‌شود؛ برنامه و رزرو را متناسب با همان خدمات ثبت کنید.'],
             'limited_surgery_center'        => ['unit' => 'مرکز جراحی محدود', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز جراحی محدود/سرپایی: اتاق عمل را به‌عنوان مکان ثبت و برنامهٔ سرپایی را تعیین کنید؛ بستری شبانه و HIS پشتیبانی نمی‌شود.'],
-            'hospital'                      => ['unit' => 'بیمارستان', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام بیمارستان (فقط محدودهٔ سرپایی)', 'guidance' => 'بیمارستان: فقط درمانگاه‌های سرپایی و فرایندهای سرپایی پشتیبانی می‌شود؛ بخش بستری و سامانهٔ جامع بیمارستانی (HIS) در این محصول وجود ندارد و در گام سلامت باید صریح تأیید شود.'],
+            // Hospital unit wording is deliberately "مرکز درمانی" (not "بیمارستان" and
+            // not the generic "کلینیک"): the picker label above still says "بیمارستان"
+            // so the administrator knows which real-world type they chose, but every
+            // derived onboarding string (step heading, nav title, validation text)
+            // uses the neutral outpatient-facility wording since this product never
+            // operates an inpatient/HIS hospital — only its outpatient clinics.
+            'hospital'                      => ['unit' => 'مرکز درمانی', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز درمانی (فقط محدودهٔ سرپایی)', 'guidance' => 'بیمارستان: فقط درمانگاه‌های سرپایی و فرایندهای سرپایی پشتیبانی می‌شود؛ بخش بستری و سامانهٔ جامع بیمارستانی (HIS) در این محصول وجود ندارد و در گام سلامت باید صریح تأیید شود.'],
             'comprehensive_health_center'   => ['unit' => 'مرکز جامع سلامت', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'مرکز جامع سلامت: خدمات بهداشتی و درمانی سرپایی را با مکان‌ها، برنامهٔ کاری و رزرو پوشش دهید.'],
             'other'                         => ['unit' => 'مرکز', 'clinician' => 'پزشک', 'clinicians' => 'پزشکان', 'name_label' => 'نام مرکز', 'guidance' => 'سایر مراکز: همان گام‌های درمانگاه چندپزشکه با تنظیمات عمومی نمایش داده می‌شود.'],
         ];

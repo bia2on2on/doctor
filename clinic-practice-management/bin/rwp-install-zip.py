@@ -44,6 +44,14 @@ try:
         page.screenshot(path=str(out / 'zip-uploaded.png'), full_page=True)
         with page.expect_navigation(wait_until='domcontentloaded'):
             activate.click()
+        # Real-browser evidence of the automatic first-run wizard open: the
+        # one-shot CpmsActivationRedirect fires on the literal post-activation
+        # landing (plugins.php?activate=true) and sends THIS SAME navigation
+        # straight to the setup wizard -- a dismissible notice alone is not
+        # this requirement; the wizard must actually be the page the browser
+        # lands on, with zero further clicks.
+        check('install.auto_redirect_to_wizard', 'page=cpms-wizard' in page.url)
+        page.screenshot(path=str(out / 'zip-activated-auto-wizard.png'), full_page=True)
         page.goto(base + '/wp-admin/plugins.php')
         # WordPress derives data-slug from the human plugin Name for an
         # uploaded ZIP. data-plugin is the authoritative installed basename.

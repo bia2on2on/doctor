@@ -91,15 +91,18 @@ final class FacilityAwareStepTitlesAndHeadingTest extends WP_UnitTestCase {
         // The exact reported defect must be gone: no generic "اطلاعات کلینیک" pill/heading.
         self::assertStringNotContainsString('اطلاعات کلینیک', $html, 'hospital must not show the generic clinic nav label');
         self::assertStringNotContainsString('راه‌اندازی کلینیک —', $html, 'hospital must not show the generic clinic page heading');
-        self::assertStringContainsString('راه‌اندازی بیمارستان —', $html, 'the page heading must name the selected facility unit');
-        self::assertStringContainsString('اطلاعات بیمارستان', $html, 'the clinic-step nav label must use the hospital unit');
+        // Hospital is presented as outpatient-only "مرکز درمانی", not the
+        // bare "بیمارستان" label used only in the type picker, and never the
+        // generic "کلینیک" wording.
+        self::assertStringContainsString('راه‌اندازی مرکز درمانی —', $html, 'the page heading must name the selected facility unit');
+        self::assertStringContainsString('اطلاعات مرکز درمانی', $html, 'the clinic-step nav label must use the hospital unit');
 
         $steps = CpmsSetupWizard::active_steps();
         $byId  = [];
         foreach ($steps as $s) {
             $byId[$s['id']] = $s;
         }
-        self::assertSame('اطلاعات بیمارستان', $byId['clinic']['title']);
+        self::assertSame('اطلاعات مرکز درمانی', $byId['clinic']['title']);
         self::assertTrue($byId['clinic']['required']);
     }
 

@@ -8,10 +8,12 @@
  *    schedules (weekday + time range) have no calendar date to convert, and
  *    this file intentionally has no code path that could misinterpret one.
  *  - The native input keeps its real value as canonical Gregorian ISO
- *    (`YYYY-MM-DD`): this script only ADDS a live Jalali-equivalent display
- *    and an accessible Jalali picker that writes back a valid Gregorian ISO
- *    string into the SAME native input (dispatching real `input`/`change`
- *    events). No server-side contract, validation or storage format changes.
+ *    (`YYYY-MM-DD`): this script ADDS a real Jalali date-ENTRY text field
+ *    (type/paste a Shamsi date) plus an accessible popup calendar grid; both
+ *    write a valid Gregorian ISO string back into the SAME native input
+ *    (dispatching real `input`/`change` events). The native input is never
+ *    hidden or disabled — it stays independently usable. No server-side
+ *    contract, validation or storage format changes.
  *  - No network dependency: the Gregorian<->Jalali conversion below is the
  *    same table-driven algorithm (+ Borkowski fallback) already used by the
  *    PHP canonical source `ClinicCore\Domain\Time\Jalali`
@@ -244,33 +246,331 @@
     toPersianDigits: toPersianDigits
   };
 
-  // ===================== Progressive enhancement widget =====================
+  // ===================== Real Jalali date-ENTRY widget =====================
+  //
+  // Two ways to enter a real calendar date, both writing the canonical
+  // Gregorian ISO value into the SAME native `input[type="date"]` (real
+  // `input`/`change` events, so any existing listener/validation keeps
+  // working unmodified):
+  //   1. Typing directly into the Jalali text field (`۱۴۰۴/۰۷/۲۷` or
+  //      `1404-07-27`), live-validated on every keystroke/blur.
+  //   2. Picking a day from an accessible popup calendar grid
+  //      (role="dialog" + role="grid"; arrow keys move focus, Enter/Space
+  //      selects, Escape closes and returns focus to the trigger button).
+  // The native input is never hidden, disabled or intercepted: an admin who
+  // prefers the plain Gregorian control can still use it exactly as before,
+  // and the Jalali field stays in sync with it in both directions.
+
+  var JALALI_WEEKDAYS = ['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج'];
+  var JALALI_MONTHS = [
+    'فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور',
+    'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند'
+  ];
+  var uidCounter = 0;
+
+  function todayJalali() {
+    var now = new Date();
+    return toJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
+  }
+
+  /**
+   * Accessible popup calendar grid for ONE enhanced field. Built once per
+   * field; shown/hidden on demand. Returns {element, open, close, toggle}.
+   */
+  function buildCalendarPopup(nativeInput, entryInput, triggerBtn, onPick) {
+    var popup = document.createElement('div');
+    popup.className = 'cpms-jalali-popup';
+    popup.setAttribute('role', 'dialog');
+    popup.setAttribute('aria-label', 'انتخاب تاریخ شمسی');
+    popup.hidden = true;
+
+    var header = document.createElement('div');
+    header.className = 'cpms-jalali-popup-header';
+
+    var prevBtn = document.createElement('button');
+    prevBtn.type = 'button';
+    prevBtn.className = 'cpms-jalali-nav';
+    prevBtn.setAttribute('aria-label', 'ماه قبل');
+    prevBtn.textContent = '\u2039';
+
+    var nextBtn = document.createElement('button');
+    nextBtn.type = 'button';
+    nextBtn.className = 'cpms-jalali-nav';
+    nextBtn.setAttribute('aria-label', 'ماه بعد');
+    nextBtn.textContent = '\u203A';
+
+    var title = document.createElement('span');
+    title.className = 'cpms-jalali-popup-title';
+
+    header.appendChild(prevBtn);
+    header.appendChild(title);
+    header.appendChild(nextBtn);
+
+    var grid = document.createElement('div');
+    grid.className = 'cpms-jalali-grid';
+    grid.setAttribute('role', 'grid');
+
+    var weekdayRow = document.createElement('div');
+    weekdayRow.className = 'cpms-jalali-weekdays';
+    weekdayRow.setAttribute('role', 'row');
+    for (var w = 0; w < JALALI_WEEKDAYS.length; w += 1) {
+      var wd = document.createElement('span');
+      wd.setAttribute('role', 'columnheader');
+      wd.textContent = JALALI_WEEKDAYS[w];
+      weekdayRow.appendChild(wd);
+    }
+
+    var daysWrap = document.createElement('div');
+    daysWrap.className = 'cpms-jalali-days';
+
+    popup.appendChild(header);
+    popup.appendChild(weekdayRow);
+    grid.appendChild(daysWrap);
+    popup.appendChild(grid);
+
+    var view = { jy: MIN_YEAR, jm: 1 };
+    var dayButtons = [];
+
+    function gregorianWeekday(gy, gm, gd) {
+      // Saturday-first week (ش‌ی‌د‌س‌چ‌پ‌ج), matching the Persian calendar.
+      return (new Date(Date.UTC(gy, gm - 1, gd)).getUTCDay() + 1) % 7;
+    }
+
+    function render() {
+      title.textContent = toPersianDigits(String(view.jy)) + ' ' + JALALI_MONTHS[view.jm - 1];
+      daysWrap.innerHTML = '';
+      dayButtons = [];
+      var firstG = toGregorian(view.jy, view.jm, 1);
+      if (!firstG) { return; }
+      var lead = gregorianWeekday(firstG[0], firstG[1], firstG[2]);
+      var len = monthLength(view.jy, view.jm);
+      for (var i = 0; i < lead; i += 1) {
+        var filler = document.createElement('span');
+        filler.className = 'cpms-jalali-day cpms-jalali-day-empty';
+        daysWrap.appendChild(filler);
+      }
+      var selectedIso = nativeInput.value;
+      var selectedJ = selectedIso ? (function () {
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(selectedIso);
+        return m ? toJalali(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)) : null;
+      }()) : null;
+      for (var d = 1; d <= len; d += 1) {
+        (function (day) {
+          var btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'cpms-jalali-day';
+          btn.setAttribute('role', 'gridcell');
+          btn.textContent = toPersianDigits(String(day));
+          btn.tabIndex = -1;
+          if (selectedJ && selectedJ[0] === view.jy && selectedJ[1] === view.jm && selectedJ[2] === day) {
+            btn.classList.add('is-selected');
+            btn.tabIndex = 0;
+          }
+          btn.addEventListener('click', function () {
+            onPick(view.jy, view.jm, day);
+            closePopup();
+            triggerBtn.focus();
+          });
+          btn.addEventListener('keydown', function (ev) { handleDayKeydown(ev, day); });
+          daysWrap.appendChild(btn);
+          dayButtons.push(btn);
+        }(d));
+      }
+      var anyTabbable = false;
+      for (var k = 0; k < dayButtons.length; k += 1) {
+        if (dayButtons[k].tabIndex === 0) { anyTabbable = true; }
+      }
+      if (!anyTabbable && dayButtons.length > 0) { dayButtons[0].tabIndex = 0; }
+    }
+
+    function moveFocus(fromDay, delta) {
+      var targetIndex = (fromDay - 1) + delta;
+      if (targetIndex < 0) {
+        view.jm -= 1;
+        if (view.jm < 1) { view.jm = 12; view.jy -= 1; }
+        render();
+        if (dayButtons.length > 0) { dayButtons[dayButtons.length - 1].tabIndex = 0; dayButtons[dayButtons.length - 1].focus(); }
+        return;
+      }
+      if (targetIndex >= dayButtons.length) {
+        view.jm += 1;
+        if (view.jm > 12) { view.jm = 1; view.jy += 1; }
+        render();
+        if (dayButtons.length > 0) { dayButtons[0].tabIndex = 0; dayButtons[0].focus(); }
+        return;
+      }
+      for (var i = 0; i < dayButtons.length; i += 1) { dayButtons[i].tabIndex = -1; }
+      dayButtons[targetIndex].tabIndex = 0;
+      dayButtons[targetIndex].focus();
+    }
+
+    function handleDayKeydown(ev, day) {
+      switch (ev.key) {
+        case 'ArrowRight': ev.preventDefault(); moveFocus(day, -1); break;
+        case 'ArrowLeft': ev.preventDefault(); moveFocus(day, 1); break;
+        case 'ArrowDown': ev.preventDefault(); moveFocus(day, 7); break;
+        case 'ArrowUp': ev.preventDefault(); moveFocus(day, -7); break;
+        case 'Enter':
+        case ' ':
+          ev.preventDefault();
+          onPick(view.jy, view.jm, day);
+          closePopup();
+          triggerBtn.focus();
+          break;
+        case 'Escape':
+          ev.preventDefault();
+          closePopup();
+          triggerBtn.focus();
+          break;
+        default: break;
+      }
+    }
+
+    prevBtn.addEventListener('click', function () {
+      view.jm -= 1;
+      if (view.jm < 1) { view.jm = 12; view.jy -= 1; }
+      render();
+    });
+    nextBtn.addEventListener('click', function () {
+      view.jm += 1;
+      if (view.jm > 12) { view.jm = 1; view.jy += 1; }
+      render();
+    });
+
+    function openPopup() {
+      var iso = nativeInput.value;
+      var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
+      var j = m ? toJalali(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)) : todayJalali();
+      view.jy = j[0];
+      view.jm = j[1];
+      render();
+      popup.hidden = false;
+      triggerBtn.setAttribute('aria-expanded', 'true');
+      var focusable = null;
+      for (var i = 0; i < dayButtons.length; i += 1) {
+        if (dayButtons[i].tabIndex === 0) { focusable = dayButtons[i]; break; }
+      }
+      (focusable || prevBtn).focus();
+      document.addEventListener('mousedown', onOutsideClick, true);
+    }
+
+    function closePopup() {
+      popup.hidden = true;
+      triggerBtn.setAttribute('aria-expanded', 'false');
+      document.removeEventListener('mousedown', onOutsideClick, true);
+    }
+
+    function onOutsideClick(ev) {
+      if (popup.hidden) { return; }
+      if (popup.contains(ev.target) || ev.target === triggerBtn) { return; }
+      closePopup();
+    }
+
+    return {
+      element: popup,
+      open: openPopup,
+      close: closePopup,
+      toggle: function () { if (popup.hidden) { openPopup(); } else { closePopup(); } }
+    };
+  }
 
   function enhanceField(input) {
     if (!input || input.dataset.cpmsJalaliEnhanced === '1') { return; }
     if (input.getAttribute('data-cpms-no-jalali') === '1') { return; }
     input.dataset.cpmsJalaliEnhanced = '1';
+    uidCounter += 1;
 
     var wrap = document.createElement('span');
     wrap.className = 'cpms-jalali-field';
 
-    var display = document.createElement('span');
-    display.className = 'cpms-jalali-display';
-    display.setAttribute('dir', 'rtl');
-    display.setAttribute('aria-live', 'polite');
+    var entryId = 'cpms-jalali-entry-' + uidCounter;
 
-    function refreshDisplay() {
-      var text = isoToJalaliText(input.value);
-      display.textContent = text !== '' ? '(شمسی: ' + text + ')' : '';
+    var label = document.createElement('label');
+    label.className = 'cpms-jalali-label';
+    label.setAttribute('for', entryId);
+    label.textContent = 'شمسی:';
+
+    var entry = document.createElement('input');
+    entry.type = 'text';
+    entry.id = entryId;
+    entry.className = 'cpms-jalali-entry';
+    entry.setAttribute('dir', 'rtl');
+    entry.setAttribute('inputmode', 'numeric');
+    entry.setAttribute('autocomplete', 'off');
+    entry.setAttribute('placeholder', '۱۴۰۴/۰۱/۰۱');
+    entry.setAttribute('aria-describedby', entryId + '-status');
+
+    var triggerBtn = document.createElement('button');
+    triggerBtn.type = 'button';
+    triggerBtn.className = 'cpms-jalali-trigger button';
+    triggerBtn.setAttribute('aria-haspopup', 'dialog');
+    triggerBtn.setAttribute('aria-expanded', 'false');
+    triggerBtn.setAttribute('aria-label', 'باز کردن تقویم شمسی');
+    triggerBtn.textContent = '\uD83D\uDCC5';
+
+    var status = document.createElement('span');
+    status.className = 'cpms-jalali-status';
+    status.id = entryId + '-status';
+    status.setAttribute('dir', 'rtl');
+    status.setAttribute('aria-live', 'polite');
+
+    function setNativeIso(iso, dispatch) {
+      if (input.value === iso) { return; }
+      input.value = iso;
+      if (dispatch) {
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      }
     }
+
+    function syncEntryFromNative() {
+      entry.value = isoToJalaliText(input.value);
+      entry.removeAttribute('aria-invalid');
+      status.textContent = '';
+    }
+
+    function applyEntryToNative() {
+      var raw = entry.value;
+      if (raw.trim() === '') {
+        entry.removeAttribute('aria-invalid');
+        status.textContent = '';
+        setNativeIso('', true);
+        return;
+      }
+      var iso = jalaliTextToIso(raw);
+      if (iso === null) {
+        entry.setAttribute('aria-invalid', 'true');
+        status.textContent = 'تاریخ شمسی نامعتبر است (مثال: ۱۴۰۴/۰۱/۰۱).';
+        return;
+      }
+      entry.removeAttribute('aria-invalid');
+      status.textContent = '';
+      setNativeIso(iso, true);
+    }
+
+    var popup = buildCalendarPopup(input, entry, triggerBtn, function (jy, jm, jd) {
+      var g = toGregorian(jy, jm, jd);
+      if (!g) { return; }
+      var iso = g[0] + '-' + pad2(g[1]) + '-' + pad2(g[2]);
+      setNativeIso(iso, true);
+      syncEntryFromNative();
+    });
+
+    entry.addEventListener('input', applyEntryToNative);
+    entry.addEventListener('blur', applyEntryToNative);
+    input.addEventListener('input', syncEntryFromNative);
+    input.addEventListener('change', syncEntryFromNative);
+    triggerBtn.addEventListener('click', function () { popup.toggle(); });
 
     input.parentNode.insertBefore(wrap, input);
     wrap.appendChild(input);
-    wrap.appendChild(display);
+    wrap.appendChild(label);
+    wrap.appendChild(entry);
+    wrap.appendChild(triggerBtn);
+    wrap.appendChild(popup.element);
+    wrap.appendChild(status);
 
-    input.addEventListener('input', refreshDisplay);
-    input.addEventListener('change', refreshDisplay);
-    refreshDisplay();
+    syncEntryFromNative();
   }
 
   function enhanceAll(root) {

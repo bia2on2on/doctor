@@ -981,10 +981,10 @@ final class CpmsSetupWizard
         foreach ( $ids as $id ) {
             if ( isset( $by_id[ $id ] ) ) {
                 // Facility-aware nav/heading wording (single source of truth:
-                // FacilityTypeCatalog::step_title()) — e.g. "اطلاعات بیمارستان
-                // (فقط سرپایی)" for a hospital instead of the generic
-                // "اطلاعات کلینیک", or "دندانپزشکان" instead of "پزشکان" for a
-                // dental clinic. Other step ids keep their generic title.
+                // FacilityTypeCatalog::step_title()) — e.g. "اطلاعات مرکز درمانی"
+                // for a hospital instead of the generic "اطلاعات کلینیک", or
+                // "دندانپزشکان" instead of "پزشکان" for a dental clinic. Other
+                // step ids keep their generic title.
                 $step             = $by_id[ $id ];
                 $step['required'] = in_array( $id, $required, true );
                 $step['title']    = FacilityTypeCatalog::step_title( $facility, $id, $step['title'] );
@@ -1530,8 +1530,9 @@ final class CpmsSetupWizard
         }
 
         // Basic pre-validation to keep error messages consistent with old wizard.
-        // Facility-aware unit (e.g. "نام بیمارستان الزامی است."); an unknown/
-        // empty facility selection keeps the historical generic "کلینیک" wording.
+        // Facility-aware unit (e.g. "نام مرکز درمانی الزامی است." for a hospital);
+        // an unknown/empty facility selection keeps the historical generic
+        // "کلینیک" wording.
         $unit = self::current_facility_profile()['unit'];
         if ($name === '') {
             return 'نام ' . $unit . ' الزامی است.';
@@ -1634,8 +1635,11 @@ final class CpmsSetupWizard
      * Whether the embedded first-practice panel (fresh bootstrap,
      * interrupted-setup recovery, or blocked interrupted setup) applies to
      * the current installation state. Read-only.
+     *
+     * Public: also the single source of truth CpmsActivationRedirect reuses
+     * to decide whether a genuine first-run redirect is still warranted.
      */
-    private static function onboarding_panel_applies(): bool {
+    public static function onboarding_panel_applies(): bool {
         try {
             $setup_service = App::first_practice_setup_service();
 

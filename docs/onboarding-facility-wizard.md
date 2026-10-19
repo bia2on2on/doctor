@@ -95,7 +95,7 @@ Only the `clinic` (identity) and `doctors` (clinician roster) step titles/wordin
 | 7 | `mental_health_center` | مرکز سلامت روان | پزشک/درمانگر / پزشکان/درمانگران | اطلاعات مرکز سلامت روان — راه‌اندازی مرکز سلامت روان | پزشکان/درمانگران | سرپایی فقط (guidance) |
 | 8 | `specialized_outpatient_center` | مرکز درمان سرپایی | پزشک / پزشکان | اطلاعات مرکز درمان سرپایی — راه‌اندازی مرکز درمان سرپایی | پزشکان | سرپایی فقط (guidance) |
 | 9 | `limited_surgery_center` | مرکز جراحی محدود | پزشک / پزشکان | اطلاعات مرکز جراحی محدود — راه‌اندازی مرکز جراحی محدود | پزشکان | بدون بستری شبانه/HIS (guidance) |
-| 10 | `hospital` | بیمارستان | پزشک / پزشکان | اطلاعات بیمارستان — راه‌اندازی بیمارستان | پزشکان | **فقط سرپایی**، گام سلامت + تأیید صریح الزامی (`health` اجباری)، بدون HIS/بستری |
+| 10 | `hospital` | مرکز درمانی *(picker label stays `بیمارستان`)* | پزشک / پزشکان | اطلاعات مرکز درمانی — راه‌اندازی مرکز درمانی | پزشکان | **فقط سرپایی**، گام سلامت + تأیید صریح الزامی (`health` اجباری)، بدون HIS/بستری |
 | 11 | `comprehensive_health_center` | مرکز جامع سلامت | پزشک / پزشکان | اطلاعات مرکز جامع سلامت — راه‌اندازی مرکز جامع سلامت | پزشکان | — |
 | 12 | `other` | مرکز | پزشک / پزشکان | اطلاعات مرکز — راه‌اندازی مرکز | پزشکان | — |
 
@@ -122,3 +122,49 @@ The new hard `wp_safe_redirect()` silently won the race against that notice (it 
 ### Tests added
 
 `FacilityAwareStepTitlesAndHeadingTest`, `CpmsJalaliDateAssetsTest` (both Integration, real WordPress Test Suite/MySQL — no code-path was skipped or weakened; both are part of the `Full Integration suite` run that passed with 0 failures/errors on this PR's final head). As with every prior slice in this document: **no PHP/MySQL runtime exists in the agent sandbox**; PHP syntax of every touched file was verified locally with `php-parser` (Node, no PHP interpreter available), and the Jalali JS↔PHP conversion was cross-checked locally with Node for multiple anchor dates (round-trip + Nowruz boundary) — but the authoritative PHPUnit/WPCS/PHPStan/real-browser results (including the one that caught and led to reverting the activation-redirect attempt above) come only from this repository's own CI on the pushed head.
+
+## Continuation batch (2026-10-19T04:33:29Z) — exact hospital wording, re-scoped automatic first-run redirect, real Jalali date entry
+
+Receipt: 2026-10-19T04:33:29Z. Base for this batch: the previous corrective batch's final head (`05b588a069900339ed5fb7869b5a7dab11e2e4a6`), itself based on `main` `e92f4056ebed37004e986353e367e38dea69e130`. `origin/main` unchanged; PR #248 file list re-checked and still has zero overlap with everything touched below.
+
+This batch responds to an explicit owner finding that "green CI does not mean the product mission is complete" and asks for three concrete, previously-incomplete items.
+
+### 1) Hospital wording: "اطلاعات مرکز درمانی", not "اطلاعات کلینیک" and not the bare "بیمارستان"
+
+`FacilityTypeCatalog::type_profile('hospital')['unit']` changed from `'بیمارستان'` to `'مرکز درمانی'`. This is the single source of truth for the `clinic` step's nav label/page content and the wizard's `<h1>` heading, so the hospital flow now shows exactly **"اطلاعات مرکز درمانی"** (step heading) and **"راه‌اندازی مرکز درمانی — قدم N از M"** (page heading) — matching the owner's required string verbatim. The 12-type *picker* label (`FacilityTypeCatalog::all()`, what the administrator selects from) deliberately still reads `"بیمارستان"` so the real-world type stays recognizable; only the *derived* onboarding strings (heading, nav, the `نام ... الزامی است.` validation message) use the neutral outpatient-facility wording, consistent with this product never operating an inpatient/HIS hospital. `name_label` was updated in lockstep to `'نام مرکز درمانی (فقط محدودهٔ سرپایی)'`. The terminology coverage matrix table (row 10) and three existing assertions (`FacilityTypeCatalogTest`, `FacilityAdaptiveFlowEvolutionTest`, `FacilityAwareStepTitlesAndHeadingTest`) were updated to the new exact strings — no assertion was weakened, only its expected value corrected to the new intended wording.
+
+### 2) Automatic first-run wizard open — re-implemented with the exact fix for the prior regression
+
+The prior batch's `CpmsActivationRedirect` was reverted because it ran on `admin_init` for **any** wp-admin page, which fires before `admin_notices` and silently prevented `CpmsAdminMenu::onboardingNotice()` from ever rendering on the dashboard landing the browser test checks.
+
+This batch re-adds `CpmsActivationRedirect` with one structural change that removes the conflict entirely rather than attempting to race or coordinate with the notice: `maybe_redirect()` now **only acts when `$pagenow === 'plugins.php'`** — the literal page WordPress itself returns the admin to immediately after clicking "Activate". This is safe for two independent reasons, both verified:
+- `CpmsAdminMenu::onboardingNotice()` already has its own `if ($screen->id === 'plugins') { return; }` guard, i.e. it **never** renders on `plugins.php` regardless of this redirect. The two features literally cannot compete for the same page.
+- Every other admin page load (dashboard, wizard, any CPMS screen) is now completely untouched by `CpmsActivationRedirect` — confirmed by a new dedicated regression test (`testNonPluginsPageLoadNeverRedirectsAndLeavesTheFlagArmedForTheRealLanding`) that simulates a non-`plugins.php` admin_init first (asserts no redirect, flag still armed) and then the real `plugins.php` landing (asserts the redirect still fires there).
+
+All other original safety properties are unchanged: one-shot (transient consumed on first observation, win or lose — no loop possible), Administrator-capability-gated at redirect time, same-admin-only, state-aware via the shared `CpmsSetupWizard::onboarding_panel_applies()` predicate (now `public` again — its only other caller, the wizard's embedded panel, is unaffected), never armed for network-wide/bulk activation, and defensive bail-outs for AJAX/REST/cron/CLI/autosave/iframe contexts.
+
+**Real-browser evidence (Chromium/Playwright, not code inspection):** `bin/rwp-install-zip.py` — the script that drives the actual "upload ZIP → click Activate" flow in CI — now asserts `install.auto_redirect_to_wizard`: immediately after `activate.click()`'s navigation completes, `page.url` must already contain `page=cpms-wizard`. This is real evidence that the wizard *opens automatically*, not merely that a notice with a link to it exists. The script still performs its own separate, fresh navigation back to `plugins.php` afterward and still asserts the plugin shows as active there — unaffected, because the one-shot transient is consumed by the first (redirected) landing.
+
+`tests/Integration/CpmsActivationRedirectTest.php` was restored with the original 9 methods (fixtures/assertions updated to simulate `$pagenow` explicitly, matching the existing pattern already used by `WooCommerceAdminAccessCoexistenceTest`) plus the new regression test above — 11 methods total.
+
+### 3) Real Jalali date entry (not a read-only companion label)
+
+The previous batch's `assets/js/cpms-jalali-date.js` only added a **read-only** live Jalali-equivalent display next to `input[type="date"]`; it explicitly deferred the interactive typing widget. That is no longer accurate to this product's requirement ("a dismissible notice/label alone is not the same as actually entering a date").
+
+`cpms-jalali-date.js` now adds, next to every real calendar-date `input[type="date"]` on a CPMS admin screen (unchanged scope — weekday/time-range weekly schedule fields are never targeted):
+- A Jalali text-entry field (`type="text"`, RTL, Persian-digit placeholder) the administrator can type or paste a Shamsi date into (`۱۴۰۴/۰۷/۲۷` or ASCII `1404-07-27`), live-validated on every keystroke and on blur; a successfully parsed date writes the converted Gregorian ISO value into the native input and dispatches real `input`/`change` events, so every existing listener/validator on that field keeps working unmodified. An unparseable value is flagged (`aria-invalid="true"` + a visible Persian error message) **without** touching the native input's existing value.
+- An accessible popup calendar grid (`role="dialog"` + `role="grid"`, a labelled trigger button, arrow-key day navigation that crosses month boundaries, Enter/Space to pick, Escape to close and return focus to the trigger) that picks a day and performs the same native-input write-back.
+- The native `input[type="date"]` is never hidden, disabled, or intercepted — editing it directly still works exactly as before and now also re-syncs the Jalali entry field's text (bidirectional).
+
+Canonical storage stays exactly as before: the server only ever sees the native input's Gregorian ISO value; no PHP validation/storage/timezone code changed, and zero scheduling/booking files were touched (no overlap with PR #248). The first concrete real-calendar-date target for this widget is the clinician schedule-**exception** date field in `ClinicianAdminPage.php` (`cpms-clinicians`, an already-allowlisted asset page) — the weekly weekday/time-range schedule UI in the same file was not touched at all.
+
+**Evidence of correctness:** `node --check` (syntax) plus a real, executed functional test of the shipped script against a genuine DOM (Node + `jsdom`, run in this sandbox, not part of CI) exercising: typing a valid Jalali date → correct native ISO value; typing an invalid value → `aria-invalid` set, native value left untouched; editing the native input directly → Jalali entry text re-syncs; opening the popup, rendering ≥28 day cells, clicking a day → correct ISO + popup closes; `Escape` closes the popup. **This is real JS execution against a DOM, not a Chromium/Playwright browser session** — it is disclosed as such and must not be read as CI browser acceptance. `CpmsJalaliDateAssetsTest` (unchanged scope: local-file/no-network-marker + allowlisted-page enqueue) still passes against the updated file.
+
+### Honest status of "real Administrator acceptance, 12 facility types"
+
+This continuation batch did not add a new exhaustive Playwright walkthrough of all 12 facility types end-to-end (time-boxed). What is real, executed-in-CI Chromium evidence after this batch:
+- The existing `First-practice browser` job's personal-practice (`doctor_practice`/`simple_practice`) walkthrough, onboarding-notice checks, and the new `install.auto_redirect_to_wizard` assertion above.
+- The existing `FacilityAdaptiveFlowEvolutionTest`/`FacilityAwareStepTitlesAndHeadingTest`/`FacilityTypeCatalogTest` Integration coverage (real WordPress Test Suite/MySQL in CI, not a browser) exercises all 12 types' terminology, structure compatibility and flow resolution.
+- Hospital outpatient-only wording and medical-building explicit-provisioning-only behavior are covered at the Integration level (DB-backed, real WordPress bootstrap) but **not** independently re-verified via a dedicated new Chromium session in this batch.
+
+Anything beyond the above (e.g. an administrator clicking through all 12 types end-to-end in a live Chromium tab across mobile/tablet/desktop viewports) remains a gap for a future slice and must not be reported as executed browser evidence.
