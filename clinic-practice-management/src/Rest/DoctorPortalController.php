@@ -423,12 +423,12 @@ final class DoctorPortalController extends RestBase {
 			)
 			: null;
 		if ( null === $active_loc ) {
-			$this->workspace_handwriting_denial( $visit_id, 'location' );
+			$this->workspace_handwriting_denial( $visit_id, 'location', $r );
 			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
 		}
 		$guard    = $this->workspace_authorize_visit( $visit_id );
 		if ( $guard instanceof WP_Error ) {
-			$this->workspace_handwriting_denial( $visit_id, $operation );
+			$this->workspace_handwriting_denial( $visit_id, $operation, $r );
 			return $guard;
 		}
 
@@ -449,7 +449,7 @@ final class DoctorPortalController extends RestBase {
 			}
 			// Even a valid foreign document/page is indistinguishable from a missing one.
 			if ( null === $document || (int) $document['visit_id'] !== $visit_id || (int) $document['clinic_id'] !== (int) App::scope()->clinicId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- existing scope contract
-				$this->workspace_handwriting_denial( $visit_id, $operation );
+				$this->workspace_handwriting_denial( $visit_id, $operation, $r );
 				return new WP_Error( 'CLINIC_NOT_FOUND', 'مراجعه یافت نشد', [ 'status' => 404 ] );
 			}
 		}
@@ -496,9 +496,44 @@ final class DoctorPortalController extends RestBase {
 		return $this->error( 'CLINIC_NOT_FOUND', 404, 'مراجعه یافت نشد' );
 	}
 
-	private function workspace_handwriting_denial( int $visit_id, string $operation ): void {
+	private function workspace_handwriting_denial( int $visit_id, string $operation, ?WP_REST_Request $request = null ): void {
+		if ( null !== $request ) {
+			// One audit per denied HTTP request, whichever layer denied it.
+			$request->set_param( '_cpms_hw_audited', true );
+		}
 		$user = wp_get_current_user();
 		App::audit()->log( 'FORBIDDEN_ACCESS_ATTEMPT', [ 'wp_user_id' => (int) $user->ID, 'role' => RolesAndCapabilities::ROLE_DOCTOR ], 'handwriting', $visit_id, null, null, null, [ 'operation' => $operation ] );
+	}
+
+	/**
+	 * Record the denial audit for a handwriting request that the shared scope
+	 * binder rejected before the route callback ran. Runs on the final response
+	 * so early WP_Error short-circuits are still covered, and is idempotent with
+	 * the controller-level denial through the per-request marker.
+	 *
+	 * @param mixed $response Final REST response.
+	 * @param mixed $server   REST server instance.
+	 * @param mixed $request  Current REST request.
+	 * @return mixed
+	 */
+	public function handwriting_post_dispatch( mixed $response, mixed $server, mixed $request ): mixed {
+		unset( $server );
+		if ( ! $response instanceof WP_REST_Response || ! $request instanceof WP_REST_Request ) {
+			return $response;
+		}
+		if ( true === $request->get_param( '_cpms_hw_audited' ) ) {
+			return $response;
+		}
+		$data = $response->get_data();
+		$code = is_array( $data ) ? (string) ( $data['code'] ?? '' ) : '';
+		if ( 'CLINIC_SCOPE_UNAVAILABLE' !== $code || 403 !== (int) $response->get_status() ) {
+			return $response;
+		}
+		if ( ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', (string) $request->get_route(), $matches ) ) {
+			return $response;
+		}
+		$this->workspace_handwriting_denial( (int) $matches[1], 'location', $request );
+		return $response;
 	}
 
 
