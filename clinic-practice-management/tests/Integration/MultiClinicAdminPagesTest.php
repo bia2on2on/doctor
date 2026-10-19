@@ -30,6 +30,11 @@ use WP_UnitTestCase;
  *     Clinicians page; data and writes are bound to the verified selected
  *     Clinic only; a foreign selector is rejected; single-membership behavior
  *     is preserved with the active Clinic shown and carried explicitly.
+ *  B+. A professional shared between Clinics keeps ONE identity (home Clinic A,
+ *     u_clinician_user) and participates in Clinic B through an ACTIVE durable
+ *     membership: Clinic B can manage that professional's schedule at Clinic B
+ *     Locations only, Clinic A rows stay untouched, the profile stays home-only,
+ *     and a suspended participation fails closed.
  *
  * Fixture rules: dynamic Organization/Clinics (ids asserted > 1), durable
  * memberships through the production primitive (cpms_test_seed_membership),
@@ -57,6 +62,17 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     private string $clinicianAName = '';
     private string $clinicianBName = '';
 
+    private int $locA1 = 0;
+    private int $locB1 = 0;
+    private string $locA1Name = '';
+    private string $locB1Name = '';
+
+    /** Shared professional: home Clinic A, ACTIVE membership in A and B. */
+    private int $sharedUserId = 0;
+    private int $sharedClinician = 0;
+    private string $sharedName = '';
+    private int $sharedMembershipB = 0;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -71,14 +87,25 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         $this->orgId = $this->createOrganization();
         $this->clinicA = $this->createClinic('A');
         $this->clinicB = $this->createClinic('B');
-        $this->createLocation($this->clinicA, 'A1');
-        $this->createLocation($this->clinicB, 'B1');
+        $locA1 = $this->createLocation($this->clinicA, 'A1');
+        $locB1 = $this->createLocation($this->clinicB, 'B1');
+        $this->locA1 = $locA1['id'];
+        $this->locA1Name = $locA1['name'];
+        $this->locB1 = $locB1['id'];
+        $this->locB1Name = $locB1['name'];
 
         $unique = bin2hex(random_bytes(3));
         $this->clinicianAName = 'Dr MCA Alpha ' . $unique;
         $this->clinicianBName = 'Dr MCA Beta ' . $unique;
         $this->clinicianA = $this->insertClinician($this->clinicA, $this->clinicianAName);
         $this->clinicianB = $this->insertClinician($this->clinicB, $this->clinicianBName);
+
+        $this->sharedName = 'Dr MCA Shared ' . $unique;
+        $this->sharedUserId = $this->makeUser('mca_shared', RolesAndCapabilities::ROLE_DOCTOR);
+        $this->sharedClinician = $this->insertClinician($this->clinicA, $this->sharedName, $this->sharedUserId);
+        self::assertGreaterThan(0, cpms_test_seed_membership($this->sharedUserId, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR));
+        $this->sharedMembershipB = cpms_test_seed_membership($this->sharedUserId, $this->clinicB, RolesAndCapabilities::ROLE_DOCTOR);
+        self::assertGreaterThan(0, $this->sharedMembershipB);
 
         $this->multiManagerId = $this->makeUser('mca_multi', RolesAndCapabilities::ROLE_MANAGER);
         self::assertGreaterThan(0, cpms_test_seed_membership($this->multiManagerId, $this->clinicA, RolesAndCapabilities::ROLE_MANAGER));
@@ -334,6 +361,80 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Defect B+ — professional shared between two authorized Clinics
+    // ------------------------------------------------------------------
+
+    public function testSharedProfessionalIsListedAsParticipantOnlyInTheParticipatingClinic(): void
+    {
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicB]);
+        self::assertStringContainsString('data-cpms-participants="' . $this->clinicB . '"', $html, 'Clinic B lists participating professionals');
+        self::assertStringContainsString($this->sharedName, $html);
+        self::assertStringContainsString('clinician_id=' . $this->sharedClinician . '&#038;clinic_id=' . $this->clinicB, $html);
+
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicA]);
+        self::assertStringContainsString($this->sharedName, $html, 'home Clinic keeps listing its own professional');
+        self::assertStringNotContainsString('data-cpms-participants=', $html, 'no participant section when nobody participates from elsewhere');
+    }
+
+    public function testSharedProfessionalDetailInParticipatingClinicShowsOnlyThatClinicLocationsAndNoProfileForm(): void
+    {
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicB, 'clinician_id' => (string) $this->sharedClinician]);
+        self::assertStringContainsString('data-cpms-participant-clinician="' . $this->sharedClinician . '"', $html);
+        self::assertStringContainsString('value="cpms_schedule_save"', $html, 'schedule management is available in the participating Clinic');
+        self::assertStringNotContainsString('value="cpms_clinician_save"', $html, 'profile stays home-Clinic only');
+        self::assertStringNotContainsString('cpms_clinician_toggle', $html, 'activation stays home-Clinic only');
+        self::assertStringContainsString($this->locB1Name, $html, 'Clinic B Locations are offered');
+        self::assertStringNotContainsString($this->locA1Name, $html, 'Clinic A Locations never appear in Clinic B');
+
+        $html = $this->renderAs($this->managerAId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicA, 'clinician_id' => (string) $this->sharedClinician]);
+        self::assertStringContainsString('value="cpms_clinician_save"', $html, 'home Clinic keeps the profile form');
+        self::assertStringNotContainsString('data-cpms-participant-clinician=', $html);
+    }
+
+    public function testPerLocationSchedulesOfSharedProfessionalStayInTheirOwnClinic(): void
+    {
+        $saveA = $this->dispatchClinicianAction($this->managerAId, 'cpms_schedule_save', $this->schedulePost($this->clinicA, $this->locA1, 0, '09:00', '12:00'), [ClinicianAdminPage::class, 'saveSchedules']);
+        self::assertStringStartsNotWith('خطا', $saveA['notice'], 'Clinic A schedule saved: ' . $saveA['notice']);
+        $saveB = $this->dispatchClinicianAction($this->multiManagerId, 'cpms_schedule_save', $this->schedulePost($this->clinicB, $this->locB1, 1, '14:00', '18:00'), [ClinicianAdminPage::class, 'saveSchedules']);
+        self::assertStringStartsNotWith('خطا', $saveB['notice'], 'Clinic B schedule saved for the participant: ' . $saveB['notice']);
+        self::assertStringContainsString('clinic_id=' . $this->clinicB, $saveB['location']);
+
+        $rows = $this->scheduleRowsOf($this->sharedClinician);
+        self::assertCount(2, $rows, 'one row per Clinic/Location');
+        self::assertSame([$this->clinicA, $this->locA1, 0, '09:00'], [(int) $rows[0]['clinic_id'], (int) $rows[0]['location_id'], (int) $rows[0]['day_of_week'], substr((string) $rows[0]['start_time'], 0, 5)]);
+        self::assertSame([$this->clinicB, $this->locB1, 1, '14:00'], [(int) $rows[1]['clinic_id'], (int) $rows[1]['location_id'], (int) $rows[1]['day_of_week'], substr((string) $rows[1]['start_time'], 0, 5)]);
+
+        // Clinic B's view never exposes Clinic A's schedule cell.
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicB, 'clinician_id' => (string) $this->sharedClinician]);
+        self::assertStringNotContainsString('sched[0][' . $this->locA1 . ']', $html);
+        self::assertStringContainsString('sched[1][' . $this->locB1 . ']', $html);
+
+        // Clinic B cannot delete Clinic A's row of the same professional.
+        $delete = $this->dispatchClinicianAction($this->multiManagerId, 'cpms_schedule_delete', ['clinician_id' => (string) $this->sharedClinician, 'schedule_id' => (string) $rows[0]['id'], 'clinic_id' => (string) $this->clinicB], [ClinicianAdminPage::class, 'deleteSchedule']);
+        self::assertStringStartsWith('خطا', $delete['notice']);
+        self::assertCount(2, $this->scheduleRowsOf($this->sharedClinician), 'Clinic A row untouched');
+    }
+
+    public function testParticipantProfileIsHomeOnlyAndSuspendedParticipationFailsClosed(): void
+    {
+        $profile = $this->dispatchClinicianAction($this->multiManagerId, 'cpms_clinician_save', ['clinician_id' => (string) $this->sharedClinician, 'full_name' => 'Renamed From B', 'clinic_id' => (string) $this->clinicB], [ClinicianAdminPage::class, 'saveClinician']);
+        self::assertStringStartsWith('خطا', $profile['notice'], 'participating Clinic cannot edit the home profile');
+        self::assertSame([$this->clinicA], $this->clinicIdsOfClinicianNamed($this->sharedName), 'profile unchanged');
+
+        App::membership_service()->suspend_membership($this->sharedMembershipB);
+
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicB]);
+        self::assertStringNotContainsString($this->sharedName, $html, 'suspended participation is not listed');
+        $html = $this->renderAs($this->multiManagerId, [ClinicianAdminPage::class, 'render'], ['clinic_id' => (string) $this->clinicB, 'clinician_id' => (string) $this->sharedClinician]);
+        self::assertStringNotContainsString('data-cpms-participant-clinician=', $html, 'suspended participant detail is not loadable');
+        self::assertStringNotContainsString($this->sharedName, $html);
+
+        $save = $this->dispatchClinicianAction($this->multiManagerId, 'cpms_schedule_save', $this->schedulePost($this->clinicB, $this->locB1, 2, '10:00', '11:00'), [ClinicianAdminPage::class, 'saveSchedules']);
+        self::assertStringStartsWith('خطا', $save['notice']);
+        self::assertSame([], $this->scheduleRowsOf($this->sharedClinician), 'no schedule row written for a suspended participation');
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -360,7 +461,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     }
 
     /**
-     * @param array<string, string> $post
+     * @param array<string, mixed> $post
      * @return array{notice: string, location: string}
      */
     private function dispatchClinicianAction(int $userId, string $nonceAction, array $post, callable $handler): array
@@ -483,6 +584,43 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         return array_map('intval', is_array($ids) ? $ids : []);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    private function schedulePost(int $clinicId, int $locationId, int $day, string $start, string $end): array
+    {
+        return [
+            'clinician_id' => (string) $this->sharedClinician,
+            'clinic_id' => (string) $clinicId,
+            'sched_submit' => $day . ':' . $locationId . ':new',
+            'sched' => [
+                $day => [
+                    $locationId => [
+                        'new' => [
+                            'schedule_id' => '',
+                            'start_time' => $start,
+                            'end_time' => $end,
+                            'appointment_duration_min' => '20',
+                            'slot_capacity' => '1',
+                            'is_active' => '1',
+                        ],
+                    ],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function scheduleRowsOf(int $clinicianId): array
+    {
+        global $wpdb;
+        $rows = $wpdb->get_results($wpdb->prepare('SELECT id, clinic_id, location_id, day_of_week, start_time FROM ' . $wpdb->prefix . 'cpms_schedule WHERE clinician_id = %d ORDER BY clinic_id ASC, day_of_week ASC', $clinicianId), ARRAY_A); // phpcs:ignore
+
+        return is_array($rows) ? array_values($rows) : [];
+    }
+
     private function clinicianActive(int $clinicianId): int
     {
         global $wpdb;
@@ -531,17 +669,21 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         return $id;
     }
 
-    private function createLocation(int $clinicId, string $tag): int
+    /**
+     * @return array{id: int, name: string}
+     */
+    private function createLocation(int $clinicId, string $tag): array
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $unique = bin2hex(random_bytes(4));
+        $name = 'MCA Loc ' . $tag . ' ' . $unique;
         $wpdb->query($wpdb->prepare(
             'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
                  (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
              VALUES (%d, %s, %s, %s, 1, 1, %s, %s)', // phpcs:ignore
             $clinicId,
-            'MCA Loc ' . $tag . ' ' . $unique,
+            $name,
             'mca-loc-' . strtolower($tag) . '-' . $unique,
             self::TZ,
             $now,
@@ -550,7 +692,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         $id = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $id, 'precondition: location inserted (' . $wpdb->last_error . ')');
 
-        return $id;
+        return ['id' => $id, 'name' => $name];
     }
 
     private function makeUser(string $login, string $role): int
@@ -565,19 +707,32 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         return $userId;
     }
 
-    private function insertClinician(int $clinicId, string $name): int
+    private function insertClinician(int $clinicId, string $name, ?int $wpUserId = null): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
-                 (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
-             VALUES (%d, %s, NULL, 1, %s, %s)', // phpcs:ignore
-            $clinicId,
-            $name,
-            $now,
-            $now
-        ));
+        if ($wpUserId === null) {
+            $wpdb->query($wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
+                     (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, NULL, 1, %s, %s)', // phpcs:ignore
+                $clinicId,
+                $name,
+                $now,
+                $now
+            ));
+        } else {
+            $wpdb->query($wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
+                     (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %d, 1, %s, %s)', // phpcs:ignore
+                $clinicId,
+                $name,
+                $wpUserId,
+                $now,
+                $now
+            ));
+        }
         $id = (int) $wpdb->insert_id;
         self::assertGreaterThan(0, $id, 'precondition: clinician row (' . $wpdb->last_error . ')');
 

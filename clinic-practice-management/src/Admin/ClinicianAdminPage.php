@@ -37,6 +37,13 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  * احرازشده را صریحاً حمل می‌کنند. رفتار تک‌عضویتی موجود (عضویت فعالِ یکتای
  * خودِ کاربر — نه Clinic تنهای نصب) حفظ شده و Clinic جاری آشکارا نمایش
  * داده می‌شود.
+ *
+ * پزشک مشترک بین Clinicها (Phase 4 participation): هویت حرفه‌ای یکتا می‌ماند
+ * (u_clinician_user) و پروفایل فقط در Clinic خانه ویرایش می‌شود؛ پزشکی که
+ * عضویت فعال در Clinic انتخاب‌شده دارد (همان قاعدهٔ clinician_participates_in که
+ * ScheduleService اعمال می‌کند) در همان Clinic برنامهٔ هفتگی و استثنا در
+ * Locationهای همان Clinic می‌گیرد. حذف ردیف برنامه/استثنا به Clinic خودِ ردیف
+ * (نه Clinic خانهٔ پزشک) مقید است.
  */
 final class ClinicianAdminPage
 {
@@ -122,8 +129,7 @@ final class ClinicianAdminPage
 
         $repo = App::clinicianRepository();
         $clinicId = (int) $scope->clinicId;
-        $selectedId = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0; // phpcs:ignore WordPress.Security.NonceVerification.Recommended
-        $selected = $selectedId > 0 ? $repo->findForClinic($selectedId, $clinicId) : null;
+        $selected = self::schedule_target( self::requested_clinician_id(), $scope );
         ?>
 <div class="wrap" dir="rtl">
     <h1>پزشکان و برنامه هفتگی</h1>
@@ -179,6 +185,78 @@ final class ClinicianAdminPage
     }
 
     /**
+     * Clinician whose schedule/exceptions may be managed in the verified Clinic:
+     * a HOME-Clinic row (any status, unchanged behavior) or an ACTIVE professional
+     * participating through an ACTIVE durable membership in that Clinic
+     * (MembershipRepository::clinician_participates_in — the ScheduleService
+     * rule). Profile writes (save/toggle) stay home-Clinic only.
+     *
+     * @return array<string, mixed>|null
+     */
+    private static function schedule_target( int $clinician_id, ClinicScope $scope ): ?array {
+        $clinic_id = self::scope_clinic_id( $scope );
+        if ( $clinician_id <= 0 || $clinic_id <= 0 ) {
+            return null;
+        }
+        $home = App::clinicianRepository()->findForClinic( $clinician_id, $clinic_id );
+        if ( null !== $home ) {
+            return $home;
+        }
+        if ( ! ( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $clinic_id ) ) {
+            return null;
+        }
+
+        return App::clinicianRepository()->find( $clinician_id );
+    }
+
+    private static function scope_clinic_id( ClinicScope $scope ): int {
+        return (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+    }
+
+    /**
+     * @param array<string, mixed> $clinician
+     */
+    private static function is_home_clinician( array $clinician ): bool {
+        return self::$active_clinic_id > 0 && (int) ( $clinician['clinic_id'] ?? 0 ) === self::$active_clinic_id;
+    }
+
+    private static function requested_clinician_id(): int {
+        if ( ! isset( $_GET['clinician_id'] ) || ! is_scalar( $_GET['clinician_id'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; row loading is Clinic-scoped
+            return 0;
+        }
+
+        return absint( wp_unslash( (string) $_GET['clinician_id'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; row loading is Clinic-scoped
+    }
+
+    /**
+     * Professionals participating in the selected Clinic (home Clinic elsewhere).
+     * Only Clinic-local data is shown; no home-Clinic identity is disclosed.
+     */
+    private static function render_participants( ClinicianRepository $repo ): void {
+        $rows = $repo->list_participating_in_clinic( self::$active_clinic_id );
+        if ( [] === $rows ) {
+            return;
+        }
+        ?>
+    <h2>پزشکان مشارکت‌کننده (عضو همین Clinic)</h2>
+    <p class="description">این پزشکان پروفایل حرفه‌ای خود را در Clinic خانه دارند و با عضویت فعال در همین Clinic مشارکت می‌کنند. برنامهٔ هفتگی و استثناهای آن‌ها در Locationهای همین Clinic از این‌جا مدیریت می‌شود؛ پروفایل فقط در Clinic خانه ویرایش می‌شود.</p>
+    <table class="widefat striped cpms-table-responsive" data-cpms-participants="<?php echo (int) self::$active_clinic_id; ?>" style="max-width:900px">
+        <thead><tr><th>نام</th><th>تخصص</th><th>روزهای برنامه در این Clinic</th><th>عملیات</th></tr></thead>
+        <tbody>
+        <?php foreach ( $rows as $row ) : ?>
+            <tr>
+                <td data-label="نام"><?php echo esc_html( (string) $row['full_name'] ); ?></td>
+                <td data-label="تخصص"><?php echo esc_html( (string) ( $row['specialty'] ?? '' ) ); ?></td>
+                <td data-label="روزهای برنامه"><?php echo (int) $row['schedule_days']; ?> روز</td>
+                <td class="cpms-actions-cell" data-label="عملیات"><a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians&clinician_id=' . (int) $row['id'] . '&clinic_id=' . self::$active_clinic_id ) ); ?>">مدیریت برنامه در این Clinic</a></td>
+            </tr>
+        <?php endforeach; ?>
+        </tbody>
+    </table>
+        <?php
+    }
+
+    /**
      * پوستهٔ fail-closed برای persona بدون زمینهٔ Clinic معتبر (ادمینِ نصب بدون
      * عضویت، چندعضویتیِ مبهم، یا بدون مجوز scoped CONFIG) — الگوی یکسان با
      * StaffManagementPage: HTTP 200 اما بدون هیچ داده/فرم Clinic.
@@ -221,6 +299,7 @@ final class ClinicianAdminPage
     </table>
 
     <h2 class="title" style="margin-top:20px">افزودن پزشک</h2>
+        <?php self::render_participants( $repo ); ?>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="max-width:640px">
         <?php wp_nonce_field('cpms_clinician_save'); ?>
         <input type="hidden" name="action" value="cpms_clinician_save">
@@ -309,6 +388,7 @@ final class ClinicianAdminPage
         <span class="description"><?php echo esc_html((string) ($clinician['specialty'] ?? '')); ?></span>
     </h1>
 
+        <?php if ( self::is_home_clinician( $clinician ) ) : ?>
     <h2 class="title">پروفایل</h2>
     <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="max-width:720px">
         <?php wp_nonce_field('cpms_clinician_save'); ?>
@@ -336,6 +416,9 @@ final class ClinicianAdminPage
             </a>
         </p>
     </form>
+        <?php else : ?>
+    <div class="notice notice-info inline" data-cpms-participant-clinician="<?php echo (int) $cid; ?>"><p>این پزشک با عضویت فعال در همین Clinic مشارکت می‌کند و پروفایل حرفه‌ای‌اش در Clinic خانه نگهداری می‌شود. این‌جا فقط برنامهٔ هفتگی و استثناهای او در Locationهای همین Clinic مدیریت می‌شود.</p></div>
+        <?php endif; ?>
 
     <h2 class="title">برنامه هفتگی (ساعت‌ها به وقت مطب)</h2>
     <?php if ((int) $clinician['is_active'] === 1) : $impact = App::scheduleService()->impact($cid); ?>
@@ -550,8 +633,7 @@ final class ClinicianAdminPage
 
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $repo = App::clinicianRepository();
-        $current = $repo->findForClinic($cid, $clinicId);
-        if ($current === null) {
+        if ( null === self::schedule_target( $cid, $scope ) ) {
             self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
 
@@ -661,15 +743,16 @@ final class ClinicianAdminPage
         $id = isset($_POST['schedule_id']) ? absint($_POST['schedule_id']) : 0;
 
         $repo = App::clinicianRepository();
-        if ($repo->findForClinic($cid, $clinicId) === null) {
+        if ( null === self::schedule_target( $cid, $scope ) ) {
             self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
         // اطمینان: schedule هم متعلق به همان Clinic باشد.
+        // The row's own Clinic and clinician are authoritative (a participant's
+        // rows belong to the participating Clinic, not to the home Clinic).
         $schedRow = App::db()->fetchRow(
             'SELECT s.id FROM ' . App::db()->table('cpms_schedule') . ' s '
-            . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = s.clinician_id '
-            . ' WHERE s.id = %d AND c.clinic_id = %d LIMIT 1',
-            [$id, $clinicId]
+            . ' WHERE s.id = %d AND s.clinic_id = %d AND s.clinician_id = %d LIMIT 1',
+            [ $id, self::scope_clinic_id( $scope ), $cid ]
         );
         if ($schedRow === null) {
             self::backWithError($cid, 'خطا: برنامه روز در این Clinic یافت نشد.');
@@ -700,7 +783,7 @@ final class ClinicianAdminPage
         if (!in_array($type, ['holiday', 'leave', 'blocked', 'open_override'], true)) {
             self::backWithError($cid, 'خطا: نوع استثنا نامعتبر است.');
         }
-        if (App::clinicianRepository()->findForClinic($cid, $clinicId) === null) {
+        if ( null === self::schedule_target( $cid, $scope ) ) {
             self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
 
@@ -742,14 +825,13 @@ final class ClinicianAdminPage
 
         $cid = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $id = isset($_POST['exception_id']) ? absint($_POST['exception_id']) : 0;
-        if (App::clinicianRepository()->findForClinic($cid, $clinicId) === null) {
+        if ( null === self::schedule_target( $cid, $scope ) ) {
             self::backWithError($cid, 'خطا: پزشک در این Clinic یافت نشد.');
         }
         $excRow = App::db()->fetchRow(
             'SELECT e.id FROM ' . App::db()->table('cpms_schedule_exceptions') . ' e '
-            . ' JOIN ' . App::db()->table('cpms_clinicians') . ' c ON c.id = e.clinician_id '
-            . ' WHERE e.id = %d AND c.clinic_id = %d LIMIT 1',
-            [$id, $clinicId]
+            . ' WHERE e.id = %d AND e.clinic_id = %d AND e.clinician_id = %d LIMIT 1',
+            [ $id, self::scope_clinic_id( $scope ), $cid ]
         );
         if ($excRow === null) {
             self::backWithError($cid, 'خطا: استثنا در این Clinic یافت نشد.');
