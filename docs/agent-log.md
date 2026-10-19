@@ -1330,3 +1330,9 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   (run 39262675829). This PR does not touch the Staff/Doctor Portal. Re-running the failed job and dispatching the
   workflow are refused for this integration (HTTP 403), so this log-only commit re-triggers the full exact-head
   cycle. No test, rule, timeout or baseline was changed.
+- **Second convergence note:** on `1e20ba2` the same Responsive smoke job failed again in the same Staff/Doctor
+  Portal journey, this time with 20 s waits timing out from `doctor-portal-tablet-768-one` onwards (`rows=[]`). The
+  fixture binds its rows to the Asia/Tehran date at fixture time (`today=2026-10-19`), and the journey ran across
+  Tehran midnight (≈20:30 UTC), so the portal's "today" no longer matched the fixture rows. This is time-of-day
+  dependent and unrelated to this PR's code (facility setup, its test, the First-Practice harness and docs). This
+  log-only commit re-runs the exact-head cycle after midnight; no test, rule, timeout or baseline was changed.
