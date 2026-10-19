@@ -364,9 +364,13 @@ final class RestClinicContext
             $request->get_param('clinic_id'),
             'clinic_id'
         );
-        // Report and export routes are Clinic-wide and expose no Location filter.
-        // Ignore a stale operational-Location header so deactivation does not
-        // block authorized historical Clinic reports/exports.
+        // Historical artifacts (async export requests/list/downloads and the
+        // printable snapshot) are Clinic-wide and expose no Location filter.
+        // Ignore a stale operational-Location header on exactly those
+        // surfaces so deactivation cannot block authorized historical
+        // exports. Live report reads stay Location-scoped: a header must name
+        // the actor's own active Location, and a foreign/inactive one is
+        // refused with CLINIC_SCOPE_UNAVAILABLE instead of being dropped.
         $location = self::is_clinic_wide_report_route( (string) $request->get_route() )
             ? null
             : self::combine(
@@ -440,7 +444,10 @@ final class RestClinicContext
     }
 
     private static function is_clinic_wide_report_route( string $route ): bool {
-        return preg_match( '#^/clinic/v1/reports(?:/|$)#', $route ) === 1;
+        return preg_match(
+            '#^/clinic/v1/reports/(?:[^/]+/(?:print|export)|exports(?:/|$))#',
+            $route
+        ) === 1;
     }
 
     private static function doctor_portal_visit_id( string $route ): ?int {

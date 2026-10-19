@@ -57,6 +57,13 @@ final class SlotRepository
      */
     public function findAllByClinicianSlot(int $clinicId, int $clinicianId, string $date, string $time): array
     {
+        // Callers pass either `H:i` or `H:i:s`; the persisted column is TIME
+        // and always reads back as `H:i:s`. Normalize before the exact match
+        // so an `H:i` request cannot miss its own Slot row.
+        if ( strlen( $time ) === 5 ) {
+            $time .= ':00';
+        }
+
         $rows = $this->db->fetchAll(
             'SELECT * FROM ' . $this->db->table('cpms_schedule_slots') .
             ' WHERE clinic_id = %d AND clinician_id = %d AND slot_date = %s AND slot_time = %s ORDER BY id ASC',

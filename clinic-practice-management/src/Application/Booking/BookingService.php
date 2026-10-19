@@ -1254,7 +1254,7 @@ final class BookingService
                         || (int) ( $locked_new_slot['location_id'] ?? 0 ) !== (int) $new_slot['location_id']
                         || (int) ( $locked_new_slot['is_open'] ?? 0 ) !== 1
                         || (string) ( $locked_new_slot['slot_date'] ?? '' ) !== $new_date
-                        || substr( (string) ( $locked_new_slot['slot_time'] ?? '' ), 0, 8 ) !== substr( $new_time, 0, 8 )
+                        || substr( (string) ( $locked_new_slot['slot_time'] ?? '' ), 0, 5 ) !== substr( $new_time, 0, 5 )
                     ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد دیگر در دسترس نیست', 409 );
                     }
