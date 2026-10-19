@@ -1504,6 +1504,13 @@ with sync_playwright() as p:
         fac_sub_ctx = new_persona_context(browser)
         sub_fac_page = fac_sub_ctx.new_page()
         if login(sub_fac_page, SUBSCRIBER_USER, SUBSCRIBER_PASS, "facility-subscriber"):
+            # Let the post-login landing page (wp-admin/profile.php for a subscriber) finish
+            # loading first: WordPress core user-profile.js assigns its form in a jQuery ready
+            # callback but reads it in a beforeunload handler, so leaving the page before
+            # ready throws a core TypeError (observed on 82e013a in both DB jobs). Errors are
+            # still collected and counted exactly as before.
+            sub_fac_page.wait_for_load_state("load")
+            sub_fac_page.wait_for_timeout(800)
             sub_fac_page.goto(f"{BASE}/wp-admin/{FACILITY_PAGE}&organization_id={hospital_org}", wait_until="domcontentloaded")
             sub_fac_page.wait_for_timeout(500)
             shot(sub_fac_page, "facility-subscriber-denied")
@@ -1548,12 +1555,13 @@ check("browser.no_console_errors", len(cm_errors) == 0,
 
 
 def error_locations(errors):
-    """Privacy-safe locations of browser errors: persona tag, error class and admin page/step only."""
+    """Privacy-safe locations of browser errors: persona tag, JS error class and admin page/step only (never the message)."""
     where = []
     for tag, msg, url in errors[:5]:
         parsed = urlparse(url or "")
         query = parse_qs(parsed.query)
-        kind = re.sub(r"[^A-Za-z]", "", str(msg).split(":", 1)[0])[:40] or "Error"
+        kind = next((k for k in ("TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError")
+                     if k in str(msg)), "JSError")
         where.append(f"[{tag}] {kind} {parsed.path} page={query.get('page', [''])[0]} step={query.get('step', [''])[0]}")
     return ("; at: " + " | ".join(where)) if where else ""
 
