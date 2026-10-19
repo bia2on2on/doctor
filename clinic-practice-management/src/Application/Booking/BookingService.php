@@ -456,16 +456,16 @@ final class BookingService
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-    public function hold(int $wp_user_id, int $clinician_id, string $slot_date, string $slot_time, ?int $slot_id = null, ?int $patient_id = null, ?int $location_id = null): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
-        $mobile = $this->mobileForUser($wp_user_id);
+        $mobile = $this->mobileForUser($wpUserId);
         if ($mobile === null) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $clinic_id = $this->requireClinician( $clinician_id );
+        $clinic_id = $this->requireClinician( $clinicianId );
         if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
@@ -475,15 +475,15 @@ final class BookingService
         $min_lead = (int) $settings->get( 'booking.min_lead_hours', 2 );
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
-        $slot = $this->resolveSlotForBooking( $clinic_id, $clinician_id, $slot_date, $slot_time, $slot_id );
+        $slot = $this->resolveSlotForBooking( $clinic_id, $clinicianId, $slotDate, $slotTime, $slotId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $this->assert_requested_location_matches_slot( $slot, $location_id );
+        $this->assert_requested_location_matches_slot( $slot, $locationId );
 
         if ($slot === null || (int) $slot['is_open'] !== 1) {
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
             // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
             // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
-            $this->assertWindow( $slot_date, $slot_time, $min_lead, $settings );
+            $this->assertWindow( $slotDate, $slotTime, $min_lead, $settings );
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
@@ -494,19 +494,19 @@ final class BookingService
 
         // Two-Clock: Location timezone -> UTC instant before lead check (precise)
         $location_tz = $this->resolveLocationTimezone( (int) $slot['location_id'], $clinic_id );
-        $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, $min_lead, $settings );
+        $this->assertWindowWithTimezone( $slotDate, $slotTime, $location_tz, $min_lead, $settings );
 
         // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
         // Trusted Clinic = slot's persisted clinic_id (never client payload).
         // Must be evaluated before any capacity claim.
         $trusted_clinic_id     = (int) $slot['clinic_id'];
-        $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
+        $patient_id_to_persist = $this->resolveBookingPatientForHold( $wpUserId, $trusted_clinic_id, $patientId );
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') .
             ' WHERE holder_wp_user_id = %d AND slot_id = %d AND status = %s AND expires_at > %s LIMIT 1',
-            [$wp_user_id, (int) $slot['id'], 'active', $this->db->nowUtcSql()]
+            [$wpUserId, (int) $slot['id'], 'active', $this->db->nowUtcSql()]
         );
         if ($existing !== null) {
             return [
@@ -521,6 +521,7 @@ final class BookingService
         $expires_at = ( new \DateTimeImmutable( '+ ' . $ttl . ' seconds', new \DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d H:i:s.000' );
 
         $has_patient_col = $this->holdsHasPatientIdColumn();
+        $wp_user_id      = (int) func_get_arg( 0 );
         $this->db->transactional(
             function () use (
                 $slot,
@@ -532,7 +533,7 @@ final class BookingService
                 $has_patient_col,
                 $min_lead,
                 $settings,
-                $slot_time
+                $slotTime
             ): void {
                 // New demand takes Organization -> Clinic -> Slot -> Location/capacity.
                 // Slot before Location is the established booking order: the
@@ -547,7 +548,7 @@ final class BookingService
                     || (int) ( $locked_slot['location_id'] ?? 0 ) !== (int) $slot['location_id']
                     || (int) ( $locked_slot['clinician_id'] ?? 0 ) !== (int) $slot['clinician_id']
                     || (int) ( $locked_slot['is_open'] ?? 0 ) !== 1
-                    || (string) $this->normalize_slot_time( (string) ( $locked_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slot_time )
+                    || (string) $this->normalize_slot_time( (string) ( $locked_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slotTime )
                 ) {
                     throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات انتخابی دیگر قابل رزرو نیست', 409 );
                 }
@@ -592,7 +593,7 @@ final class BookingService
         $hold_id = $this->db->wpdb_last_insert_id();
         $this->audit(
             'HOLD_CREATED',
-            $wp_user_id,
+            $wpUserId,
             'patient',
             'slot_hold',
             $hold_id,
@@ -601,12 +602,12 @@ final class BookingService
             [
                 'mobile' => MobileValidator::mask($mobile),
                 'slot_id' => (int) $slot['id'],
-                'slot_date' => $slot_date,
-                'slot_time' => $slot_time,
+                'slot_date' => $slotDate,
+                'slot_time' => $slotTime,
             ]
         );
         $this->op->info('booking.hold', [
-            'wp_user_id' => $wp_user_id,
+            'wp_user_id' => $wpUserId,
             'slot_id' => (int) $slot['id'],
             'hold_id'    => $hold_id,
         ]);
@@ -704,9 +705,9 @@ final class BookingService
     /**
      * @return array{reference_code: string, appointment_id: int, slot: array<string, mixed>, status: string}
      */
-    public function confirm(string $holdToken, int $wp_user_id, ?string $reason, ?string $idem_key, ?string $first_name = null, ?string $last_name = null): array
+    public function confirm(string $holdToken, int $wpUserId, ?string $reason, ?string $idemKey, ?string $firstName = null, ?string $lastName = null): array
     {
-        if (!is_string($idem_key) || $idem_key === '') {
+        if (!is_string($idemKey) || $idemKey === '') {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
@@ -742,8 +743,8 @@ final class BookingService
 
         $now = $this->now();
         $nowSql = $this->db->nowUtcSql();
-        if ((int) $hold['holder_wp_user_id'] !== $wp_user_id) {
-            $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wp_user_id, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
+        if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
+            $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
             ]);
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
@@ -752,7 +753,7 @@ final class BookingService
         if ((string) $hold['status'] !== 'active') {
             if ((string) $hold['status'] === 'converted') {
                 // با کلید متفاوت تکرار → پاسخ همان Appointment
-                $appt = $this->findActiveByUserSlot($wp_user_id, (int) $hold['slot_id']);
+                $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
                 if ($appt !== null) {
                     return $this->appointmentView($appt);
                 }
@@ -782,14 +783,14 @@ final class BookingService
             }
             $link = $this->db->fetchRow(
                 'SELECT 1 AS ok FROM ' . $this->db->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d AND clinic_id = %d AND patient_id = %d LIMIT 1',
-                [$wp_user_id, $holdClinicId, $holdPatientId]
+                [$wpUserId, $holdClinicId, $holdPatientId]
             );
             if ($link === null) {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پیوند بیمار با کاربر نامعتبر است', 422);
             }
         } else {
             // Historical NULL: compat resolver based on current linked active set in hold Clinic.
-            $linkedForConfirm = $this->linkedActivePatientsForClinic($wp_user_id, $holdClinicId);
+            $linkedForConfirm = $this->linkedActivePatientsForClinic($wpUserId, $holdClinicId);
             $cntC = count($linkedForConfirm);
             if ($cntC === 0) {
                 // NEW patient path — never reuse same-mobile unlinked; detect uniqueness collision first.
@@ -801,7 +802,7 @@ final class BookingService
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'موبایل تکراری — بیمار با این موبایل از قبل موجود است', 400);
                 }
                 $patient = null;
-                $newPatientNames = $this->requireNewPatientNames($first_name, $last_name);
+                $newPatientNames = $this->requireNewPatientNames($firstName, $lastName);
             } elseif ($cntC === 1) {
                 $patient = $linkedForConfirm[0];
             } else {
@@ -810,9 +811,9 @@ final class BookingService
             }
         }
 
-        $check = $this->idem->check($idem_key, self::EP_CONFIRM, $wp_user_id, null, $idemClinicId);
+        $check = $this->idem->check($idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId);
         if ($check['is_replay']) {
-            return $this->replayOrInFlight($check, $wp_user_id);
+            return $this->replayOrInFlight($check, $wpUserId);
         }
 
         $slot_id = (int) $hold['slot_id'];
@@ -968,7 +969,7 @@ final class BookingService
                 }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $this->idem->release( $idem_key, self::EP_CONFIRM, $wp_user_id, null, $idemClinicId );
+            $this->idem->release( $idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId );
             throw $denial;
         }
 
@@ -977,7 +978,7 @@ final class BookingService
         $patient_id          = (int) $confirmation['patient_id'];
         $patient_was_created = (bool) $confirmation['patient_was_created'];
         $view                = $this->appointmentView( $appt );
-        $this->idem->complete($idem_key, self::EP_CONFIRM, $wp_user_id, null, 200, $view, $idemClinicId);
+        $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
         if ( $patient_was_created ) {
             $this->audit(
