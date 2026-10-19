@@ -157,10 +157,11 @@ final class CpmsSetupWizard
         // migration 0026's conservative backfill consume the first-setup
         // marker for merely-viewed, zero-membership installations).
         ?>
+        <?php $shell_profile = self::current_facility_profile(); ?>
         <div class="wrap" dir="rtl">
             <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?></h1>
             <p class="description">
-                این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، مطب را راه بیندازید.
+                این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، <?php echo esc_html( $shell_profile['unit'] ); ?> را راه بیندازید.
                 پیشرفت شما ذخیره می‌شود و هر زمان می‌توانید ادامه دهید.
             </p>
 
@@ -169,7 +170,7 @@ final class CpmsSetupWizard
             <?php endif; ?>
 
             <?php if ( $is_complete ) : ?>
-                <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — کلینیک برای شروع عملیات آماده است.</p></div>
+                <div class="notice notice-success"><p>✅ راه‌اندازی تکمیل شده است — <?php echo esc_html( $shell_profile['unit'] ); ?> برای شروع عملیات آماده است.</p></div>
             <?php endif; ?>
 
             <?php if ( CpmsAdminMenu::is_first_practice_setup_pending() ) : ?>
@@ -434,7 +435,7 @@ final class CpmsSetupWizard
                     <td><input type="text" id="cphone" name="clinic_phone" class="regular-text" value="<?php echo esc_attr($phone); ?>"></td>
                 </tr>
             </table>
-            <p class="description">این اطلاعات فقط برای شناسایی مطب است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری مطب از برنامهٔ کاری پزشکان مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
+            <p class="description">این اطلاعات فقط برای شناسایی <?php echo esc_html( $facility_profile['unit'] ); ?> است و هیچ دادهٔ پزشکی در آن نیست. ساعت کاری <?php echo esc_html( $facility_profile['unit'] ); ?> از برنامهٔ کاری <?php echo esc_html( $facility_profile['clinicians'] ); ?> مشخص می‌شود و اینجا ویرایش نمی‌شود.</p>
             <?php self::submit_step_form( 'clinic', 'ذخیره و ادامه' ); ?>
         </div>
         <?php
@@ -545,10 +546,11 @@ final class CpmsSetupWizard
     private static function renderSchedules(): void
     {
         $can_manage_clinicians = ClinicianAdminPage::can_current_user_access_page();
+        $schedule_profile      = self::current_facility_profile();
         ?>
         <div class="card">
             <h2>برنامه کاری هفتگی</h2>
-            <p>برنامهٔ هفتگی هر پزشک (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
+            <p>برنامهٔ هفتگی هر <?php echo esc_html( $schedule_profile['clinician'] ); ?> (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
             <?php if ( $can_manage_clinicians ) : ?>
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به تنظیم برنامه</a></p>
             <?php endif; ?>
@@ -819,9 +821,10 @@ final class CpmsSetupWizard
                 ? ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.'
                 : ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.';
         }
+        $finish_profile = self::current_facility_profile();
         ?>
         <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
-            <h2>شروع عملیات کلینیک</h2>
+            <h2>شروع عملیات <?php echo esc_html( $finish_profile['unit'] ); ?></h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
             <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
@@ -830,7 +833,7 @@ final class CpmsSetupWizard
                 <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ پیش‌نیازهای الزامی جریان فعلی برآورده نشده است: <?php echo esc_html( implode( '، ', $missing_now ) ); ?>.<?php echo esc_html( $stale_note ); ?></p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php else : ?>
-                <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات کلینیک + یک پزشک فعال) برآورده نشده است.</p>
+                <p style="color:#b26b00;">⚠️ هنوز همهٔ پیش‌نیازهای الزامی (اطلاعات <?php echo esc_html( $finish_profile['unit'] ); ?> + یک <?php echo esc_html( $finish_profile['clinician'] ); ?> فعال) برآورده نشده است.</p>
                 <?php self::render_prerequisite_links( $clinic_name, $doctor_count ); ?>
             <?php endif; ?>
         </div>

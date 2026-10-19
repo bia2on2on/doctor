@@ -50,6 +50,17 @@
   var MAX_YEAR = 1434;
   var DAY_MS = 86400000;
 
+  // Supported Jalali year window for TYPED entry only (client-side input
+  // sanity bound, independent of the wider table/Borkowski-fallback
+  // conversion machinery below, which remains usable for any year so the
+  // popup/companion display is never artificially truncated for existing
+  // server-side values). A clinical onboarding/admin context never needs a
+  // typed date outside ~2 centuries; rejecting outside this window at the
+  // text-entry layer is a deliberate, narrow data-integrity guard — it does
+  // NOT change canonical Gregorian/UTC storage or server-side validation.
+  var SUPPORTED_MIN_YEAR = 1300;
+  var SUPPORTED_MAX_YEAR = 1499;
+
   function utcTsFromYmd(y, m, d) {
     return Date.UTC(y, m - 1, d);
   }
@@ -225,6 +236,25 @@
     return toPersianDigits(j[0] + '/' + pad2(j[1]) + '/' + pad2(j[2]));
   }
 
+  /**
+   * Full syntactic shape check only (`YYYY/MM/DD`-ish, 3-4 digit year,
+   * 1-2 digit month/day, '/' or '-' separators) — does NOT validate the
+   * numeric values. Used to tell "still typing" apart from "a complete
+   * attempt that must now be judged right or wrong".
+   */
+  function jalaliEntryShapeComplete(text) {
+    var ascii = toAsciiDigits(text || '').trim();
+    return (/^(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})$/).test(ascii);
+  }
+
+  /**
+   * Parses a complete Jalali text entry into a canonical Gregorian ISO
+   * string, or null if the text is malformed, out of the supported typed-
+   * entry year window, or not a real calendar date for its month/year
+   * (including correct per-year leap-Esfand length — e.g. 1405/12/30 is
+   * rejected because Esfand 1405 only has 29 days, while 1401/12/30 is
+   * accepted because 1401 is a leap Jalali year).
+   */
   function jalaliTextToIso(text) {
     var ascii = toAsciiDigits(text || '').trim();
     var m = /^(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(ascii);
@@ -232,10 +262,34 @@
     var jy = parseInt(m[1], 10);
     var jm = parseInt(m[2], 10);
     var jd = parseInt(m[3], 10);
+    if (jy < SUPPORTED_MIN_YEAR || jy > SUPPORTED_MAX_YEAR) { return null; }
     if (jm < 1 || jm > 12 || jd < 1) { return null; }
     var g = toGregorian(jy, jm, jd);
     if (!g) { return null; }
     return g[0] + '-' + pad2(g[1]) + '-' + pad2(g[2]);
+  }
+
+  /**
+   * Classifies ONE complete-shaped entry (see jalaliEntryShapeComplete)
+   * into a specific invalid reason, for precise user-facing messaging and
+   * setCustomValidity() text. Only called once the shape is confirmed
+   * complete; callers must not call this on a still-being-typed partial.
+   *
+   * @return {ok:true,iso:string}|{ok:false,reason:string}
+   */
+  function classifyCompleteJalaliEntry(text) {
+    var ascii = toAsciiDigits(text || '').trim();
+    var m = /^(\d{3,4})[/-](\d{1,2})[/-](\d{1,2})$/.exec(ascii);
+    if (!m) { return { ok: false, reason: 'malformed' }; }
+    var jy = parseInt(m[1], 10);
+    var jm = parseInt(m[2], 10);
+    var jd = parseInt(m[3], 10);
+    if (jy < SUPPORTED_MIN_YEAR || jy > SUPPORTED_MAX_YEAR) { return { ok: false, reason: 'year' }; }
+    if (jm < 1 || jm > 12) { return { ok: false, reason: 'month' }; }
+    if (jd < 1 || jd > monthLength(jy, jm)) { return { ok: false, reason: 'day' }; }
+    var g = toGregorian(jy, jm, jd);
+    if (!g) { return { ok: false, reason: 'malformed' }; }
+    return { ok: true, iso: g[0] + '-' + pad2(g[1]) + '-' + pad2(g[2]) };
   }
 
   window.CpmsJalali = {
@@ -243,7 +297,19 @@
     toGregorian: toGregorian,
     isoToJalaliText: isoToJalaliText,
     jalaliTextToIso: jalaliTextToIso,
-    toPersianDigits: toPersianDigits
+    jalaliEntryShapeComplete: jalaliEntryShapeComplete,
+    classifyCompleteJalaliEntry: classifyCompleteJalaliEntry,
+    toPersianDigits: toPersianDigits,
+    SUPPORTED_MIN_YEAR: SUPPORTED_MIN_YEAR,
+    SUPPORTED_MAX_YEAR: SUPPORTED_MAX_YEAR,
+    // Re-scan hook for admin screens that inject real calendar-date inputs
+    // AFTER the initial DOMContentLoaded enhancement pass (e.g. a patient
+    // visit panel rendered client-side from a REST response). Safe to call
+    // repeatedly: enhanceField() is itself idempotent per-input
+    // (`data-cpms-jalali-enhanced`), so re-enhancing an already-enhanced
+    // container is always a harmless no-op for inputs it has already seen.
+    enhanceAll: function (root) { enhanceAll(root); },
+    enhanceField: function (input) { enhanceField(input); }
   };
 
   // ===================== Real Jalali date-ENTRY widget =====================
@@ -514,6 +580,19 @@
     status.setAttribute('dir', 'rtl');
     status.setAttribute('aria-live', 'polite');
 
+    var MSG_PENDING = 'تاریخ واردشده هنوز ثبت نشده است؛ Enter را بزنید یا از این فیلد خارج شوید.';
+    var MSG_MALFORMED = 'تاریخ شمسی نامعتبر است (مثال: ۱۴۰۴/۰۱/۰۱).';
+    var MSG_YEAR = 'سال شمسی باید بین ۱۳۰۰ و ۱۴۹۹ باشد.';
+    var MSG_MONTH = 'ماه شمسی باید بین ۱ و ۱۲ باشد.';
+    var MSG_DAY = 'روز واردشده برای این ماه/سال شمسی معتبر نیست.';
+    var REASON_MESSAGE = { malformed: MSG_MALFORMED, year: MSG_YEAR, month: MSG_MONTH, day: MSG_DAY };
+
+    // Only `dispatch`-ed, COMMITTED writes ever touch the native control's
+    // value: this is the single choke point that guarantees the real
+    // Gregorian value submitted with the form always matches a complete,
+    // validated Jalali entry (typed + confirmed, or picked from the popup)
+    // and never a stale/partial intermediate the user happened to type
+    // through on the way to a different final date.
     function setNativeIso(iso, dispatch) {
       if (input.value === iso) { return; }
       input.value = iso;
@@ -527,25 +606,98 @@
       entry.value = isoToJalaliText(input.value);
       entry.removeAttribute('aria-invalid');
       status.textContent = '';
+      input.setCustomValidity('');
     }
 
-    function applyEntryToNative() {
+    // Live feedback on every keystroke — NEVER writes to the native input
+    // and NEVER dispatches native input/change events (no premature
+    // commits while the admin is still typing). It only (a) gives the
+    // admin an accessible status message and (b) keeps the native
+    // control's setCustomValidity() in sync so the browser's own submit-
+    // time validation blocks the form for as long as the typed text has
+    // not been confirmed into a real, valid, matching Gregorian value.
+    function liveValidateEntry() {
       var raw = entry.value;
-      if (raw.trim() === '') {
+      var ascii = toAsciiDigits(raw || '').trim();
+      var syncedAscii = toAsciiDigits(isoToJalaliText(input.value) || '').trim();
+
+      if (ascii === '' && input.value === '') {
         entry.removeAttribute('aria-invalid');
         status.textContent = '';
+        input.setCustomValidity('');
+        return;
+      }
+      if (ascii === syncedAscii) {
+        // Exactly matches what is already committed in the native field.
+        entry.removeAttribute('aria-invalid');
+        status.textContent = '';
+        input.setCustomValidity('');
+        return;
+      }
+      if (!jalaliEntryShapeComplete(ascii) && ascii !== '') {
+        // Still typing (or clearing) — not yet a judgeable complete date.
+        entry.removeAttribute('aria-invalid');
+        status.textContent = '';
+        input.setCustomValidity(MSG_PENDING);
+        return;
+      }
+      if (ascii === '') {
+        // Cleared but not yet committed (blur/Enter decides the clear).
+        entry.removeAttribute('aria-invalid');
+        status.textContent = '';
+        input.setCustomValidity(MSG_PENDING);
+        return;
+      }
+      var result = classifyCompleteJalaliEntry(ascii);
+      if (!result.ok) {
+        entry.setAttribute('aria-invalid', 'true');
+        status.textContent = REASON_MESSAGE[result.reason] || MSG_MALFORMED;
+        input.setCustomValidity(REASON_MESSAGE[result.reason] || MSG_MALFORMED);
+        return;
+      }
+      // A complete, valid, real calendar date — but still only "typed",
+      // not yet confirmed. Keep submission blocked (no silent stale/partial
+      // commit) until the admin explicitly confirms via blur/Enter/popup.
+      entry.removeAttribute('aria-invalid');
+      status.textContent = 'برای ثبت این تاریخ، Enter را بزنید یا از فیلد خارج شوید.';
+      input.setCustomValidity(MSG_PENDING);
+    }
+
+    // Confirms (commits) the typed entry: the ONLY path, besides a popup
+    // pick, allowed to write the native input's value and dispatch real
+    // input/change events. Runs on blur and on Enter inside the entry
+    // field. Anything less than a complete, validated date is REJECTED
+    // outright here (native value is left untouched — never overwritten
+    // with a guess) and the field is kept invalid via setCustomValidity()
+    // so the surrounding form cannot be submitted with it.
+    function commitEntry() {
+      var raw = entry.value;
+      var ascii = toAsciiDigits(raw || '').trim();
+      if (ascii === '') {
+        entry.removeAttribute('aria-invalid');
+        status.textContent = '';
+        input.setCustomValidity('');
         setNativeIso('', true);
         return;
       }
-      var iso = jalaliTextToIso(raw);
-      if (iso === null) {
+      if (!jalaliEntryShapeComplete(ascii)) {
         entry.setAttribute('aria-invalid', 'true');
-        status.textContent = 'تاریخ شمسی نامعتبر است (مثال: ۱۴۰۴/۰۱/۰۱).';
+        status.textContent = MSG_MALFORMED;
+        input.setCustomValidity(MSG_MALFORMED);
+        return;
+      }
+      var result = classifyCompleteJalaliEntry(ascii);
+      if (!result.ok) {
+        entry.setAttribute('aria-invalid', 'true');
+        var message = REASON_MESSAGE[result.reason] || MSG_MALFORMED;
+        status.textContent = message;
+        input.setCustomValidity(message);
         return;
       }
       entry.removeAttribute('aria-invalid');
       status.textContent = '';
-      setNativeIso(iso, true);
+      input.setCustomValidity('');
+      setNativeIso(result.iso, true);
     }
 
     var popup = buildCalendarPopup(input, entry, triggerBtn, function (jy, jm, jd) {
@@ -556,8 +708,17 @@
       syncEntryFromNative();
     });
 
-    entry.addEventListener('input', applyEntryToNative);
-    entry.addEventListener('blur', applyEntryToNative);
+    entry.addEventListener('input', liveValidateEntry);
+    entry.addEventListener('blur', commitEntry);
+    entry.addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') {
+        // Confirm the typed date into the field instead of letting Enter
+        // fall through to an implicit form submit with an uncommitted or
+        // stale value.
+        ev.preventDefault();
+        commitEntry();
+      }
+    });
     input.addEventListener('input', syncEntryFromNative);
     input.addEventListener('change', syncEntryFromNative);
     triggerBtn.addEventListener('click', function () { popup.toggle(); });

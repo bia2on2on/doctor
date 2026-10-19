@@ -353,7 +353,7 @@ final class ClinicianAdminPage
         <?php wp_nonce_field('cpms_exception_create'); ?>
         <input type="hidden" name="action" value="cpms_exception_create">
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
-        <label>تاریخ (میلادی): <input type="date" name="date" required></label>
+        <label for="cpms-exception-date">تاریخ (میلادی):</label> <input type="date" id="cpms-exception-date" name="date" required>
         <label>نوع:
             <select name="type">
                 <option value="holiday">تعطیل رسمی</option>
