@@ -386,6 +386,12 @@ final class DoctorPortalController extends RestBase {
 		if ( 'CLINIC_SCOPE_UNAVAILABLE' !== $response->get_error_code() || ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', $request->get_route(), $matches ) ) {
 			return $response;
 		}
+		// The handwriting guard already recorded the denial and preserved the
+		// bounded reason; never audit the same refusal twice.
+		$existing = $response->get_error_data();
+		if ( is_array( $existing ) && 'location' === ( $existing['reason'] ?? null ) ) {
+			return $response;
+		}
 		$clinic   = $request->get_header( 'X-CPMS-Clinic-Id' );
 		$location = $request->get_header( 'X-CPMS-Location-Id' );
 		if ( ! is_string( $clinic ) || ! ctype_digit( $clinic ) || ! is_string( $location ) || ! ctype_digit( $location ) ) {

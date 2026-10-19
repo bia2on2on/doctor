@@ -593,9 +593,12 @@ final class RestClinicContext
 
         // Preserve only bounded, non-sensitive selector-required metadata.
         // Never expose eligible IDs, membership internals, or tenant topology.
+        // Only the bounded location-continuity reason may cross the boundary.
+        // Membership/organization/clinic reasons are tenant topology and must
+        // never leak into the REST envelope.
         $reason = $e->data['reason'] ?? null;
-        if ( is_string( $reason ) && '' !== $reason ) {
-            $data['reason'] = $reason;
+        if ( 'location' === $reason ) {
+            $data['reason'] = 'location';
         }
         if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             $field      = $e->data['field'] ?? null;
