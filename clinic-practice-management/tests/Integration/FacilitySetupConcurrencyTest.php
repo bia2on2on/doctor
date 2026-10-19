@@ -45,7 +45,10 @@ require_once __DIR__ . '/RealTableMigrations.php';
  * response (same request key) adopts instead of duplicating.
  *
  * Fixtures are COMMITTED (independent connections only see committed rows);
- * cleanup is manual in tearDown.
+ * cleanup is manual in tearDown. The coordinator uses a raw START TRANSACTION
+ * (the integration bootstrap turns CpmsDb transactions into savepoints of the
+ * test transaction), and a worker ends with SIGKILL so PHP's shutdown never sends
+ * COM_QUIT over the MySQL socket it inherited from this process.
  */
 final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
 {
@@ -57,6 +60,7 @@ final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
 
     private int $org = 0;
     private int $actor = 0;
+    private int $auditBaseline = 0;
     private string $fileTag = '';
 
     /** @var list<int> */
@@ -71,6 +75,7 @@ final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
         App::resetScope();
         ScopeContext::clear();
         $this->fileTag = 'fs-race-' . bin2hex(random_bytes(6));
+        $this->auditBaseline = (int) App::db()->fetchValue('SELECT COALESCE(MAX(id), 0) FROM ' . App::db()->table('cpms_audit_logs'));
 
         $now = App::db()->nowUtcSql();
         $unique = bin2hex(random_bytes(5));
@@ -222,35 +227,44 @@ final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
         $parent = [];
         $error = '';
 
+        // A REAL transaction on this connection (manager A). CpmsDb transactions of
+        // the parent step become savepoints inside it.
+        $wpdb->query('START TRANSACTION'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         try {
-            App::db()->transactional(function () use ($task, $parentStep, $ready, $go, $outcomeFile, $coordinator, &$pid, &$lockWait, &$stillWaiting, &$parent): void {
-                $locked = App::db()->fetchRowForUpdate(
-                    'SELECT id FROM ' . App::db()->table('cpms_organizations') . ' WHERE id = %d LIMIT 1',
-                    [$this->org]
-                );
-                self::assertSame($this->org, (int) ($locked['id'] ?? 0), 'coordinator holds the Organization row lock');
-                $pid = pcntl_fork();
-                self::assertNotSame(-1, $pid, 'pcntl_fork failed');
-                if (0 === $pid) {
-                    $this->childWorker($task, $ready, $go, $outcomeFile);
-                }
-                $workerConnection = $this->waitForReady($ready);
-                self::assertGreaterThan(0, $workerConnection, 'worker connection became ready');
-                self::assertNotSame($coordinator, $workerConnection, 'the worker uses its own MySQL connection');
-                file_put_contents($go, 'go');
-                $lockWait = $this->waitForLockWait($workerConnection, $coordinator);
-                self::assertNotNull($lockWait, 'worker observed in InnoDB LOCK WAIT behind the coordinator');
-                // Manager A completes its own step while B is still blocked.
-                $parent = $parentStep();
-                $stillWaiting = null !== $this->waitForLockWait($workerConnection, $coordinator, 0.5);
-            });
+            $locked = App::db()->fetchRowForUpdate(
+                'SELECT id FROM ' . App::db()->table('cpms_organizations') . ' WHERE id = %d LIMIT 1',
+                [$this->org]
+            );
+            if ($this->org !== (int) ($locked['id'] ?? 0)) {
+                throw new \RuntimeException('coordinator could not lock the Organization row');
+            }
+            $pid = pcntl_fork();
+            if (-1 === $pid) {
+                throw new \RuntimeException('pcntl_fork failed');
+            }
+            if (0 === $pid) {
+                $this->childWorker($task, $ready, $go, $outcomeFile);
+            }
+            $workerConnection = $this->waitForReady($ready);
+            if ($workerConnection <= 0 || $workerConnection === $coordinator) {
+                throw new \RuntimeException('worker connection not ready or not independent');
+            }
+            file_put_contents($go, 'go');
+            $lockWait = $this->waitForLockWait($workerConnection, $coordinator);
+            if (null === $lockWait) {
+                throw new \RuntimeException('worker was not observed in InnoDB LOCK WAIT behind the coordinator');
+            }
+            // Manager A completes its own step while B is still blocked.
+            $parent = $parentStep();
+            $stillWaiting = null !== $this->waitForLockWait($workerConnection, $coordinator, 0.5);
+            $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } catch (\Throwable $e) {
             $error = get_class($e) . ': ' . $e->getMessage();
+            $wpdb->query('ROLLBACK'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         } finally {
             if (!is_file($go)) {
                 file_put_contents($go, 'go');
             }
-            $wpdb->query('COMMIT'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         }
         $outcome = ['result' => 'fatal', 'detail' => 'worker not started'];
         if ($pid > 0) {
@@ -323,6 +337,11 @@ final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
             file_put_contents($outcomeFile, wp_json_encode(['result' => 'refused', 'reason' => $e->reason()]));
         } catch (\Throwable $e) {
             file_put_contents($outcomeFile, wp_json_encode(['result' => 'error', 'class' => get_class($e), 'detail' => $e->getMessage()]));
+        }
+        // Never run PHP shutdown in the fork: destructors would send COM_QUIT over
+        // the MySQL socket inherited from the parent and end the parent's session.
+        if (function_exists('posix_kill')) {
+            posix_kill(getmypid(), SIGKILL);
         }
         exit(0);
     }
@@ -460,7 +479,11 @@ final class FacilitySetupConcurrencyTest extends WP_UnitTestCase
         }
         $p = $wpdb->prefix;
         $clinics = 'SELECT id FROM ' . $p . 'cpms_clinics WHERE organization_id = ' . $org;
+        // This test's audit rows are the committed tail of the chain (FK to its Clinics).
+        $wpdb->query('DELETE FROM ' . $p . 'cpms_audit_logs WHERE id > ' . (int) $this->auditBaseline); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_clinician_locations t JOIN ' . $p . 'cpms_locations l ON l.id = t.location_id JOIN ' . $p . 'cpms_clinics c ON c.id = l.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
+        $wpdb->query('DELETE mc FROM ' . $p . 'cpms_membership_capabilities mc JOIN ' . $p . 'cpms_clinic_memberships m ON m.id = mc.membership_id JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
+        $wpdb->query('DELETE ml FROM ' . $p . 'cpms_membership_locations ml JOIN ' . $p . 'cpms_clinic_memberships m ON m.id = ml.membership_id JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
         $wpdb->query('DELETE m FROM ' . $p . 'cpms_clinic_memberships m JOIN ' . $p . 'cpms_clinics c ON c.id = m.clinic_id WHERE c.organization_id = ' . $org); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_clinicians t WHERE t.clinic_id IN (' . $clinics . ')'); // phpcs:ignore
         $wpdb->query('DELETE t FROM ' . $p . 'cpms_settings t WHERE t.clinic_id IN (' . $clinics . ')'); // phpcs:ignore
