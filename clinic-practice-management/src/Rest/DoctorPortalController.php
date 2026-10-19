@@ -652,12 +652,25 @@ final class DoctorPortalController extends RestBase {
 				[ 'field' => 'location_id', 'reason' => 'location_required' ]
 			);
 		}
-		return RestClinicContext::bind_doctor_portal_scope_after_authorization(
+		$bound = RestClinicContext::bind_doctor_portal_scope_after_authorization(
 			$r,
 			(int) $user->ID,
 			$clinic_id,
 			$location_id
 		);
+		// The Doctor Portal binds its operational Location inside the permission
+		// callback, after the shared trusted-Clinic binder has already returned:
+		// a Location denial here is still a denial of this request and must carry
+		// the same single audit as the route-level boundary.
+		if (
+			$bound instanceof WP_Error
+			&& 'CLINIC_SCOPE_UNAVAILABLE' === $bound->get_error_code()
+			&& 'location' === (string) ( $bound->get_error_data()['reason'] ?? '' )
+			&& preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', (string) $r->get_route(), $matches )
+		) {
+			$this->workspace_handwriting_denial( (int) $matches[1], 'location', $r );
+		}
+		return $bound;
 	}
 
 	/**
