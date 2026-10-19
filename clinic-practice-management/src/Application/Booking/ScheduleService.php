@@ -179,13 +179,13 @@ final class ScheduleService
         // Phase 6 Slice 7: ترتیبی‌سازی همزمان Create و Update تحت یک قرارداد قفل یکسان.
         $result = $this->db->transactional(
             function () use ( $id, $fields ): array {
-				// C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
-				$current      = $this->requireScheduleForTrustedClinic( $id );
-				$clinician_id = (int) $current['clinician_id'];
-				$clinic_id    = (int) $current['clinic_id'];
+                // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
+                $current      = $this->requireScheduleForTrustedClinic( $id );
+                $clinician_id = (int) $current['clinician_id'];
+                $clinic_id    = (int) $current['clinic_id'];
 
-				$this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
-				$this->lockClinicianForScheduleWrite( $clinician_id );
+                $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
+                $this->lockClinicianForScheduleWrite( $clinician_id );
 
             // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
             $fresh = $this->schedules->findForUpdate($id);
@@ -195,7 +195,7 @@ final class ScheduleService
 
             $data = $this->validatedScheduleFields($fields, (array) $fresh);
 
-				$this->assertNoShiftConflict(
+                $this->assertNoShiftConflict(
                     $clinician_id,
                     (int) $fresh['day_of_week'],
                     $clinic_id,
@@ -204,27 +204,27 @@ final class ScheduleService
                     (string) $data['end_time'],
                     (int) $data['is_active'],
                     $id
-				);
-				if ( 1 === (int) $data['is_active'] ) {
-					// Activating a Schedule is new scheduling demand; it must not
-					// beat concurrent Location deactivation via an unlocked read.
-					$this->lock_active_location_for_schedule_write(
+                );
+                if ( 1 === (int) $data['is_active'] ) {
+                    // Activating a Schedule is new scheduling demand; it must not
+                    // beat concurrent Location deactivation via an unlocked read.
+                    $this->lock_active_location_for_schedule_write(
                         $clinic_id,
                         (int) $fresh['location_id']
-					);
-				}
+                    );
+                }
 
             if ($data !== []) {
                 $data['updated_at'] = $this->db->nowUtcSql();
                 $this->schedules->update($id, $data);
             }
 
-				return [
-					'current'      => $current,
-					'clinic_id'    => $clinic_id,
-					'clinician_id' => $clinician_id,
-				];
-			}
+                return [
+                    'current'      => $current,
+                    'clinic_id'    => $clinic_id,
+                    'clinician_id' => $clinician_id,
+                ];
+            }
         );
 
         $current      = $result['current'];

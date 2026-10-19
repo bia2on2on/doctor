@@ -127,10 +127,10 @@ final class SlotsGenerateHandler
                 $this->op->warning(
                     'SLOTS_GEN_SKIP_CLINIC_MISMATCH',
                     [
-						'clinician_id'        => $clinician['clinician_id'],
-						'clinician_clinic_id' => $home_clinic_id,
-						'schedule_clinic_id'  => $schedule_clinic_id,
-					]
+                        'clinician_id'        => $clinician['clinician_id'],
+                        'clinician_clinic_id' => $home_clinic_id,
+                        'schedule_clinic_id'  => $schedule_clinic_id,
+                    ]
                 );
                 continue;
             }
@@ -150,10 +150,10 @@ final class SlotsGenerateHandler
                 $this->op->warning(
                     'SLOTS_GEN_SKIP_LOCATION_INVALID',
                     [
-						'clinician_id'         => $clinician['clinician_id'],
-						'clinic_id'            => $clinic_id,
-						'schedule_location_id' => $schedule_location_id,
-					]
+                        'clinician_id'         => $clinician['clinician_id'],
+                        'clinic_id'            => $clinic_id,
+                        'schedule_location_id' => $schedule_location_id,
+                    ]
                 );
                 continue;
             }
@@ -164,11 +164,11 @@ final class SlotsGenerateHandler
                 $this->op->warning(
                     'SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH',
                     [
-						'clinician_id'       => $clinician['clinician_id'],
-						'schedule_clinic_id' => $clinic_id,
-						'location_id'        => $schedule_location_id,
-						'location_clinic_id' => $location_clinic_id,
-					]
+                        'clinician_id'       => $clinician['clinician_id'],
+                        'schedule_clinic_id' => $clinic_id,
+                        'location_id'        => $schedule_location_id,
+                        'location_clinic_id' => $location_clinic_id,
+                    ]
                 );
                 continue;
             }
@@ -191,11 +191,11 @@ final class SlotsGenerateHandler
                 $this->op->warning(
                     'SLOTS_GEN_SKIP_LOCATION_TZ_INVALID',
                     [
-						'clinician_id' => $clinician['clinician_id'],
-						'clinic_id'    => $clinic_id,
-						'location_id'  => $schedule_location_id,
-						'timezone'     => (string) ( $clinician['location_timezone'] ?? '' ),
-					]
+                        'clinician_id' => $clinician['clinician_id'],
+                        'clinic_id'    => $clinic_id,
+                        'location_id'  => $schedule_location_id,
+                        'timezone'     => (string) ( $clinician['location_timezone'] ?? '' ),
+                    ]
                 );
                 continue;
             }

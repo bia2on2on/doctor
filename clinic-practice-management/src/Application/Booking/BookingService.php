@@ -592,19 +592,19 @@ final class BookingService
             null,
             null,
             [
-				'mobile'    => MobileValidator::mask( $mobile ),
-				'slot_id'   => (int) $slot['id'],
-				'slot_date' => $slotDate,
-				'slot_time' => $slotTime,
-			]
+                'mobile'    => MobileValidator::mask( $mobile ),
+                'slot_id'   => (int) $slot['id'],
+                'slot_date' => $slotDate,
+                'slot_time' => $slotTime,
+            ]
         );
         $this->op->info(
             'booking.hold',
             [
-				'wp_user_id' => $wpUserId,
-				'slot_id'    => (int) $slot['id'],
-				'hold_id'    => $hold_id,
-			]
+                'wp_user_id' => $wpUserId,
+                'slot_id'    => (int) $slot['id'],
+                'hold_id'    => $hold_id,
+            ]
         );
 
         return [
@@ -1194,8 +1194,8 @@ final class BookingService
                             null,
                             null,
                             [
-								'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
-							]
+                                'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
+                            ]
                         );
                         throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
                     }
@@ -1306,34 +1306,34 @@ final class BookingService
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
                     $new_appt_id = $this->appointments->create(
                         [
-							'clinic_id'         => (int) $new_slot['clinic_id'],
-							'reference_code'    => $this->referenceCode( $new_date ),
-							'clinician_id'      => $new_clinician_id,
-							'patient_id'        => (int) $appt['patient_id'],
-							'slot_id'           => $new_slot_id,
-							'slot_date'         => $new_date,
-							'slot_time'         => $new_time,
-							'duration_min'      => $duration,        // Snapshot اسلات جدید
-							'slot_end_time'     => $end_time,
-							'wp_user_id'        => $owner_user_id,
-							'reason'            => (string) $appt['reason'],
-							'status'            => 'confirmed',
-							'is_walkin_express' => (int) $appt['is_walkin_express'],
-							'rescheduled_from'  => $appointment_id,
-							'booked_at'         => $now_sql,
-							'confirmed_at'      => $now_sql,
-							'created_at'        => $now_sql,
-							'updated_at'        => $now_sql,
-						]
+                            'clinic_id'         => (int) $new_slot['clinic_id'],
+                            'reference_code'    => $this->referenceCode( $new_date ),
+                            'clinician_id'      => $new_clinician_id,
+                            'patient_id'        => (int) $appt['patient_id'],
+                            'slot_id'           => $new_slot_id,
+                            'slot_date'         => $new_date,
+                            'slot_time'         => $new_time,
+                            'duration_min'      => $duration,        // Snapshot اسلات جدید
+                            'slot_end_time'     => $end_time,
+                            'wp_user_id'        => $owner_user_id,
+                            'reason'            => (string) $appt['reason'],
+                            'status'            => 'confirmed',
+                            'is_walkin_express' => (int) $appt['is_walkin_express'],
+                            'rescheduled_from'  => $appointment_id,
+                            'booked_at'         => $now_sql,
+                            'confirmed_at'      => $now_sql,
+                            'created_at'        => $now_sql,
+                            'updated_at'        => $now_sql,
+                        ]
                     );
 
                     $this->appointments->updateStatus(
                         $appointment_id,
                         [
-							'status'         => $to_state,
-							'rescheduled_to' => $new_appt_id,
-							'updated_at'     => $now_sql,
-						]
+                            'status'         => $to_state,
+                            'rescheduled_to' => $new_appt_id,
+                            'updated_at'     => $now_sql,
+                        ]
                     );
 
                     return [$appt, $new_appt_id, $new_slot];
@@ -1680,31 +1680,31 @@ final class BookingService
             // از هر تغییر وضعیت/Slot انجام می‌شود.
             $this->assertNoActiveVisit($appointmentId);
 
-				if ( $actor === 'patient' ) {
-					// SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
-					$locationTz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
-					$err        = BookingWindow::checkCancelWithTimezone(
+                if ( $actor === 'patient' ) {
+                    // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
+                    $locationTz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
+                    $err        = BookingWindow::checkCancelWithTimezone(
                         (string) $appt['slot_date'],
                         (string) $appt['slot_time'],
                         $locationTz,
                         $this->now(),
                         (int) $this->settingsFor( (int) $appt['clinic_id'] )->get( 'booking.cancel_deadline_hours', 24 )
-					);
-					if ( $err !== null ) {
-						throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409 );
-					}
-				}
+                    );
+                    if ( $err !== null ) {
+                        throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409 );
+                    }
+                }
 
-				$slotId = (int) $appt['slot_id'];
-				$nowSql = $this->db->nowUtcSql();
-				$this->appointments->updateStatus(
+                $slotId = (int) $appt['slot_id'];
+                $nowSql = $this->db->nowUtcSql();
+                $this->appointments->updateStatus(
                     $appointmentId,
                     [
-						'status'                  => $toState,
-						'cancelled_at'            => $nowSql,
-						'cancel_reason'           => is_string( $reason ) && $reason !== '' ? mb_substr( $reason, 0, 255 ) : null,
-						'cancelled_by_wp_user_id' => $wpUserId,
-						'updated_at'              => $nowSql,
+                        'status'                  => $toState,
+                        'cancelled_at'            => $nowSql,
+                        'cancel_reason'           => is_string( $reason ) && $reason !== '' ? mb_substr( $reason, 0, 255 ) : null,
+                        'cancelled_by_wp_user_id' => $wpUserId,
+                        'updated_at'              => $nowSql,
                     ]
                 );
                 if ($err !== null) {
