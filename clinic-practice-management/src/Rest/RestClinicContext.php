@@ -57,8 +57,8 @@ final class RestClinicContext
             return $response;
         }
 
-        $userId = get_current_user_id();
-        if ($userId <= 0) {
+        $user_id = get_current_user_id();
+        if ($user_id <= 0) {
             return $response;
         }
 
@@ -67,13 +67,13 @@ final class RestClinicContext
             $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
             if ( self::is_doctor_portal_queue_route( (string) $request->get_route() ) ) {
                 $scope = $establisher->establish_for_doctor_portal(
-                    $userId,
+                    $user_id,
                     $ids['clinic_id'],
                     $ids['location_id'],
                     self::doctor_portal_visit_id( (string) $request->get_route() )
                 );
             } else {
-                $scope = $establisher->establish($userId, $ids['clinic_id'], $ids['location_id']);
+                $scope = $establisher->establish( $user_id, $ids['clinic_id'], $ids['location_id'] );
             }
         } catch (ScopeRequiredException $e) {
             return self::toError($e);
@@ -91,7 +91,7 @@ final class RestClinicContext
      *
      * @param list<string> $permissions
      */
-    public static function authorizeAndBindReceptionScope(
+    public static function authorize_and_bind_reception_scope(
         WP_REST_Request $request,
         int $user_id,
         array $permissions,
@@ -167,7 +167,7 @@ final class RestClinicContext
      * callback has authorized its Clinic capability. The shared after-callback
      * and shutdown restoration lifecycle remains identical to generic staff scope.
      */
-    public static function bindDoctorPortalScopeAfterAuthorization(
+    public static function bind_doctor_portal_scope_after_authorization(
         WP_REST_Request $request,
         int $user_id,
         int $clinic_id,
@@ -370,8 +370,8 @@ final class RestClinicContext
         $location = self::is_clinic_wide_report_route( (string) $request->get_route() )
             ? null
             : self::combine(
-                $request->get_header('X-CPMS-Location-Id'),
-                $request->get_param('location_id'),
+                $request->get_header( 'X-CPMS-Location-Id' ),
+                $request->get_param( 'location_id' ),
                 'location_id'
             );
 

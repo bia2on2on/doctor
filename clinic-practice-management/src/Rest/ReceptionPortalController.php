@@ -407,7 +407,7 @@ final class ReceptionPortalController extends RestBase {
 
 		$is_context = '/clinic/v1/staff/portal/reception/context' === (string) $r->get_route();
 
-		return RestClinicContext::authorizeAndBindReceptionScope(
+		return RestClinicContext::authorize_and_bind_reception_scope(
 			$r,
 			(int) $user->ID,
 			$caps,

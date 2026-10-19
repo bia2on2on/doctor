@@ -587,7 +587,7 @@ final class DoctorPortalController extends RestBase {
 				[ 'field' => 'location_id', 'reason' => 'location_required' ]
 			);
 		}
-		return RestClinicContext::bindDoctorPortalScopeAfterAuthorization(
+		return RestClinicContext::bind_doctor_portal_scope_after_authorization(
 			$r,
 			(int) $user->ID,
 			$clinic_id,
@@ -1035,7 +1035,7 @@ final class DoctorPortalController extends RestBase {
 
 		$location = $eligible_by_id[ $selected ];
 		if ( ! $location['is_active'] ) {
-			$continuity    = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
+			$continuity   = new DoctorPortalLocationEligibility( App::db(), $this->memberships );
 			$can_continue = null !== $continuity_visit_id
 				? $continuity->has_active_visit( $clinic_id, $user_id, $selected, $continuity_visit_id )
 				: ( $active_visit_continuity_only && $continuity->has_active_visit_at_location( $clinic_id, $user_id, $selected ) );

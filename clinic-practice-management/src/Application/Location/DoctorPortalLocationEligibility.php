@@ -16,8 +16,7 @@ use ClinicCore\Infrastructure\Repository\MembershipRepository;
  * while this clinician still has an actionable appointment or an active Visit
  * there, and only within the actor's current Clinic membership scope.
  */
-final class DoctorPortalLocationEligibility
-{
+final class DoctorPortalLocationEligibility {
     /**
      * @param CpmsDb                 $db
      * @param MembershipRepository   $memberships
@@ -35,14 +34,13 @@ final class DoctorPortalLocationEligibility
      *
      * @return list<array{id:int,name:string,slug:string,timezone:string,is_primary:bool,is_active:bool}>
      */
-    public function eligible_locations( int $clinic_id, int $wp_user_id ): array
-    {
+    public function eligible_locations( int $clinic_id, int $wp_user_id ): array {
         $actor = $this->actor_context( $clinic_id, $wp_user_id );
         if ( null === $actor ) {
             return [];
         }
 
-        $rows = $this->db->fetchAll(
+        $rows           = $this->db->fetchAll(
             'SELECT id, name, slug, timezone, is_primary, is_active FROM ' . $this->db->table( 'cpms_locations' ) .
             ' WHERE clinic_id = %d ORDER BY id ASC',
             [ $clinic_id ]
@@ -80,8 +78,7 @@ final class DoctorPortalLocationEligibility
     /**
      * @return list<int>
      */
-    public function eligible_location_ids( int $clinic_id, int $wp_user_id ): array
-    {
+    public function eligible_location_ids( int $clinic_id, int $wp_user_id ): array {
         return array_map(
             static fn( array $location ): int => $location['id'],
             $this->eligible_locations( $clinic_id, $wp_user_id )
@@ -93,8 +90,7 @@ final class DoctorPortalLocationEligibility
      * to remain active for the authenticated clinician. This prevents an
      * unrelated appointment at the same Location from reopening old work.
      */
-    public function has_active_visit( int $clinic_id, int $wp_user_id, int $location_id, int $visit_id ): bool
-    {
+    public function has_active_visit( int $clinic_id, int $wp_user_id, int $location_id, int $visit_id ): bool {
         if ( $visit_id <= 0 ) {
             return false;
         }
@@ -110,8 +106,7 @@ final class DoctorPortalLocationEligibility
      * Continuity gate for read-only historical Portal projections: an inactive
      * Location is usable only while this clinician has active treatment there.
      */
-    public function has_active_visit_at_location( int $clinic_id, int $wp_user_id, int $location_id ): bool
-    {
+    public function has_active_visit_at_location( int $clinic_id, int $wp_user_id, int $location_id ): bool {
         $actor = $this->actor_context( $clinic_id, $wp_user_id );
         if ( null === $actor || ! $this->location_in_membership_scope( $clinic_id, $location_id, $actor ) ) {
             return false;
@@ -123,8 +118,7 @@ final class DoctorPortalLocationEligibility
     /**
      * @return array{clinician_id:int,membership_id:int,scope_mode:string}|null
      */
-    private function actor_context( int $clinic_id, int $wp_user_id ): ?array
-    {
+    private function actor_context( int $clinic_id, int $wp_user_id ): ?array {
         if ( $clinic_id <= 0 || $wp_user_id <= 0 ) {
             return null;
         }
@@ -139,17 +133,16 @@ final class DoctorPortalLocationEligibility
         }
 
         return [
-            'clinician_id' => $clinician_id,
+            'clinician_id'  => $clinician_id,
             'membership_id' => (int) $membership['id'],
-            'scope_mode' => (string) ( $membership['scope_mode'] ?? 'clinic' ),
+            'scope_mode'    => (string) ( $membership['scope_mode'] ?? 'clinic' ),
         ];
     }
 
     /**
      * @param array{clinician_id:int,membership_id:int,scope_mode:string} $actor
      */
-    private function location_in_membership_scope( int $clinic_id, int $location_id, array $actor ): bool
-    {
+    private function location_in_membership_scope( int $clinic_id, int $location_id, array $actor ): bool {
         if ( $location_id <= 0 ) {
             return false;
         }
@@ -167,11 +160,10 @@ final class DoctorPortalLocationEligibility
     /**
      * @return list<int>
      */
-    private function continuity_location_ids( int $clinic_id, int $clinician_id ): array
-    {
-        $visit_statuses   = VisitMachine::ACTIVE_STATUSES;
+    private function continuity_location_ids( int $clinic_id, int $clinician_id ): array {
+        $visit_statuses     = VisitMachine::ACTIVE_STATUSES;
         $visit_placeholders = implode( ',', array_fill( 0, count( $visit_statuses ), '%s' ) );
-        $rows             = $this->db->fetchAll(
+        $rows               = $this->db->fetchAll(
             'SELECT l.id FROM ' . $this->db->table( 'cpms_locations' ) . ' l' .
             ' WHERE l.clinic_id = %d AND l.is_active = 0' .
             ' AND (' .
@@ -196,16 +188,15 @@ final class DoctorPortalLocationEligibility
         return array_values( array_unique( $ids ) );
     }
 
-    private function active_visit_exists( int $clinic_id, int $location_id, int $clinician_id, ?int $visit_id ): bool
-    {
+    private function active_visit_exists( int $clinic_id, int $location_id, int $clinician_id, ?int $visit_id ): bool {
         if ( $clinic_id <= 0 || $location_id <= 0 || $clinician_id <= 0 ) {
             return false;
         }
 
         $visit_statuses = VisitMachine::ACTIVE_STATUSES;
         $placeholders   = implode( ',', array_fill( 0, count( $visit_statuses ), '%s' ) );
-        $visit_filter = null === $visit_id ? '' : ' AND v.id = %d';
-        $params       = array_merge( [ $clinic_id, $location_id, $clinician_id ], $visit_statuses, [ $clinic_id ] );
+        $visit_filter   = null === $visit_id ? '' : ' AND v.id = %d';
+        $params         = array_merge( [ $clinic_id, $location_id, $clinician_id ], $visit_statuses, [ $clinic_id ] );
         if ( null !== $visit_id ) {
             $params[] = $visit_id;
         }
