@@ -1635,16 +1635,7 @@ final class CpmsSetupWizard
      * interrupted-setup recovery, or blocked interrupted setup) applies to
      * the current installation state. Read-only.
      */
-    /**
-     * Public read-only predicate reused by CpmsActivationRedirect so the
-     * one-shot post-activation redirect and the embedded wizard panel share
-     * exactly one definition of "this installation genuinely still needs
-     * first-run attention" (fresh bootstrap, strictly-eligible interrupted
-     * setup recovery, or a blocked interrupted setup). An already fully
-     * configured/multi-Clinic installation returns false here, so neither
-     * surface forces an unexpected redirect/panel on it.
-     */
-    public static function onboarding_panel_applies(): bool {
+    private static function onboarding_panel_applies(): bool {
         try {
             $setup_service = App::first_practice_setup_service();
 
