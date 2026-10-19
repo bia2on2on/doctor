@@ -346,10 +346,14 @@ final class FacilitySetupService {
         $location_name = mb_substr( $name . ' — ' . (string) $site['label'], 0, 190 );
         $address       = '' !== (string) $site['address'] ? (string) $site['address'] : null;
 
+        // The Clinic is CREATED held (status 'suspended', no new demand) by the
+        // explicit provisioning API: it is never active — not even inside this
+        // transaction — until the consolidated review and an explicit, authorized
+        // activation. Any failure aborts the plan transaction (nothing survives).
         $clinic_id   = 0;
         $location_id = 0;
         try {
-            $created     = $this->provisioning->provision( $actor_id, $organization_id, $name, $slug, $timezone, $location_name, $address, null );
+            $created     = $this->provisioning->provision_held( $actor_id, $organization_id, $name, $slug, $timezone, $location_name, $address, null );
             $clinic_id   = (int) $created['clinic_id'];
             $location_id = (int) $created['location_id'];
         } catch ( InvalidArgumentException $e ) {
@@ -359,13 +363,17 @@ final class FacilitySetupService {
                 throw new FacilitySetupException( 'denied', 'ایجاد درمانگاه انجام نشد؛ دسترسی سازمانی یا وضعیت سازمان معتبر نیست و تغییری ثبت نشد.' );
             }
             // Retry after a lost response: the deterministic slug already exists.
-            // Adopt it only when it belongs to this same Organization.
-            $row = $this->db->fetchRow(
-                'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE slug = %s LIMIT 1',
+            // Adopt it only when it belongs to this same Organization AND is still
+            // held; an ACTIVE Clinic is never treated as held (nor silently suspended).
+            $row = $this->db->fetchRowForUpdate(
+                'SELECT id, organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE slug = %s LIMIT 1',
                 [ $slug ]
             );
             if ( null === $row || (int) $row['organization_id'] !== $organization_id ) {
                 throw new FacilitySetupException( 'conflict', 'شناسهٔ این درمانگاه در دسترس نیست؛ چیزی ایجاد نشد.' );
+            }
+            if ( 'suspended' !== (string) $row['status'] ) {
+                throw new FacilitySetupException( 'hold_failed', 'درمانگاهی با شناسهٔ همین درخواست وجود دارد و فعال است؛ به‌عنوان درمانگاه نگه‌داشته پذیرفته نشد و تغییری ثبت نشد. آن را در «سازمان‌ها» مدیریت کنید.' );
             }
             $clinic_id   = (int) $row['id'];
             $location_id = (int) ( $this->db->fetchValue(
@@ -374,22 +382,13 @@ final class FacilitySetupService {
             ) ?? 0 );
         }
 
-        // Hold new demand until the consolidated review + explicit activation.
-        // Fail closed: this runs inside the plan transaction, so a refused or failed
-        // hold (lifecycle authority withdrawn, Organization no longer active, update
-        // or readback failure) aborts the step and rolls back the new Clinic, its
-        // primary Location and their audit rows. A Clinic that is not verifiably held
-        // is never committed, never recorded in the plan and never treated as held.
-        try {
-            $hold = $this->provisioning->set_clinic_status( $actor_id, $organization_id, $clinic_id, false );
-        } catch ( InvalidArgumentException | RuntimeException $e ) {
-            throw new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
-        }
+        // Fail closed: the plan records the Clinic as held only after a locking
+        // readback proves it is suspended inside this transaction.
         $status = $this->db->fetchValue(
-            'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
+            'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1 FOR UPDATE',
             [ $clinic_id, $organization_id ]
         );
-        if ( 'suspended' !== (string) $hold['status'] || 'suspended' !== (string) $status ) {
+        if ( 'suspended' !== (string) $status ) {
             throw new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
         }
 
@@ -1462,12 +1461,15 @@ final class FacilitySetupService {
     }
 
     /**
+     * The plan as stored in the database — never from the WordPress object cache,
+     * which is neither transactional nor invalidated by a rollback. Inside mutate()
+     * the read is a locking read taken after the Organization row lock, so it
+     * returns the latest committed plan regardless of the transaction snapshot.
+     *
      * @return array<string, mixed>|null
      */
-    private function read_plan( int $organization_id ): ?array {
-        $option = self::OPTION_PREFIX . $organization_id;
-        wp_cache_delete( $option, 'options' );
-        $value = get_option( $option, null );
+    private function read_plan( int $organization_id, bool $for_update = false ): ?array {
+        $value = $this->stored_plan( $organization_id, $for_update );
         if ( ! is_array( $value ) || (int) ( $value['organization_id'] ?? 0 ) !== $organization_id ) {
             return null;
         }
@@ -1487,25 +1489,86 @@ final class FacilitySetupService {
      * @return array<string, mixed>
      */
     private function mutate( int $actor_id, int $organization_id, callable $change ): array {
-        return $this->db->transactional(
-            function () use ( $actor_id, $organization_id, $change ): array {
-                $organization = $this->db->fetchRowForUpdate(
-                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
-                    [ $organization_id ]
-                );
-                if ( null === $organization || 'active' !== (string) $organization['status'] ) {
-                    throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ تغییری ثبت نشد.' );
-                }
-                $before             = $this->read_plan( $organization_id );
-                $plan               = $change( $before );
-                $plan['updated_at'] = gmdate( 'Y-m-d H:i:s' );
-                $plan['updated_by'] = $actor_id;
-                update_option( self::OPTION_PREFIX . $organization_id, $plan, false );
-                $this->audit_plan_change( $actor_id, $organization_id, $before, $plan );
+        $this->assert_transactional_plan_storage();
+        $option = self::OPTION_PREFIX . $organization_id;
+        try {
+            return $this->db->transactional(
+                function () use ( $actor_id, $organization_id, $change, $option ): array {
+                    // Lock order: Organization row first (as every Organization →
+                    // Clinic → Location write), then the plan row; the complete
+                    // read → validate → create → record sequence runs under it.
+                    $organization = $this->db->fetchRowForUpdate(
+                        'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                        [ $organization_id ]
+                    );
+                    if ( null === $organization || 'active' !== (string) $organization['status'] ) {
+                        throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ تغییری ثبت نشد.' );
+                    }
+                    $before             = $this->read_plan( $organization_id, true );
+                    $plan               = $change( $before );
+                    $plan['updated_at'] = gmdate( 'Y-m-d H:i:s' );
+                    $plan['updated_by'] = $actor_id;
+                    self::forget_cached_plan( $option );
+                    update_option( $option, $plan, false );
+                    // Verified write: a silently skipped or partial plan write must
+                    // never commit the entities created above outside the plan.
+                    if ( $this->stored_plan( $organization_id, true ) !== $plan ) {
+                        throw new FacilitySetupException( 'plan_write_failed', 'ثبت راه‌اندازی تأیید نشد؛ هیچ تغییری ذخیره نشد. دوباره تلاش کنید.' );
+                    }
+                    $this->audit_plan_change( $actor_id, $organization_id, $before, $plan );
 
-                return $plan;
-            }
-        );
+                    return $plan;
+                }
+            );
+        } finally {
+            // The object cache is not transactional: after a commit OR a rollback the
+            // next reader must reload the plan from the database.
+            self::forget_cached_plan( $option );
+        }
+    }
+
+    /**
+     * Raw stored plan value (unserialized) straight from the options table.
+     *
+     * @return mixed
+     */
+    private function stored_plan( int $organization_id, bool $for_update ) {
+        $wpdb = $this->db->wpdb();
+        $sql  = 'SELECT option_value FROM ' . $wpdb->options . ' WHERE option_name = %s LIMIT 1';
+        $raw  = $for_update
+            ? $this->db->fetchValue( $sql . ' FOR UPDATE', [ self::OPTION_PREFIX . $organization_id ] )
+            : $this->db->fetchValue( $sql, [ self::OPTION_PREFIX . $organization_id ] );
+
+        return null === $raw ? null : maybe_unserialize( (string) $raw );
+    }
+
+    private static function forget_cached_plan( string $option ): void {
+        wp_cache_delete( $option, 'options' );
+        $not_options = wp_cache_get( 'notoptions', 'options' );
+        if ( is_array( $not_options ) && isset( $not_options[ $option ] ) ) {
+            unset( $not_options[ $option ] );
+            wp_cache_set( 'notoptions', $not_options, 'options' );
+        }
+    }
+
+    /**
+     * The plan lives in the WordPress options table: its writes roll back with the
+     * Clinic/Location writes only if that table is transactional. Fail closed
+     * otherwise instead of risking a plan that disagrees with the live rows.
+     */
+    private function assert_transactional_plan_storage(): void {
+        static $engine = null;
+        if ( null === $engine ) {
+            $engine = strtolower(
+                (string) $this->db->fetchValue(
+                    'SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s LIMIT 1',
+                    [ $this->db->wpdb()->options ]
+                )
+            );
+        }
+        if ( 'innodb' !== $engine ) {
+            throw new FacilitySetupException( 'storage', 'جدول تنظیمات وردپرس تراکنشی (InnoDB) نیست؛ راه‌اندازی چنددرمانگاهی برای جلوگیری از ثبت ناقص متوقف شد و تغییری ثبت نشد.' );
+        }
     }
 
     /**

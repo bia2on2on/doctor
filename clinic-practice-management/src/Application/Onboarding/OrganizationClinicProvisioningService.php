@@ -161,8 +161,34 @@ final class OrganizationClinicProvisioningService {
         return $out;
     }
 
+    /**
+     * Post-onboarding Clinic provisioning (Organizations page): the new Clinic is
+     * active immediately, exactly as before.
+     *
+     * @return array{clinic_id:int,location_id:int,audit_id:int}
+     */
+    public function provision( int $actor_id, int $organization_id, string $name, string $slug, string $timezone, ?string $location_name = null, ?string $address = null, ?string $phone = null ): array {
+        return $this->provision_clinic( false, $actor_id, $organization_id, $name, $slug, $timezone, $location_name, $address, $phone );
+    }
+
+    /**
+     * Facility-setup provisioning: the Clinic row is INSERTED with status
+     * 'suspended' (held: no new demand), so it is never active — not even inside
+     * the creating transaction — until an explicit, authorized activation through
+     * set_clinic_status(). Requires both cpms_org_clinic_create and
+     * cpms_org_clinic_lifecycle (DENY > GRANT > preset) under the Organization row
+     * lock; the held status is read back before the transaction can commit and is
+     * recorded in the provisioning audit row.
+     *
+     * @return array{clinic_id:int,location_id:int,audit_id:int}
+     */
+    public function provision_held( int $actor_id, int $organization_id, string $name, string $slug, string $timezone, ?string $location_name = null, ?string $address = null, ?string $phone = null ): array {
+        return $this->provision_clinic( true, $actor_id, $organization_id, $name, $slug, $timezone, $location_name, $address, $phone );
+    }
+
     /** @return array{clinic_id:int,location_id:int,audit_id:int} */
-    public function provision(
+    private function provision_clinic(
+        bool $held,
         int $actor_id,
         int $organization_id,
         string $name,
@@ -198,6 +224,7 @@ final class OrganizationClinicProvisioningService {
 
         return $this->db->transactional(
             function () use (
+                $held,
                 $actor_id,
                 $organization_id,
                 $name,
@@ -215,6 +242,7 @@ final class OrganizationClinicProvisioningService {
                     $organization === null
                     || (string) $organization['status'] !== 'active'
                     || ! $this->authorized( $actor_id, $organization_id, true )
+                    || ( $held && ! $this->authorized( $actor_id, $organization_id, true, self::CAPABILITY_LIFECYCLE ) )
                 ) {
                     throw new RuntimeException( 'organization provisioning denied' );
                 }
@@ -226,25 +254,35 @@ final class OrganizationClinicProvisioningService {
                     throw new RuntimeException( 'clinic slug unavailable' );
                 }
 
-                $now = $this->db->nowUtcSql();
-                if ( ! $this->db->insert(
-                    'cpms_clinics',
-                    [
-                        'organization_id' => $organization_id,
-                        'name'            => $name,
-                        'slug'            => $slug,
-                        'timezone'        => $timezone,
-                        'address'         => $address,
-                        'phone'           => $phone,
-                        'created_at'      => $now,
-                        'updated_at'      => $now,
-                    ]
-                ) ) {
+                $now        = $this->db->nowUtcSql();
+                $clinic_row = [
+                    'organization_id' => $organization_id,
+                    'name'            => $name,
+                    'slug'            => $slug,
+                    'timezone'        => $timezone,
+                    'address'         => $address,
+                    'phone'           => $phone,
+                    'created_at'      => $now,
+                    'updated_at'      => $now,
+                ];
+                if ( $held ) {
+                    // Created held: the row never exists with status 'active'.
+                    $clinic_row['status']                       = 'suspended';
+                    $clinic_row['status_updated_at']            = $now;
+                    $clinic_row['status_updated_by_wp_user_id'] = $actor_id;
+                }
+                if ( ! $this->db->insert( 'cpms_clinics', $clinic_row ) ) {
                     throw new RuntimeException( 'clinic creation failed' );
                 }
                 $clinic_id = $this->db->wpdb_last_insert_id();
                 if ( $clinic_id <= 0 ) {
                     throw new RuntimeException( 'clinic id unavailable' );
+                }
+                if ( $held && 'suspended' !== (string) $this->db->fetchValue(
+                    'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
+                    [ $clinic_id, $organization_id ]
+                ) ) {
+                    throw new RuntimeException( 'held clinic readback failed' );
                 }
 
                 if ( ! $this->db->insert(
@@ -269,6 +307,16 @@ final class OrganizationClinicProvisioningService {
                     throw new RuntimeException( 'location id unavailable' );
                 }
 
+                $audit_after = [
+                    'organization_id' => $organization_id,
+                    'slug'            => $slug,
+                    'timezone'        => $timezone,
+                ];
+                $audit_meta  = [ 'location_id' => $location_id ];
+                if ( $held ) {
+                    $audit_after['status'] = 'suspended';
+                    $audit_meta['held']    = true;
+                }
                 $audit_id = $this->audit->log(
                     self::AUDIT_ACTION,
                     ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
@@ -276,8 +324,8 @@ final class OrganizationClinicProvisioningService {
                     (int) $clinic_id,
                     null,
                     null,
-                    ['organization_id' => $organization_id, 'slug' => $slug, 'timezone' => $timezone],
-                    ['location_id' => $location_id],
+                    $audit_after,
+                    $audit_meta,
                     (int) $clinic_id
                 );
 

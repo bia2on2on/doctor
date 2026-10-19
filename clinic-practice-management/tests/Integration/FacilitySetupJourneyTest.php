@@ -744,35 +744,37 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     // authorize-before-identify manager designation
     // ------------------------------------------------------------------
 
-    public function testAFailedClinicHoldFailsClosedSoNoActiveBookableClinicEscapes(): void
+    public function testHeldProvisioningNeverWritesAnActiveClinicAndEveryWriteBoundaryFailsClosed(): void
     {
         $service = FacilitySetupPage::service();
         $this->hospitalReady($service);
         $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
-        $clinics = App::db()->table('cpms_clinics');
-        $isHold = static fn (string $sql): bool => 1 === preg_match('/^\s*UPDATE\s+`?' . preg_quote($clinics, '/') . '`?\s+SET\s+`?status`?\s*=\s*\'suspended\'/i', $sql);
-        $injections = [
-            // The lifecycle UPDATE raises (a database failure surfaced as an exception).
-            'exception' => static function (string $sql) use ($isHold): string {
-                if ($isHold($sql)) {
-                    throw new \RuntimeException('injected hold failure');
-                }
-
-                return $sql;
-            },
-            // The lifecycle UPDATE silently matches no row (no exception anywhere).
-            'no_row' => static fn (string $sql): string => $isHold($sql) ? (string) preg_replace('/\bWHERE\b/i', 'WHERE 1 = 0 AND', $sql, 1) : $sql,
+        $db = App::db();
+        $option = FacilitySetupService::OPTION_PREFIX . $this->org;
+        $audits = preg_quote($db->table('cpms_audit_logs'), '/');
+        $boundaries = [
+            'clinic_insert' => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table('cpms_clinics'), '/') . '`?\s/i',
+            'primary_location_insert' => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table('cpms_locations'), '/') . '`?\s/i',
+            'provisioning_audit' => '/^\s*INSERT\s+INTO\s+`?' . $audits . '`?\s.*\'' . OrganizationClinicProvisioningService::AUDIT_ACTION . '\'/is',
+            'plan_write' => '/^\s*(INSERT\s+INTO|UPDATE)\s+`?' . preg_quote($db->wpdb()->options, '/') . '`?\s.*' . preg_quote($option, '/') . '/is',
+            'plan_audit' => '/^\s*INSERT\s+INTO\s+`?' . $audits . '`?\s.*\'' . FacilitySetupService::PLAN_AUDIT_ACTION . '\'/is',
         ];
         $provisioned = $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION);
         $deactivated = $this->auditCount('CLINIC_DEACTIVATED');
         $planChanges = $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION);
-        $nothingEscaped = function (string $label) use ($service, $provisioned, $deactivated, $planChanges): void {
-            self::assertSame(0, $this->clinicCount($this->org), $label . ': no Clinic survives a failed hold');
+        $nothingEscaped = function (string $label) use ($service, $option, $provisioned, $deactivated, $planChanges): void {
+            self::assertSame(0, $this->clinicCount($this->org), $label . ': no Clinic survives');
             self::assertSame(0, (int) App::db()->fetchValue(
                 'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics') . ' WHERE organization_id = %d AND COALESCE(status, %s) = %s',
                 [$this->org, 'active', 'active']
-            ), $label . ': no active (bookable) Clinic escapes');
-            self::assertSame([], $service->plan($this->actor, $this->org)['clinics'], $label . ': the setup never records an unheld Clinic');
+            ), $label . ': no active (bookable) Clinic exists');
+            self::assertSame(0, (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' l JOIN ' . App::db()->table('cpms_clinics') . ' c ON c.id = l.clinic_id WHERE c.organization_id = %d',
+                [$this->org]
+            ), $label . ': no orphan Location');
+            self::assertSame([], $service->plan($this->actor, $this->org)['clinics'], $label . ': no plan entry');
+            self::assertFalse(wp_cache_get($option, 'options'), $label . ': no rolled-back plan left in the object cache');
+            self::assertSame([], (array) (get_option($option)['clinics'] ?? null), $label . ': WordPress readers see the committed plan');
             self::assertSame($provisioned, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION), $label . ': provisioning audit rolled back');
             self::assertSame($deactivated, $this->auditCount('CLINIC_DEACTIVATED'), $label);
             self::assertSame($planChanges, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), $label);
@@ -780,36 +782,130 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         };
 
         $key = FacilitySetupService::new_request_key();
-        foreach ($injections as $label => $inject) {
-            add_filter('query', $inject);
-            try {
-                $this->assertRefused('hold_failed', fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ));
-            } finally {
-                remove_filter('query', $inject);
-            }
+        foreach ($boundaries as $label => $pattern) {
+            $this->failAt($pattern, $label, fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ));
             $nothingEscaped($label);
         }
 
         // The page path reports an error notice and leaves nothing behind either.
-        $fields = ['request_key' => $key, 'clinic_name' => 'درمانگاه نگه‌داشته', 'site_key' => $site, 'timezone' => self::TZ];
+        $fields = ['request_key' => $key, 'clinic_name' => 'درمانگاه مرزی', 'site_key' => $site, 'timezone' => self::TZ];
         $field = static fn (string $name): string => (string) ($fields[$name] ?? '');
-        add_filter('query', $injections['exception']);
-        try {
-            self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'clinic', $field, []));
-        } finally {
-            remove_filter('query', $injections['exception']);
-        }
+        $notice = '';
+        $this->failAt($boundaries['clinic_insert'], 'page', function () use (&$notice, $field): void {
+            $notice = FacilitySetupPage::dispatch($this->actor, $this->org, 'clinic', $field, []);
+            throw new \RuntimeException('dispatch returned');
+        });
+        self::assertStringStartsWith('خطا', $notice);
         $nothingEscaped('page');
 
-        // Once holding works, the same request creates exactly one held Clinic.
-        $clinic = $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ);
-        self::assertSame(1, $this->clinicCount($this->org));
+        // The Clinic row is INSERTED suspended; nothing ever updates it during creation.
+        $clinicTable = preg_quote($db->table('cpms_clinics'), '/');
+        $inserts = [];
+        $updates = [];
+        $spy = static function (string $sql) use ($clinicTable, &$inserts, &$updates): string {
+            if (1 === preg_match('/^\s*INSERT\s+INTO\s+`?' . $clinicTable . '`?\s/i', $sql)) {
+                $inserts[] = $sql;
+            }
+            if (1 === preg_match('/^\s*UPDATE\s+`?' . $clinicTable . '`?\s/i', $sql)) {
+                $updates[] = $sql;
+            }
+
+            return $sql;
+        };
+        add_filter('query', $spy);
+        try {
+            $clinic = $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ);
+        } finally {
+            remove_filter('query', $spy);
+        }
+        self::assertCount(1, $inserts, 'one Clinic row');
+        self::assertMatchesRegularExpression("/'suspended'/", $inserts[0], 'the Clinic row is created suspended');
+        self::assertSame([], $updates, 'no active-then-suspend window: the row is never updated while it is created');
         self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']), 'held: no new demand before explicit activation');
         self::assertTrue((bool) $clinic['held']);
         self::assertSame($provisioned + 1, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION));
-        self::assertSame($deactivated + 1, $this->auditCount('CLINIC_DEACTIVATED'), 'the hold is audited through the lifecycle service');
-        self::assertSame((int) $clinic['clinic_id'], (int) $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشته', $site, self::TZ)['clinic_id'], 'a retry adopts it');
+        self::assertSame($deactivated, $this->auditCount('CLINIC_DEACTIVATED'), 'never active, so never deactivated');
+        $row = App::db()->fetchRow(
+            'SELECT after_json, meta_json FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND resource_id = %d ORDER BY id DESC LIMIT 1',
+            [OrganizationClinicProvisioningService::AUDIT_ACTION, (int) $clinic['clinic_id']]
+        );
+        self::assertNotNull($row);
+        self::assertSame('suspended', json_decode((string) $row['after_json'], true)['status'] ?? null, 'the provisioning audit records the held status');
+        self::assertTrue(json_decode((string) $row['meta_json'], true)['held'] ?? false);
+        self::assertSame((int) $clinic['clinic_id'], (int) $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ)['clinic_id'], 'a retry adopts it');
         self::assertSame(1, $this->clinicCount($this->org));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    public function testARetryNeverTreatsAnActiveClinicAsHeldAndAdoptsOnlyAHeldOne(): void
+    {
+        $service = FacilitySetupPage::service();
+        $provisioning = App::organization_clinic_provisioning_service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $slugFor = fn (string $key): string => 'org' . $this->org . '-' . substr(hash('sha256', $this->org . ':' . $key), 0, 12);
+
+        // An ACTIVE Clinic occupies this request's deterministic slug.
+        $activeKey = FacilitySetupService::new_request_key();
+        $active = $provisioning->provision($this->actor, $this->org, 'درمانگاه فعال موجود', $slugFor($activeKey), self::TZ);
+        self::assertSame('active', $this->clinicStatus((int) $active['clinic_id']), 'post-onboarding provisioning still creates an active Clinic');
+        $deactivated = $this->auditCount('CLINIC_DEACTIVATED');
+        $this->assertRefused('hold_failed', fn () => $service->add_clinic($this->actor, $this->org, $activeKey, 'درمانگاه ادعایی', $site, self::TZ));
+        self::assertSame('active', $this->clinicStatus((int) $active['clinic_id']), 'an active Clinic is never silently suspended by a retry');
+        self::assertSame($deactivated, $this->auditCount('CLINIC_DEACTIVATED'));
+        self::assertSame([], $service->plan($this->actor, $this->org)['clinics'], 'an active Clinic is never recorded as held');
+
+        // A held Clinic left behind by a lost response is adopted.
+        $heldKey = FacilitySetupService::new_request_key();
+        $held = $provisioning->provision_held($this->actor, $this->org, 'درمانگاه بازیابی', $slugFor($heldKey), self::TZ);
+        self::assertSame('suspended', $this->clinicStatus((int) $held['clinic_id']));
+        $adopted = $service->add_clinic($this->actor, $this->org, $heldKey, 'درمانگاه بازیابی', $site, self::TZ);
+        self::assertSame((int) $held['clinic_id'], (int) $adopted['clinic_id']);
+        self::assertTrue((bool) $adopted['held']);
+        self::assertSame(2, $this->clinicCount($this->org));
+
+        // Held provisioning needs the lifecycle authority too (DENY wins), checked under the lock.
+        $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_LIFECYCLE, 'deny');
+        try {
+            $provisioning->provision_held($this->actor, $this->org, 'درمانگاه بی‌اختیار', $slugFor(FacilitySetupService::new_request_key()), self::TZ);
+            self::fail('lifecycle DENY must refuse held provisioning');
+        } catch (\RuntimeException $e) {
+            self::assertSame('organization provisioning denied', $e->getMessage());
+        }
+        self::assertSame(2, $this->clinicCount($this->org));
+    }
+
+    public function testThePlanIsNeverServedFromAStaleCacheAndASkippedPlanWriteRollsBackTheClinic(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $option = FacilitySetupService::OPTION_PREFIX . $this->org;
+
+        // A (persistent) object cache holding a plan that was never committed must
+        // not influence validation: the locked database row is authoritative.
+        $stale = get_option($option);
+        $stale['clinics'][] = ['key' => 'cstale', 'request_key' => str_repeat('a', 32), 'name' => 'درمانگاه کش', 'clinic_id' => 999999, 'location_id' => 0, 'rooms' => []];
+        wp_cache_set($option, $stale, 'options');
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه کش', $site, self::TZ);
+        self::assertGreaterThan(0, (int) $clinic['clinic_id'], 'validated against the committed plan, not the cached one');
+        self::assertFalse(wp_cache_get($option, 'options'), 'the cache is invalidated after the write');
+        self::assertCount(1, get_option($option)['clinics']);
+
+        // A plan write that silently does not happen must roll the new Clinic back.
+        $skip = static fn ($value, $old) => $old;
+        add_filter('pre_update_option_' . $option, $skip, 10, 2);
+        try {
+            $this->assertRefused('plan_write_failed', fn () => $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه بی‌ثبت', $site, self::TZ));
+        } finally {
+            remove_filter('pre_update_option_' . $option, $skip, 10);
+        }
+        self::assertSame(1, $this->clinicCount($this->org), 'no Clinic outside the plan');
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' l JOIN ' . App::db()->table('cpms_clinics') . ' c ON c.id = l.clinic_id WHERE c.organization_id = %d',
+            [$this->org]
+        ), 'no orphan Location');
+        self::assertCount(1, $service->plan($this->actor, $this->org)['clinics']);
         self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
@@ -1005,6 +1101,144 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
+    public function testEveryClinicianWriteBoundaryRollsBackCompletelyAndPreservesTheExistingProfile(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinicA = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه مرز الف', $site, self::TZ);
+        $clinicB = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه مرز ب', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinicA['key'], $this->actor);
+        $service->designate_manager($this->actor, $this->org, $clinicB['key'], $this->actor);
+        $roomA = $service->add_room($this->actor, $this->org, $clinicA['key'], FacilitySetupService::new_request_key(), 'اتاق مرز الف', $site);
+        $db = App::db();
+        $insertInto = static fn (string $table): string => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table($table), '/') . '`?\s/i';
+        $auditOf = static fn (string $action): string => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table('cpms_audit_logs'), '/') . '`?\s.*\'' . $action . '\'/is';
+        $locationDelete = '/^\s*DELETE\s+FROM\s+`?' . preg_quote($db->table('cpms_clinician_locations'), '/') . '`?\s/i';
+        $doctor = $this->makeUser('fs_boundary_doc', 'subscriber');
+        $created = $this->auditCount('CLINICIAN_CREATED');
+        $assigned = $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION);
+
+        // A new professional: every write boundary of the step rolls back everything.
+        $firstTime = [
+            'profile_insert' => $insertInto('cpms_clinicians'),
+            'membership_insert' => $insertInto('cpms_clinic_memberships'),
+            'location_delete' => $locationDelete,
+            'location_insert' => $insertInto('cpms_clinician_locations'),
+            'clinician_created_audit' => $auditOf('CLINICIAN_CREATED'),
+            'assignment_audit' => $auditOf(FacilitySetupService::CLINICIAN_AUDIT_ACTION),
+        ];
+        foreach ($firstTime as $label => $pattern) {
+            $this->failAt($pattern, $label, fn () => $service->assign_clinician($this->actor, $this->org, $clinicA['key'], $doctor, 'دکتر مرزی', [$roomA['key']]));
+            self::assertSame(0, $this->profileCount($doctor), $label . ': no partial clinician profile');
+            self::assertNull(App::membership_service()->membership_for((int) $clinicA['clinic_id'], $doctor), $label . ': no partial membership');
+            self::assertSame(0, $this->clinicianLinkCount((int) $clinicA['clinic_id']), $label . ': no partial Location association');
+            self::assertSame($created, $this->auditCount('CLINICIAN_CREATED'), $label . ': no audit row survives');
+            self::assertSame($assigned, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION), $label);
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label . ': audit hash chain intact after the rollback');
+        }
+
+        $first = $service->assign_clinician($this->actor, $this->org, $clinicA['key'], $doctor, 'دکتر مرزی', [$roomA['key']]);
+        self::assertTrue($first['profile_created']);
+        $profileQuery = 'SELECT id, clinic_id, full_name, is_active FROM ' . $db->table('cpms_clinicians') . ' WHERE wp_user_id = %d';
+        $profile = $db->fetchRow($profileQuery, [$doctor]);
+        self::assertNotNull($profile);
+        $locationsA = App::membership_service()->clinician_location_ids($first['clinician_id']);
+        self::assertSame([(int) $roomA['location_id']], $locationsA);
+        $created = $this->auditCount('CLINICIAN_CREATED');
+        $assigned = $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION);
+
+        // The EXISTING profile joins a second Clinic: a failure at any later boundary
+        // leaves the profile, its Clinic A membership and its Locations untouched.
+        $joining = [
+            'membership_insert' => $insertInto('cpms_clinic_memberships'),
+            'location_delete' => $locationDelete,
+            'location_insert' => $insertInto('cpms_clinician_locations'),
+            'assignment_audit' => $auditOf(FacilitySetupService::CLINICIAN_AUDIT_ACTION),
+        ];
+        foreach ($joining as $label => $pattern) {
+            $this->failAt($pattern, 'join ' . $label, fn () => $service->assign_clinician($this->actor, $this->org, $clinicB['key'], $doctor, '', ['primary']));
+            self::assertSame($profile, $db->fetchRow($profileQuery, [$doctor]), $label . ': the existing profile is untouched');
+            self::assertSame('active', (string) (App::membership_service()->membership_for((int) $clinicA['clinic_id'], $doctor)['status'] ?? ''), $label);
+            self::assertNull(App::membership_service()->membership_for((int) $clinicB['clinic_id'], $doctor), $label . ': no partial membership');
+            self::assertSame($locationsA, App::membership_service()->clinician_location_ids($first['clinician_id']), $label . ': Clinic A Locations preserved');
+            self::assertSame((int) $roomA['location_id'], App::membership_service()->primary_clinician_location_id($first['clinician_id']), $label . ': primary preserved');
+            self::assertSame($created, $this->auditCount('CLINICIAN_CREATED'), $label);
+            self::assertSame($assigned, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION), $label);
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label);
+        }
+
+        $joined = $service->assign_clinician($this->actor, $this->org, $clinicB['key'], $doctor, '', ['primary']);
+        self::assertFalse($joined['profile_created']);
+        self::assertTrue($joined['membership_created']);
+        self::assertSame($first['clinician_id'], $joined['clinician_id'], 'one profile across both Clinics');
+        $expected = [(int) $roomA['location_id'], (int) $clinicB['location_id']];
+        sort($expected);
+        $actual = App::membership_service()->clinician_location_ids($first['clinician_id']);
+        sort($actual);
+        self::assertSame($expected, $actual, 'additive across Clinics');
+        self::assertSame((int) $roomA['location_id'], App::membership_service()->primary_clinician_location_id($first['clinician_id']));
+        self::assertSame($created, $this->auditCount('CLINICIAN_CREATED'));
+        self::assertSame($assigned + 1, $this->auditCount(FacilitySetupService::CLINICIAN_AUDIT_ACTION));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    public function testUnauthorizedDesignationThroughTheAdminRequestHandlerRevealsNothing(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه درخواست', $site, self::TZ);
+        $existing = $this->makeUser('fs_handler_target', 'subscriber');
+        $existingLogin = (string) get_userdata($existing)->user_login;
+        wp_set_current_user($this->actor);
+        $post = function (string $login) use ($clinic): string {
+            $_POST = [
+                '_wpnonce' => wp_create_nonce(FacilitySetupPage::NONCE),
+                'organization_id' => (string) $this->org,
+                'op' => 'manager',
+                'step' => 'managers',
+                'clinic_key' => (string) $clinic['key'],
+                'user_login' => $login,
+            ];
+            $_REQUEST = $_POST;
+            delete_transient('cpms_facility_notice_' . $this->actor);
+            $intercept = static function (): string {
+                throw new \RuntimeException('redirect intercepted');
+            };
+            add_filter('wp_redirect', $intercept);
+            try {
+                FacilitySetupPage::handle();
+                self::fail('the admin handler must redirect');
+            } catch (\RuntimeException $e) {
+                self::assertSame('redirect intercepted', $e->getMessage());
+            } finally {
+                remove_filter('wp_redirect', $intercept);
+                $_POST = [];
+                $_REQUEST = [];
+            }
+
+            return (string) get_transient('cpms_facility_notice_' . $this->actor);
+        };
+
+        // Explicit DENY: the real admin request boundary answers identically for an
+        // existing login, an unknown login and an unknown email.
+        $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'deny');
+        $notices = [
+            $post($existingLogin),
+            $post('fs_no_such_login_' . bin2hex(random_bytes(3))),
+            $post('nobody_' . bin2hex(random_bytes(3)) . '@fs.test'),
+        ];
+        self::assertStringStartsWith('خطا', $notices[0]);
+        self::assertCount(1, array_unique($notices), 'identical admin response for existing and nonexistent accounts');
+        self::assertNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $existing));
+
+        // Authorized again: the same handler designates the real account.
+        $this->orgCapability(OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER, 'grant');
+        self::assertStringStartsNotWith('خطا', $post($existingLogin));
+        self::assertNotNull(App::membership_service()->membership_for((int) $clinic['clinic_id'], $existing));
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
@@ -1094,6 +1328,29 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $user->set_role($role);
 
         return $userId;
+    }
+
+    /** Runs $operation with a database failure injected at the first statement matching $pattern. */
+    private function failAt(string $pattern, string $label, callable $operation): void
+    {
+        $inject = static function (string $sql) use ($pattern, $label): string {
+            if (1 === preg_match($pattern, $sql)) {
+                throw new \RuntimeException('injected failure at ' . $label);
+            }
+
+            return $sql;
+        };
+        $thrown = null;
+        add_filter('query', $inject);
+        try {
+            $operation();
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        } finally {
+            remove_filter('query', $inject);
+        }
+        self::assertNotNull($thrown, $label . ': the injected failure must abort the step');
+        self::assertNotInstanceOf(\PHPUnit\Framework\AssertionFailedError::class, $thrown, $label . ': ' . $thrown->getMessage());
     }
 
     private function refusalMessage(string $reason, callable $operation): string

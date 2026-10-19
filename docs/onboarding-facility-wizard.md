@@ -281,12 +281,15 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
 
 - New Clinics are held suspended (the existing lifecycle control: no new demand) until the consolidated review is
   ready and activation is explicitly confirmed.
-- The hold fails closed: it runs through `OrganizationClinicProvisioningService::set_clinic_status` inside the same
-  transaction as the Clinic, its primary Location and its plan entry, followed by a status readback. If the hold is
-  refused or fails (lifecycle authority withdrawn, Organization no longer active, update or readback failure), the
-  whole step rolls back and reports `hold_failed`: no Clinic, Location, audit row or plan entry is committed, so a
-  Clinic is never committed active (bookable) before activation and the setup never records an unheld Clinic. The
-  same request key then retries cleanly.
+- Clinics are **created** held: `OrganizationClinicProvisioningService::provision_held` inserts the Clinic row with
+  status `suspended` (it needs both `cpms_org_clinic_create` and `cpms_org_clinic_lifecycle`, DENY > GRANT > preset,
+  under the Organization row lock; the status is read back before commit and recorded in the provisioning audit
+  row). The row never exists as `active`, not even inside the creating transaction. Post-onboarding provisioning
+  on «سازمان‌ها» (`provision`) is unchanged and still creates an active Clinic.
+- Any failure while creating (Clinic, primary Location, audit, plan write, plan audit) rolls the whole step back:
+  no Clinic, Location, audit row or plan entry is committed. A retry adopts an existing Clinic with the request's
+  deterministic slug only when it is still suspended; an active one is refused (`hold_failed`) and is never
+  recorded as held or silently suspended.
 - Setup and Location management continue while a Clinic is held, as documented in
   `post-onboarding-clinic-location-management.md`.
 
@@ -303,6 +306,11 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
     run against the locked plan, and the Clinic (with its primary Location and hold) or room Location is written
     together with its plan entry. Concurrent submissions for one Organization therefore serialize, a duplicate name
     cannot slip past a stale check, and a failure at any point leaves no Clinic or Location outside the plan;
+  - the plan (a WordPress option) is read straight from the database — under the Organization row lock with a
+    locking read inside a step — and never from the object cache, which is not transactional; the plan write is
+    verified by a readback before commit (a skipped or partial write rolls the step back); the cached option is
+    invalidated after every commit or rollback; and the setup refuses to run (`storage`) unless the options table
+    is transactional (InnoDB), so plan writes really roll back with the Clinic/Location writes;
   - an unexpected internal failure is shown as a Persian error notice, never as a fatal error page; the operational
     log keeps only ids, the step and the exception class;
   - every real plan change (identity, outpatient acknowledgment, sites, Clinic/room records, activation) is audited
@@ -374,7 +382,18 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
   row and keeps the audit chain valid; a failing Location write at the end of the clinician step leaves no profile,
   membership, Location association or audit row, and the retry is audited exactly once; a suspended membership is
   refused before any profile is written; and unauthorized manager designation (explicit DENY, foreign Organization,
-  foreign Clinic) returns one refusal for existing, nonexistent and invalid user ids.
+  foreign Clinic) returns one refusal for existing, nonexistent and invalid user ids — from both services, the page
+  dispatcher and the real admin request handler (`FacilitySetupPage::handle`; there is no REST route for this
+  step). Failures are injected at every write boundary: Clinic, primary Location, provisioning audit, plan write
+  and plan audit (no Clinic, active Clinic, Location, plan entry, audit row or stale cached plan survives); and
+  profile, membership, Location delete/insert and both clinician audit rows, for a new professional and for an
+  existing profile joining a second Clinic (the existing profile, membership and Locations stay untouched).
+- `tests/Integration/FacilitySetupConcurrencyTest.php`: genuine two-connection concurrency. The test process holds
+  the Organization row lock in its own transaction (manager A) while a forked worker on a new MySQL connection runs
+  the real step (manager B); InnoDB's lock tables must show B in LOCK WAIT on the Organization PRIMARY record held by
+  A's connection, still waiting after A finished its own step. Cases: same Clinic name (B refuses the duplicate), a
+  lost-response retry with the same request key (B adopts A's Clinic), same room name (B refuses), and one
+  professional assigned to two Clinics at once (one profile, two memberships, no lost Location assignment).
 - `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup (including a
   location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
   explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,

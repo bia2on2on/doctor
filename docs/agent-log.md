@@ -1406,3 +1406,28 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   Organization row lock and is not driven by a real parallel-request test.
 - **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
   PR #253, not in this log.
+
+## [2026-10-19 22:49 UTC] — PR #253 security and atomicity closure (four findings; Draft, unmerged)
+
+- **Start (verified live):** head `2adfd54` (clean, equal to remote, no stashes), base `main` `b7ae469`, PR #253
+  Draft with 26/26 green. The brief expected head `6d41b7b`, an ancestor 7 commits back: findings 1, 3 and 4 had
+  already been addressed on the live head (`2adfd54`, `20fcf53`), so this cycle closes the remaining gaps.
+- **Finding 2 (root cause):** Clinics were provisioned `active` and then suspended in the same transaction. The new
+  explicit API `provision_held` inserts the row `suspended` (create + lifecycle authority under the Organization
+  lock, readback, audit records status/held), so the row never exists as active. Adoption on retry requires the
+  existing row to be suspended (locking read); an active one is refused and never silently suspended.
+- **Finding 4 (remaining gap):** the plan was read through `get_option` (object cache / `notoptions` could be
+  stale, and the read was not a locking read) and the plan write was not verified. Plans are now read from the
+  database (locking read under the Organization lock inside a step), written through `update_option` and verified
+  by readback, the cache entry is invalidated after commit and rollback, and the setup refuses to run unless the
+  options table is InnoDB.
+- **Finding 1:** inspected `MembershipService`, `ClinicianRepository`, `MembershipRepository` and `LocationService`:
+  all use the one `App::db()` instance (the only production `CpmsDb`), so their `transactional()` calls become
+  savepoints of the step's transaction and never commit it; failure injection at every write boundary proves it.
+- **Finding 3:** unchanged code; added a test through the real admin request handler (no REST route exists).
+- **Tests:** a new two-connection concurrency test (forked worker on its own MySQL connection, verified InnoDB lock
+  wait on the Organization PRIMARY record held by the test connection) and failure injection at every write
+  boundary of Clinic creation and of the clinician step. One earlier test of this PR (injected failure of the
+  separate hold UPDATE) was replaced, because that UPDATE no longer exists; its assertions are kept and extended.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
+  PR #253, not in this log.
