@@ -1217,3 +1217,18 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   - Dedicated browser journeys for the multi-Clinic screens, multi-Clinic hospital and building flows, and mobile/desktop layouts of the new selectors.
   - A shared professional identity across Clinics as a *profile*. This is structurally blocked by `u_clinician_user`, on which the financial-authorization decision relies, so it needs an owner decision. Participation via membership is what is delivered.
   - `update.channel` is persisted per Clinic while updates are installation-wide (owner decision).
+
+### [2026-10-19 17:00 UTC] — PR #253 addendum: browser journey + health scope notice
+
+- **`6538d4a`** adds real Chromium journeys to `bin/rwp-first-practice.py`, which runs in the First-Practice Browser Acceptance workflow (MySQL and MariaDB).
+  - An Administrator with zero memberships on the existing multi-Clinic fixture now also visits `cpms-system`, `cpms-settings` and `cpms-clinicians`, using the existing no-uncaught-PHP and no-recovery-screen checks.
+  - A new `multiclinic_manager` fixture covers a manager with ACTIVE memberships in two Clinics:
+    - an explicit selector with exactly the two Clinics and no default
+    - real-form selection that shows only the selected Clinic's clinician, with forms carrying the Clinic
+    - a forged ID denied without disclosure
+    - Settings showing installation info only until an explicit Clinic is chosen
+    - System rendering with a selector
+    - 390px with `dir="rtl"` and horizontal overflow ≤ 8px (same metric as the existing check)
+  - Validated locally only by `py_compile`, plus `php -l` on the extracted fixture PHP. Browser results come from exact-head CI only.
+- **`4cd69d2`**: on multi-Clinic installs, a Clinic-dependent health probe now renders a dedicated informational notice (`data-cpms-health-scope="required"`). Before, it reused the generic health-error notice, whose literal "Critical Error" text misreported a scope requirement as a failure and would trip the harness's critical-error detector. The local WPCS replica still reports 0 violations.
+- Exact-head CI results for the final head are reported on PR #253 only after the runs complete.
