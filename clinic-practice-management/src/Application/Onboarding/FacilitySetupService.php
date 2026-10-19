@@ -294,20 +294,51 @@ final class FacilitySetupService {
             throw new FacilitySetupException( 'invalid_clinic', 'منطقهٔ زمانی باید شناسهٔ معتبر IANA باشد.' );
         }
 
-        $plan = self::require_plan( $this->read_plan( $organization_id ) );
-        if ( 'hospital_network' === (string) $plan['flow'] && (int) $plan['outpatient_ack_by'] <= 0 ) {
-            throw new FacilitySetupException( 'ack_required', 'پیش از ایجاد درمانگاه، محدودهٔ فقط سرپایی بیمارستان را صریحاً تأیید کنید.' );
-        }
-        $existing = self::clinic_entry_by_request( $plan, $request_key );
-        if ( null !== $existing ) {
-            return $existing;
-        }
-        self::assert_unique_clinic_name( $plan, $name );
-        if ( count( $plan['clinics'] ) >= self::MAX_CLINICS ) {
-            throw new FacilitySetupException( 'limit', 'حداکثر ۵۰ درمانگاه در یک راه‌اندازی.' );
-        }
-        $site = self::site( $plan, $site_key );
+        // The whole creation (checks against the LOCKED plan, Clinic + primary
+        // Location, hold, plan entry) runs in ONE transaction that holds the
+        // Organization row lock: concurrent submissions serialize, a duplicate
+        // name can never pass a stale check, and a failure anywhere leaves no
+        // Clinic outside the plan (all-or-nothing; nested writes are savepoints).
+        $result = [];
+        $this->mutate(
+            $actor_id,
+            $organization_id,
+            function ( ?array $plan ) use ( $actor_id, $organization_id, $request_key, $name, $site_key, $timezone, &$result ): array {
+                $plan = self::require_plan( $plan );
+                if ( 'hospital_network' === (string) $plan['flow'] && (int) $plan['outpatient_ack_by'] <= 0 ) {
+                    throw new FacilitySetupException( 'ack_required', 'پیش از ایجاد درمانگاه، محدودهٔ فقط سرپایی بیمارستان را صریحاً تأیید کنید.' );
+                }
+                $existing = self::clinic_entry_by_request( $plan, $request_key );
+                if ( null !== $existing ) {
+                    $result = $existing;
 
+                    return $plan;
+                }
+                self::assert_unique_clinic_name( $plan, $name );
+                if ( count( $plan['clinics'] ) >= self::MAX_CLINICS ) {
+                    throw new FacilitySetupException( 'limit', 'حداکثر ۵۰ درمانگاه در یک راه‌اندازی.' );
+                }
+                $entry                = $this->create_held_clinic( $actor_id, $organization_id, $request_key, $name, self::site( $plan, $site_key ), $timezone );
+                $plan['clinics'][]    = $entry;
+                $plan['activated_at'] = '';
+                $result               = $entry;
+
+                return $plan;
+            }
+        );
+
+        return $result;
+    }
+
+    /**
+     * Clinic + primary Location for one request (or adoption of that request's
+     * deterministic slug inside the same Organization), held until activation.
+     * Called only inside the plan transaction, so nothing survives a later failure.
+     *
+     * @param array<string, mixed> $site
+     * @return array<string, mixed> The plan entry.
+     */
+    private function create_held_clinic( int $actor_id, int $organization_id, string $request_key, string $name, array $site, string $timezone ): array {
         $slug          = 'org' . $organization_id . '-' . substr( hash( 'sha256', $organization_id . ':' . $request_key ), 0, 12 );
         $location_name = mb_substr( $name . ' — ' . (string) $site['label'], 0, 190 );
         $address       = '' !== (string) $site['address'] ? (string) $site['address'] : null;
@@ -361,22 +392,7 @@ final class FacilitySetupService {
             'rooms'       => [],
         ];
 
-        $plan = $this->mutate(
-            $actor_id,
-            $organization_id,
-            static function ( ?array $plan ) use ( $entry, $request_key ): array {
-                $plan = self::require_plan( $plan );
-                if ( null !== self::clinic_entry_by_request( $plan, $request_key ) ) {
-                    return $plan;
-                }
-                $plan['clinics'][]    = $entry;
-                $plan['activated_at'] = '';
-
-                return $plan;
-            }
-        );
-
-        return (array) self::clinic_entry_by_request( $plan, $request_key );
+        return $entry;
     }
 
     /**
@@ -412,26 +428,62 @@ final class FacilitySetupService {
         if ( '' === $name || mb_strlen( $name ) > 190 ) {
             throw new FacilitySetupException( 'invalid_room', 'نام اتاق/مکان الزامی است (حداکثر ۱۹۰ نویسه).' );
         }
-        $plan  = self::require_plan( $this->read_plan( $organization_id ) );
-        $entry = $this->clinic_entry( $organization_id, $clinic_key );
-        foreach ( $entry['rooms'] as $room ) {
-            if ( (string) $room['request_key'] === $request_key ) {
-                return $room;
+        // Live ownership pre-check; the authoritative checks below run against the
+        // LOCKED plan inside the same transaction as the Location write (serialized
+        // per Organization, all-or-nothing: no Location outside the plan).
+        $this->clinic_entry( $organization_id, $clinic_key );
+
+        $result = [];
+        $this->mutate(
+            $actor_id,
+            $organization_id,
+            function ( ?array $plan ) use ( $actor_id, $organization_id, $clinic_key, $request_key, $name, $site_key, &$result ): array {
+                $plan = self::require_plan( $plan );
+                foreach ( $plan['clinics'] as $index => $clinic ) {
+                    if ( (string) $clinic['key'] !== $clinic_key ) {
+                        continue;
+                    }
+                    foreach ( $clinic['rooms'] as $existing ) {
+                        if ( (string) $existing['request_key'] === $request_key ) {
+                            $result = $existing;
+
+                            return $plan;
+                        }
+                        if ( mb_strtolower( (string) $existing['name'] ) === mb_strtolower( $name ) ) {
+                            throw new FacilitySetupException( 'duplicate_room', 'اتاقی با همین نام در این درمانگاه ثبت شده است؛ اتاق تکراری ساخته نشد.' );
+                        }
+                    }
+                    if ( count( $clinic['rooms'] ) >= self::MAX_ROOMS ) {
+                        throw new FacilitySetupException( 'limit', 'حداکثر ۵۰ اتاق برای هر درمانگاه.' );
+                    }
+                    $room                                 = $this->create_room( $actor_id, $organization_id, (int) $clinic['clinic_id'], $request_key, $name, self::site( $plan, $site_key ) );
+                    $plan['clinics'][ $index ]['rooms'][] = $room;
+                    $result                               = $room;
+
+                    return $plan;
+                }
+
+                throw new FacilitySetupException( 'not_found', 'درمانگاه انتخاب‌شده در راه‌اندازی این سازمان نیست.' );
             }
-            if ( mb_strtolower( (string) $room['name'] ) === mb_strtolower( $name ) ) {
-                throw new FacilitySetupException( 'duplicate_room', 'اتاقی با همین نام در این درمانگاه ثبت شده است؛ اتاق تکراری ساخته نشد.' );
-            }
-        }
-        if ( count( $entry['rooms'] ) >= self::MAX_ROOMS ) {
-            throw new FacilitySetupException( 'limit', 'حداکثر ۵۰ اتاق برای هر درمانگاه.' );
-        }
-        $site      = self::site( $plan, $site_key );
-        $clinic_id = (int) $entry['clinic_id'];
-        $timezone  = (string) ( $this->db->fetchValue(
+        );
+
+        return $result;
+    }
+
+    /**
+     * One room Location of one Clinic for one request (or adoption of that
+     * request's deterministic slug in the same Clinic). Called only inside the
+     * plan transaction; LocationService enforces the actor's Clinic authority.
+     *
+     * @param array<string, mixed> $site
+     * @return array<string, mixed> The room entry.
+     */
+    private function create_room( int $actor_id, int $organization_id, int $clinic_id, string $request_key, string $name, array $site ): array {
+        $timezone = (string) ( $this->db->fetchValue(
             'SELECT timezone FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d AND organization_id = %d LIMIT 1',
             [ $clinic_id, $organization_id ]
         ) ?? '' );
-        $slug      = 'room-' . substr( hash( 'sha256', $clinic_id . ':' . $request_key ), 0, 12 );
+        $slug     = 'room-' . substr( hash( 'sha256', $clinic_id . ':' . $request_key ), 0, 12 );
 
         $location_id = 0;
         try {
@@ -466,34 +518,6 @@ final class FacilitySetupService {
             'site_key'    => (string) $site['key'],
             'location_id' => $location_id,
         ];
-
-        $plan = $this->mutate(
-            $actor_id,
-            $organization_id,
-            static function ( ?array $plan ) use ( $clinic_key, $room, $request_key ): array {
-                $plan = self::require_plan( $plan );
-                foreach ( $plan['clinics'] as $index => $clinic ) {
-                    if ( (string) $clinic['key'] !== $clinic_key ) {
-                        continue;
-                    }
-                    foreach ( $clinic['rooms'] as $existing ) {
-                        if ( (string) $existing['request_key'] === $request_key ) {
-                            return $plan;
-                        }
-                    }
-                    $plan['clinics'][ $index ]['rooms'][] = $room;
-                }
-
-                return $plan;
-            }
-        );
-
-        $entry = self::find_clinic_entry( $plan, $clinic_key );
-        foreach ( (array) ( $entry['rooms'] ?? [] ) as $stored ) {
-            if ( (string) $stored['request_key'] === $request_key ) {
-                return $stored;
-            }
-        }
 
         return $room;
     }

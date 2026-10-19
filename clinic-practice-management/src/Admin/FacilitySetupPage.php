@@ -320,6 +320,20 @@ final class FacilitySetupPage {
             }
         } catch ( FacilitySetupException $e ) {
             return 'خطا: ' . $e->getMessage();
+        } catch ( \Throwable $e ) {
+            // Never surface a raw internal error; the operational log keeps only ids
+            // and the exception class (no message, no PHI).
+            App::op()->error(
+                'FACILITY_SETUP_STEP_FAILED',
+                [
+                    'actor_wp_user_id' => $actor_id,
+                    'organization_id'  => $organization_id,
+                    'op'               => $op,
+                    'exception'        => get_class( $e ),
+                ]
+            );
+
+            return 'خطا: این گام به‌دلیل خطای داخلی کامل نشد. وضعیت همین گام را بررسی کنید و در صورت نیاز دوباره تلاش کنید.';
         }
     }
 

@@ -293,6 +293,12 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
     instead of duplicating it;
   - duplicate names are refused;
   - the plan (`cpms_facility_setup_plan_{organization}`, non-autoload) is written under the Organization row lock;
+  - Clinic and room creation is one transaction under that lock: the request-key, duplicate-name and limit checks
+    run against the locked plan, and the Clinic (with its primary Location and hold) or room Location is written
+    together with its plan entry. Concurrent submissions for one Organization therefore serialize, a duplicate name
+    cannot slip past a stale check, and a failure at any point leaves no Clinic or Location outside the plan;
+  - an unexpected internal failure is shown as a Persian error notice, never as a fatal error page; the operational
+    log keeps only ids, the step and the exception class;
   - every real plan change (identity, outpatient acknowledgment, sites, Clinic/room records, activation) is audited
     as `FACILITY_SETUP_PLAN_CHANGED` in the same transaction, listing only the changed plan sections; an identical
     retry is not re-audited.

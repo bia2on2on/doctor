@@ -1336,3 +1336,26 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   Tehran midnight (≈20:30 UTC), so the portal's "today" no longer matched the fixture rows. This is time-of-day
   dependent and unrelated to this PR's code (facility setup, its test, the First-Practice harness and docs). This
   log-only commit re-runs the exact-head cycle after midnight; no test, rule, timeout or baseline was changed.
+
+## [2026-10-19 20:58 UTC] — PR #253 continuation: all-or-nothing Clinic/room creation under the Organization lock (Draft, unmerged)
+
+- **Start:** branch `arena/a4b51631-doctor` at `a5a84cd` (clean, equal to remote); base `main` `b7ae469` unchanged;
+  PR #253 Draft with 26/26 exact-head checks green (verified live).
+- **Finding:** `add_clinic()` / `add_room()` checked the request key and duplicate names against a plan read before
+  the write, created the Clinic or Location in their own transactions, and only then wrote the plan entry under
+  the Organization row lock. Two concurrent submissions with different request keys (for example a re-rendered form
+  submitted while the first request was still running) could both pass the duplicate-name check; and a failure
+  after provisioning (or a crash before the hold) could leave a Clinic or Location outside the plan.
+- **Change:** both steps now run their checks against the locked plan and write the Clinic (primary Location and
+  hold) or the room Location in the same transaction as the plan entry (nested writes become savepoints of the one
+  `App::db()` transaction). Concurrent submissions per Organization serialize; a failure leaves nothing behind.
+  The page dispatcher converts an unexpected internal exception into a Persian error notice and an operational log
+  entry with ids, step and exception class only (no message, no PHI), instead of a fatal error page.
+- **Tests:** a new integration test injects a failing plan write and asserts that no Clinic, primary Location,
+  room Location or provisioning audit row survives; that the page path returns an error notice; and that the same
+  request then creates exactly one held Clinic / one room, retries adopt, and duplicates are refused. Existing
+  tests unchanged.
+- **Not covered:** no test drives two real concurrent HTTP requests; serialization rests on the Organization row
+  lock held for the whole step.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
+  `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.

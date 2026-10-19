@@ -305,6 +305,79 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $this->assertRefused('duplicate_room', fn () => $service->add_room($this->actor, $this->org, $adopted['key'], FacilitySetupService::new_request_key(), 'اتاق تکرار', $site));
     }
 
+    public function testClinicAndRoomCreationIsAllOrNothingWithThePlanWriteSoAFailedWriteLeavesNothingBehind(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $option = FacilitySetupService::OPTION_PREFIX . $this->org;
+        $failWrite = static function (): void {
+            throw new \RuntimeException('injected plan write failure');
+        };
+        $provisioned = $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION);
+
+        // The Clinic, its primary Location, the hold and the plan entry are written in
+        // ONE transaction under the Organization row lock: a failing plan write rolls
+        // everything back, so no Clinic (or provisioning audit row) exists outside the plan.
+        $key = FacilitySetupService::new_request_key();
+        add_filter('pre_update_option_' . $option, $failWrite);
+        try {
+            $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه همه یا هیچ', $site, self::TZ);
+            self::fail('the injected plan write failure must surface');
+        } catch (\RuntimeException $e) {
+            self::assertSame('injected plan write failure', $e->getMessage());
+        } finally {
+            remove_filter('pre_update_option_' . $option, $failWrite);
+        }
+        self::assertSame(0, $this->clinicCount($this->org), 'no Clinic outside the plan after a failed plan write');
+        self::assertSame([], $service->plan($this->actor, $this->org)['clinics']);
+        self::assertSame($provisioned, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION), 'no orphan provisioning audit row');
+
+        // The page path turns an internal failure into an error notice (never a fatal) and also leaves nothing behind.
+        $fields = ['request_key' => FacilitySetupService::new_request_key(), 'clinic_name' => 'درمانگاه مسیر صفحه', 'site_key' => $site, 'timezone' => self::TZ];
+        $field = static fn (string $name): string => (string) ($fields[$name] ?? '');
+        add_filter('pre_update_option_' . $option, $failWrite);
+        try {
+            self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'clinic', $field, []));
+        } finally {
+            remove_filter('pre_update_option_' . $option, $failWrite);
+        }
+        self::assertSame(0, $this->clinicCount($this->org));
+
+        // The same request then creates exactly one held Clinic; a retry adopts it.
+        $clinic = $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه همه یا هیچ', $site, self::TZ);
+        self::assertSame(1, $this->clinicCount($this->org));
+        self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']), 'held until activation');
+        self::assertSame($provisioned + 1, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION));
+        self::assertSame((int) $clinic['clinic_id'], (int) $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه همه یا هیچ', $site, self::TZ)['clinic_id']);
+        self::assertSame(1, $this->clinicCount($this->org));
+
+        // Rooms: the Location and its plan entry are written together as well.
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $locations = static fn (): int => (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d',
+            [(int) $clinic['clinic_id']]
+        );
+        $roomKey = FacilitySetupService::new_request_key();
+        add_filter('pre_update_option_' . $option, $failWrite);
+        try {
+            $service->add_room($this->actor, $this->org, $clinic['key'], $roomKey, 'اتاق همه یا هیچ', $site);
+            self::fail('the injected plan write failure must surface');
+        } catch (\RuntimeException $e) {
+            self::assertSame('injected plan write failure', $e->getMessage());
+        } finally {
+            remove_filter('pre_update_option_' . $option, $failWrite);
+        }
+        self::assertSame(1, $locations(), 'only the primary Location remains after a failed plan write');
+        self::assertSame([], $service->plan($this->actor, $this->org)['clinics'][0]['rooms']);
+        $room = $service->add_room($this->actor, $this->org, $clinic['key'], $roomKey, 'اتاق همه یا هیچ', $site);
+        self::assertSame(2, $locations());
+        self::assertSame((int) $room['location_id'], (int) $service->add_room($this->actor, $this->org, $clinic['key'], $roomKey, 'اتاق همه یا هیچ', $site)['location_id'], 'a retry adopts the same Location');
+        self::assertSame(2, $locations());
+        $this->assertRefused('duplicate_room', fn () => $service->add_room($this->actor, $this->org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق همه یا هیچ', $site));
+        self::assertSame(2, $locations(), 'a refused duplicate writes nothing');
+    }
+
     public function testPartialProgressResumesAndTheFlowIsLockedAfterTheFirstClinic(): void
     {
         $service = FacilitySetupPage::service();
