@@ -71,6 +71,13 @@ final class CpmsSetupWizard
         ];
     }
 
+    /**
+     * Clinic bound by bind_requested_clinic() for this request (0 = none). It is
+     * honored only while the live ScopeContext still holds that same Clinic, so a
+     * stale value can never widen has_clinic_local_config().
+     */
+    private static int $explicit_clinic_id = 0;
+
     public static function register(): void
     {
         add_action('admin_menu', [self::class, 'menu']);
@@ -125,6 +132,13 @@ final class CpmsSetupWizard
             return;
         }
 
+        // Multi-Clinic: an explicit clinic_id is only a selector, verified for this
+        // actor (active membership + CONFIG). A rejected selector shows nothing.
+        if ( ! self::bind_requested_clinic( $_GET ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; verified against membership + CONFIG
+            self::render_clinic_choice( true );
+            return;
+        }
+
         try {
             $settings = App::settings();
         } catch ( ScopeRequiredException ) {
@@ -133,7 +147,9 @@ final class CpmsSetupWizard
             echo '<h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
             echo '<div class="notice notice-warning" data-cpms-scope-required="1"><p>';
             echo esc_html( $guidance );
-            echo '</p></div></div>';
+            echo '</p></div>';
+            self::render_clinic_choice( false );
+            echo '</div>';
             return;
         }
         $steps = self::active_steps();
@@ -160,6 +176,7 @@ final class CpmsSetupWizard
         <?php $shell_profile = self::current_facility_profile(); ?>
         <div class="wrap" dir="rtl">
             <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?></h1>
+            <?php self::render_active_clinic_banner(); ?>
             <p class="description">
                 این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، <?php echo esc_html( $shell_profile['unit'] ); ?> را راه بیندازید.
                 پیشرفت شما ذخیره می‌شود و هر زمان می‌توانید ادامه دهید.
@@ -239,12 +256,14 @@ final class CpmsSetupWizard
      */
     private static function step_url( string $step_id ): string {
         if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
-            return admin_url( 'admin.php?page=' . self::PAGE_SLUG );
+            return self::with_explicit_clinic( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
         }
 
-        return add_query_arg(
-            [ 'page' => self::PAGE_SLUG, 'step' => $step_id ],
-            admin_url( 'admin.php' )
+        return self::with_explicit_clinic(
+            add_query_arg(
+                [ 'page' => self::PAGE_SLUG, 'step' => $step_id ],
+                admin_url( 'admin.php' )
+            )
         );
     }
 
@@ -330,6 +349,7 @@ final class CpmsSetupWizard
             <?php wp_nonce_field( 'cpms_wizard_save', '_wpnonce' ); ?>
             <input type="hidden" name="action" value="cpms_wizard_save">
             <input type="hidden" name="step" value="<?php echo esc_attr( $step_id ); ?>">
+            <?php self::render_explicit_clinic_field(); ?>
             <?php echo $extra_notice; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- HTML از کد داخل همین کلاس ساخته می‌شود ?>
         <?php
     }
@@ -498,7 +518,7 @@ final class CpmsSetupWizard
                 <li>هیچ تغییر مجوزی بدون ثبت در Audit انجام نمی‌شود.</li>
             </ul>
             <p>
-                <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-staff')); ?>">رفتن به «کاربران و دسترسی‌ها»</a>
+                <a class="button" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-staff' ) ) ); ?>">رفتن به «کاربران و دسترسی‌ها»</a>
                 <a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-roles')); ?>">مجوزهای پیشرفته</a>
             </p>
         </div>
@@ -517,7 +537,7 @@ final class CpmsSetupWizard
             <p><?php echo esc_html( $facility_profile['clinicians'] ); ?> را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن <?php echo esc_html( $facility_profile['clinician'] ); ?> بدون حذف تاریخچه انجام می‌شود.</p>
             <p>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال: <strong><?php echo esc_html( (string) $count ); ?></strong></p>
             <?php if ( $can_manage_clinicians ) : ?>
-                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
+                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-clinicians' ) ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
         </div>
         <?php self::open_step_form( 'doctors' ); ?>
@@ -552,7 +572,7 @@ final class CpmsSetupWizard
             <h2>برنامه کاری هفتگی</h2>
             <p>برنامهٔ هفتگی هر <?php echo esc_html( $schedule_profile['clinician'] ); ?> (۷ روز) و استثناها (تعطیلی/مرخصی) از صفحهٔ «پزشکان و برنامه کاری» تنظیم می‌شود.</p>
             <?php if ( $can_manage_clinicians ) : ?>
-                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">رفتن به تنظیم برنامه</a></p>
+                <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-clinicians' ) ) ); ?>">رفتن به تنظیم برنامه</a></p>
             <?php endif; ?>
         </div>
         <?php
@@ -581,6 +601,7 @@ final class CpmsSetupWizard
                 <?php wp_nonce_field('cpms_wizard_save', '_wpnonce'); ?>
                 <input type="hidden" name="action" value="cpms_wizard_save">
                 <input type="hidden" name="step" value="sms">
+                <?php self::render_explicit_clinic_field(); ?>
                 <label>ارائه‌دهندهٔ پیامک: <input type="text" name="sms_provider" value="<?php echo esc_attr($provider); ?>" placeholder="generic_api"></label>
                 <label>فرستنده: <input type="text" name="sms_sender" value="<?php echo esc_attr($sender); ?>"></label>
                 <p class="submit"><button type="submit" class="button button-primary">ذخیره و ادامه</button></p>
@@ -750,7 +771,7 @@ final class CpmsSetupWizard
                 <li>
                     <?php echo esc_html( $profile['clinician'] ); ?> فعالی ثبت نشده است.
                     <?php if ( $can_manage_scoped_clinic ) : ?>
-                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians' ) ); ?>">افزودن/مدیریت <?php echo esc_html( $profile['clinicians'] ); ?></a>
+                        <a data-cpms-wizard-action="clinicians" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-clinicians' ) ) ); ?>">افزودن/مدیریت <?php echo esc_html( $profile['clinicians'] ); ?></a>
                     <?php elseif ( $first_practice_pending ) : ?>
                         <a data-cpms-first-practice-link="1" href="<?php echo esc_url( admin_url( 'admin.php?page=' . FirstPracticeSetupPage::PAGE_SLUG ) ); ?>">ابتدا اولین مطب را راه‌اندازی کنید</a>
                     <?php else : ?>
@@ -850,6 +871,7 @@ final class CpmsSetupWizard
             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
                 <?php wp_nonce_field( 'cpms_wizard_restart', '_wpnonce' ); ?>
                 <input type="hidden" name="action" value="cpms_wizard_restart">
+                <?php self::render_explicit_clinic_field(); ?>
                 <p class="submit">
                     <button type="submit" class="button">شروع دوباره — فقط بازنشانی پیشرفت</button>
                 </p>
@@ -1367,7 +1389,7 @@ final class CpmsSetupWizard
             <h2>مکان‌ها</h2>
             <p>مکان اصلی را مشخص کنید و در صورت نیاز مکان‌های بیشتر اضافه کنید. برای هر مکان، منطقهٔ زمانی دقیق باید صریح انتخاب شود و مقدار پیش‌فرض خودکار وجود ندارد.</p>
             <?php if ( $can ) : ?>
-                <p><a class="button" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-locations' ) ); ?>">رفتن به مدیریت مکان‌ها</a></p>
+                <p><a class="button" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-locations' ) ) ); ?>">رفتن به مدیریت مکان‌ها</a></p>
             <?php else : ?>
                 <div class="notice notice-warning inline"><p>برای مدیریت مکان‌ها، عضویت فعال در همین مرکز و مجوز پیکربندی لازم است؛ فرم بدون مجوز نمایش داده نمی‌شود.</p></div>
             <?php endif; ?>
@@ -1387,6 +1409,10 @@ final class CpmsSetupWizard
             wp_die('اعتبارسنجی ناموفق', 403);
         }
 
+        if ( ! self::bind_requested_clinic( $_POST ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified above
+            wp_die( 'Clinic انتخاب‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید.', 403 );
+        }
+
         if ( CpmsAdminMenu::is_first_practice_setup_pending() ) {
             // Stay inside the single visible wizard; its render embeds the
             // first-practice bootstrap panel for this state.
@@ -1394,7 +1420,14 @@ final class CpmsSetupWizard
             return;
         }
 
-        $settings = App::settings();
+        try {
+            $settings = App::settings();
+        } catch ( ScopeRequiredException ) {
+            // Multi-Clinic install without an explicit selector: never infer a Clinic.
+            set_transient( self::NOTICE_KEY, 'خطا: Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.', 60 );
+            wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
+            exit;
+        }
         $step = trim((string) sanitize_key(wp_unslash($_POST['step'] ?? 'welcome'))); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput
         $valid = array_column(self::steps(), 'id');
         if (!in_array($step, $valid, true)) {
@@ -1463,7 +1496,7 @@ final class CpmsSetupWizard
         self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
         self::setCurrentStep(self::nextStepId($step));
         set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=cpms-wizard'));
+        wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
     }
 
@@ -1490,6 +1523,10 @@ final class CpmsSetupWizard
             wp_die('اعتبارسنجی ناموفق', 403);
         }
 
+        if ( ! self::bind_requested_clinic( $_POST ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified above
+            wp_die( 'Clinic انتخاب‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید.', 403 );
+        }
+
         if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
             wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
@@ -1497,7 +1534,7 @@ final class CpmsSetupWizard
         $settings = App::settings();
         self::reset_progress( $settings, (int) get_current_user_id() );
         set_transient(self::NOTICE_KEY, 'راه‌اندازی از نو شروع شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=cpms-wizard'));
+        wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
     }
 
@@ -1609,6 +1646,91 @@ final class CpmsSetupWizard
      * @return string '' = ok
      */
     /**
+     * Verify and bind an explicit Clinic selector (multi-Clinic wizard).
+     *
+     * Returns true when no selector is present (existing single-membership
+     * behavior is unchanged) or when the selector is verified for the actor
+     * (active membership + CONFIG via TrustedClinicEstablisher and
+     * AuthorizationService); false when a selector is present but rejected.
+     * Never infers a sole/first/primary Clinic.
+     *
+     * @param array<string|int, mixed> $source Usually $_GET or $_POST.
+     */
+    private static function bind_requested_clinic( array $source ): bool {
+        self::$explicit_clinic_id = 0;
+        $requested_clinic_id      = AdminClinicSelector::requested_clinic_id( $source );
+        if ( null === $requested_clinic_id ) {
+            return true;
+        }
+        $scope = AdminClinicSelector::establish( (int) get_current_user_id(), $requested_clinic_id, RolesAndCapabilities::CONFIG );
+        if ( null === $scope ) {
+            return false;
+        }
+        App::replaceExplicitScope( $scope );
+        self::$explicit_clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+
+        return true;
+    }
+
+    /**
+     * The explicitly bound Clinic, only while the live ScopeContext still holds it.
+     */
+    private static function explicit_clinic_bound(): int {
+        $scope = ScopeContext::tryGet();
+        if ( self::$explicit_clinic_id <= 0 || null === $scope ) {
+            return 0;
+        }
+
+        return (int) $scope->clinicId === self::$explicit_clinic_id ? self::$explicit_clinic_id : 0; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+    }
+
+    private static function with_explicit_clinic( string $url ): string {
+        $clinic_id = self::explicit_clinic_bound();
+
+        return $clinic_id > 0 ? add_query_arg( 'clinic_id', $clinic_id, $url ) : $url;
+    }
+
+    private static function render_explicit_clinic_field(): void {
+        $clinic_id = self::explicit_clinic_bound();
+        if ( $clinic_id > 0 ) {
+            echo '<input type="hidden" name="clinic_id" value="' . esc_attr( (string) $clinic_id ) . '">';
+        }
+    }
+
+    private static function render_active_clinic_banner(): void {
+        $clinic_id = self::explicit_clinic_bound();
+        if ( $clinic_id <= 0 ) {
+            return;
+        }
+        $label = 'Clinic #' . $clinic_id;
+        foreach ( AdminClinicSelector::choices( (int) get_current_user_id(), RolesAndCapabilities::CONFIG ) as $choice ) {
+            if ( (int) $choice['clinic_id'] === $clinic_id ) {
+                $label = (string) $choice['clinic_name'];
+            }
+        }
+        echo '<p class="description" data-cpms-wizard-clinic="' . esc_attr( (string) $clinic_id ) . '">Clinic در حال پیکربندی: <strong>' . esc_html( $label ) . '</strong> — همهٔ گام‌ها فقط برای همین Clinic ذخیره می‌شوند. <a href="' . esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ) . '">تغییر Clinic</a></p>';
+    }
+
+    /**
+     * Explicit Clinic choice for multi-Clinic installs: only Clinics with an
+     * active membership AND scoped CONFIG, without a pre-selected default.
+     */
+    private static function render_clinic_choice( bool $rejected ): void {
+        $choices = AdminClinicSelector::choices( (int) get_current_user_id(), RolesAndCapabilities::CONFIG );
+        if ( $rejected ) {
+            echo '<div class="wrap" dir="rtl"><h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
+            echo '<div class="notice notice-error" data-cpms-clinic-scope="denied"><p>Clinic درخواست‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید؛ هیچ داده‌ای نمایش داده نشد.</p></div>';
+        }
+        if ( [] !== $choices ) {
+            echo '<p class="description" data-cpms-clinic-scope="required">برای ادامهٔ راه‌اندازی، Clinic موردنظر را صریحاً انتخاب کنید؛ پیکربندی هر Clinic جدا ذخیره می‌شود.</p>';
+            AdminClinicSelector::render_selector( self::PAGE_SLUG, 'cpms_wizard_clinic', $choices, 0, 'Clinic' );
+        }
+        if ( $rejected ) {
+            echo '</div>';
+        }
+    }
+
+    /**
      * Effective Clinic-local CONFIG authorization for wizard writes.
      *
      * The generic WordPress capability alone is NOT Clinic authority: the
@@ -1620,6 +1742,14 @@ final class CpmsSetupWizard
     private static function has_clinic_local_config( int $actor_user_id ): bool {
         if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
             return false;
+        }
+
+        // Multi-Clinic: a Clinic explicitly selected and verified in this request
+        // (bind_requested_clinic) is re-checked here: ACTIVE membership + CONFIG.
+        $explicit_clinic_id = self::explicit_clinic_bound();
+        if ( $explicit_clinic_id > 0 ) {
+            return null !== App::membership_service()->active_membership_for( $explicit_clinic_id, $actor_user_id )
+                && App::authorization_service()->can( $actor_user_id, $explicit_clinic_id, RolesAndCapabilities::CONFIG );
         }
 
         try {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\ClinicianAdminPage;
+use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Admin\SettingsAdmin;
 use ClinicCore\Admin\SystemPage;
 use ClinicCore\Application\Scope\ScopeContext;
@@ -35,6 +36,10 @@ use WP_UnitTestCase;
  *     membership: Clinic B can manage that professional's schedule at Clinic B
  *     Locations only, Clinic A rows stay untouched, the profile stays home-only,
  *     and a suspended participation fails closed.
+ *  W. The Classic setup wizard on a multi-Clinic install offers an explicit
+ *     authorized Clinic choice instead of a dead end, configures only the
+ *     verified selected Clinic, never infers one on save, and rejects a
+ *     foreign selector.
  *
  * Fixture rules: dynamic Organization/Clinics (ids asserted > 1), durable
  * memberships through the production primitive (cpms_test_seed_membership),
@@ -435,6 +440,63 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // Wizard — explicit per-Clinic configuration on a multi-Clinic install
+    // ------------------------------------------------------------------
+
+    public function testWizardOnMultiClinicInstallOffersExplicitClinicChoiceWithoutGuessing(): void
+    {
+        $html = $this->renderAs($this->multiManagerId, [CpmsSetupWizard::class, 'render']);
+        self::assertStringContainsString('data-cpms-scope-required="1"', $html, 'ambiguous scope is still reported');
+        self::assertStringContainsString('data-cpms-clinic-scope="required"', $html);
+        self::assertSelectorOffersExactly($html, 'cpms_wizard_clinic', [$this->clinicA, $this->clinicB]);
+        self::assertNoPreselectedClinic($html, 'cpms_wizard_clinic');
+        self::assertStringNotContainsString('data-cpms-wizard-clinic=', $html, 'no Clinic is configured before explicit selection');
+    }
+
+    public function testWizardWithExplicitAuthorizedClinicConfiguresThatClinicOnly(): void
+    {
+        $html = $this->renderAs($this->multiManagerId, [CpmsSetupWizard::class, 'render'], ['clinic_id' => (string) $this->clinicB]);
+        self::assertStringContainsString('data-cpms-wizard-clinic="' . $this->clinicB . '"', $html, 'the Clinic being configured is shown');
+        self::assertStringNotContainsString('data-cpms-scope-required="1"', $html);
+        self::assertStringContainsString('clinic_id=' . $this->clinicB, $html, 'wizard navigation and forms carry the explicit Clinic');
+        self::assertStringNotContainsString('clinic_id=' . $this->clinicA . '"', $html);
+    }
+
+    public function testWizardRejectsForeignClinicSelectorWithoutDisclosure(): void
+    {
+        $html = $this->renderAs($this->managerAId, [CpmsSetupWizard::class, 'render'], ['clinic_id' => (string) $this->clinicB]);
+        self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html);
+        self::assertStringNotContainsString('data-cpms-wizard-clinic=', $html);
+        self::assertSelectorOffersExactly($html, 'cpms_wizard_clinic', [$this->clinicA]);
+    }
+
+    public function testWizardSaveWritesOnlyTheExplicitlySelectedClinicAndNeverInfersOne(): void
+    {
+        $before_a = $this->clinicSetting($this->clinicA, 'booking.duration_default_min');
+        $booking = ['step' => 'booking', 'duration' => '35', 'capacity' => '2', 'lead' => '3', 'future' => '40', 'cancel' => '12'];
+
+        // Multi-Clinic without selector: no fatal, no inference, no write.
+        $missing = $this->dispatchWizardSave($this->multiManagerId, $booking);
+        self::assertFalse($missing['died']);
+        self::assertStringStartsWith('خطا', $missing['notice']);
+        self::assertNotEquals(35, (int) $this->clinicSetting($this->clinicB, 'booking.duration_default_min'));
+        self::assertEquals($before_a, $this->clinicSetting($this->clinicA, 'booking.duration_default_min'));
+
+        // Foreign selector: rejected before any write.
+        $foreign = $this->dispatchWizardSave($this->managerAId, $booking + ['clinic_id' => (string) $this->clinicB]);
+        self::assertTrue($foreign['died'], 'foreign Clinic selector is refused');
+        self::assertNotEquals(35, (int) $this->clinicSetting($this->clinicB, 'booking.duration_default_min'));
+
+        // Explicit authorized selector: only Clinic B changes.
+        $saved = $this->dispatchWizardSave($this->multiManagerId, $booking + ['clinic_id' => (string) $this->clinicB]);
+        self::assertFalse($saved['died']);
+        self::assertStringStartsNotWith('خطا', $saved['notice'], 'wizard save for Clinic B: ' . $saved['notice']);
+        self::assertSame(35, (int) $this->clinicSetting($this->clinicB, 'booking.duration_default_min'));
+        self::assertEquals($before_a, $this->clinicSetting($this->clinicA, 'booking.duration_default_min'), 'Clinic A untouched');
+        self::assertStringContainsString('clinic_id=' . $this->clinicB, $saved['location'], 'redirect keeps the explicit Clinic');
+    }
+
+    // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
 
@@ -498,6 +560,45 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         App::settingsFactory()->reset();
 
         return (string) get_transient('cpms_sys_notice');
+    }
+
+    /**
+     * @param array<string, string> $post
+     * @return array{died: bool, notice: string, location: string}
+     */
+    private function dispatchWizardSave(int $userId, array $post): array
+    {
+        wp_set_current_user($userId);
+        ScopeContext::clear();
+        App::resetScope();
+        $_POST = $post + ['_wpnonce' => wp_create_nonce('cpms_wizard_save'), 'action' => 'cpms_wizard_save'];
+        delete_transient('cpms_wizard_notice');
+        $died = false;
+        $location = '';
+        $redirect = static function ($location) {
+            throw new \RuntimeException('MCA_ADMIN_REDIRECT_EXIT_SIMULATED:' . (string) $location);
+        };
+        add_filter('wp_redirect', $redirect);
+        try {
+            CpmsSetupWizard::save();
+            self::fail('wizard save ended without a redirect or wp_die');
+        } catch (\WPDieException $e) {
+            $died = true;
+        } catch (\RuntimeException $e) {
+            $message = $e->getMessage();
+            self::assertStringStartsWith('MCA_ADMIN_REDIRECT_EXIT_SIMULATED:', $message, 'unexpected wizard failure: ' . $message);
+            $location = substr($message, strlen('MCA_ADMIN_REDIRECT_EXIT_SIMULATED:'));
+        } finally {
+            remove_filter('wp_redirect', $redirect);
+            $_POST = [];
+            ScopeContext::clear();
+            App::resetScope();
+            Settings::flushCache();
+            App::settingsFactory()->reset();
+        }
+        $notice = get_transient('cpms_wizard_notice');
+
+        return ['died' => $died, 'notice' => is_string($notice) ? $notice : '', 'location' => $location];
     }
 
     private function runRedirectingHandler(callable $handler): string
