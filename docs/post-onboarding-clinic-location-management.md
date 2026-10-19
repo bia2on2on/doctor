@@ -254,9 +254,12 @@ Clinic data through the implicit "sole Clinic" path.
    no selector it keeps the unique-membership rule.
 
 **Tests:** `tests/Integration/MultiClinicAdminPagesTest.php` (24 tests) runs on a real fixture of two
-dynamic Clinics. The first commit's 15 tests ran in the full Integration suite of CI run `39287276984` on
-head `17c0e79`: `OK (2151 tests, 62680 assertions)`, with 0 failures, errors or skips. Results for later
-heads are reported on PR #253.
+dynamic Clinics. Exact-head CI evidence:
+
+- Head `17c0e79` had 16 of these tests. Full Integration suite, CI run `39287276984`: `OK (2151 tests, 62680 assertions)`, with 0 failures, errors or skips.
+- Head `e8351dd` had all 24 tests. Full Integration suite, CI run `39290307489`: `OK (2159 tests, 63000 assertions)`, with 0 failures, errors or skips. The +8 tests between the two heads match the tests added to this file, and no other test file changed.
+
+Results for any later head are reported on PR #253.
 
 **Not claimed / open:**
 
