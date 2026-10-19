@@ -347,6 +347,9 @@ uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «
   location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
   explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,
   WordPress Administrator and subscriber refusal, and 390px RTL.
+- Real concurrency (a third Organization): two separately rendered Clinic forms with the same name, one Clinic form
+  submitted twice at once, and two room forms with the same name are POSTed in parallel from the browser (same
+  session, real HTTP against MySQL/MariaDB); each case yields exactly one Clinic or room Location and one plan entry.
 - Delegated manager hand-off (medical building): the review reports both subscriber managers without admin entry;
   after the technical WordPress role step (WP-CLI, outside CPMS) only that Clinic turns ready; the delegated manager
   then logs in, manages their own Clinic on «پزشکان» with an explicit `clinic_id`, is refused for the other

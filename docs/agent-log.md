@@ -1359,3 +1359,7 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   lock held for the whole step.
 - **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
   `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.
+- **Second commit (browser):** a third fixture Organization is used for real parallel HTTP submissions from the
+  browser (same session): two separately rendered Clinic forms with the same name, one Clinic form submitted twice
+  at once, and two room forms with the same name. Each case must yield exactly one Clinic or room Location and one
+  plan entry (live DB facts). Manager, clinician, staff and schedule steps still have no parallel-request test.

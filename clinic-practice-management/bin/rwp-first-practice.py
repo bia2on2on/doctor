@@ -398,7 +398,7 @@ if ($kind === "reset_unclaimed") {
     $mgr = get_user_by("login", (string) getenv("SECOND_ADMIN_USER"));
     if (!$mgr instanceof WP_User) { fwrite(STDERR, "missing manager\n"); exit(1); }
     $out = [];
-    foreach (["hospital" => "FP Hospital Org", "building" => "FP Medical Building Org"] as $key => $label) {
+    foreach (["hospital" => "FP Hospital Org", "building" => "FP Medical Building Org", "race" => "FP Concurrency Org"] as $key => $label) {
         $wpdb->insert($db->table("cpms_organizations"), ["name" => $label, "slug" => "fp-" . $key . "-" . bin2hex(random_bytes(3)), "status" => "active", "created_at" => $now, "updated_at" => $now]);
         $orgId = (int) $wpdb->insert_id;
         if ($orgId <= 0) { fwrite(STDERR, "organization insert failed\n"); exit(1); }
@@ -476,6 +476,33 @@ echo "FP_LAYOUT=" . implode(";", $out) . PHP_EOL;
                 if clinic.isdigit():
                     layout[int(clinic)] = sorted(int(x) for x in locs.split(",") if x.isdigit())
     return layout
+
+
+def facility_race_facts(org_id, clinic_name, room_name=""):
+    """Live counts for the concurrency checks: Clinics of one Organization with one name and their
+    plan entries, and (optionally) room Locations with one name and their plan entries."""
+    code = r'''
+$org = (int) getenv("FP_ORG");
+$name = (string) getenv("FP_NAME");
+$room = (string) getenv("FP_ROOM");
+$db = \ClinicCore\Bootstrap\App::db();
+$clinics = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d AND name = %s", [$org, $name]);
+$locations = $room === "" ? 0 : (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_locations") . " l INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = l.clinic_id WHERE k.organization_id = %d AND l.name = %s", [$org, $room]);
+wp_cache_delete("cpms_facility_setup_plan_" . $org, "options");
+$plan = get_option("cpms_facility_setup_plan_" . $org, []);
+$entries = 0;
+$roomEntries = 0;
+foreach ((array) ($plan["clinics"] ?? []) as $clinic) {
+    if ($name !== "" && (string) ($clinic["name"] ?? "") === $name) { $entries++; }
+    foreach ((array) ($clinic["rooms"] ?? []) as $entry) {
+        if ($room !== "" && (string) ($entry["name"] ?? "") === $room) { $roomEntries++; }
+    }
+}
+echo "FP_RACE clinics=" . $clinics . " plan_entries=" . $entries . " room_locations=" . $locations . " room_entries=" . $roomEntries . PHP_EOL;
+'''
+    out = wp_eval(code, {"FP_ORG": str(org_id), "FP_NAME": clinic_name, "FP_ROOM": room_name}) or ""
+    line = next((ln for ln in out.splitlines() if ln.startswith("FP_RACE ")), "")
+    return dict(tok.split("=", 1) for tok in line.split()[1:] if "=" in tok)
 
 
 def facility_prepare_delegated_manager(login_name, org_id, password):
@@ -698,6 +725,91 @@ def run_hospital_facility_journey(page, tag, org, fac):
     check(f"{tag}.hospital.activate", facility_submit(page, tag, "activate", "facility-hospital-activated") == "ok",
           "explicit activation after review")
     check(f"{tag}.hospital.activated_marker", page.locator('[data-cpms-facility-activated="1"]').count() == 1, "activation recorded")
+
+
+FACILITY_RACE_JS = """
+async ({form, keys, values}) => {
+  const el = document.querySelector(form);
+  if (!el) { return ['no-form']; }
+  return Promise.all(keys.map((key) => {
+    const body = new FormData(el);
+    body.set('request_key', key);
+    for (const [name, value] of Object.entries(values)) { body.set(name, value); }
+    return fetch(el.action, {method: 'POST', body, credentials: 'same-origin', redirect: 'manual'})
+      .then((r) => r.type, (e) => 'error:' + e.name);
+  }));
+}
+"""
+
+
+def facility_form_key(page, op):
+    field = page.locator(f'form[data-cpms-facility-form="{op}"] input[name="request_key"]')
+    return field.input_value() if field.count() == 1 else ""
+
+
+def facility_race_submit(page, op, keys, values):
+    """POST one facility form several times IN PARALLEL from the browser (same session, real HTTP)."""
+    return page.evaluate(FACILITY_RACE_JS, {"form": f'form[data-cpms-facility-form="{op}"]', "keys": keys, "values": values})
+
+
+def run_facility_race_journey(page, tag, org):
+    """Real concurrent HTTP submissions against one Organization's plan (row lock in MySQL/MariaDB).
+
+    Two separately rendered forms (two server-issued request keys) carrying the same name, and one
+    form submitted twice at once (same request key), are POSTed in parallel: exactly one Clinic or
+    room Location and exactly one plan entry may result.
+    """
+    goto_admin(page, tag, facility_url(org, "identity"), "facility-race-identity")
+    page.check('input[name="facility_type"][value="other"]')
+    page.select_option("#cpms_facility_structure", "medical_building")
+    page.fill("#cpms_facility_display_name", "مجتمع آزمون هم‌زمانی")
+    check(f"{tag}.race.start", facility_submit(page, tag, "start", "facility-race-started") == "ok", "concurrency Organization started")
+    goto_admin(page, tag, facility_url(org, "sites"), "facility-race-sites")
+    page.fill("#cpms_facility_site_label", "ساختمان هم‌زمانی")
+    page.fill("#cpms_facility_site_address", "شیراز، خیابان آزمون")
+    facility_submit(page, tag, "site", "facility-race-site")
+
+    keys = []
+    for index in (1, 2):
+        goto_admin(page, tag, facility_url(org, "clinics"), f"facility-race-clinics-{index}")
+        keys.append(facility_form_key(page, "clinic"))
+    sites = facility_option_values(page, "#cpms_facility_clinic_site")
+    values = {"clinic_name": "درمانگاه هم‌زمان", "site_key": sites[0] if sites else "", "timezone": "Asia/Tehran"}
+    responses = facility_race_submit(page, "clinic", keys, values)
+    facts = facility_race_facts(org, "درمانگاه هم‌زمان")
+    check(f"{tag}.race.same_name_parallel_one_clinic",
+          len(set(keys)) == 2 and all(keys) and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
+          f"parallel_posts={len(responses)} responses={sorted(set(responses))} distinct_keys={len(set(keys))} "
+          f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
+
+    goto_admin(page, tag, facility_url(org, "clinics"), "facility-race-clinics-3")
+    key = facility_form_key(page, "clinic")
+    values["clinic_name"] = "درمانگاه ارسال دوباره"
+    responses = facility_race_submit(page, "clinic", [key, key], values)
+    facts = facility_race_facts(org, "درمانگاه ارسال دوباره")
+    check(f"{tag}.race.double_submit_parallel_one_clinic",
+          bool(key) and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
+          f"parallel_posts={len(responses)} responses={sorted(set(responses))} "
+          f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
+
+    goto_admin(page, tag, facility_url(org, "managers"), "facility-race-managers")
+    page.select_option("#cpms_facility_manager_clinic", index=1)
+    page.fill("#cpms_facility_user_login", SECOND_ADMIN_USER)
+    check(f"{tag}.race.manager", facility_submit(page, tag, "manager", "facility-race-manager") == "ok",
+          "explicit manager for the room concurrency check")
+    room_keys = []
+    for index in (1, 2):
+        goto_admin(page, tag, facility_url(org, "rooms"), f"facility-race-rooms-{index}")
+        room_keys.append(facility_form_key(page, "room"))
+    clinic_keys = facility_option_values(page, "#cpms_facility_room_clinic")
+    room_values = {"clinic_key": clinic_keys[0] if clinic_keys else "", "room_name": "اتاق هم‌زمان",
+                   "site_key": sites[0] if sites else ""}
+    responses = facility_race_submit(page, "room", room_keys, room_values)
+    facts = facility_race_facts(org, "", "اتاق هم‌زمان")
+    check(f"{tag}.race.same_name_parallel_one_room",
+          len(set(room_keys)) == 2 and all(room_keys) and facts.get("room_locations") == "1" and facts.get("room_entries") == "1",
+          f"parallel_posts={len(responses)} responses={sorted(set(responses))} distinct_keys={len(set(room_keys))} "
+          f"room_locations={facts.get('room_locations')} room_entries={facts.get('room_entries')}")
 
 
 def run_facility_location_switch_journey(page, tag, org):
@@ -1613,6 +1725,10 @@ with sync_playwright() as p:
             run_hospital_facility_journey(fac_page, "facility-org-manager", hospital_org, fac)
             run_facility_location_switch_journey(fac_page, "facility-org-manager", hospital_org)
             run_building_facility_journey(fac_page, "facility-org-manager", building_org, fac)
+            race_org = fac.get("race", "")
+            check("facility.race.fixture", race_org.isdigit(), f"race_org_set={race_org.isdigit()}")
+            if race_org.isdigit():
+                run_facility_race_journey(fac_page, "facility-org-manager", race_org)
             # Delegated manager hand-off: only the technical WordPress role is added
             # outside CPMS; the Clinic membership from the journey is the authority.
             delegated = facility_prepare_delegated_manager(fac.get("mgra", ""), building_org, delegated_pass)
