@@ -120,7 +120,11 @@ Lifecycle **concurrency** is serialized by the Organization row lock plus `SELEC
 - **Facility-type transitions are not supported.** No automated Clinic→Clinic type migration (e.g. مطب → بیمارستان); `setup.facility_type` is configuration, not a lifecycle state. Inpatient/HIS remains unsupported for every flow. Adaptive per-type completion for newly provisioned Clinics remains unimplemented.
 - **Tests were NOT executed in this sandbox** — no PHP interpreter is available in the agent workspace (`php` absent, `phpunit.phar` present but unrunnable). All new/updated tests are committed for CI execution; no local pass/fail result is claimed. See the PR body for the exact list.
 
-- Real-browser submission coverage for patient cross-Clinic enrollment and Administrator Organization Manager bootstrap is **tracked but not yet included in CI** for this slice; it is documented in this file and planned for the next acceptance slice.
+- **Real-browser submission coverage (implemented in CI):** `clinic-practice-management/bin/rwp_classic_submissions.py` (invoked by `bin/rwp-acceptance.py` in `Real WordPress Acceptance`) exercises real Chromium submissions for:
+  1. Patient cross-Clinic self-enrollment (`PatientEnrollmentSection` → `POST /clinic/v1/patient/enroll`, `classic.enrollment.*`).
+  2. WordPress Administrator bootstrap of Organization Manager (`cpms-organization-manager-bootstrap` → `cpms_bootstrap_organization_manager`, `classic.bootstrap.*`) and B4 pure `manage_options` no-silent-grant boundary (`classic.b4.*`).
+  3. Organization Manager Clinic provisioning (`cpms-organizations`), Clinic profile update & lifecycle suspend/reactivate (`cpms-clinic-management`, B1/B2), and Clinic Manager Location create/update/lifecycle (`cpms-locations`, B3) with offline Iranian 31-province/city selectors (`ClinicCore\Domain\Geography\IranProvinceCityCatalog` + `ClinicCore\Admin\AddressSelectorField`, `classic.geography.*`).
+- **Owner real-host acceptance checklist:** `docs/testing/classic-real-host-acceptance-checklist.md` (evidence-based checklist for independent execution on the Owner host; actual Owner-host execution is not claimed until performed on that host).
 - Adaptive per-facility-type setup (full wizard configuration for every newly provisioned Clinic type) remains unimplemented — the slice is intentionally narrow and does not claim it.
 
 ## 7. How to verify

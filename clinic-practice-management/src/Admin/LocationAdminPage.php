@@ -10,6 +10,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -153,7 +154,7 @@ final class LocationAdminPage
                     <input type="hidden" name="clinic_id" value="<?php echo (int) $clinic_id; ?>">
                     <table class="form-table" role="presentation">
                         <tr><th><label for="loc_name">نام شعبه</label></th><td><input type="text" id="loc_name" name="name" class="regular-text" maxlength="190" required value=""></td></tr>
-                        <tr><th><label for="loc_address">آدرس</label></th><td><input type="text" id="loc_address" name="address" class="regular-text" maxlength="255" value=""></td></tr>
+                        <tr><th><label for="loc_address">آدرس</label></th><td><?php AddressSelectorField::render( '', 'loc_address', 'address_province', 'address_city', 'loc_address' ); ?><input type="text" id="loc_address" name="address" class="regular-text" maxlength="255" value=""></td></tr>
                         <tr><th><label for="loc_phone">تلفن</label></th><td><input type="text" id="loc_phone" name="phone" class="regular-text ltr" maxlength="32" value=""></td></tr>
                         <tr><th><label for="loc_slug">شناسه (slug)</label></th>
                             <td>
@@ -184,7 +185,7 @@ final class LocationAdminPage
                         <tr><th>شناسه (slug)</th><td><span class="ltr"><?php echo esc_html( (string) $edit['slug'] ); ?></span> <code>(ثابت)</code></td></tr>
                         <tr><th>مالک (Clinic)</th><td><code>(ثابت — #<?php echo (int) $edit['clinic_id']; ?>)</code></td></tr>
                         <tr><th><label for="loc_edit_name">نام شعبه</label></th><td><input type="text" id="loc_edit_name" name="name" class="regular-text" maxlength="190" required value="<?php echo esc_attr( (string) $edit['name'] ); ?>"></td></tr>
-                        <tr><th><label for="loc_edit_address">آدرس</label></th><td><input type="text" id="loc_edit_address" name="address" class="regular-text" maxlength="255" value="<?php echo esc_attr( (string) ( $edit['address'] ?? '' ) ); ?>"></td></tr>
+                        <tr><th><label for="loc_edit_address">آدرس</label></th><td><?php AddressSelectorField::render( (string) ( $edit['address'] ?? '' ), 'loc_edit_address', 'address_province', 'address_city', 'loc_edit_address' ); ?><input type="text" id="loc_edit_address" name="address" class="regular-text" maxlength="255" value="<?php echo esc_attr( (string) ( $edit['address'] ?? '' ) ); ?>"></td></tr>
                         <tr><th><label for="loc_edit_phone">تلفن</label></th><td><input type="text" id="loc_edit_phone" name="phone" class="regular-text ltr" maxlength="32" value="<?php echo esc_attr( (string) ( $edit['phone'] ?? '' ) ); ?>"></td></tr>
                         <tr><th><label for="loc_edit_tz">منطقهٔ زمانی</label></th>
                             <td>
@@ -221,7 +222,7 @@ final class LocationAdminPage
         ];
         // Preserve existing optional profile values for older/partial clients
         // that omit the field. An explicitly submitted empty string clears it.
-        foreach ( [ 'address', 'phone' ] as $optional_field ) {
+        foreach ( [ 'address', 'address_province', 'address_city', 'phone' ] as $optional_field ) {
             if ( array_key_exists( $optional_field, $_POST ) ) {
                 $in[ $optional_field ] = wp_unslash( $_POST[ $optional_field ] );
             }
@@ -311,22 +312,34 @@ final class LocationAdminPage
 
         // Sanitize and validate caller-controlled profile values only after the
         // requested Clinic has passed its durable authorization check.
-        $mode_raw        = $in['mode'] ?? 'create';
-        $mode            = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
-        $name            = self::sanitize_text_input( $in['name'] ?? '' );
-        $slug            = self::sanitize_text_input( $in['slug'] ?? '' );
-        $timezone        = self::sanitize_text_input( $in['timezone'] ?? '' );
-        $location_raw_id = $in['location_id'] ?? 0;
-        $location_id     = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
+        $mode_raw         = $in['mode'] ?? 'create';
+        $mode             = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
+        $name             = self::sanitize_text_input( $in['name'] ?? '' );
+        $slug             = self::sanitize_text_input( $in['slug'] ?? '' );
+        $timezone         = self::sanitize_text_input( $in['timezone'] ?? '' );
+        $location_raw_id  = $in['location_id'] ?? 0;
+        $location_id      = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
+        $address_province = array_key_exists( 'address_province', $in ) ? (string) ( self::sanitize_text_input( $in['address_province'] ) ?? '' ) : '';
+        $address_city     = array_key_exists( 'address_city', $in ) ? (string) ( self::sanitize_text_input( $in['address_city'] ) ?? '' ) : '';
 
         try {
+            $resolved_address = null;
+            $has_address      = array_key_exists( 'address', $in );
+            if ( $has_address ) {
+                $resolved_address = self::sanitize_text_input( $in['address'] );
+            }
+            if ( $address_province !== '' || $address_city !== '' ) {
+                $raw_addr_str     = is_string( $resolved_address ) ? $resolved_address : '';
+                $resolved_address = IranProvinceCityCatalog::resolve_submitted_address( $raw_addr_str, $address_province, $address_city );
+                $has_address      = true;
+            }
             if ( $mode === 'update' ) {
                 $update_input = [
                     'name'     => $name,
                     'timezone' => $timezone,
                 ];
-                if ( array_key_exists( 'address', $in ) ) {
-                    $update_input['address'] = self::sanitize_text_input( $in['address'] );
+                if ( $has_address ) {
+                    $update_input['address'] = $resolved_address;
                 }
                 if ( array_key_exists( 'phone', $in ) ) {
                     $update_input['phone'] = self::sanitize_text_input( $in['phone'] );
@@ -344,12 +357,14 @@ final class LocationAdminPage
                     [
                         'name'     => $name,
                         'slug'     => $slug,
-                        'address'  => array_key_exists( 'address', $in ) ? self::sanitize_text_input( $in['address'] ) : null,
+                        'address'  => $has_address ? $resolved_address : null,
                         'phone'    => array_key_exists( 'phone', $in ) ? self::sanitize_text_input( $in['phone'] ) : null,
                         'timezone' => $timezone,
                     ]
                 );
             }
+        } catch ( \InvalidArgumentException $e ) {
+            return ['error' => $e->getMessage(), 'location_id' => 0, 'clinic_id' => $authorization['clinic_id'], 'noop' => false];
         } catch ( LocationException $e ) {
             return ['error' => self::map_error( $e ), 'location_id' => 0, 'clinic_id' => $authorization['clinic_id'], 'noop' => false];
         }

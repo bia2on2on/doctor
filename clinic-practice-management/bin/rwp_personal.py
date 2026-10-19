@@ -46,6 +46,12 @@ echo 'PERSONAL_DB=' . wp_json_encode($data) . PHP_EOL;
     )
     form = page.locator('form:has(input[name="action"][value="cpms_location_save"]):has(input[name="mode"][value="create"])')
     check('personal.location.real_create_form', form.count() == 1)
+    check(
+        'personal.location.iran_province_city_selectors_offline',
+        form.locator('select[name="address_province"]').count() == 1
+        and form.locator('select[name="address_city"]').count() == 1
+        and form.locator('select[name="address_province"]').input_value() == '',
+    )
     form.locator('input[name="name"]').fill(loc_name)
     form.locator('input[name="slug"]').fill('personal-acceptance')
     form.locator('input[name="timezone"]').fill('Asia/Tehran')
