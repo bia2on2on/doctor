@@ -1323,3 +1323,10 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   Clinic with an explicit `clinic_id`, is refused for the other independent Clinic, and gets no Organization setup.
 - **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
   `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.
+- **CI convergence note:** on `00d7710` every check passed except Responsive smoke (Pilot/Staging Gate run
+  39315617708). It failed at the pre-existing Staff/Doctor Portal check `doctor-portal-tablet-768-one` ("history
+  reload operational data was requested before explicit Clinic and Location selection"); the mobile-390 and
+  desktop-1366 variants passed in the same run, and the identical failure occurred on PR #252 head `be0f3c9`
+  (run 39262675829). This PR does not touch the Staff/Doctor Portal. Re-running the failed job and dispatching the
+  workflow are refused for this integration (HTTP 403), so this log-only commit re-triggers the full exact-head
+  cycle. No test, rule, timeout or baseline was changed.
