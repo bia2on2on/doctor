@@ -294,7 +294,7 @@ final class ApptReminderHandler
         foreach (DateTimeZone::listIdentifiers(DateTimeZone::ALL_WITH_BC) as $identifier) {
             try {
                 $localDate = $referenceUtc->setTimezone(new DateTimeZone($identifier))->format('Y-m-d');
-            } catch (\Throwable) {
+            } catch ( \Throwable ) {
                 // Some PHP/tzdata builds expose registry metadata such as
                 // `leapseconds` or `tzdata.zi`; these are not IANA zones.
                 // \Throwable (not \Exception): PHP 8.3 timezone construction can
@@ -495,7 +495,7 @@ final class ApptReminderHandler
             $tomorrow = $local_reference->modify( '+1 day' )->format( 'Y-m-d' );
 
             return (string) $row['slot_date'] === $today || (string) $row['slot_date'] === $tomorrow;
-        } catch (\Throwable) {
+        } catch ( \Throwable ) {
             // Narrow boundary: only timezone construction/conversion for THIS
             // row. A bad identifier skips the row; it never aborts the batch.
             $this->op->warning('appt.reminder_location_timezone_invalid', [
@@ -564,7 +564,7 @@ final class ApptReminderHandler
             $today = $referenceUtc->setTimezone($zone)->format('Y-m-d');
 
             return (string) $row['slot_date'] === $today ? 'morn' : 'eve';
-        } catch (\Throwable) {
+        } catch ( \Throwable ) {
             // isLocationEligible() already accepted the row with the stable chain
             // reference. This branch is defensive only and does not alter eligibility.
             return 'eve';
