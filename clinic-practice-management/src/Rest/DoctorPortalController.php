@@ -413,7 +413,7 @@ final class DoctorPortalController extends RestBase {
 		// Handwriting is a live clinical workspace, never a historical
 		// projection: even the exact active Visit cannot keep it at an inactive
 		// Location. The bounded reason is preserved for the portal envelope.
-		$scope        = App::scope();
+		$scope = App::scope();
 		// The shared scope value object exposes established camelCase properties;
 		// read them once through get_object_vars() so this boundary stays
 		// WPCS-clean without renaming a published value-object contract.

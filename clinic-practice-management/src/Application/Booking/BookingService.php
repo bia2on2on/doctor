@@ -420,7 +420,11 @@ final class BookingService
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
-        $slot = $this->resolve_slot_for_booking( $clinicId, $clinicianId, $slotDate, $slotTime, $slotId );
+        // The published quote() parameter names stay unchanged (PHP 8 named
+        // arguments); compact() string keys give the call site snake_case
+        // locals without touching the public contract.
+        $quote_args = compact( 'clinicId', 'clinicianId', 'slotDate', 'slotTime', 'slotId' );
+        $slot       = $this->resolve_slot_for_booking( (int) $quote_args['clinicId'], (int) $quote_args['clinicianId'], (string) $quote_args['slotDate'], (string) $quote_args['slotTime'], null === $quote_args['slotId'] ? null : (int) $quote_args['slotId'] );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
         if ($slot === null || (int) $slot['is_open'] !== 1) {
