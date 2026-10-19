@@ -1,0 +1,32 @@
+/*
+ * CPMS Jalali (Shamsi) date UX — companion display next to native
+ * `input[type="date"]` fields on CPMS admin screens (see cpms-jalali-date.js).
+ * Scoped under body.cpms-admin so it never leaks into unrelated wp-admin UI.
+ */
+body.cpms-admin .cpms-jalali-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+body.cpms-admin .cpms-jalali-display {
+  font-size: 12px;
+  color: #50575e;
+  white-space: nowrap;
+  direction: rtl;
+}
+
+body.cpms-admin .cpms-jalali-display:empty {
+  display: none;
+}
+
+@media (max-width: 782px) {
+  body.cpms-admin .cpms-jalali-field {
+    width: 100%;
+  }
+  body.cpms-admin .cpms-jalali-display {
+    display: block;
+    margin-top: 2px;
+  }
+}

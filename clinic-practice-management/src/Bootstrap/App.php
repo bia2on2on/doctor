@@ -354,6 +354,7 @@ final class App
         CpmsAdminMenu::register();
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
+        \ClinicCore\Admin\CpmsActivationRedirect::register(); // one-shot, state-aware first-launch redirect to the wizard
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
         FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
         \ClinicCore\Admin\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning

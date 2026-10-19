@@ -69,3 +69,50 @@ Receipt: 2026-10-18T19:24:29Z. Head before batch: `d1c04ec` (26/26 checks green)
 - **Hospital clinician-count alignment:** the `hospital_network` flow is multi-provider — displayed input `min="2"`, `save_doctors()` rejects <2 with a hospital-specific Persian message, and `step_is_complete('doctors')` uses `max(stored intended, flow minimum)` when a facility selection exists (a stale intended=1 from a previous single-provider flow can no longer understate the current requirement). Legacy installs without a selection keep their exact previous semantics.
 - **Defense-in-depth authorization:** the public `save_facility()`/`save_doctors()`/`save_health()` methods enforce the same Clinic-local CONFIG gate (`has_clinic_local_config`) as every other wizard write — checked **before** any flow inspection or payload processing, with no writes on denial. The pre-bootstrap entry point `save_facility_selection()` intentionally remains `manage_options` + nonce only (it runs before any Clinic scope exists); `save()` keeps its own double gate.
 - **Tests:** `FacilityAdaptiveFlowEvolutionTest` expanded from 16 to 20 DB-backed methods (hospital override refusals + positive controls + disabled-option UI + pre-bootstrap refusal; fresh-ack unchecked/stale/reset/re-ack/restart with tenant snapshots; truthful completion across doctor_practice → general_clinic → hospital → medical_building; public-save auth denials before flow logic). Unit: `testStructureCompatibilityPolicyProtectsHospitalOutpatientScope`. Two pre-existing test setups that hand-crafted now-incompatible combinations were corrected (`FacilityOnboardingWizardTest` notice test: `hospital`+`medical_building` → `other`+`medical_building`; cross-admin structure resumability: `general_clinic`+`hospital_network` → `other`+`medical_building`) — disclosed, not hidden; the hospital evolution test now expects `['پزشکان','سلامت سیستم']` and re-satisfies doctors with a real second clinician. No test was skipped, weakened or removed.
+
+## Corrective batch (2026-10-19) — facility-aware wizard chrome, safe first-run redirect, Jalali date UX
+
+Receipt: 2026-10-19T00:44:22Z. Base: `e92f4056ebed37004e986353e367e38dea69e130` (live `main`; PR #246/#247/#249 already merged). PR #248 (Doctor Portal/bookings Location-scoping) inspected and left untouched — no overlapping files (`BookingService.php`, `VisitService.php`, `DoctorPortalController.php`, `QueueController.php`, `RestClinicContext.php`, `doctor-portal-shell.php` and their listed tests).
+
+**Real-world finding (static code audit + reasoning about rendered output, NOT a live browser session — see Phase 1 limitation note in the PR):** the per-step card content (`renderClinic`, `renderDoctors`, review table, guidance) was already facility-aware via `FacilityTypeCatalog::type_profile()`, but the page `<h1>` heading, the step-nav pills, the "missing required steps" list and several prerequisite/validation messages still used the generic hardcoded `self::steps()` titles — reproducing exactly the reported defect ("2. اطلاعات کلینیک (الزامی)" for a selected hospital).
+
+**Fix — single source of truth, no scattered string replacement:**
+- `FacilityTypeCatalog::step_title(facility_id, step_id, fallback)` and `::wizard_heading(facility_id)` are the only two new functions; every nav/heading/message site now calls them (or the existing `type_profile()`), nothing is duplicated.
+- An empty/invalid facility id always returns the previous generic string — legacy installations without a facility selection are byte-for-byte unaffected (pinned by `FacilityAwareStepTitlesAndHeadingTest::testUnselectedFacilityKeepsLegacyGenericWording` and `::testInvalidFacilityIdFallsBackSafely`).
+
+### Terminology coverage matrix — all 12 approved facility types
+
+Only the `clinic` (identity) and `doctors` (clinician roster) step titles/wording change by type; every other step id (`locations`, `users`, `schedules`, `booking`, `health`, `review`, `finish`) intentionally keeps identical generic wording for every type (confirmed in the catalog and pinned by test).
+
+| # | Facility type (id) | Unit (`unit`) | Clinician / Clinicians | `clinic` step & heading | `doctors` step title | Hospital/inpatient note |
+|---|---|---|---|---|---|---|
+| 1 | `doctor_practice` | مطب | پزشک / پزشکان | اطلاعات مطب — راه‌اندازی مطب | پزشکان | — |
+| 2 | `general_clinic` | درمانگاه | پزشک / پزشکان | اطلاعات درمانگاه — راه‌اندازی درمانگاه | پزشکان | — |
+| 3 | `specialized_clinic` | درمانگاه | پزشک متخصص / پزشکان متخصص | اطلاعات درمانگاه — راه‌اندازی درمانگاه | پزشکان متخصص | — |
+| 4 | `dental_clinic` | کلینیک دندانپزشکی | دندانپزشک / دندانپزشکان | اطلاعات کلینیک دندانپزشکی — راه‌اندازی کلینیک دندانپزشکی | دندانپزشکان | — |
+| 5 | `diagnostic_center` | مرکز تشخیصی | پزشک / پزشکان | اطلاعات مرکز تشخیصی — راه‌اندازی مرکز تشخیصی | پزشکان | سرپایی فقط (guidance) |
+| 6 | `rehabilitation_center` | مرکز توانبخشی | پزشک/درمانگر / پزشکان/درمانگران | اطلاعات مرکز توانبخشی — راه‌اندازی مرکز توانبخشی | پزشکان/درمانگران | — |
+| 7 | `mental_health_center` | مرکز سلامت روان | پزشک/درمانگر / پزشکان/درمانگران | اطلاعات مرکز سلامت روان — راه‌اندازی مرکز سلامت روان | پزشکان/درمانگران | سرپایی فقط (guidance) |
+| 8 | `specialized_outpatient_center` | مرکز درمان سرپایی | پزشک / پزشکان | اطلاعات مرکز درمان سرپایی — راه‌اندازی مرکز درمان سرپایی | پزشکان | سرپایی فقط (guidance) |
+| 9 | `limited_surgery_center` | مرکز جراحی محدود | پزشک / پزشکان | اطلاعات مرکز جراحی محدود — راه‌اندازی مرکز جراحی محدود | پزشکان | بدون بستری شبانه/HIS (guidance) |
+| 10 | `hospital` | بیمارستان | پزشک / پزشکان | اطلاعات بیمارستان — راه‌اندازی بیمارستان | پزشکان | **فقط سرپایی**، گام سلامت + تأیید صریح الزامی (`health` اجباری)، بدون HIS/بستری |
+| 11 | `comprehensive_health_center` | مرکز جامع سلامت | پزشک / پزشکان | اطلاعات مرکز جامع سلامت — راه‌اندازی مرکز جامع سلامت | پزشکان | — |
+| 12 | `other` | مرکز | پزشک / پزشکان | اطلاعات مرکز — راه‌اندازی مرکز | پزشکان | — |
+
+No row implies inpatient/HIS support anywhere (`FacilityTypeCatalog::flow_supports_inpatient()` is `false` for every flow, pinned by the existing `FacilityAdaptiveFlowEvolutionTest`); medical-building multi-Clinic provisioning stays fail-closed and routes to explicit Organization Manager provisioning regardless of type (unchanged by this batch).
+
+### Safe first-run redirect (`CpmsActivationRedirect`)
+
+A one-shot, Administrator-only, state-aware redirect now sends the activating admin to the wizard after a genuine single-site activation — reusing `CpmsSetupWizard::onboarding_panel_applies()` (now `public`) as the single definition of "this installation still genuinely needs first-run attention", so an already-configured install (including a later deactivate→reactivate) is never force-redirected. Never armed for network-wide or WordPress bulk plugin activation; never fires during AJAX/cron/REST/CLI/autosave/iframe contexts; never loops (transient consumed on first observation, page-slug self-check); only the exact activating Administrator is ever redirected. A clear route back to the wizard remains in the existing CPMS admin menu regardless. See `CpmsActivationRedirectTest` for the full positive/negative matrix.
+
+### Jalali (Shamsi) date UX — delivered vs. deferred
+
+**Delivered:** a local, network-free companion display (`assets/js/cpms-jalali-date.js` + `.css`, enqueued by the existing `CpmsAssets` allowlist) that shows the live Jalali equivalent next to every real `input[type="date"]` on a CPMS admin screen (e.g. the clinician schedule-exception date, finance report date filters, patient birth date) — using the exact same Nowruz table/algorithm as the canonical PHP `ClinicCore\Domain\Time\Jalali`, so client display and server `_jalali` fields never disagree. The native input's value, validation, `required`/`min`/`max` and keyboard behaviour are completely untouched — this is strictly additive (display only), which is also why it required **zero changes** to any scheduling PHP file (`ClinicianAdminPage.php` and friends were not touched at all — avoiding any overlap with PR #248's booking/schedule work).
+
+**Explicitly NOT converted (by design):** weekday selectors and `input[type="time"]` clock ranges used by weekly recurring schedules — the script's selector is scoped to `input[type="date"]` only and has no code path that reads weekday/time values, so it cannot misinterpret them as calendar dates.
+
+**Deferred to a follow-up slice:** bidirectional Jalali *typing* (entering a date in Shamsi and having it set the native Gregorian input) — the conversion primitive (`window.CpmsJalali.jalaliTextToIso`) is already implemented and unit-cross-checked against the PHP table (Node-side manual verification only; no JS test runner exists in this repo's CI), but the interactive widget itself was deferred to keep this slice's surface area minimal and risk-free within the review window.
+
+### Tests added
+
+`FacilityAwareStepTitlesAndHeadingTest`, `CpmsActivationRedirectTest`, `CpmsJalaliDateAssetsTest` (all Integration, real WordPress Test Suite/MySQL — no code-path was skipped or weakened). As with every prior slice in this document: **no PHP/MySQL runtime exists in the agent sandbox**; PHP syntax of every touched file was verified locally with `php-parser` (Node, no PHP interpreter available), and the Jalali JS↔PHP conversion was cross-checked locally with Node for multiple anchor dates (round-trip + Nowruz boundary), but PHPUnit/WPCS/PHPStan/real-browser results are reported only from CI on the exact pushed head — see the PR for the resulting run links.

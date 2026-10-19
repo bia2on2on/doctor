@@ -100,6 +100,42 @@ final class FacilityTypeCatalog {
     }
 
     /**
+     * Facility-aware wizard page heading ("راه‌اندازی <واحد>").
+     *
+     * Single source of truth for the top-level wizard title: an empty/unknown
+     * id keeps the previous generic "راه‌اندازی کلینیک" wording so legacy
+     * installations without a facility selection are unaffected.
+     */
+    public static function wizard_heading( string $facility_id ): string {
+        return 'راه‌اندازی ' . self::type_profile( $facility_id )['unit'];
+    }
+
+    /**
+     * Facility-aware title for ONE registered wizard step id.
+     *
+     * This is the single source of truth for step-nav labels, the
+     * "missing required steps" list and prerequisite notices: only the
+     * steps whose generic wording actually names the unit/clinician
+     * ('clinic', 'doctors') are overridden; every other step id keeps its
+     * generic $fallback title unchanged (identical wording for every
+     * facility type, e.g. "مکان‌ها", "برنامه کاری"). An unknown/empty
+     * facility id always returns $fallback, so legacy behaviour before any
+     * facility selection is byte-identical to before this method existed.
+     */
+    public static function step_title( string $facility_id, string $step_id, string $fallback ): string {
+        if ( $facility_id === '' || ! self::is_valid( $facility_id ) ) {
+            return $fallback;
+        }
+        $profile = self::type_profile( $facility_id );
+
+        return match ( $step_id ) {
+            'clinic'  => 'اطلاعات ' . $profile['unit'],
+            'doctors' => $profile['clinicians'],
+            default   => $fallback,
+        };
+    }
+
+    /**
      * Structure override values selectable alongside a facility type.
      *
      * @return array<string,string>
