@@ -323,7 +323,13 @@ final class SlotsGenerateHandler
             return 0;
         }
 
-        return $this->db->transactional(
+        // Lifecycle validation runs under Organization -> Clinic -> Clinician ->
+        // Schedule -> Location. The Slot rows themselves are written AFTER that
+        // transaction commits: booking holds a Slot row and then waits for the
+        // Location, so an INSERT IGNORE (which takes a shared lock on a duplicate
+        // key) while holding Location would invert the order and could deadlock.
+        $plan     = null;
+        $validated = $this->db->transactional(
             function () use (
                 $candidate,
                 $clinic_id,
@@ -334,7 +340,8 @@ final class SlotsGenerateHandler
                 $schedule_id,
                 $organization_id,
                 $clinician_id,
-                $home_clinic_id
+                $home_clinic_id,
+                &$plan
             ): int {
                 $organization = $this->db->fetchRowForUpdate(
                     'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
@@ -460,34 +467,64 @@ final class SlotsGenerateHandler
                     return 0;
                 }
 
-                $generated = 0;
-                foreach ( $slot_candidates as $date => $times ) {
-                    foreach ( $times as $time ) {
-                        $this->db->query(
-                            'INSERT IGNORE INTO ' . $this->db->table( 'cpms_schedule_slots' ) . '
-                                 (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
-                                  is_open, generated_from, created_at, updated_at)
-                             VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
-                            [
-                                $clinic_id,
-                                $location_id,
-                                $clinician_id,
-                                $date,
-                                $time,
-                                (int) $schedule['appointment_duration_min'],
-                                (int) $schedule['slot_capacity'],
-                                $payload['source'] ?? 'cron',
-                                $this->db->nowUtcSql(),
-                                $this->db->nowUtcSql(),
-                            ]
-                        );
-                        $generated++;
-                    }
-                }
+                $plan = [
+                    'duration_min' => (int) $schedule['appointment_duration_min'],
+                    'capacity'     => (int) $schedule['slot_capacity'],
+                ];
 
-                return $generated;
+                return 1;
             }
         );
+        if ( 1 !== $validated || ! is_array( $plan ) ) {
+            return 0;
+        }
+
+        // Best-effort unlocked re-check narrows the deactivation window now that
+        // no lifecycle lock is held. A deactivation that still wins the race only
+        // leaves idempotent, unbookable rows behind: every booking path re-reads
+        // the Location under its own lock and refuses an inactive one.
+        $still_active = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            [ $location_id, $clinic_id ]
+        );
+        if ( null === $still_active ) {
+            $this->op->warning(
+                'SLOTS_GEN_SKIP_LOCATION_INACTIVE',
+                [
+                    'schedule_id' => $schedule_id,
+                    'clinic_id'   => $clinic_id,
+                    'location_id' => $location_id,
+                ]
+            );
+            return 0;
+        }
+
+        $generated = 0;
+        foreach ( $slot_candidates as $date => $times ) {
+            foreach ( $times as $time ) {
+                $this->db->query(
+                    'INSERT IGNORE INTO ' . $this->db->table( 'cpms_schedule_slots' ) . '
+                         (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
+                          is_open, generated_from, created_at, updated_at)
+                     VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
+                    [
+                        $clinic_id,
+                        $location_id,
+                        $clinician_id,
+                        $date,
+                        $time,
+                        (int) $plan['duration_min'],
+                        (int) $plan['capacity'],
+                        $payload['source'] ?? 'cron',
+                        $this->db->nowUtcSql(),
+                        $this->db->nowUtcSql(),
+                    ]
+                );
+                $generated++;
+            }
+        }
+
+        return $generated;
     }
 
     /**

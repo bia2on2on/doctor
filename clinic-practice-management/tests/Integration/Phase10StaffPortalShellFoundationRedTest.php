@@ -711,9 +711,22 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
         $zeroMissing = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
         self::assertSame(400, $zeroMissing->get_status(), 'G5: even with 0 eligible Locations, an absent explicit selector remains a scope-required error.');
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zeroMissing), 'G5: the Portal never infers a Location when none is selectable.');
+        // Decided continuity policy (2026-10-19): an inactive Location stays
+        // usable for the EXACT active Visit that is assigned to the requesting,
+        // authorized clinician of this Clinic. This assertion previously
+        // demanded a blanket 403 for the same request; that contradicted the
+        // policy, so it now asserts the permitted continuation instead.
         $zero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, $locationId));
-        self::assertSame(403, $zero->get_status(), 'G5: a now-inactive explicit Location fails closed when the Clinic has 0 eligible Locations.');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zero), 'G5: established explicit-unavailable denial code.');
+        self::assertSame(200, $zero->get_status(), 'G5: the exact active Visit continues at its now-inactive Location.');
+        self::assertSame($visitId, (int) ($this->payload($zero)['id'] ?? 0), 'G5: continuity serves the same authorized Visit.');
+
+        // Negative control: the same inactive Location without an active Visit
+        // for this clinician is still denied with the established envelope.
+        $otherPatient = $this->insertPatient($clinicId, 'g5off');
+        $otherVisit   = $this->insertVisit($otherPatient, (int) $fx['clinician'], $clinicId, $locationId, 'checked_out');
+        $zeroClosed   = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $otherVisit), [], $this->scopeHeaders($clinicId, $locationId));
+        self::assertSame(403, $zeroClosed->get_status(), 'G5: a closed Visit never reopens an inactive Location.');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zeroClosed), 'G5: established explicit-unavailable denial code.');
     }
 
     // =================================================================
