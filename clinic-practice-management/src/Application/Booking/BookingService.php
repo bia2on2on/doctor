@@ -1879,7 +1879,9 @@ final class BookingService
         }
         try {
             return new \DateTimeZone( $tz_name );
-        } catch ( \Exception ) {
+        } catch ( \Throwable ) {
+            // Narrow boundary: invalid/unsupported identifiers become the
+            // established validation error instead of escaping as a fatal.
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است' );
         }
     }
@@ -1912,7 +1914,9 @@ final class BookingService
         }
         try {
             return new \DateTimeZone( $tz_name );
-        } catch ( \Exception ) {
+        } catch ( \Throwable ) {
+            // Narrow boundary: invalid/unsupported identifiers become the
+            // established validation error instead of escaping as a fatal.
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است' );
         }
     }

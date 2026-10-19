@@ -255,6 +255,50 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * Regression: a Location row whose stored timezone is not a usable IANA
+     * identifier must never abort the reminder batch. PHP 8.3 raises
+     * DateInvalidTimeZoneException for such identifiers (and an Error can
+     * surface instead while the exception object is being decorated), so the
+     * per-row timezone boundary must catch Throwable. The valid row in the same
+     * batch still has to be reminded exactly once.
+     */
+    public function testUnsupportedLocationTimezoneSkipsOnlyItsOwnRow(): void
+    {
+        $topology = $this->pinDeterministicTopology();
+        $now = App::db()->nowUtcSql();
+
+        $patientValid = $this->fxTInsertPatient();
+        $validAppt = $this->fxTInsertAppointment(
+            (int) $topology['locA'],
+            (string) $topology['todayA'],
+            '09:00:00',
+            'confirmed',
+            null,
+            $patientValid
+        );
+        self::assertGreaterThan(0, $validAppt, 'fixture: valid-timezone appointment persisted');
+
+        $patientBroken = $this->fxTInsertPatient();
+        $brokenAppt = $this->fxTInsertAppointment(
+            (int) $topology['locB'],
+            (string) $topology['todayB'],
+            '09:00:00',
+            'confirmed',
+            null,
+            $patientBroken
+        );
+        self::assertGreaterThan(0, $brokenAppt, 'fixture: broken-timezone appointment persisted');
+        $this->setLocationTimezone((int) $topology['locB'], 'Mars/Olympus_Mons', $now);
+        Settings::flushCache();
+
+        $processed = $this->runReminderJob();
+
+        self::assertSame(1, $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $validAppt, $patientValid), 'the valid row must still be reminded exactly once');
+        self::assertSame(0, $this->reminderNotificationCount(self::FX_T_CLINIC_ID, $brokenAppt, $patientBroken), 'an unusable Location timezone must skip only its own row');
+        self::assertGreaterThanOrEqual(0, $processed, 'the batch must complete without a fatal');
+    }
+
     public function testAmbiguousLegacyAppointmentIsPreservedAndNotReminded(): void
     {
         global $wpdb;
