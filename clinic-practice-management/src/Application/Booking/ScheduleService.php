@@ -79,7 +79,7 @@ final class ScheduleService
     public function create(int $actorUserId, array $fields): array
     {
         $actor_user_id = (int) func_get_arg( 0 );
-        $clinician_id = $this->intField( $fields, 'clinician_id' );
+        $clinician_id  = $this->intField( $fields, 'clinician_id' );
         // C7-S5: پزشکِ انتخاب‌شدهٔ کلاینت «شیء» است، نه tenant context —
         // مالکیت او نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و کلینیکِ
         // ردیف برنامه هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
@@ -101,8 +101,8 @@ final class ScheduleService
          *      فقط از Scope مورد اعتمادِ درخواست.
          */
         $location_id = $this->intField( $fields, 'location_id' );
-        if ($this->locations->findActiveForClinic( $clinic_id, $location_id ) === null) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'محل یافت نشد', 404);
+        if ( $this->locations->findActiveForClinic( $clinic_id, $location_id ) === null ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل یافت نشد', 404 );
         }
 
         $data = $this->validatedScheduleFields($fields);
@@ -177,14 +177,15 @@ final class ScheduleService
     {
         $actor_user_id = (int) func_get_arg( 0 );
         // Phase 6 Slice 7: ترتیبی‌سازی همزمان Create و Update تحت یک قرارداد قفل یکسان.
-        $result = $this->db->transactional(function () use ($id, $fields): array {
-            // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
-            $current = $this->requireScheduleForTrustedClinic($id);
-            $clinician_id = (int) $current['clinician_id'];
-            $clinic_id = (int) $current['clinic_id'];
+        $result = $this->db->transactional(
+            function () use ( $id, $fields ): array {
+				// C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
+				$current      = $this->requireScheduleForTrustedClinic( $id );
+				$clinician_id = (int) $current['clinician_id'];
+				$clinic_id    = (int) $current['clinic_id'];
 
-            $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
-            $this->lockClinicianForScheduleWrite( $clinician_id );
+				$this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
+				$this->lockClinicianForScheduleWrite( $clinician_id );
 
             // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
             $fresh = $this->schedules->findForUpdate($id);
@@ -194,44 +195,45 @@ final class ScheduleService
 
             $data = $this->validatedScheduleFields($fields, (array) $fresh);
 
-            $this->assertNoShiftConflict(
-                $clinician_id,
-                (int) $fresh['day_of_week'],
-                $clinic_id,
-                (int) $fresh['location_id'],
-                (string) $data['start_time'],
-                (string) $data['end_time'],
-                (int) $data['is_active'],
-                $id
-            );
-            if ( 1 === (int) $data['is_active'] ) {
-                // Activating a Schedule is new scheduling demand; it must not
-                // beat concurrent Location deactivation via an unlocked read.
-                $this->lock_active_location_for_schedule_write(
+				$this->assertNoShiftConflict(
+                    $clinician_id,
+                    (int) $fresh['day_of_week'],
                     $clinic_id,
-                    (int) $fresh['location_id']
-                );
-            }
+                    (int) $fresh['location_id'],
+                    (string) $data['start_time'],
+                    (string) $data['end_time'],
+                    (int) $data['is_active'],
+                    $id
+				);
+				if ( 1 === (int) $data['is_active'] ) {
+					// Activating a Schedule is new scheduling demand; it must not
+					// beat concurrent Location deactivation via an unlocked read.
+					$this->lock_active_location_for_schedule_write(
+                        $clinic_id,
+                        (int) $fresh['location_id']
+					);
+				}
 
             if ($data !== []) {
                 $data['updated_at'] = $this->db->nowUtcSql();
                 $this->schedules->update($id, $data);
             }
 
-            return [
-                'current'      => $current,
-                'clinic_id'    => $clinic_id,
-                'clinician_id' => $clinician_id,
-            ];
-        });
+				return [
+					'current'      => $current,
+					'clinic_id'    => $clinic_id,
+					'clinician_id' => $clinician_id,
+				];
+			}
+        );
 
         $current      = $result['current'];
         $clinic_id    = $result['clinic_id'];
         $clinician_id = $result['clinician_id'];
 
-        $updated = (array) $this->schedules->find($id);
-        $view = $this->scheduleView($updated);
-        $this->audit( 'SCHEDULE_UPDATED', $actor_user_id, 'schedule', $id, null, $this->scheduleView($current), $view );
+        $updated = (array) $this->schedules->find( $id );
+        $view    = $this->scheduleView( $updated );
+        $this->audit( 'SCHEDULE_UPDATED', $actor_user_id, 'schedule', $id, null, $this->scheduleView( $current ), $view );
         $this->op->info(
             'config.schedule_updated',
             [
@@ -254,7 +256,7 @@ final class ScheduleService
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
 
-        $candidate      = $this->db->fetchRow(
+        $candidate       = $this->db->fetchRow(
             'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [ $clinic_id ]
         );
@@ -450,7 +452,7 @@ final class ScheduleService
     public function createException(int $actorUserId, array $fields): array
     {
         $actor_user_id = (int) func_get_arg( 0 );
-        $clinician_id = $this->intField( $fields, 'clinician_id' );
+        $clinician_id  = $this->intField( $fields, 'clinician_id' );
         // C7-S6: همان قاعدهٔ مالکیت create (C7-S5) — پزشکِ انتخاب‌شدهٔ کلاینت
         // «شیء» است؛ مالکیتش نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و
         // کلینیکِ ردیف استثنا هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
@@ -486,7 +488,7 @@ final class ScheduleService
         $start_time = isset( $fields['start_time'] ) && $fields['start_time'] !== ''
             ? $this->parseTime( (string) $fields['start_time'], 'start_time' )
             : null;
-        $end_time = isset( $fields['end_time'] ) && $fields['end_time'] !== ''
+        $end_time   = isset( $fields['end_time'] ) && $fields['end_time'] !== ''
             ? $this->parseTime( (string) $fields['end_time'], 'end_time' )
             : null;
 
@@ -501,7 +503,7 @@ final class ScheduleService
         } else {
             // holiday / leave: کل روز — بازه معنا ندارد
             $start_time = null;
-            $end_time = null;
+            $end_time   = null;
         }
 
         $reason = isset($fields['reason']) && is_string($fields['reason']) && $fields['reason'] !== ''

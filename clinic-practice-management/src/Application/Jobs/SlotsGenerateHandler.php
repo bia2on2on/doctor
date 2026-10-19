@@ -75,7 +75,7 @@ final class SlotsGenerateHandler
     {
         // Single reference instant for the whole sweep. Each row is then projected
         // into its own Location's calendar frame — the instant itself is frame-free.
-        $reference_instant = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $reference_instant = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
 
         // Fetch all active clinicians with their active schedule rows.
         //
@@ -110,10 +110,10 @@ final class SlotsGenerateHandler
         );
 
         $generated = 0;
-        foreach ($clinicians as $clinician) {
-            $home_clinic_id = (int) ($clinician['clinic_id'] ?? 0);
-            if ($home_clinic_id <= 0) {
-                $this->op->warning('SLOTS_GEN_SKIP_NO_CLINIC', ['clinician_id' => $clinician['clinician_id'] ?? 0]);
+        foreach ( $clinicians as $clinician ) {
+            $home_clinic_id = (int) ( $clinician['clinic_id'] ?? 0 );
+            if ( $home_clinic_id <= 0 ) {
+                $this->op->warning( 'SLOTS_GEN_SKIP_NO_CLINIC', ['clinician_id' => $clinician['clinician_id'] ?? 0] );
                 continue;
             }
 
@@ -121,14 +121,17 @@ final class SlotsGenerateHandler
             // authoritative and is served only through the profile's home Clinic
             // (compat) or a durable ACTIVE membership. Anything else fails closed
             // for this row only — no fallback to the home Clinic, no guessing.
-            $schedule_clinic_id = (int) ($clinician['schedule_clinic_id'] ?? 0);
-            $has_membership = ($clinician['schedule_membership_id'] ?? null) !== null;
-            if ($schedule_clinic_id <= 0 || ($schedule_clinic_id !== $home_clinic_id && !$has_membership)) {
-                $this->op->warning('SLOTS_GEN_SKIP_CLINIC_MISMATCH', [
-                    'clinician_id' => $clinician['clinician_id'],
-                    'clinician_clinic_id' => $home_clinic_id,
-                    'schedule_clinic_id' => $schedule_clinic_id,
-                ]);
+            $schedule_clinic_id = (int) ( $clinician['schedule_clinic_id'] ?? 0 );
+            $has_membership     = ( $clinician['schedule_membership_id'] ?? null ) !== null;
+            if ( $schedule_clinic_id <= 0 || ( $schedule_clinic_id !== $home_clinic_id && ! $has_membership ) ) {
+                $this->op->warning(
+                    'SLOTS_GEN_SKIP_CLINIC_MISMATCH',
+                    [
+						'clinician_id'        => $clinician['clinician_id'],
+						'clinician_clinic_id' => $home_clinic_id,
+						'schedule_clinic_id'  => $schedule_clinic_id,
+					]
+                );
                 continue;
             }
 
@@ -141,26 +144,32 @@ final class SlotsGenerateHandler
             // Schedule.location_id is durable/NOT NULL (migration 0013). An explicit
             // persisted Location is NEVER overridden or silently replaced by the
             // primary Location: a broken reference fails closed for this row.
-            $schedule_location_id = (int) ($clinician['location_id'] ?? 0);
-            $joined_location_id = (int) ($clinician['loc_id'] ?? 0);
-            if ($schedule_location_id <= 0 || $joined_location_id !== $schedule_location_id) {
-                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_INVALID', [
-                    'clinician_id' => $clinician['clinician_id'],
-                    'clinic_id' => $clinic_id,
-                    'schedule_location_id' => $schedule_location_id,
-                ]);
+            $schedule_location_id = (int) ( $clinician['location_id'] ?? 0 );
+            $joined_location_id   = (int) ( $clinician['loc_id'] ?? 0 );
+            if ( $schedule_location_id <= 0 || $joined_location_id !== $schedule_location_id ) {
+                $this->op->warning(
+                    'SLOTS_GEN_SKIP_LOCATION_INVALID',
+                    [
+						'clinician_id'         => $clinician['clinician_id'],
+						'clinic_id'            => $clinic_id,
+						'schedule_location_id' => $schedule_location_id,
+					]
+                );
                 continue;
             }
 
             // Location must belong to the SAME authoritative Clinic as the row.
-            $location_clinic_id = (int) ($clinician['location_clinic_id'] ?? 0);
-            if ($location_clinic_id !== $clinic_id) {
-                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH', [
-                    'clinician_id' => $clinician['clinician_id'],
-                    'schedule_clinic_id' => $clinic_id,
-                    'location_id' => $schedule_location_id,
-                    'location_clinic_id' => $location_clinic_id,
-                ]);
+            $location_clinic_id = (int) ( $clinician['location_clinic_id'] ?? 0 );
+            if ( $location_clinic_id !== $clinic_id ) {
+                $this->op->warning(
+                    'SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH',
+                    [
+						'clinician_id'       => $clinician['clinician_id'],
+						'schedule_clinic_id' => $clinic_id,
+						'location_id'        => $schedule_location_id,
+						'location_clinic_id' => $location_clinic_id,
+					]
+                );
                 continue;
             }
 
@@ -177,14 +186,17 @@ final class SlotsGenerateHandler
             }
 
             // Validated IANA timezone — no fallback to Clinic/WordPress/PHP timezone.
-            $location_tz = $this->locationTimezone((string) ($clinician['location_timezone'] ?? ''));
-            if ($location_tz === null) {
-                $this->op->warning('SLOTS_GEN_SKIP_LOCATION_TZ_INVALID', [
-                    'clinician_id' => $clinician['clinician_id'],
-                    'clinic_id' => $clinic_id,
-                    'location_id' => $schedule_location_id,
-                    'timezone' => (string) ($clinician['location_timezone'] ?? ''),
-                ]);
+            $location_tz = $this->locationTimezone( (string) ( $clinician['location_timezone'] ?? '' ) );
+            if ( $location_tz === null ) {
+                $this->op->warning(
+                    'SLOTS_GEN_SKIP_LOCATION_TZ_INVALID',
+                    [
+						'clinician_id' => $clinician['clinician_id'],
+						'clinic_id'    => $clinic_id,
+						'location_id'  => $schedule_location_id,
+						'timezone'     => (string) ( $clinician['location_timezone'] ?? '' ),
+					]
+                );
                 continue;
             }
 
@@ -193,8 +205,8 @@ final class SlotsGenerateHandler
             // Location-local calendar "today" for this reference instant. Anchored in
             // UTC afterwards so the +N day arithmetic is pure Gregorian date math and
             // never depends on the ambient PHP timezone (and invents no DST policy).
-            $local_today = $reference_instant->setTimezone($location_tz)->format('Y-m-d');
-            $anchor = new DateTimeImmutable($local_today . ' 00:00:00', new DateTimeZone('UTC'));
+            $local_today = $reference_instant->setTimezone( $location_tz )->format( 'Y-m-d' );
+            $anchor      = new DateTimeImmutable( $local_today . ' 00:00:00', new DateTimeZone( 'UTC' ) );
 
             // Resolve horizon per-Clinic, or use explicit payload override if present.
             // Payload horizon_days is an explicit internal payload override; absent/malformed
@@ -209,12 +221,12 @@ final class SlotsGenerateHandler
                     // (> 365 previously produced unbounded horizons). Numeric non-integer
                     // input (e.g. "90.7") keeps its existing (int) cast semantics — no new
                     // policy. Warning context intentionally stays clinic_id + horizon_days only.
-                    $this->op->warning('SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinic_id, 'horizon_days' => $payload['horizon_days']]);
+                    $this->op->warning( 'SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinic_id, 'horizon_days' => $payload['horizon_days']] );
                     continue;
                 }
             } else {
-                $horizon = $this->horizonForClinic($clinic_id);
-                if ($horizon === null) {
+                $horizon = $this->horizonForClinic( $clinic_id );
+                if ( $horizon === null ) {
                     // Settings failure for this Clinic — fail-closed for this Clinic only,
                     // do NOT use another Clinic's horizon and do NOT fail entire sweep.
                     continue;
@@ -227,13 +239,13 @@ final class SlotsGenerateHandler
             // before persistence, persist_schedule_slots() rechecks Organization
             // → Clinic → Clinician → Schedule → Location in the shared lock order.
             $slot_candidates = [];
-            for ($day = 1; $day <= $horizon; $day++) {
-                $date_obj = $anchor->add(new DateInterval('P' . $day . 'D'));
-                $date = $date_obj->format('Y-m-d');
+            for ( $day = 1; $day <= $horizon; $day++ ) {
+                $date_obj = $anchor->add( new DateInterval( 'P' . $day . 'D' ) );
+                $date     = $date_obj->format( 'Y-m-d' );
                 try {
-                    $slots = $this->generateDaySlots($clinician, $clinic_id, $date, $date_obj, $location_id);
-                } catch (DomainException $e) {
-                    $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
+                    $slots = $this->generateDaySlots( $clinician, $clinic_id, $date, $date_obj, $location_id );
+                } catch ( DomainException $e ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()] );
                     continue;
                 }
                 if ( $slots !== [] ) {
@@ -382,7 +394,7 @@ final class SlotsGenerateHandler
 
                 if ( $clinic_id !== $home_clinic_id ) {
                     $membership_id = (int) ( $candidate['schedule_membership_id'] ?? 0 );
-                    $membership   = $membership_id > 0
+                    $membership    = $membership_id > 0
                         ? $this->db->fetchRowForUpdate(
                             'SELECT id FROM ' . $this->db->table( 'cpms_clinic_memberships' )
                             . ' WHERE id = %d AND wp_user_id = %d AND clinic_id = %d AND status = %s LIMIT 1',
