@@ -420,7 +420,7 @@ final class BookingService
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
-        $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        $slot = $this->resolve_slot_for_booking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
         if ($slot === null || (int) $slot['is_open'] !== 1) {
@@ -475,7 +475,7 @@ final class BookingService
         $min_lead = (int) $settings->get( 'booking.min_lead_hours', 2 );
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
-        $slot = $this->resolveSlotForBooking( $clinic_id, $clinicianId, $slotDate, $slotTime, $slotId );
+        $slot = $this->resolve_slot_for_booking( $clinic_id, $clinicianId, $slotDate, $slotTime, $slotId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
 
@@ -600,8 +600,8 @@ final class BookingService
             null,
             null,
             [
-                'mobile' => MobileValidator::mask($mobile),
-                'slot_id' => (int) $slot['id'],
+                'mobile'    => MobileValidator::mask( $mobile ),
+                'slot_id'   => (int) $slot['id'],
                 'slot_date' => $slotDate,
                 'slot_time' => $slotTime,
             ]
@@ -816,8 +816,8 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        $slot_id = (int) $hold['slot_id'];
-        $hold_id = (int) $hold['id'];
+        $slot_id            = (int) $hold['slot_id'];
+        $hold_id            = (int) $hold['id'];
         $confirmation_input = compact( 'newPatientNames' );
 
         try {
@@ -1254,7 +1254,7 @@ final class BookingService
                     $this->lock_booking_tenant_prefix( $idem_clinic_id );
 
                     // Resolve new destination slot unambiguously (exact id preferred)
-                    $new_slot = $this->resolveSlotForBooking( $new_clinic_id, $new_clinician_id, $new_date, $new_time, $new_slot_id );
+                    $new_slot = $this->resolve_slot_for_booking( $new_clinic_id, $new_clinician_id, $new_date, $new_time, $new_slot_id );
                     if ( $new_slot === null || (int) $new_slot['is_open'] !== 1 ) {
                         throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404 );
                     }
@@ -1435,7 +1435,7 @@ final class BookingService
         }
 
         // Resolve slot under trusted Clinic — exact identity preferred.
-        $resolved_slot = $this->resolveSlotForBooking(
+        $resolved_slot = $this->resolve_slot_for_booking(
             $trusted_clinic_id,
             $clinician_id,
             $slot_date,
@@ -1931,23 +1931,23 @@ final class BookingService
      *
      * @return array<string, mixed>|null
      */
-    private function resolveSlotForBooking(int $clinicId, int $clinician_id, string $slot_date, string $slot_time, ?int $slot_id = null): ?array
+    private function resolve_slot_for_booking( int $clinic_id, int $clinician_id, string $slot_date, string $slot_time, ?int $slot_id = null ): ?array
     {
         // Exact identity path — stable slot_id
-        if ($slot_id !== null && $slot_id > 0) {
-            $slot = $this->slots->findByIdAndClinic($slot_id, $clinicId);
+        if ( $slot_id !== null && $slot_id > 0 ) {
+            $slot = $this->slots->findByIdAndClinic( $slot_id, $clinic_id );
             if ($slot === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404);
             }
             // Validate clinician if tuple also supplied (redundant check)
-            if ((int) $slot['clinician_id'] !== $clinician_id) {
+            if ( (int) $slot['clinician_id'] !== $clinician_id ) {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422);
             }
             if ( (string) $slot['slot_date'] !== $slot_date || $this->normalize_slot_time( (string) $slot['slot_time'] ) !== $this->normalize_slot_time( $slot_time ) ) {
                 // Allow H:i vs H:i:s normalization but require date/time match if both supplied
                 $norm_requested = substr( $slot_date . ' ' . $this->normalize_slot_time( $slot_time ), 0, 19 );
                 $norm_slot      = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time( (string) $slot['slot_time'] );
-                if (substr($norm_requested, 0, 16) !== substr($norm_slot, 0, 16)) {
+                if ( substr( $norm_requested, 0, 16 ) !== substr( $norm_slot, 0, 16 ) ) {
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
                 }
             }
@@ -1955,7 +1955,7 @@ final class BookingService
         }
 
         // Legacy tuple path — ambiguity-safe
-        $all = $this->slots->findAllByClinicianSlot($clinicId, $clinician_id, $slot_date, $slot_time);
+        $all   = $this->slots->findAllByClinicianSlot( $clinic_id, $clinician_id, $slot_date, $slot_time );
         $count = count($all);
         if ($count === 0) {
             return null;
@@ -1964,10 +1964,10 @@ final class BookingService
             // Fail closed — do NOT use LIMIT 1
             throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
                 'matches' => $count,
-                'clinic_id' => $clinicId,
+                'clinic_id' => $clinic_id,
                 'clinician_id' => $clinician_id,
-                'slot_date' => $slot_date,
-                'slot_time' => $slot_time,
+                'slot_date'    => $slot_date,
+                'slot_time'    => $slot_time,
             ]);
         }
 
