@@ -395,7 +395,7 @@ final class DoctorPortalController extends RestBase {
 		}
 		$clinic_id   = (int) $clinic;
 		$location_id = (int) $location;
-		$user_id = (int) get_current_user_id();
+		$user_id     = (int) get_current_user_id();
 		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 ) {
 			return $response;
 		}
@@ -413,10 +413,10 @@ final class DoctorPortalController extends RestBase {
 		// Handwriting is a live clinical workspace, never a historical
 		// projection: even the exact active Visit cannot keep it at an inactive
 		// Location. The bounded reason is preserved for the portal envelope.
-		$scope       = App::scope();
-		$scope_loc   = (int) ( $scope->locationId ?? 0 );
+		$scope        = App::scope();
+		$scope_loc    = (int) ( $scope->locationId ?? 0 );
 		$scope_clinic = (int) $scope->clinicId;
-		$active_loc  = $scope_loc > 0
+		$active_loc   = $scope_loc > 0
 			? App::db()->fetchValue(
 				'SELECT id FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
 				[ $scope_loc, $scope_clinic ]
@@ -426,7 +426,7 @@ final class DoctorPortalController extends RestBase {
 			$this->workspace_handwriting_denial( $visit_id, 'location', $r );
 			return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', 'Trusted clinic context is not available.', [ 'status' => 403, 'reason' => 'location' ] );
 		}
-		$guard    = $this->workspace_authorize_visit( $visit_id );
+		$guard = $this->workspace_authorize_visit( $visit_id );
 		if ( $guard instanceof WP_Error ) {
 			// A guard denial whose bounded reason is the operational Location is a
 			// Location-scope denial: it must be audited as such, not as the route

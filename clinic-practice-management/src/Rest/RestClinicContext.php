@@ -58,7 +58,7 @@ final class RestClinicContext
         }
 
         $user_id = get_current_user_id();
-        if ($user_id <= 0) {
+        if ( $user_id <= 0 ) {
             return $response;
         }
 

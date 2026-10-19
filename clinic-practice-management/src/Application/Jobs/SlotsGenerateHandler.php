@@ -75,7 +75,7 @@ final class SlotsGenerateHandler
     {
         // Single reference instant for the whole sweep. Each row is then projected
         // into its own Location's calendar frame — the instant itself is frame-free.
-        $reference_instant = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $reference_instant = new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) );
 
         // Fetch all active clinicians with their active schedule rows.
         //
@@ -193,8 +193,8 @@ final class SlotsGenerateHandler
             // Location-local calendar "today" for this reference instant. Anchored in
             // UTC afterwards so the +N day arithmetic is pure Gregorian date math and
             // never depends on the ambient PHP timezone (and invents no DST policy).
-            $local_today = $reference_instant->setTimezone($location_tz)->format('Y-m-d');
-            $anchor = new DateTimeImmutable($local_today . ' 00:00:00', new DateTimeZone('UTC'));
+            $local_today = $reference_instant->setTimezone( $location_tz )->format( 'Y-m-d' );
+            $anchor      = new DateTimeImmutable( $local_today . ' 00:00:00', new DateTimeZone( 'UTC' ) );
 
             // Resolve horizon per-Clinic, or use explicit payload override if present.
             // Payload horizon_days is an explicit internal payload override; absent/malformed
@@ -209,7 +209,7 @@ final class SlotsGenerateHandler
                     // (> 365 previously produced unbounded horizons). Numeric non-integer
                     // input (e.g. "90.7") keeps its existing (int) cast semantics — no new
                     // policy. Warning context intentionally stays clinic_id + horizon_days only.
-                    $this->op->warning('SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinic_id, 'horizon_days' => $payload['horizon_days']]);
+                    $this->op->warning( 'SLOTS_GEN_SKIP_INVALID_HORIZON', ['clinic_id' => $clinic_id, 'horizon_days' => $payload['horizon_days']] );
                     continue;
                 }
             } else {
@@ -328,7 +328,7 @@ final class SlotsGenerateHandler
         // transaction commits: booking holds a Slot row and then waits for the
         // Location, so an INSERT IGNORE (which takes a shared lock on a duplicate
         // key) while holding Location would invert the order and could deadlock.
-        $plan     = null;
+        $plan      = null;
         $validated = $this->db->transactional(
             function () use (
                 $candidate,
@@ -387,7 +387,7 @@ final class SlotsGenerateHandler
 
                 if ( $clinic_id !== $home_clinic_id ) {
                     $membership_id = (int) ( $candidate['schedule_membership_id'] ?? 0 );
-                    $membership   = $membership_id > 0
+                    $membership    = $membership_id > 0
                         ? $this->db->fetchRowForUpdate(
                             'SELECT id FROM ' . $this->db->table( 'cpms_clinic_memberships' )
                             . ' WHERE id = %d AND wp_user_id = %d AND clinic_id = %d AND status = %s LIMIT 1',
@@ -518,7 +518,7 @@ final class SlotsGenerateHandler
                         $this->db->nowUtcSql(),
                     ]
                 );
-                $generated++;
+                ++$generated;
             }
         }
 

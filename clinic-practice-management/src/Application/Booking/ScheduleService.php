@@ -79,7 +79,7 @@ final class ScheduleService
     public function create(int $actorUserId, array $fields): array
     {
         $actor_user_id = (int) func_get_arg( 0 );
-        $clinician_id = $this->intField( $fields, 'clinician_id' );
+        $clinician_id  = $this->intField( $fields, 'clinician_id' );
         // C7-S5: پزشکِ انتخاب‌شدهٔ کلاینت «شیء» است، نه tenant context —
         // مالکیت او نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و کلینیکِ
         // ردیف برنامه هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
@@ -254,7 +254,7 @@ final class ScheduleService
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
 
-        $candidate      = $this->db->fetchRow(
+        $candidate       = $this->db->fetchRow(
             'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [ $clinic_id ]
         );
@@ -450,7 +450,7 @@ final class ScheduleService
     public function createException(int $actorUserId, array $fields): array
     {
         $actor_user_id = (int) func_get_arg( 0 );
-        $clinician_id = $this->intField( $fields, 'clinician_id' );
+        $clinician_id  = $this->intField( $fields, 'clinician_id' );
         // C7-S6: همان قاعدهٔ مالکیت create (C7-S5) — پزشکِ انتخاب‌شدهٔ کلاینت
         // «شیء» است؛ مالکیتش نسبت به Clinic معتبرِ درخواست راستی‌آزمایی می‌شود و
         // کلینیکِ ردیف استثنا هرگز از خودِ ردیف پزشک به‌عنوان اعتماد گرفته نمی‌شود.
@@ -486,7 +486,7 @@ final class ScheduleService
         $start_time = isset( $fields['start_time'] ) && $fields['start_time'] !== ''
             ? $this->parseTime( (string) $fields['start_time'], 'start_time' )
             : null;
-        $end_time = isset( $fields['end_time'] ) && $fields['end_time'] !== ''
+        $end_time   = isset( $fields['end_time'] ) && $fields['end_time'] !== ''
             ? $this->parseTime( (string) $fields['end_time'], 'end_time' )
             : null;
 
@@ -501,7 +501,7 @@ final class ScheduleService
         } else {
             // holiday / leave: کل روز — بازه معنا ندارد
             $start_time = null;
-            $end_time = null;
+            $end_time   = null;
         }
 
         $reason = isset($fields['reason']) && is_string($fields['reason']) && $fields['reason'] !== ''
