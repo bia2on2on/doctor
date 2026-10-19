@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\CpmsActivationRedirect;
+use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
@@ -296,5 +297,40 @@ final class CpmsActivationRedirectTest extends WP_UnitTestCase
             CpmsActivationRedirect::maybe_redirect();
         });
         self::assertNull($location, 'without the one-shot flag, admin_init must never redirect');
+    }
+
+    /**
+     * Regression proof for the exact defect real browser CI caught when this
+     * redirect was first attempted: landing ON the wizard page (where this
+     * redirect sends the admin) must never silently burn the SEPARATE
+     * `cpms_onboarding_seen` one-shot flag that CpmsAdminMenu::onboardingNotice()
+     * uses — otherwise the notice would never render again on the dashboard
+     * the admin actually sees afterward. CpmsAdminMenu::onboardingNotice()
+     * must explicitly skip (and not consume anything) while $_GET['page']
+     * is the wizard's own slug.
+     */
+    public function testLandingOnTheWizardPageNeverConsumesTheSeparateOnboardingNoticeFlag(): void
+    {
+        $this->freshEligibleAdmin();
+        delete_transient('cpms_onboarding_seen');
+        $prevGet = $_GET;
+        try {
+            $_GET['page'] = CpmsSetupWizard::PAGE_SLUG;
+            ob_start();
+            CpmsAdminMenu::onboardingNotice();
+            $onWizardOutput = (string) ob_get_clean();
+            self::assertSame('', $onWizardOutput, 'the install notice must not render ON the wizard page itself');
+            self::assertFalse(get_transient('cpms_onboarding_seen'), 'landing on the wizard page must never consume the onboarding-notice one-shot flag');
+
+            unset($_GET['page']);
+            ob_start();
+            CpmsAdminMenu::onboardingNotice();
+            $dashboardOutput = (string) ob_get_clean();
+            self::assertStringContainsString('CPMS نصب شد', $dashboardOutput, 'the real dashboard landing must still show the notice afterward');
+            self::assertNotFalse(get_transient('cpms_onboarding_seen'), 'the real dashboard landing is what consumes the flag, not the wizard redirect target');
+        } finally {
+            $_GET = $prevGet;
+            delete_transient('cpms_onboarding_seen');
+        }
     }
 }
