@@ -1449,7 +1449,7 @@ final class BookingService
                         || (int) ( $slot['location_id'] ?? 0 ) !== (int) $resolved_slot['location_id']
                         || (int) ( $slot['is_open'] ?? 0 ) !== 1
                         || (string) ( $slot['slot_date'] ?? '' ) !== $slot_date
-                        || substr( (string) ( $slot['slot_time'] ?? '' ), 0, 8 ) !== substr( $slot_time, 0, 8 )
+                        || substr( (string) ( $slot['slot_time'] ?? '' ), 0, 5 ) !== substr( $slot_time, 0, 5 )
                     ) {
                         throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404 );
                     }
