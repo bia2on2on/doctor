@@ -1190,3 +1190,30 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **Changed-line cleanup:** 275 → 23 findings. Work was restricted to lines the branch already adds: `phpcbf` output was hunk-filtered against the collector's added-line set so legacy formatting was never rewritten, and the remaining whitespace/alignment corrections were applied by a token-aware pass (never inside strings or comments). `token_get_all(..., TOKEN_PARSE)` passes on every touched file.
 - **Remaining 23 (all naming):** 21 are `$clinicianId`/`$slotDate`/`$slotTime`/`$slotId`/`$wpUserId`/`$patientId` usages of the **published `BookingService::hold()` parameter names**, and 2 are `$scope->locationId` / `$scope->clinicId` reads of the shared `ClinicScope` value object. Clearing them requires either renaming published named-argument parameters (a BC break the repository convention explicitly forbids) or adding `phpcs:ignore` comments (excluded by the governing directive), so they are intentionally left open rather than silently suppressed.
 - **Other checks on `72ce575e`:** Unit 8.1–8.4, PHPStan, Closure ×4, First-practice ×2, Real WP Acceptance `clinic_`, Release Artifact, Tenant Tripwire, Upgrade path and coexistence all green; Responsive smoke and Staging Gate still running at this entry. Staging Gate earlier failed in `appt.reminder` with `DateInvalidTimeZoneException` (job retried 3/3) — a background path this branch's final commits do not modify; provenance is not established and it is not claimed as fixed.
+
+### [2026-10-19 16:55 UTC] — Classic multi-Clinic: explicit Clinic selection (PR #253, Draft, unmerged)
+
+- **Basis:** fixed branch `arena/a4b51631-doctor`, from `main` @ `b7ae4691a63ddbeed6af9e03838a0309868d8755` (merge of PR #252). Main had not advanced when this entry was written. Task received 2026-10-19T16:16:24Z.
+- **PR #251 disposition:** the live evidence matched the independent audit.
+  - Its 6 unique commits were superseded by #252 / main (`normalize_slot_time`, `is_clinic_wide_report_route`, DoctorPortal order verify → capability → Location bind, retained `[-1]` sentinels), or they were a token-changing WPCS transplant plus its exact revert (tree of `6915c3f` == `f644b65`).
+  - Closed without merging, with a comment: https://github.com/bia2on2on/doctor/pull/251#issuecomment-6271833699. Branch `arena/5f15f305-doctor` is kept at `6915c3f`. Nothing was cherry-picked.
+  - Residual, unverified: the legacy tuple path in `BookingService` passes raw `H:i` to `SlotRepository::findAllByClinicianSlot` and relies on MySQL TIME coercion.
+- **Commits:**
+  1. `17c0e79` fixes defects A and B. System and Settings no longer fatal on multi-Clinic installs: installation info renders without a Clinic, and Clinic-specific settings require an explicit, verified Clinic. The Clinicians page gets an explicit selector, and every form, link and redirect carries the verified Clinic. The shared helper is `AdminClinicSelector`.
+  2. `d1971ae` adds wp-admin schedule and exception management for a professional shared via the Phase 4 participation rule. The profile stays home-only. Deletes are bound to the row's own Clinic.
+  3. `cbff619` makes the wizard offer explicit, verified per-Clinic configuration on multi-Clinic installs instead of the dead end. `save()` no longer fatals without a selector.
+  4. A docs commit (this entry, plus `docs/post-onboarding-clinic-location-management.md` and `docs/onboarding-facility-wizard.md`).
+- **Local validation (exact heads):**
+  - `php -l` under PHP 8.5 WASM (`@php-wasm/cli`) on every changed PHP file.
+  - The exact CI WPCS changed-lines gate, reproduced locally: same baseline `2263ed6`, same `bin/wpcs-changed-lines.py`, same `--basepath` filter, PHPCS 3.13.6 + WPCS 3.4.1 + PHPCSUtils 1.2.3 + PHPCSExtra 1.5.1 assembled from GitHub tarballs. Result: 0 violations on added lines at `17c0e79` and `cbff619`.
+  - PHPUnit, WordPress, MySQL and a browser are unavailable locally, so no local test PASS is claimed.
+- **Exact-head CI, `17c0e79` (PR merge ref `e87a451`):**
+  - CI run `39287276984` succeeded: Unit 8.1–8.4, PHPStan, WPCS, Tenant Tripwire, and Integration `OK (2151 tests, 62680 assertions)` with 0 failures, errors or skips.
+  - First-Practice Browser `39287277005`, Real WordPress Acceptance `39287277018` (both prefixes) and Closure Gate `39287268381` succeeded.
+  - Coexistence and Pilot/Staging were still running when superseded.
+  - Later heads are reported on PR #253 only after they complete.
+- **Not implemented / open:**
+  - The Organization-level top-down hospital outpatient and medical-building journeys inside the wizard (repeatable Clinic creation, rooms, staff and permissions, booking policies, consolidated review and activation).
+  - Dedicated browser journeys for the multi-Clinic screens, multi-Clinic hospital and building flows, and mobile/desktop layouts of the new selectors.
+  - A shared professional identity across Clinics as a *profile*. This is structurally blocked by `u_clinician_user`, on which the financial-authorization decision relies, so it needs an owner decision. Participation via membership is what is delivered.
+  - `update.channel` is persisted per Clinic while updates are installation-wide (owner decision).

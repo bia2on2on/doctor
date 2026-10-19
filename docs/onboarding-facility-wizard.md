@@ -224,3 +224,23 @@ Receipt: 2026-10-19T06:36:47Z. Base for this batch: the prior batch's final head
 `CpmsSetupWizard.php`'s shared page shell and several step bodies hardcoded generic words (`مطب`, `کلینیک`, `پزشک`) regardless of the selected facility type, even though the step-2 `<h2>` right next to them already used `FacilityTypeCatalog`'s facility-aware `unit`/`clinician`/`clinicians` terminology. The welcome paragraph, the completion banner, the clinic-info description, the weekly-schedule description, the finish-step heading, and the finish-step unmet-prerequisites warning now all interpolate `current_facility_profile()`/`$facility_profile` the same way the rest of the file already does; for an unselected facility (or a pre-existing install with no facility type), the defaults (`کلینیک`/`پزشک`) are unchanged byte-for-byte from before this batch, so no existing test asserting the generic wording was weakened — only the facility-aware case (previously silently wrong) was fixed.
 
 The two paragraphs above in this same document (the ones headed "an activation redirect was attempted, then reverted" and "Jalali (Shamsi) date UX — delivered vs. deferred") were flagged as contradictory when read in isolation, since both were later superseded by subsequent batches further down this same file. Rather than rewriting history, each now carries an explicit **"SUPERSEDED later in this same document"** callout at its top, pointing forward to the batch that re-added the redirect and the batch that added real Jalali entry, so a reader stopping at either paragraph cannot mistake a since-reversed interim state for the current one.
+
+### Multi-Clinic installs — explicit per-Clinic configuration (PR #253)
+
+**Before:** once an installation had more than one Clinic, the wizard stopped at the "ambiguous Clinic" notice
+(`data-cpms-scope-required="1"`), and `save()` fataled with `CLINIC_SCOPE_REQUIRED`.
+
+**Now:**
+
+- The same notice also offers an explicit Clinic choice (`#cpms_wizard_clinic`). It lists only Clinics with an
+  ACTIVE membership and scoped `cpms_config`, and nothing is pre-selected.
+- After a verified choice, the wizard runs its existing facility-adaptive steps for that Clinic only.
+  `data-cpms-wizard-clinic` names that Clinic, and every step link, form, redirect and per-Clinic deep link
+  (clinicians, Locations, staff) carries the selected `clinic_id`.
+- `save()` and `restart()` re-verify the selector and refuse a foreign one with 403. Without a selector they
+  redirect with guidance and never infer a Clinic.
+
+**Single-Clinic installs** behave exactly as before.
+
+**Not yet implemented:** the Organization-level hospital and medical-building journey inside the wizard (repeatable
+Clinic creation, rooms, consolidated review). The provisioning entry point remains «مدیریت سازمان و درمانگاه‌ها».
