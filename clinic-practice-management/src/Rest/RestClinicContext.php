@@ -58,7 +58,7 @@ final class RestClinicContext
         }
 
         $user_id = get_current_user_id();
-        if ( $user_id <= 0 ) {
+        if ($user_id <= 0) {
             return $response;
         }
 
@@ -458,7 +458,8 @@ final class RestClinicContext
         return (int) $matches[1];
     }
 
-    private static function current_user_is_staff( WP_REST_Request $request ): bool {
+    private static function current_user_is_staff( WP_REST_Request $request ): bool
+    {
         $userId = get_current_user_id();
         $user = $userId > 0 ? get_userdata($userId) : false;
         if ($user === false || !$user->exists()) {
@@ -502,7 +503,8 @@ final class RestClinicContext
      * Durable, request-scoped staff-membership probe (routing signal only; never
      * an authorization decision — see the contract above).
      */
-    private static function has_active_staff_membership_in_request( int $user_id, WP_REST_Request $request ): bool {
+    private static function has_active_staff_membership_in_request( int $user_id, WP_REST_Request $request ): bool
+    {
         if ( $user_id <= 0 ) {
             return false;
         }
