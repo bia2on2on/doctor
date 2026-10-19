@@ -1994,14 +1994,14 @@ final class BookingService
         );
     }
 
-    private function assertWindow(string $slot_date, string $slot_time, int $minLeadHours, Settings $settings): void
+    private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours, Settings $settings): void
     {
         // LEGACY path kept for backward compat where Location not yet resolved
         // `booking.max_future_days` از Clinicِ معتبرِ همین عملیات می‌آید.
         $maxFutureDays = (int) $settings->get('booking.max_future_days', 60);
         $err = BookingWindow::checkRequest(
-            $slot_date,
-            $slot_time,
+            $slotDate,
+            $slotTime,
             $this->now(),
             $minLeadHours,
             $maxFutureDays
