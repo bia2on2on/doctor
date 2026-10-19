@@ -73,6 +73,9 @@ final class SystemPage
         $backups = [];
         $licError = null;
         $health_error = null;
+        // Multi-Clinic: a health probe that needs Clinic configuration is a scope
+        // requirement, not a page failure; it gets its own informational notice.
+        $health_scope_required = false;
         $backupsError = null;
         try {
             $lic = App::licenseService()->statusMeta();
@@ -87,7 +90,7 @@ final class SystemPage
             } catch ( ScopeRequiredException ) {
                 // Multi-Clinic install: some health probes read Clinic configuration.
                 // No Clinic is inferred; the rest of the page stays available.
-                $health_error = 'بخشی از بررسی‌های Health به پیکربندی Clinic وابسته است و در نصب چند-Clinic بدون Clinic صریح اجرا نمی‌شود؛ هیچ Clinic پیش‌فرضی حدس زده نشد.';
+                $health_scope_required = true;
             } catch ( \Throwable $e ) {
                 $health_error = $e->getMessage();
             }
@@ -119,7 +122,9 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
-            <?php if ( $health_error !== null || $health === null ) : ?>
+            <?php if ( $health_scope_required ) : ?>
+                <div class="notice notice-info inline" data-cpms-health-scope="required"><p>بخشی از بررسی‌های Health به پیکربندی Clinic وابسته است و در نصب چند-Clinic بدون Clinic صریح اجرا نمی‌شود؛ هیچ Clinic پیش‌فرضی حدس زده نشد. بخش‌های سطح نصب (مجوز، بکاپ، بازیابی) در دسترس می‌مانند.</p></div>
+            <?php elseif ( $health_error !== null || $health === null ) : ?>
                 <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
                     <code><?php echo esc_html( $health_error ); ?></code></p></div>
             <?php else : ?>
