@@ -120,7 +120,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
             'first_name' => 'Control',
             'last_name'  => 'Shared',
             'mobile'     => '09121110001',
-        ], $this->scopeHeaders($fx['clinic']));
+        ], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $shared->get_status(), 'S1 control: shared established create reachable for the secretary');
         $sharedRow = $this->createPayload($shared);
         self::assertGreaterThan(0, (int) ($sharedRow['id'] ?? 0), 'S1 control: shared create persisted a patient');
@@ -165,7 +165,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         // A. Doctor is NOT the Reception role (and has no patient-create cap).
         $this->seedMembership($fx['doctor'], $fx['clinic'], 'cpms_doctor');
         wp_set_current_user($fx['doctor']);
-        $doc = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $doc = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $doc->get_status(), 'S2: doctor denied on the reception create boundary');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($doc), 'S2: doctor denial envelope');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S2: doctor creates no row');
@@ -174,7 +174,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $acct = $this->makeUser('qa_s2_acct', RolesAndCapabilities::ROLE_ACCOUNTANT);
         $this->seedMembership($acct, $fx['clinic'], 'cpms_accountant');
         wp_set_current_user($acct);
-        $acc = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $acc = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $acc->get_status(), 'S2: accountant denied');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S2: accountant creates no row');
 
@@ -182,21 +182,21 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $mid = $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         App::membership_service()->set_capability($mid, RolesAndCapabilities::PATIENT_CREATE, 'deny');
         wp_set_current_user($fx['secretary']);
-        $deny = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $deny = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $deny->get_status(), 'S2: scoped cpms_patient_create deny blocks reception create');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($deny), 'S2: capability denial envelope');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S2: capability deny creates no row');
 
         // D. Missing nonce — CSRF layer preserved.
         App::membership_service()->remove_capability($mid, RolesAndCapabilities::PATIENT_CREATE);
-        $noNonce = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']), false);
+        $noNonce = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']), false);
         self::assertSame(403, $noNonce->get_status(), 'S2: missing nonce rejected');
         self::assertSame('CLINIC_INVALID_NONCE', $this->errCode($noNonce), 'S2: nonce denial code');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S2: missing nonce creates no row');
 
         // E. Anonymous.
         wp_set_current_user(0);
-        $anon = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $anon = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertContains($anon->get_status(), [401, 403], 'S2: anonymous denied');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S2: anonymous creates no row');
     }
@@ -211,13 +211,13 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $mid = $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         App::membership_service()->suspend_membership($mid);
         wp_set_current_user($fx['secretary']);
-        $susp = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $susp = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $susp->get_status(), 'S3: suspended membership denied');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S3: suspended membership creates no row');
 
         $loner = $this->makeUser('qa_s3_loner', RolesAndCapabilities::ROLE_SECRETARY);
         wp_set_current_user($loner);
-        $none = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic']));
+        $none = $this->dispatch('POST', self::CREATE, $body, $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $none->get_status(), 'S3: secretary without membership denied');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S3: no membership creates no row');
     }
@@ -239,7 +239,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
             'first_name' => 'Twin',
             'last_name'  => 'Foreign',
             'mobile'     => '09121110031',
-        ], $this->scopeHeaders($b['clinic']));
+        ], $this->scopeHeaders($b['clinic'], $b['loc_a']));
         self::assertNotSame(200, $cross->get_status(), 'S4: foreign Clinic selector fails closed');
         self::assertSame($beforeA, $this->countPatients($a['clinic']), 'S4: foreign selector creates no Clinic A row');
         self::assertSame($beforeB, $this->countPatients($b['clinic']), 'S4: foreign selector creates no Clinic B row');
@@ -307,7 +307,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $fx = $this->makeStage('s6');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic']);
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['loc_a']);
 
         foreach (
             [
@@ -345,7 +345,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
             'last_name'   => 'Nid',
             'mobile'      => '09121110061',
             'national_id' => self::NID_INVALID,
-        ], $this->scopeHeaders($fx['clinic']));
+        ], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(400, $bad->get_status(), 'S7: invalid national ID rejected');
         self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($bad), 'S7: established validation code');
         self::assertSame(0, $this->countPatients($fx['clinic']), 'S7: invalid national ID creates no row');
@@ -359,7 +359,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
             'national_id' => self::NID_A,
             'birth_date'  => '1985-04-01',
             'gender'      => 'female',
-        ], $this->scopeHeaders($fx['clinic']));
+        ], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $ok->get_status(), 'S7: valid national ID accepted — ' . $this->errCode($ok));
         $row = $this->createPayload($ok);
         self::assertSame('***0899', (string) $row['national_id'], 'S7: national ID masked in the Reception presentation');
@@ -374,7 +374,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $fx = $this->makeStage('s8');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic']);
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['loc_a']);
 
         $first = $this->dispatch('POST', self::CREATE, [
             'first_name' => 'First',
@@ -405,7 +405,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $fx = $this->makeStage('s9');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic']);
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['loc_a']);
 
         $first = $this->dispatch('POST', self::CREATE, [
             'first_name'  => 'First',
@@ -438,7 +438,7 @@ final class Phase11ReceptionPatientCreateRedTest extends WP_UnitTestCase
         $fx = $this->makeStage('s10');
         $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         wp_set_current_user($fx['secretary']);
-        $headers = $this->scopeHeaders($fx['clinic']);
+        $headers = $this->scopeHeaders($fx['clinic'], $fx['loc_a']);
 
         $a = $this->dispatch('POST', self::CREATE, [
             'first_name' => 'Same',

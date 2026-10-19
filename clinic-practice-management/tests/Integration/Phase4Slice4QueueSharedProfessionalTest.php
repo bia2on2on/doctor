@@ -281,13 +281,14 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
 
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
 
-        self::assertSame($this->clinics['B'], $this->capturedRestClinicId, 'trusted Clinic B is established');
-        self::assertSame(200, $response->get_status(), 'ADR-0030: an unlinked doctor still receives a dashboard');
-        $data = $this->payload($response);
-        self::assertSame([], $data['queue'], 'ADR-0030: empty queue, never the whole Clinic');
-        self::assertSame(0, $data['stats']['total'], 'ADR-0030: zero stats, never the whole Clinic');
-        self::assertSame(0, (int) $data['last_event_id'], 'ADR-0030: zero watermark');
-        self::assertGreaterThan(0, $otherVisit['id'], 'control: a visible Clinic-B Visit existed and stayed hidden');
+        self::assertSame(
+            $this->clinics['B'],
+            $this->capturedRestClinicId,
+            'Clinic B scope is established before handler denial'
+        );
+        self::assertSame(403, $response->get_status(), 'a Doctor Portal actor without a clinician identity is denied');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
+        self::assertGreaterThan(0, $otherVisit['id'], 'control: a Clinic-B Visit existed but stayed undisclosed');
     }
 
     /** Control A/B — inactive identity: participation primitive is false, scope stays empty. */
@@ -307,20 +308,21 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
 
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
 
-        self::assertSame($this->clinics['B'], $this->capturedRestClinicId, 'trusted Clinic B is established');
-        self::assertSame(200, $response->get_status(), 'inactive identity keeps the dashboard contract');
-        $data = $this->payload($response);
-        self::assertSame([], $data['queue'], 'inactive identity resolves to an empty scope, not the whole Clinic');
-        self::assertSame(0, $data['stats']['total'], 'inactive identity yields zero stats');
+        self::assertSame(
+            $this->clinics['B'],
+            $this->capturedRestClinicId,
+            'Clinic B scope is established before handler denial'
+        );
+        self::assertSame(403, $response->get_status(), 'an inactive clinician identity cannot enter Doctor Portal');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
     }
 
     /**
      * Control B — suspended participation in B.
      *
-     * Suspension is rejected by the pre-existing REST scope boundary
-     * (no ACTIVE membership ⇒ CLINIC_SCOPE_UNAVAILABLE), so the queue is never
-     * even computed. The service-level scope is asserted separately with an
-     * explicitly established Clinic-B scope to prove the fail-closed result.
+     * Scoped Portal authorization rejects the suspended membership before a
+     * trusted tenant context or queue projection is produced. The generic
+     * service's empty-scope behavior remains asserted separately below.
      */
     public function testDoctorWithSuspendedParticipationInBNeverSeesClinicQueue(): void
     {
@@ -345,8 +347,9 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         );
 
         $response = $this->dispatchRead('GET', self::NS . '/doctor/today', [], $this->clinics['B'], $doctorUserId);
-        self::assertSame(403, $response->get_status(), 'existing scope boundary denies a suspended B membership');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($response), 'existing denial code is preserved');
+        self::assertNull($this->capturedRestClinicId, 'authorization rejects B before scope establishment');
+        self::assertSame(403, $response->get_status(), 'suspended B participation denies Doctor Portal access');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($response));
 
         // Service-level proof: even with a legitimately established Clinic-B
         // scope, suspended participation resolves to the empty scope.
@@ -1026,6 +1029,15 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         }
         $request->set_header('X-WP-Nonce', $nonce);
         $request->set_header('X-CPMS-Clinic-Id', (string) $clinicId);
+        if ( $route === self::NS . '/doctor/today' ) {
+            $locationId = $this->locations[$clinicId] ?? 0;
+            self::assertGreaterThan(
+                0,
+                $locationId,
+                'precondition: selected Clinic has a Doctor Portal Location'
+            );
+            $request->set_header( 'X-CPMS-Location-Id', (string) $locationId );
+        }
 
         $this->capturedRestClinicId = null;
         $probe = function ($response, $handler, $incomingRequest) use ($request) {

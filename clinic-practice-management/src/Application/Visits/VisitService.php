@@ -3,7 +3,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Visits;
 
+use ClinicCore\Application\Location\DoctorPortalLocationEligibility;
 use ClinicCore\Application\Notifications\NotificationService;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
@@ -511,11 +513,11 @@ final class VisitService
     /**
      * Doctor Portal Today — strict Location enforcement (Blocker 1).
      *
-     * Owner decision FINAL for Doctor Portal:
-     * - 0 eligible => fail closed / no Today or Queue data
-     * - 1 eligible => auto-bind
-     * - N>1 => explicit Location REQUIRED (no first/primary fallback)
-     * - foreign/inactive/unassigned => denied (UNAVAILABLE)
+     * Doctor Portal scope contract:
+     * - 0 eligible => empty Today/Queue projection
+     * - 1 or more eligible => explicit Location REQUIRED (no sole/first/primary fallback)
+     * - inactive Locations require this doctor's active Visit or pending/confirmed appointment;
+     *   foreign/unassigned or inactive without continuity => denied (UNAVAILABLE)
      *
      * Uses existing CLINIC_SCOPE_REQUIRED 400 with field=location_id reason=location_required.
      * Never returns eligible IDs.
@@ -524,11 +526,11 @@ final class VisitService
      */
     public function todayForDoctorPortal( int $actor_user_id, ?int $clinician_id = null ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id = $this->queueClinicId(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
-        $location_id = $this->queueLocationId( $clinic_id, $actor_user_id ); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment
+        $clinic_id          = $this->doctor_portal_clinic_id();
+        $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
+        $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             $date = $this->nowUtc()->format( 'Y-m-d' );
@@ -542,18 +544,15 @@ final class VisitService
         }
 
         if ( null === $location_id ) {
-            if ( 1 === count( $eligible ) ) {
-                $location_id = $eligible[0];
-            } else {
-                // N>1 without explicit Location => REQUIRED
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
-                    'Location scope required: multiple eligible locations',
-                    400,
-                    [
-                        'field'  => 'location_id',
-                        'reason' => 'location_required',
-                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
-            }
+            throw VisitException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'Location scope required: explicit selection',
+                400,
+                [
+                    'field'  => 'location_id',
+                    'reason' => 'location_required',
+                ]
+            );
         }
 
         // Validate explicit Location is eligible (foreign/inactive/unassigned => denied)
@@ -678,17 +677,17 @@ final class VisitService
     }
 
     /**
-     * Doctor Portal eventsSince — strict Location enforcement.
+     * Doctor Portal eventsSince — explicit Location enforcement for every cardinality.
      *
      * @return array<string, mixed>
      */
     public function eventsSinceForDoctorPortal( int $actor_user_id, int $since_event_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
+        $clinic_id          = $this->doctor_portal_clinic_id();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             return [
@@ -698,17 +697,15 @@ final class VisitService
         }
 
         if ( null === $location_id ) {
-            if ( 1 === count( $eligible ) ) {
-                $location_id = $eligible[0];
-            } else {
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
-                    'Location scope required: multiple eligible locations',
-                    400,
-                    [
-                        'field'  => 'location_id',
-                        'reason' => 'location_required',
-                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
-            }
+            throw VisitException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'Location scope required: explicit selection',
+                400,
+                [
+                    'field'  => 'location_id',
+                    'reason' => 'location_required',
+                ]
+            );
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
@@ -741,32 +738,30 @@ final class VisitService
     }
 
     /**
-     * Doctor Portal lastEventId — strict Location enforcement.
+     * Doctor Portal lastEventId — explicit Location enforcement for every cardinality.
      */
     public function lastEventIdForDoctorPortal( int $actor_user_id ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $this->requireQueueReader( $actor_user_id );
-        $clinic_id          = $this->queueClinicId();
+        $clinic_id          = $this->doctor_portal_clinic_id();
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             return 0;
         }
 
         if ( null === $location_id ) {
-            if ( 1 === count( $eligible ) ) {
-                $location_id = $eligible[0];
-            } else {
-                throw VisitException::of( 'CLINIC_SCOPE_REQUIRED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
-                    'Location scope required: multiple eligible locations',
-                    400,
-                    [
-                        'field'  => 'location_id',
-                        'reason' => 'location_required',
-                    ] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
-            }
+            throw VisitException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'Location scope required: explicit selection',
+                400,
+                [
+                    'field'  => 'location_id',
+                    'reason' => 'location_required',
+                ]
+            );
         }
 
         if ( ! in_array( $location_id, $eligible, true ) ) {
@@ -1478,6 +1473,29 @@ final class VisitService
     }
 
     /**
+     * Doctor Portal must receive an explicitly established Clinic scope.
+     * The system-single Clinic resolver remains available to other legacy
+     * workflows, but cannot select a clinical tenant on behalf of a doctor.
+     */
+    private function doctor_portal_clinic_id(): int {
+        $scope = ScopeContext::tryGet();
+        if (
+            $scope === null
+            || $scope->source !== ClinicScope::SOURCE_EXPLICIT
+            || $scope->clinicId <= 0 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope retains its published property name.
+        ) {
+            throw VisitException::of(
+                'CLINIC_SCOPE_REQUIRED',
+                'Explicit Clinic scope required for Doctor Portal',
+                400,
+                [ 'field' => 'clinic_id', 'reason' => 'clinic_required' ]
+            );
+        }
+
+        return (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope retains its published property name.
+    }
+
+    /**
      * C6 (Visit Tenant Hardcode): مطبِ جریان صف/Today/Feed از **context موثق**
      * حل می‌شود — Scope صریحِ درخواست (مرز REST از Membership) یا Resolution
      * سیستمی «تنها Clinic». هیچ مقدار پیش‌فرض/اولین‌Clinic جای آن نمی‌نشیند؛
@@ -1555,6 +1573,27 @@ final class VisitService
             return $eligible;
         }
         return $active;
+    }
+
+    /**
+     * Doctor Portal continuity uses its own narrow policy; legacy shared queue,
+     * check-in and scheduling callers keep the active-only helper above.
+     *
+     * @return list<int>
+     */
+    private function eligibleDoctorPortalLocationIds( int $clinic_id, int $actor_user_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
+        if ( $clinic_id <= 0 || $actor_user_id <= 0 ) {
+            return [];
+        }
+
+        // Preserve the legacy direct-service fallback, but never use it to
+        // extend inactive-Location continuity without an active membership.
+        if ( null === $this->memberships->find_active( $clinic_id, $actor_user_id ) ) {
+            return $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        }
+
+        return ( new DoctorPortalLocationEligibility( $this->db, $this->memberships ) )
+            ->eligible_location_ids( $clinic_id, $actor_user_id );
     }
 
     /**

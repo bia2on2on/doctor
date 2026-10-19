@@ -992,7 +992,8 @@ final class ClinicalService
         int $clinic_id,
         int $clinician_id,
         int $trusted_location_id,
-        int $limit
+        int $limit,
+        bool $allow_inactive_location = false
     ): array {
         $this->requireCap( $actor_user_id, RolesAndCapabilities::RX_READ, 'history' );
         if ( $actor_user_id <= 0 || $clinic_id <= 0 || $clinician_id <= 0 || $trusted_location_id <= 0 || $limit <= 0 ) {
@@ -1012,9 +1013,13 @@ final class ClinicalService
             );
         }
 
+        // Continuity: the portal boundary admits an inactive Location only for
+        // the requesting clinician's ongoing treatment. This read-only history
+        // projection must then stay readable there; every other caller keeps the
+        // active-Location requirement. Clinic ownership is never relaxed.
         $location = $this->db->fetchRow(
             'SELECT id, timezone FROM ' . $this->db->table( 'cpms_locations' ) .
-            ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            ' WHERE id = %d AND clinic_id = %d' . ( $allow_inactive_location ? '' : ' AND is_active = 1' ) . ' LIMIT 1',
             [ $trusted_location_id, $clinic_id ]
         );
         if ( $location === null || trim( (string) ( $location['timezone'] ?? '' ) ) === '' ) {

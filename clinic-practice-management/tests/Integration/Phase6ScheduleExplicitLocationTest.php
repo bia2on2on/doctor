@@ -604,6 +604,138 @@ final class Phase6ScheduleExplicitLocationTest extends WP_UnitTestCase
         }
     }
 
+    public function testInactiveLocationStopsSlotGenerationWithoutRemovingExistingSlotsOrSchedule(): void
+    {
+        $reference = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $tomorrow = $reference->setTimezone(new DateTimeZone(self::TZ_SECONDARY))->modify('+1 day')->format('Y-m-d');
+        $weekday = self::toIranianDow(
+            (int) ( new DateTimeImmutable( $tomorrow . ' 12:00:00', new DateTimeZone( self::TZ_SECONDARY ) ) )->format( 'w' )
+        );
+
+        $created = $this->withScope( $this->clinicA, fn (): array => App::scheduleService()->create(
+            $this->managerAId,
+            [
+                'clinician_id' => $this->clinicianId,
+                'day_of_week' => $weekday,
+                'start_time' => '09:00',
+                'end_time' => '10:00',
+                'appointment_duration_min' => 30,
+                'location_id' => $this->locA2,
+            ]
+        ) );
+        $scheduleId = (int) ( $created['id'] ?? 0 );
+        self::assertGreaterThan( 0, $scheduleId, 'precondition: active A2 schedule created through ScheduleService' );
+        self::assertSame( $this->locA2, $this->scheduleLocationId( $scheduleId ), 'precondition: schedule remains explicitly bound to A2' );
+
+        // First prove the active Location generates its existing slots. Then
+        // extend the horizon so a second sweep would add a fresh matching day if
+        // the inactive-Location gate were missing; the pre-existing rows must stay.
+        $this->setClinicHorizon( $this->clinicA, self::HORIZON );
+        $this->runProductionSlotSweep();
+        $before = App::db()->fetchAll(
+            'SELECT id, slot_date, slot_time FROM ' . App::db()->table( 'cpms_schedule_slots' )
+            . ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d ORDER BY slot_date, slot_time, id',
+            [ $this->clinicA, $this->locA2, $this->clinicianId ]
+        );
+        self::assertNotEmpty( $before, 'positive control: active A2 generates persisted slots' );
+        $beforeIds = array_map( static fn ( array $row ): int => (int) $row['id'], $before );
+        $availabilityFrom = (string) $before[0]['slot_date'];
+        $availabilityTo = (string) $before[ count( $before ) - 1 ]['slot_date'];
+        $availabilityBeforeDeactivation = App::bookingService()->availability(
+            $this->clinicianId,
+            $availabilityFrom,
+            $availabilityTo
+        );
+        self::assertContains(
+            $this->locA2,
+            $this->availabilityLocationIds( $availabilityBeforeDeactivation ),
+            'positive control: active Location slots appear in public availability'
+        );
+
+        $this->setClinicHorizon( $this->clinicA, self::HORIZON * 2 );
+        $deactivated = App::locationService()->set_active( $this->managerAId, $this->clinicA, $this->locA2, false );
+        self::assertSame( 0, (int) ( $deactivated['is_active'] ?? 1 ), 'LocationService deactivation persisted' );
+        self::assertSame( 1, (int) ( $this->scheduleRow( $scheduleId )['is_active'] ?? 0 ), 'deactivation must preserve the existing Schedule row' );
+        self::assertSame( $this->locA2, $this->scheduleLocationId( $scheduleId ), 'deactivation must not retarget the Schedule' );
+        $availabilityAfterDeactivation = App::bookingService()->availability(
+            $this->clinicianId,
+            $availabilityFrom,
+            $availabilityTo
+        );
+        self::assertNotContains(
+            $this->locA2,
+            $this->availabilityLocationIds( $availabilityAfterDeactivation ),
+            'inactive Location slots remain historical but are not advertised as available'
+        );
+
+        $this->runProductionSlotSweep();
+        $after = App::db()->fetchAll(
+            'SELECT id, slot_date, slot_time FROM ' . App::db()->table( 'cpms_schedule_slots' )
+            . ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d ORDER BY slot_date, slot_time, id',
+            [ $this->clinicA, $this->locA2, $this->clinicianId ]
+        );
+        $afterIds = array_map( static fn ( array $row ): int => (int) $row['id'], $after );
+        self::assertSame( $beforeIds, $afterIds, 'inactive sweep must neither add slots nor remove historical/materialized rows' );
+
+        $reactivated = App::locationService()->set_active( $this->managerAId, $this->clinicA, $this->locA2, true );
+        self::assertSame( 1, (int) ( $reactivated['is_active'] ?? 0 ), 'LocationService reactivation persisted' );
+        $this->runProductionSlotSweep();
+        $afterReactivation = App::db()->fetchAll(
+            'SELECT id FROM ' . App::db()->table( 'cpms_schedule_slots' )
+            . ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d ORDER BY slot_date, slot_time, id',
+            [ $this->clinicA, $this->locA2, $this->clinicianId ]
+        );
+        self::assertGreaterThan( count( $before ), count( $afterReactivation ), 'reactivated Location may generate newly eligible future slots' );
+    }
+
+    public function testInactiveLocationCannotAcceptNewOrReactivatedScheduleDemand(): void
+    {
+        $created = $this->dispatch( 'POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianId,
+            'day_of_week' => 1,
+            'start_time' => '09:00',
+            'end_time' => '10:00',
+            'location_id' => $this->locA2,
+        ], $this->clinicA, $this->managerAId );
+        self::assertSame( 200, $created->get_status(), 'precondition: active Location schedule created' );
+        $scheduleId = (int) ( $created->get_data()['data']['id'] ?? 0 );
+        self::assertGreaterThan( 0, $scheduleId, 'precondition: schedule id persisted' );
+
+        $deactivated = App::locationService()->set_active( $this->managerAId, $this->clinicA, $this->locA2, false );
+        self::assertSame( 0, (int) ( $deactivated['is_active'] ?? 1 ), 'precondition: A2 deactivated through lifecycle service' );
+
+        $beforeCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d AND clinician_id = %d',
+            [ $this->clinicA, $this->clinicianId ]
+        );
+        $newSchedule = $this->dispatch( 'POST', self::NS . '/config/schedules', [
+            'clinician_id' => $this->clinicianId,
+            'day_of_week' => 2,
+            'start_time' => '11:00',
+            'end_time' => '12:00',
+            'location_id' => $this->locA2,
+        ], $this->clinicA, $this->managerAId );
+        self::assertSame( 404, $newSchedule->get_status(), 'inactive Location cannot receive a new Schedule' );
+        self::assertSame( 'CLINIC_NOT_FOUND', $this->errorCode( $newSchedule ), 'inactive Location retains not-found parity' );
+        self::assertSame(
+            $beforeCount,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_schedule' ) . ' WHERE clinic_id = %d AND clinician_id = %d',
+                [ $this->clinicA, $this->clinicianId ]
+            ),
+            'denied Schedule create writes no row'
+        );
+
+        $disabled = $this->dispatch( 'PUT', self::NS . '/config/schedules/' . $scheduleId, [ 'is_active' => false ], $this->clinicA, $this->managerAId );
+        self::assertSame( 200, $disabled->get_status(), 'existing Schedule may be disabled after Location deactivation' );
+        self::assertSame( 0, (int) ( $this->scheduleRow( $scheduleId )['is_active'] ?? 1 ), 'Schedule disable is persisted without deleting history' );
+
+        $reactivatedSchedule = $this->dispatch( 'PUT', self::NS . '/config/schedules/' . $scheduleId, [ 'is_active' => true ], $this->clinicA, $this->managerAId );
+        self::assertSame( 404, $reactivatedSchedule->get_status(), 'inactive Location cannot reactivate Schedule demand' );
+        self::assertSame( 'CLINIC_NOT_FOUND', $this->errorCode( $reactivatedSchedule ), 'Schedule reactivation uses the same not-found envelope' );
+        self::assertSame( 0, (int) ( $this->scheduleRow( $scheduleId )['is_active'] ?? 1 ), 'denied Schedule reactivation writes nothing' );
+    }
+
     // ==================================================================
     // T8 — existing shared-professional Clinic participation behavior
     //      remains correct under the explicit-Location contract.
@@ -743,6 +875,24 @@ final class Phase6ScheduleExplicitLocationTest extends WP_UnitTestCase
         );
 
         return new DateTimeImmutable('now', new DateTimeZone('UTC'));
+    }
+
+    /** @param array<string, mixed> $availability @return list<int> */
+    private function availabilityLocationIds( array $availability ): array
+    {
+        $ids = [];
+        foreach ( $availability['days'] ?? [] as $day ) {
+            if ( ! is_array( $day ) ) {
+                continue;
+            }
+            foreach ( $day['slots'] ?? [] as $slot ) {
+                if ( is_array( $slot ) && (int) ( $slot['location_id'] ?? 0 ) > 0 ) {
+                    $ids[] = (int) $slot['location_id'];
+                }
+            }
+        }
+
+        return array_values( array_unique( $ids ) );
     }
 
     /**

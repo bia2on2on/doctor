@@ -259,6 +259,15 @@ final class App
             3
         );
         add_filter('rest_request_after_callbacks', [RestClinicContext::class, 'afterCallbacks'], 10, 3);
+        // Early scope-binder denials short-circuit before the route callback;
+        // mirror their mandatory audit on the final response (idempotent with
+        // the controller-level denial via a per-request marker).
+        add_filter(
+            'rest_post_dispatch',
+            [ new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ), 'handwriting_post_dispatch' ],
+            10,
+            3
+        );
 
         // Phase 17 profiling (measurement only): request-level bounded markers.
         // Each callback self-guards on the server-side flag, so disarmed requests

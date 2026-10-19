@@ -162,12 +162,12 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$path = '/clinic/v1/doctor/portal/visits/' . $fx['visit'] . '/handwriting';
 		$db = \ClinicCore\Bootstrap\App::db();
 		$db->update( 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $fx['location'] ] );
-		$zero = $this->call_portal( 'GET', $path, $fx );
+		$zero = $this->call_portal( 'GET', $path, $fx, $fx['location'] );
 		self::assertSame( 403, $zero->get_status() );
 		self::assertSame( 'location', $zero->get_data()['data']['reason'] ?? '' );
 		$db->update( 'cpms_locations', [ 'is_active' => 1 ], [ 'id' => $fx['location'] ] );
-		$one = $this->call_portal( 'GET', $path, $fx );
-		self::assertSame( 200, $one->get_status(), 'Exactly one Location auto-resolves.' );
+		$one = $this->call_portal( 'GET', $path, $fx, $fx['location'] );
+		self::assertSame( 200, $one->get_status(), 'Explicitly selected eligible Location permits the read.' );
 		$now = $db->nowUtcSql();
 		self::assertTrue( $db->insert( 'cpms_locations', [ 'clinic_id' => $fx['clinic'], 'name' => 'Second', 'slug' => 'second-' . bin2hex( random_bytes( 4 ) ), 'timezone' => 'Asia/Tehran', 'is_primary' => 0, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now ] ) );
 		global $wpdb;
@@ -179,11 +179,18 @@ final class Phase10StaffPortalHandwritingRedTest extends WP_UnitTestCase {
 		$wrong = $this->call_portal( 'GET', $path, $fx, $other_location );
 		self::assertSame( 404, $wrong->get_status(), 'Visit is bound to its original Location.' );
 		$db->update( 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $other_location ] );
+		$audit_query = 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d AND meta_json LIKE %s';
+		$audit_args = [ 'FORBIDDEN_ACCESS_ATTEMPT', $fx['visit'], '%location%' ];
+		$inactive_audit_before = (int) $db->fetchValue( $audit_query, $audit_args );
 		$inactive = $this->call_portal( 'GET', $path, $fx, $other_location );
 		self::assertSame( 403, $inactive->get_status() );
 		self::assertSame( 'location', $inactive->get_data()['data']['reason'] ?? '', 'Explicit ineligible Location must preserve the requested portal reason.' );
-		$inactive_audit = $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d AND meta_json LIKE %s', [ 'FORBIDDEN_ACCESS_ATTEMPT', $fx['visit'], '%location%' ] );
-		self::assertSame( 1, (int) $inactive_audit, 'Explicit inactive Location denial is audited once.' );
+		$inactive_audit_after = (int) $db->fetchValue( $audit_query, $audit_args );
+		self::assertSame(
+			$inactive_audit_before + 1,
+			$inactive_audit_after,
+			'This denial adds exactly one audit, regardless of earlier denied requests in the test.'
+		);
 		$created = $this->call_portal( 'POST', $path, $fx, $fx['location'], [ 'patient_id' => 999999, 'clinic_id' => 999999, 'clinician_id' => 999999, 'visit_id' => 999999, 'location_id' => 999999 ] );
 		self::assertSame( 201, $created->get_status() );
 		$doc = $created->get_data()['data'];

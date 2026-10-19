@@ -18,11 +18,12 @@ use WP_REST_Request;
 /**
  * مرز REST برای استقرار ClinicScope مورد اعتماد.
  *
- * استخراج شناسه فقط اینجاست (هدر/پارامتر). تأیید عضویت و تعلق در
- * {@see TrustedClinicEstablisher} است — مستقل از HTTP.
+ * Generic staff selector extraction happens here; Doctor Portal selectors are
+ * parsed by the endpoint permission boundary. Membership/tenant verification is
+ * delegated to {@see TrustedClinicEstablisher}.
  *
- * Bind در `rest_request_before_callbacks` است نه permission_callback
- * (تست‌های permission بدون dispatch صدا زده می‌شوند).
+ * Generic staff scopes bind in `rest_request_before_callbacks`; Doctor Portal
+ * and Reception operational scopes bind only after their permission callbacks.
  */
 final class RestClinicContext
 {
@@ -56,22 +57,139 @@ final class RestClinicContext
             return $response;
         }
 
-        $userId = get_current_user_id();
-        if ($userId <= 0) {
+        $user_id = get_current_user_id();
+        if ( $user_id <= 0 ) {
             return $response;
         }
 
         try {
             $ids = self::extractIds($request);
             $establisher = new TrustedClinicEstablisher(App::db(), new MembershipRepository(App::db()));
-            $scope = $establisher->establish($userId, $ids['clinic_id'], $ids['location_id']);
+            if ( self::is_doctor_portal_queue_route( (string) $request->get_route() ) ) {
+                $scope = $establisher->establish_for_doctor_portal(
+                    $user_id,
+                    $ids['clinic_id'],
+                    $ids['location_id'],
+                    self::doctor_portal_visit_id( (string) $request->get_route() )
+                );
+            } else {
+                $scope = $establisher->establish( $user_id, $ids['clinic_id'], $ids['location_id'] );
+            }
         } catch (ScopeRequiredException $e) {
+            self::audit_handwriting_location_denial( $request, $e );
             return self::toError($e);
         }
 
         self::pushRestoreState($request, $scope);
 
         return $response;
+    }
+
+    /**
+     * Authorize explicit Reception Clinic scope before validating the tenant
+     * selector. The only unscoped request permitted here is the Reception
+     * context selector used to list the actor's own authorized Clinics.
+     *
+     * @param list<string> $permissions
+     */
+    public static function authorize_and_bind_reception_scope(
+        WP_REST_Request $request,
+        int $user_id,
+        array $permissions,
+        bool $allow_unscoped_context = false,
+        bool $allow_missing_location = false
+    ): bool|WP_Error {
+        try {
+            $ids = self::extractIds( $request );
+        } catch ( ScopeRequiredException $e ) {
+            return self::toError( $e );
+        }
+
+        if ( null === $ids['clinic_id'] ) {
+            if ( null !== $ids['location_id'] ) {
+                return self::toError(
+                    new ScopeRequiredException(
+                        'CLINIC_VALIDATION_FAILED',
+                        'Location cannot establish Clinic.',
+                        [ 'field' => 'location_id' ],
+                        422
+                    )
+                );
+            }
+            if ( $allow_unscoped_context ) {
+                return true;
+            }
+
+            return self::toError(
+                new ScopeRequiredException(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Explicit Clinic is required for Reception operations.',
+                    [ 'field' => 'clinic_id', 'reason' => 'clinic_required' ],
+                    400
+                )
+            );
+        }
+
+        // Authorization is evaluated against the explicit Clinic before the
+        // establisher validates that Clinic/Location exists or belongs to the
+        // actor. This preserves DENY precedence and avoids tenant probing.
+        try {
+            foreach ( $permissions as $permission ) {
+                App::authorization_service()->authorize( $user_id, $ids['clinic_id'], $permission );
+            }
+        } catch ( \ClinicCore\Application\Authorization\AuthorizationException $e ) {
+            return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'دسترسی ندارید', [ 'status' => 403 ] );
+        }
+
+        if ( null === $ids['location_id'] && ! $allow_unscoped_context && ! $allow_missing_location ) {
+            return self::toError(
+                new ScopeRequiredException(
+                    'CLINIC_SCOPE_REQUIRED',
+                    'Explicit operational Location is required for Reception operations.',
+                    [ 'field' => 'location_id', 'reason' => 'location_required' ],
+                    400
+                )
+            );
+        }
+
+        try {
+            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
+            $scope       = $establisher->establish( $user_id, $ids['clinic_id'], $ids['location_id'] );
+        } catch ( ScopeRequiredException $e ) {
+            return self::toError( $e );
+        }
+
+        self::pushRestoreState( $request, $scope );
+
+        return true;
+    }
+
+    /**
+     * Establish Doctor Portal tenant scope only after the endpoint permission
+     * callback has authorized its Clinic capability. The shared after-callback
+     * and shutdown restoration lifecycle remains identical to generic staff scope.
+     */
+    public static function bind_doctor_portal_scope_after_authorization(
+        WP_REST_Request $request,
+        int $user_id,
+        int $clinic_id,
+        int $location_id
+    ): bool|WP_Error {
+        try {
+            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
+            $scope       = $establisher->establish_for_doctor_portal(
+                $user_id,
+                $clinic_id,
+                $location_id,
+                self::doctor_portal_visit_id( (string) $request->get_route() )
+            );
+        } catch ( ScopeRequiredException $e ) {
+            return self::toError( $e );
+        }
+
+        self::pushRestoreState( $request, $scope );
+
+        return true;
     }
 
     /**
@@ -169,6 +287,12 @@ final class RestClinicContext
             return false;
         }
 
+        // Reception resolves Clinic authority in its permission callback so
+        // role/capability authorization happens before tenant selector checks.
+        if ( self::is_reception_route( $route ) ) {
+            return false;
+        }
+
         /*
          * C6 repair — این مرز فقط برای «استفادهٔ staff از عملیات Clinic‑scoped» است.
          *
@@ -184,6 +308,17 @@ final class RestClinicContext
          * سنجیده می‌شود و fail‑closed است: staff بدون عضویت فعال → 403.
          */
         if ( ! self::current_user_is_staff( $request ) ) {
+            return false;
+        }
+
+        // Doctor Portal Workspace endpoints bind from their own endpoint
+        // capability boundary; context/selector routes remain unscoped. The
+        // queue projection aliases are handled below because QueueController
+        // consumes the scope established by this post-permission REST hook.
+        if (
+            preg_match( '#^/clinic/v1/doctor/portal(?:/|$)#', $route ) === 1
+            && ! self::is_doctor_portal_queue_route( $route )
+        ) {
             return false;
         }
 
@@ -231,11 +366,24 @@ final class RestClinicContext
             $request->get_param('clinic_id'),
             'clinic_id'
         );
-        $location = self::combine(
-            $request->get_header('X-CPMS-Location-Id'),
-            $request->get_param('location_id'),
-            'location_id'
-        );
+        // Schedule configuration sends the target Location as an operational
+        // BODY field; it is validated by ScheduleService (not-found parity), so
+        // it must not be mistaken for a tenant scope selector. An explicit
+        // X-CPMS-Location-Id header still binds scope normally.
+        $location = preg_match( '#^/clinic/v1/config/schedules(?:/|$)#', (string) $request->get_route() ) === 1
+            ? self::combine( $request->get_header( 'X-CPMS-Location-Id' ), null, 'location_id' )
+            : self::combine(
+                $request->get_header( 'X-CPMS-Location-Id' ),
+                $request->get_param( 'location_id' ),
+                'location_id'
+            );
+        // Reports/exports are Clinic-wide: a stale selector for an inactive
+        // Location of the SAME Clinic must not suppress an authorized read.
+        // Foreign, malformed and absent-Clinic selectors keep their established
+        // validation and denial envelopes.
+        if ( null !== $location && self::is_clinic_wide_report_route( (string) $request->get_route() ) ) {
+            $location = self::report_location_selector( $clinic, $location );
+        }
 
         return [
             'clinic_id' => $clinic,
@@ -283,6 +431,73 @@ final class RestClinicContext
             ['field' => $field],
             422
         );
+    }
+
+    private static function is_reception_route( string $route ): bool {
+        return preg_match( '#^/clinic/v1/staff/portal/reception(?:/|$)#', $route ) === 1;
+    }
+
+    private static function is_doctor_portal_queue_route( string $route ): bool {
+        return in_array(
+            $route,
+            [
+                '/clinic/v1/doctor/today',
+                '/clinic/v1/doctor/portal/today',
+                '/clinic/v1/doctor/portal/rt/queue',
+            ],
+            true
+        );
+    }
+
+    private static function is_clinic_wide_report_route( string $route ): bool {
+        return preg_match( '#^/clinic/v1/reports(?:/|$)#', $route ) === 1;
+    }
+
+    /**
+     * Keep the explicit report selector unless it names an INACTIVE Location
+     * that durably belongs to the requested Clinic. In that one case the
+     * Clinic-wide report keeps working (the Location is not a report filter);
+     * every other selector keeps normal trusted-context validation.
+     */
+    private static function report_location_selector( ?int $clinic_id, int $location_id ): ?int {
+        if ( null === $clinic_id || $clinic_id <= 0 || $location_id <= 0 ) {
+            return $location_id;
+        }
+
+        $row = App::db()->fetchRow(
+            'SELECT clinic_id, is_active FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            [ $location_id ]
+        );
+        if ( null === $row || (int) ( $row['clinic_id'] ?? 0 ) !== $clinic_id ) {
+            return $location_id;
+        }
+
+        return 1 === (int) ( $row['is_active'] ?? 0 ) ? $location_id : null;
+    }
+
+    /**
+     * Verify the Doctor Portal Clinic boundary (active membership + durable
+     * Clinic/Organization) WITHOUT binding a request scope. Endpoint capability
+     * authorization runs after this check and before any Location validation,
+     * so tenant existence is never disclosed ahead of capability denial.
+     */
+    public static function verify_doctor_portal_clinic( int $user_id, int $clinic_id ): bool|WP_Error {
+        try {
+            ( new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ) )
+                ->establish_for_doctor_portal( $user_id, $clinic_id, null );
+        } catch ( ScopeRequiredException $e ) {
+            return self::toError( $e );
+        }
+
+        return true;
+    }
+
+    private static function doctor_portal_visit_id( string $route ): ?int {
+        if ( preg_match( '#^/clinic/v1/doctor/portal/visits/([1-9][0-9]*)/#', $route, $matches ) !== 1 ) {
+            return null;
+        }
+
+        return (int) $matches[1];
     }
 
     private static function current_user_is_staff( WP_REST_Request $request ): bool
@@ -363,6 +578,35 @@ final class RestClinicContext
         ) || CustomRolePolicy::is_definable_role_key( $role_key );
     }
 
+    /**
+     * The visit-workspace handwriting route audits every Location denial exactly
+     * once. A trusted-binder denial returns before the route callback, so the
+     * audit is recorded here, at the point of denial, keyed by a per-request
+     * marker that the controller-level denial path also sets.
+     */
+    private static function audit_handwriting_location_denial( WP_REST_Request $request, ScopeRequiredException $e ): void {
+        if ( 'location' !== (string) ( $e->data['reason'] ?? '' ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
+            return;
+        }
+        if ( true === $request->get_param( '_cpms_hw_audited' ) ) {
+            return;
+        }
+        if ( ! preg_match( '#^/clinic/v1/doctor/portal/visits/([0-9]+)/handwriting(?:/|$)#', (string) $request->get_route(), $matches ) ) {
+            return;
+        }
+        $request->set_param( '_cpms_hw_audited', true );
+        App::audit()->log(
+            'FORBIDDEN_ACCESS_ATTEMPT',
+            [ 'wp_user_id' => get_current_user_id(), 'role' => RolesAndCapabilities::ROLE_DOCTOR ],
+            'handwriting',
+            (int) $matches[1],
+            null,
+            null,
+            null,
+            [ 'operation' => 'location' ]
+        );
+    }
+
     private static function toError( ScopeRequiredException $e ): WP_Error { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
         $reason = (string) ( $e->data['reason'] ?? '' );
         if ( '' !== $reason ) {
@@ -377,17 +621,26 @@ final class RestClinicContext
 
         $data = [ 'status' => $e->httpStatus() ];
 
-        // Blocker 2: preserve bounded non-sensitive Location-required metadata for Doctor Portal.
-        // Use existing CLINIC_SCOPE_REQUIRED, do NOT invent LOCATION_SCOPE_REQUIRED.
-        // Return only field=location_id + reason=location_required, never eligible IDs or internals.
+        // Preserve only bounded, non-sensitive selector-required metadata.
+        // Never expose eligible IDs, membership internals, or tenant topology.
+        // Only the bounded location-continuity reason may cross the boundary.
+        // Membership/organization/clinic reasons are tenant topology and must
+        // never leak into the REST envelope.
+        $reason = $e->data['reason'] ?? null;
+        if ( 'location' === $reason ) {
+            $data['reason'] = 'location';
+        }
         if ( 'CLINIC_SCOPE_REQUIRED' === $e->errorCode ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract
             $field      = $e->data['field'] ?? null;
             $reason_val = $e->data['reason'] ?? null;
             if ( 'location_id' === $field && 'location_required' === $reason_val ) {
                 $data['field']  = 'location_id';
                 $data['reason'] = 'location_required';
+            } elseif ( 'clinic_id' === $field && 'clinic_required' === $reason_val ) {
+                $data['field']  = 'clinic_id';
+                $data['reason'] = 'clinic_required';
             }
-            // Clinic-required case (multiple clinics) remains compatible: no field relabel.
+            // Generic multiple-membership ambiguity remains compatible: no field relabel.
         }
 
         if ( 'CLINIC_VALIDATION_FAILED' === $e->errorCode && isset( $e->data['field'] ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy PSR-style, established contract

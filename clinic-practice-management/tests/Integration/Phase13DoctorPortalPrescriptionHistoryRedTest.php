@@ -17,10 +17,10 @@
  *   authenticated WP user + doctor role + existing cpms_rx_read capability +
  *   existing WordPress nonce + server-derived clinician<->WP-user mapping
  *   (client clinician_id is never authority) + trusted Clinic + CURRENT
- *   operational Location under the established strict 0/1/N policy
- *   (0 => fail closed, 1 => auto-resolution, N>1 => explicit eligible
- *   Location required — never first/primary/global fallback, foreign /
- *   inactive / unassigned => fail closed).
+ *   operational Location under the explicit 0/1/N policy (every eligible
+ *   Location requires explicit selection — never first/primary/global fallback;
+ *   foreign/unassigned fail closed). For an inactive Location, this read-only
+ *   history query additionally requires active treatment by this clinician there.
  *
  * Privacy-minimal row (exact key set):
  *   prescription_id (print selector), visit_id (print selector),
@@ -229,12 +229,28 @@ final class Phase13DoctorPortalPrescriptionHistoryRedTest extends WP_UnitTestCas
         $foreignLocation = $this->dispatch('GET', '/' . self::HISTORY, [], $this->scopeHeaders($fx['clinic'], $foreign['location']));
         $this->gateIn([403, 404], $foreignLocation, 'P13S2: a foreign Location selector fails closed');
 
-        // Inactive Location => not eligible => fail closed (single remaining Location deactivated too).
+        // Location deactivation preserves the bounded history while this doctor
+        // still has active treatment there; another doctor's Visit is not enough.
         global $wpdb;
         $wpdb->update($wpdb->prefix . 'cpms_locations', ['is_active' => 0], ['id' => $fx['location']]);
         $wpdb->update($wpdb->prefix . 'cpms_locations', ['is_active' => 0], ['id' => $otherLoc]);
-        $inactive = $this->dispatch('GET', '/' . self::HISTORY, [], $headers);
-        $this->gateIn([400, 403, 404], $inactive, 'P13S2: inactive/zero eligible Location fails closed');
+        $continuity = $this->dispatch('GET', '/' . self::HISTORY, [], $headers);
+        $this->gate(200, $continuity, 'P13S2: active treatment keeps read-only history available at the deactivated Location');
+        $continuityIds = array_map(
+            static fn(array $row): int => (int) $row['prescription_id'],
+            $this->payload($continuity)['prescriptions'] ?? []
+        );
+        self::assertSame([$mine], $continuityIds, 'P13S2: inactive-Location continuity remains clinician- and Location-isolated');
+
+        // Once treatment is closed, inactive historical Location access is no
+        // longer granted merely because an old prescription remains persisted.
+        $wpdb->update(
+            $wpdb->prefix . 'cpms_visits',
+            ['active' => 0, 'status' => 'checked_out'],
+            ['id' => $visitId]
+        );
+        $closed = $this->dispatch('GET', '/' . self::HISTORY, [], $headers);
+        $this->gateIn([403, 404], $closed, 'P13S2: closed history alone does not keep an inactive Location in the Portal scope');
     }
 
     public function testHistoryRequiresNonceCapabilityAndServerDerivedClinicianIdentity(): void

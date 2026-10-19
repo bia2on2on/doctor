@@ -20,8 +20,8 @@
  *   authenticated WP user
  *   + server-derived clinician identity
  *   + active trusted Clinic
- *   + trusted operational Location (0=>fail closed, 1=>auto, N>1=>explicit required,
- *     foreign/inactive/unassigned=>fail closed)
+ *   + explicitly selected trusted operational Location (every cardinality;
+ *     foreign/unassigned=>fail closed; inactive only for the exact active Visit)
  *   + Visit owned by that clinician and at that Location
  *   = authorized.
  * Raw visit_id/location_id remain selectors only; cross-doctor and foreign-
@@ -489,7 +489,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         self::assertArrayNotHasKey('eligible_location_ids', $rawNoLoc, 'G7.E: must not leak eligible IDs');
         self::assertArrayNotHasKey('eligible', $rawNoLoc, 'G7.E: must not leak eligible IDs');
 
-        // With explicit trusted Location, portal succeeds (and auto-resolution with 1 location also succeeds).
+        // With explicit trusted Location, portal succeeds.
         $headersWithLoc = $this->scopeHeaders($fxMulti['clinic'], $fxMulti['location']);
         $rWithLoc = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitMulti), [], $headersWithLoc);
         self::assertSame(200, $rWithLoc->get_status(), 'G7.E: Portal with explicit trusted Location succeeds');
@@ -499,15 +499,36 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $rNoteNoLoc = $this->dispatch('POST', '/' . sprintf(self::PORTAL_NOTES, $visitMulti), $noteBody, $headersNoLoc);
         self::assertSame(400, $rNoteNoLoc->get_status(), 'G7.E: Portal note create N>1 without Location requires 400');
 
-        // Single-location clinic auto-resolution must still succeed without explicit header (prove 1=>auto).
+        // A sole Location is still not selected implicitly.
         $fxSingle = $this->makePortalStage('g7s');
         $patientSingle = $this->insertPatient($fxSingle['clinic'], 'g7s_patient');
         $visitSingle = $this->insertVisit($patientSingle, $fxSingle['clinician'], $fxSingle['clinic'], $fxSingle['location'], 'in_consultation');
         wp_set_current_user($fxSingle['doctor']);
-        $rSingleNoHeader = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $this->scopeHeaders($fxSingle['clinic'], null));
-        self::assertSame(200, $rSingleNoHeader->get_status(), 'G7.E: Single location auto-resolution succeeds without explicit header');
+        $singleNoLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], null)
+        );
+        self::assertSame(
+            400,
+            $singleNoLocation->get_status(),
+            'G7.E: Sole Location without explicit selection is rejected'
+        );
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($singleNoLocation));
+        $singleWithLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitSingle),
+            [],
+            $this->scopeHeaders($fxSingle['clinic'], $fxSingle['location'])
+        );
+        self::assertSame(
+            200,
+            $singleWithLocation->get_status(),
+            'G7.E: Sole Location with explicit selection succeeds'
+        );
 
-        // F. forged/foreign/inactive/unassigned Location cannot create authority.
+        // F. Forged/foreign/unassigned and inactive-without-continuity selectors cannot create authority.
 
         // Foreign Location (belongs to another clinic)
         $orgF = $this->insertOrg('G7F Org');
@@ -558,16 +579,15 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $rForged = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $headersForged);
         self::assertContains($rForged->get_status(), [403, 422], 'G7.F: Forged Location fails closed');
 
-        // 0 eligible => fail closed
-        // Deactivate all locations for a clinic so eligible = []
+        // No active Location and no actionable continuity record => fail closed.
         $fxZero = $this->makePortalStage('g7z');
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
         $patientZ = $this->insertPatient($fxZero['clinic'], 'g7z_patient');
-        $visitZ = $this->insertVisit($patientZ, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'in_consultation');
+        $visitZ = $this->insertVisit($patientZ, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'skipped');
         wp_set_current_user($fxZero['doctor']);
         $rZero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitZ), [], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
-        // With 0 eligible, even explicit trusted Location must fail closed (no authority to create scope)
-        self::assertContains($rZero->get_status(), [403, 404], 'G7.F: 0 eligible fails closed');
+        // Skipped history is not active treatment; an explicit inactive Location remains unavailable.
+        self::assertContains($rZero->get_status(), [403, 404], 'G7.F: no active continuity record fails closed');
     }
 
     // ================= helpers (proven Slice 1/2 patterns) =================

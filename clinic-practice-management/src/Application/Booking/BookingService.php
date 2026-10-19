@@ -121,13 +121,13 @@ final class BookingService
         // fail-closed shape (HTTP 200, empty days) instead of an error, so the
         // shortcode/REST surface never advertises new demand and leaks nothing about
         // why. Non-locking read on purpose: every demand-CREATING path re-checks the
-        // status under the Clinic row lock, so an advertisement read that races a
-        // suspension can never produce an appointment.
+        // lifecycle under the Organization -> Clinic prefix, so an advertisement
+        // read that races a transition cannot produce an appointment.
         // Narrow naming ignore for the established camelCase local of this method
         // (same convention already used elsewhere in this file). No security sniff is
         // suppressed by it.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        if ( $this->clinic_is_suspended( $clinicId ) ) {
+        if ( $this->clinic_is_suspended( $clinicId ) || ! $this->clinic_organization_is_active( $clinicId ) ) {
             return ['days' => []];
         }
 
@@ -410,7 +410,7 @@ final class BookingService
         // Narrow naming ignore for the established camelCase local of this method; no
         // security sniff is suppressed by it.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        if ( $this->clinic_is_suspended( $clinicId ) ) {
+        if ( $this->clinic_is_suspended( $clinicId ) || ! $this->clinic_organization_is_active( $clinicId ) ) {
             return ['available' => false, 'capacity_left' => 0];
         }
 
@@ -420,7 +420,11 @@ final class BookingService
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
-        $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        // The published quote() parameter names stay unchanged (PHP 8 named
+        // arguments); compact() string keys give the call site snake_case
+        // locals without touching the public contract.
+        $quote_args = compact( 'clinicId', 'clinicianId', 'slotDate', 'slotTime', 'slotId' );
+        $slot       = $this->resolve_slot_for_booking( (int) $quote_args['clinicId'], (int) $quote_args['clinicianId'], (string) $quote_args['slotDate'], (string) $quote_args['slotTime'], null === $quote_args['slotId'] ? null : (int) $quote_args['slotId'] );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
         if ($slot === null || (int) $slot['is_open'] !== 1) {
@@ -460,19 +464,34 @@ final class BookingService
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
+        // The published parameter names are part of the PHP 8 named-argument
+        // contract and must not change. Read them through compact() string keys
+        // so the body works with snake_case locals only.
+        $hold_args    = compact( 'wpUserId', 'clinicianId', 'slotDate', 'slotTime', 'slotId', 'patientId', 'locationId' );
+        $wp_user_id   = (int) $hold_args['wpUserId'];
+        $clinician_id = (int) $hold_args['clinicianId'];
+        $slot_date    = (string) $hold_args['slotDate'];
+        $slot_time    = (string) $hold_args['slotTime'];
+        $slot_id      = null === $hold_args['slotId'] ? null : (int) $hold_args['slotId'];
+        $patient_id   = null === $hold_args['patientId'] ? null : (int) $hold_args['patientId'];
+        $location_id  = null === $hold_args['locationId'] ? null : (int) $hold_args['locationId'];
+
         $mobile = $this->mobileForUser($wpUserId);
         if ($mobile === null) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $clinicId = $this->requireClinician($clinicianId);
+        $clinic_id = $this->requireClinician( $clinician_id );
+        if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
 
         // B1 — policy از Clinicِ **پایدارِ همان پزشک** (requireClinician بالا).
-        $settings = $this->settingsFor($clinicId);
-        $minLead = (int) $settings->get('booking.min_lead_hours', 2);
+        $settings = $this->settingsFor( $clinic_id );
+        $min_lead = (int) $settings->get( 'booking.min_lead_hours', 2 );
 
         // Resolve slot — exact identity if slotId given, else unique tuple with fail-closed on ambiguity
-        $slot = $this->resolveSlotForBooking($clinicId, $clinicianId, $slotDate, $slotTime, $slotId);
+        $slot = $this->resolve_slot_for_booking( $clinic_id, $clinician_id, $slot_date, $slot_time, $slot_id );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
 
@@ -480,24 +499,24 @@ final class BookingService
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
             // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
             // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
-            $this->assertWindow($slotDate, $slotTime, $minLead, $settings);
+            $this->assertWindow( $slot_date, $slot_time, $min_lead, $settings );
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
 
         // A public hold is accepted only for the same active, Clinic-owned
         // Location that was selected from A1's persisted slot identity.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $this->assert_active_location_for_booking( (int) $slot['location_id'], (int) $clinicId );
+        $this->assert_active_location_for_booking( (int) $slot['location_id'], (int) $clinic_id );
 
         // Two-Clock: Location timezone -> UTC instant before lead check (precise)
-        $locationTz = $this->resolveLocationTimezone((int) $slot['location_id'], $clinicId);
-        $this->assertWindowWithTimezone($slotDate, $slotTime, $locationTz, $minLead, $settings);
+        $location_tz = $this->resolveLocationTimezone( (int) $slot['location_id'], $clinic_id );
+        $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, $min_lead, $settings );
 
         // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
         // Trusted Clinic = slot's persisted clinic_id (never client payload).
         // Must be evaluated before any capacity claim.
-        $trustedClinicId = (int) $slot['clinic_id'];
-        $patientIdToPersist = $this->resolveBookingPatientForHold($wpUserId, $trustedClinicId, $patientId);
+        $trusted_clinic_id     = (int) $slot['clinic_id'];
+        $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
@@ -515,54 +534,103 @@ final class BookingService
 
         $ttl = (int) $settings->get('booking.hold_ttl_sec', 600);
         $token = self::uuid4();
-        $expiresAt = (new \DateTimeImmutable('+ ' . $ttl . ' seconds', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.000');
+        $expires_at = ( new \DateTimeImmutable( '+ ' . $ttl . ' seconds', new \DateTimeZone( 'UTC' ) ) )->format( 'Y-m-d H:i:s.000' );
 
-        $hasPatientCol = $this->holdsHasPatientIdColumn();
-        $this->db->transactional(function () use ($slot, $wpUserId, $mobile, $token, $expiresAt, $patientIdToPersist, $hasPatientCol): void {
-            // New demand (public/patient path) + suspension/booking race: the Clinic
-            // status is read under the Clinic row lock, inside this transaction,
-            // before any capacity is claimed.
-            $this->assert_clinic_accepting_new_demand( (int) $slot['clinic_id'], true );
+        $has_patient_col = $this->holdsHasPatientIdColumn();
+        $wp_user_id      = (int) func_get_arg( 0 );
+        $this->db->transactional(
+            function () use (
+                $slot,
+                $wp_user_id,
+                $mobile,
+                $token,
+                $expires_at,
+                $patient_id_to_persist,
+                $has_patient_col,
+                $min_lead,
+                $settings,
+                $slot_time
+            ): void {
+                // New demand takes Organization -> Clinic -> Slot -> Location/capacity.
+                // Slot before Location is the established booking order: the
+                // independent staff-create race test requires the Slot lock to be
+                // held while the actor blocks on the Location row, and every other
+                // booking path follows the same order so no ABBA cycle exists.
+                $this->lock_booking_tenant_prefix( (int) $slot['clinic_id'] );
+                $locked_slot = $this->slots->findForUpdate( (int) $slot['id'] );
+                if (
+                    $locked_slot === null
+                    || (int) ( $locked_slot['clinic_id'] ?? 0 ) !== (int) $slot['clinic_id']
+                    || (int) ( $locked_slot['location_id'] ?? 0 ) !== (int) $slot['location_id']
+                    || (int) ( $locked_slot['clinician_id'] ?? 0 ) !== (int) $slot['clinician_id']
+                    || (int) ( $locked_slot['is_open'] ?? 0 ) !== 1
+                    || (string) $this->normalize_slot_time( (string) ( $locked_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slot_time )
+                ) {
+                    throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات انتخابی دیگر قابل رزرو نیست', 409 );
+                }
+                $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $slot['location_id'], (int) $slot['clinic_id'] );
+                $this->assertWindowWithTimezone(
+                    (string) $locked_slot['slot_date'],
+                    (string) $locked_slot['slot_time'],
+                    $locked_location_tz,
+                    $min_lead,
+                    $settings
+                );
 
-            if (!$this->slots->atomicHold((int) $slot['id'])) {
-                // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
-                // از زمینهٔ trusted اسلاتِ باخته (همان ردیف persisted) ساخته می‌شود.
-                throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید', 409, ['nearby_slots' => $this->nearbySlotsForLosingSlot($slot)]);
+                if ( ! $this->slots->atomicHold( (int) $locked_slot['id'] ) ) {
+                    // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
+                    // از زمینهٔ trusted اسلاتِ باخته (همان ردیف persisted) ساخته می‌شود.
+                    throw BookingException::of(
+                        'CLINIC_SLOT_TAKEN',
+                        'اسلات در لحظه انتخاب پر شد — اسلات دیگری انتخاب کنید',
+                        409,
+                        [ 'nearby_slots' => $this->nearbySlotsForLosingSlot( $slot ) ]
+                    );
+                }
+                $row = [
+                    'clinic_id'         => (int) $slot['clinic_id'],
+                    'slot_id'           => (int) $locked_slot['id'],
+                    'holder_wp_user_id' => $wp_user_id,
+                    'holder_mobile'     => $mobile,
+                    'token'             => $token,
+                    'expires_at'        => $expires_at,
+                    'status'            => 'active',
+                    'created_at'        => $this->db->nowUtcSql(),
+                ];
+                if ( $has_patient_col ) {
+                    $row['patient_id'] = $patient_id_to_persist;
+                }
+                // A capacity lock wait may have crossed signed T0; rollback the hold claim.
+                $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                $this->db->insert( 'cpms_slot_holds', $row );
             }
-            $row = [
-                'clinic_id' => (int) $slot['clinic_id'],
-                'slot_id' => (int) $slot['id'],
-                'holder_wp_user_id' => $wpUserId,
-                'holder_mobile' => $mobile,
-                'token' => $token,
-                'expires_at' => $expiresAt,
-                'status' => 'active',
-                'created_at' => $this->db->nowUtcSql(),
-            ];
-            if ($hasPatientCol) {
-                $row['patient_id'] = $patientIdToPersist;
-            }
-            // A capacity lock wait may have crossed signed T0; rollback the hold claim.
-            $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
-            $this->db->insert('cpms_slot_holds', $row);
-        });
+        );
 
-        $holdId = $this->db->wpdb_last_insert_id();
-        $this->audit('HOLD_CREATED', $wpUserId, 'patient', 'slot_hold', $holdId, null, null, [
-            'mobile' => MobileValidator::mask($mobile),
-            'slot_id' => (int) $slot['id'],
-            'slot_date' => $slotDate,
-            'slot_time' => $slotTime,
-        ]);
+        $hold_id = $this->db->wpdb_last_insert_id();
+        $this->audit(
+            'HOLD_CREATED',
+            $wp_user_id,
+            'patient',
+            'slot_hold',
+            $hold_id,
+            null,
+            null,
+            [
+                'mobile'    => MobileValidator::mask( $mobile ),
+                'slot_id'   => (int) $slot['id'],
+                'slot_date' => $slot_date,
+                'slot_time' => $slot_time,
+            ]
+        );
         $this->op->info('booking.hold', [
             'wp_user_id' => $wpUserId,
             'slot_id' => (int) $slot['id'],
-            'hold_id' => $holdId,
+            'hold_id'    => $hold_id,
         ]);
 
         return [
             'hold_token' => $token,
-            'expires_at' => $expiresAt,
+            'expires_at' => $expires_at,
             'slot' => $this->slotView((int) $slot['id'], $slot),
         ];
     }
@@ -764,8 +832,8 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        $slotId = (int) $hold['slot_id'];
-        $holdId = (int) $hold['id'];
+        $slot_id            = (int) $hold['slot_id'];
+        $hold_id            = (int) $hold['id'];
         $confirmation_input = compact( 'newPatientNames' );
 
         try {
@@ -781,22 +849,47 @@ final class BookingService
                     $slot_id        = (int) $hold['slot_id'];
                     $hold_clinic_id = (int) $hold['clinic_id'];
                     $wp_user_id     = (int) $hold['holder_wp_user_id'];
-                    // A confirmation creates a genuinely new appointment, so it is new
-                    // demand: the Clinic status is revalidated under the Clinic row lock.
-                    // Lock order is fixed across every booking transaction - Clinic row
-                    // first, then Slot rows in ascending id order - so hold(), confirm()
-                    // and rescheduleAs() can never form an ABBA deadlock cycle when a
-                    // suspension races a booking. Denial is side-effect-free: the rolled
-                    // back transaction plus the catch below leave the existing Hold and
-                    // its capacity claim untouched.
-                    $this->assert_clinic_accepting_new_demand( $hold_clinic_id, true );
-                    $slot = $this->slots->findForUpdate( $slot_id );
-                    if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
+
+                    // Resolve the candidate Location without locking, then acquire
+                    // Organization -> Clinic -> Location -> Hold -> Slot. The final
+                    // persisted rows are revalidated after the locks below.
+                    $candidate_slot = $this->slots->find( $slot_id );
+                    if ( $candidate_slot === null || (int) ( $candidate_slot['clinic_id'] ?? 0 ) !== $hold_clinic_id ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
                     }
+                    $this->lock_booking_tenant_prefix( $hold_clinic_id );
+
+                    $locked_hold = $this->db->fetchRowForUpdate(
+                        'SELECT * FROM ' . $this->db->table( 'cpms_slot_holds' ) . ' WHERE id = %d AND token = %s LIMIT 1',
+                        [ $hold_id, (string) $hold['token'] ]
+                    );
+                    if (
+                        $locked_hold === null
+                        || (int) ( $locked_hold['holder_wp_user_id'] ?? 0 ) !== $wp_user_id
+                        || (int) ( $locked_hold['slot_id'] ?? 0 ) !== $slot_id
+                        || (int) ( $locked_hold['clinic_id'] ?? 0 ) !== $hold_clinic_id
+                        || (string) ( $locked_hold['status'] ?? '' ) !== 'active'
+                        || $this->toDateTime( (string) ( $locked_hold['expires_at'] ?? '' ) ) <= $this->now()
+                    ) {
+                        throw BookingException::of( 'CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422 );
+                    }
+
+                    $slot = $this->slots->findForUpdate( $slot_id );
+                    if (
+                        $slot === null
+                        || (int) ( $slot['is_open'] ?? 0 ) !== 1
+                        || (int) ( $slot['clinic_id'] ?? 0 ) !== $hold_clinic_id
+                        || (int) ( $slot['location_id'] ?? 0 ) !== (int) $candidate_slot['location_id']
+                    ) {
+                        throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات دیگر در دسترس نیست', 409 );
+                    }
+                    // Location follows the Slot in every booking transaction.
+                    $locked_location_tz = $this->resolve_location_timezone_for_update( (int) $candidate_slot['location_id'], $hold_clinic_id );
                     // The final DST decision is made on the locked persisted Slot
-                    // before a new Patient, link, or audit can be created.
-                    $this->assert_slot_has_bookable_local_time( $slot );
+                    // before a new Patient, link, audit, or capacity write.
+                    if ( BookingWindow::slotUtcInstant( (string) $slot['slot_date'], (string) $slot['slot_time'], $locked_location_tz ) === null ) {
+                        throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت اسلات در تقویم Location معتبر نیست' );
+                    }
 
                     // Re-authorize after lock acquisition, before any new patient side effect.
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
@@ -881,13 +974,15 @@ final class BookingService
             // WordPress.NamingConventions sniffs are suppressed - no security sniff is.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             if ( $denial->errorCode !== 'CLINIC_SUSPENDED' ) {
-                $this->db->query(
+                $released_hold = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
-                    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-                    [ $holdId ]
+                    [ $hold_id ]
                 );
-                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-                $this->slots->releaseHold( $slotId );
+                // Decrement capacity only if this compensation changed the active
+                // Hold. An expiry worker may already have released it.
+                if ( $released_hold > 0 ) {
+                    $this->slots->releaseHold( $slot_id );
+                }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $this->idem->release( $idemKey, self::EP_CONFIRM, $wpUserId, null, $idemClinicId );
@@ -1047,201 +1142,263 @@ final class BookingService
      * @return array{appointment_id: int, reference_code: string, slot: array<string, mixed>, status: string, previous_appointment_id: int}
      */
     private function rescheduleAs(
-        int $actorUserId,
-        int $appointmentId,
-        int $newClinicianId,
-        string $newDate,
-        string $newTime,
-        ?string $idemKey,
-        ?int $newSlotId,
+        int $actor_user_id,
+        int $appointment_id,
+        int $new_clinician_id,
+        string $new_date,
+        string $new_time,
+        ?string $idem_key,
+        ?int $new_slot_id,
         string $actor
     ): array {
-        if (!is_string($idemKey) || $idemKey === '') {
+        if ( ! is_string( $idem_key ) || $idem_key === '' ) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
         // C6: دامنهٔ کلید = کلینیک نوبت (پیش از claim خوانده می‌شود)
-        $scopeAppt = $this->appointments->find($appointmentId);
-        if ($scopeAppt === null) {
+        $scope_appt = $this->appointments->find( $appointment_id );
+        if ( $scope_appt === null ) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
         }
-        $idemClinicId = (int) $scopeAppt['clinic_id'];
+        $idem_clinic_id = (int) $scope_appt['clinic_id'];
 
-        $check = $this->idem->check($idemKey, self::EP_RESCHEDULE, $actorUserId, $appointmentId, $idemClinicId);
+        $check = $this->idem->check( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
         if ($check['is_replay']) {
-            return $this->replayOrInFlight($check, $actorUserId);
+            return $this->replayOrInFlight( $check, $actor_user_id );
+        }
+
+        // Authorize against the source Appointment before acquiring any tenant
+        // lifecycle lock. The same checks are repeated after the locked row is read.
+        if ( $actor === 'staff' ) {
+            if ( $this->trustedClinicIdForStaff() !== $idem_clinic_id ) {
+                throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+            }
+            $this->assertAppointmentWithinExplicitScope( $scope_appt );
+        } elseif ( $actor === 'patient' && ! $this->userHasPatient( $actor_user_id, (int) $scope_appt['patient_id'] ) ) {
+            throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
         }
 
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_RESCHEDULE);
 
         try {
-            [$oldAppt, $newApptId, $newSlot] = $this->db->transactional(function () use (
-                $actorUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $newSlotId, $actor
-            ): array {
-                $appt = $this->appointments->findForUpdate($appointmentId);
-                if ($appt === null) {
-                    throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
-                }
-                if ($actor === 'staff') {
-                    $this->assertAppointmentWithinExplicitScope($appt);
-                }
-                if ($actor === 'patient' && !$this->userHasPatient($actorUserId, (int) $appt['patient_id'])) {
-                    $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $actorUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
-                        'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-                    ]);
-                    throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
-                }
+            [$old_appt, $new_appt_id, $new_slot] = $this->db->transactional(
+                function () use (
+                    $actor_user_id,
+                    $appointment_id,
+                    $new_clinician_id,
+                    $new_date,
+                    $new_time,
+                    $new_slot_id,
+                    $actor,
+                    $idem_clinic_id
+                ): array {
+                    // The source Appointment row is the outermost lock: check-in
+                    // locks the Patient and Appointment before it inserts a Visit, and
+                    // that insert takes a shared FK lock on the Clinic row. Taking the
+                    // Organization/Clinic prefix first inverts that pair and produces a
+                    // genuine deadlock, so the tenant prefix is acquired only after the
+                    // source Appointment is locked and authorized.
+                    $appt = $this->appointments->findForUpdate( $appointment_id );
+                    if (
+                        $appt === null
+                        || (int) ( $appt['clinic_id'] ?? 0 ) !== $idem_clinic_id
+                    ) {
+                        throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+                    }
+                    if ( $actor === 'staff' ) {
+                        $this->assertAppointmentWithinExplicitScope( $appt );
+                    }
+                    if ( $actor === 'patient' && ! $this->userHasPatient( $actor_user_id, (int) $appt['patient_id'] ) ) {
+                        $this->audit(
+                            'FORBIDDEN_ACCESS_ATTEMPT',
+                            $actor_user_id,
+                            'patient',
+                            'appointment',
+                            $appointment_id,
+                            (int) $appt['patient_id'],
+                            null,
+                            null,
+                            [
+								'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
+							]
+                        );
+                        throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+                    }
 
-                $toState = $this->machineCheck((string) $appt['status'], 'reschedule', $actor);
+                    $to_state = $this->machineCheck( (string) $appt['status'], 'reschedule', $actor );
 
-                // I-3 (Phase 7 Slice 2) — T7: جابه‌جایی نوبتِ دارای ویزیت فعال
-                // ممنوع است؛ پیش از Policy بازه، رزرو Slot جدید و هر Mutation.
-                $this->assertNoActiveVisit($appointmentId);
+                    // I-3 (Phase 7 Slice 2) — T7: جابه‌جایی نوبتِ دارای ویزیت فعال
+                    // ممنوع است؛ پیش از Policy بازه، رزرو Slot جدید و هر Mutation.
+                    $this->assertNoActiveVisit( $appointment_id );
 
-                if ($actor === 'patient') {
-                    // Policy نوبت فعلی — از location_id خود appointment + timezone آن Location
-                    $oldLocationTz = $this->resolveLocationTimezone((int) $appt['location_id'], (int) $appt['clinic_id']);
-                    $err = BookingWindow::checkCancelWithTimezone(
-                        (string) $appt['slot_date'],
-                        (string) $appt['slot_time'],
-                        $oldLocationTz,
-                        $this->now(),
-                        (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.reschedule_deadline_hours', 24)
+                    if ( $actor === 'patient' ) {
+                        // Policy نوبت فعلی — از location_id خود appointment + timezone آن Location
+                        $old_location_tz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
+                        $err             = BookingWindow::checkCancelWithTimezone(
+                            (string) $appt['slot_date'],
+                            (string) $appt['slot_time'],
+                            $old_location_tz,
+                            $this->now(),
+                            (int) $this->settingsFor( (int) $appt['clinic_id'] )->get( 'booking.reschedule_deadline_hours', 24 )
+                        );
+                        if ( $err !== null ) {
+                            throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409 );
+                        }
+                    }
+
+                    $old_slot_id = (int) $appt['slot_id'];
+                    if ( $actor === 'staff' ) {
+                        $new_clinic_id = $this->trustedClinicIdForStaff();
+                        if ( ! $this->memberships->clinician_participates_in( $new_clinician_id, $new_clinic_id ) ) {
+                            throw BookingException::of( 'CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404 );
+                        }
+                    } else {
+                        $new_clinic_id = $this->requireClinician( $new_clinician_id );
+                    }
+
+                    // Rescheduling carries the existing Patient into its replacement;
+                    // never let a patient-owned Appointment or its PHI move across
+                    // Clinic boundaries without a separate, Clinic-local patient flow.
+                    if ( $new_clinic_id !== (int) $appt['clinic_id'] ) {
+                        throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+                    }
+
+                    // Cross-Clinic replacements are denied above, so locking the
+                    // source Clinic's lifecycle prefix now serializes the destination
+                    // lifecycle without moving PHI. The source Appointment is already
+                    // locked, so check-in cannot deadlock against this order.
+                    $this->lock_booking_tenant_prefix( $idem_clinic_id );
+
+                    // Resolve new destination slot unambiguously (exact id preferred)
+                    $new_slot = $this->resolve_slot_for_booking( $new_clinic_id, $new_clinician_id, $new_date, $new_time, $new_slot_id );
+                    if ( $new_slot === null || (int) $new_slot['is_open'] !== 1 ) {
+                        throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404 );
+                    }
+                    if ( $actor === 'staff' && (int) $new_slot['clinic_id'] !== $new_clinic_id ) {
+                        throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404 );
+                    }
+
+                    $new_settings = $this->settingsFor( $new_clinic_id );
+                    $min_lead     = $actor === 'staff' ? 0 : (int) $new_settings->get( 'booking.min_lead_hours', 2 );
+                    $new_slot_id  = (int) $new_slot['id'];
+
+                    // Lock both Slots in ascending id order after the tenant lifecycle
+                    // rows; the Location lock follows the Slot locks (established order).
+                    [$first, $second] = $old_slot_id < $new_slot_id ? [ $old_slot_id, $new_slot_id ] : [ $new_slot_id, $old_slot_id ];
+                    $first_slot       = $this->slots->findForUpdate( $first );
+                    $second_slot      = $second === $first ? $first_slot : $this->slots->findForUpdate( $second );
+                    if ( $first_slot === null || $second_slot === null ) {
+                        throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مبدأ یا مقصد دیگر در دسترس نیست', 409 );
+                    }
+                    $locked_new_slot = $new_slot_id === $first ? $first_slot : $second_slot;
+                    if (
+                        (int) ( $locked_new_slot['id'] ?? 0 ) !== $new_slot_id
+                        || (int) ( $locked_new_slot['clinic_id'] ?? 0 ) !== $new_clinic_id
+                        || (int) ( $locked_new_slot['clinician_id'] ?? 0 ) !== $new_clinician_id
+                        || (int) ( $locked_new_slot['location_id'] ?? 0 ) !== (int) $new_slot['location_id']
+                        || (int) ( $locked_new_slot['is_open'] ?? 0 ) !== 1
+                        || (string) ( $locked_new_slot['slot_date'] ?? '' ) !== $new_date
+                        || $this->normalize_slot_time( (string) ( $locked_new_slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $new_time )
+                    ) {
+                        throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد دیگر در دسترس نیست', 409 );
+                    }
+                    $new_slot = $locked_new_slot;
+
+                    // Location follows the Slot locks in every booking transaction.
+                    $new_location_tz = $this->resolve_location_timezone_for_update( (int) $new_slot['location_id'], $new_clinic_id );
+
+                    // Final timezone/window validation follows all lock waits, using
+                    // the persisted destination Slot, Location, and Clinic policy.
+                    $this->assertWindowWithTimezone( (string) $new_slot['slot_date'], (string) $new_slot['slot_time'], $new_location_tz, $min_lead, $new_settings );
+
+                    $dup = $this->appointments->findActiveForPatientSlot( (int) $appt['patient_id'], $new_slot_id, self::ACTIVE_STATUSES );
+                    if ( $dup !== null && (int) $dup['id'] !== $appointment_id ) {
+                        throw BookingException::of( 'CLINIC_DUPLICATE_APPOINTMENT', 'در اسلات مقصد نوبت Active دارید', 409 );
+                    }
+                    if ( (int) $new_slot['capacity'] - (int) $new_slot['booked_count'] - (int) $new_slot['held_count'] <= 0 ) {
+                        throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد پر شد — اسلات دیگری انتخاب کنید', 409 );
+                    }
+
+                    $this->slots->releaseBooking( $old_slot_id );
+                    if ( ! $this->slots->atomicBook( $new_slot_id ) ) {
+                        throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد در لحظه نهایی پر شد', 409 );
+                    }
+
+                    $duration      = (int) $new_slot['duration_min'];
+                    $end_time      = DurationResolver::slotEndTime( $new_time, $duration );
+                    $now_sql       = $this->db->nowUtcSql();
+                    $owner_user_id = $actor === 'staff'
+                        ? ( (int) ( $appt['wp_user_id'] ?? 0 ) > 0 ? (int) $appt['wp_user_id'] : null )
+                        : $actor_user_id;
+                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
+                    $new_appt_id = $this->appointments->create(
+                        [
+							'clinic_id'         => (int) $new_slot['clinic_id'],
+							'reference_code'    => $this->referenceCode( $new_date ),
+							'clinician_id'      => $new_clinician_id,
+							'patient_id'        => (int) $appt['patient_id'],
+							'slot_id'           => $new_slot_id,
+							'slot_date'         => $new_date,
+							'slot_time'         => $new_time,
+							'duration_min'      => $duration,        // Snapshot اسلات جدید
+							'slot_end_time'     => $end_time,
+							'wp_user_id'        => $owner_user_id,
+							'reason'            => (string) $appt['reason'],
+							'status'            => 'confirmed',
+							'is_walkin_express' => (int) $appt['is_walkin_express'],
+							'rescheduled_from'  => $appointment_id,
+							'booked_at'         => $now_sql,
+							'confirmed_at'      => $now_sql,
+							'created_at'        => $now_sql,
+							'updated_at'        => $now_sql,
+						]
                     );
-                    if ($err !== null) {
-                        throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409);
-                    }
+
+                    $this->appointments->updateStatus(
+                        $appointment_id,
+                        [
+							'status'         => $to_state,
+							'rescheduled_to' => $new_appt_id,
+							'updated_at'     => $now_sql,
+						]
+                    );
+
+                    return [$appt, $new_appt_id, $new_slot];
                 }
-
-                $oldSlotId = (int) $appt['slot_id'];
-                if ($actor === 'staff') {
-                    $newClinicId = $this->trustedClinicIdForStaff();
-                    if (!$this->memberships->clinician_participates_in($newClinicianId, $newClinicId)) {
-                        throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404);
-                    }
-                } else {
-                    $newClinicId = $this->requireClinician($newClinicianId);
-                }
-
-                // Rescheduling creates a genuinely new replacement appointment, so it is
-                // new demand and the DESTINATION Clinic must be active. Read under the
-                // Clinic row lock, inside this transaction and before any Slot lock or
-                // capacity mutation, matching hold()/confirm() (fixed lock order: Clinic
-                // first, then Slots in ascending id order). Both the patient path and the
-                // staff path funnel through here, so neither can bypass the lifecycle.
-                // The SOURCE Clinic is deliberately not gated: leaving/cancelling inside a
-                // suspended Clinic stays allowed (continuity), while a replacement may
-                // only be created in an active one. On denial the whole transaction rolls
-                // back and the catch below frees only the Idempotency key, so the existing
-                // appointment, both Slots and their counters stay byte-identical.
-                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-                $this->assert_clinic_accepting_new_demand( $newClinicId, true );
-
-                // Resolve new destination slot unambiguously (exact id preferred)
-                $newSlot = $this->resolveSlotForBooking($newClinicId, $newClinicianId, $newDate, $newTime, $newSlotId);
-                if ($newSlot === null || (int) $newSlot['is_open'] !== 1) {
-                    throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404);
-                }
-                if ($actor === 'staff' && (int) $newSlot['clinic_id'] !== $newClinicId) {
-                    throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات مقصد یافت نشد', 404);
-                }
-
-                // Window اسلات جدید با timezone مقصد.
-                // Staff: min-lead = 0 (owner-issued policy; N-3 staff create parity).
-                // Patient: existing destination min-lead setting.
-                $newLocationTz = $this->resolveLocationTimezone((int) $newSlot['location_id'], $newClinicId);
-                $newSettings = $this->settingsFor($newClinicId);
-                $minLead = $actor === 'staff' ? 0 : (int) $newSettings->get('booking.min_lead_hours', 2);
-                $this->assertWindowWithTimezone($newDate, $newTime, $newLocationTz, $minLead, $newSettings);
-                $newSlotId = (int) $newSlot['id'];
-
-                // قفل هر دو اسلات — مرتب بر اساس id (پیشگیری از Deadlock)
-                [$first, $second] = $oldSlotId < $newSlotId ? [$oldSlotId, $newSlotId] : [$newSlotId, $oldSlotId];
-                $this->slots->findForUpdate($first);
-                $this->slots->findForUpdate($second);
-
-                $dup = $this->appointments->findActiveForPatientSlot((int) $appt['patient_id'], $newSlotId, self::ACTIVE_STATUSES);
-                if ($dup !== null && (int) $dup['id'] !== $appointmentId) {
-                    throw BookingException::of('CLINIC_DUPLICATE_APPOINTMENT', 'در اسلات مقصد نوبت Active دارید', 409);
-                }
-                if ((int) $newSlot['capacity'] - (int) $newSlot['booked_count'] - (int) $newSlot['held_count'] <= 0) {
-                    throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات مقصد پر شد — اسلات دیگری انتخاب کنید', 409);
-                }
-
-                $this->slots->releaseBooking($oldSlotId);
-                if (!$this->slots->atomicBook($newSlotId)) {
-                    throw BookingException::of('CLINIC_SLOT_TAKEN', 'اسلات مقصد در لحظه نهایی پر شد', 409);
-                }
-
-                $duration = (int) $newSlot['duration_min'];
-                $endTime = DurationResolver::slotEndTime($newTime, $duration);
-                $nowSql = $this->db->nowUtcSql();
-                $ownerUserId = $actor === 'staff'
-                    ? ((int) ($appt['wp_user_id'] ?? 0) > 0 ? (int) $appt['wp_user_id'] : null)
-                    : $actorUserId;
-                $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
-                $newApptId = $this->appointments->create([
-                    'clinic_id' => (int) $newSlot['clinic_id'],
-                    'reference_code' => $this->referenceCode($newDate),
-                    'clinician_id' => $newClinicianId,
-                    'patient_id' => (int) $appt['patient_id'],
-                    'slot_id' => $newSlotId,
-                    'slot_date' => $newDate,
-                    'slot_time' => $newTime,
-                    'duration_min' => $duration,        // Snapshot اسلات جدید
-                    'slot_end_time' => $endTime,
-                    'wp_user_id' => $ownerUserId,
-                    'reason' => (string) $appt['reason'],
-                    'status' => 'confirmed',
-                    'is_walkin_express' => (int) $appt['is_walkin_express'],
-                    'rescheduled_from' => $appointmentId,
-                    'booked_at' => $nowSql,
-                    'confirmed_at' => $nowSql,
-                    'created_at' => $nowSql,
-                    'updated_at' => $nowSql,
-                ]);
-
-                $this->appointments->updateStatus($appointmentId, [
-                    'status' => $toState,
-                    'rescheduled_to' => $newApptId,
-                    'updated_at' => $nowSql,
-                ]);
-
-                return [$appt, $newApptId, $newSlot];
-            });
+            );
         } catch (Throwable $e) {
-            $this->idem->release($idemKey, self::EP_RESCHEDULE, $actorUserId, $appointmentId, $idemClinicId);
+            $this->idem->release( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
             throw $this->toBookingException($e);
         }
 
-        $newAppt = $this->appointments->find($newApptId);
-        $view = $this->appointmentView($newAppt);
-        $response = array_merge($view, ['previous_appointment_id' => $appointmentId]);
-        $this->idem->complete($idemKey, self::EP_RESCHEDULE, $actorUserId, $appointmentId, 200, $response, $idemClinicId);
+        $new_appt = $this->appointments->find( $new_appt_id );
+        $view     = $this->appointmentView( $new_appt );
+        $response = array_merge( $view, [ 'previous_appointment_id' => $appointment_id ] );
+        $this->idem->complete( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, 200, $response, $idem_clinic_id );
 
         $this->audit(
             'APPOINTMENT_RESCHEDULED',
-            $actorUserId,
+            $actor_user_id,
             $actor === 'patient' ? 'patient' : 'staff',
             'appointment',
-            $newApptId,
-            (int) $oldAppt['patient_id'],
+            $new_appt_id,
+            (int) $old_appt['patient_id'],
             null,
             $view,
             [
-                'from_appointment_id' => $appointmentId,
-                'from_date' => (string) $oldAppt['slot_date'],
-                'from_time' => (string) $oldAppt['slot_time'],
+                'from_appointment_id' => $appointment_id,
+                'from_date'           => (string) $old_appt['slot_date'],
+                'from_time'           => (string) $old_appt['slot_time'],
             ]
         );
-        $this->op->info('booking.rescheduled', ['old' => $appointmentId, 'new' => $newApptId, 'wp_user_id' => $actorUserId, 'actor' => $actor]);
+        $this->op->info( 'booking.rescheduled', ['old' => $appointment_id, 'new' => $new_appt_id, 'wp_user_id' => $actor_user_id, 'actor' => $actor] );
 
         // F8 §5 — نوبت قدیمی جایگزین شده → یادآوری‌های queued آن Cancel می‌شوند
-        $this->notifications?->cancelQueuedForAppointment($appointmentId);
+        $this->notifications?->cancelQueuedForAppointment( $appointment_id );
 
-        $patient = $this->patients->find((int) $oldAppt['patient_id']);
+        $patient = $this->patients->find( (int) $old_appt['patient_id'] );
         if ($patient !== null) {
-            $this->sendAppointmentSms(SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $newAppt);
+            $this->sendAppointmentSms( SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $new_appt );
         }
 
         return $response;
@@ -1294,7 +1451,7 @@ final class BookingService
         }
 
         // Resolve slot under trusted Clinic — exact identity preferred.
-        $resolved_slot = $this->resolveSlotForBooking(
+        $resolved_slot = $this->resolve_slot_for_booking(
             $trusted_clinic_id,
             $clinician_id,
             $slot_date,
@@ -1327,26 +1484,22 @@ final class BookingService
                     $trusted_clinic_id,
                     $settings
                 ): array {
-                    // Staff-created appointments are new demand, so the Clinic lifecycle
-                    // status is revalidated under the Clinic row lock INSIDE this
-                    // transaction and BEFORE any Slot lock - the same fixed order used by
-                    // hold(), confirm() and rescheduleAs() (Clinic first, then Slots in
-                    // ascending id order). The unlocked pre-transaction check above is only
-                    // an early refusal: a suspension that lands between it and the Slot lock
-                    // is serialized by InnoDB here, and denial rolls back with zero durable
-                    // side effects (no appointment, no capacity mutation).
-                    $this->assert_clinic_accepting_new_demand( $trusted_clinic_id, true );
+                    // New demand takes Organization -> Clinic -> Slot ->
+                    // Location/capacity. This same tenant prefix is used by
+                    // LocationService, so a lifecycle transition cannot interleave
+                    // with the final booking. The Slot lock is acquired before the
+                    // Location lock (the established booking order).
+                    $this->lock_booking_tenant_prefix( $trusted_clinic_id );
 
-                    // Lock the persisted Slot first (the established booking lock),
-                    // then lock its Location before the final timezone decision.
-                    // Location updates lock only that Location row, so this order
-                    // introduces no inverse Slot lock in the Location writer.
                     $slot = $this->slots->findForUpdate( (int) $resolved_slot['id'] );
                     if (
                         $slot === null
-                        || (int) $slot['clinic_id'] !== $trusted_clinic_id
-                        || (int) $slot['clinician_id'] !== $clinician_id
-                        || (int) $slot['is_open'] !== 1
+                        || (int) ( $slot['clinic_id'] ?? 0 ) !== $trusted_clinic_id
+                        || (int) ( $slot['clinician_id'] ?? 0 ) !== $clinician_id
+                        || (int) ( $slot['location_id'] ?? 0 ) !== (int) $resolved_slot['location_id']
+                        || (int) ( $slot['is_open'] ?? 0 ) !== 1
+                        || (string) ( $slot['slot_date'] ?? '' ) !== $slot_date
+                        || $this->normalize_slot_time( (string) ( $slot['slot_time'] ?? '' ) ) !== $this->normalize_slot_time( $slot_time )
                     ) {
                         throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات یافت نشد — ممکن است Schedule پزشک برای این روز تعریف نشده باشد', 404 );
                     }
@@ -1558,11 +1711,11 @@ final class BookingService
 
             if ($actor === 'patient') {
                 // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
-                $locationTz = $this->resolveLocationTimezone((int) $appt['location_id'], (int) $appt['clinic_id']);
+                $location_tz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
                 $err = BookingWindow::checkCancelWithTimezone(
                     (string) $appt['slot_date'],
                     (string) $appt['slot_time'],
-                    $locationTz,
+                    $location_tz,
                     $this->now(),
                     (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.cancel_deadline_hours', 24)
                 );
@@ -1676,9 +1829,11 @@ final class BookingService
     }
 
     /**
-     * New public booking may use only a real, active Location owned by the
-     * slot's persisted Clinic. Inactive historical appointment operations keep
-     * using resolveLocationTimezone() unchanged.
+     * Non-locking preflight for a real, active Location owned by the Slot Clinic.
+     * New-demand transactions repeat this by locking the Location after the
+     * Organization -> Clinic prefix and before Slot/capacity rows. Historical
+     * appointment operations continue to resolve their Location timezone without
+     * requiring current activity.
      */
     private function assert_active_location_for_booking( int $location_id, int $clinic_id ): void {
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
@@ -1724,14 +1879,16 @@ final class BookingService
         }
         try {
             return new \DateTimeZone( $tz_name );
-        } catch ( \Exception ) {
+        } catch ( \Throwable ) {
+            // Narrow boundary: invalid/unsupported identifiers become the
+            // established validation error instead of escaping as a fatal.
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است' );
         }
     }
 
     /**
-     * Lock the exact Location row after the Slot lock before the final staff
-     * write validation. Location writers hold only their Location row.
+     * Lock and validate the exact active Location after Organization -> Clinic
+     * and before any Slot/capacity lock in a new-demand transaction.
      */
     private function resolve_location_timezone_for_update( int $location_id, int $clinic_id ): \DateTimeZone {
         if ( $location_id <= 0 || $clinic_id <= 0 ) {
@@ -1739,7 +1896,7 @@ final class BookingService
         }
 
         $row = $this->db->fetchRowForUpdate(
-            'SELECT id, clinic_id, timezone FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            'SELECT id, clinic_id, timezone, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
             [ $location_id ]
         );
         if ( $row === null ) {
@@ -1748,13 +1905,18 @@ final class BookingService
         if ( (int) $row['clinic_id'] !== $clinic_id ) {
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Location به کلینیک دیگری تعلق دارد', 422 );
         }
+        if ( (int) ( $row['is_active'] ?? 0 ) !== 1 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'Location یافت نشد', 404 );
+        }
         $tz_name = trim( (string) ( $row['timezone'] ?? '' ) );
         if ( $tz_name === '' || ! in_array( $tz_name, timezone_identifiers_list(), true ) ) {
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است' );
         }
         try {
             return new \DateTimeZone( $tz_name );
-        } catch ( \Exception ) {
+        } catch ( \Throwable ) {
+            // Narrow boundary: invalid/unsupported identifiers become the
+            // established validation error instead of escaping as a fatal.
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'Timezone Location نامعتبر است' );
         }
     }
@@ -1789,23 +1951,23 @@ final class BookingService
      *
      * @return array<string, mixed>|null
      */
-    private function resolveSlotForBooking(int $clinicId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): ?array
+    private function resolve_slot_for_booking( int $clinic_id, int $clinician_id, string $slot_date, string $slot_time, ?int $slot_id = null ): ?array
     {
         // Exact identity path — stable slot_id
-        if ($slotId !== null && $slotId > 0) {
-            $slot = $this->slots->findByIdAndClinic($slotId, $clinicId);
+        if ( $slot_id !== null && $slot_id > 0 ) {
+            $slot = $this->slots->findByIdAndClinic( $slot_id, $clinic_id );
             if ($slot === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404);
             }
             // Validate clinician if tuple also supplied (redundant check)
-            if ((int) $slot['clinician_id'] !== $clinicianId) {
+            if ( (int) $slot['clinician_id'] !== $clinician_id ) {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422);
             }
-            if ((string) $slot['slot_date'] !== $slotDate || substr((string) $slot['slot_time'], 0, 8) !== substr($slotTime, 0, 8)) {
+            if ( (string) $slot['slot_date'] !== $slot_date || $this->normalize_slot_time( (string) $slot['slot_time'] ) !== $this->normalize_slot_time( $slot_time ) ) {
                 // Allow H:i vs H:i:s normalization but require date/time match if both supplied
-                $normRequested = substr($slotDate . ' ' . $slotTime, 0, 19);
-                $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
-                if (substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
+                $norm_requested = substr( $slot_date . ' ' . $this->normalize_slot_time( $slot_time ), 0, 19 );
+                $norm_slot      = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time( (string) $slot['slot_time'] );
+                if ( substr( $norm_requested, 0, 16 ) !== substr( $norm_slot, 0, 16 ) ) {
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
                 }
             }
@@ -1813,7 +1975,7 @@ final class BookingService
         }
 
         // Legacy tuple path — ambiguity-safe
-        $all = $this->slots->findAllByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
+        $all   = $this->slots->findAllByClinicianSlot( $clinic_id, $clinician_id, $slot_date, $slot_time );
         $count = count($all);
         if ($count === 0) {
             return null;
@@ -1822,14 +1984,34 @@ final class BookingService
             // Fail closed — do NOT use LIMIT 1
             throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
                 'matches' => $count,
-                'clinic_id' => $clinicId,
-                'clinician_id' => $clinicianId,
-                'slot_date' => $slotDate,
-                'slot_time' => $slotTime,
+                'clinic_id'    => $clinic_id,
+                'clinician_id' => $clinician_id,
+                'slot_date'    => $slot_date,
+                'slot_time'    => $slot_time,
             ]);
         }
 
         return $all[0];
+    }
+
+    /**
+     * Canonical HH:MM:SS comparison key. Persisted slots are TIME values
+     * ("09:00:00"), while browser/REST callers legitimately send "09:00"; both
+     * forms must denote the same slot and must never be compared as raw
+     * strings.
+     */
+    private function normalize_slot_time( string $time ): string {
+        $time = trim( $time );
+        if ( preg_match( '/^([01]?[0-9]|2[0-3]):([0-5][0-9])(?::([0-5][0-9]))?$/', $time, $matches ) !== 1 ) {
+            return $time;
+        }
+
+        return sprintf(
+            '%02d:%02d:%02d',
+            (int) $matches[1],
+            (int) $matches[2],
+            isset( $matches[3] ) ? (int) $matches[3] : 0
+        );
     }
 
     private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours, Settings $settings): void
@@ -1896,10 +2078,9 @@ final class BookingService
      * appointments (cancel/no-show/read), finance settlement and refunds, reports,
      * export, backup and recovery.
      *
-     * Race safety: callers that create new demand re-run this check with
-     * $for_update = true INSIDE their transaction, after the slot/appointment lock,
-     * so a concurrent suspension is serialized by the Clinic row lock and the final
-     * state is revalidated before commit.
+     * Race safety: this method is an unlocked early refusal. Every transaction
+     * that creates new demand then calls lock_booking_tenant_prefix() to lock
+     * Organization -> Clinic, followed by active Location and Slot/capacity rows.
      *
      * Missing/legacy rows (no status value) never become a blanket denial here; an
      * invalid Clinic id is handled by the caller's own fail-closed scope check.
@@ -1909,9 +2090,9 @@ final class BookingService
      *
      * Non-locking: availability/quote only decide what is advertised. Every path
      * that actually creates demand (hold/confirm/reschedule/staff booking) is
-     * re-checked under the Clinic row lock by
-     * assert_clinic_accepting_new_demand(), so an advertisement read that races
-     * with a suspension can never produce an appointment.
+     * re-checked under the Organization -> Clinic prefix by
+     * lock_booking_tenant_prefix(), so an advertisement read that races with a
+     * lifecycle transition cannot produce an appointment.
      */
     private function clinic_is_suspended( int $clinic_id ): bool {
 
@@ -1927,17 +2108,74 @@ final class BookingService
         return $status !== null && (string) $status === 'suspended';
     }
 
-    private function assert_clinic_accepting_new_demand( int $clinic_id, bool $for_update = false ): void {
+    private function clinic_organization_is_active( int $clinic_id ): bool {
+        if ( $clinic_id <= 0 ) {
+            return false;
+        }
+
+        $status = $this->db->fetchValue(
+            'SELECT o.status FROM ' . $this->db->table( 'cpms_clinics' ) . ' c JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id WHERE c.id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
+
+        return $status !== null && (string) $status === 'active';
+    }
+
+    /**
+     * Lock the tenant lifecycle prefix before any Location, Slot, or capacity
+     * row is touched by a new-demand transaction. Location lifecycle writers use
+     * this same Organization -> Clinic prefix.
+     */
+    private function lock_booking_tenant_prefix( int $clinic_id ): void {
+
+        if ( $clinic_id <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        // This is a non-locking identity lookup only. Acquire the actual lifecycle
+        // locks separately and in the canonical Organization -> Clinic order.
+        $organization_id = (int) $this->db->fetchValue(
+            'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
+        if ( $organization_id <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        $organization = $this->db->fetchRowForUpdate(
+            'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+            [ $organization_id ]
+        );
+        if (
+            $organization === null
+            || (int) ( $organization['id'] ?? 0 ) !== $organization_id
+            || (string) ( $organization['status'] ?? '' ) !== 'active'
+        ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        $clinic = $this->db->fetchRowForUpdate(
+            'SELECT id, organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
+        if ( $clinic === null || (int) ( $clinic['organization_id'] ?? 0 ) !== $organization_id ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+        if ( (string) ( $clinic['status'] ?? '' ) === 'suspended' ) {
+            throw BookingException::of( 'CLINIC_SUSPENDED', 'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود؛ برای نوبت‌های موجود با پذیرش تماس بگیرید', 409 );
+        }
+    }
+
+    private function assert_clinic_accepting_new_demand( int $clinic_id ): void {
 
         if ( $clinic_id <= 0 ) {
             return;
         }
 
-        $sql = 'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1';
-        if ( $for_update ) {
-            $sql .= ' FOR UPDATE';
-        }
-        $status = $this->db->fetchValue( $sql, [ $clinic_id ] );
+        $status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinic_id ]
+        );
 
         if ( $status !== null && (string) $status === 'suspended' ) {
             throw BookingException::of( 'CLINIC_SUSPENDED', 'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود؛ برای نوبت‌های موجود با پذیرش تماس بگیرید', 409 );

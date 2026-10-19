@@ -632,7 +632,7 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
             'G5 fixture: exactly one active clinician row for the doctor fixture.'
         );
 
-        // ---- 1 eligible Location ⇒ auto-resolution allowed; timezone is the trusted Location's. ----
+        // ---- Explicitly selected eligible Location; timezone is Location-local. ----
         wp_set_current_user($doctorId);
         $locations = $this->dispatch('GET', '/' . self::PORTAL_LOCATIONS, ['clinic_id' => $clinicId]);
         self::assertSame(200, $locations->get_status(), 'G5: doctor locations route reachable.');
@@ -645,10 +645,27 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
         $patientId = $this->insertPatient($clinicId, 'g5');
         $visitId   = $this->insertVisit($patientId, (int) $fx['clinician'], $clinicId, $locationId, 'in_consultation');
 
-        $single = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
-        self::assertSame(200, $single->get_status(), 'G5: 1 eligible Location ⇒ auto-resolution allowed (existing doctor contract).');
+        $singleNoLocation = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitId),
+            [],
+            $this->scopeHeaders($clinicId, null)
+        );
+        self::assertSame(
+            400,
+            $singleNoLocation->get_status(),
+            'G5: singleton Location still requires explicit selection.'
+        );
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($singleNoLocation));
+        $single = $this->dispatch(
+            'GET',
+            '/' . sprintf(self::PORTAL_RECORD, $visitId),
+            [],
+            $this->scopeHeaders($clinicId, $locationId)
+        );
+        self::assertSame(200, $single->get_status(), 'G5: explicit singleton Location authorizes.');
 
-        // ---- N>1 eligible Locations ⇒ explicit trusted Location REQUIRED (never guess the first). ----
+        // ---- Every Location cardinality requires an explicit trusted selector. ----
         $secondLocation = $this->insertLocation($clinicId, 'G5 Second Loc', self::TZ_TEHRAN, 0);
         self::assertGreaterThan(0, $secondLocation, 'G5 fixture: second Location persisted.');
 
@@ -691,9 +708,25 @@ final class Phase10StaffPortalShellFoundationRedTest extends WP_UnitTestCase
             'G5 fixture: zero eligible Locations really persisted.'
         );
         wp_set_current_user($doctorId);
-        $zero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
-        self::assertSame(403, $zero->get_status(), 'G5: 0 eligible Locations fails closed.');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zero), 'G5: established zero-Location denial code.');
+        $zeroMissing = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, null));
+        self::assertSame(400, $zeroMissing->get_status(), 'G5: even with 0 eligible Locations, an absent explicit selector remains a scope-required error.');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zeroMissing), 'G5: the Portal never infers a Location when none is selectable.');
+        // Decided continuity policy (2026-10-19): an inactive Location stays
+        // usable for the EXACT active Visit that is assigned to the requesting,
+        // authorized clinician of this Clinic. This assertion previously
+        // demanded a blanket 403 for the same request; that contradicted the
+        // policy, so it now asserts the permitted continuation instead.
+        $zero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitId), [], $this->scopeHeaders($clinicId, $locationId));
+        self::assertSame(200, $zero->get_status(), 'G5: the exact active Visit continues at its now-inactive Location.');
+        self::assertSame($visitId, (int) ($this->payloadOf($zero)['visit']['id'] ?? 0), 'G5: continuity serves the same authorized Visit.');
+
+        // Negative control: the same inactive Location without an active Visit
+        // for this clinician is still denied with the established envelope.
+        $otherPatient = $this->insertPatient($clinicId, 'g5off');
+        $otherVisit   = $this->insertVisit($otherPatient, (int) $fx['clinician'], $clinicId, $locationId, 'checked_out');
+        $zeroClosed   = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $otherVisit), [], $this->scopeHeaders($clinicId, $locationId));
+        self::assertSame(403, $zeroClosed->get_status(), 'G5: a closed Visit never reopens an inactive Location.');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zeroClosed), 'G5: established explicit-unavailable denial code.');
     }
 
     // =================================================================

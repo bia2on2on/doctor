@@ -338,14 +338,18 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         $pz    = $this->insertPatient($zero['clinic'], 'a3z');
         $zslot = $this->insertSlot($zero['clinic'], $zero['locA'], $zero['c1'], $tomorrow, '09:00:00');
         $zr    = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $zero['c1']], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(200, $zr->get_status(), 'A3: zero-eligible slot read answers fail-closed — ' . $this->errCode($zr));
-        self::assertNull($this->payload($zr)['location_id'] ?? null, 'A3: zero eligible ⇒ no Location resolved');
-        self::assertSame([], $this->slotIds($zr), 'A3: zero eligible ⇒ no slots');
+        self::assertSame(400, $zr->get_status(), 'A3: zero-eligible Clinic-only slot read requires explicit Location selection');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zr), 'A3: missing Location is rejected before returning slots');
+        self::assertStringNotContainsString(
+            '"slots"',
+            (string) wp_json_encode($zr->get_data()),
+            'A3: no slots are disclosed without explicit Location'
+        );
         $zw = $this->dispatch('POST', self::APPTS, [
             'patient_id' => $pz, 'clinician_id' => $zero['c1'], 'slot_id' => $zslot,
         ], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(403, $zw->get_status(), 'A3: zero eligible ⇒ create fails closed');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zw), 'A3: zero-eligible envelope');
+        self::assertSame(400, $zw->get_status(), 'A3: zero eligible ⇒ unscoped staff create fails closed');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zw), 'A3: missing Location denial envelope');
         self::assertSame(0, $this->appointmentCountForPatient($pz), 'A3: zero eligible ⇒ no appointment');
 
         // B. N>1 without an explicit Location ⇒ REQUIRED (no first-Location fallback).
@@ -376,19 +380,22 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->appointmentCountForPatient($pn), 'A3: foreign/inactive Location ⇒ no appointment');
 
         // D. Location-scoped secretary: unassigned Location rejected; the ONE
-        // eligible Location auto-resolves without any selector.
+        // eligible Location still requires a deliberate selector.
         App::membership_service()->set_scope_mode($mid, 'location', [$many['locB']]);
         self::assertSame(403, $this->create($many, $pn, $many['c2'], $nslot, $many['locA'])->get_status(), 'A3: unassigned Location rejected');
-        $autoSlot = $this->insertSlot($many['clinic'], $many['locB'], $many['c2'], $tomorrow, '10:00:00');
-        $auto     = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $many['c2'], 'date' => $tomorrow], $this->scopeHeaders($many['clinic']));
-        self::assertSame(200, $auto->get_status(), 'A3: single eligible Location auto-resolves for the slot read — ' . $this->errCode($auto));
-        self::assertSame($many['locB'], (int) ($this->payload($auto)['location_id'] ?? 0), 'A3: auto-resolved Location = B');
-        self::assertContains($autoSlot, $this->slotIds($auto), 'A3: the auto-resolved Location offers its own slots');
-        $aw = $this->dispatch('POST', self::APPTS, [
-            'patient_id' => $pn, 'clinician_id' => $many['c2'], 'slot_id' => $autoSlot,
-        ], $this->scopeHeaders($many['clinic']));
-        self::assertSame(200, $aw->get_status(), 'A3: single eligible Location create succeeds — ' . $this->errCode($aw));
-        self::assertSame($many['locB'], (int) $this->appointmentRow((int) ($this->payload($aw)['appointment']['id'] ?? 0))['location_id'], 'A3: the appointment lands in the auto-resolved Location');
+        $locationBSlot = $this->insertSlot($many['clinic'], $many['locB'], $many['c2'], $tomorrow, '10:00:00');
+        $noLocation = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $many['c2'], 'date' => $tomorrow], $this->scopeHeaders($many['clinic']));
+        self::assertSame(400, $noLocation->get_status(), 'A3: single eligible Location remains unselected');
+        self::assertSame('location_required', (string) ($this->errorData($noLocation)['reason'] ?? ''), 'A3: singleton Location requires explicit selection');
+        $explicitSlotRead = $this->dispatch('GET', self::SLOTS, ['clinician_id' => $many['c2'], 'date' => $tomorrow], $this->scopeHeaders($many['clinic'], $many['locB']));
+        self::assertSame(200, $explicitSlotRead->get_status(), 'A3: explicit single eligible Location selection succeeds — ' . $this->errCode($explicitSlotRead));
+        self::assertSame($many['locB'], (int) ($this->payload($explicitSlotRead)['location_id'] ?? 0), 'A3: explicitly selected Location = B');
+        self::assertContains($locationBSlot, $this->slotIds($explicitSlotRead), 'A3: explicitly selected Location offers its own slots');
+        $explicitCreate = $this->dispatch('POST', self::APPTS, [
+            'patient_id' => $pn, 'clinician_id' => $many['c2'], 'slot_id' => $locationBSlot,
+        ], $this->scopeHeaders($many['clinic'], $many['locB']));
+        self::assertSame(200, $explicitCreate->get_status(), 'A3: explicit single eligible Location create succeeds — ' . $this->errCode($explicitCreate));
+        self::assertSame($many['locB'], (int) $this->appointmentRow((int) ($this->payload($explicitCreate)['appointment']['id'] ?? 0))['location_id'], 'A3: the appointment persists in the explicitly selected Location');
 
         // E. A Location switch invalidates the previous slot context: a slot of
         // Location A is never offered nor bookable while Location B is trusted.
