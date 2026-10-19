@@ -395,9 +395,8 @@ final class DoctorPortalController extends RestBase {
 		}
 		$clinic_id   = (int) $clinic;
 		$location_id = (int) $location;
-		$user_id     = (int) get_current_user_id();
-		$user        = wp_get_current_user();
-		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) || null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
+		$user_id = (int) get_current_user_id();
+		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 ) {
 			return $response;
 		}
 		// Audit every trusted-binder denial on this live handwriting route.
