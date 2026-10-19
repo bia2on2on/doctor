@@ -227,7 +227,17 @@ $clinicCount = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_
 $admin = get_user_by("login", getenv("ADMIN_USER"));
 $adminRoles = ($admin instanceof WP_User) ? array_values($admin->roles) : [];
 $schema = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
-$setupCompleted = (bool) \ClinicCore\Bootstrap\App::settings()->get("setup.completed", false);
+// Raw SQL against the first Clinic row only — deliberately NOT
+// App::settings()/App::scope(), which throw CLINIC_SCOPE_REQUIRED when
+// more than one Clinic exists (exactly the ambiguous multi-Clinic
+// persona this very script also exercises later); db_snapshot() must
+// stay usable at every point in the script regardless of Clinic count.
+$firstClinicId = is_array($clinic) ? (int) $clinic["id"] : 0;
+$completedRaw = $firstClinicId > 0 ? $db->fetchValue(
+    "SELECT value_json FROM " . $db->table("cpms_settings") . " WHERE clinic_id = %d AND `key` = %s",
+    [$firstClinicId, "setup.completed"]
+) : null;
+$setupCompleted = $completedRaw !== null && json_decode((string) $completedRaw, true) === true;
 $payload = [
     "schema" => (string) $schema,
     "setup_completed" => $setupCompleted,
@@ -800,7 +810,12 @@ with sync_playwright() as p:
                 mform.locator('button[type="submit"]').first.click()
             goto_admin(admin_page, "admin", "admin.php?page=cpms-wizard&step=clinic",
                        f"cpms-wizard-clinic-matrix-{facility_id}")
-            heading = admin_page.locator("h2").first.inner_text() if admin_page.locator("h2").count() else ""
+            # NOTE: the page also renders a flow-summary card (<h2>{picker
+            # label}</h2>, e.g. "مطب پزشک — انفرادی یا مشترک") ABOVE the
+            # clinic-info card's own <h2>مشخصات ...</h2> — select the
+            # "مشخصات" heading specifically, not simply the first <h2>.
+            heading_loc = admin_page.locator("h2", has_text="مشخصات")
+            heading = heading_loc.first.inner_text() if heading_loc.count() else ""
             check(f"admin.facility_matrix.{facility_id}.exact_heading",
                   heading.strip() == f"مشخصات {expected_unit}",
                   f"got heading={heading!r}, expected={'مشخصات ' + expected_unit!r}")
@@ -876,9 +891,16 @@ with sync_playwright() as p:
                 with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=20000):
                     finish_form.locator('button[type="submit"]').first.click()
             post_finish_snapshot = db_snapshot()
+            # NOTE: setup.completed may already be true from the earlier
+            # doctor_practice journey (Journey A) run in this same session —
+            # that historical flag is intentionally preserved by this
+            # product (see docs/onboarding-facility-wizard.md) and is NOT
+            # itself evidence of a bypass. The real assertion is that THIS
+            # blocked submit attempt makes no change at all.
             check("admin.medical_building.submit_does_not_complete_setup",
-                  post_finish_snapshot.get("setup_completed") is not True,
-                  "attempting the real finish submit while blocked must never flip setup.completed to true")
+                  post_finish_snapshot.get("setup_completed") == pre_finish_snapshot.get("setup_completed"),
+                  "attempting the real finish submit while blocked must never change setup.completed "
+                  f"(before={pre_finish_snapshot.get('setup_completed')}, after={post_finish_snapshot.get('setup_completed')})")
 
         # --- Real Jalali date-ENTRY widget: interactive typing + popup pick,
         # on a REAL calendar-date field reached through an authenticated
