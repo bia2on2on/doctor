@@ -262,6 +262,11 @@ def new_page(browser, vp):
             "route": route_of(req.url),
             "headers": headers,
             "body": req.post_data or "",
+            # Playwright reports startTime in ms since the UNIX epoch, the same
+            # base as performance.timeOrigin; goto_portal records that origin so
+            # a request issued by a PREVIOUS document (WebDriver-style late
+            # event delivery) cannot be mistaken for a scope leak.
+            "start": float((req.timing or {}).get("startTime") or 0.0),
         })
 
     def on_response(resp):
@@ -1188,6 +1193,13 @@ def goto_portal(page, state):
     state["context"] = _json(ctx_info.value, "context")
     page.wait_for_load_state("networkidle")
     assert_shell(page)
+    # Everything this document requests is >= its own time origin. Requests
+    # delivered late from the previous document are older and are excluded from
+    # the pre-selection audit below (they were already verified in their stage).
+    try:
+        state["doc_time_origin"] = float(page.evaluate("performance.timeOrigin"))
+    except Exception:  # noqa: BLE001
+        state["doc_time_origin"] = 0.0
 
 
 def assert_scope_unselected(page, state, clinic_id, expected_clinic_ids, label):
@@ -1216,7 +1228,17 @@ def assert_scope_unselected(page, state, clinic_id, expected_clinic_ids, label):
     ):
         raise RuntimeError(f"{label} operational data is visible before explicit Clinic and Location selection")
     operational_routes = ("/doctor/today", "/rt/queue", "/doctor/portal/prescriptions/history")
-    if any(any(request["route"].endswith(route) for route in operational_routes) for request in state["reqs"]):
+    doc_origin = float(state.get("doc_time_origin") or 0.0)
+    # Fail closed: an unknown start time stays in scope for this audit; only a
+    # request PROVEN to predate the current document is dropped.
+    current = [
+        request
+        for request in state["reqs"]
+        if doc_origin <= 0.0
+        or float(request.get("start") or 0.0) <= 0.0
+        or float(request["start"]) >= doc_origin
+    ]
+    if any(any(request["route"].endswith(route) for route in operational_routes) for request in current):
         raise RuntimeError(f"{label} operational data was requested before explicit Clinic and Location selection")
     return context
 
