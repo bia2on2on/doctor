@@ -591,16 +591,25 @@ final class BookingService
         );
 
         $hold_id = $this->db->wpdb_last_insert_id();
-        $this->audit('HOLD_CREATED', $wpUserId, 'patient', 'slot_hold', $hold_id, null, null, [
-            'mobile' => MobileValidator::mask($mobile),
-            'slot_id' => (int) $slot['id'],
-            'slot_date' => $slotDate,
-            'slot_time' => $slotTime,
-        ]);
+        $this->audit(
+            'HOLD_CREATED',
+            $wpUserId,
+            'patient',
+            'slot_hold',
+            $hold_id,
+            null,
+            null,
+            [
+                'mobile' => MobileValidator::mask($mobile),
+                'slot_id' => (int) $slot['id'],
+                'slot_date' => $slotDate,
+                'slot_time' => $slotTime,
+            ]
+        );
         $this->op->info('booking.hold', [
             'wp_user_id' => $wpUserId,
             'slot_id' => (int) $slot['id'],
-            'hold_id' => $hold_id,
+            'hold_id'    => $hold_id,
         ]);
 
         return [
@@ -807,8 +816,8 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        $slotId = (int) $hold['slot_id'];
-        $holdId = (int) $hold['id'];
+        $slot_id = (int) $hold['slot_id'];
+        $hold_id = (int) $hold['id'];
         $confirmation_input = compact( 'newPatientNames' );
 
         try {
@@ -951,12 +960,12 @@ final class BookingService
             if ( $denial->errorCode !== 'CLINIC_SUSPENDED' ) {
                 $released_hold = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
-                    [ $holdId ]
+                    [ $hold_id ]
                 );
                 // Decrement capacity only if this compensation changed the active
                 // Hold. An expiry worker may already have released it.
                 if ( $released_hold > 0 ) {
-                    $this->slots->releaseHold( $slotId );
+                    $this->slots->releaseHold( $slot_id );
                 }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
@@ -1126,7 +1135,7 @@ final class BookingService
         ?int $new_slot_id,
         string $actor
     ): array {
-        if ( !is_string( $idem_key ) || $idem_key === '' ) {
+        if ( ! is_string( $idem_key ) || $idem_key === '' ) {
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'هدر Idempotency-Key برای این عملیات الزامی است');
         }
 
@@ -1686,11 +1695,11 @@ final class BookingService
 
             if ($actor === 'patient') {
                 // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
-                $locationTz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
+                $location_tz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
                 $err = BookingWindow::checkCancelWithTimezone(
                     (string) $appt['slot_date'],
                     (string) $appt['slot_time'],
-                    $locationTz,
+                    $location_tz,
                     $this->now(),
                     (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.cancel_deadline_hours', 24)
                 );
@@ -1922,23 +1931,23 @@ final class BookingService
      *
      * @return array<string, mixed>|null
      */
-    private function resolveSlotForBooking(int $clinicId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null): ?array
+    private function resolveSlotForBooking(int $clinicId, int $clinician_id, string $slot_date, string $slot_time, ?int $slot_id = null): ?array
     {
         // Exact identity path — stable slot_id
-        if ($slotId !== null && $slotId > 0) {
-            $slot = $this->slots->findByIdAndClinic($slotId, $clinicId);
+        if ($slot_id !== null && $slot_id > 0) {
+            $slot = $this->slots->findByIdAndClinic($slot_id, $clinicId);
             if ($slot === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404);
             }
             // Validate clinician if tuple also supplied (redundant check)
-            if ((int) $slot['clinician_id'] !== $clinicianId) {
+            if ((int) $slot['clinician_id'] !== $clinician_id) {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422);
             }
-            if ( (string) $slot['slot_date'] !== $slotDate || $this->normalize_slot_time( (string) $slot['slot_time'] ) !== $this->normalize_slot_time( $slotTime ) ) {
+            if ( (string) $slot['slot_date'] !== $slot_date || $this->normalize_slot_time( (string) $slot['slot_time'] ) !== $this->normalize_slot_time( $slot_time ) ) {
                 // Allow H:i vs H:i:s normalization but require date/time match if both supplied
-                $normRequested = substr( $slotDate . ' ' . $this->normalize_slot_time( $slotTime ), 0, 19 );
-                $normSlot = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time( (string) $slot['slot_time'] );
-                if (substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
+                $norm_requested = substr( $slot_date . ' ' . $this->normalize_slot_time( $slot_time ), 0, 19 );
+                $norm_slot      = (string) $slot['slot_date'] . ' ' . $this->normalize_slot_time( (string) $slot['slot_time'] );
+                if (substr($norm_requested, 0, 16) !== substr($norm_slot, 0, 16)) {
                     throw BookingException::of('CLINIC_VALIDATION_FAILED', 'تاریخ/ساعت با شناسه اسلات همخوانی ندارد', 422);
                 }
             }
@@ -1946,7 +1955,7 @@ final class BookingService
         }
 
         // Legacy tuple path — ambiguity-safe
-        $all = $this->slots->findAllByClinicianSlot($clinicId, $clinicianId, $slotDate, $slotTime);
+        $all = $this->slots->findAllByClinicianSlot($clinicId, $clinician_id, $slot_date, $slot_time);
         $count = count($all);
         if ($count === 0) {
             return null;
@@ -1956,9 +1965,9 @@ final class BookingService
             throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
                 'matches' => $count,
                 'clinic_id' => $clinicId,
-                'clinician_id' => $clinicianId,
-                'slot_date' => $slotDate,
-                'slot_time' => $slotTime,
+                'clinician_id' => $clinician_id,
+                'slot_date' => $slot_date,
+                'slot_time' => $slot_time,
             ]);
         }
 
@@ -1985,14 +1994,14 @@ final class BookingService
         );
     }
 
-    private function assertWindow(string $slotDate, string $slotTime, int $minLeadHours, Settings $settings): void
+    private function assertWindow(string $slot_date, string $slot_time, int $minLeadHours, Settings $settings): void
     {
         // LEGACY path kept for backward compat where Location not yet resolved
         // `booking.max_future_days` از Clinicِ معتبرِ همین عملیات می‌آید.
         $maxFutureDays = (int) $settings->get('booking.max_future_days', 60);
         $err = BookingWindow::checkRequest(
-            $slotDate,
-            $slotTime,
+            $slot_date,
+            $slot_time,
             $this->now(),
             $minLeadHours,
             $maxFutureDays
