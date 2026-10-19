@@ -379,7 +379,7 @@ final class App
         PublicShortcodeAdminPage::register(); // Classic shortcode helper (manage_options + authorized Clinic selector)
     }
 
-    public static function activate(bool $networkWide = false): void
+    public static function activate( bool $network_wide = false ): void
     {
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
@@ -397,7 +397,7 @@ final class App
         // Side-effect-free beyond a short-lived transient: see
         // CpmsActivationRedirect for every safety gate (network-wide/bulk/
         // CLI/REST/cron activation, no identifiable human admin, etc.).
-        CpmsActivationRedirect::flag_activation($networkWide);
+        CpmsActivationRedirect::flag_activation( $network_wide );
     }
 
     public static function deactivate(): void
