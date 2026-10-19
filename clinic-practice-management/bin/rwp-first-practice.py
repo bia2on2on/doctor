@@ -368,6 +368,29 @@ if ($kind === "reset_unclaimed") {
         ]
     );
     echo "FP_FIXTURE=multiclinic second=" . (int) $wpdb->insert_id . PHP_EOL;
+} elseif ($kind === "multiclinic_manager") {
+    // PR #253: explicit Clinic selection evidence. Requires the multiclinic fixture.
+    $second = $db->fetchRow(
+        "SELECT id FROM " . $db->table("cpms_clinics") . " WHERE id <> %d ORDER BY id DESC LIMIT 1",
+        [$clinicId]
+    );
+    if (!is_array($second)) { fwrite(STDERR, "no second clinic\n"); exit(1); }
+    $secondId = (int) $second["id"];
+    $staff = get_user_by("login", (string) getenv("SECOND_ADMIN_USER"));
+    if (!$staff instanceof WP_User) { fwrite(STDERR, "missing staff\n"); exit(1); }
+    $svc = \ClinicCore\Bootstrap\App::membership_service();
+    foreach ([$clinicId, $secondId] as $cid) {
+        if ($svc->membership_for($cid, (int) $staff->ID) === null) {
+            $svc->create_membership($cid, (int) $staff->ID, \ClinicCore\Auth\RolesAndCapabilities::ROLE_MANAGER);
+        }
+    }
+    foreach ([[$clinicId, "FP Dr First Clinic"], [$secondId, "FP Dr Second Clinic"]] as $row) {
+        $wpdb->insert(
+            $db->table("cpms_clinicians"),
+            ["clinic_id" => $row[0], "full_name" => $row[1], "is_active" => 1, "created_at" => $now, "updated_at" => $now]
+        );
+    }
+    echo "FP_FIXTURE=multiclinic_manager first=" . $clinicId . " second=" . $secondId . PHP_EOL;
 } else {
     fwrite(STDERR, "unknown fixture\n");
     exit(1);
@@ -1086,6 +1109,9 @@ with sync_playwright() as p:
                 ("admin.php?page=cpms-dashboard", "multiclinic-dashboard"),
                 ("admin.php?page=cpms-wizard&step=clinic", "multiclinic-wizard-clinic"),
                 ("admin.php?page=cpms-first-practice-setup", "multiclinic-first-practice"),
+                ("admin.php?page=cpms-system", "multiclinic-system"),
+                ("admin.php?page=cpms-settings", "multiclinic-settings"),
+                ("admin.php?page=cpms-clinicians", "multiclinic-clinicians"),
             ):
                 status, body = goto_admin(multi_page, "admin-multiclinic", path, shot_name)
                 excerpt = uncaught_debug_excerpt()
@@ -1130,6 +1156,86 @@ with sync_playwright() as p:
         multi_ctx.close()
     except Exception as cop:
         check("multiclinic.takeover_denied", False, type(cop).__name__)
+
+    # --- Multi-Clinic manager: explicit Clinic selection (PR #253) ---
+    # A manager with ACTIVE memberships in two Clinics must choose a Clinic
+    # explicitly; data is bound to the verified choice; a forged id discloses
+    # nothing; installation info renders without a Clinic.
+    try:
+        fixture_out = apply_fixture("multiclinic_manager")
+        ids = dict(tok.split("=", 1) for tok in (fixture_out or "").split() if "=" in tok)
+        first_id = ids.get("first", "")
+        second_id = ids.get("second", "")
+        check("multiclinic_manager.fixture", first_id.isdigit() and second_id.isdigit() and first_id != second_id,
+              f"first={first_id} second={second_id}")
+        mgr_ctx = new_persona_context(browser)
+        mgr_page = mgr_ctx.new_page()
+        if login(mgr_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "manager-multiclinic"):
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-clinicians", "multiclinic-clinicians-choose")
+            select = mgr_page.locator("#cpms_clinicians_clinic")
+            options = select.locator("option").evaluate_all("els => els.map(el => el.value).filter(Boolean)") if select.count() == 1 else []
+            check("multiclinic_manager.clinicians.explicit_selector",
+                  sorted(options) == sorted([first_id, second_id])
+                  and mgr_page.locator('[data-cpms-clinic-scope="required"]').count() == 1,
+                  f"authorized options={options}")
+            check("multiclinic_manager.clinicians.no_default",
+                  select.count() == 1 and select.input_value() == ""
+                  and not body_has(body, "FP Dr First Clinic") and not body_has(body, "FP Dr Second Clinic"),
+                  "no Clinic is guessed and no clinician data is shown before selection")
+            if select.count() == 1 and second_id in options:
+                select.select_option(second_id)
+                with mgr_page.expect_navigation(wait_until="domcontentloaded"):
+                    select.evaluate("el => el.form.submit()")
+                mgr_page.wait_for_timeout(500)
+                body = mgr_page.content()
+                shot(mgr_page, "multiclinic-clinicians-second")
+                check("multiclinic_manager.clinicians.selected_clinic_only",
+                      mgr_page.locator(f'[data-cpms-active-clinic="{second_id}"]').count() == 1
+                      and body_has(body, "FP Dr Second Clinic") and not body_has(body, "FP Dr First Clinic"),
+                      "only the explicitly selected Clinic's clinicians are shown")
+                check("multiclinic_manager.clinicians.forms_carry_clinic",
+                      mgr_page.locator(f'input[name="clinic_id"][value="{second_id}"]').count() >= 1,
+                      "mutation forms carry the verified Clinic")
+            status, body = goto_admin(mgr_page, "manager-multiclinic",
+                                      "admin.php?page=cpms-clinicians&clinic_id=2147483647", "multiclinic-clinicians-forged")
+            check("multiclinic_manager.clinicians.forged_denied",
+                  mgr_page.locator('[data-cpms-clinic-scope="denied"]').count() == 1
+                  and not body_has(body, "FP Dr First Clinic") and not body_has(body, "FP Dr Second Clinic"),
+                  "forged Clinic id is denied without disclosure")
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-settings", "multiclinic-manager-settings")
+            check("multiclinic_manager.settings.installation_info_without_clinic",
+                  body_has(body, "تعداد جداول")
+                  and mgr_page.locator('[data-cpms-clinic-scope="required"]').count() == 1
+                  and mgr_page.locator("[data-cpms-clinic-settings]").count() == 0,
+                  "installation info renders; Clinic settings need explicit selection")
+            status, body = goto_admin(mgr_page, "manager-multiclinic",
+                                      f"admin.php?page=cpms-settings&clinic_id={second_id}", "multiclinic-manager-settings-second")
+            check("multiclinic_manager.settings.explicit_clinic",
+                  mgr_page.locator(f'[data-cpms-clinic-settings="{second_id}"]').count() == 1,
+                  "Clinic-specific settings for the explicit Clinic only")
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-system", "multiclinic-manager-system")
+            check("multiclinic_manager.system.renders_with_selector",
+                  body_has(body, "وضعیت Health") and mgr_page.locator("#cpms_system_clinic").count() == 1,
+                  "System page renders on a multi-Clinic install and offers explicit selection")
+        mgr_page.close()
+        mgr_ctx.close()
+
+        mob_ctx = new_persona_context(browser, 390, 844)
+        mob_page = mob_ctx.new_page()
+        if login(mob_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "manager-multiclinic-mobile"):
+            for path, shot_name in (
+                ("admin.php?page=cpms-clinicians", "multiclinic-selector-mobile"),
+                (f"admin.php?page=cpms-clinicians&clinic_id={second_id}", "multiclinic-clinicians-mobile"),
+            ):
+                goto_admin(mob_page, "manager-multiclinic-mobile", path, shot_name)
+                rtl = mob_page.locator('.wrap[dir="rtl"]').count() >= 1
+                overflow = mob_page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+                check(f"multiclinic_manager.mobile.{shot_name}.rtl_no_overflow", rtl and overflow <= 8,
+                      f"rtl={rtl} overflow={overflow}px at 390px")
+        mob_page.close()
+        mob_ctx.close()
+    except Exception as cop:
+        check("multiclinic_manager.explicit_selection", False, type(cop).__name__)
 
     browser.close()
 
