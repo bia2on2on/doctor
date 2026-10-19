@@ -532,7 +532,8 @@ final class BookingService
                 $patient_id_to_persist,
                 $has_patient_col,
                 $min_lead,
-                $settings
+                $settings,
+                $slotTime
             ): void {
                 // New demand takes Organization -> Clinic -> Slot -> Location/capacity.
                 // Slot before Location is the established booking order: the
