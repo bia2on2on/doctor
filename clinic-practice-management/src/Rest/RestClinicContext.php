@@ -314,7 +314,7 @@ final class RestClinicContext
         // queue projection aliases are handled below because QueueController
         // consumes the scope established by this post-permission REST hook.
         if (
-            preg_match( '#^/clinic/v1/doctor/portal(?:/|$)', $route ) === 1
+            preg_match( '#^/clinic/v1/doctor/portal(?:/|$)#', $route ) === 1
             && ! self::is_doctor_portal_queue_route( $route )
         ) {
             return false;
