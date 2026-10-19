@@ -434,6 +434,56 @@ def select_location(page, location_id):
     page.select_option('[data-role="sr-location-select"]', str(location_id))
 
 
+def select_reception_scope(page):
+    """Choose the Clinic and Location explicitly, including singleton choices."""
+    clinic_select = page.locator('[data-role="sr-clinic-select"]')
+    location_select = page.locator('[data-role="sr-location-select"]')
+    clinic_select.wait_for(state="visible", timeout=15000)
+    page.wait_for_function(
+        """(id) => {
+            const select = document.querySelector('[data-role="sr-clinic-select"]');
+            return select && Array.from(select.options).some((option) => option.value === String(id));
+        }""",
+        arg=PUB["clinic"],
+        timeout=15000,
+    )
+    if clinic_select.input_value() != "":
+        raise RuntimeError("sole Clinic must remain unselected until deliberate user selection")
+    clinic_values = {
+        clinic_select.locator("option").nth(i).get_attribute("value") or ""
+        for i in range(clinic_select.locator("option").count())
+    }
+    if clinic_values != {"", str(PUB["clinic"])}:
+        raise RuntimeError(f"expected one authorized Clinic plus an empty option, got {sorted(clinic_values)}")
+    if location_select.input_value() != "" or not location_select.is_disabled():
+        raise RuntimeError("Location must remain blank and disabled before Clinic selection")
+    if rows(page).count() != 0:
+        raise RuntimeError("no operational rows may render before explicit Clinic and Location selection")
+
+    context_route = "/clinic/v1/staff/portal/reception/context"
+    with page.expect_response(
+        lambda response: route_of(response.url).rstrip("/") == context_route,
+        timeout=15000,
+    ) as context_response:
+        clinic_select.select_option(str(PUB["clinic"]))
+    response = context_response.value
+    if response.status != 200:
+        raise RuntimeError(f"explicit Reception Clinic selection returned context status {response.status}")
+    if response.request.headers.get("x-cpms-clinic-id") != str(PUB["clinic"]):
+        raise RuntimeError("Clinic context request did not carry the deliberate Clinic selector")
+    page.wait_for_function(
+        """(ids) => {
+            const select = document.querySelector('[data-role="sr-location-select"]');
+            const values = select ? Array.from(select.options).map((option) => option.value) : [];
+            return select && !select.disabled && select.value === '' && ids.every((id) => values.includes(String(id)));
+        }""",
+        arg=[PUB["loc_tehran"], PUB["loc_tokyo"]],
+        timeout=15000,
+    )
+    if location_select.input_value() != "":
+        raise RuntimeError("sole eligible Location must remain unselected after Clinic selection")
+
+
 def wait_rows_count(page, expected, timeout=15000):
     page.wait_for_function(
         """(n) => document.querySelectorAll('[data-role="sr-row"]').length === n""",
@@ -609,19 +659,17 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
 
-        stage = "strict-location"
-        # N>1 Locations: explicit selection REQUIRED before ANY reception data.
-        # Wait for the selector to become VISIBLE (context load is async) so
-        # the pre-boot DOM cannot race the assertions.
-        page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
-        if page.locator('[data-role="sr-location-select"]').count() != 1:
-            raise RuntimeError("multi-Location clinic must render the explicit Location selector")
-        if not page.locator('[data-role="sr-location-select"]').is_visible():
-            raise RuntimeError("Location selector must be visible when N>1")
+        stage = "strict-tenant-selection"
+        # No Clinic or Location is implicitly chosen, even though the fixture
+        # returns exactly one authorized Clinic. After the explicit Clinic
+        # selection the fixture leaves one active Location, which must also stay
+        # blank until the operator deliberately selects it.
+        select_reception_scope(page)
+        if page.locator('[data-role="sr-location-select"]').count() != 1 or not page.locator('[data-role="sr-location-select"]').is_visible():
+            raise RuntimeError("Reception must keep the Location selector visible for explicit selection")
         if rows(page).count() != 0:
             raise RuntimeError("no booked rows may render before explicit Location selection")
-        wait_status_contains(page, "الزامی")
-        shot(page, f"reception-{vp['vp']}-strict-location")
+        shot(page, f"reception-{vp['vp']}-strict-tenant-selection")
 
         stage = "board"
         select_location(page, PUB["loc_tehran"])
@@ -747,6 +795,7 @@ def run_partial_journey(browser, vp):
         if resp is None or resp.status != 200:
             raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
 
@@ -837,6 +886,106 @@ def run_partial_journey(browser, vp):
         ctx.close()
 
 
+def select_doctor_portal_scope(page, state):
+    """Explicitly select the fixture Clinic and Location and prove the API scope.
+
+    The synthetic doctor has one Clinic and two active Location choices. The
+    controls must still start blank, and the real REST requests must carry the
+    explicit choices rather than inferring a sole eligible row.
+    """
+    clinic_id = PUB["clinic"]
+    location_id = PUB["loc_tehran"]
+    clinic_select = page.locator('[data-role="clinic-select"]')
+    location_select = page.locator('[data-role="location-select"]')
+
+    clinic_select.wait_for(state="visible", timeout=15000)
+    if clinic_select.input_value() != "":
+        raise RuntimeError("Doctor Portal must not infer the singleton Clinic")
+    clinic_options = {
+        clinic_select.locator("option").nth(i).get_attribute("value") or ""
+        for i in range(clinic_select.locator("option").count())
+    } - {""}
+    if clinic_options != {str(clinic_id)}:
+        raise RuntimeError(f"expected exactly the fixture Clinic choice, got {sorted(clinic_options)}")
+
+    if page.locator('[data-role="location-selector-wrap"]').is_visible():
+        raise RuntimeError("Location selector must remain hidden before explicit Clinic selection")
+    if location_select.input_value() != "":
+        raise RuntimeError("Doctor Portal must not infer the singleton Location")
+    if page.locator('[data-role="queue-item"]').count() != 0:
+        raise RuntimeError("Doctor queue must remain empty before explicit Clinic and Location selection")
+
+    locations_route = "/clinic/v1/doctor/portal/locations"
+    with page.expect_response(
+        lambda response: route_of(response.url).rstrip("/") == locations_route,
+        timeout=20000,
+    ) as locations_response:
+        clinic_select.select_option(str(clinic_id))
+    locations_response = locations_response.value
+    if locations_response.status != 200:
+        raise RuntimeError(f"explicit Clinic Location-list request returned {locations_response.status}")
+    location_body = locations_response.json()
+    location_data = location_body.get("data", location_body) if isinstance(location_body, dict) else {}
+    if not isinstance(location_data, dict) or int(location_data.get("clinic_id") or 0) != clinic_id:
+        raise RuntimeError("Location-list response did not confirm the explicitly selected Clinic")
+    eligible_locations = location_data.get("locations")
+    if not isinstance(eligible_locations, list):
+        raise RuntimeError("Location-list response did not contain the eligible Location choices")
+    location_options = {
+        int(item.get("id") or 0)
+        for item in eligible_locations
+        if isinstance(item, dict) and int(item.get("id") or 0) > 0
+    }
+    expected_location_ids = {PUB["loc_tehran"], PUB["loc_tokyo"]}
+    if location_options != expected_location_ids:
+        raise RuntimeError(
+            f"expected the fixture's two Location choices, got {sorted(location_options)}"
+        )
+
+    page.locator('[data-role="location-selector-wrap"]').wait_for(state="visible", timeout=10000)
+    if location_select.input_value() != "":
+        raise RuntimeError("Location must remain unselected after the Clinic request")
+    if page.locator('[data-role="queue-item"]').count() != 0:
+        raise RuntimeError("Doctor queue must remain empty until the Location is explicitly selected")
+
+    today_route = "/clinic/v1/doctor/today"
+    with page.expect_response(
+        lambda response: route_of(response.url).rstrip("/") == today_route,
+        timeout=20000,
+    ) as today_response:
+        location_select.select_option(str(location_id))
+    today_response = today_response.value
+    if today_response.status != 200:
+        raise RuntimeError(f"explicit Clinic+Location Today request returned {today_response.status}")
+    today_headers = {key.lower(): value for key, value in today_response.request.headers.items()}
+    if today_headers.get("x-cpms-clinic-id") != str(clinic_id):
+        raise RuntimeError("Doctor Today request did not carry the explicitly selected Clinic header")
+    if today_headers.get("x-cpms-location-id") != str(location_id):
+        raise RuntimeError("Doctor Today request did not carry the explicitly selected Location header")
+    today_body = today_response.json()
+    today_data = today_body.get("data", today_body) if isinstance(today_body, dict) else {}
+    if not isinstance(today_data, dict) or int(today_data.get("location_id") or 0) != location_id:
+        raise RuntimeError("Doctor Today response did not confirm the explicitly selected Location")
+
+    location_requests = [
+        request for request in state["reqs"]
+        if request["method"] == "GET" and request["route"].rstrip("/") == locations_route
+    ]
+    if not any(request["query"].get("clinic_id") == str(clinic_id) for request in location_requests):
+        raise RuntimeError("browser did not request Locations with the explicitly selected Clinic query")
+    today_requests = [
+        request for request in state["reqs"]
+        if request["method"] == "GET" and request["route"].rstrip("/") == today_route
+    ]
+    if not any(
+        request["headers"].get("x-cpms-clinic-id") == str(clinic_id)
+        and request["headers"].get("x-cpms-location-id") == str(location_id)
+        for request in today_requests
+    ):
+        raise RuntimeError("captured Doctor Today request lacks the explicit Clinic+Location scope")
+    return today_data
+
+
 def run_queue_states_journey(browser, vp):
     """Called / in-consultation visual evidence. The reception patient is put
     into waiting through the established flow, then the EXISTING authorized
@@ -853,6 +1002,7 @@ def run_queue_states_journey(browser, vp):
         if resp is None or resp.status != 200:
             raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
         # The recovered partial-arrival patient is in waiting via the
@@ -866,16 +1016,13 @@ def run_queue_states_journey(browser, vp):
         if resp is None or resp.status != 200:
             raise RuntimeError(f"doctor portal entry status {getattr(resp, 'status', None)}")
         dpage.wait_for_selector('script.cpms-doctor-portal__config', state="attached", timeout=15000)
-        # The Doctor Portal enforces the SAME Location policy: 0 => fail closed,
-        # 1 => auto, N>1 => explicit REQUIRED. Drive its existing selector when
-        # the queue is not auto-bound.
-        try:
-            dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=8000)
-        except Exception:
-            loc_sel = dpage.locator('[data-role="location-select"]')
-            loc_sel.wait_for(state="visible", timeout=10000)
-            dpage.select_option('[data-role="location-select"]', str(PUB["loc_tehran"]))
-            dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=20000)
+        # The Doctor Portal requires an explicit Clinic and Location even when
+        # this fixture exposes only one of each. Prove the selector state and the
+        # real Clinic-list / Today requests before attempting a queue action.
+        today_data = select_doctor_portal_scope(dpage, dstate)
+        dpage.wait_for_selector('[data-role="queue-item"]', state="attached", timeout=20000)
+        if int(today_data.get("location_id") or 0) != PUB["loc_tehran"]:
+            raise RuntimeError("Doctor queue was not loaded for the explicitly selected Tehran Location")
         # Bind "that patient" across the two real UIs: reception row name →
         # the doctor queue row of the same patient (visit id from the DOM).
         name = (row_of(page, PUB["appt_partial"]).locator(".cpms-sr-name").inner_text() or "").strip()
@@ -992,10 +1139,11 @@ def run_search_journey(browser, vp):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
-        if not (page.locator('[data-role="sr-clinic"]').inner_text() or "").strip():
-            raise RuntimeError("trusted Clinic context chip must stay visible")
+        if page.locator('[data-role="sr-clinic-select"]').input_value() != str(PUB["clinic"]):
+            raise RuntimeError("explicitly selected trusted Clinic must remain visible in the Clinic selector")
 
         stage = "idle"
         search_input = page.locator('[data-role="sr-search-input"]')
@@ -1156,6 +1304,7 @@ def run_create_journey(browser, vp):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
 
@@ -1383,6 +1532,7 @@ def run_walkin_journey(browser, vp, doctor_key):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
         if page.locator('[data-role="sr-walkin"]').is_visible():
@@ -1523,6 +1673,7 @@ def run_walkin_partial_journey(browser, vp):
             raise RuntimeError(f"reception entry status {getattr(resp, 'status', None)}")
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, 4)
         select_walkin_patient(page, "partial")
@@ -1774,6 +1925,7 @@ def run_booking_journey(browser, vp):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         wait_rows_count(page, board_rows)
         queue_rows_before = page.locator('[data-role="sr-queue-row"]').count()
@@ -2097,6 +2249,7 @@ def run_cancel_journey(browser, vp):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         page.wait_for_selector('[data-role="sr-status"]', state="attached", timeout=15000)
         page.wait_for_function(
@@ -2440,6 +2593,7 @@ def run_reschedule_journey(browser, vp):
         page.wait_for_selector('[data-role="reception-app"]', state="attached", timeout=15000)
         assert_reception_shell(page)
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         page.wait_for_function(
             """() => document.querySelectorAll('[data-role="sr-row"]').length > 0""",
@@ -2757,6 +2911,7 @@ def run_upcoming_transition(browser, vp, kind):
         if resp is None or resp.status != 200:
             raise RuntimeError("reception entry unavailable")
         page.wait_for_selector('[data-role="sr-location-select"]', state="visible", timeout=15000)
+        select_reception_scope(page)
         select_location(page, PUB["loc_tehran"])
         page.wait_for_selector('[data-role="sr-row"]', state="attached", timeout=15000)
         queue_before = page.locator('[data-role="sr-queue-row"]').count()

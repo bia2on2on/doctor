@@ -739,7 +739,10 @@ function renderLocationSelector(){
     show(wrap);
     hide(noData);
     sel.innerHTML = '<option value="">انتخاب شعبه…</option>' + state.locations.map(function(l){
-        return '<option value="' + l.id + '">' + esc(l.name) + ' (' + esc(l.timezone) + ')</option>';
+        var availability = (l.is_active === false || Number(l.is_active) === 0)
+            ? ' — غیرفعال؛ فقط پیگیری کارهای موجود'
+            : '';
+        return '<option value="' + l.id + '">' + esc(l.name) + ' (' + esc(l.timezone) + ')' + esc(availability) + '</option>';
     }).join('');
     sel.value = state.selectedLocationId ? String(state.selectedLocationId) : '';
 }

@@ -6,7 +6,8 @@
  * After trusted Clinic scope established, operational Location must be explicitly and securely resolved.
  * - 0 eligible Locations => empty Today/Queue projection (no tenant data)
  * - 1 or more eligible => explicit Location selection REQUIRED — no sole/first/primary fallback
- * - foreign/inactive/unassigned => fail closed using existing trusted-scope error contract (CLINIC_SCOPE_UNAVAILABLE 403)
+ * - inactive Locations are eligible only for this doctor's pending/confirmed appointments or active Visits;
+ *   foreign, unassigned, or inactive without continuity fails closed (CLINIC_SCOPE_UNAVAILABLE 403)
  * - raw location_id selector only, NEVER authority
  * Authority = authenticated WP user + active Clinic membership + explicitly
  * trusted Clinic + eligible Location assignment + explicit operational Location
@@ -14,8 +15,8 @@
  *
  * Reuses: RestClinicContext (X-CPMS-Clinic-Id / X-CPMS-Location-Id), TrustedClinicEstablisher, ScopeContext/ClinicScope, membership_locations, MembershipRepository
  * Error-contract: omitted Location => CLINIC_SCOPE_REQUIRED 400 with field
- * location_id/reason location_required; foreign/inactive => UNAVAILABLE 403;
- * invalid selectors => VALIDATION_FAILED 422.
+ * location_id/reason location_required; foreign/unassigned/inactive without
+ * continuity => UNAVAILABLE 403; invalid selectors => VALIDATION_FAILED 422.
  * No new canonical LOCATION_SCOPE_REQUIRED.
  *
  * Operational day: persisted eligible Location IANA timezone + current instant (via VisitService::nowUtc seam + filter cpms_visit_now_utc) => Y-m-d, no Clinic/WP/PHP/browser/Tehran/first fallback, no frozen gmdate
@@ -157,6 +158,18 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         );
         self::assertSame([$fx['location']], $locationIds);
 
+        $conflictingLocation = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/doctor/portal/visits/999999/record',
+            [ 'location_id' => $fx['location'] + 1000000 ],
+            [
+                'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+                'X-CPMS-Location-Id' => (string) $fx['location'],
+            ]
+        );
+        self::assertSame(422, $conflictingLocation->get_status(), 'Header/query Location disagreement fails closed after endpoint authorization');
+        self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($conflictingLocation));
+
         // WP Administrator alone does not become a clinical actor.
         $admin = $this->makeUser('portal_admin', 'administrator');
         wp_set_current_user($admin);
@@ -194,6 +207,288 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
             $deniedToday->get_status(),
             'Explicit Clinic DENY wins over role preset on the operational path'
         );
+
+        // Endpoint capability DENY must precede Location membership/eligibility
+        // validation; a denied doctor must not distinguish a bad Location selector.
+        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::MEDICAL_READ, 'deny');
+        $deniedWorkspace = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/doctor/portal/visits/999999/record',
+            [],
+            [
+                'X-CPMS-Clinic-Id'   => (string) $denied['clinic'],
+                'X-CPMS-Location-Id' => (string) ($denied['location'] + 1000000),
+            ]
+        );
+        self::assertSame(403, $deniedWorkspace->get_status());
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($deniedWorkspace), 'Endpoint capability denial must win before invalid Location validation');
+    }
+
+    public function testDoctorPortalContinuesOnlyExistingWorkAtInactiveLocations(): void
+    {
+        $fx = $this->makeDoctor('CONTINUITY');
+        $inactiveLocation = $this->insertLocation(
+            $fx['clinic'],
+            'Continuity Location',
+            'continuity-' . bin2hex(random_bytes(3)),
+            self::TZ_TEHRAN,
+            0
+        );
+        $patient = $this->insertPatient(
+            'MR-CONTINUITY-' . bin2hex(random_bytes(2)),
+            '0912' . sprintf('%07d', random_int(1000000, 9999999)),
+            $fx['clinic']
+        );
+        $slot = $this->insertSlot( $fx['clinic'], $inactiveLocation, $fx['clinician'], self::FIXED_UTC_DATE, '10:30:00' );
+        $appointment = $this->insertAppointment(
+            $fx['clinic'],
+            $inactiveLocation,
+            'CONT-' . bin2hex(random_bytes(3)),
+            $patient,
+            $fx['clinician'],
+            $slot,
+            self::FIXED_UTC_DATE,
+            '10:30:00',
+            0
+        );
+        $visit = $this->insertVisitWithAppointment(
+            $patient,
+            $fx['clinician'],
+            $fx['clinic'],
+            $inactiveLocation,
+            $appointment,
+            'waiting',
+            self::FIXED_UTC_DATE,
+            '10:30:00'
+        );
+        $this->linkAppointmentVisit( $appointment, $visit );
+
+        global $wpdb;
+        $wpdb->update( $wpdb->prefix . 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $inactiveLocation ] );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue( 'SELECT is_active FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d', [ $inactiveLocation ] ),
+            'Continuity fixture Location is durably inactive'
+        );
+
+        wp_set_current_user( $fx['doctor'] );
+        $locationChoices = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/locations', [ 'clinic_id' => $fx['clinic'] ] );
+        self::assertSame( 200, $locationChoices->get_status() );
+        $locationRows = $this->payload( $locationChoices )['locations'] ?? [];
+        $continuityChoice = null;
+        foreach ( $locationRows as $row ) {
+            if ( (int) ( $row['id'] ?? 0 ) === $inactiveLocation ) {
+                $continuityChoice = $row;
+                break;
+            }
+        }
+        self::assertIsArray( $continuityChoice, 'An inactive Location with this doctor’s actionable appointment remains explicitly selectable' );
+        self::assertFalse( $continuityChoice['is_active'], 'The Portal identifies the Location as inactive' );
+
+        $headers = [
+            'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+            'X-CPMS-Location-Id' => (string) $inactiveLocation,
+        ];
+        $context = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/context', [], $headers );
+        self::assertSame( 200, $context->get_status(), 'Explicit continuity context remains available' );
+        self::assertFalse( $this->payload( $context )['current_location']['is_active'] ?? true );
+
+        $today = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/today', [], $headers );
+        self::assertSame( 200, $today->get_status(), 'Existing appointment and Visit remain visible in Doctor Portal Today' );
+        $todayData = $this->payload( $today );
+        self::assertSame( $inactiveLocation, (int) ( $todayData['location_id'] ?? 0 ) );
+        self::assertSame( [ $appointment ], $this->appointmentIds( $todayData ) );
+        self::assertContains( $visit, array_map( 'intval', array_column( $todayData['queue'] ?? [], 'id' ) ) );
+
+        // The modern Portal queue aliases are served by QueueController, which
+        // needs RestClinicContext's post-permission scope binder too.
+        $portalToday = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/today', [], $headers );
+        self::assertSame( 200, $portalToday->get_status(), 'Modern Today alias receives explicit Clinic/Location scope' );
+        self::assertSame( $inactiveLocation, (int) ( $this->payload( $portalToday )['location_id'] ?? 0 ) );
+        $portalEvents = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/rt/queue', [ 'since' => 0 ], $headers );
+        self::assertSame( 200, $portalEvents->get_status(), 'Modern live-queue alias receives the same explicit scope' );
+
+        $record = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/visits/' . $visit . '/record', [], $headers );
+        self::assertSame( 200, $record->get_status(), 'The exact active Visit remains available to its doctor at the inactive Location' );
+        $called = $this->dispatch( 'POST', '/' . self::REST_NS . '/doctor/portal/visits/' . $visit . '/call', [], $headers );
+        self::assertSame( 200, $called->get_status(), 'Existing queue treatment workflow continues after Location deactivation' );
+        self::assertSame( 'called', $this->payload( $called )['status'] ?? null );
+        $started = $this->dispatch( 'POST', '/' . self::REST_NS . '/doctor/portal/visits/' . $visit . '/start', [], $headers );
+        self::assertSame( 200, $started->get_status(), 'An active Visit can proceed into consultation at its historical Location' );
+        self::assertSame( 'in_consultation', $this->payload( $started )['status'] ?? null );
+
+        // A pending/confirmed appointment is enough to list the Location and
+        // its daily appointment, but not enough to reopen an unrelated Visit.
+        $appointmentOnlyLocation = $this->insertLocation(
+            $fx['clinic'],
+            'Appointment-only Location',
+            'appointment-only-' . bin2hex( random_bytes( 3 ) ),
+            self::TZ_TEHRAN,
+            0
+        );
+        $appointmentOnlyPatient = $this->insertPatient(
+            'MR-APPT-ONLY-' . bin2hex( random_bytes( 2 ) ),
+            '0912' . sprintf( '%07d', random_int( 1000000, 9999999 ) ),
+            $fx['clinic']
+        );
+        $appointmentOnlySlot = $this->insertSlot(
+            $fx['clinic'],
+            $appointmentOnlyLocation,
+            $fx['clinician'],
+            self::FIXED_UTC_DATE,
+            '13:30:00'
+        );
+        $appointmentOnlyAppointment = $this->insertAppointment(
+            $fx['clinic'],
+            $appointmentOnlyLocation,
+            'APPT-ONLY-' . bin2hex( random_bytes( 3 ) ),
+            $appointmentOnlyPatient,
+            $fx['clinician'],
+            $appointmentOnlySlot,
+            self::FIXED_UTC_DATE,
+            '13:30:00',
+            0
+        );
+        $wpdb->update( $wpdb->prefix . 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $appointmentOnlyLocation ] );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT is_active FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE id = %d',
+                [ $appointmentOnlyLocation ]
+            ),
+            'Appointment-only continuity fixture Location is durably inactive'
+        );
+        $appointmentOnlyHeaders = [
+            'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+            'X-CPMS-Location-Id' => (string) $appointmentOnlyLocation,
+        ];
+        $appointmentOnlyToday = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/doctor/today',
+            [],
+            $appointmentOnlyHeaders
+        );
+        self::assertSame( 200, $appointmentOnlyToday->get_status(), 'A confirmed appointment alone keeps its inactive Location selectable for Today' );
+        self::assertSame(
+            [ $appointmentOnlyAppointment ],
+            $this->appointmentIds( $this->payload( $appointmentOnlyToday ) ),
+            'Appointment-only continuity exposes only the appointment scoped to that Location'
+        );
+        self::assertSame( [], $this->payload( $appointmentOnlyToday )['queue'] ?? [], 'An appointment alone creates no live Visit queue row' );
+        $unrelatedVisit = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/doctor/portal/visits/' . $visit . '/record',
+            [],
+            $appointmentOnlyHeaders
+        );
+        self::assertSame( 403, $unrelatedVisit->get_status(), 'A different active Visit cannot be reopened via appointment-only Location continuity' );
+        self::assertSame( 'CLINIC_SCOPE_UNAVAILABLE', $this->errCode( $unrelatedVisit ) );
+
+        $sharedQueue = $this->dispatch( 'GET', '/' . self::REST_NS . '/queue', [], $headers );
+        self::assertSame( 403, $sharedQueue->get_status(), 'Generic staff queue scope remains active-Location-only' );
+        self::assertSame( 'CLINIC_SCOPE_UNAVAILABLE', $this->errCode( $sharedQueue ) );
+
+        // An inactive Location with only a completed appointment is not an active continuity grant.
+        $closedLocation = $this->insertLocation(
+            $fx['clinic'],
+            'Closed Location',
+            'closed-' . bin2hex(random_bytes(3)),
+            self::TZ_TEHRAN,
+            0
+        );
+        $closedPatient = $this->insertPatient(
+            'MR-CLOSED-' . bin2hex(random_bytes(2)),
+            '0912' . sprintf('%07d', random_int(1000000, 9999999)),
+            $fx['clinic']
+        );
+        $closedSlot = $this->insertSlot( $fx['clinic'], $closedLocation, $fx['clinician'], self::FIXED_UTC_DATE, '11:30:00' );
+        $closedAppointment = $this->insertAppointment(
+            $fx['clinic'],
+            $closedLocation,
+            'CLOSED-' . bin2hex(random_bytes(3)),
+            $closedPatient,
+            $fx['clinician'],
+            $closedSlot,
+            self::FIXED_UTC_DATE,
+            '11:30:00',
+            0
+        );
+        $wpdb->update( $wpdb->prefix . 'cpms_appointments', [ 'status' => 'completed' ], [ 'id' => $closedAppointment ] );
+        $wpdb->update( $wpdb->prefix . 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $closedLocation ] );
+
+        $otherDoctor = $this->makeUser( 'continuity_other', RolesAndCapabilities::ROLE_DOCTOR );
+        $otherClinician = $this->insertClinician( 'Dr Continuity Other', $fx['clinic'], 1, $otherDoctor );
+        cpms_test_seed_membership( $otherDoctor, $fx['clinic'], 'cpms_doctor' );
+        $otherLocation = $this->insertLocation(
+            $fx['clinic'],
+            'Other Doctor Location',
+            'other-doc-' . bin2hex(random_bytes(3)),
+            self::TZ_TEHRAN,
+            0
+        );
+        $otherPatient = $this->insertPatient(
+            'MR-OTHER-' . bin2hex(random_bytes(2)),
+            '0912' . sprintf('%07d', random_int(1000000, 9999999)),
+            $fx['clinic']
+        );
+        $otherSlot = $this->insertSlot( $fx['clinic'], $otherLocation, $otherClinician, self::FIXED_UTC_DATE, '12:30:00' );
+        $this->insertAppointment(
+            $fx['clinic'],
+            $otherLocation,
+            'OTHER-' . bin2hex(random_bytes(3)),
+            $otherPatient,
+            $otherClinician,
+            $otherSlot,
+            self::FIXED_UTC_DATE,
+            '12:30:00',
+            0
+        );
+        $wpdb->update( $wpdb->prefix . 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $otherLocation ] );
+
+        $locationChoices = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/locations', [ 'clinic_id' => $fx['clinic'] ] );
+        self::assertSame( 200, $locationChoices->get_status() );
+        $eligibleIds = array_map( 'intval', array_column( $this->payload( $locationChoices )['locations'] ?? [], 'id' ) );
+        self::assertNotContains( $closedLocation, $eligibleIds, 'Completed appointment alone does not keep a deactivated Location in the operational choices' );
+        self::assertNotContains( $otherLocation, $eligibleIds, 'Another doctor’s appointment cannot create continuity for this doctor' );
+        foreach ( [ $closedLocation, $otherLocation ] as $deniedLocation ) {
+            $denied = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/today', [], [
+                'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+                'X-CPMS-Location-Id' => (string) $deniedLocation,
+            ] );
+            self::assertSame( 403, $denied->get_status(), 'No active appointment/Visit for this doctor means inactive Location selection is denied' );
+        }
+
+        // A location-scoped membership still excludes an assigned-to-nobody
+        // inactive Location even when its clinician has an active Visit there.
+        $scopedDoctor = $this->makeUser( 'continuity_scoped', RolesAndCapabilities::ROLE_DOCTOR );
+        $scopedClinician = $this->insertClinician( 'Dr Continuity Scoped', $fx['clinic'], 1, $scopedDoctor );
+        $membershipId = cpms_test_seed_membership( $scopedDoctor, $fx['clinic'], 'cpms_doctor' );
+        App::membership_service()->set_scope_mode( $membershipId, 'location', [ $fx['location'] ] );
+        $unassignedLocation = $this->insertLocation(
+            $fx['clinic'],
+            'Unassigned Continuity Location',
+            'unassigned-continuity-' . bin2hex(random_bytes(3)),
+            self::TZ_TEHRAN,
+            0
+        );
+        $scopedPatient = $this->insertPatient(
+            'MR-SCOPED-' . bin2hex(random_bytes(2)),
+            '0912' . sprintf('%07d', random_int(1000000, 9999999)),
+            $fx['clinic']
+        );
+        $this->insertVisit( $scopedPatient, $scopedClinician, $fx['clinic'], $unassignedLocation, 'in_consultation', self::FIXED_UTC_DATE, '13:30:00' );
+        $wpdb->update( $wpdb->prefix . 'cpms_locations', [ 'is_active' => 0 ], [ 'id' => $unassignedLocation ] );
+        wp_set_current_user( $scopedDoctor );
+        $scopedChoices = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/portal/locations', [ 'clinic_id' => $fx['clinic'] ] );
+        self::assertSame( 200, $scopedChoices->get_status() );
+        $scopedIds = array_map( 'intval', array_column( $this->payload( $scopedChoices )['locations'] ?? [], 'id' ) );
+        self::assertContains( $fx['location'], $scopedIds, 'Location assignment remains visible' );
+        self::assertNotContains( $unassignedLocation, $scopedIds, 'Active Visit does not override the membership Location assignment' );
+        $unassignedToday = $this->dispatch( 'GET', '/' . self::REST_NS . '/doctor/today', [], [
+            'X-CPMS-Clinic-Id'   => (string) $fx['clinic'],
+            'X-CPMS-Location-Id' => (string) $unassignedLocation,
+        ] );
+        self::assertSame( 403, $unassignedToday->get_status(), 'An inactive unassigned Location cannot be selected for Portal Today' );
     }
 
     // B — doctor identity fail-closed — backend guard PASS
@@ -466,7 +761,7 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         $scopeM = $establisher->establish($doctor, $clinic, $locM);
         self::assertSame($locM, $scopeM->locationId, 'F: explicit Location M => trusted operational Location');
 
-        // Foreign/inactive/unassigned denied — existing error contract CLINIC_SCOPE_UNAVAILABLE 403
+        // Foreign/unassigned and inactive-without-continuity denied — existing error contract CLINIC_SCOPE_UNAVAILABLE 403
         $foreignClinic = $this->insertClinic('F foreign', 'f-foreign-'.bin2hex(random_bytes(2)));
         $foreignLoc = $this->insertLocation($foreignClinic, 'Foreign Loc', 'f-foreign-loc-'.bin2hex(random_bytes(2)), 'Asia/Tehran', 1);
         $resForeign = $this->dispatch('GET', '/'.self::REST_NS.'/queue', [], ['X-CPMS-Clinic-Id' => (string)$clinic, 'X-CPMS-Location-Id' => (string)$foreignLoc]);

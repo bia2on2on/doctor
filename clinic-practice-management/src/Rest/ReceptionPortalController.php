@@ -394,10 +394,6 @@ final class ReceptionPortalController extends RestBase {
 			if ( $allowed instanceof WP_Error ) {
 				return $allowed;
 			}
-			$scoped = $this->requireClinicPermission( $cap );
-			if ( $scoped instanceof WP_Error ) {
-				return $scoped;
-			}
 		}
 
 		$user = wp_get_current_user();
@@ -409,7 +405,14 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
 
-		return true;
+		$is_context = '/clinic/v1/staff/portal/reception/context' === (string) $r->get_route();
+
+		return RestClinicContext::authorizeAndBindReceptionScope(
+			$r,
+			(int) $user->ID,
+			$caps,
+			$is_context
+		);
 	}
 
 	/**
@@ -417,8 +420,9 @@ final class ReceptionPortalController extends RestBase {
 	 * PatientService::search() contract — trimmed query, minimum 2 characters
 	 * (CLINIC_VALIDATION_FAILED otherwise), limit clamped by the service, trusted
 	 * Clinic from App::scope(), active patients only, bounded searchView with the
-	 * masked national ID. The Location selector is intentionally ignored here:
-	 * patient identity is Clinic-scoped and Location never filters this search.
+	 * masked national ID. The explicit Reception Location is validated at the
+	 * permission boundary; patient identity remains Clinic-scoped and Location
+	 * never filters this search.
 	 * Nothing is written; a returned patient id stays a selector only.
 	 */
 	private function patient_search( WP_REST_Request $r ): WP_REST_Response|WP_Error {
@@ -441,7 +445,8 @@ final class ReceptionPortalController extends RestBase {
 	 * are forwarded — clinical/address/emergency/MRN/clinic_id/location_id
 	 * from the body never become writes. The response is the Slice 2
 	 * searchView (masked national ID), never staffView. Location is not a
-	 * patient-ownership field and is not required for this mutation.
+	 * patient-ownership field; explicit Clinic/Location selection is still
+	 * required at the Reception permission boundary.
 	 */
 	private function patient_create( WP_REST_Request $r ): WP_REST_Response|WP_Error {
 		$fields = [];
@@ -462,33 +467,45 @@ final class ReceptionPortalController extends RestBase {
 	}
 
 	/**
-	 * Reception context: trusted Clinic + eligible operational Locations for
-	 * the 0/1/N selection contract. Raw ids remain selectors only; nothing here
-	 * grants authority and no clinic/location payload carries patient data.
+	 * Reception context: list the actor's own authorized Clinics before selection,
+	 * then list eligible Locations only after an explicit Clinic selection. Raw ids
+	 * remain selectors only; no clinic/location payload carries patient data.
 	 */
 	private function context( WP_REST_Request $r ): WP_REST_Response|WP_Error {
-		unset( $r );
 		$user_id     = (int) get_current_user_id();
 		$memberships = $this->memberships->active_for_user( $user_id );
 		$clinics     = [];
 		foreach ( $memberships as $m ) {
+			$clinic_id = (int) $m['clinic_id'];
+			try {
+				$can_read_queue = App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_READ );
+			} catch ( \Throwable $e ) {
+				unset( $e );
+				$can_read_queue = false;
+			}
+			if ( ! $can_read_queue ) {
+				continue;
+			}
 			$clinics[] = [
-				'id'   => (int) $m['clinic_id'],
-				'name' => (string) ( $m['clinic_name'] ?? ( 'Clinic ' . (int) $m['clinic_id'] ) ),
+				'id'   => $clinic_id,
+				'name' => (string) ( $m['clinic_name'] ?? ( 'Clinic ' . $clinic_id ) ),
 				'slug' => (string) ( $m['clinic_slug'] ?? '' ),
 			];
 		}
 
 		$selected_clinic_id   = null;
 		$selected_location_id = null;
-		try {
-			$scope                = App::scope();
-			$selected_clinic_id   = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
-			$selected_location_id = null !== $scope->locationId ? (int) $scope->locationId : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
-		} catch ( \Throwable $e ) {
-			unset( $e );
-			if ( 1 === count( $clinics ) ) {
-				$selected_clinic_id = (int) $clinics[0]['id'];
+		$clinic_selector      = $r->get_header( 'X-CPMS-Clinic-Id' );
+		if ( null === $clinic_selector || '' === $clinic_selector ) {
+			$clinic_selector = $r->get_param( 'clinic_id' );
+		}
+		if ( is_scalar( $clinic_selector ) && '' !== trim( (string) $clinic_selector ) ) {
+			try {
+				$scope                = App::scope();
+				$selected_clinic_id   = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+				$selected_location_id = null !== $scope->locationId ? (int) $scope->locationId : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+			} catch ( \Throwable $e ) {
+				unset( $e );
 			}
 		}
 
@@ -506,9 +523,6 @@ final class ReceptionPortalController extends RestBase {
 				if ( ! $known ) {
 					$selected_location_id = null;
 				}
-			}
-			if ( null === $selected_location_id && 1 === count( $eligible ) ) {
-				$selected_location_id = (int) $eligible[0]['id'];
 			}
 		}
 
@@ -1780,7 +1794,8 @@ final class ReceptionPortalController extends RestBase {
 	}
 
 	/**
-	 * Strict reception Location resolution (0/1/N policy).
+	 * Strict reception Location resolution; an explicit selector is mandatory
+	 * even when exactly one eligible operational Location exists.
 	 *
 	 * The resolved row also carries the persisted IANA `timezone` of the trusted
 	 * Location: it is the operational authority for the reception appointment
@@ -1796,58 +1811,34 @@ final class ReceptionPortalController extends RestBase {
 			$explicit  = null !== $scope->locationId ? (int) $scope->locationId : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
 		} catch ( \Throwable $e ) {
 			unset( $e );
-			return $this->error( 'CLINIC_SCOPE_REQUIRED', 400, 'محدودهٔ کلینیک لازم است.' );
+			return $this->error( 'CLINIC_SCOPE_REQUIRED', 400, 'محدودهٔ کلینیک لازم است.', [ 'field' => 'clinic_id', 'reason' => 'clinic_required' ] );
+		}
+
+		if ( null === $explicit ) {
+			return $this->error(
+				'CLINIC_SCOPE_REQUIRED',
+				400,
+				'محدودهٔ موقعیت عملیاتی لازم است.',
+				[ 'field' => 'location_id', 'reason' => 'location_required' ]
+			);
 		}
 
 		$eligible = $this->eligible_locations_for_clinic( $clinic_id, $user_id );
-		if ( [] === $eligible ) {
-			// 0 eligible: fail closed — no reception data, no reception mutation.
-			return [
-				'clinic_id'     => $clinic_id,
-				'location_id'   => null,
-				'location_name' => null,
-				'timezone'      => null,
-			];
-		}
-
-		$by_id = [];
+		$by_id    = [];
 		foreach ( $eligible as $row ) {
 			$by_id[ (int) $row['id'] ] = $row;
 		}
-
-		if ( null !== $explicit ) {
-			if ( ! isset( $by_id[ $explicit ] ) ) {
-				// Foreign / inactive / unassigned Location selector.
-				return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
-			}
-			return [
-				'clinic_id'     => $clinic_id,
-				'location_id'   => $explicit,
-				'location_name' => (string) $by_id[ $explicit ]['name'],
-				'timezone'      => (string) ( $by_id[ $explicit ]['timezone'] ?? '' ),
-			];
+		if ( ! isset( $by_id[ $explicit ] ) ) {
+			// Foreign / inactive / unassigned Location selector.
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
 		}
 
-		if ( 1 === count( $by_id ) ) {
-			$only_id = (int) ( array_keys( $by_id )[0] ?? 0 );
-			return [
-				'clinic_id'     => $clinic_id,
-				'location_id'   => $only_id,
-				'location_name' => (string) $by_id[ $only_id ]['name'],
-				'timezone'      => (string) ( $by_id[ $only_id ]['timezone'] ?? '' ),
-			];
-		}
-
-		// N>1 without an explicit trusted Location: REQUIRED, never a fallback.
-		return $this->error(
-			'CLINIC_SCOPE_REQUIRED',
-			400,
-			'محدودهٔ کلینیک لازم است.',
-			[
-				'field'  => 'location_id',
-				'reason' => 'location_required',
-			]
-		);
+		return [
+			'clinic_id'     => $clinic_id,
+			'location_id'   => $explicit,
+			'location_name' => (string) $by_id[ $explicit ]['name'],
+			'timezone'      => (string) ( $by_id[ $explicit ]['timezone'] ?? '' ),
+		];
 	}
 
 	/**

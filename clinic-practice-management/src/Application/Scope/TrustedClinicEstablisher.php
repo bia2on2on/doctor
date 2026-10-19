@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Scope;
 
+use ClinicCore\Application\Location\DoctorPortalLocationEligibility;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
@@ -48,6 +49,44 @@ final class TrustedClinicEstablisher {
 	}
 
 	/**
+	 * Doctor Portal scope binding: inactive Locations are admitted only through
+	 * the narrow continuity policy; all ordinary staff callers remain active-only.
+	 *
+	 * @throws ScopeRequiredException
+	 */
+	public function establish_for_doctor_portal( int $wp_user_id, ?int $clinic_id, ?int $location_id, ?int $visit_id = null ): ClinicScope {
+		if ( $wp_user_id <= 0 ) {
+			$this->unavailable( 'unauthenticated' );
+		}
+		if ( null === $clinic_id ) {
+			if ( null !== $location_id ) {
+				throw new ScopeRequiredException(
+					'CLINIC_VALIDATION_FAILED',
+					'Location cannot establish Clinic.',
+					[ 'field' => 'location_id' ],
+					422
+				);
+			}
+			throw new ScopeRequiredException(
+				'CLINIC_SCOPE_REQUIRED',
+				'Explicit Clinic is required for Doctor Portal scope.',
+				[ 'field' => 'clinic_id', 'reason' => 'clinic_required' ],
+				400
+			);
+		}
+		if ( $clinic_id <= 0 ) {
+			throw new ScopeRequiredException(
+				'CLINIC_VALIDATION_FAILED',
+				'Invalid clinic id.',
+				[ 'field' => 'clinic_id' ],
+				422
+			);
+		}
+
+		return $this->verified_scope( $wp_user_id, $clinic_id, $location_id, false, true, $visit_id );
+	}
+
+	/**
 	 * @throws ScopeRequiredException
 	 */
 	private function from_unique_membership( int $wp_user_id, bool $for_update ): ClinicScope {
@@ -89,7 +128,14 @@ final class TrustedClinicEstablisher {
 	 *
 	 * @throws ScopeRequiredException
 	 */
-	private function verified_scope( int $wp_user_id, int $clinic_id, ?int $location_id, bool $for_update ): ClinicScope {
+	private function verified_scope(
+		int $wp_user_id,
+		int $clinic_id,
+		?int $location_id,
+		bool $for_update,
+		bool $allow_doctor_portal_continuity = false,
+		?int $portal_visit_id = null
+	): ClinicScope {
 		$membership = $this->memberships->find_active( $clinic_id, $wp_user_id, $for_update );
 		if ( null === $membership ) {
 			$this->unavailable( 'membership' );
@@ -142,6 +188,25 @@ final class TrustedClinicEstablisher {
 		$location_clinic = $this->memberships->location_clinic_map( [ $location_id ] );
 		if ( ( $location_clinic[ $location_id ] ?? null ) !== $clinic_id ) {
 			$this->unavailable( 'location' );
+		}
+
+		if ( $allow_doctor_portal_continuity ) {
+			$portal_locations = new DoctorPortalLocationEligibility( $this->db, $this->memberships );
+			$eligible_ids     = $portal_locations->eligible_location_ids( $clinic_id, $wp_user_id );
+			if ( ! in_array( $location_id, $eligible_ids, true ) ) {
+				$this->unavailable( 'location' );
+			}
+
+			$active = $this->db->fetchValue(
+				'SELECT id FROM ' . $this->db->table( 'cpms_locations' ) .
+				' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+				[ $location_id, $clinic_id ]
+			);
+			if ( null === $active && null !== $portal_visit_id && ! $portal_locations->has_active_visit( $clinic_id, $wp_user_id, $location_id, $portal_visit_id ) ) {
+				$this->unavailable( 'location' );
+			}
+
+			return $scope->withLocation( $location_id );
 		}
 
 		$active = $this->db->fetchValue(

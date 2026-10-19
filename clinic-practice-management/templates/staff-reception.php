@@ -3,7 +3,8 @@
  * Phase 11 Slice 1 — Staff Portal reception module (Arrival Board), embed mode.
  *
  * Mounted by templates/staff-portal-shell.php inside the canonical shared
- * Staff Portal shell. One trusted Clinic + one operational Location, today's
+ * Staff Portal shell. The operator explicitly selects one trusted Clinic and
+ * one operational Location (including singleton options), then sees today's
  * booked patients for that Location, ONE arrival action ("arrived / ready")
  * that runs the EXISTING check-in + enqueue transitions in valid order, and a
  * read-only queue status board (waiting / called / in_consultation / skipped)
@@ -201,11 +202,17 @@ $cpms_reception_cfg = [
 <main id="cpms-staff-reception-main" class="cpms-staff-reception-main" role="main" data-cpms-staff-module="reception">
     <section class="cpms-sr-panel cpms-sr-top" data-role="sr-top">
         <div class="cpms-sr-chips" data-role="sr-scope">
-            <span class="cpms-sr-chip cpms-sr-chip--primary" data-role="sr-clinic" title="کلینیک مورد اعتماد">—</span>
+            <label class="cpms-sr-chip cpms-sr-chip--primary" data-role="sr-clinic-wrap">
+                <span>کلینیک:</span>
+                <select class="cpms-sr-select" data-role="sr-clinic-select" aria-label="انتخاب کلینیک">
+                    <option value="">— انتخاب کلینیک —</option>
+                </select>
+            </label>
             <label class="cpms-sr-chip" data-role="sr-location-wrap">
                 <span>موقعیت:</span>
-                <select class="cpms-sr-select" data-role="sr-location-select" aria-label="انتخاب موقعیت عملیاتی" hidden></select>
-                <span class="cpms-sr-chip" data-role="sr-location" hidden>—</span>
+                <select class="cpms-sr-select" data-role="sr-location-select" aria-label="انتخاب موقعیت عملیاتی" disabled>
+                    <option value="">— ابتدا کلینیک را انتخاب کنید —</option>
+                </select>
             </label>
         </div>
         <div class="cpms-sr-chip" data-role="sr-date">—</div>
@@ -416,10 +423,12 @@ $cpms_reception_cfg = [
     }
 
     var POLL_MS = 5000;
+    var scopeGeneration = 0;
 
     var state = {
         clinicId: null,
         clinicName: '',
+        clinics: [],
         locationId: null,
         locationName: '',
         locations: [],
@@ -458,6 +467,7 @@ $cpms_reception_cfg = [
 
     function api(path, options) {
         options = options || {};
+        var generation = scopeGeneration;
         var headers = Object.assign({ 'X-WP-Nonce': CONFIG.nonce, 'Accept': 'application/json' }, scopeHeaders(), options.headers || {});
         var init = { method: options.method || 'GET', headers: headers, credentials: 'same-origin', cache: 'no-store' };
         if (options.body !== undefined) {
@@ -468,6 +478,13 @@ $cpms_reception_cfg = [
             return response.json().catch(function () { return {}; }).then(function (body) {
                 return { status: response.status, ok: response.ok, body: body };
             });
+        }).then(function (result) {
+            // A late response from a previous Clinic/Location must not repopulate
+            // the Reception UI after the operator changes scope. Discard its body.
+            if (generation !== scopeGeneration) {
+                return { status: 0, ok: false, stale: true, body: {} };
+            }
+            return result;
         });
     }
 
@@ -506,35 +523,34 @@ $cpms_reception_cfg = [
     }
 
     function renderScope() {
-        var clinicNode = el('sr-clinic');
-        if (clinicNode) {
-            clinicNode.textContent = state.clinicName || 'کلینیک';
-        }
-        var select = el('sr-location-select');
-        var chip = el('sr-location');
-        if (select && chip) {
-            if (state.locations.length > 1) {
-                select.hidden = false;
-                chip.hidden = true;
-                var current = String(state.locationId || '');
-                if (select.options.length !== state.locations.length) {
-                    select.innerHTML = '';
-                    for (var i = 0; i < state.locations.length; i += 1) {
-                        var option = document.createElement('option');
-                        option.value = String(state.locations[i].id);
-                        option.textContent = String(state.locations[i].name || ('موقعیت ' + state.locations[i].id));
-                        select.appendChild(option);
-                    }
-                }
-                if (current) {
-                    select.value = current;
-                }
-            } else {
-                select.hidden = true;
-                chip.hidden = false;
-                chip.textContent = state.locationName || '—';
+        var clinicSelect = el('sr-clinic-select');
+        if (clinicSelect) {
+            var clinicHtml = '<option value="">— انتخاب کلینیک —</option>';
+            for (var c = 0; c < state.clinics.length; c += 1) {
+                clinicHtml += '<option value="' + escapeHtml(state.clinics[c].id) + '">' + escapeHtml(state.clinics[c].name || ('کلینیک ' + state.clinics[c].id)) + '</option>';
             }
+            clinicSelect.innerHTML = clinicHtml;
+            clinicSelect.value = state.clinicId ? String(state.clinicId) : '';
         }
+
+        var locationSelect = el('sr-location-select');
+        if (locationSelect) {
+            var locationHtml = state.clinicId
+                ? '<option value="">— انتخاب موقعیت عملیاتی —</option>'
+                : '<option value="">— ابتدا کلینیک را انتخاب کنید —</option>';
+            for (var i = 0; i < state.locations.length; i += 1) {
+                locationHtml += '<option value="' + escapeHtml(state.locations[i].id) + '">' + escapeHtml(state.locations[i].name || ('موقعیت ' + state.locations[i].id)) + '</option>';
+            }
+            locationSelect.innerHTML = locationHtml;
+            locationSelect.value = state.locationId ? String(state.locationId) : '';
+            locationSelect.disabled = !state.clinicId || state.locations.length === 0;
+        }
+        var scopeReady = Boolean(state.clinicId && state.locationId);
+        ['sr-search-input', 'sr-search-submit', 'sr-create-open'].forEach(function (role) {
+            var control = el(role);
+            if (control) { control.disabled = !scopeReady; }
+        });
+
         var dateNode = el('sr-date');
         if (dateNode) {
             dateNode.textContent = state.date ? ('تاریخ عملیاتی: ' + state.date) : 'تاریخ عملیاتی: —';
@@ -637,8 +653,8 @@ $cpms_reception_cfg = [
         if (!container || !message) { return; }
         container.innerHTML = '';
         message.textContent = 'در حال بارگذاری…';
-        if (!state.locationId) {
-            message.textContent = 'ابتدا موقعیت عملیاتی را انتخاب کنید.';
+        if (!state.clinicId || !state.locationId) {
+            message.textContent = 'ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.';
             return;
         }
         api('/staff/portal/reception/upcoming').then(function (result) {
@@ -707,14 +723,11 @@ $cpms_reception_cfg = [
     }
 
     function renderBoard(data) {
+        if (!state.clinicId || !state.locationId || Number(data.location_id || 0) !== Number(state.locationId)) {
+            return;
+        }
         doctorsIndex(data);
         state.date = data.date || null;
-        if (data.location_id) {
-            state.locationId = Number(data.location_id);
-        }
-        if (data.location_name) {
-            state.locationName = String(data.location_name);
-        }
         renderScope();
         renderStats(data.stats);
         renderAppointments(data.appointments || []);
@@ -723,11 +736,17 @@ $cpms_reception_cfg = [
 
     function loadContext() {
         return api('/staff/portal/reception/context').then(function (result) {
+            if (result.stale) {
+                return;
+            }
             var data = payloadOf(result.body);
             if (!result.ok) {
                 setStatus('خطا در دریافت محدودهٔ کاری: ' + errorMessageOf(result.body, ''), 'error');
                 return;
             }
+            state.clinics = (data.clinics || []).map(function (clinic) {
+                return { id: Number(clinic.id), name: String(clinic.name || '') };
+            });
             state.locations = (data.eligible_locations || []).map(function (loc) {
                 return { id: Number(loc.id), name: String(loc.name || '') };
             });
@@ -736,12 +755,27 @@ $cpms_reception_cfg = [
                 state.clinicName = String(data.current_clinic.name || '');
             } else if (data.selected_clinic_id) {
                 state.clinicId = Number(data.selected_clinic_id);
+                var selectedClinic = state.clinics.find(function (clinic) { return clinic.id === state.clinicId; });
+                state.clinicName = selectedClinic ? selectedClinic.name : '';
+            } else {
+                // The selector endpoint never promotes a sole Clinic to a selection.
+                state.clinicId = null;
+                state.clinicName = '';
+                state.locationId = null;
+                state.locationName = '';
+                state.locations = [];
             }
             if (data.current_location) {
                 state.locationId = Number(data.current_location.id);
                 state.locationName = String(data.current_location.name || '');
             } else if (data.selected_location_id) {
                 state.locationId = Number(data.selected_location_id);
+                var selectedLocation = state.locations.find(function (loc) { return loc.id === state.locationId; });
+                state.locationName = selectedLocation ? selectedLocation.name : '';
+            } else {
+                // Even a sole eligible Location remains unselected until chosen.
+                state.locationId = null;
+                state.locationName = '';
             }
             renderScope();
         }).catch(function () {
@@ -750,12 +784,21 @@ $cpms_reception_cfg = [
     }
 
     function loadBoard(silent) {
-        if (state.locations.length > 1 && !state.locationId) {
+        if (!state.clinicId) {
             renderScope();
-            setStatus('بیش از یک موقعیت واجد شرایط موجود است — انتخاب موقعیت الزامی است.', 'error');
+            setStatus('ابتدا کلینیک را انتخاب کنید.', 'error');
             return Promise.resolve();
         }
+        if (!state.locationId) {
+            renderScope();
+            setStatus('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+            return Promise.resolve();
+        }
+        var generation = scopeGeneration;
         return api('/staff/portal/reception/board').then(function (result) {
+            if (result.stale || generation !== scopeGeneration) {
+                return;
+            }
             if (!result.ok) {
                 var code = errorCodeOf(result.body);
                 if (code === 'CLINIC_SCOPE_REQUIRED') {
@@ -780,12 +823,14 @@ $cpms_reception_cfg = [
                 setStatus('', null);
             }
         }).catch(function () {
-            setStatus('خطای شبکه هنگام دریافت تختهٔ پذیرش.', 'error');
+            if (generation === scopeGeneration) {
+                setStatus('خطای شبکه هنگام دریافت تختهٔ پذیرش.', 'error');
+            }
         });
     }
 
     function arrive(button) {
-        if (state.busy) {
+        if (!state.clinicId || !state.locationId || state.busy) {
             return;
         }
         state.busy = true;
@@ -1483,22 +1528,107 @@ $cpms_reception_cfg = [
         }
     });
 
+    function scopeSwitchBlocked() {
+        return Boolean(state.busy || cancelBusy || createBusy || (reschedule && reschedule.busy) || (walkin && walkin.busy) || (book && book.busy));
+    }
+
+    function clearTenantPresentation() {
+        upcomingSeq += 1;
+        if (search.timer) {
+            window.clearTimeout(search.timer);
+            search.timer = null;
+        }
+        search.seq += 1;
+        search.lastQuery = '';
+        search.results = [];
+        search.selected = null;
+        search.created = null;
+        setSearchState(SEARCH_IDLE, false);
+        var searchInput = el('sr-search-input');
+        if (searchInput) { searchInput.value = ''; }
+        var createForm = el('sr-create');
+        if (createForm) { createForm.reset(); createForm.hidden = true; }
+        if (typeof closeCreate === 'function') { closeCreate(true); }
+        renderSearchResults();
+
+        rescheduleAbort();
+        walkin.patientId = null;
+        walkinClear();
+        var walkinSection = el('sr-walkin');
+        if (walkinSection) { walkinSection.hidden = true; }
+        book.patientId = null;
+        bookClear();
+        var bookSection = el('sr-book');
+        if (bookSection) { bookSection.hidden = true; }
+        renderSelected();
+
+        var appointments = el('sr-appointments-body');
+        if (appointments) { appointments.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.</td></tr>'; }
+        var queue = el('sr-queue-body');
+        if (queue) { queue.innerHTML = '<tr><td colspan="3" class="cpms-sr-empty">ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.</td></tr>'; }
+        var upcomingRows = el('sr-upcoming-rows');
+        if (upcomingRows) { upcomingRows.innerHTML = ''; }
+        var upcomingState = el('sr-upcoming-state');
+        if (upcomingState) { upcomingState.textContent = 'ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.'; }
+        var stats = el('sr-stats');
+        if (stats) { stats.hidden = true; }
+        var cancelRows = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        for (var i = 0; i < cancelRows.length; i += 1) { cancelRows[i].hidden = true; }
+        state.date = null;
+        renderScope();
+    }
+
     document.addEventListener('change', function (event) {
         var target = event.target;
-        if (target && target.getAttribute && target.getAttribute('data-role') === 'sr-location-select') {
-            state.locationId = Number(target.value || 0);
+        if (!target || !target.getAttribute) { return; }
+        var role = target.getAttribute('data-role');
+        if (role === 'sr-clinic-select') {
+            if (scopeSwitchBlocked()) {
+                renderScope();
+                setStatus('برای تغییر محدوده، ابتدا عملیات جاری را پایان دهید.', 'error');
+                return;
+            }
+            var clinicId = Number(target.value || 0) || null;
+            if (clinicId === state.clinicId) { return; }
+            scopeGeneration += 1;
+            state.clinicId = clinicId;
+            var selectedClinic = state.clinics.find(function (clinic) { return clinic.id === clinicId; });
+            state.clinicName = selectedClinic ? selectedClinic.name : '';
+            state.locationId = null;
             state.locationName = '';
-            // A Location switch invalidates the panel: the destination is ALWAYS
-            // the CURRENT trusted Location — nothing switches automatically.
-            rescheduleAbort();
+            state.locations = [];
+            clearTenantPresentation();
+            setStatus(clinicId ? 'در حال بارگذاری موقعیت‌های کلینیک…' : 'ابتدا کلینیک را انتخاب کنید.', null);
+            loadContext().then(function () {
+                if (!state.clinicId) {
+                    setStatus('ابتدا کلینیک را انتخاب کنید.', null);
+                } else {
+                    setStatus(state.locations.length ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : 'موقعیت عملیاتی فعالی در دسترس نیست.', state.locations.length ? null : 'error');
+                }
+            });
+            return;
+        }
+        if (role === 'sr-location-select') {
+            if (scopeSwitchBlocked()) {
+                renderScope();
+                setStatus('برای تغییر محدوده، ابتدا عملیات جاری را پایان دهید.', 'error');
+                return;
+            }
+            var locationId = Number(target.value || 0) || null;
+            if (locationId === state.locationId) { return; }
+            scopeGeneration += 1;
+            state.locationId = locationId;
+            var selectedLocation = state.locations.find(function (loc) { return loc.id === locationId; });
+            state.locationName = selectedLocation ? selectedLocation.name : '';
+            clearTenantPresentation();
+            if (!state.clinicId || !state.locationId) {
+                setStatus(state.clinicId ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : 'ابتدا کلینیک را انتخاب کنید.', null);
+                return;
+            }
             setStatus('در حال بارگذاری…', null);
             loadBoard(false);
             loadUpcoming();
-            // Phase 11 Slice 4: a Location change invalidates the doctor list and
-            // any doctor selection immediately (never carried across Locations).
             walkinReload();
-            // Phase 11 Slice 5: the same rule for booking — a Location change
-            // invalidates the doctor, date and slot selection immediately.
             bookReload();
         }
     });
@@ -1609,6 +1739,14 @@ $cpms_reception_cfg = [
     }
 
     function runSearch(force) {
+        if (!state.clinicId || !state.locationId) {
+            search.results = [];
+            search.selected = null;
+            renderSearchResults();
+            renderSelected();
+            setSearchState('ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.', true);
+            return;
+        }
         var input = el('sr-search-input');
         var q = input ? String(input.value || '').trim() : '';
         if (search.timer) {
@@ -1783,6 +1921,10 @@ $cpms_reception_cfg = [
 
     function submitCreate(event) {
         event.preventDefault();
+        if (!state.clinicId || !state.locationId) {
+            setCreateError('ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.');
+            return;
+        }
         if (createBusy) {
             return;
         }
@@ -1968,8 +2110,8 @@ $cpms_reception_cfg = [
         if (section) {
             section.hidden = false;
         }
-        if (state.locations.length > 1 && !state.locationId) {
-            setWalkinState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+        if (!state.clinicId || !state.locationId) {
+            setWalkinState('ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.', 'error');
             return;
         }
         var seq = walkin.seq;
@@ -2334,8 +2476,8 @@ $cpms_reception_cfg = [
         if (section) {
             section.hidden = false;
         }
-        if (state.locations.length > 1 && !state.locationId) {
-            setBookState('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+        if (!state.clinicId || !state.locationId) {
+            setBookState('ابتدا کلینیک و موقعیت عملیاتی را انتخاب کنید.', 'error');
             return;
         }
         book.seq += 1;
@@ -2489,6 +2631,10 @@ $cpms_reception_cfg = [
     }());
 
     function poll() {
+        if (!state.clinicId || !state.locationId) {
+            window.setTimeout(poll, POLL_MS);
+            return;
+        }
         loadBoard(true).then(function () {
             window.setTimeout(poll, POLL_MS);
         }, function () {
@@ -2496,9 +2642,13 @@ $cpms_reception_cfg = [
         });
     }
 
-    setStatus('در حال بارگذاری…', null);
+    setStatus('در حال بارگذاری کلینیک‌های مجاز…', null);
     loadContext().then(function () {
-        return loadBoard(false).then(loadUpcoming);
+        if (state.clinicId && state.locationId) {
+            return loadBoard(false).then(loadUpcoming);
+        }
+        setStatus(state.clinicId ? 'ابتدا موقعیت عملیاتی را انتخاب کنید.' : 'ابتدا کلینیک را انتخاب کنید.', null);
+        return null;
     }).then(poll);
 }());
 </script>

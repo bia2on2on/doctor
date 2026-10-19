@@ -26,7 +26,8 @@
  *   + server-derived active clinician identity
  *   + active trusted Clinic
  *   + explicitly selected trusted operational Location (every cardinality;
- *     foreign/inactive/unassigned => fail closed; never guess a sole/first Location)
+ *     foreign/unassigned => fail closed; inactive requires the exact active Visit;
+ *     never guess a sole/first Location)
  *   + Visit owned by that clinician at that Clinic/Location.
  * Cross-doctor / foreign-Clinic / foreign-Location Visit selectors fail
  * non-enumerating (404 CLINIC_NOT_FOUND); a foreign Clinic selector header
@@ -412,7 +413,7 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         );
         $this->gate(200, $rSingle, 'G3.C: explicit sole Location authoring succeeds');
 
-        // D. 0 eligible Locations => fail closed.
+        // D. No active Location or active Visit => fail closed despite retained historical rows.
         $fxZero = $this->makePortalStage('g3z');
         global $wpdb;
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
@@ -422,7 +423,7 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         );
         self::assertSame(0, $activeLeft, 'G3.fixture: zero eligible Locations really persisted');
         $patientZero = $this->insertPatient($fxZero['clinic'], 'g3z_patient');
-        $visitZero = $this->insertVisit($patientZero, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'in_consultation');
+        $visitZero = $this->insertVisit($patientZero, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'skipped');
         wp_set_current_user($fxZero['doctor']);
         $rZero = $this->dispatch('POST', '/' . sprintf(self::PORTAL_REC_CREATE, $visitZero), [
             'items' => [['type' => 'lab', 'text' => 'توصیه G3 صفر', 'is_patient_visible' => false]],
@@ -443,7 +444,7 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         $this->gate(403, $rForeignLocHeader, 'G3.E: foreign explicit Location fails closed');
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($rForeignLocHeader), 'G3.E: established scope denial code');
 
-        // F. Inactive explicit Location (own Clinic) => fail closed.
+        // F. Inactive Location without a live Visit is not a continuation grant.
         $locInactive = $this->insertLocation($fxSingle['clinic'], 'G3 Inactive Loc', self::TZ_TEHRAN, 0);
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE id = %d', $locInactive));
         $inactiveActive = (int) App::db()->fetchValue(

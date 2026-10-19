@@ -110,6 +110,7 @@ final class ScheduleService
         // اتمیسیتی بررسی همپوشانی و درج از طریق تراکنش DB و قفل پایدار ردیف پزشک
         // تضمین می‌شود تا دو درخواست موازی نتوانند وضعیت سلول را همزمان خوانده و هر دو بنویسند.
         $createdId = $this->db->transactional(function () use ($clinicianId, $day, $clinicId, $locationId, $data): int {
+            $this->lockOrganizationAndClinicForScheduleWrite( $clinicId );
             $this->lockClinicianForScheduleWrite($clinicianId);
 
             $this->assertNoShiftConflict(
@@ -122,6 +123,9 @@ final class ScheduleService
                 (int) $data['is_active'],
                 null
             );
+            // Recheck lifecycle under the Location row lock; the preflight
+            // above cannot prevent a concurrent deactivation from racing this write.
+            $this->lockActiveLocationForScheduleWrite( $clinicId, $locationId );
 
             $nowSql = $this->db->nowUtcSql();
 
@@ -158,6 +162,7 @@ final class ScheduleService
             $clinicianId = (int) $current['clinician_id'];
             $clinicId = (int) $current['clinic_id'];
 
+            $this->lockOrganizationAndClinicForScheduleWrite( $clinicId );
             $this->lockClinicianForScheduleWrite($clinicianId);
 
             // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
@@ -178,6 +183,11 @@ final class ScheduleService
                 (int) $data['is_active'],
                 $id
             );
+            if ( 1 === (int) $data['is_active'] ) {
+                // Activating a Schedule is new scheduling demand; it must not
+                // beat concurrent Location deactivation via an unlocked read.
+                $this->lockActiveLocationForScheduleWrite( $clinicId, (int) $fresh['location_id'] );
+            }
 
             if ($data !== []) {
                 $data['updated_at'] = $this->db->nowUtcSql();
@@ -205,6 +215,50 @@ final class ScheduleService
     }
 
     /**
+     * Lock the Organization -> Clinic prefix shared by lifecycle, scheduling,
+     * slot-generation, and booking writers before schedule/Location row locks.
+     */
+    private function lockOrganizationAndClinicForScheduleWrite( int $clinicId ): void
+    {
+        if ( $clinicId <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        $candidate = $this->db->fetchRow(
+            'SELECT organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [$clinicId]
+        );
+        $organizationId = (int) ( $candidate['organization_id'] ?? 0 );
+        if ( $candidate === null || $organizationId <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        $organization = $this->db->fetchRowForUpdate(
+            'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+            [$organizationId]
+        );
+        if (
+            $organization === null
+            || (int) ( $organization['id'] ?? 0 ) !== $organizationId
+            || (string) ( $organization['status'] ?? '' ) !== 'active'
+        ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+
+        $clinic = $this->db->fetchRowForUpdate(
+            'SELECT id, organization_id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [$clinicId]
+        );
+        if (
+            $clinic === null
+            || (int) ( $clinic['id'] ?? 0 ) !== $clinicId
+            || (int) ( $clinic['organization_id'] ?? 0 ) !== $organizationId
+        ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+    }
+
+    /**
      * قفل پایدار ردیف پزشک در تراکنش برای ترتیبی‌سازی جهش‌های برنامه.
      */
     private function lockClinicianForScheduleWrite(int $clinicianId): void
@@ -218,18 +272,58 @@ final class ScheduleService
         }
     }
 
+    /**
+     * Recheck and serialize active-Location schedule writes against lifecycle
+     * changes. Call after the Organization/Clinic and Clinician/Schedule locks,
+     * matching slot generation's prefix and avoiding a Location/Schedule inversion.
+     */
+    private function lockActiveLocationForScheduleWrite( int $clinicId, int $locationId ): void
+    {
+        if ( $clinicId <= 0 || $locationId <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل یافت نشد', 404 );
+        }
+
+        $location = $this->db->fetchRowForUpdate(
+            'SELECT id, clinic_id, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            [ $locationId ]
+        );
+        if (
+            $location === null
+            || (int) $location['clinic_id'] !== $clinicId
+            || (int) ( $location['is_active'] ?? 0 ) !== 1
+        ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل یافت نشد', 404 );
+        }
+    }
+
     public function delete(int $actorUserId, int $id): array
     {
-        // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
-        $current = $this->requireScheduleForTrustedClinic($id);
+        // C7-S2: ownership preflight, then revalidate the persisted row while
+        // holding the shared Organization -> Clinic -> Clinician -> Schedule order.
+        $candidate = $this->requireScheduleForTrustedClinic($id);
+        $clinicId = (int) $candidate['clinic_id'];
+        $clinicianId = (int) $candidate['clinician_id'];
+        $current = $this->db->transactional(function () use ($id, $clinicId, $clinicianId): array {
+            $this->lockOrganizationAndClinicForScheduleWrite($clinicId);
+            $this->lockClinicianForScheduleWrite($clinicianId);
+            $fresh = $this->schedules->findForUpdate($id);
+            if (
+                $fresh === null
+                || (int) ($fresh['clinic_id'] ?? 0) !== $clinicId
+                || (int) ($fresh['clinician_id'] ?? 0) !== $clinicianId
+            ) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
+            }
+            if (1 !== $this->schedules->delete($id)) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
+            }
 
-        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ برنامه است.
-        $clinicId = (int) $current['clinic_id'];
+            return $fresh;
+        });
 
-        $this->schedules->delete($id);
         $this->audit('SCHEDULE_DELETED', $actorUserId, 'schedule', $id, null, $this->scheduleView($current), null);
         $this->op->info('config.schedule_deleted', ['schedule_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id'], $clinicId);
+        $this->regenerate($clinicianId, $clinicId);
 
         return ['id' => $id, 'deleted' => true];
     }
@@ -366,18 +460,25 @@ final class ScheduleService
             ? mb_substr($fields['reason'], 0, 255)
             : null;
 
-        $id = $this->schedules->createException([
-            'clinic_id' => $clinicId,
-            'location_id' => $locationId,
-            'clinician_id' => $clinicianId,
-            'date' => $date,
-            'type' => $type,
-            'start_time' => $startTime,
-            'end_time' => $endTime,
-            'reason' => $reason,
-            'created_by_wp_user_id' => $actorUserId,
-            'created_at' => $this->db->nowUtcSql(),
-        ]);
+        $id = $this->db->transactional( function () use ( $clinicId, $locationId, $clinicianId, $date, $type, $startTime, $endTime, $reason, $actorUserId ): int {
+            $this->lockOrganizationAndClinicForScheduleWrite( $clinicId );
+            if ( $locationId !== null ) {
+                $this->lockActiveLocationForScheduleWrite( $clinicId, $locationId );
+            }
+
+            return $this->schedules->createException([
+                'clinic_id' => $clinicId,
+                'location_id' => $locationId,
+                'clinician_id' => $clinicianId,
+                'date' => $date,
+                'type' => $type,
+                'start_time' => $startTime,
+                'end_time' => $endTime,
+                'reason' => $reason,
+                'created_by_wp_user_id' => $actorUserId,
+                'created_at' => $this->db->nowUtcSql(),
+            ]);
+        } );
 
         $view = $this->exceptionView((array) $this->schedules->findException($id));
         $this->audit('SCHEDULE_EXCEPTION_CREATED', $actorUserId, 'schedule_exception', $id, null, null, $view);
@@ -393,17 +494,36 @@ final class ScheduleService
      */
     public function deleteException(int $actorUserId, int $id): array
     {
-        // C7-S2: مالکیت پیش از حذف/بازتولید Slotهای وابسته.
-        $current = $this->requireExceptionForTrustedClinic($id);
+        // C7-S2: ownership preflight, then revalidate under the lifecycle prefix.
+        // No Location lock is needed: deleting a policy row creates no demand and
+        // remains allowed after Location deactivation.
+        $candidate = $this->requireExceptionForTrustedClinic($id);
+        $clinicId = (int) $candidate['clinic_id'];
+        $clinicianId = (int) $candidate['clinician_id'];
+        $current = $this->db->transactional(function () use ($id, $clinicId, $clinicianId): array {
+            $this->lockOrganizationAndClinicForScheduleWrite($clinicId);
+            $this->lockClinicianForScheduleWrite($clinicianId);
+            $fresh = $this->db->fetchRowForUpdate(
+                'SELECT * FROM ' . $this->db->table('cpms_schedule_exceptions') . ' WHERE id = %d LIMIT 1',
+                [$id]
+            );
+            if (
+                $fresh === null
+                || (int) ($fresh['clinic_id'] ?? 0) !== $clinicId
+                || (int) ($fresh['clinician_id'] ?? 0) !== $clinicianId
+            ) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'استثنای برنامه یافت نشد', 404);
+            }
+            if (1 !== $this->schedules->deleteException($id)) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'استثنای برنامه یافت نشد', 404);
+            }
 
-        // Phase 6 Slice 1: Clinic معتبرِ این جهش، ردیف پایدارِ استثنا است
-        // (قبلاً در برابر Scope اعتبارسنجی شده).
-        $clinicId = (int) $current['clinic_id'];
+            return $fresh;
+        });
 
-        $this->schedules->deleteException($id);
         $this->audit('SCHEDULE_EXCEPTION_DELETED', $actorUserId, 'schedule_exception', $id, null, $this->exceptionView($current), null);
         $this->op->info('config.schedule_exception_deleted', ['exception_id' => $id, 'clinic_id' => $clinicId, 'actor' => $actorUserId]);
-        $this->regenerate((int) $current['clinician_id'], $clinicId);
+        $this->regenerate($clinicianId, $clinicId);
 
         return ['id' => $id, 'deleted' => true];
     }

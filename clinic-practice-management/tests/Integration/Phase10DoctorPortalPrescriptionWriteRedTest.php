@@ -20,7 +20,8 @@
  *   + server-derived active clinician identity
  *   + active trusted Clinic
  *   + explicitly selected trusted operational Location (every cardinality;
- *     no sole/primary inference; foreign/inactive/unassigned => fail closed)
+ *     no sole/primary inference; foreign/unassigned => fail closed; inactive
+ *     requires the exact active Visit)
  *   + Visit owned by that clinician and located at that Clinic/Location
  *     (create) resp. Prescription belonging to that authorized Visit
  *     (finalize)
@@ -812,7 +813,8 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         );
         $this->gate(200, $rSingle, 'G2b.E: explicit sole Location write succeeds');
 
-        // 0 eligible => fail closed on write.
+        // No active Location remains, but this exact active Visit preserves
+        // the Doctor's existing treatment workflow after Location deactivation.
         $fxZero = $this->makePortalStage('g2bz');
         global $wpdb;
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
@@ -822,7 +824,26 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $rZero = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visitZero), [
             'items' => [$this->validItem()],
         ], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
-        $this->gateIn([403, 404], $rZero, 'G2b.F: zero eligible Locations fails closed on write');
+        $this->gate(200, $rZero, 'G2b.F: an active Visit at an inactive Location still accepts its structured prescription');
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_prescriptions') . ' WHERE visit_id = %d',
+                [$visitZero]
+            ),
+            'G2b.F: the ongoing Visit receives exactly one prescription row'
+        );
+        $rxZero = $this->payload( $rZero );
+        $rxZeroId = (int) ( $rxZero['id'] ?? 0 );
+        self::assertGreaterThan( 0, $rxZeroId, 'G2b.F: Portal draft has a persisted prescription id' );
+        $finalizedZero = $this->dispatch(
+            'POST',
+            '/' . sprintf( self::PORTAL_RX_FINALIZE, $rxZeroId ),
+            [],
+            $this->scopeHeaders( $fxZero['clinic'], $fxZero['location'] )
+        );
+        $this->gate( 200, $finalizedZero, 'G2b.F: the exact active Visit can finalize its prescription after Location deactivation' );
+        self::assertSame( 'finalized', $this->payload( $finalizedZero )['status'] ?? null );
     }
 
     // ============ Phase 13 Slice 1 — structured prescription print (TEST-ONLY RED) ============

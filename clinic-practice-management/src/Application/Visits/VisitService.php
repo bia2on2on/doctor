@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Visits;
 
+use ClinicCore\Application\Location\DoctorPortalLocationEligibility;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
@@ -515,7 +516,8 @@ final class VisitService
      * Doctor Portal scope contract:
      * - 0 eligible => empty Today/Queue projection
      * - 1 or more eligible => explicit Location REQUIRED (no sole/first/primary fallback)
-     * - foreign/inactive/unassigned => denied (UNAVAILABLE)
+     * - inactive Locations require this doctor's active Visit or pending/confirmed appointment;
+     *   foreign/unassigned or inactive without continuity => denied (UNAVAILABLE)
      *
      * Uses existing CLINIC_SCOPE_REQUIRED 400 with field=location_id reason=location_required.
      * Never returns eligible IDs.
@@ -528,7 +530,7 @@ final class VisitService
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, $clinician_id );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             $date = $this->nowUtc()->format( 'Y-m-d' );
@@ -685,7 +687,7 @@ final class VisitService
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             return [
@@ -744,7 +746,7 @@ final class VisitService
         $scope_clinician_id = $this->queueScopeClinicianId( $actor_user_id, $clinic_id, null );
         $location_id        = $this->queueLocationId( $clinic_id, $actor_user_id );
 
-        $eligible = $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        $eligible = $this->eligibleDoctorPortalLocationIds( $clinic_id, $actor_user_id );
 
         if ( [] === $eligible ) {
             return 0;
@@ -1571,6 +1573,27 @@ final class VisitService
             return $eligible;
         }
         return $active;
+    }
+
+    /**
+     * Doctor Portal continuity uses its own narrow policy; legacy shared queue,
+     * check-in and scheduling callers keep the active-only helper above.
+     *
+     * @return list<int>
+     */
+    private function eligibleDoctorPortalLocationIds( int $clinic_id, int $actor_user_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy PSR-style, established contract
+        if ( $clinic_id <= 0 || $actor_user_id <= 0 ) {
+            return [];
+        }
+
+        // Preserve the legacy direct-service fallback, but never use it to
+        // extend inactive-Location continuity without an active membership.
+        if ( null === $this->memberships->find_active( $clinic_id, $actor_user_id ) ) {
+            return $this->eligibleLocationIdsForActor( $clinic_id, $actor_user_id );
+        }
+
+        return ( new DoctorPortalLocationEligibility( $this->db, $this->memberships ) )
+            ->eligible_location_ids( $clinic_id, $actor_user_id );
     }
 
     /**

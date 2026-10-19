@@ -21,7 +21,7 @@
  *   + server-derived clinician identity
  *   + active trusted Clinic
  *   + explicitly selected trusted operational Location (every cardinality;
- *     foreign/inactive/unassigned=>fail closed)
+ *     foreign/unassigned=>fail closed; inactive only for the exact active Visit)
  *   + Visit owned by that clinician and at that Location
  *   = authorized.
  * Raw visit_id/location_id remain selectors only; cross-doctor and foreign-
@@ -528,7 +528,7 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
             'G7.E: Sole Location with explicit selection succeeds'
         );
 
-        // F. forged/foreign/inactive/unassigned Location cannot create authority.
+        // F. Forged/foreign/unassigned and inactive-without-continuity selectors cannot create authority.
 
         // Foreign Location (belongs to another clinic)
         $orgF = $this->insertOrg('G7F Org');
@@ -579,16 +579,15 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $rForged = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitSingle), [], $headersForged);
         self::assertContains($rForged->get_status(), [403, 422], 'G7.F: Forged Location fails closed');
 
-        // 0 eligible => fail closed
-        // Deactivate all locations for a clinic so eligible = []
+        // No active Location and no actionable continuity record => fail closed.
         $fxZero = $this->makePortalStage('g7z');
         $wpdb->query($wpdb->prepare('UPDATE ' . $wpdb->prefix . 'cpms_locations SET is_active = 0 WHERE clinic_id = %d', $fxZero['clinic']));
         $patientZ = $this->insertPatient($fxZero['clinic'], 'g7z_patient');
-        $visitZ = $this->insertVisit($patientZ, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'in_consultation');
+        $visitZ = $this->insertVisit($patientZ, $fxZero['clinician'], $fxZero['clinic'], $fxZero['location'], 'skipped');
         wp_set_current_user($fxZero['doctor']);
         $rZero = $this->dispatch('GET', '/' . sprintf(self::PORTAL_RECORD, $visitZ), [], $this->scopeHeaders($fxZero['clinic'], $fxZero['location']));
-        // With 0 eligible, even explicit trusted Location must fail closed (no authority to create scope)
-        self::assertContains($rZero->get_status(), [403, 404], 'G7.F: 0 eligible fails closed');
+        // Skipped history is not active treatment; an explicit inactive Location remains unavailable.
+        self::assertContains($rZero->get_status(), [403, 404], 'G7.F: no active continuity record fails closed');
     }
 
     // ================= helpers (proven Slice 1/2 patterns) =================

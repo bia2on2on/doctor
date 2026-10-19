@@ -137,7 +137,8 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
         $ctx = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/context', [], $this->scopeHeaders($fx['clinic']));
         self::assertSame(200, $ctx->get_status(), 'G1: context must answer for a valid secretary — got ' . $ctx->get_status() . '/' . $this->errCode($ctx));
         $ctxData = $this->payload($ctx);
-        self::assertSame($fx['clinic'], (int) ($ctxData['selected_clinic_id'] ?? 0), 'G1: trusted Clinic is resolved');
+        self::assertSame($fx['clinic'], (int) ($ctxData['selected_clinic_id'] ?? 0), 'G1: explicitly selected Clinic is resolved');
+        self::assertNull($ctxData['selected_location_id'] ?? null, 'G1: Clinic selection does not auto-select a sole Location');
         self::assertNotEmpty($ctxData['eligible_locations'] ?? [], 'G1: eligible Locations must be listed for the selector contract');
 
         // REST board: today's booked rows + read-only queue for the trusted Location.
@@ -202,9 +203,9 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
     // ============ G3 — Location policy: 0 / 1 / N>1 ============
 
     /**
-     * 0 eligible Locations ⇒ fail closed / no reception data and no mutation;
-     * 1 eligible ⇒ auto-resolution is allowed; N>1 ⇒ explicit Location REQUIRED
-     * (no first-Location fallback), using the established CLINIC_SCOPE_REQUIRED
+     * No implicit Location resolution: 0, 1, and N eligible Locations all
+     * require a deliberate selector before tenant-specific Reception work,
+     * using the established CLINIC_SCOPE_REQUIRED
      * location_required envelope without leaking eligible ids.
      */
     public function testG3_LocationPolicyZeroOneMany(): void
@@ -216,27 +217,27 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
         $this->deactivateLocation($zero['loc_tokyo']);
         wp_set_current_user($zero['secretary']);
         $zeroBoard = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board', [], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(200, $zeroBoard->get_status(), 'G3: zero-eligible board answers fail-closed');
-        $zeroData = $this->payload($zeroBoard);
-        self::assertNull($zeroData['location_id'] ?? null, 'G3: zero eligible ⇒ no Location is resolved');
-        self::assertSame([], $zeroData['appointments'] ?? ['x'], 'G3: zero eligible ⇒ no booked rows');
-        self::assertSame([], $zeroData['queue'] ?? ['x'], 'G3: zero eligible ⇒ no queue rows');
+        self::assertSame(400, $zeroBoard->get_status(), 'G3: zero-eligible Clinic-only board read requires explicit Location selection');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zeroBoard), 'G3: zero-eligible read fails before returning operational data');
+        self::assertSame('location_id', (string) ($this->errorData($zeroBoard)['field'] ?? ''), 'G3: Location selector is required even when no active option exists');
         $zeroArrival = $this->dispatch('POST', '/' . self::REST_NS . '/staff/portal/reception/arrivals', [
             'patient_id'     => 1,
             'appointment_id' => 1,
         ], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(403, $zeroArrival->get_status(), 'G3: zero eligible ⇒ arrival fails closed');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zeroArrival), 'G3: zero-eligible mutation denial envelope');
+        self::assertSame(400, $zeroArrival->get_status(), 'G3: zero eligible ⇒ arrival fails closed before mutation');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zeroArrival), 'G3: missing explicit Location denial envelope');
 
-        // B. 1 eligible Location ⇒ auto-resolution without an explicit selector.
+        // B. 1 eligible Location still requires deliberate selection.
         $one = $this->makeReceptionStage('g3one');
         $this->seedMembership($one['secretary'], $one['clinic'], 'cpms_secretary');
         $this->deactivateLocation($one['loc_tokyo']);
         wp_set_current_user($one['secretary']);
         $oneBoard = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board', [], $this->scopeHeaders($one['clinic']));
-        self::assertSame(200, $oneBoard->get_status(), 'G3: single-eligible board answers');
-        $oneData = $this->payload($oneBoard);
-        self::assertSame($one['loc_tehran'], (int) ($oneData['location_id'] ?? 0), 'G3: single eligible Location auto-resolves');
+        self::assertSame(400, $oneBoard->get_status(), 'G3: single eligible Location remains unselected');
+        self::assertSame('location_required', (string) ($this->errorData($oneBoard)['reason'] ?? ''), 'G3: singleton Location selection is mandatory');
+        $oneSelected = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board', [], $this->scopeHeaders($one['clinic'], $one['loc_tehran']));
+        self::assertSame(200, $oneSelected->get_status(), 'G3: explicit singleton Location selection succeeds — ' . $this->errCode($oneSelected));
+        self::assertSame($one['loc_tehran'], (int) ($this->payload($oneSelected)['location_id'] ?? 0), 'G3: the deliberately selected Location is bound');
 
         // C. N>1 without explicit Location ⇒ REQUIRED, never a first-Location fallback.
         $many = $this->makeReceptionStage('g3many');
@@ -260,6 +261,100 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
         $manyBoard2 = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board', [], $this->scopeHeaders($many['clinic'], $many['loc_tokyo']));
         self::assertSame(200, $manyBoard2->get_status(), 'G3: explicit Location selection is honored');
         self::assertSame($many['loc_tokyo'], (int) ($this->payload($manyBoard2)['location_id'] ?? 0), 'G3: the selected Location is bound');
+    }
+
+    // ============ G3A — Explicit singleton Clinic + Location selection ============
+
+    public function testReceptionRequiresExplicitClinicAndLocationEvenForSingletons(): void
+    {
+        $fx = $this->makeReceptionStage('explicit-singleton');
+        $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
+        $this->deactivateLocation($fx['loc_tokyo']);
+        $patientId = $this->insertPatient($fx['clinic'], 'private-selection');
+        $foreignClinic = $this->insertClinicInOrg('Rcp Foreign explicit', $fx['org'], 'America/New_York');
+        $foreignLocation = $this->insertLocation($foreignClinic, 'Rcp Foreign Location', self::TZ_TEHRAN, 1);
+        wp_set_current_user($fx['secretary']);
+
+        $prefix = '/' . self::REST_NS . '/staff/portal/reception/';
+        $initialContext = $this->dispatch('GET', $prefix . 'context');
+        self::assertSame(200, $initialContext->get_status(), 'G3A: selector context lists only authorized Clinic choices');
+        $initial = $this->payload($initialContext);
+        self::assertCount(1, (array) ($initial['clinics'] ?? []), 'G3A: fixture has one authorized Clinic choice');
+        self::assertNull($initial['selected_clinic_id'] ?? null, 'G3A: sole Clinic remains unselected');
+        self::assertNull($initial['selected_location_id'] ?? null, 'G3A: no Location is selected before Clinic selection');
+        self::assertSame([], $initial['eligible_locations'] ?? [], 'G3A: no Location list is loaded before Clinic selection');
+
+        $before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+            [$fx['clinic']]
+        );
+        $noClinicBoard = $this->dispatch('GET', $prefix . 'board');
+        self::assertSame(400, $noClinicBoard->get_status(), 'G3A: no Clinic selection blocks operational reads');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($noClinicBoard), 'G3A: missing Clinic is explicit');
+        self::assertSame('clinic_id', (string) ($this->errorData($noClinicBoard)['field'] ?? ''), 'G3A: Clinic selection is required');
+
+        $noClinicSearch = $this->dispatch('GET', $prefix . 'patients/search', ['q' => 'Test']);
+        self::assertSame(400, $noClinicSearch->get_status(), 'G3A: no Clinic selection blocks patient search');
+        self::assertArrayNotHasKey('first_name', $this->payload($noClinicSearch), 'G3A: no patient presentation is returned without Clinic selection');
+        self::assertStringNotContainsString('Patient', (string) wp_json_encode($noClinicSearch->get_data()), 'G3A: no PHI in unscoped search denial');
+        $noClinicCreate = $this->dispatch('POST', $prefix . 'patients', [
+            'first_name' => 'Should', 'last_name' => 'NotPersist', 'mobile' => '09121119999',
+        ]);
+        self::assertSame(400, $noClinicCreate->get_status(), 'G3A: no Clinic selection blocks patient writes');
+        self::assertSame($before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+            [$fx['clinic']]
+        ), 'G3A: missing Clinic selection creates no patient');
+
+        $selectedClinicContext = $this->dispatch('GET', $prefix . 'context', [], $this->scopeHeaders($fx['clinic']));
+        self::assertSame(200, $selectedClinicContext->get_status(), 'G3A: explicit Clinic selection loads its Location choices');
+        $selectedClinic = $this->payload($selectedClinicContext);
+        self::assertSame($fx['clinic'], (int) ($selectedClinic['selected_clinic_id'] ?? 0), 'G3A: selected Clinic is echoed');
+        self::assertCount(1, (array) ($selectedClinic['eligible_locations'] ?? []), 'G3A: exactly one active eligible Location exists');
+        self::assertNull($selectedClinic['selected_location_id'] ?? null, 'G3A: sole Location remains unselected');
+
+        $noLocationBoard = $this->dispatch('GET', $prefix . 'board', [], $this->scopeHeaders($fx['clinic']));
+        self::assertSame(400, $noLocationBoard->get_status(), 'G3A: Clinic-only selection blocks Location-scoped board read');
+        self::assertSame('location_required', (string) ($this->errorData($noLocationBoard)['reason'] ?? ''), 'G3A: singleton Location selection is mandatory');
+        $noLocationSearch = $this->dispatch('GET', $prefix . 'patients/search', ['q' => 'Test'], $this->scopeHeaders($fx['clinic']));
+        self::assertSame(400, $noLocationSearch->get_status(), 'G3A: tenant-specific Reception patient search requires explicit Location too');
+        self::assertStringNotContainsString('Patient', (string) wp_json_encode($noLocationSearch->get_data()), 'G3A: no PHI before Location selection');
+        $noLocationCreate = $this->dispatch('POST', $prefix . 'patients', [
+            'first_name' => 'Should', 'last_name' => 'NotPersist', 'mobile' => '09121119999',
+        ], $this->scopeHeaders($fx['clinic']));
+        self::assertSame(400, $noLocationCreate->get_status(), 'G3A: Clinic-only selection blocks patient writes until Location selection');
+        self::assertSame($before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+            [$fx['clinic']]
+        ), 'G3A: missing Location selection creates no patient');
+
+        $forgedClinic = $this->dispatch('GET', $prefix . 'context', [], $this->scopeHeaders($foreignClinic));
+        self::assertSame(403, $forgedClinic->get_status(), 'G3A: Clinic outside the actor membership is rejected');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($forgedClinic), 'G3A: cross-Clinic selector has non-enumerating authorization denial');
+        $foreignLocationRead = $this->dispatch('GET', $prefix . 'board', [], $this->scopeHeaders($fx['clinic'], $foreignLocation));
+        self::assertSame(403, $foreignLocationRead->get_status(), 'G3A: cross-Clinic Location selector is rejected');
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($foreignLocationRead), 'G3A: foreign Location is non-enumerating');
+
+        $explicitHeaders = $this->scopeHeaders($fx['clinic'], $fx['loc_tehran']);
+        $explicitContext = $this->dispatch('GET', $prefix . 'context', [], $explicitHeaders);
+        self::assertSame(200, $explicitContext->get_status(), 'G3A: explicit Clinic + singleton Location context succeeds');
+        $explicit = $this->payload($explicitContext);
+        self::assertSame($fx['clinic'], (int) ($explicit['selected_clinic_id'] ?? 0), 'G3A: explicit Clinic remains bound');
+        self::assertSame($fx['loc_tehran'], (int) ($explicit['selected_location_id'] ?? 0), 'G3A: explicit Location remains bound');
+        $board = $this->dispatch('GET', $prefix . 'board', [], $explicitHeaders);
+        self::assertSame(200, $board->get_status(), 'G3A: explicit singleton selections authorize the board');
+        self::assertSame($fx['loc_tehran'], (int) ($this->payload($board)['location_id'] ?? 0), 'G3A: board data is bound to the selected Location');
+        $search = $this->dispatch('GET', $prefix . 'patients/search', ['q' => 'Test'], $explicitHeaders);
+        self::assertSame(200, $search->get_status(), 'G3A: explicit singleton selections authorize Clinic patient search');
+        self::assertContains($patientId, array_map(static fn($row) => (int) ($row['id'] ?? 0), $this->payload($search)), 'G3A: patient PHI is returned only after explicit selections');
+        $created = $this->dispatch('POST', $prefix . 'patients', [
+            'first_name' => 'Explicit', 'last_name' => 'Selection', 'mobile' => '09121119998',
+        ], $explicitHeaders);
+        self::assertSame(200, $created->get_status(), 'G3A: explicit singleton selections authorize patient creation');
+        self::assertSame($before + 1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d',
+            [$fx['clinic']]
+        ), 'G3A: only the explicitly scoped create persists a patient');
     }
 
     // ============ G4 — Foreign / inactive / unassigned Location rejected ============
@@ -619,6 +714,15 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
             return $b['data'];
         }
         return is_array($b) ? $b : [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function errorData(WP_REST_Response $res): array
+    {
+        $body = $res->get_data();
+        return is_array($body) && isset($body['data']) && is_array($body['data']) ? $body['data'] : [];
     }
 
     private function errCode(WP_REST_Response $res): string

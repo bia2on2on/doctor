@@ -260,12 +260,12 @@ final class Phase11ReceptionWalkInRedTest extends WP_UnitTestCase
         wp_set_current_user($zero['secretary']);
         $pz = $this->insertPatient($zero['clinic'], 'w3z');
         $zl = $this->dispatch('GET', self::CLINICIANS, [], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(200, $zl->get_status(), 'W3: zero-eligible clinicians read answers fail-closed — ' . $this->errCode($zl));
-        self::assertNull($this->payload($zl)['location_id'] ?? null, 'W3: zero eligible ⇒ no Location resolved');
-        self::assertSame([], $this->clinicianIds($zl), 'W3: zero eligible ⇒ no doctors');
+        self::assertSame(400, $zl->get_status(), 'W3: zero-eligible Clinic-only clinician read requires an explicit Location');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zl), 'W3: missing Location is rejected before the read');
+        self::assertSame([], $this->clinicianIds($zl), 'W3: no doctors are disclosed without explicit Location');
         $zw = $this->dispatch('POST', self::WALK_IN, ['patient_id' => $pz, 'clinician_id' => $zero['c1']], $this->scopeHeaders($zero['clinic']));
-        self::assertSame(403, $zw->get_status(), 'W3: zero eligible ⇒ walk-in fails closed');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($zw), 'W3: zero-eligible envelope');
+        self::assertSame(400, $zw->get_status(), 'W3: zero eligible ⇒ unscoped walk-in fails closed');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($zw), 'W3: missing Location denial envelope');
         self::assertSame(0, $this->visitCount($pz), 'W3: zero eligible ⇒ no Visit');
 
         // B. N>1 without explicit Location ⇒ REQUIRED (no first-Location fallback).
@@ -291,18 +291,21 @@ final class Phase11ReceptionWalkInRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->visitCount($pn), 'W3: foreign/inactive Location ⇒ no Visit');
 
         // D. Location-scoped secretary: unassigned Location rejected; the ONE
-        // eligible Location auto-resolves without a selector.
+        // eligible Location still requires a deliberate selector.
         App::membership_service()->set_scope_mode($mid, 'location', [$many['locB']]);
         $uw = $this->walkIn($many, $pn, $many['c2'], $many['locA']);
         self::assertSame(403, $uw->get_status(), 'W3: unassigned Location rejected');
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($uw), 'W3: unassigned Location envelope');
-        $ol = $this->dispatch('GET', self::CLINICIANS, [], $this->scopeHeaders($many['clinic']));
-        self::assertSame(200, $ol->get_status(), 'W3: single eligible Location auto-resolves for clinicians — ' . $this->errCode($ol));
-        self::assertSame($many['locB'], (int) ($this->payload($ol)['location_id'] ?? 0), 'W3: auto-resolved Location = B');
+        $noLocation = $this->dispatch('GET', self::CLINICIANS, [], $this->scopeHeaders($many['clinic']));
+        self::assertSame(400, $noLocation->get_status(), 'W3: single eligible Location remains unselected');
+        self::assertSame('location_required', (string) ($this->errorData($noLocation)['reason'] ?? ''), 'W3: singleton Location requires explicit selection');
+        $ol = $this->dispatch('GET', self::CLINICIANS, [], $this->scopeHeaders($many['clinic'], $many['locB']));
+        self::assertSame(200, $ol->get_status(), 'W3: explicit single eligible Location selection succeeds — ' . $this->errCode($ol));
+        self::assertSame($many['locB'], (int) ($this->payload($ol)['location_id'] ?? 0), 'W3: explicitly selected Location = B');
         self::assertSame([$many['c2']], $this->clinicianIds($ol), 'W3: Location B doctors only');
-        $ow = $this->dispatch('POST', self::WALK_IN, ['patient_id' => $pn, 'clinician_id' => $many['c2']], $this->scopeHeaders($many['clinic']));
+        $ow = $this->dispatch('POST', self::WALK_IN, ['patient_id' => $pn, 'clinician_id' => $many['c2']], $this->scopeHeaders($many['clinic'], $many['locB']));
         self::assertSame(200, $ow->get_status(), 'W3: single eligible Location walk-in succeeds — ' . $this->errCode($ow));
-        self::assertSame($many['locB'], (int) $this->latestVisit($pn)['location_id'], 'W3: Visit lands in the auto-resolved Location');
+        self::assertSame($many['locB'], (int) $this->latestVisit($pn)['location_id'], 'W3: Visit lands in the explicitly selected Location');
     }
 
     // ============ W4 — Clinician eligibility ============

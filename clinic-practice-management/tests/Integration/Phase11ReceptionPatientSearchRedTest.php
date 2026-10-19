@@ -108,7 +108,7 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         // Control: the trusted-Clinic secretary path is reached — the SHARED
         // established search answers for this very secretary and fixture.
         wp_set_current_user($fx['secretary']);
-        $shared = $this->dispatch('GET', self::SHARED_SEARCH, ['q' => 'Kavian'], $this->scopeHeaders($fx['clinic']));
+        $shared = $this->dispatch('GET', self::SHARED_SEARCH, ['q' => 'Kavian'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $shared->get_status(), 'S1 control: shared established search reachable for the secretary');
         self::assertContains($pid, $this->ids($shared), 'S1 control: shared search finds the fixture patient');
 
@@ -136,7 +136,7 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         // A. Doctor holds cpms_patient_read but is NOT the Reception role.
         $this->seedMembership($fx['doctor'], $fx['clinic'], 'cpms_doctor');
         wp_set_current_user($fx['doctor']);
-        $doc = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic']));
+        $doc = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $doc->get_status(), 'S2: doctor denied on the reception search boundary');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($doc), 'S2: doctor denial envelope');
 
@@ -144,27 +144,27 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         $acct = $this->makeUser('qa_s2_acct', RolesAndCapabilities::ROLE_ACCOUNTANT);
         $this->seedMembership($acct, $fx['clinic'], 'cpms_accountant');
         wp_set_current_user($acct);
-        $acc = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic']));
+        $acc = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $acc->get_status(), 'S2: accountant denied');
 
         // C. Secretary + ACTIVE membership but clinic-scoped patient-read DENY.
         $mid = $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         App::membership_service()->set_capability($mid, RolesAndCapabilities::PATIENT_READ, 'deny');
         wp_set_current_user($fx['secretary']);
-        $deny = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic']));
+        $deny = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $deny->get_status(), 'S2: scoped cpms_patient_read deny blocks reception search');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($deny), 'S2: capability denial envelope');
         self::assertSame([], $this->ids($deny), 'S2: denial carries no patient rows');
 
         // D. Missing nonce — CSRF layer preserved.
         App::membership_service()->remove_capability($mid, RolesAndCapabilities::PATIENT_READ);
-        $noNonce = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic']), false);
+        $noNonce = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']), false);
         self::assertSame(403, $noNonce->get_status(), 'S2: missing nonce rejected');
         self::assertSame('CLINIC_INVALID_NONCE', $this->errCode($noNonce), 'S2: nonce denial code');
 
         // E. Anonymous.
         wp_set_current_user(0);
-        $anon = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic']));
+        $anon = $this->dispatch('GET', self::SEARCH, ['q' => 'Deny'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertContains($anon->get_status(), [401, 403], 'S2: anonymous denied');
         self::assertSame([], $this->ids($anon), 'S2: anonymous gets no rows');
     }
@@ -179,13 +179,13 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         $mid = $this->seedMembership($fx['secretary'], $fx['clinic'], 'cpms_secretary');
         App::membership_service()->suspend_membership($mid);
         wp_set_current_user($fx['secretary']);
-        $susp = $this->dispatch('GET', self::SEARCH, ['q' => 'Member'], $this->scopeHeaders($fx['clinic']));
+        $susp = $this->dispatch('GET', self::SEARCH, ['q' => 'Member'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $susp->get_status(), 'S3: suspended membership denied');
         self::assertSame([], $this->ids($susp), 'S3: suspended membership gets no rows');
 
         $loner = $this->makeUser('qa_s3_loner', RolesAndCapabilities::ROLE_SECRETARY);
         wp_set_current_user($loner);
-        $none = $this->dispatch('GET', self::SEARCH, ['q' => 'Member'], $this->scopeHeaders($fx['clinic']));
+        $none = $this->dispatch('GET', self::SEARCH, ['q' => 'Member'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(403, $none->get_status(), 'S3: secretary without membership denied');
         self::assertSame([], $this->ids($none), 'S3: no membership gets no rows');
     }
@@ -209,7 +209,7 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         }
 
         // Raw Clinic B selector from a Clinic A secretary fails closed (no membership in B).
-        $cross = $this->dispatch('GET', self::SEARCH, ['q' => 'Samename'], $this->scopeHeaders($b['clinic']));
+        $cross = $this->dispatch('GET', self::SEARCH, ['q' => 'Samename'], $this->scopeHeaders($b['clinic'], $b['loc_a']));
         self::assertNotSame(200, $cross->get_status(), 'S4: foreign Clinic selector fails closed');
         self::assertSame([], $this->ids($cross), 'S4: foreign Clinic selector returns no rows');
     }
@@ -232,12 +232,13 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
 
         self::assertSame(200, $atA->get_status(), 'S5: Location A search answers — ' . $this->errCode($atA));
         self::assertSame(200, $atB->get_status(), 'S5: Location B search answers — ' . $this->errCode($atB));
-        self::assertSame(200, $noLoc->get_status(), 'S5: Clinic search does not require a Location — ' . $this->errCode($noLoc));
+        self::assertSame(400, $noLoc->get_status(), 'S5: Reception search requires explicit Location selection');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($noLoc), 'S5: missing Location has the required-scope envelope');
+        self::assertArrayNotHasKey('first_name', $this->payload($noLoc), 'S5: no patient PHI is returned without Location selection');
         $want = [$p1, $p2];
         sort($want);
         self::assertSame($want, $this->sortedIds($atA), 'S5: Location A sees all Clinic patients');
         self::assertSame($this->sortedIds($atA), $this->sortedIds($atB), 'S5: Location B returns the identical Clinic result');
-        self::assertSame($this->sortedIds($atA), $this->sortedIds($noLoc), 'S5: no Location selection returns the identical Clinic result');
         self::assertSame($this->payload($atA), $this->payload($atB), 'S5: payloads are identical across Locations');
     }
 
@@ -251,12 +252,12 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         wp_set_current_user($fx['secretary']);
 
         foreach (['A', ' A ', '', '  '] as $q) {
-            $res = $this->dispatch('GET', self::SEARCH, ['q' => $q], $this->scopeHeaders($fx['clinic']));
+            $res = $this->dispatch('GET', self::SEARCH, ['q' => $q], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
             self::assertSame(400, $res->get_status(), 'S6: query "' . $q . '" rejected like the established search');
             self::assertSame('CLINIC_VALIDATION_FAILED', $this->errCode($res), 'S6: established validation code');
             self::assertSame([], $this->ids($res), 'S6: short query returns no rows');
         }
-        $two = $this->dispatch('GET', self::SEARCH, ['q' => 'Ab'], $this->scopeHeaders($fx['clinic']));
+        $two = $this->dispatch('GET', self::SEARCH, ['q' => 'Ab'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $two->get_status(), 'S6: two characters are enough');
     }
 
@@ -278,7 +279,7 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
             'MRN'         => 'ZQ42',
         ];
         foreach ($cases as $label => $q) {
-            $res = $this->dispatch('GET', self::SEARCH, ['q' => $q], $this->scopeHeaders($fx['clinic']));
+            $res = $this->dispatch('GET', self::SEARCH, ['q' => $q], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
             self::assertSame(200, $res->get_status(), 'S7: ' . $label . ' search answers');
             self::assertSame([$target], $this->ids($res), 'S7: ' . $label . ' search finds exactly the target');
             self::assertNotContains($decoy, $this->ids($res), 'S7: ' . $label . ' search excludes the decoy');
@@ -296,11 +297,11 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         }
         wp_set_current_user($fx['secretary']);
 
-        $default = $this->dispatch('GET', self::SEARCH, ['q' => 'Bounded'], $this->scopeHeaders($fx['clinic']));
+        $default = $this->dispatch('GET', self::SEARCH, ['q' => 'Bounded'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $default->get_status(), 'S8: default search answers');
         self::assertCount(25, $this->ids($default), 'S8: established default limit (25) preserved');
 
-        $huge = $this->dispatch('GET', self::SEARCH, ['q' => 'Bounded', 'limit' => 5000], $this->scopeHeaders($fx['clinic']));
+        $huge = $this->dispatch('GET', self::SEARCH, ['q' => 'Bounded', 'limit' => 5000], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $huge->get_status(), 'S8: oversized limit answers');
         self::assertLessThanOrEqual(50, count($this->ids($huge)), 'S8: established hard cap (50) preserved');
     }
@@ -324,7 +325,7 @@ final class Phase11ReceptionPatientSearchRedTest extends WP_UnitTestCase
         ));
         wp_set_current_user($fx['secretary']);
 
-        $res = $this->dispatch('GET', self::SEARCH, ['q' => 'Clinicalx'], $this->scopeHeaders($fx['clinic']));
+        $res = $this->dispatch('GET', self::SEARCH, ['q' => 'Clinicalx'], $this->scopeHeaders($fx['clinic'], $fx['loc_a']));
         self::assertSame(200, $res->get_status(), 'S9: search answers');
         $rows = $this->payload($res);
         self::assertCount(1, $rows, 'S9: one row');

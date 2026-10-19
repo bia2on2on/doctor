@@ -574,6 +574,45 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
         self::assertStringContainsString('revenue', $csv);
     }
 
+    public function testAllowClinicWideExportWhenSelectedLocationIsInactive(): void
+    {
+        $orgId = $this->createOrganization('inactive-location-export');
+        $clinicId = $this->createClinic($orgId, 'inactive-location-export');
+        $actorId = $this->makeUser('rep_inactive_location_export', 'cpms_accountant');
+        App::membership_service()->create_membership($clinicId, $actorId, 'cpms_accountant');
+
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
+                (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+             VALUES (%d, %s, %s, %s, 0, 0, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $clinicId,
+            'Archived export Location ' . $unique,
+            'archived-export-location-' . $unique,
+            'Asia/Tehran',
+            $now,
+            $now
+        ));
+        $locationId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $locationId, 'precondition: inactive operational Location exists');
+
+        wp_set_current_user($actorId);
+        $request = new WP_REST_Request('POST', self::NS . '/reports/revenue/export');
+        $request->set_param('from', gmdate('Y-m-d'));
+        $request->set_param('to', gmdate('Y-m-d'));
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        $request->set_header('X-CPMS-Clinic-Id', (string) $clinicId);
+        // The report route is Clinic-wide and has no Location filter. A stale
+        // dashboard selector must not suppress an authorized historical export.
+        $request->set_header('X-CPMS-Location-Id', (string) $locationId);
+
+        $response = rest_do_request($request);
+        self::assertSame(202, $response->get_status(), 'Clinic-wide export remains available after Location deactivation');
+        self::assertGreaterThan(0, $this->reportExportJobCount($clinicId, $actorId), 'the authorized Clinic export job is durably queued');
+    }
+
     public function testAllowExplicitMembershipGrantWhereSemanticallyValid(): void
     {
         $orgId = $this->createOrganization('explicit-grant');

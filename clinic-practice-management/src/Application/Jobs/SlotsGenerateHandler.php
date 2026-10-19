@@ -93,16 +93,19 @@ final class SlotsGenerateHandler
         // Location reference is observable and can fail closed with a log, rather
         // than silently vanishing from the sweep.
         $clinicians = $this->db->fetchAll(
-            'SELECT c.id AS clinician_id, c.clinic_id, s.clinic_id AS schedule_clinic_id, s.location_id, s.day_of_week, s.start_time, s.end_time,
-                    s.break_start, s.break_end, s.appointment_duration_min, s.slot_capacity,
+            'SELECT c.id AS clinician_id, c.clinic_id, c.wp_user_id, s.id AS schedule_id, s.clinic_id AS schedule_clinic_id,
+                    s.location_id, s.day_of_week, s.start_time, s.end_time, s.break_start, s.break_end,
+                    s.appointment_duration_min, s.slot_capacity, s.is_active AS schedule_is_active,
+                    cl.organization_id AS schedule_organization_id,
                     l.id AS loc_id, l.clinic_id AS location_clinic_id, l.timezone AS location_timezone,
-                    m.id AS schedule_membership_id
+                    l.is_active AS location_is_active, m.id AS schedule_membership_id
              FROM ' . $this->db->table('cpms_clinicians') . ' c
              JOIN ' . $this->db->table('cpms_schedule') . ' s ON s.clinician_id = c.id AND s.is_active = 1
              LEFT JOIN ' . $this->db->table('cpms_locations') . ' l ON l.id = s.location_id
              LEFT JOIN ' . $this->db->table('cpms_clinic_memberships') . ' m
                     ON m.wp_user_id = c.wp_user_id AND m.clinic_id = s.clinic_id AND m.status = \'active\'
-             JOIN ' . $this->db->table( 'cpms_clinics' ) . ' cl ON cl.id = s.clinic_id AND cl.status = \'active\'
+             JOIN ' . $this->db->table('cpms_clinics') . ' cl ON cl.id = s.clinic_id AND cl.status = \'active\'
+             JOIN ' . $this->db->table('cpms_organizations') . ' o ON o.id = cl.organization_id AND o.status = \'active\'
              WHERE c.is_active = 1'
         );
 
@@ -161,10 +164,14 @@ final class SlotsGenerateHandler
                 continue;
             }
 
-            // NOTE: `location.is_active` deliberately does NOT gate generation here.
-            // Whether deactivating a Location must stop generation for existing
-            // Schedules is a separate product policy with no verified canonical
-            // contract, and it is not required by this timezone correction.
+            if ( (int) ( $clinician['location_is_active'] ?? 0 ) !== 1 ) {
+                $this->op->warning( 'SLOTS_GEN_SKIP_LOCATION_INACTIVE', [
+                    'schedule_id' => (int) ( $clinician['schedule_id'] ?? 0 ),
+                    'clinic_id' => $clinicId,
+                    'location_id' => $scheduleLocationId,
+                ] );
+                continue;
+            }
 
             // Validated IANA timezone — no fallback to Clinic/WordPress/PHP timezone.
             $locationTz = $this->locationTimezone((string) ($clinician['location_timezone'] ?? ''));
@@ -213,6 +220,10 @@ final class SlotsGenerateHandler
 
             // Horizon semantics preserved exactly: offsets {1 .. horizon} inclusive
             // from the Location-local "today"; today itself is never generated.
+            // Candidate computation does not hold lifecycle locks. Immediately
+            // before persistence, persistScheduleSlots() rechecks Organization
+            // → Clinic → Clinician → Schedule → Location in the shared lock order.
+            $slotCandidates = [];
             for ($day = 1; $day <= $horizon; $day++) {
                 $dateObj = $anchor->add(new DateInterval('P' . $day . 'D'));
                 $date = $dateObj->format('Y-m-d');
@@ -222,27 +233,19 @@ final class SlotsGenerateHandler
                     $this->op->warning('SLOTS_GEN_SKIP', ['clinician_id' => $clinician['clinician_id'], 'date' => $date, 'error' => $e->getMessage()]);
                     continue;
                 }
-                foreach ($slots as $time) {
-                    $this->db->query(
-                        'INSERT IGNORE INTO ' . $this->db->table('cpms_schedule_slots') . '
-                             (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
-                              is_open, generated_from, created_at, updated_at)
-                         VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
-                        [
-                            $clinicId,
-                            $locationId,
-                            $clinician['clinician_id'],
-                            $date,
-                            $time,
-                            (int) $clinician['appointment_duration_min'],
-                            (int) $clinician['slot_capacity'],
-                            $payload['source'] ?? 'cron',
-                            $this->db->nowUtcSql(),
-                            $this->db->nowUtcSql(),
-                        ]
-                    );
-                    $generated++;
+                if ( $slots !== [] ) {
+                    $slotCandidates[$date] = $slots;
                 }
+            }
+            if ( $slotCandidates !== [] ) {
+                $generated += $this->persistScheduleSlots(
+                    $clinician,
+                    $clinicId,
+                    $locationId,
+                    (string) ( $clinician['location_timezone'] ?? '' ),
+                    $slotCandidates,
+                    $payload
+                );
             }
         }
 
@@ -273,6 +276,238 @@ final class SlotsGenerateHandler
             $this->op->warning('SLOTS_GEN_HORIZON_RESOLVE_FAILED', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
             return null;
         }
+    }
+
+    /**
+     * Persist precomputed slots only if the lifecycle and schedule inputs are
+     * still current. Candidate generation is deliberately outside this critical
+     * section; the final re-read closes the race with Location deactivation and
+     * Schedule edits without holding lifecycle locks during calendar work.
+     *
+     * Lock order: Organization → Clinic → Clinician → Schedule → Location.
+     * The lifecycle prefix matches LocationService; the Clinician → Schedule
+     * pair matches ScheduleService. Locking Location only after the Schedule
+     * row avoids inverting ScheduleService's foreign-key check. Booking paths
+     * acquire the same Organization -> Clinic prefix, then Location before
+     * Slot/capacity rows.
+     *
+     * @param array<string, mixed>       $candidate      Candidate sweep row.
+     * @param array<string, list<string>> $slotCandidates date => local wall times.
+     * @param array<string, mixed>       $payload        Original job payload.
+     */
+    private function persistScheduleSlots(
+        array $candidate,
+        int $clinicId,
+        int $locationId,
+        string $candidateTimezone,
+        array $slotCandidates,
+        array $payload
+    ): int {
+        $scheduleId = (int) ( $candidate['schedule_id'] ?? 0 );
+        $organizationId = (int) ( $candidate['schedule_organization_id'] ?? 0 );
+        $clinicianId = (int) ( $candidate['clinician_id'] ?? 0 );
+        $homeClinicId = (int) ( $candidate['clinic_id'] ?? 0 );
+
+        if ( $scheduleId <= 0 || $organizationId <= 0 || $clinicId <= 0 || $locationId <= 0 || $clinicianId <= 0 ) {
+            $this->op->warning( 'SLOTS_GEN_SKIP_SCHEDULE_INVALID', [
+                'schedule_id' => $scheduleId,
+                'clinic_id' => $clinicId,
+                'location_id' => $locationId,
+            ] );
+            return 0;
+        }
+
+        return $this->db->transactional(
+            function () use (
+                $candidate,
+                $clinicId,
+                $locationId,
+                $candidateTimezone,
+                $slotCandidates,
+                $payload,
+                $scheduleId,
+                $organizationId,
+                $clinicianId,
+                $homeClinicId
+            ): int {
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [ $organizationId ]
+                );
+                if ( $organization === null || (int) $organization['id'] !== $organizationId || (string) $organization['status'] !== 'active' ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_ORGANIZATION_INACTIVE', [ 'schedule_id' => $scheduleId, 'clinic_id' => $clinicId ] );
+                    return 0;
+                }
+
+                $clinic = $this->db->fetchRowForUpdate(
+                    'SELECT id, organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+                    [ $clinicId ]
+                );
+                if (
+                    $clinic === null
+                    || (int) $clinic['id'] !== $clinicId
+                    || (int) $clinic['organization_id'] !== $organizationId
+                    || (string) $clinic['status'] !== 'active'
+                ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_CLINIC_INACTIVE', [ 'schedule_id' => $scheduleId, 'clinic_id' => $clinicId ] );
+                    return 0;
+                }
+
+                // Match ScheduleService's Clinician → Schedule write order
+                // before locking Location. Schedule creation inserts a row with
+                // a Location foreign key; holding Location first here would
+                // invert that order and permit an InnoDB lock cycle.
+                $clinician = $this->db->fetchRowForUpdate(
+                    'SELECT id, clinic_id, wp_user_id, is_active FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d LIMIT 1',
+                    [ $clinicianId ]
+                );
+                if (
+                    $clinician === null
+                    || (int) $clinician['clinic_id'] !== $homeClinicId
+                    || (int) $clinician['is_active'] !== 1
+                    || (int) ( $clinician['wp_user_id'] ?? 0 ) !== (int) ( $candidate['wp_user_id'] ?? 0 )
+                ) {
+                    $this->op->warning(
+                        'SLOTS_GEN_SKIP_CLINICIAN_CHANGED',
+                        [ 'schedule_id' => $scheduleId, 'clinic_id' => $clinicId, 'clinician_id' => $clinicianId ]
+                    );
+                    return 0;
+                }
+
+                if ( $clinicId !== $homeClinicId ) {
+                    $membershipId = (int) ( $candidate['schedule_membership_id'] ?? 0 );
+                    $membership = $membershipId > 0
+                        ? $this->db->fetchRowForUpdate(
+                            'SELECT id FROM ' . $this->db->table( 'cpms_clinic_memberships' )
+                            . ' WHERE id = %d AND wp_user_id = %d AND clinic_id = %d AND status = %s LIMIT 1',
+                            [ $membershipId, (int) ( $clinician['wp_user_id'] ?? 0 ), $clinicId, 'active' ]
+                        )
+                        : null;
+                    if ( $membership === null ) {
+                        $this->op->warning(
+                            'SLOTS_GEN_SKIP_MEMBERSHIP_CHANGED',
+                            [ 'schedule_id' => $scheduleId, 'clinic_id' => $clinicId, 'clinician_id' => $clinicianId ]
+                        );
+                        return 0;
+                    }
+                }
+
+                $schedule = $this->db->fetchRowForUpdate(
+                    'SELECT id, clinic_id, location_id, clinician_id, day_of_week, start_time, end_time,
+                            break_start, break_end, appointment_duration_min, slot_capacity, is_active
+                     FROM ' . $this->db->table( 'cpms_schedule' ) . ' WHERE id = %d LIMIT 1',
+                    [ $scheduleId ]
+                );
+                if ( $schedule === null || ! $this->scheduleSnapshotMatches( $candidate, $schedule, $clinicId, $locationId, $clinicianId ) ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_SCHEDULE_CHANGED', [
+                        'schedule_id' => $scheduleId,
+                        'clinic_id' => $clinicId,
+                        'location_id' => $locationId,
+                        'clinician_id' => $clinicianId,
+                    ] );
+                    return 0;
+                }
+
+                // Location lifecycle writers lock Organization → Clinic →
+                // Location. We hold the first two rows, so after locking the
+                // Clinician/Schedule pair this final Location lock is serialized
+                // against deactivation without reversing ScheduleService's order.
+                $location = $this->db->fetchRowForUpdate(
+                    'SELECT id, clinic_id, timezone, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+                    [ $locationId ]
+                );
+                if ( $location === null || (int) $location['clinic_id'] !== $clinicId ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_LOCATION_CLINIC_MISMATCH', [
+                        'schedule_id' => $scheduleId,
+                        'clinic_id' => $clinicId,
+                        'location_id' => $locationId,
+                        'location_clinic_id' => (int) ( $location['clinic_id'] ?? 0 ),
+                    ] );
+                    return 0;
+                }
+                if ( (int) $location['is_active'] !== 1 ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_LOCATION_INACTIVE', [
+                        'schedule_id' => $scheduleId,
+                        'clinic_id' => $clinicId,
+                        'location_id' => $locationId,
+                    ] );
+                    return 0;
+                }
+                if ( trim( (string) $location['timezone'] ) !== trim( $candidateTimezone ) ) {
+                    $this->op->warning( 'SLOTS_GEN_SKIP_LOCATION_CHANGED', [
+                        'schedule_id' => $scheduleId,
+                        'clinic_id' => $clinicId,
+                        'location_id' => $locationId,
+                    ] );
+                    return 0;
+                }
+
+                $generated = 0;
+                foreach ( $slotCandidates as $date => $times ) {
+                    foreach ( $times as $time ) {
+                        $this->db->query(
+                            'INSERT IGNORE INTO ' . $this->db->table( 'cpms_schedule_slots' ) . '
+                                 (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity,
+                                  is_open, generated_from, created_at, updated_at)
+                             VALUES (%d, %d, %d, %s, %s, %d, %d, 1, %s, %s, %s)',
+                            [
+                                $clinicId,
+                                $locationId,
+                                $clinicianId,
+                                $date,
+                                $time,
+                                (int) $schedule['appointment_duration_min'],
+                                (int) $schedule['slot_capacity'],
+                                $payload['source'] ?? 'cron',
+                                $this->db->nowUtcSql(),
+                                $this->db->nowUtcSql(),
+                            ]
+                        );
+                        $generated++;
+                    }
+                }
+
+                return $generated;
+            }
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $candidate
+     * @param array<string, mixed> $current
+     */
+    private function scheduleSnapshotMatches( array $candidate, array $current, int $clinicId, int $locationId, int $clinicianId ): bool {
+        if (
+            (int) ( $current['clinic_id'] ?? 0 ) !== $clinicId
+            || (int) ( $current['location_id'] ?? 0 ) !== $locationId
+            || (int) ( $current['clinician_id'] ?? 0 ) !== $clinicianId
+            || (int) ( $current['is_active'] ?? 0 ) !== 1
+            || (int) ( $candidate['schedule_is_active'] ?? 0 ) !== 1
+            || (int) ( $candidate['schedule_clinic_id'] ?? 0 ) !== $clinicId
+            || (int) ( $candidate['location_id'] ?? 0 ) !== $locationId
+        ) {
+            return false;
+        }
+
+        foreach ( [ 'day_of_week', 'appointment_duration_min', 'slot_capacity' ] as $field ) {
+            if ( (int) ( $candidate[ $field ] ?? 0 ) !== (int) ( $current[ $field ] ?? 0 ) ) {
+                return false;
+            }
+        }
+        foreach ( [ 'start_time', 'end_time', 'break_start', 'break_end' ] as $field ) {
+            if ( self::normalizedTime( $candidate[ $field ] ?? null ) !== self::normalizedTime( $current[ $field ] ?? null ) ) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function normalizedTime( mixed $value ): ?string {
+        if ( $value === null || (string) $value === '' ) {
+            return null;
+        }
+        return substr( (string) $value, 0, 8 );
     }
 
     /**
