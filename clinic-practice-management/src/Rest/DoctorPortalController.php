@@ -400,10 +400,10 @@ final class DoctorPortalController extends RestBase {
 		if ( $clinic_id < 1 || $location_id < 1 || $user_id < 1 || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) || null === $this->memberships->find_active( $clinic_id, $user_id ) ) {
 			return $response;
 		}
-		$eligible = array_map( static fn( array $row ): int => (int) $row['id'], $this->eligible_locations_for_clinic( $clinic_id, $user_id ) );
-		if ( in_array( $location_id, $eligible, true ) ) {
-			return $response;
-		}
+		// Audit every trusted-binder denial on this live handwriting route.
+		// The binder and the selector projection answer different questions
+		// (Visit-bound continuity vs. selectable Locations), so re-deriving
+		// "eligibility" here could wrongly suppress the denial audit.
 		$this->workspace_handwriting_denial( (int) $matches[1], 'location' );
 		return new WP_Error( 'CLINIC_SCOPE_UNAVAILABLE', $response->get_error_message(), [ 'status' => 403, 'reason' => 'location' ] );
 	}

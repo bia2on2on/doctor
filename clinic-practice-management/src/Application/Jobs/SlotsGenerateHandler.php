@@ -331,12 +331,8 @@ final class SlotsGenerateHandler
         $plan     = null;
         $validated = $this->db->transactional(
             function () use (
-                $candidate,
                 $clinic_id,
                 $location_id,
-                $candidate_timezone,
-                $slot_candidates,
-                $payload,
                 $schedule_id,
                 $organization_id,
                 $clinician_id,
