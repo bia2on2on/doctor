@@ -727,37 +727,35 @@ def run_hospital_facility_journey(page, tag, org, fac):
     check(f"{tag}.hospital.activated_marker", page.locator('[data-cpms-facility-activated="1"]').count() == 1, "activation recorded")
 
 
-FACILITY_RACE_JS = """
-async ({form, keys, values}) => {
-  const el = document.querySelector(form);
-  if (!el) { return ['no-form']; }
-  return Promise.all(keys.map((key) => {
-    const body = new FormData(el);
-    body.set('request_key', key);
-    for (const [name, value] of Object.entries(values)) { body.set(name, value); }
-    return fetch(el.action, {method: 'POST', body, credentials: 'same-origin', redirect: 'manual'})
-      .then((r) => r.type, (e) => 'error:' + e.name);
-  }));
-}
-"""
-
-
 def facility_form_key(page, op):
     field = page.locator(f'form[data-cpms-facility-form="{op}"] input[name="request_key"]')
     return field.input_value() if field.count() == 1 else ""
 
 
-def facility_race_submit(page, op, keys, values):
-    """POST one facility form several times IN PARALLEL from the browser (same session, real HTTP)."""
-    return page.evaluate(FACILITY_RACE_JS, {"form": f'form[data-cpms-facility-form="{op}"]', "keys": keys, "values": values})
+def facility_parallel_submit(tabs, op):
+    """Submit the same facility form in several tabs of ONE session without waiting in between.
+
+    Real browser form POSTs (identical to the sequential journeys); every click is dispatched
+    before any navigation is awaited, so the requests are in flight at the same time.
+    """
+    with tabs[0].expect_navigation(wait_until="domcontentloaded"):
+        with tabs[1].expect_navigation(wait_until="domcontentloaded"):
+            for tab in tabs:
+                tab.locator(f'form[data-cpms-facility-form="{op}"] button[type="submit"]').click(no_wait_after=True)
+    notices = []
+    for tab in tabs:
+        tab.wait_for_timeout(300)
+        notice = tab.locator("[data-cpms-facility-notice]")
+        notices.append((notice.first.get_attribute("data-cpms-facility-notice") or "") if notice.count() else "none")
+    return notices
 
 
 def run_facility_race_journey(page, tag, org):
     """Real concurrent HTTP submissions against one Organization's plan (row lock in MySQL/MariaDB).
 
-    Two separately rendered forms (two server-issued request keys) carrying the same name, and one
-    form submitted twice at once (same request key), are POSTed in parallel: exactly one Clinic or
-    room Location and exactly one plan entry may result.
+    Two tabs of the same session submit, at the same time: two separately rendered Clinic forms
+    carrying the same name; one Clinic form twice (same request key); two room forms carrying the
+    same name. Each case must yield exactly one Clinic or room Location and one plan entry.
     """
     goto_admin(page, tag, facility_url(org, "identity"), "facility-race-identity")
     page.check('input[name="facility_type"][value="other"]')
@@ -769,47 +767,53 @@ def run_facility_race_journey(page, tag, org):
     page.fill("#cpms_facility_site_address", "شیراز، خیابان آزمون")
     facility_submit(page, tag, "site", "facility-race-site")
 
-    keys = []
-    for index in (1, 2):
-        goto_admin(page, tag, facility_url(org, "clinics"), f"facility-race-clinics-{index}")
-        keys.append(facility_form_key(page, "clinic"))
-    sites = facility_option_values(page, "#cpms_facility_clinic_site")
-    values = {"clinic_name": "درمانگاه هم‌زمان", "site_key": sites[0] if sites else "", "timezone": "Asia/Tehran"}
-    responses = facility_race_submit(page, "clinic", keys, values)
-    facts = facility_race_facts(org, "درمانگاه هم‌زمان")
-    check(f"{tag}.race.same_name_parallel_one_clinic",
-          len(set(keys)) == 2 and all(keys) and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
-          f"parallel_posts={len(responses)} responses={sorted(set(responses))} distinct_keys={len(set(keys))} "
-          f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
+    tab = page.context.new_page()
+    attach_watchers(tab, tag)
+    tabs = [page, tab]
+    try:
+        cases = (("same_name_parallel_one_clinic", "درمانگاه هم‌زمان", False),
+                 ("double_submit_parallel_one_clinic", "درمانگاه ارسال دوباره", True))
+        for case, name, same_key in cases:
+            for index, current in enumerate(tabs, 1):
+                goto_admin(current, tag, facility_url(org, "clinics"), f"facility-race-{case}-{index}")
+                current.fill("#cpms_facility_clinic_name", name)
+                current.select_option("#cpms_facility_clinic_site", index=1)
+                current.select_option("#cpms_facility_timezone", "Asia/Tehran")
+            keys = [facility_form_key(current, "clinic") for current in tabs]
+            if same_key:
+                tabs[1].locator('form[data-cpms-facility-form="clinic"] input[name="request_key"]').evaluate(
+                    "(el, value) => { el.value = value; }", keys[0])
+                keys = [facility_form_key(current, "clinic") for current in tabs]
+            notices = facility_parallel_submit(tabs, "clinic")
+            facts = facility_race_facts(org, name)
+            check(f"{tag}.race.{case}",
+                  all(keys) and (len(set(keys)) == 1) == same_key
+                  and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
+                  f"parallel_submits=2 distinct_keys={len(set(keys))} notices={sorted(notices)} "
+                  f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
 
-    goto_admin(page, tag, facility_url(org, "clinics"), "facility-race-clinics-3")
-    key = facility_form_key(page, "clinic")
-    values["clinic_name"] = "درمانگاه ارسال دوباره"
-    responses = facility_race_submit(page, "clinic", [key, key], values)
-    facts = facility_race_facts(org, "درمانگاه ارسال دوباره")
-    check(f"{tag}.race.double_submit_parallel_one_clinic",
-          bool(key) and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
-          f"parallel_posts={len(responses)} responses={sorted(set(responses))} "
-          f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
-
-    goto_admin(page, tag, facility_url(org, "managers"), "facility-race-managers")
-    page.select_option("#cpms_facility_manager_clinic", index=1)
-    page.fill("#cpms_facility_user_login", SECOND_ADMIN_USER)
-    check(f"{tag}.race.manager", facility_submit(page, tag, "manager", "facility-race-manager") == "ok",
-          "explicit manager for the room concurrency check")
-    room_keys = []
-    for index in (1, 2):
-        goto_admin(page, tag, facility_url(org, "rooms"), f"facility-race-rooms-{index}")
-        room_keys.append(facility_form_key(page, "room"))
-    clinic_keys = facility_option_values(page, "#cpms_facility_room_clinic")
-    room_values = {"clinic_key": clinic_keys[0] if clinic_keys else "", "room_name": "اتاق هم‌زمان",
-                   "site_key": sites[0] if sites else ""}
-    responses = facility_race_submit(page, "room", room_keys, room_values)
-    facts = facility_race_facts(org, "", "اتاق هم‌زمان")
-    check(f"{tag}.race.same_name_parallel_one_room",
-          len(set(room_keys)) == 2 and all(room_keys) and facts.get("room_locations") == "1" and facts.get("room_entries") == "1",
-          f"parallel_posts={len(responses)} responses={sorted(set(responses))} distinct_keys={len(set(room_keys))} "
-          f"room_locations={facts.get('room_locations')} room_entries={facts.get('room_entries')}")
+        goto_admin(page, tag, facility_url(org, "managers"), "facility-race-managers")
+        if not facility_option_values(page, "#cpms_facility_manager_clinic"):
+            check(f"{tag}.race.manager", False, "no Clinic to designate a manager for")
+            return
+        page.select_option("#cpms_facility_manager_clinic", index=1)
+        page.fill("#cpms_facility_user_login", SECOND_ADMIN_USER)
+        check(f"{tag}.race.manager", facility_submit(page, tag, "manager", "facility-race-manager") == "ok",
+              "explicit manager for the room concurrency check")
+        for index, current in enumerate(tabs, 1):
+            goto_admin(current, tag, facility_url(org, "rooms"), f"facility-race-rooms-{index}")
+            current.select_option("#cpms_facility_room_clinic", index=1)
+            current.fill("#cpms_facility_room_name", "اتاق هم‌زمان")
+            current.select_option("#cpms_facility_room_site", index=1)
+        keys = [facility_form_key(current, "room") for current in tabs]
+        notices = facility_parallel_submit(tabs, "room")
+        facts = facility_race_facts(org, "", "اتاق هم‌زمان")
+        check(f"{tag}.race.same_name_parallel_one_room",
+              all(keys) and len(set(keys)) == 2 and facts.get("room_locations") == "1" and facts.get("room_entries") == "1",
+              f"parallel_submits=2 distinct_keys={len(set(keys))} notices={sorted(notices)} "
+              f"room_locations={facts.get('room_locations')} room_entries={facts.get('room_entries')}")
+    finally:
+        tab.close()
 
 
 def run_facility_location_switch_journey(page, tag, org):
@@ -1728,7 +1732,10 @@ with sync_playwright() as p:
             race_org = fac.get("race", "")
             check("facility.race.fixture", race_org.isdigit(), f"race_org_set={race_org.isdigit()}")
             if race_org.isdigit():
-                run_facility_race_journey(fac_page, "facility-org-manager", race_org)
+                try:
+                    run_facility_race_journey(fac_page, "facility-org-manager", race_org)
+                except Exception as race_exc:
+                    check("facility.race.journey", False, type(race_exc).__name__)
             # Delegated manager hand-off: only the technical WordPress role is added
             # outside CPMS; the Clinic membership from the journey is the authority.
             delegated = facility_prepare_delegated_manager(fac.get("mgra", ""), building_org, delegated_pass)

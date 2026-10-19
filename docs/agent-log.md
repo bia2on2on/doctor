@@ -1363,3 +1363,9 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
   browser (same session): two separately rendered Clinic forms with the same name, one Clinic form submitted twice
   at once, and two room forms with the same name. Each case must yield exactly one Clinic or room Location and one
   plan entry (live DB facts). Manager, clinician, staff and schedule steps still have no parallel-request test.
+- **Correction (third commit):** the first harness attempt POSTed the forms with `fetch()` from the page; on `aee1ccf`
+  the server answered without the usual redirect and nothing was created (both databases), so the checks failed and
+  the later facility checks were skipped by the resulting timeout. The concurrency checks now submit the real forms
+  from two tabs of the same session, dispatching both clicks before awaiting either navigation, and a failure in this
+  journey is recorded as a failed check without aborting the remaining facility checks. The cause of the `fetch()`
+  refusal was not diagnosed.
