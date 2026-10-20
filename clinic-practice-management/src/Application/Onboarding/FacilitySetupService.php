@@ -1163,6 +1163,12 @@ final class FacilitySetupService {
     /**
      * Step 9b — explicit activation: re-activates every held Clinic of the plan.
      *
+     * The review, every Clinic lifecycle write (including its audit row), and the
+     * final plan marker are one transaction under the Organization lock. A failure
+     * at Clinic N therefore rolls Clinics 1..N-1 back to suspended and leaves the
+     * plan unactivated; concurrent setup mutations cannot enter between review and
+     * activation. Nested provisioning/mutate transactions are savepoints.
+     *
      * @return array{activated: list<int>, plan: array<string, mixed>}
      */
     public function activate( int $actor_id, int $organization_id, bool $confirmed ): array {
@@ -1170,37 +1176,60 @@ final class FacilitySetupService {
         if ( ! $confirmed ) {
             throw new FacilitySetupException( 'confirm_required', 'برای فعال‌سازی، بازبینی را صریحاً تأیید کنید.' );
         }
-        $review = $this->review( $actor_id, $organization_id );
-        if ( ! $review['ready'] ) {
-            throw new FacilitySetupException( 'not_ready', 'فعال‌سازی انجام نشد: ' . implode( ' ', $review['blocking'] ) );
-        }
 
-        $activated = [];
-        foreach ( $review['clinics'] as $clinic ) {
-            try {
-                $this->provisioning->set_clinic_status( $actor_id, $organization_id, (int) $clinic['clinic_id'], true );
-            } catch ( Throwable $e ) {
-                throw new FacilitySetupException( 'denied', 'فعال‌سازی درمانگاه مجاز نیست (اختیار سازمانی چرخهٔ عمر لازم است).' );
-            }
-            $activated[] = (int) $clinic['clinic_id'];
-        }
+        return $this->db->transactional(
+            function () use ( $actor_id, $organization_id ): array {
+                // Serialize the review-to-activation boundary with every facility
+                // mutation before reading the plan or any readiness evidence.
+                $organization = $this->db->fetchRowForUpdate(
+                    'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+                    [ $organization_id ]
+                );
+                if ( null === $organization || 'active' !== (string) $organization['status'] ) {
+                    throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ فعال‌سازی انجام نشد.' );
+                }
 
-        $plan = $this->mutate(
-            $actor_id,
-            $organization_id,
-            static function ( ?array $plan ) use ( $actor_id ): array {
-                $plan                 = self::require_plan( $plan );
-                $plan['activated_at'] = gmdate( 'Y-m-d H:i:s' );
-                $plan['activated_by'] = $actor_id;
+                $review = $this->review( $actor_id, $organization_id );
+                if ( ! $review['ready'] ) {
+                    throw new FacilitySetupException( 'not_ready', 'فعال‌سازی انجام نشد: ' . implode( ' ', $review['blocking'] ) );
+                }
 
-                return $plan;
+                $activated = [];
+                foreach ( $review['clinics'] as $clinic ) {
+                    try {
+                        $this->provisioning->set_clinic_status( $actor_id, $organization_id, (int) $clinic['clinic_id'], true );
+                    } catch ( RuntimeException $e ) {
+                        if ( 'organization clinic lifecycle denied' === $e->getMessage() ) {
+                            throw new FacilitySetupException( 'denied', 'فعال‌سازی درمانگاه مجاز نیست (اختیار سازمانی چرخهٔ عمر لازم است).' );
+                        }
+                        if ( 'clinic not found in organization' === $e->getMessage() ) {
+                            throw new FacilitySetupException( 'not_found', 'یکی از درمانگاه‌های راه‌اندازی دیگر به این سازمان تعلق ندارد؛ هیچ درمانگاهی فعال نشد.' );
+                        }
+                        // Database, audit, readback and transaction failures are
+                        // operational failures, not authorization refusals.
+                        throw $e;
+                    }
+                    $activated[] = (int) $clinic['clinic_id'];
+                }
+
+                $plan = $this->mutate(
+                    $actor_id,
+                    $organization_id,
+                    static function ( ?array $plan ) use ( $actor_id ): array {
+                        $plan                 = self::require_plan( $plan );
+                        $plan['activated_at'] = gmdate( 'Y-m-d H:i:s' );
+                        $plan['activated_by'] = $actor_id;
+
+                        return $plan;
+                    }
+                );
+
+                return [
+                    'activated' => $activated,
+                    'plan'      => $plan,
+                ];
             }
         );
-
-        return [
-            'activated' => $activated,
-            'plan'      => $plan,
-        ];
     }
 
     /**
