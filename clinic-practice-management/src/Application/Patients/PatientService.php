@@ -358,7 +358,22 @@ final class PatientService
      * @return array<string, mixed>
      */
     private function create_record( array $fields, int $actor_user_id, ?int $verified_user = null, ?int $expected_identity = null ): array {
-        $reception = $verified_user === null && user_can( $actor_user_id, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE );
+        // "Reception" is the CPMS secretary surface, not a WordPress role: a
+        // Subscriber secretary with the scoped patient-create capability is the
+        // same actor class as any other receptionist, so the license decision
+        // (and its read-only policy) sees the same operation.
+        $reception = false;
+        if ( $verified_user === null ) {
+            $scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+            $scope_clinic = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
+            $reception = user_can( $actor_user_id, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE );
+            if ( ! $reception && $scope_clinic > 0 ) {
+                $membership = App::membership_service()->membership_for( $scope_clinic, $actor_user_id );
+                $reception  = null !== $membership
+                    && \ClinicCore\Auth\RolesAndCapabilities::ROLE_SECRETARY === (string) ( $membership['role_key'] ?? '' )
+                    && App::authorization_service()->can( $actor_user_id, $scope_clinic, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_CREATE );
+            }
+        }
         if ( $verified_user === null ) {
             $this->assert_license( LicenseGate::OP_PATIENT_CREATE, [ 'clinic_id' => App::scope()->clinicId, 'reception' => $reception ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing scope value object.
         }

@@ -59,7 +59,16 @@ final class FinanceService
         $allowed = false;
         $last = null;
         foreach ([RolesAndCapabilities::INVOICE_READ, RolesAndCapabilities::CONFIG] as $cap) {
-            if (!user_can($actorUserId, $cap)) {
+            // Scoped-first and final: an ACTIVE membership decides (grant or
+            // explicit DENY), so a Subscriber accountant/service editor is the
+            // same actor class as any other staff member and a global
+            // `has_cap()` can never bypass a scoped DENY. Only an actor with no
+            // membership in this Clinic keeps the legacy global path.
+            $decision = App::authorization_service()->scoped_decision($actorUserId, $clinicId, $cap);
+            if (false === $decision) {
+                continue;
+            }
+            if (null === $decision && !user_can($actorUserId, $cap)) {
                 continue;
             }
             try {

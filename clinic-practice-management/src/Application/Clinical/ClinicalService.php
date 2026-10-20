@@ -1758,14 +1758,18 @@ final class ClinicalService
     // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
-        if (user_can($wpUserId, $cap)) {
-            return;
-        }
+        // Scoped-first and FINAL: an ACTIVE membership of the trusted Clinic
+        // decides (grant or explicit DENY), so a WordPress-global capability can
+        // never override a scoped DENY. Only an actor with no membership in that
+        // Clinic keeps the legacy global path.
         $scoped = $this->scoped_membership($wpUserId);
-        if (
-            $scoped !== null
-            && App::authorization_service()->can($wpUserId, (int) $scoped['clinic_id'], $cap)
-        ) {
+        if ($scoped !== null) {
+            if (App::authorization_service()->can($wpUserId, (int) $scoped['clinic_id'], $cap)) {
+                return;
+            }
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope, 'reason' => 'scoped']);
+        }
+        if (user_can($wpUserId, $cap)) {
             return;
         }
         throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
