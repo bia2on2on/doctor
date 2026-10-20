@@ -1653,6 +1653,58 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         return (int) App::db()->fetchValue('SELECT clinic_id FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d', [$locationId]);
     }
 
+    // ------------------------------------------------------------------
+    // Address step: offline Iranian province/city catalog (no network, no default)
+    // ------------------------------------------------------------------
+
+    public function testSiteAddressUsesTheOfflineProvinceCityCatalogAndRejectsAnOrphanCity(): void
+    {
+        $service = FacilitySetupPage::service();
+        $service->start($this->actor, $this->org, 'specialized_clinic', 'medical_building', 'ساختمان پزشکی آزمون');
+
+        wp_set_current_user($this->actor);
+        $_GET = ['page' => FacilitySetupPage::PAGE, 'organization_id' => (string) $this->org, 'step' => 'sites'];
+        ob_start();
+        FacilitySetupPage::render();
+        $html = (string) ob_get_clean();
+
+        self::assertStringContainsString('data-cpms-province-select="1"', $html, 'the offline province selector is rendered');
+        self::assertStringContainsString('data-cpms-city-select="1"', $html, 'the offline city selector is rendered');
+        self::assertStringContainsString('name="address_province"', $html);
+        self::assertStringContainsString('name="address_city"', $html);
+        self::assertStringNotContainsString('selected>تهران', $html, 'no province is preselected — the wizard never guesses Tehran');
+        self::assertStringNotContainsString('data-cpms-city-select="1" data-selected-city="تهران"', $html);
+
+        // A city without its province is a validation error, not a silent fix-up.
+        $cityOnly = static function (string $key): string {
+            return ['site_label' => 'ساختمان بدون استان', 'site_address' => 'خیابان آزمون', 'address_city' => 'تهران'][$key] ?? '';
+        };
+        $notice = FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $cityOnly, []);
+        self::assertStringStartsWith('خطا', $notice, 'a city without a province is refused');
+        self::assertSame([], $service->plan($this->actor, $this->org)['sites'], 'nothing was persisted for the refused address');
+
+        // A city that does not belong to the selected province is refused too.
+        $foreignCity = static function (string $key): string {
+            return ['site_label' => 'ساختمان شهر نامعتبر', 'site_address' => 'خیابان آزمون', 'address_province' => 'تهران', 'address_city' => 'شیراز'][$key] ?? '';
+        };
+        self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $foreignCity, []));
+        self::assertSame([], $service->plan($this->actor, $this->org)['sites'], 'a foreign city leaves no site behind');
+
+        // A valid pair is composed into the stored address (province، city — detail).
+        $valid = static function (string $key): string {
+            return ['site_label' => 'ساختمان مرکزی', 'site_address' => 'خیابان ولیعصر، پلاک ۱', 'address_province' => 'تهران', 'address_city' => 'تهران'][$key] ?? '';
+        };
+        self::assertStringStartsWith('ساختمان/سایت ثبت شد', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $valid, []));
+        $sites = $service->plan($this->actor, $this->org)['sites'];
+        self::assertCount(1, $sites);
+        self::assertStringContainsString('تهران', (string) $sites[0]['address']);
+        self::assertStringContainsString('خیابان ولیعصر', (string) $sites[0]['address']);
+
+        // Re-submitting the same site stays idempotent (never a duplicate building).
+        self::assertStringStartsWith('ساختمان/سایت ثبت شد', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $valid, []));
+        self::assertCount(1, $service->plan($this->actor, $this->org)['sites'], 'the same site is never duplicated');
+    }
+
     private function clinicCount(int $organizationId): int
     {
         return (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics') . ' WHERE organization_id = %d', [$organizationId]);

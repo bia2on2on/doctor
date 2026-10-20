@@ -9,6 +9,7 @@ use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -272,7 +273,21 @@ final class FacilitySetupPage {
                     $service->acknowledge_outpatient( $actor_id, $organization_id, '1' === $field( 'outpatient_ack' ) );
                     return 'محدودهٔ فقط سرپایی صریحاً تأیید شد.';
                 case 'site':
-                    $service->add_site( $actor_id, $organization_id, $field( 'site_label' ), $field( 'site_address' ) );
+                    // The address is a STRUCTURED Iranian address: the optional
+                    // offline province/city selects are validated against the
+                    // official catalog and composed into the stored value. A
+                    // city without its province, or a city outside the chosen
+                    // province, is a validation error — never a silent fix-up.
+                    try {
+                        $site_address = IranProvinceCityCatalog::resolve_submitted_address(
+                            $field( 'site_address' ),
+                            $field( 'address_province' ),
+                            $field( 'address_city' )
+                        );
+                    } catch ( \InvalidArgumentException $e ) {
+                        return 'خطا: ' . $e->getMessage();
+                    }
+                    $service->add_site( $actor_id, $organization_id, $field( 'site_label' ), (string) ( $site_address ?? '' ) );
                     return 'ساختمان/سایت ثبت شد.';
                 case 'clinic':
                     $entry = $service->add_clinic( $actor_id, $organization_id, $field( 'request_key' ), $field( 'clinic_name' ), $field( 'site_key' ), $field( 'timezone' ) );
@@ -423,7 +438,10 @@ final class FacilitySetupPage {
         self::render_site_list( $plan );
         self::open_form( $organization_id, 'site', 'sites' );
         self::text_input( 'site_label', 'نام ساختمان/سایت', 120, true );
-        self::text_input( 'site_address', 'نشانی', 255, false );
+        AddressSelectorField::render( null, 'cpms_facility_site', 'address_province', 'address_city', 'cpms_facility_site_address' );
+        echo '<p><label for="cpms_facility_site_address">نشانی (جزئیات؛ خیابان، پلاک، واحد)</label><br>';
+        echo '<input id="cpms_facility_site_address" name="site_address" maxlength="255" style="width:100%;max-width:420px;box-sizing:border-box;"></p>';
+        echo '<p class="description">استان و شهر از فهرست آفلاین رسمی انتخاب می‌شوند (بدون هیچ پیش‌فرض و بدون فراخوانی شبکه)؛ خالی گذاشتن هر دو مجاز است و فقط نشانی متنی ذخیره می‌شود.</p>';
         self::close_form( 'افزودن ساختمان/سایت' );
     }
 
