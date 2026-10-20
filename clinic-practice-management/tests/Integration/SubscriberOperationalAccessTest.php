@@ -300,7 +300,15 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     private function makeSubscriberDoctor(string $tag): array
     {
         $user      = $this->makeUser($tag, 'subscriber');
-        $clinician = $this->insertClinician('Dr ' . $tag, $this->clinic, 1, $user);
+        $clinician = $this->insertClinician('Dr ' . $tag, $this->clinic, $user);
+        self::assertGreaterThan(0, $clinician, 'fixture: the professional profile row must exist');
+        self::assertNotNull(
+            App::db()->fetchValue(
+                'SELECT id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
+                [$user]
+            ),
+            'fixture: the professional profile must resolve by WordPress user id'
+        );
         cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_DOCTOR);
         $location = $this->primaryLocation();
 
