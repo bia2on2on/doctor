@@ -163,8 +163,7 @@ final class AuthorizationService
      *              original behaviour of their own surface).
      */
     // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase API of this class
-    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool
-    {
+    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool {
         if ( $actorWpUserId <= 0 || $clinicId <= 0 ) {
             return null;
         }

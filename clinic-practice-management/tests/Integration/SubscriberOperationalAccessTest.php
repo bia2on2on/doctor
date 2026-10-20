@@ -550,13 +550,15 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         $record = $this->doctorRequest('GET', $visit . '/record', $fx['location']);
         self::assertSame(200, $record->get_status(), 'workspace record — ' . $this->errDetail($record));
 
+        // The patient self-service file list stays patient-only: staff authority
+        // never widens a patient route (no cross-surface leakage).
         $files = $this->dispatch(
             'GET',
             '/' . self::REST_NS . '/patients/' . $fx['patient'] . '/files',
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(200, $files->get_status(), 'patient medical-file list — ' . $this->errDetail($files));
+        self::assertSame(403, $files->get_status(), 'the patient file list is not a staff surface');
 
         $handwriting = $this->doctorRequest('GET', $visit . '/handwriting', $fx['location']);
         self::assertSame(200, $handwriting->get_status(), 'workspace handwriting list — ' . $this->errDetail($handwriting));
