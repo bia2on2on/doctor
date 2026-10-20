@@ -397,7 +397,7 @@ final class ManagementPortalController {
 	 * @return list<int>
 	 */
 	private static function id_list( string $value ): array {
-		$ids = array();
+		$ids   = array();
 		$parts = preg_split( '/[^0-9]+/', $value );
 		foreach ( is_array( $parts ) ? $parts : array() as $part ) {
 			$id = absint( $part );

@@ -307,7 +307,7 @@ final class ManagementPortalTest extends WP_UnitTestCase {
     public function test_explicit_membership_deny_blocks_the_clinic_workflow(): void {
         $membership = App::membership_service()->active_membership_for( $this->clinicA, $this->clinicManager );
         self::assertNotNull( $membership );
-        MEMREP->set_capability( (int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny' );
+        ( new MembershipRepository( App::db() ) )->set_capability( (int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny' );
 
         self::assertNull(
             App::management_portal_service()->clinic_workspace( $this->clinicManager, $this->clinicA ),
