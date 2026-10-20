@@ -122,11 +122,18 @@ final class HospitalTwoManagerJourneyTest extends WP_UnitTestCase {
         // ------------------------------------------------------------------
         // 2. A DIFFERENT Subscriber Clinic Manager per Clinic
         // ------------------------------------------------------------------
+        // Manager A is designated by LOGIN (server-side resolution, no hand-typed id).
         self::assertTrue( $this->act( $this->orgManager, 'org_facility_designate', [
             'organization_id' => (string) $this->org,
             'clinic_key'      => $clinicKeyA,
-            'target_user_id'  => (string) $this->managerA,
-        ] ), 'manager A is designated for Clinic A' );
+            'identifier'      => (string) get_userdata( $this->managerA )->user_login,
+        ] ), 'manager A is designated for Clinic A by login' );
+        // A non-existent identifier is refused and designates nobody.
+        self::assertFalse( $this->act( $this->orgManager, 'org_facility_designate', [
+            'organization_id' => (string) $this->org,
+            'clinic_key'      => $clinicKeyA,
+            'identifier'      => 'no-such-manager-' . bin2hex( random_bytes( 3 ) ),
+        ] ), 'an unknown identifier designates nobody' );
         self::assertTrue( $this->act( $this->orgManager, 'org_facility_designate', [
             'organization_id' => (string) $this->org,
             'clinic_key'      => $clinicKeyB,
@@ -136,6 +143,11 @@ final class HospitalTwoManagerJourneyTest extends WP_UnitTestCase {
         foreach ( [ $this->managerA, $this->managerB ] as $manager ) {
             self::assertSame( [ 'subscriber' ], array_values( (array) get_userdata( $manager )->roles ), 'designation never changes a WordPress role' );
             self::assertFalse( user_can( $manager, RolesAndCapabilities::PATIENT_READ ), 'no global capability is granted to a Clinic Manager' );
+        }
+        $selectors = $service->facility_selectors( $this->orgManager, $this->org );
+        self::assertCount( 2, $selectors );
+        foreach ( $selectors as $selector ) {
+            self::assertFalse( (bool) $selector['can_configure'], 'the Organization Manager may configure no Clinic step' );
         }
         self::assertSame( 0, count( $service->organizations( $this->managerA ) ), 'a Clinic Manager holds no Organization authority' );
         self::assertNull( $service->organization_overview( $this->managerA, $this->org ), 'Organization surface stays closed to a Clinic Manager' );

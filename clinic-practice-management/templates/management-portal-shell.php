@@ -357,13 +357,26 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php endif; ?>
 
 						<?php $cpms_mp_selectors = $cpms_mp_service->facility_selectors( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
-						<?php if ( array() !== $cpms_mp_selectors ) : ?>
+						<?php
+						// Organization authority never implies Clinic authority: the Clinic-level
+						// steps are only rendered for a Clinic the ACTOR may really configure.
+						$cpms_mp_configurable = array_values(
+							array_filter(
+								$cpms_mp_selectors,
+								static fn( array $cpms_mp_row ): bool => ! empty( $cpms_mp_row['can_configure'] )
+							)
+						);
+						?>
+						<?php if ( array() === $cpms_mp_configurable ) : ?>
+							<p class="cpms-mgmt-meta" data-cpms-clinic-steps-delegated="1">گام‌های درمانگاهی (اتاق، پزشک، برنامه و سیاست رزرو) با مدیر تعیین‌شدهٔ همان درمانگاه در پورتال خودش انجام می‌شود؛ اختیار سازمانی به‌تنهایی اجازهٔ این گام‌ها را نمی‌دهد.</p>
+						<?php endif; ?>
+						<?php if ( array() !== $cpms_mp_configurable ) : ?>
 							<h3>افزودن اتاق/مکان به درمانگاه <span class="cpms-mgmt-meta">(نیازمند اختیار درمانگاه)</span></h3>
 							<?php $cpms_mp_form_open( 'org_facility_room', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-room-clinic">درمانگاه</label>
 									<select id="cpms-mgmt-room-clinic" name="clinic_key">
-										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+										<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
 										<?php endforeach; ?>
 									</select>
@@ -385,13 +398,13 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 							<p class="cpms-mgmt-meta">ایجاد اتاق یک عملیات درمانگاهی است: اختیار سازمانی به‌تنهایی کافی نیست و مدیر تعیین‌شدهٔ همان درمانگاه (عضویت فعال + مجوز پیکربندی) لازم است.</p>
 						<?php endif; ?>
 
-						<?php if ( array() !== $cpms_mp_selectors ) : ?>
+						<?php if ( array() !== $cpms_mp_configurable ) : ?>
 							<h3>اختصاص پزشک</h3>
 							<?php $cpms_mp_form_open( 'org_facility_clinician', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-facl-clinic">درمانگاه</label>
 									<select id="cpms-mgmt-facl-clinic" name="clinic_key">
-										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+										<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
 										<?php endforeach; ?>
 									</select>
@@ -399,7 +412,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-facl-room">اتاق/مکان</label>
 									<select id="cpms-mgmt-facl-room" name="room_key[]">
-										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+										<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 											<?php foreach ( $cpms_mp_sel['rooms'] as $cpms_mp_room ) : ?>
 												<option value="<?php echo esc_attr( (string) $cpms_mp_room['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] . ' — ' . (string) $cpms_mp_room['name'] ); ?></option>
 											<?php endforeach; ?>
@@ -414,12 +427,12 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 							</form>
 
 							<h3>برنامهٔ هفتگی پزشک</h3>
-							<?php if ( array() !== array_merge( ...array_map( static fn( array $row ): array => $row['clinicians'], $cpms_mp_selectors ) ) ) : ?>
+							<?php if ( array() !== array_merge( ...array_map( static fn( array $row ): array => $row['clinicians'], $cpms_mp_configurable ) ) ) : ?>
 								<?php $cpms_mp_form_open( 'org_facility_schedule', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 									<p class="cpms-mgmt-field">
 										<label for="cpms-mgmt-fsch-clinician">پزشک</label>
 										<select id="cpms-mgmt-fsch-clinician" name="clinician_id">
-											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 												<?php foreach ( $cpms_mp_sel['clinicians'] as $cpms_mp_clinician_option ) : ?>
 													<option value="<?php echo esc_attr( (string) $cpms_mp_clinician_option['id'] ); ?>"><?php echo esc_html( (string) $cpms_mp_clinician_option['full_name'] . ' — ' . (string) $cpms_mp_sel['name'] ); ?></option>
 												<?php endforeach; ?>
@@ -429,7 +442,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 									<p class="cpms-mgmt-field">
 										<label for="cpms-mgmt-fsch-clinic">درمانگاه</label>
 										<select id="cpms-mgmt-fsch-clinic" name="clinic_key">
-											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 												<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
 											<?php endforeach; ?>
 										</select>
@@ -437,7 +450,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 									<p class="cpms-mgmt-field">
 										<label for="cpms-mgmt-fsch-room">اتاق/مکان</label>
 										<select id="cpms-mgmt-fsch-room" name="room_key">
-											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 												<?php foreach ( $cpms_mp_sel['rooms'] as $cpms_mp_room ) : ?>
 													<option value="<?php echo esc_attr( (string) $cpms_mp_room['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] . ' — ' . (string) $cpms_mp_room['name'] ); ?></option>
 												<?php endforeach; ?>
@@ -467,7 +480,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-book-clinic">درمانگاه</label>
 									<select id="cpms-mgmt-book-clinic" name="clinic_key">
-										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+										<?php foreach ( $cpms_mp_configurable as $cpms_mp_sel ) : ?>
 											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
 										<?php endforeach; ?>
 									</select>
@@ -493,7 +506,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 									<?php endforeach; ?>
 								</select>
 							</p>
-							<?php $cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر', '', true, 'number' ); ?>
+							<?php $cpms_mp_field( 'identifier', 'نام کاربری یا ایمیل مدیر (Subscriber موجود)', '', true ); ?>
+							<p class="cpms-mgmt-meta">کاربر با همین شناسه در سرور پیدا می‌شود؛ این گام هیچ حساب تازه‌ای نمی‌سازد و هیچ نقش وردپرسی را تغییر نمی‌دهد.</p>
 							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">تعیین مدیر</button>
 						</form>
 

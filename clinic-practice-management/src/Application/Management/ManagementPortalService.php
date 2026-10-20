@@ -1491,6 +1491,44 @@ final class ManagementPortalService {
 	}
 
 	/**
+	 * Clinic-manager designation addressed by a login or e-mail — the same
+	 * human-friendly identifier the staff-enrollment step uses. The identifier is
+	 * resolved server-side to an existing WordPress user; this path NEVER
+	 * provisions an account and never changes a WordPress role. Authority stays
+	 * the actor's Organization designation capability.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function designate_facility_manager_by_identifier( int $actor_wp_user_id, int $organization_id, string $clinic_key, string $identifier ): array {
+		$identifier = trim( $identifier );
+		if ( '' === $identifier ) {
+			return self::failure();
+		}
+
+		// Authorize (and resolve the plan Clinic) BEFORE identifying any user, so a
+		// failed attempt is not a user-existence probe.
+		try {
+			App::facility_setup_service()->authorize_manager_designation( $actor_wp_user_id, $organization_id, $clinic_key );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		$target = 0;
+		if ( is_email( $identifier ) ) {
+			$by_email = get_user_by( 'email', $identifier );
+			$target   = $by_email instanceof WP_User ? (int) $by_email->ID : 0;
+		} else {
+			$by_login = get_user_by( 'login', $identifier );
+			$target   = $by_login instanceof WP_User ? (int) $by_login->ID : 0;
+		}
+		if ( $target <= 0 ) {
+			return self::failure();
+		}
+
+		return $this->designate_facility_manager( $actor_wp_user_id, $organization_id, $clinic_key, $target );
+	}
+
+	/**
 	 * Plan Clinics and their selectable rooms/locations, with the clinicians that
 	 * may be scheduled there — the server-side source for portal selectors, so no
 	 * free-text key ever has to be typed by a human.
@@ -1535,11 +1573,14 @@ final class ManagementPortalService {
 			}
 
 			$out[] = array(
-				'key'        => $clinic_key,
-				'clinic_id'  => (int) ( $entry['clinic_id'] ?? 0 ),
-				'name'       => (string) ( $entry['name'] ?? '' ),
-				'rooms'      => $rooms,
-				'clinicians' => $clinicians,
+				'key'           => $clinic_key,
+				'clinic_id'     => (int) ( $entry['clinic_id'] ?? 0 ),
+				'name'          => (string) ( $entry['name'] ?? '' ),
+				'rooms'         => $rooms,
+				'clinicians'    => $clinicians,
+				// Organization authority NEVER implies Clinic authority: a Clinic step
+				// form is only rendered for an actor who really holds CONFIG there.
+				'can_configure' => $this->authorization->can( $actor_wp_user_id, (int) ( $entry['clinic_id'] ?? 0 ), self::CLINIC_MANAGE_CAPABILITY ),
 			);
 		}
 

@@ -306,6 +306,19 @@ final class ManagementPortalController {
 				);
 
 			case 'org_facility_designate':
+				// Preferred frontend path: a login/e-mail is resolved server-side to an
+				// existing Subscriber. The numeric-id path is kept for API compatibility
+				// (and is still fully re-authorized inside the service).
+				$cpms_identifier = self::string_value( $input, 'identifier' );
+				if ( '' !== $cpms_identifier ) {
+					return $service->designate_facility_manager_by_identifier(
+						$actor_wp_user_id,
+						self::int_value( $input, 'organization_id' ),
+						self::string_value( $input, 'clinic_key' ),
+						$cpms_identifier
+					);
+				}
+
 				return $service->designate_facility_manager(
 					$actor_wp_user_id,
 					self::int_value( $input, 'organization_id' ),
