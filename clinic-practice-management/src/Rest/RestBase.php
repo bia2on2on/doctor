@@ -68,7 +68,7 @@ abstract class RestBase
         }
         $caps = (array) $caps;
         foreach ($caps as $cap) {
-            if ( ! $user->has_cap( $cap ) && ! $this->scopedCapabilityGranted( (string) $cap ) ) {
+            if ( ! $user->has_cap( $cap ) && ! $this->scoped_capability_granted( (string) $cap ) ) {
                 App::audit()->log(
                     'FORBIDDEN_ACCESS_ATTEMPT',
                     ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
@@ -104,8 +104,7 @@ abstract class RestBase
      * still gets false, a foreign Clinic still gets false, and object ownership
      * continues to be enforced by the calling service.
      */
-    private function scopedCapabilityGranted( string $cap ): bool
-    {
+    private function scoped_capability_granted( string $cap ): bool {
         if ( '' === $cap ) {
             return false;
         }
@@ -113,7 +112,7 @@ abstract class RestBase
         if ( $scope === null ) {
             return false;
         }
-        $clinic_id = (int) $scope->clinicId;
+        $clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
         $user_id   = (int) get_current_user_id();
         if ( $clinic_id <= 0 || $user_id <= 0 ) {
             return false;

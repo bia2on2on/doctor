@@ -1728,15 +1728,15 @@ final class ClinicalService
      * authorizeScoped() for the durable object Clinic (defence in depth), and the
      * same pattern is already published in FinanceService.
      */
-    private function requireCap(int $wpUserId, string $cap, string $scope): void
-    {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
+    private function requireCap( int $wp_user_id, string $cap, string $scope ): void {
         $scope_context = ScopeContext::tryGet();
         $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
         $authorized    = $clinic_id > 0
-            ? App::authorization_service()->can( $wpUserId, $clinic_id, $cap )
-            : user_can( $wpUserId, $cap );
+            ? App::authorization_service()->can( $wp_user_id, $clinic_id, $cap )
+            : user_can( $wp_user_id, $cap );
         if ( ! $authorized ) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+            throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, [ 'scope' => $scope ] );
         }
     }
 
@@ -1751,14 +1751,14 @@ final class ClinicalService
      * widens nor replaces authorization. Non-doctor roles (secretary) are
      * capability-defined and therefore have no actor-shape gate here.
      */
-    private function requireRole(int $wpUserId, string $role, string $action): void
-    {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
+    private function requireRole( int $wp_user_id, string $role, string $action ): void {
         if ( 'doctor' !== $role ) {
             return; // capability-defined staff surface; requireCap() is the gate.
         }
-        $clinician_id = ( new MembershipRepository( $this->db ) )->active_clinician_id_for_wp_user( $wpUserId );
+        $clinician_id = ( new MembershipRepository( $this->db ) )->active_clinician_id_for_wp_user( $wp_user_id );
         if ( $clinician_id === null || (int) $clinician_id <= 0 ) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
+            throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403 );
         }
     }
 

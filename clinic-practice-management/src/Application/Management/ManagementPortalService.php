@@ -32,6 +32,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Management;
 
+// The portal read model returns several small associative arrays whose keys have
+// very different lengths. This file follows the project idiom (compact arrays,
+// one key per line) rather than the WordPress multi-statement alignment, which is
+// purely cosmetic and would fight the surrounding code.
+// phpcs:disable WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
+// phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning
+
 use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Authorization\AuthorizationService;
 use ClinicCore\Application\Location\LocationException;
@@ -120,12 +127,12 @@ final class ManagementPortalService {
 				continue;
 			}
 			$out[] = array(
-				'id'                => $organization_id,
-				'name'              => (string) ( $organization['name'] ?? '' ),
-				'can_create'        => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY ),
-				'can_update'        => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_PROFILE_UPDATE ),
-				'can_lifecycle'     => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_LIFECYCLE ),
-				'can_designate'     => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER ),
+				'id'                 => $organization_id,
+				'name'               => (string) ( $organization['name'] ?? '' ),
+				'can_create'         => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY ),
+				'can_update'         => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_PROFILE_UPDATE ),
+				'can_lifecycle'      => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_LIFECYCLE ),
+				'can_designate'      => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY_CLINIC_MANAGER ),
 				'can_manage_members' => $this->organizations->can( $actor_wp_user_id, $organization_id, OrganizationClinicProvisioningService::MEMBERSHIP_CAPABILITY ),
 			);
 		}
@@ -151,16 +158,16 @@ final class ManagementPortalService {
 			if ( $clinic === null ) {
 				continue;
 			}
-			$can_manage = $this->authorization->can( $actor_wp_user_id, (int) $clinic_id, self::CLINIC_MANAGE_CAPABILITY );
+			$can_manage  = $this->authorization->can( $actor_wp_user_id, (int) $clinic_id, self::CLINIC_MANAGE_CAPABILITY );
 			$can_reports = $this->authorization->can( $actor_wp_user_id, (int) $clinic_id, self::CLINIC_REPORT_CAPABILITY );
 			if ( ! $can_manage && ! $can_reports ) {
 				continue;
 			}
 			$out[] = array(
-				'id'              => (int) $clinic_id,
-				'name'            => (string) ( $clinic['name'] ?? '' ),
-				'status'          => (string) ( $clinic['status'] ?? 'active' ),
-				'can_manage'      => $can_manage,
+				'id'               => (int) $clinic_id,
+				'name'             => (string) ( $clinic['name'] ?? '' ),
+				'status'           => (string) ( $clinic['status'] ?? 'active' ),
+				'can_manage'       => $can_manage,
 				'can_view_reports' => $can_reports,
 			);
 		}
@@ -224,11 +231,11 @@ final class ManagementPortalService {
 
 		return array(
 			'organization' => array(
-				'id'   => $organization_id,
-				'name' => $organization['name'],
+				'id'           => $organization_id,
+				'name'         => $organization['name'],
 			),
-			'clinics'      => $clinics,
-			'can'          => array(
+			'clinics'   => $clinics,
+			'can'       => array(
 				'create'    => $organization['can_create'],
 				'update'    => $organization['can_update'],
 				'lifecycle' => $organization['can_lifecycle'],
@@ -335,13 +342,13 @@ final class ManagementPortalService {
 				continue;
 			}
 			$locations[] = array(
-				'id'        => (int) ( $location['id'] ?? 0 ),
-				'name'      => (string) ( $location['name'] ?? '' ),
-				'slug'      => (string) ( $location['slug'] ?? '' ),
-				'address'   => (string) ( $location['address'] ?? '' ),
-				'phone'     => (string) ( $location['phone'] ?? '' ),
-				'timezone'  => (string) ( $location['timezone'] ?? '' ),
-				'is_active' => (int) ( $location['is_active'] ?? 0 ),
+				'id'         => (int) ( $location['id'] ?? 0 ),
+				'name'       => (string) ( $location['name'] ?? '' ),
+				'slug'       => (string) ( $location['slug'] ?? '' ),
+				'address'    => (string) ( $location['address'] ?? '' ),
+				'phone'      => (string) ( $location['phone'] ?? '' ),
+				'timezone'   => (string) ( $location['timezone'] ?? '' ),
+				'is_active'  => (int) ( $location['is_active'] ?? 0 ),
 				'is_primary' => (int) ( $location['is_primary'] ?? 0 ),
 			);
 		}
@@ -368,29 +375,29 @@ final class ManagementPortalService {
 		}
 
 		return array(
-			'clinic'            => array(
-				'id'        => $clinic_id,
-				'name'      => (string) ( $clinic['name'] ?? '' ),
-				'slug'      => (string) ( $clinic['slug'] ?? '' ),
-				'address'   => (string) ( $clinic['address'] ?? '' ),
-				'phone'     => (string) ( $clinic['phone'] ?? '' ),
-				'timezone'  => (string) ( $clinic['timezone'] ?? '' ),
-				'status'    => (string) ( $clinic['status'] ?? 'active' ),
+			'clinic'          => array(
+				'id'              => $clinic_id,
+				'name'            => (string) ( $clinic['name'] ?? '' ),
+				'slug'            => (string) ( $clinic['slug'] ?? '' ),
+				'address'         => (string) ( $clinic['address'] ?? '' ),
+				'phone'           => (string) ( $clinic['phone'] ?? '' ),
+				'timezone'        => (string) ( $clinic['timezone'] ?? '' ),
+				'status'          => (string) ( $clinic['status'] ?? 'active' ),
 				'organization_id' => (int) ( $clinic['organization_id'] ?? 0 ),
 			),
-			'locations'         => $locations,
-			'staff'             => $staff,
-			'clinicians'        => $clinicians,
-			'assignable_roles'  => self::ASSIGNABLE_BUILT_IN_ROLES,
-			'custom_roles'      => array_map(
+			'locations'        => $locations,
+			'staff'            => $staff,
+			'clinicians'       => $clinicians,
+			'assignable_roles' => self::ASSIGNABLE_BUILT_IN_ROLES,
+			'custom_roles'     => array_map(
 				static fn( array $role ): array => array(
 					'role_key'     => (string) ( $role['role_key'] ?? '' ),
 					'display_name' => (string) ( $role['display_name'] ?? '' ),
 				),
 				is_array( $custom_roles ) ? $custom_roles : array()
 			),
-			'can_view_reports'  => $this->authorization->can( $actor_wp_user_id, $clinic_id, self::CLINIC_REPORT_CAPABILITY ),
-			'can_view_finance'  => $this->authorization->can( $actor_wp_user_id, $clinic_id, RolesAndCapabilities::FINANCE_READ ),
+			'can_view_reports' => $this->authorization->can( $actor_wp_user_id, $clinic_id, self::CLINIC_REPORT_CAPABILITY ),
+			'can_view_finance' => $this->authorization->can( $actor_wp_user_id, $clinic_id, RolesAndCapabilities::FINANCE_READ ),
 		);
 	}
 
@@ -658,7 +665,7 @@ final class ManagementPortalService {
 			return null;
 		}
 
-		return $scope->clinicId;
+		return $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
 	}
 
 	/**

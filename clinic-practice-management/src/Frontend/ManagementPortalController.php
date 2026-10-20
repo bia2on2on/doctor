@@ -93,8 +93,8 @@ final class ManagementPortalController {
 			self::redirect( array( 'notice' => 'invalid' ) );
 		}
 
-		$actor = (int) get_current_user_id();
-		$input = self::collect_input( $action );
+		$actor  = (int) get_current_user_id();
+		$input  = self::collect_input( $action );
 		$result = self::dispatch( $actor, $action, $input );
 
 		self::redirect(

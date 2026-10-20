@@ -648,7 +648,7 @@ final class ExportService
 
         $missing = [];
         foreach ($reports->typeCaps($type) as $cap) {
-            if (!$this->export_capability_granted($actorUserId, (string) $cap)) {
+            if ( ! $this->export_capability_granted( $actorUserId, (string) $cap ) ) {
                 $missing[] = $cap;
             }
         }
@@ -667,26 +667,26 @@ final class ExportService
      * Scoped engine when a trusted Clinic scope is bound, legacy global answer
      * otherwise. Exports keep their own scoped authorizeScoped() checks.
      */
-    private function export_capability_granted(int $actorUserId, string $cap): bool
-    {
+    private function export_capability_granted( int $actor_user_id, string $cap ): bool {
         $scope_context = ScopeContext::tryGet();
         $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
-        if ($clinic_id > 0 && $actorUserId > 0) {
-            return App::authorization_service()->can($actorUserId, $clinic_id, $cap);
+        if ( $clinic_id > 0 && $actor_user_id > 0 ) {
+            return App::authorization_service()->can( $actor_user_id, $clinic_id, $cap );
         }
 
-        $user = get_userdata($actorUserId);
-        return $user !== false && $user->has_cap($cap);
+        $user = get_userdata( $actor_user_id );
+
+        return $user !== false && $user->has_cap( $cap );
     }
 
-    private function requireCap(int $actorUserId, string $cap, string $what): void
-    {
-        if (!$this->export_capability_granted($actorUserId, $cap)) {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
+    private function requireCap( int $actor_user_id, string $cap, string $what ): void {
+        if ( ! $this->export_capability_granted( $actor_user_id, $cap ) ) {
             throw ReportException::of(
                 'CLINIC_PERMISSION_DENIED',
                 "دسترسی لازم برای {$what} را ندارید",
                 403,
-                ['capability' => $cap]
+                [ 'capability' => $cap ]
             );
         }
     }

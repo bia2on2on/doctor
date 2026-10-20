@@ -44,11 +44,11 @@ $cpms_mp_clinic_id  = isset( $_GET[ ManagementPortalShell::CLINIC_PARAM ] ) ? ab
 // phpcs:enable WordPress.Security.NonceVerification.Recommended
 
 $cpms_mp_notices = array(
-	'done'           => array( 'class' => 'is-success', 'text' => 'عملیات با موفقیت ثبت شد.' ),
-	'denied'         => array( 'class' => 'is-error', 'text' => 'عملیات انجام نشد؛ دسترسی یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.' ),
-	'invalid'        => array( 'class' => 'is-error', 'text' => 'درخواست نامعتبر است. دوباره تلاش کنید.' ),
-	'auth_required'  => array( 'class' => 'is-error', 'text' => 'برای انجام این عملیات ابتدا وارد شوید.' ),
-	'login_failed'   => array( 'class' => 'is-error', 'text' => 'ورود ناموفق بود یا دسترسی مدیریتی CPMS برای این حساب وجود ندارد.' ),
+	'done'          => array( 'class' => 'is-success', 'text' => 'عملیات با موفقیت ثبت شد.' ),
+	'denied'        => array( 'class' => 'is-error', 'text' => 'عملیات انجام نشد؛ دسترسی یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.' ),
+	'invalid'       => array( 'class' => 'is-error', 'text' => 'درخواست نامعتبر است. دوباره تلاش کنید.' ),
+	'auth_required' => array( 'class' => 'is-error', 'text' => 'برای انجام این عملیات ابتدا وارد شوید.' ),
+	'login_failed'  => array( 'class' => 'is-error', 'text' => 'ورود ناموفق بود یا دسترسی مدیریتی CPMS برای این حساب وجود ندارد.' ),
 );
 $cpms_mp_notice  = $cpms_mp_notices[ $cpms_mp_notice_key ] ?? null;
 
