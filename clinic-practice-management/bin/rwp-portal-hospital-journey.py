@@ -215,6 +215,16 @@ def submit_form(page, action: str, tag: str, sshot: str, fill=None) -> str:
         return "missing"
     if fill:
         fill(form)
+    try:
+        invalid = form.evaluate(
+            "f => Array.from(f.elements).filter(e => e.willValidate && !e.checkValidity())"
+            ".map(e => (e.name || e.id || e.type) + '=' + (e.value || ''))"
+        )
+    except Exception:  # noqa: BLE001 - diagnostics only
+        invalid = []
+    if invalid:
+        check(f"{tag}.native_validation", False, "browser refused submit: " + ", ".join(invalid[:6]))
+        return "invalid"
     form.locator('button[type="submit"]').first.click()
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(600)
@@ -226,7 +236,7 @@ def submit_form(page, action: str, tag: str, sshot: str, fill=None) -> str:
         check(f"{tag}.no_critical_error", False, "critical error page")
         return "critical"
     ok = "cpms-mgmt-notice" in body and ("انجام شد" in text or "ذخیره" in text or "ثبت" in text or "ایجاد" in text or "تعیین" in text or "فعال" in text or "تأیید" in text)
-    check(f"{tag}.submitted", ok, f"notice={text[:80]}")
+    check(f"{tag}.submitted", ok, f"notice={text[:80]}; {inventory(page)}")
     return "ok" if ok else ("ok" if "cpms-mgmt-notice" in body and "دسترسی" not in text else "denied")
 
 
