@@ -74,6 +74,42 @@ new authority source and leaves every existing gate byte-for-byte as published.
 5. **`manage_options` bootstrap** (B-04/B-05) remains an explicit Administrator
    action; it is not a business workflow.
 
+## 2A. Independent-review remediation (2026-10-20, second round)
+
+The independent review of head `3204369` confirmed five P0 authorization defects in the
+dedicated portal. All five are fixed in `ManagementPortalService` (and
+`FacilitySetupService` for the entry check); each has a negative regression test.
+
+| ID | Defect (confirmed) | Fix | Regression test |
+|---|---|---|---|
+| P0-1 | `set_staff_capability()` read the target membership **before** any management authorization, so an actor holding only some other capability (e.g. a secretary with `cpms_patient_read`) could mutate capability overrides | `clinic_manager_scope()` establishes the trusted Clinic and authorizes `cpms_config` FIRST; the membership row is read afterwards; the delegated capability must also be effective for the actor; DENY > GRANT > preset unchanged | `test_non_manager_capability_mutation_is_refused_before_lookup` |
+| P0-2 | `assign_built_in_role()` / `enroll_staff()` allowed self-role changes and unlimited role delegation (a manager could hand out `cpms_doctor`, i.e. clinical authority it never held) | authorization precedes target lookup; the actor's **own** membership can never be changed; every capability of the target role preset must already be effective for the actor in that Clinic | `test_self_role_escalation_is_refused`, `test_forbidden_clinical_and_financial_role_delegation_is_refused`, `test_subscriber_clinic_manager_enrolls_staff_and_provisions_only_a_subscriber` |
+| P0-3 | `update_location()` / `set_location_active()` performed the target Location lookup before authorization (existence/ownership probe surface) | scoped management capability is authorized before the Location row is read; foreign ids and unauthorized actors receive the same uniform failure | `test_location_mutation_requires_scoped_management_before_lookup` |
+| P0-4 | Sensitive portal mutations wrote **no** audit rows (enrollment, role change, suspension, scope, capability overrides, clinician registration) | every mutation appends a hash-chained `AuditLogger` entry with before/after state, actor, resource and Clinic | `test_sensitive_portal_changes_write_hash_chained_audit_rows` |
+| P0-5 | Portal had no regression coverage for any of the above | seven new DB-backed negative/positive tests plus controller-only facility journeys | see `ManagementPortalTest` §9 and the facility tests |
+
+Functional review items addressed in the same round:
+
+- **P1-6/P1-7** — free-text `site_key`/`clinic_key` inputs are replaced by
+  server-populated selectors (`facility_selectors()`), and clinician assignment, weekly
+  schedules and the booking policy are now portal controller actions, so hospital
+  readiness and atomic activation are reachable **without** calling
+  `FacilitySetupService` directly from a test.
+- **P1-8** — room provisioning stays a Clinic operation: an Organization Manager
+  without an explicit Clinic designation is refused, and the delegation is what makes
+  it succeed. Organization authority is never converted into Clinic authority.
+- **P1-9** — `FacilitySetupService::has_admin_entry()` (WordPress-global
+  `user_can()`) is replaced by `has_cpms_entry()`: ACTIVE durable membership plus the
+  scoped capability that opens that role's surface. It is per Clinic, never a
+  WordPress role, and it grants nothing.
+- **P1-10** — a clinician serving several Clinics of one Organization is visible in
+  every one of them (home + participating profiles, deduplicated) and can be scheduled
+  in the secondary Clinic; the durable home Clinic is re-read rather than assumed.
+
+**Not delivered (see §2.3):** Subscriber operation of the Doctor/Reception portals and
+the decoupling of the REST/service gates from WordPress-global capabilities (P1-11 to
+P1-13 of the review). No "authorized in any Clinic" fallback was introduced anywhere.
+
 ## 3. Test evidence
 
 - `tests/Integration/ManagementPortalTest.php`:
@@ -98,3 +134,11 @@ new authority source and leaves every existing gate byte-for-byte as published.
   failed in its first exact-head run because the template docblock contained the
   literal string "/wp-admin" (the assertion matched documentation, not markup). The
   wording was corrected; the assertion still fails closed on real links/actions.
+
+### 3.2 Exact-head evidence for round 2
+
+- `ManagementPortalTest` (22 DB-backed tests at this head) and the two facility
+  journeys in `FacilitySetupJourneyTest` are executed by the exact-head Integration
+  lane; the audit-row test also verifies the global hash-chain linkage of the recent
+  window.
+- WPCS runs on added lines only; PHPStan level 3 covers the modified services.

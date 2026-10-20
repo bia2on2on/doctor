@@ -314,8 +314,10 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         foreach ($service->review($this->actor, $this->org)['clinics'] as $clinic) {
             $byClinic[(int) $clinic['clinic_id']] = $clinic;
         }
-        self::assertSame(0, $byClinic[(int) $a['clinic_id']]['entry_missing'], 'manager A can now open the CPMS screens');
-        self::assertSame(1, $byClinic[(int) $b['clinic_id']]['entry_missing'], 'the independent Clinic B is unaffected');
+        // CPMS entry is membership-based and per Clinic: adding a WordPress role
+        // changes neither Clinic's report, and grants no Clinic authority below.
+        self::assertSame(0, $byClinic[(int) $a['clinic_id']]['entry_missing'], 'manager A keeps CPMS entry from its membership');
+        self::assertSame(0, $byClinic[(int) $b['clinic_id']]['entry_missing'], 'the independent Clinic B report is unaffected by a WordPress role');
         self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::CONFIG), 'a WordPress role grants no Clinic authority');
         self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::PATIENT_READ));
         $service->activate($this->actor, $this->org, true);
