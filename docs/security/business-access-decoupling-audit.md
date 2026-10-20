@@ -249,3 +249,101 @@ repeat apply, `SHOW CREATE TABLE cpms_custom_role_defs` equality, and the CHECK 
   current upstream stable (`persian-woocommerce-sms` 7.3.1 → 7.3.2,
   `persian-woocommerce` 10.0.5 → 10.0.6). The harness fails closed by design; Stage B is
   NOT RUN. Updating the pins is a separate, reviewable change and was not made here.
+
+### 4.5 Round-3 delivery — Subscriber security closure (exact-head evidence)
+
+**Reviewed head:** `bd6f346` → **delivered head `e9271f6`** (this section).
+
+#### Authorization model refinement (`AuthorizationService::scoped_decision`)
+
+A single authoritative helper now answers, per (actor, Clinic, capability):
+
+| result | meaning | consequence |
+|---|---|---|
+| `true` | the ACTIVE membership effectively grants the capability | allowed (Subscriber and staff identical) |
+| `false` | the ACTIVE membership carries an **explicit DENY** | **final** — no WordPress-global `has_cap()` may override it |
+| `null` | no ACTIVE membership, or a membership that neither grants nor denies | the caller's legacy WordPress-capability path may answer (unchanged compatibility) |
+
+This replaced the previous "scoped check, else global" pattern at these boundaries:
+`ReportService` (route gate + report-specific capabilities), `ExportService`
+(export + report-type capabilities), `ReportsController`, `FinanceController`,
+`FinanceService::listServices`, `HandwritingService`, `MedicalFileService`,
+`ClinicalService` (`requireCap`, private-note/private-file readback),
+`VisitService::requireQueueReader`, `PatientService` (license class), and the
+shared `RestBase::requireCap` used by the remaining staff controllers.
+
+#### Accountant surface (owner delivery 2026-10-20)
+
+The Finance board's read boundary is **`cpms_finance_read` + `cpms_invoice_read`
+in ONE Clinic**. `cpms_queue_read` is no longer part of it, so the built-in
+`cpms_accountant` preset opens the board without any WordPress role and without
+queue authority. `cpms_queue_checkout` still guards checkout, so the accountant
+still cannot mutate settlement. Five pre-existing test expectations that pinned
+"accountant is outside the finance board" were updated in the same commit with
+the reason recorded inline — this is a deliberate contract change, not a
+weakened assertion.
+
+#### Doctor / reception surfaces
+
+- `MedicalFileService`: staff classification (doctor/secretary/patient) comes from
+  the durable membership of the file's Clinic plus the clinician identity, never
+  from a WordPress role; the global pre-check capability gates were removed and
+  `authorizeScoped()` on the durable Clinic remains the decider before any disk
+  read. `doctor_private` still needs clinician identity **and** scoped
+  `cpms_private_note_read` **and** scoped `cpms_file_read`.
+- `ClinicalService`: private notes/files readback uses durable Visit ownership +
+  scoped capability (D-8 masking unchanged).
+- `ReceptionPortalController`: unscoped requests are decided by durable Reception
+  authority first — an actor whose required Reception capabilities are denied
+  gets `403 CLINIC_PERMISSION_DENIED` and never a `400` selector oracle; the
+  clinic selector and the operational requests share one eligibility rule
+  (ACTIVE secretary membership, ACTIVE Organization, non-suspended Clinic, all
+  three queue capabilities); `StaffPortalShell::reception_module_eligible` now
+  mirrors it exactly.
+- `PatientService`: the license "reception" operation class is derived from the
+  durable secretary membership + scoped `cpms_patient_create`, not the WP role.
+
+#### Regressions added (`SubscriberOperationalAccessTest`, DB-backed)
+
+Full Subscriber doctor workspace (record, handwriting, clinical search, scoped
+DENY closure), true Subscriber accountant (finance board + report catalog, no
+`QUEUE_READ`), scoped DENY over a legacy WordPress role capability, reception
+DENY on unscoped context/board plus the authorized actor's `400` selector
+contract, suspended Organization and suspended Clinic removal from the selector,
+cross-Clinic isolation, and authorization-before-PHI (foreign existing vs
+nonexistent Visit produce one indistinguishable envelope with no patient
+identity in the body).
+
+#### Exact-head CI at `e9271f6` — **23 pass / 3 fail / 0 pending (26 checks)**
+
+Green: Integration (`2226` tests), WPCS (changed lines), Unit 8.1–8.4, Static
+Analysis, Tenant Tripwire, Real WP Acceptance ×3, Upgrade path, Release
+Artifact, Closure ×4, First-practice browser (mysql + mariadb), Responsive smoke
+(Chromium ×4), Staging Gate (fresh install → restore drill), coexistence ×3
+(auth/combined-ten) — i.e. **all product/security/browser lanes**.
+
+Red: `coexistence-persian-woocommerce-sms`, `coexistence-persian-woocommerce-diagnosis`,
+`coexistence-combined-nineteen` — Stage A `official_stable_source_validated`
+fails closed because upstream stable advanced past the frozen pins
+(`persian-woocommerce-sms` 7.3.1 → 7.3.2, `persian-woocommerce` 10.0.5 → 10.0.6).
+Stage B is NOT RUN. **No pin was changed**: the harness verifies exact-version
+identity *and* ZIP header identity against `downloads.wordpress.org`, which this
+execution environment cannot reach, so artifact integrity of a new pin could not
+be verified. Re-pinning stays a separate, reviewable change.
+
+#### NOT RUN (honest)
+
+- Real Chromium journeys with **Subscriber** Manager/Doctor/Receptionist/Accountant
+  accounts. The existing browser lanes authenticate WordPress-role staff; the
+  Subscriber contract is proven by DB-backed integration tests only. Exact repro
+  for the installation agent: create a `subscriber` WP user, seed
+  `cpms_clinic_memberships` (role `cpms_doctor` / `cpms_secretary` /
+  `cpms_accountant`) in one Clinic with an ACTIVE Location, then run
+  `bin/pilot-doctor-portal.py`, `bin/pilot-reception.py`, `bin/pilot-finance-board.py`
+  against that session.
+- MariaDB **11.8** migration-0027 replay (unchanged: gate stays fail-closed,
+  evidence not obtainable here) — see §4.3.
+- PRIORITY-2 frontend-management completeness (clinic settings, booking policy,
+  SMS settings, clinician/schedule management, executable `simple_practice` /
+  `multi_doctor_clinic` onboarding, 12-facility differentiation, separate
+  Organization/Clinic manager identities) remains **open**.
