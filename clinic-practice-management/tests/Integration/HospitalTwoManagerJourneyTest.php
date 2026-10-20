@@ -221,10 +221,8 @@ final class HospitalTwoManagerJourneyTest extends WP_UnitTestCase {
             'future'    => '10',
             'cancel'    => '1',
         ] ), 'manager A cannot write Clinic B booking policy' );
-        self::assertSame( 1, (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s AND value = %s',
-            [ $clinicB, 'booking.duration_default_min', '15' ]
-        ), 'Clinic B keeps its own policy (15), untouched by manager A' );
+        self::assertSame( 15, (int) ( new \ClinicCore\Settings\Settings( App::db(), $clinicB, App::audit() ) )->get( 'booking.duration_default_min' ),
+            'Clinic B keeps its own policy (15), untouched by manager A' );
 
         self::assertFalse( $this->act( $this->managerB, 'clinic_location_create', [
             'clinic_id' => (string) $clinicA,
