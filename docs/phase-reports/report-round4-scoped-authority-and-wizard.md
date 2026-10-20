@@ -1,6 +1,7 @@
 # Round 4 report — scoped authority hardening and the facility wizard
 
-- **Exact head:** `89ca847` (tree identical to `5a294f8`; the empty commit re-runs a flaky lane)
+- **Code head:** `89ca847` (tree identical to `5a294f8`; the empty commit re-runs a flaky lane)
+- **CI evidence head:** `9199c84` — same code tree, plus this docs-only report commit
 - **Base:** `0f3d21a` (Round-3 head)
 - **Branch:** `arena/4be58c19-doctor` · **PR #255 (Draft, not merged)** · PR #256 untouched
 
@@ -68,14 +69,14 @@ contradicted the established Phase 11 contract
   idempotent re-submit. Test:
   `FacilitySetupJourneyTest::testSiteAddressUsesTheOfflineProvinceCityCatalogAndRejectsAnOrphanCity`.
 
-## 2. Exact-head CI at `89ca847`
+## 2. Exact-head CI (code tree at `89ca847`, re-run at `9199c84`)
 
 | Lane | Result |
 | --- | --- |
 | Integration (WP 7.1 + MySQL 8) | **PASS** — 2125 tests, 59874 assertions, 0 failures, 0 errors |
 | WPCS (changed code) / PHPStan / Unit 8.1–8.4 / Closure ×4 | **PASS** |
 | Real WP Acceptance (`prefix clinic_`), First-practice browser (mariadb), Upgrade path, Tenant Tripwire | **PASS** |
-| Real WP Acceptance (`prefix wp_`) | **FAIL — infrastructure**: `curl error 28` to `packagist.org` (security advisories) + baseline-ZIP build failure; the same lane passed at the two preceding SHAs |
+| Real WP Acceptance (`prefix wp_`) | **PASS at `9199c84`**; at `89ca847` it failed once for **infrastructure** only (`curl error 28` to `packagist.org` + baseline-ZIP build failure) and passed at the preceding SHAs |
 | Coexistence ×3 | **FAIL — upstream pin drift** (`persian-woocommerce` 10.0.5→10.0.6, `-sms` 7.3.1→7.3.2); unfixable here (artifact identity needs downloads.wordpress.org) |
 | Responsive smoke (Chromium ×4), Staging Gate | still pending at report time |
 
