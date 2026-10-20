@@ -226,3 +226,26 @@ a MariaDB 11.8 instance, which this environment does not provide. Required evide
 change the gate: full migrate to schema `2026_10_18_0029`, `rollbackOne()` from 0027,
 repeat apply, `SHOW CREATE TABLE cpms_custom_role_defs` equality, and the CHECK /
 `@@SESSION.check_constraint_checks` probes the migration already performs.
+
+### 4.4 Round-2 exact-head evidence (`be27e1e` and successor)
+
+- Integration (WP 7.1 + MySQL 8): **PASS** — `OK (2220 tests, 64341 assertions)`,
+  0 failures at `be27e1e`; WPCS (changed lines): **PASS**; Unit (8.1–8.4): **PASS**.
+- New negative/positive contract `SubscriberOperationalAccessTest` (11 cases): Subscriber
+  doctor Today / live queue / visit record / context on scoped authority alone;
+  cross-Clinic refusal; explicit DENY over preset; suspended membership; inactive
+  Location without continuity; missing/ambiguous scope; explicit DENY on the finance
+  board; WordPress Administrator without CPMS authority.
+- Responsive smoke exposed one real ordering regression from this round: a Reception
+  request with **no** Clinic selector returned `400 CLINIC_SCOPE_REQUIRED` to an actor
+  holding no Reception authority, where the established contract is `403
+  CLINIC_PERMISSION_DENIED` with no patient data. Fixed in
+  `ReceptionPortalController::perm_reception`: when no explicit Clinic is supplied the
+  durable Reception authority decides the envelope first (deny 403), and only an actor
+  who holds Reception authority somewhere is asked for the explicit Clinic (400).
+  No patient data was returned in the failing probe.
+- Coexistence jobs (3): **blocked upstream, not by this change**. Stage A fails at its
+  `official_stable_source_validated` gate because the pinned versions no longer equal the
+  current upstream stable (`persian-woocommerce-sms` 7.3.1 → 7.3.2,
+  `persian-woocommerce` 10.0.5 → 10.0.6). The harness fails closed by design; Stage B is
+  NOT RUN. Updating the pins is a separate, reviewable change and was not made here.

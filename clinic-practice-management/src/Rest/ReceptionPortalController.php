@@ -406,6 +406,24 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
 		}
 
+		// Deny first, select later: when the request carries no explicit Clinic the
+		// trusted scope cannot exist yet, so the durable Reception authority of
+		// the actor decides the envelope. An actor with NO Reception authority in
+		// any Clinic receives the capability denial (403 — the established
+		// contract); only an actor who holds Reception authority somewhere is
+		// asked for the explicit Clinic (400 ambiguity). A tenant selector is
+		// never requested from someone who could not use it.
+		$clinic_selector = $r->get_header( 'X-CPMS-Clinic-Id' );
+		if ( null === $clinic_selector || '' === trim( (string) $clinic_selector ) ) {
+			$clinic_selector = $r->get_param( 'clinic_id' );
+		}
+		if ( null === $clinic_selector || '' === trim( (string) $clinic_selector ) || 0 === (int) $clinic_selector ) {
+			$pre_denial = $this->reception_role_holds( (int) $user->ID, true );
+			if ( $pre_denial instanceof WP_Error ) {
+				return $pre_denial;
+			}
+		}
+
 		$route      = (string) $r->get_route();
 		$is_context = '/clinic/v1/staff/portal/reception/context' === $route;
 		// Patient identity is Clinic-scoped: the read-only search and the
