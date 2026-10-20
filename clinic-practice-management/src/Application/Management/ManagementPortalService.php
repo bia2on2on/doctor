@@ -388,14 +388,14 @@ final class ManagementPortalService {
 			// clinic_id; the durable home Clinic is re-read instead of assumed.
 			$home_clinic = (int) ( $clinician['clinic_id'] ?? 0 );
 			if ( $home_clinic <= 0 ) {
-				$profile     = $this->clinicians->find( $clinician_id );
+				$profile = $this->clinicians->find( $clinician_id );
 				$home_clinic = $profile === null ? 0 : (int) ( $profile['clinic_id'] ?? 0 );
 			}
-			$clinicians[]          = array(
-				'id'          => $clinician_id,
-				'full_name'   => (string) ( $clinician['full_name'] ?? '' ),
-				'is_active'   => (int) ( $clinician['is_active'] ?? 1 ),
-				'home_clinic' => $home_clinic,
+			$clinicians[] = array(
+				'id'                  => $clinician_id,
+				'full_name'           => (string) ( $clinician['full_name'] ?? '' ),
+				'is_active'           => (int) ( $clinician['is_active'] ?? 1 ),
+				'home_clinic'         => $home_clinic,
 				'home_clinic_matches' => $home_clinic === $clinic_id,
 			);
 		}
@@ -934,7 +934,7 @@ final class ManagementPortalService {
 				return self::failure();
 			}
 			$membership = $found;
-			$before     = array(
+			$before = array(
 				'scope_mode'   => (string) ( $membership['scope_mode'] ?? '' ),
 				'location_ids' => array_values( array_map( 'intval', $this->memberships->location_ids_for( $membership_id ) ) ),
 			);

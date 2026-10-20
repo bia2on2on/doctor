@@ -371,7 +371,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-room-site">ساختمان (اختیاری)</label>
 									<select id="cpms-mgmt-room-site" name="site_key">
-										<option value="">—</option>
+										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_primary_site ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_primary_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_primary_site['label'] ); ?></option>
+										<?php endforeach; ?>
 										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_site ) : ?>
 											<option value="<?php echo esc_attr( (string) $cpms_mp_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_site['label'] ); ?></option>
 										<?php endforeach; ?>

@@ -1321,7 +1321,7 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         // must not be silently converted into Clinic authority.
         self::assertFalse( App::authorization_service()->can( $this->orgManager, $clinic_id, RolesAndCapabilities::CONFIG ) );
         self::assertFalse( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_room', array(
-            'organization_id' => (string) $this->orgA, 'clinic_key' => $clinic_key, 'name' => 'Room No Authority',
+            'organization_id' => (string) $this->orgA, 'clinic_key' => $clinic_key, 'name' => 'Room No Authority', 'site_key' => $site_key,
         ) )['ok'], 'Organization authority alone cannot create Clinic rooms' );
         $locations = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
@@ -1336,8 +1336,8 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         ) )['ok'] );
         self::assertTrue( App::authorization_service()->can( $this->orgManager, $clinic_id, RolesAndCapabilities::CONFIG ) );
         self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_room', array(
-            'organization_id' => (string) $this->orgA, 'clinic_key' => $clinic_key, 'name' => 'Room Delegated',
-        ) )['ok'] );
+            'organization_id' => (string) $this->orgA, 'clinic_key' => $clinic_key, 'name' => 'Room Delegated', 'site_key' => $site_key,
+        ) )['ok'], 'delegated Clinic authority may create the Clinic room' );
         self::assertSame( 2, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
             array( $clinic_id )

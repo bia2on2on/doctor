@@ -300,8 +300,11 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         ob_start();
         FacilitySetupPage::render();
         $html = (string) ob_get_clean();
-        self::assertSame(2, substr_count($html, 'data-cpms-facility-entry-missing="1"'), 'each Clinic shows its admin-entry gap');
-        self::assertStringContainsString('data-cpms-facility-entry-guidance="2"', $html);
+        // CPMS entry now follows the durable membership + scoped capability, so a
+        // designated subscriber manager has no entry gap for the frontend portals.
+        self::assertSame(0, substr_count($html, 'data-cpms-facility-entry-missing="1"'), 'no CPMS entry gap is reported');
+        self::assertSame(2, substr_count($html, 'data-cpms-facility-entry-missing="0"'), 'each Clinic is reported as CPMS-entry ready');
+        self::assertStringContainsString('data-cpms-facility-entry-guidance="0"', $html);
 
         // Technical WordPress step outside CPMS: the matching WordPress role opens the
         // screens for manager A only, and grants no Clinic authority anywhere.
