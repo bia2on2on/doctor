@@ -351,18 +351,26 @@ final class Phase4Slice4QueueSharedProfessionalTest extends WP_UnitTestCase
         self::assertSame(403, $response->get_status(), 'suspended B participation denies Doctor Portal access');
         self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errorCode($response));
 
-        // Service-level proof: even with a legitimately established Clinic-B
-        // scope, suspended participation resolves to the empty scope.
+        // Service-level proof: with a legitimately established Clinic-B scope, a
+        // SUSPENDED membership is a final DENY — the service refuses before it
+        // reads any Visit, so Clinic-B rows can never be projected. (Round-4
+        // hardening: previously this path returned a bounded empty projection;
+        // the security property "B never leaks" is preserved and enforced earlier.)
         wp_set_current_user($doctorUserId);
         App::replaceExplicitScope(ClinicScope::forClinic($this->clinics['B']));
+        $denied = null;
         try {
-            $today = App::visitService()->today($doctorUserId);
+            App::visitService()->today($doctorUserId);
+        } catch (\Throwable $e) {
+            $denied = $e;
         } finally {
             App::replaceExplicitScope(null);
         }
 
-        self::assertSame([], $today['queue'], 'suspended participation yields an empty queue, never Clinic-wide rows');
-        self::assertSame(0, $today['stats']['total'], 'suspended participation yields zero stats');
+        self::assertInstanceOf(\ClinicCore\Domain\Visits\VisitException::class, $denied, 'suspended participation is denied at the service layer');
+        self::assertSame(403, $denied->httpStatus, 'suspended participation is a 403, never a Clinic-wide projection');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $denied->errorCode, 'suspended participation is an explicit scoped denial');
+        self::assertStringNotContainsString('suspended-participation', $denied->getMessage(), 'the denial leaks no patient/Visit detail');
         self::assertGreaterThan(0, $visitB['id'], 'control: a visible Clinic-B Visit existed and stayed hidden');
     }
 

@@ -153,7 +153,7 @@ final class ScopedAuthorityHardeningTest extends WP_UnitTestCase
         self::assertSame(403, $board->get_status(), 'a suspended membership is not rescued by a global capability');
     }
 
-    public function testSuspendedClinicIsNotAReceptionSurfaceEvenForAnActiveSecretary(): void
+    public function testSuspendedClinicAdvertisesNoReceptionWorkEvenForAnActiveSecretary(): void
     {
         global $wpdb;
         $user = $this->makeUser('sh_susp_clinic', 'subscriber');
@@ -176,7 +176,15 @@ final class ScopedAuthorityHardeningTest extends WP_UnitTestCase
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic, 'X-CPMS-Location-Id' => (string) $location]
         );
-        self::assertSame(403, $denied->get_status(), 'a suspended Clinic opens no new reception work');
+        // Established lifecycle contract (Phase 11): a suspended Clinic keeps the
+        // bounded EMPTY read (HTTP 200) rather than a distinguishable 403, so the
+        // surface leaks neither work nor lifecycle state. Either way no board row
+        // may be exposed; the payload below is the proof under test.
+        self::assertSame(200, $denied->get_status(), 'a suspended Clinic keeps a bounded read — ' . $this->errDetail($denied));
+        $body = $denied->get_data();
+        self::assertIsArray($body, 'the bounded read returns a payload');
+        self::assertSame([], (array) ($body['queue'] ?? []), 'a suspended Clinic exposes no reception queue');
+        self::assertSame([], (array) ($body['appointments'] ?? []), 'a suspended Clinic exposes no reception appointment');
         $wpdb->update($wpdb->prefix . 'cpms_clinics', ['status' => 'active'], ['id' => $this->clinic]);
     }
 

@@ -1403,6 +1403,15 @@ final class VisitService
         if ( $scope !== null && (int) $scope->clinicId > 0 && $wpUserId > 0 ) {
             $membership = $this->memberships->find_active( (int) $scope->clinicId, $wpUserId );
             if ( $membership === null ) {
+                // No durable row (or a suspended one) is NOT staff authority. A
+                // WordPress "doctor" stays a DOCTOR identity so the queue scope
+                // resolves to that clinician's own empty set — never the
+                // clinic-wide staff view. Unknown actors fall through as null.
+                $legacy = get_userdata( $wpUserId );
+                if ( $legacy !== false && in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) ( $legacy->roles ?? [] ), true ) ) {
+                    return 'doctor';
+                }
+
                 return null;
             }
             $role_key = (string) ( $membership['role_key'] ?? '' );

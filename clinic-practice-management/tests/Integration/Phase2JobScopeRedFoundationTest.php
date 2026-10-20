@@ -1091,8 +1091,12 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $user->add_cap('cpms_patient_read');
 
         // Clinic A only. Using the production membership service keeps this on
-        // the same primitive the guard reads.
-        App::membership_service()->create_membership($this->fxClinicA, $userId, 'cpms_accountant');
+        // the same primitive the guard reads. The accountant preset does NOT
+        // carry EXPORT, and under the hardened contract a WordPress-global cap
+        // never substitutes for scoped authority — so the fixture GRANTS EXPORT
+        // on the membership (the wire the account must really use).
+        $memId = App::membership_service()->create_membership($this->fxClinicA, $userId, 'cpms_accountant');
+        App::membership_service()->set_capability((int) $memId, 'cpms_export', 'grant');
 
         return $userId;
     }
