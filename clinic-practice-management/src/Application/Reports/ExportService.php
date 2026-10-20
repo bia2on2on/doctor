@@ -664,6 +664,16 @@ final class ExportService
 
     private function requireCap(int $actorUserId, string $cap, string $what): void
     {
+        // WordPress-independent business access: scoped authority of the explicit
+        // Clinic is sufficient; the WordPress-global capability stays as the legacy
+        // path. Scope is never inferred from the single-Clinic system resolution.
+        $scope = ScopeContext::tryGet();
+        if (
+            $scope !== null && $scope->clinicId > 0 && $actorUserId > 0
+            && App::authorization_service()->can($actorUserId, (int) $scope->clinicId, $cap)
+        ) {
+            return;
+        }
         $user = get_userdata($actorUserId);
         if ($user === false || !$user->has_cap($cap)) {
             throw ReportException::of(

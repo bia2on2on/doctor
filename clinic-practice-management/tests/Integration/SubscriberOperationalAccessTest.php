@@ -217,6 +217,59 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // 8. Finance and Reports: Subscriber accountant on scoped authority.
+    // ------------------------------------------------------------------
+
+    public function testSubscriberAccountantUsesFinanceAndReportsOnScopedAuthority(): void
+    {
+        $user = $this->makeUser('sub_acc', 'subscriber');
+        $membershipId = cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_ACCOUNTANT);
+        wp_set_current_user($user);
+        self::assertFalse(user_can($user, RolesAndCapabilities::FINANCE_READ), 'precondition: no WordPress-global finance capability');
+
+        $finance = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/staff/portal/finance/context',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $finance->get_status(), 'Subscriber accountant must reach the finance board context');
+
+        $reports = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $reports->get_status(), 'Subscriber accountant must reach the reports catalog');
+
+        // Explicit DENY on the same membership overrides the preset for reports too.
+        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::REPORT_READ, 'deny');
+        $denied = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(403, $denied->get_status(), 'explicit DENY on cpms_report_read must win over the accountant preset');
+    }
+
+    public function testSubscriberWithoutFinanceAuthorityIsDeniedTheFinanceBoard(): void
+    {
+        // A doctor membership grants no finance authority in the same Clinic.
+        $user = $this->makeUser('sub_fin_deny', 'subscriber');
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_DOCTOR);
+        wp_set_current_user($user);
+        $finance = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/staff/portal/finance/context',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(403, $finance->get_status(), 'no capability in another role is not finance authority');
+    }
+
+    // ------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------
 

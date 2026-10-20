@@ -8,6 +8,7 @@ use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportException;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -62,7 +63,7 @@ final class ReportsController extends RestBase
                     'reports' => $this->reports->catalog($this->userId($r)),
                 ]),
                 'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
+                    => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -82,7 +83,7 @@ final class ReportsController extends RestBase
                             $r['to'] ?? null
                         )
                     ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -103,7 +104,7 @@ final class ReportsController extends RestBase
                 [
                     'methods'             => WP_REST_Server::READABLE,
                     'callback'            => fn ( WP_REST_Request $r ) => $this->printView( $r ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -136,7 +137,7 @@ final class ReportsController extends RestBase
                         // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
                         RolesAndCapabilities::EXPORT
                     ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -162,7 +163,7 @@ final class ReportsController extends RestBase
                     RolesAndCapabilities::EXPORT
                 ),
                 'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
+                    => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -170,7 +171,7 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->download($r),
-                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::EXPORT),
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permScopedOrGlobal($r, RolesAndCapabilities::EXPORT),
             ],
         ]);
     }
@@ -188,7 +189,7 @@ final class ReportsController extends RestBase
         if ($error instanceof WP_Error) {
             return $error;
         }
-        $perm = $this->requireCap(RolesAndCapabilities::REPORT_READ);
+        $perm = $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ);
         if ($perm instanceof WP_Error) {
             return $perm;
         }
@@ -337,7 +338,9 @@ final class ReportsController extends RestBase
         if ($nonce instanceof WP_Error) {
             return $nonce;
         }
-        $perm = $this->requireCap($cap);
+        // WordPress-independent business access: scoped authority first, legacy
+        // WordPress-global capability as the fallback (see permScopedOrGlobal).
+        $perm = $this->permScopedOrGlobal($r, $cap);
         if ($perm instanceof WP_Error) {
             return $perm;
         }
@@ -388,6 +391,32 @@ final class ReportsController extends RestBase
      * شیءِ دیگری افشا نشود. بررسی‌های خشنِ قبلی (Nonce + Cap سراسری) دست‌نخورده
      * مانده‌اند (Defense in Depth) و پیش از این helper اجرا می‌شوند.
      */
+    /**
+     * WordPress-independent business access: the scoped authority of the
+     * explicitly established Clinic decides first; the legacy WordPress-global
+     * capability stays as the backward-compatible fallback. Never a widening —
+     * the scoped engine requires an ACTIVE membership and the same capability
+     * with DENY precedence, and the handlers re-check scope (`REPORT_READ`).
+     */
+    private function permScopedOrGlobal(WP_REST_Request $r, string $cap): bool|WP_Error
+    {
+        $nonce = $this->requireNonce($r);
+        if ($nonce instanceof WP_Error) {
+            return $nonce;
+        }
+        $user_id = (int) get_current_user_id();
+        if ($user_id <= 0) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) $scope->clinicId > 0
+            && App::authorization_service()->can($user_id, (int) $scope->clinicId, $cap)) {
+            return true;
+        }
+
+        return $this->requireCap($cap);
+    }
+
     private function requireScopedClinicPermission(string $cap): bool|WP_Error
     {
         $userId = (int) get_current_user_id();

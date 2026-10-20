@@ -595,12 +595,10 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return array();
 		}
-		foreach ( self::REPORTS_MODULE_CAPS as $cap ) {
-			if ( ! $user->has_cap( $cap ) ) {
-				return array();
-			}
-		}
-
+		// WordPress-independent business access: the reports module no longer
+		// requires the WordPress-global capability. Every listed Clinic must still
+		// grant ALL module capabilities through the scoped engine below, and each
+		// report/export request is re-validated server-side.
 		$auth = App::authorization_service();
 		$ids  = array();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {

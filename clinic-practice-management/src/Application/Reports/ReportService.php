@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -802,6 +803,18 @@ final class ReportService
 
     private function requireCap(int $actorUserId, string $cap): void
     {
+        // WordPress-independent business access: the scoped authority of an
+        // explicitly established Clinic (ACTIVE membership + effective capability,
+        // DENY > GRANT > preset) is sufficient. The WordPress-global capability
+        // remains a valid legacy path. The single-Clinic system resolution is never
+        // used here to infer a scope.
+        $scope = ScopeContext::tryGet();
+        if (
+            $scope !== null && $scope->clinicId > 0 && $actorUserId > 0
+            && App::authorization_service()->can($actorUserId, (int) $scope->clinicId, $cap)
+        ) {
+            return;
+        }
         $user = get_userdata($actorUserId);
         if ($user === false || !$user->has_cap($cap)) {
             throw ReportException::of(
