@@ -536,6 +536,46 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
+    // 14. Full Subscriber doctor Visit Workspace: records, files, handwriting
+    //     and clinical search on scoped authority alone.
+    // ------------------------------------------------------------------
+
+    public function testSubscriberDoctorUsesTheFullVisitWorkspace(): void
+    {
+        $fx = $this->makeSubscriberDoctor('sub_ws');
+        wp_set_current_user($fx['user']);
+
+        $visit = '/doctor/portal/visits/' . $fx['visit'];
+
+        $record = $this->doctorRequest('GET', $visit . '/record', $fx['location']);
+        self::assertSame(200, $record->get_status(), 'workspace record — ' . $this->errDetail($record));
+
+        $files = $this->doctorRequest('GET', $visit . '/files', $fx['location']);
+        self::assertSame(200, $files->get_status(), 'workspace medical-file list — ' . $this->errDetail($files));
+
+        $handwriting = $this->doctorRequest('GET', $visit . '/handwriting', $fx['location']);
+        self::assertSame(200, $handwriting->get_status(), 'workspace handwriting list — ' . $this->errDetail($handwriting));
+
+        $search = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/search',
+            ['q' => 'Subscriber', 'type' => 'all'],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic, 'X-CPMS-Location-Id' => (string) $fx['location']]
+        );
+        self::assertSame(200, $search->get_status(), 'clinical search on scoped cpms_search — ' . $this->errDetail($search));
+
+        // Explicit DENY on the medical read capability closes the workspace and
+        // the search, proving the scoped engine (not the WP role) decides.
+        $membership = App::membership_service()->membership_for($this->clinic, $fx['user']);
+        self::assertNotNull($membership);
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::MEDICAL_READ, 'deny');
+        $deniedRecord = $this->doctorRequest('GET', $visit . '/record', $fx['location']);
+        self::assertSame(403, $deniedRecord->get_status(), 'scoped DENY closes the record');
+        $deniedHandwriting = $this->doctorRequest('GET', $visit . '/handwriting', $fx['location']);
+        self::assertSame(403, $deniedHandwriting->get_status(), 'scoped DENY closes handwriting');
+    }
+
+    // ------------------------------------------------------------------
     // Fixtures
     // ------------------------------------------------------------------
 

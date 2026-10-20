@@ -66,7 +66,34 @@ abstract class RestBase
             return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
         $caps = (array) $caps;
+        // WordPress-independent business access: when the request carries a
+        // trusted Clinic, the scoped engine is FINAL for that capability — an
+        // ACTIVE membership grant allows a Subscriber exactly like the equivalent
+        // staff member, and an explicit membership DENY refuses even a
+        // WordPress-global grant. Without a trusted scope (or without a
+        // membership) the legacy global check is unchanged.
+        $scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+        $scope_clinic = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
         foreach ($caps as $cap) {
+            if ( $scope_clinic > 0 ) {
+                $decision = App::authorization_service()->scoped_decision( (int) $user->ID, $scope_clinic, $cap );
+                if ( true === $decision ) {
+                    continue;
+                }
+                if ( false === $decision ) {
+                    App::audit()->log(
+                        'FORBIDDEN_ACCESS_ATTEMPT',
+                        ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
+                        'capability',
+                        null,
+                        null,
+                        null,
+                        ['cap' => $cap, 'reason' => 'scoped']
+                    );
+
+                    return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+                }
+            }
             if (!$user->has_cap($cap)) {
                 App::audit()->log(
                     'FORBIDDEN_ACCESS_ATTEMPT',
