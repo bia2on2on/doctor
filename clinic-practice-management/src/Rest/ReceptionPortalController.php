@@ -447,12 +447,6 @@ final class ReceptionPortalController extends RestBase {
 			return $bound;
 		}
 
-		// Lifecycle consistency (Round-4): Reception is a NEW-DEMAND surface, so a
-		// suspended Clinic or a non-active Organization is refused here exactly as
-		// it is refused in the Clinic selector. Historical clinical/finance
-		// continuity keeps its own scope rules elsewhere; it never opens new
-		// reception work.
-
 		return $this->reception_role_holds( (int) $user->ID, $is_context );
 	}
 
