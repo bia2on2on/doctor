@@ -192,10 +192,26 @@ def portal_form(page, action: str):
     return page.locator(f'form:has(input[name="cpms_action"][value="{action}"])')
 
 
+def inventory(page) -> str:
+    """Bounded, redacted description of what the browser actually rendered."""
+    try:
+        actions = page.locator('input[name="cpms_action"]').evaluate_all("els => els.map(e => e.value)")
+    except Exception:  # noqa: BLE001 - diagnostics only
+        actions = []
+    notice = ""
+    loc = page.locator(".cpms-mgmt-notice")
+    if loc.count():
+        try:
+            notice = loc.first.inner_text()
+        except Exception:  # noqa: BLE001
+            notice = ""
+    return f"url={page.url} actions={list(actions)[:20]} notice={notice[:120]}"
+
+
 def submit_form(page, action: str, tag: str, sshot: str, fill=None) -> str:
     form = portal_form(page, action)
     if form.count() == 0:
-        check(f"{tag}.form_present", False, f"no form for {action}")
+        check(f"{tag}.form_present", False, f"no form for {action}; {inventory(page)}")
         return "missing"
     if fill:
         fill(form)
@@ -222,6 +238,20 @@ def select_by_label_text(form, selector: str, text: str) -> bool:
             form.locator(selector).select_option(option.get_attribute("value"))
             return True
     return False
+
+
+def surface_url(portal: str, param: str, value: int) -> str:
+    joiner = "&" if "?" in portal else "?"
+    return f"{portal}{joiner}{param}={value}"
+
+
+def submit_on_surface(page, action: str, tag: str, sshot: str, surface: str, fill=None) -> str:
+    """Submit one portal form, then re-open the explicit surface (deterministic)."""
+    outcome = submit_form(page, action, tag, sshot, fill)
+    if surface:
+        page.goto(surface, wait_until="domcontentloaded")
+        page.wait_for_timeout(500)
+    return outcome
 
 
 def overflow(page) -> int:
@@ -253,20 +283,22 @@ def main() -> int:
             org.wait_for_load_state("domcontentloaded")
             org.wait_for_timeout(500)
 
+        org_surface = surface_url(portal, "cpms-org", org_id)
+
         # 1. facility type + identity
-        submit_form(org, "org_facility_start", "org.start", "org-facility-start",
+        submit_on_surface(org, "org_facility_start", "org.start", "org-facility-start", org_surface,
                     lambda f: (f.locator('select[name="facility_type"]').select_option("hospital"),
                                f.locator('select[name="structure"]').select_option("hospital_network") if f.locator('select[name="structure"] option[value="hospital_network"]').count() else None,
                                f.locator('input[name="display_name"]').fill(HOSPITAL_NAME)))
         check("org.plan_is_hospital", "hospital_network" in org.content(), "flow=hospital_network rendered")
 
         # 2. outpatient-only acknowledgment
-        submit_form(org, "org_facility_ack", "org.ack", "org-outpatient-ack")
+        submit_on_surface(org, "org_facility_ack", "org.ack", "org-outpatient-ack", org_surface)
 
         # 3. two physical sites
         for label, address, sshot in ((SITE_EAST, "تهران، خیابان اول", "org-site-east"),
                                       (SITE_WEST, "تهران، خیابان دوم", "org-site-west")):
-            submit_form(org, "org_facility_site", f"org.site.{label}", sshot,
+            submit_on_surface(org, "org_facility_site", f"org.site.{label}", sshot, org_surface,
                         lambda f, label=label, address=address: (f.locator('input[name="label"]').fill(label),
                                                                  f.locator('input[name="address"]').fill(address)))
 
@@ -277,10 +309,11 @@ def main() -> int:
                 f.locator('input[name="name"]').fill(name)
                 select_by_label_text(f, 'select[name="site_key"]', site)
                 f.locator('input[name="timezone"]').fill("Asia/Tehran")
-            submit_form(org, "org_facility_clinic", f"org.clinic.{name}", sshot, fill_clinic)
+            submit_on_surface(org, "org_facility_clinic", f"org.clinic.{name}", sshot, org_surface, fill_clinic)
 
         body = org.content()
-        check("org.two_clinics_listed", body.count("درمانگاه") >= 1 and "درمانگاه‌ها: 2" in body, "plan shows 2 Clinics")
+        check("org.two_clinics_listed", body.count("درمانگاه") >= 1 and "درمانگاه‌ها: 2" in body,
+              f"plan shows 2 Clinics; {inventory(org)}")
         check("org.clinic_steps_delegated", 'data-cpms-clinic-steps-delegated="1"' in body,
               "Clinic-level forms are NOT offered to the Organization Manager")
 
@@ -290,7 +323,7 @@ def main() -> int:
             def fill_desig(f, clinic=clinic, mgr_login=mgr_login):
                 select_by_label_text(f, 'select[name="clinic_key"]', clinic)
                 f.locator('input[name="identifier"]').fill(mgr_login)
-            submit_form(org, "org_facility_designate", f"org.designate.{clinic}", sshot, fill_desig)
+            submit_on_surface(org, "org_facility_designate", f"org.designate.{clinic}", sshot, org_surface, fill_desig)
 
         check("org.still_not_ready", "فعال‌سازی" in org.content(), "activation form present but plan incomplete")
 
@@ -311,6 +344,9 @@ def main() -> int:
                 check(f"{tag}.clinic_tab", False, "owned Clinic is not listed")
                 ctx.close()
                 return False
+            href = tab.first.get_attribute("href") or ""
+            clinic_match = re.search(r"cpms-clinic=(\d+)", href)
+            clinic_surface = surface_url(portal, "cpms-clinic", int(clinic_match.group(1))) if clinic_match else ""
             tab.first.click()
             page.wait_for_load_state("domcontentloaded")
             page.wait_for_timeout(600)
@@ -320,12 +356,12 @@ def main() -> int:
             shot(page, f"{sshot_prefix}-clinic-blocked")
 
             # Location / room
-            submit_form(page, "clinic_location_create", f"{tag}.location", f"{sshot_prefix}-location",
+            submit_on_surface(page, "clinic_location_create", f"{tag}.location", f"{sshot_prefix}-location", clinic_surface,
                         lambda f: (f.locator('input[name="name"]').fill("اتاق ویزیت ۱"),
                                    f.locator('input[name="slug"]').fill(f"room-1-{tag}"),
                                    f.locator('input[name="timezone"]').fill("Asia/Tehran")))
             # Clinician
-            submit_form(page, "clinic_clinician_register", f"{tag}.clinician", f"{sshot_prefix}-clinician",
+            submit_on_surface(page, "clinic_clinician_register", f"{tag}.clinician", f"{sshot_prefix}-clinician", clinic_surface,
                         lambda f: (f.locator('input[name="full_name"]').fill("دکتر " + tag),
                                    f.locator('input[name="specialty"]').fill("عمومی")))
             # Weekly schedule (server-populated selects: clinician + location)
@@ -337,12 +373,12 @@ def main() -> int:
                     f.locator('select[name="day_of_week"]').select_option(str(day)) if f.locator(f'select[name="day_of_week"] option[value="{day}"]').count() else None
                     f.locator('input[name="start_time"]').fill("09:00")
                     f.locator('input[name="end_time"]').fill("12:00")
-                submit_form(page, "clinic_schedule_create", f"{tag}.schedule", f"{sshot_prefix}-schedule", fill_sched)
+                submit_on_surface(page, "clinic_schedule_create", f"{tag}.schedule", f"{sshot_prefix}-schedule", clinic_surface, fill_sched)
             else:
                 check(f"{tag}.schedule.form_present", False, "no schedule form")
 
             # Booking policy — the Clinic Manager's own completion step
-            submit_form(page, "clinic_facility_booking", f"{tag}.booking", f"{sshot_prefix}-booking",
+            submit_on_surface(page, "clinic_facility_booking", f"{tag}.booking", f"{sshot_prefix}-booking", clinic_surface,
                         lambda f: [f.locator(f'input[name="{key}"]').fill(value) for key, value in BOOKING.items()])
 
             body = page.content()
@@ -365,7 +401,7 @@ def main() -> int:
         check("org.review_ready", "همهٔ پیش‌شرط‌ها فراهم است" in body or "فعال‌سازی اتمیک" in body,
               "activation panel present after both Clinics completed")
         shot(org, "org-review-ready")
-        submit_form(org, "org_facility_activate", "org.activate", "org-activated")
+        submit_on_surface(org, "org_facility_activate", "org.activate", "org-activated", org_surface)
 
         facts = parse_kv(wp_eval(FACTS_EVAL)).get("FACTS", "[]")
         try:
