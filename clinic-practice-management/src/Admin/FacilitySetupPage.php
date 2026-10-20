@@ -135,6 +135,39 @@ final class FacilitySetupPage {
             echo '<div class="notice ' . ( $is_error ? 'notice-error' : 'notice-success' ) . '" data-cpms-facility-notice="' . ( $is_error ? 'error' : 'ok' ) . '"><p>' . esc_html( $notice ) . '</p></div>';
         }
         if ( [] === $organizations ) {
+            // Secure handoff: Clinic Managers without Organization authority must not
+            // be blocked from their Clinic-level configuration. They work through
+            // their dedicated per-Clinic pages, while Organization review/activation
+            // stays with the Organization Manager. The FacilitySetupService clinic
+            // steps already enforce Clinic CONFIG without requiring Organization
+            // capability, so this branch only needs to surface the handoff.
+            $managed_clinic_ids = [];
+            foreach ( \ClinicCore\Bootstrap\App::membership_service()->active_clinic_ids_for_user( $actor_id ) as $candidate_clinic_id ) {
+                if ( \ClinicCore\Bootstrap\App::authorization_service()->can( $actor_id, (int) $candidate_clinic_id, \ClinicCore\Auth\RolesAndCapabilities::CONFIG ) ) {
+                    $managed_clinic_ids[] = (int) $candidate_clinic_id;
+                }
+            }
+            if ( [] !== $managed_clinic_ids ) {
+                echo '<div class="notice notice-info" data-cpms-facility-setup="clinic-manager"><p>شما مدیر سازمان نیستید اما مدیر درمانگاه‌های زیر هستید. پیکربندی درمانگاه (اتاق‌ها، پزشکان، کارکنان، برنامه، رزرو) را در صفحات همان درمانگاه انجام دهید؛ بازبینی و فعال‌سازی نهایی با مدیر سازمان است. نقش مدیر وردپرس به‌تنهایی هیچ اختیاری نمی‌دهد.</p></div>';
+                $rows = \ClinicCore\Bootstrap\App::db()->fetchAll(
+                    'SELECT c.id, c.name, c.organization_id, o.name AS org_name FROM ' . \ClinicCore\Bootstrap\App::db()->table( 'cpms_clinics' ) . ' c LEFT JOIN ' . \ClinicCore\Bootstrap\App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id WHERE c.id IN (' . implode( ',', array_fill( 0, count( $managed_clinic_ids ), '%d' ) ) . ') ORDER BY c.id',
+                    $managed_clinic_ids
+                );
+                echo '<ul data-cpms-facility-clinic-manager-clinics="' . esc_attr( (string) count( $rows ) ) . '">';
+                foreach ( $rows as $row ) {
+                    $cid = (int) $row['id'];
+                    $clinic_arg = [ 'clinic_id' => $cid ];
+                    echo '<li data-cpms-facility-clinic-manager="' . esc_attr( (string) $cid ) . '">' . esc_html( (string) $row['name'] ) . ' — سازمان: ' . esc_html( (string) ( $row['org_name'] ?? '' ) ) . ' — ';
+                    echo '<a href="' . esc_url( add_query_arg( $clinic_arg, admin_url( 'admin.php?page=cpms-clinicians' ) ) ) . '">پزشکان و برنامه</a> | ';
+                    echo '<a href="' . esc_url( add_query_arg( $clinic_arg, admin_url( 'admin.php?page=cpms-locations' ) ) ) . '">مکان‌ها</a> | ';
+                    echo '<a href="' . esc_url( add_query_arg( $clinic_arg, admin_url( 'admin.php?page=' . \ClinicCore\Admin\StaffManagementPage::PAGE_SLUG ) ) ) . '">کارکنان و مجوزها</a>';
+                    echo '</li>';
+                }
+                echo '</ul>';
+                echo '<p class="description">این راه‌اندازی سربه‌سر (all-or-nothing) در «سازمان‌ها → راه‌اندازی مرکز چنددرمانگاهی» توسط مدیر سازمان فعال می‌شود؛ وضعیت «در انتظار فعال‌سازی» تا آن لحظه بدون پذیرش نوبت جدید حفظ می‌شود. مرز «سازمان ← درمانگاه ← مکان» و تفکیک اختیار سازمان/درمانگاه حفظ شده است.</p>';
+                echo '</div>';
+                return;
+            }
             echo '<div class="notice notice-warning" data-cpms-facility-setup="denied"><p>برای این حساب، عضویت فعال و مجاز مدیر سازمان وجود ندارد. نقش مدیر وردپرس به‌تنهایی اجازهٔ راه‌اندازی سازمانی، ایجاد درمانگاه یا دسترسی به درمانگاه را نمی‌دهد.</p></div></div>';
             return;
         }

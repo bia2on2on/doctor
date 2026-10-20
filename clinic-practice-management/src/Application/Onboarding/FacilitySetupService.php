@@ -475,7 +475,11 @@ final class FacilitySetupService {
      * @return array<string, mixed> The room entry.
      */
     public function add_room( int $actor_id, int $organization_id, string $clinic_key, string $request_key, string $name, string $site_key ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        // Clinic-level configuration: Organization must be active, but actor needs
+        // Clinic CONFIG, not Organization capability (secure handoff).
+        $this->assert_organization_active( $organization_id );
+        $entry_for_scope = $this->clinic_entry( $organization_id, $clinic_key );
+        $this->clinic_scope( $actor_id, (int) $entry_for_scope['clinic_id'] );
         $this->assert_request_key( $request_key );
         $name = trim( $name );
         if ( '' === $name || mb_strlen( $name ) > 190 ) {
@@ -607,7 +611,8 @@ final class FacilitySetupService {
      * @return array{clinician_id:int, profile_created:bool, membership_created:bool, location_ids:list<int>, noop:bool}
      */
     public function assign_clinician( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $full_name, array $room_keys ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        // Clinic-level: Organization active, Clinic CONFIG — no Organization capability.
+        $this->assert_organization_active( $organization_id );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -833,7 +838,8 @@ final class FacilitySetupService {
      * @return array{membership_id:int, noop:bool, scope_mode:string, location_ids:list<int>, denied:list<string>}
      */
     public function assign_staff( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $role_key, string $access, array $room_keys, array $deny_caps ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        // Clinic-level configuration — no Organization capability, Clinic CONFIG only.
+        $this->assert_organization_active( $organization_id );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -952,7 +958,7 @@ final class FacilitySetupService {
      * @return list<array{wp_user_id:int, login:string, role_key:string, status:string, scope_mode:string, locations:int, denied:int, entry:bool}>
      */
     public function clinic_staff( int $actor_id, int $organization_id, string $clinic_key ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_organization_active( $organization_id );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -995,7 +1001,7 @@ final class FacilitySetupService {
      * @return array{schedule_id:int, noop:bool}
      */
     public function add_weekly_schedule( int $actor_id, int $organization_id, string $clinic_key, int $clinician_id, string $room_key, array $input ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_organization_active( $organization_id );
         $entry       = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id   = (int) $entry['clinic_id'];
         $scope       = $this->clinic_scope( $actor_id, $clinic_id );
@@ -1062,7 +1068,7 @@ final class FacilitySetupService {
      * @return array<string, int>
      */
     public function save_booking_policy( int $actor_id, int $organization_id, string $clinic_key, array $input ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_organization_active( $organization_id );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -1239,7 +1245,7 @@ final class FacilitySetupService {
      * @return list<array{id:int, full_name:string, schedule_rows:int}>
      */
     public function clinic_clinicians( int $actor_id, int $organization_id, string $clinic_key ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_organization_active( $organization_id );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -1348,6 +1354,27 @@ final class FacilitySetupService {
         );
         if ( 'active' !== (string) $status || ! $this->provisioning->can( $actor_id, $organization_id, $permission ) ) {
             throw new FacilitySetupException( 'denied', 'برای این سازمان اختیار سازمانی لازم را ندارید؛ نقش مدیر وردپرس به‌تنهایی کافی نیست.' );
+        }
+    }
+
+    /**
+     * Clinic-level authority helper — the Organization must be active but the
+     * actor needs NO Organization capability. Clinic authority is established
+     * separately via clinic_scope() (ACTIVE membership + CONFIG, DENY > GRANT).
+     * This is the secure handoff for multi-Clinic provisioning: Organization
+     * Managers never auto-acquire Clinic authority, Clinic Managers never acquire
+     * Organization authority.
+     */
+    private function assert_organization_active( int $organization_id ): void {
+        if ( $organization_id <= 0 ) {
+            throw new FacilitySetupException( 'denied', 'سازمان باید صریحاً انتخاب شود.' );
+        }
+        $status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+            [ $organization_id ]
+        );
+        if ( 'active' !== (string) $status ) {
+            throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ این بخش فقط برای سازمانِ فعال است.' );
         }
     }
 
