@@ -114,13 +114,27 @@ final class FacilitySetupService {
     }
 
     /**
-     * Whether a WordPress account can open the CPMS screens of one built-in role
-     * (admin entry only — never Clinic authority, which stays with the membership).
+     * Whether an account can already open the CPMS (frontend) screens of one
+     * built-in role in THIS Clinic.
+     *
+     * Eligibility is CPMS data only: an ACTIVE durable membership plus the
+     * scoped capability that opens that role's surface. A WordPress business
+     * role or a global WordPress capability is never consulted, so the answer is
+     * exactly the authority the frontend portals use, and it is per Clinic.
+     *
+     * This is a REPORT, not a grant: no facility step changes any WordPress role
+     * or promotes an account.
      */
-    public static function has_admin_entry( int $wp_user_id, string $role_key ): bool {
+    public function has_cpms_entry( int $wp_user_id, string $role_key, int $clinic_id ): bool {
         $capability = self::ENTRY_CAPABILITIES[ $role_key ] ?? '';
+        if ( '' === $capability || $wp_user_id <= 0 || $clinic_id <= 0 ) {
+            return false;
+        }
+        if ( null === $this->membership_rows->find_active( $clinic_id, $wp_user_id ) ) {
+            return false;
+        }
 
-        return '' !== $capability && $wp_user_id > 0 && user_can( $wp_user_id, $capability );
+        return $this->authz->can( $wp_user_id, $clinic_id, $capability );
     }
 
     /**
@@ -977,7 +991,7 @@ final class FacilitySetupService {
                 'scope_mode' => (string) $row['scope_mode'],
                 'locations'  => (int) $row['locations'],
                 'denied'     => (int) $row['denied'],
-                'entry'      => self::has_admin_entry( (int) $row['wp_user_id'], (string) $row['role_key'] ),
+                'entry'      => $this->has_cpms_entry( (int) $row['wp_user_id'], (string) $row['role_key'], $clinic_id ),
             ];
         }
 
@@ -1305,7 +1319,8 @@ final class FacilitySetupService {
             [ $clinic_id, 'booking.duration_default_min' ]
         );
 
-        // Admin-entry readiness (WordPress role), reported per Clinic as counts only.
+        // CPMS frontend entry readiness (ACTIVE membership + scoped capability),
+        // reported per Clinic as counts only; no WordPress role is consulted.
         $entry_missing    = 0;
         $managers_missing = 0;
         $members          = $this->db->fetchAll(
@@ -1313,7 +1328,7 @@ final class FacilitySetupService {
             array_merge( [ $clinic_id, 'active' ], array_keys( self::ENTRY_CAPABILITIES ) )
         );
         foreach ( $members as $member ) {
-            if ( self::has_admin_entry( (int) $member['wp_user_id'], (string) $member['role_key'] ) ) {
+            if ( $this->has_cpms_entry( (int) $member['wp_user_id'], (string) $member['role_key'], $clinic_id ) ) {
                 continue;
             }
             ++$entry_missing;

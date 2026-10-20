@@ -68,6 +68,9 @@ final class ManagementPortalController {
 		'org_facility_room',
 		'org_facility_designate',
 		'org_facility_activate',
+		'org_facility_clinician',
+		'org_facility_schedule',
+		'org_facility_booking',
 	);
 
 	public static function register(): void {
@@ -309,6 +312,42 @@ final class ManagementPortalController {
 					self::int_value( $input, 'target_user_id' )
 				);
 
+			case 'org_facility_clinician':
+				return $service->assign_facility_clinician(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'clinic_key' ),
+					self::int_value( $input, 'target_user_id' ),
+					self::string_value( $input, 'full_name' ),
+					self::room_keys( $input )
+				);
+
+			case 'org_facility_schedule':
+				return $service->add_facility_schedule(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'clinic_key' ),
+					self::int_value( $input, 'clinician_id' ),
+					self::string_value( $input, 'room_key' ),
+					self::int_value( $input, 'day_of_week' ),
+					self::string_value( $input, 'start_time' ),
+					self::string_value( $input, 'end_time' )
+				);
+
+			case 'org_facility_booking':
+				return $service->save_facility_booking_policy(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'clinic_key' ),
+					array(
+						'duration' => self::int_value( $input, 'duration' ),
+						'capacity' => self::int_value( $input, 'capacity' ),
+						'lead'     => self::int_value( $input, 'lead' ),
+						'future'   => self::int_value( $input, 'future' ),
+						'cancel'   => self::int_value( $input, 'cancel' ),
+					)
+				);
+
 			case 'org_facility_activate':
 				return $service->activate_facility_setup(
 					$actor_wp_user_id,
@@ -381,7 +420,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
@@ -390,6 +429,15 @@ final class ManagementPortalController {
 			}
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
 			$raw = wp_unslash( $_POST[ $field ] );
+			if ( is_array( $raw ) ) {
+				// Only multi-value room selection is expected as an array; every value
+				// is sanitized again by the consuming helper.
+				$input[ $field ] = array_map(
+					static fn( $value ): string => is_scalar( $value ) ? sanitize_text_field( (string) $value ) : '',
+					$raw
+				);
+				continue;
+			}
 			if ( ! is_scalar( $raw ) ) {
 				continue;
 			}
@@ -451,6 +499,27 @@ final class ManagementPortalController {
 		$value = $input[ $key ] ?? 0;
 
 		return is_scalar( $value ) ? absint( (string) $value ) : 0;
+	}
+
+	/**
+	 * Room/Location keys selected for a facility step (server-issued keys only).
+	 *
+	 * @param array<string,mixed> $input
+	 * @return list<string>
+	 */
+	private static function room_keys( array $input ): array {
+		$keys = array();
+		foreach ( (array) ( $input['room_key'] ?? array() ) as $key ) {
+			$clean = is_scalar( $key ) ? sanitize_key( (string) $key ) : '';
+			if ( '' !== $clean && 'primary' !== $clean && 1 !== preg_match( '/^[a-z0-9_-]{1,64}$/', $clean ) ) {
+				continue;
+			}
+			if ( '' !== $clean ) {
+				$keys[] = $clean;
+			}
+		}
+
+		return array_values( array_unique( $keys ) );
 	}
 
 	/**

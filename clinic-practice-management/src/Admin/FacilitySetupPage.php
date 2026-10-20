@@ -546,7 +546,7 @@ final class FacilitySetupPage {
             $labels = [];
             foreach ( $rows as $row ) {
                 $scope    = 'location' === $row['scope_mode'] ? $row['locations'] . ' مکان' : 'کل درمانگاه';
-                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' ) . ( $row['entry'] ? '' : ' — بدون نقش وردپرسیِ ورود' );
+                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' ) . ( $row['entry'] ? '' : ' — بدون دسترسی ورود CPMS (عضویت/مجوز مؤثر)' );
             }
             echo esc_html( implode( '، ', $labels ) );
             echo ' — <a href="' . esc_url( add_query_arg( [ 'clinic_id' => (int) $clinic['clinic_id'] ], admin_url( 'admin.php?page=' . StaffManagementPage::PAGE_SLUG ) ) ) . '">مدیریت کارکنان این درمانگاه</a></div>';

@@ -338,31 +338,160 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						</form>
 
 						<h3>افزودن درمانگاه به برنامه</h3>
-						<?php $cpms_mp_form_open( 'org_facility_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
-							<?php
-							$cpms_mp_field( 'name', 'نام درمانگاه', '', true );
-							$cpms_mp_field( 'site_key', 'شناسهٔ ساختمان (site_key)', '' );
-							$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', 'Asia/Tehran' );
-							?>
-							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">افزودن درمانگاه (معلق)</button>
-						</form>
+						<?php if ( array() !== (array) $cpms_mp_facility['sites'] ) : ?>
+							<?php $cpms_mp_form_open( 'org_facility_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<?php $cpms_mp_field( 'name', 'نام درمانگاه', '', true ); ?>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-site-key">ساختمان</label>
+									<select id="cpms-mgmt-site-key" name="site_key">
+										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_site ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_site['label'] ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<?php $cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', 'Asia/Tehran' ); ?>
+								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">افزودن درمانگاه (معلق)</button>
+							</form>
+						<?php else : ?>
+							<p class="cpms-mgmt-empty">نخست یک ساختمان/سایت ثبت کنید؛ انتخاب ساختمان از فهرست مجاز انجام می‌شود.</p>
+						<?php endif; ?>
 
-						<h3>افزودن اتاق/مکان به درمانگاه</h3>
-						<?php $cpms_mp_form_open( 'org_facility_room', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
-							<?php
-							$cpms_mp_field( 'clinic_key', 'شناسهٔ درمانگاه در برنامه (clinic_key)', '', true );
-							$cpms_mp_field( 'name', 'نام اتاق/مکان', '', true );
-							$cpms_mp_field( 'site_key', 'شناسهٔ ساختمان (اختیاری)' );
-							?>
-							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت اتاق</button>
-						</form>
+						<?php $cpms_mp_selectors = $cpms_mp_service->facility_selectors( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
+						<?php if ( array() !== $cpms_mp_selectors ) : ?>
+							<h3>افزودن اتاق/مکان به درمانگاه <span class="cpms-mgmt-meta">(نیازمند اختیار درمانگاه)</span></h3>
+							<?php $cpms_mp_form_open( 'org_facility_room', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-room-clinic">درمانگاه</label>
+									<select id="cpms-mgmt-room-clinic" name="clinic_key">
+										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-room-site">ساختمان (اختیاری)</label>
+									<select id="cpms-mgmt-room-site" name="site_key">
+										<option value="">—</option>
+										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_site ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_site['label'] ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<?php $cpms_mp_field( 'name', 'نام اتاق/مکان', '', true ); ?>
+								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت اتاق</button>
+							</form>
+							<p class="cpms-mgmt-meta">ایجاد اتاق یک عملیات درمانگاهی است: اختیار سازمانی به‌تنهایی کافی نیست و مدیر تعیین‌شدهٔ همان درمانگاه (عضویت فعال + مجوز پیکربندی) لازم است.</p>
+						<?php endif; ?>
+
+						<?php if ( array() !== $cpms_mp_selectors ) : ?>
+							<h3>اختصاص پزشک</h3>
+							<?php $cpms_mp_form_open( 'org_facility_clinician', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-facl-clinic">درمانگاه</label>
+									<select id="cpms-mgmt-facl-clinic" name="clinic_key">
+										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-facl-room">اتاق/مکان</label>
+									<select id="cpms-mgmt-facl-room" name="room_key[]">
+										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<?php foreach ( $cpms_mp_sel['rooms'] as $cpms_mp_room ) : ?>
+												<option value="<?php echo esc_attr( (string) $cpms_mp_room['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] . ' — ' . (string) $cpms_mp_room['name'] ); ?></option>
+											<?php endforeach; ?>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<?php
+								$cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر پزشک', '', true, 'number' );
+								$cpms_mp_field( 'full_name', 'نام کامل (اگر پروفایل تازه است)' );
+								?>
+								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">اختصاص پزشک</button>
+							</form>
+
+							<h3>برنامهٔ هفتگی پزشک</h3>
+							<?php if ( array() !== array_merge( ...array_map( static fn( array $row ): array => $row['clinicians'], $cpms_mp_selectors ) ) ) : ?>
+								<?php $cpms_mp_form_open( 'org_facility_schedule', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+									<p class="cpms-mgmt-field">
+										<label for="cpms-mgmt-fsch-clinician">پزشک</label>
+										<select id="cpms-mgmt-fsch-clinician" name="clinician_id">
+											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+												<?php foreach ( $cpms_mp_sel['clinicians'] as $cpms_mp_clinician_option ) : ?>
+													<option value="<?php echo esc_attr( (string) $cpms_mp_clinician_option['id'] ); ?>"><?php echo esc_html( (string) $cpms_mp_clinician_option['full_name'] . ' — ' . (string) $cpms_mp_sel['name'] ); ?></option>
+												<?php endforeach; ?>
+											<?php endforeach; ?>
+										</select>
+									</p>
+									<p class="cpms-mgmt-field">
+										<label for="cpms-mgmt-fsch-clinic">درمانگاه</label>
+										<select id="cpms-mgmt-fsch-clinic" name="clinic_key">
+											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+												<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
+											<?php endforeach; ?>
+										</select>
+									</p>
+									<p class="cpms-mgmt-field">
+										<label for="cpms-mgmt-fsch-room">اتاق/مکان</label>
+										<select id="cpms-mgmt-fsch-room" name="room_key">
+											<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+												<?php foreach ( $cpms_mp_sel['rooms'] as $cpms_mp_room ) : ?>
+													<option value="<?php echo esc_attr( (string) $cpms_mp_room['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] . ' — ' . (string) $cpms_mp_room['name'] ); ?></option>
+												<?php endforeach; ?>
+											<?php endforeach; ?>
+										</select>
+									</p>
+									<p class="cpms-mgmt-field">
+										<label for="cpms-mgmt-fsch-day">روز هفته</label>
+										<select id="cpms-mgmt-fsch-day" name="day_of_week">
+											<option value="0">شنبه</option><option value="1">یکشنبه</option><option value="2">دوشنبه</option>
+											<option value="3">سه‌شنبه</option><option value="4">چهارشنبه</option><option value="5">پنجشنبه</option>
+											<option value="6">جمعه</option>
+										</select>
+									</p>
+									<?php
+									$cpms_mp_field( 'start_time', 'ساعت شروع (HH:MM)', '09:00', true );
+									$cpms_mp_field( 'end_time', 'ساعت پایان (HH:MM)', '12:00', true );
+									?>
+									<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت برنامه</button>
+								</form>
+							<?php else : ?>
+								<p class="cpms-mgmt-empty">برای ثبت برنامه ابتدا یک پزشک را به درمانگاه اختصاص دهید.</p>
+							<?php endif; ?>
+
+							<h3>سیاست رزرو و ظرفیت</h3>
+							<?php $cpms_mp_form_open( 'org_facility_booking', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-book-clinic">درمانگاه</label>
+									<select id="cpms-mgmt-book-clinic" name="clinic_key">
+										<?php foreach ( $cpms_mp_selectors as $cpms_mp_sel ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_sel['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_sel['name'] ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<?php
+								$cpms_mp_field( 'duration', 'مدت نوبت (دقیقه)', '20', true, 'number' );
+								$cpms_mp_field( 'capacity', 'ظرفیت هر اسلات', '1', true, 'number' );
+								$cpms_mp_field( 'lead', 'حداقل فاصلهٔ رزرو (ساعت)', '2', true, 'number' );
+								$cpms_mp_field( 'future', 'حداکثر روز آینده', '30', true, 'number' );
+								$cpms_mp_field( 'cancel', 'مهلت لغو (ساعت)', '6', true, 'number' );
+								?>
+								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ سیاست رزرو</button>
+							</form>
+						<?php endif; ?>
 
 						<h3>تعیین مدیر درمانگاه (صریح)</h3>
 						<?php $cpms_mp_form_open( 'org_facility_designate', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
-							<?php
-							$cpms_mp_field( 'clinic_key', 'شناسهٔ درمانگاه در برنامه', '', true );
-							$cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر', '', true, 'number' );
-							?>
+							<p class="cpms-mgmt-field">
+								<label for="cpms-mgmt-desig-clinic">درمانگاه</label>
+								<select id="cpms-mgmt-desig-clinic" name="clinic_key">
+									<?php foreach ( (array) $cpms_mp_facility['clinics'] as $cpms_mp_plan_clinic ) : ?>
+										<option value="<?php echo esc_attr( (string) $cpms_mp_plan_clinic['key'] ); ?>"><?php echo esc_html( (string) ( $cpms_mp_plan_clinic['name'] ?? $cpms_mp_plan_clinic['key'] ) ); ?></option>
+									<?php endforeach; ?>
+								</select>
+							</p>
+							<?php $cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر', '', true, 'number' ); ?>
 							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">تعیین مدیر</button>
 						</form>
 
