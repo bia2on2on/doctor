@@ -625,6 +625,7 @@ final class HandwritingService
      * Clinic keeps the legacy WordPress-capability path. A request without a
      * trusted Clinic keeps the original global contract unchanged.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- legacy host API; security, SQL, i18n and escaping sniffs stay active
     private function requireCap(int $wpUserId, string $cap): void
     {
         $scope = ScopeContext::tryGet();
@@ -641,6 +642,7 @@ final class HandwritingService
             throw HandwritingException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }
     }
+    // phpcs:enable
 
     /**
      * Phase 3 Slice 6A: Clinic معتبر از ScopeContext گرفته می‌شود (fail-closed).

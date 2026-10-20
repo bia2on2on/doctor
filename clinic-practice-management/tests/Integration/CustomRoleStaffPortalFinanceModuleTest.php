@@ -55,10 +55,14 @@ final class CustomRoleStaffPortalFinanceModuleTest extends WP_UnitTestCase
     private const ROLE_KEY = 'sr_board_cashier';
 
     /** The three read capabilities the Finance board genuinely requires. */
+    /**
+     * Owner delivery 2026-10-20: the finance board's read boundary is finance +
+     * invoice read in ONE Clinic. Queue read is no longer part of it (the
+     * accountant preset owns the board), so each of these two stays mandatory.
+     */
     private const READ_CAPS = [
         RolesAndCapabilities::FINANCE_READ,
         RolesAndCapabilities::INVOICE_READ,
-        RolesAndCapabilities::QUEUE_READ,
     ];
 
     protected function setUp(): void

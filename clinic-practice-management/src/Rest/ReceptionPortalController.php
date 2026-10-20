@@ -480,7 +480,24 @@ final class ReceptionPortalController extends RestBase {
 			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
 		foreach ( $this->memberships->active_for_user( $user_id ) as $membership ) {
-			if ( RolesAndCapabilities::ROLE_SECRETARY === (string) ( $membership['role_key'] ?? '' ) ) {
+			if ( RolesAndCapabilities::ROLE_SECRETARY !== (string) ( $membership['role_key'] ?? '' ) ) {
+				continue;
+			}
+			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
+			if ( $clinic_id <= 0 || ! $this->reception_clinic_operational( $clinic_id ) ) {
+				continue;
+			}
+			// An explicit DENY on any required Reception capability means this
+			// actor has no Reception authority at all: denied — never asked for a
+			// Clinic selector.
+			$effective = true;
+			foreach ( [ RolesAndCapabilities::QUEUE_READ, RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE ] as $cap ) {
+				if ( ! App::authorization_service()->can( $user_id, $clinic_id, $cap ) ) {
+					$effective = false;
+					break;
+				}
+			}
+			if ( $effective ) {
 				return true;
 			}
 		}
@@ -1939,8 +1956,7 @@ final class ReceptionPortalController extends RestBase {
 	 * suspended. Membership/capability are evaluated separately by the scoped
 	 * engine. An unreadable row fails closed.
 	 */
-	private function reception_clinic_operational( int $clinic_id ): bool
-	{
+	private function reception_clinic_operational( int $clinic_id ): bool {
 		if ( $clinic_id <= 0 ) {
 			return false;
 		}

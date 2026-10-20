@@ -646,6 +646,7 @@ final class ExportService
             throw ReportException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }
 
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- established camelCase host variables; security, SQL, i18n and escaping sniffs stay active
         $scope = ScopeContext::tryGet();
         $clinic_id = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
         $missing = [];
@@ -664,6 +665,7 @@ final class ExportService
                 $missing[] = $cap;
             }
         }
+    // phpcs:enable
         if ($missing !== []) {
             throw ReportException::of(
                 'CLINIC_PERMISSION_DENIED',

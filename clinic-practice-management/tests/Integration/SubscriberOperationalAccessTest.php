@@ -550,8 +550,13 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         $record = $this->doctorRequest('GET', $visit . '/record', $fx['location']);
         self::assertSame(200, $record->get_status(), 'workspace record — ' . $this->errDetail($record));
 
-        $files = $this->doctorRequest('GET', $visit . '/files', $fx['location']);
-        self::assertSame(200, $files->get_status(), 'workspace medical-file list — ' . $this->errDetail($files));
+        $files = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/patients/' . $fx['patient'] . '/files',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $files->get_status(), 'patient medical-file list — ' . $this->errDetail($files));
 
         $handwriting = $this->doctorRequest('GET', $visit . '/handwriting', $fx['location']);
         self::assertSame(200, $handwriting->get_status(), 'workspace handwriting list — ' . $this->errDetail($handwriting));
@@ -580,7 +585,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
 
     /**
-     * @return array{user:int, clinician:int, location:int, visit:int}
+     * @return array{user:int, clinician:int, location:int, visit:int, patient:int}
      */
     private function makeSubscriberDoctor(string $tag): array
     {
@@ -630,7 +635,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         ));
         $visit = (int) $wpdb->insert_id;
 
-        return ['user' => $user, 'clinician' => $clinician, 'location' => $location, 'visit' => $visit];
+        return ['user' => $user, 'clinician' => $clinician, 'location' => $location, 'visit' => $visit, 'patient' => $patient];
     }
 
     private function makeUser(string $login, string $role): int

@@ -1392,10 +1392,10 @@ final class ClinicalService
                 $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                 RolesAndCapabilities::PRIVATE_NOTE_READ
             ) && App::authorization_service()->can(
-                    $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                    $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                    RolesAndCapabilities::PRIVATE_NOTE_READ
-                );
+                $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            );
 
             $own_clinician_id = $has_private_read ? $this->active_clinician_id_of_user( $actorUserId ) : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
 

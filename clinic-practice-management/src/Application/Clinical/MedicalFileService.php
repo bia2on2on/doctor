@@ -214,6 +214,7 @@ final class MedicalFileService
         // the equivalent staff member, and the clinician identity (not a WP
         // role) decides who is a doctor. Capability, visibility and scope checks
         // below are unchanged and still decide.
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- established camelCase host variables; security, SQL, i18n and escaping sniffs stay active
         $user = get_userdata($actorUserId);
         $roles = $user === false ? [] : (array) $user->roles;
         $membership = ( new MembershipRepository( App::db() ) )->find_active( (int) $row['clinic_id'], $actorUserId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
@@ -227,6 +228,7 @@ final class MedicalFileService
         $isPatient = RolesAndCapabilities::ROLE_PATIENT === $role_key
             || in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true);
 
+    // phpcs:enable
         if ($isPatient) {
             // P-8 + Phase 9 Slice 7 — مجوز بر پایهٔ **عضویت پایدار**: فایل باید
             // patient_visible و بدون حذف باشد و patient_id آن به رکوردِ بیمارِ
@@ -887,6 +889,7 @@ final class MedicalFileService
      * membership in that Clinic. Staff file paths no longer call this: their
      * authority is authorizeScoped() on the durable Clinic of the row.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- legacy host API; security, SQL, i18n and escaping sniffs stay active
     private function requireCap(int $wpUserId, string $cap): void
     {
         $scope = ScopeContext::tryGet();
@@ -903,6 +906,7 @@ final class MedicalFileService
             throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }
     }
+    // phpcs:enable
 
     /**
      * @return array{wp_user_id: int, role: string}

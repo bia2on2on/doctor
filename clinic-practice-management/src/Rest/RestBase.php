@@ -72,6 +72,7 @@ abstract class RestBase
         // staff member, and an explicit membership DENY refuses even a
         // WordPress-global grant. Without a trusted scope (or without a
         // membership) the legacy global check is unchanged.
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- established camelCase host variables; security, SQL, i18n and escaping sniffs stay active
         $scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
         $scope_clinic = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
         foreach ($caps as $cap) {
@@ -94,6 +95,7 @@ abstract class RestBase
                     return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
                 }
             }
+    // phpcs:enable
             if (!$user->has_cap($cap)) {
                 App::audit()->log(
                     'FORBIDDEN_ACCESS_ATTEMPT',

@@ -358,6 +358,7 @@ final class PatientService
      * @return array<string, mixed>
      */
     private function create_record( array $fields, int $actor_user_id, ?int $verified_user = null, ?int $expected_identity = null ): array {
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- established camelCase host variables; security, SQL, i18n and escaping sniffs stay active
         // "Reception" is the CPMS secretary surface, not a WordPress role: a
         // Subscriber secretary with the scoped patient-create capability is the
         // same actor class as any other receptionist, so the license decision
@@ -375,6 +376,7 @@ final class PatientService
             }
         }
         if ( $verified_user === null ) {
+    // phpcs:enable
             $this->assert_license( LicenseGate::OP_PATIENT_CREATE, [ 'clinic_id' => App::scope()->clinicId, 'reception' => $reception ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing scope value object.
         }
 

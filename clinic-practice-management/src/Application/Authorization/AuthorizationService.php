@@ -148,22 +148,22 @@ final class AuthorizationService
 
     /**
      * Authoritative scoped decision for a capability, or NULL when the scoped
-     * engine does not govern this actor at all.
+     * engine does not govern this capability for this actor.
      *
      * Contract (owner policy: WordPress-independent business access):
-     *  - `null`  — the actor holds NO ACTIVE membership in the Clinic, so a
-     *              caller may fall back to its legacy WordPress-capability path;
      *  - `true`  — the ACTIVE membership effectively grants the capability;
-     *  - `false` — the membership exists but the capability is not effective
-     *              (explicit DENY, missing preset entry, inactive custom role).
-     *
-     * A `false` result is FINAL for this Clinic: it must never be overridden by
-     * a WordPress-global capability, and it is exactly how an explicit
-     * membership DENY outranks a legacy `has_cap()` grant. Suspended
-     * memberships produce `null` (find_active returns nothing), which keeps the
-     * legacy path only for actors who are not scoped staff at all.
+     *  - `false` — the ACTIVE membership carries an EXPLICIT DENY for it. That
+     *              answer is FINAL: no WordPress-global capability may override
+     *              it, which is exactly how "explicit DENY outranks legacy
+     *              `has_cap()`" is enforced;
+     *  - `null`  — no ACTIVE membership in the Clinic, or a membership that
+     *              neither grants nor explicitly denies the capability. The
+     *              caller may then consult its legacy WordPress capability path
+     *              (suspended memberships also land here, so they keep the
+     *              original behaviour of their own surface).
      */
-    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase API of this class
+    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool
     {
         if ( $actorWpUserId <= 0 || $clinicId <= 0 ) {
             return null;
@@ -172,13 +172,30 @@ final class AuthorizationService
             return null;
         }
 
-        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update );
         if ( $membership === null ) {
             return null;
         }
 
-        return $this->can( $actorWpUserId, $clinicId, $permission, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+        if ( $this->can( $actorWpUserId, $clinicId, $permission, $for_update ) ) {
+            return true;
+        }
+
+        $membership_id = (int) ( $membership['id'] ?? 0 );
+        if ( $membership_id > 0 ) {
+            foreach ( $this->memberships->capabilities_for( $membership_id, $for_update ) as $row ) {
+                if ( ! is_array( $row ) ) {
+                    continue;
+                }
+                if ( (string) ( $row['capability'] ?? '' ) === $permission && 'deny' === (string) ( $row['effect'] ?? '' ) ) {
+                    return false;
+                }
+            }
+        }
+
+        return null;
     }
+    // phpcs:enable
 
     /**
      * Clinic-scoped permission check with durable object ownership validation.

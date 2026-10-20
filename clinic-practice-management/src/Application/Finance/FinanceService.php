@@ -64,6 +64,7 @@ final class FinanceService
             // same actor class as any other staff member and a global
             // `has_cap()` can never bypass a scoped DENY. Only an actor with no
             // membership in this Clinic keeps the legacy global path.
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- established camelCase host variables; security, SQL, i18n and escaping sniffs stay active
             $decision = App::authorization_service()->scoped_decision($actorUserId, $clinicId, $cap);
             if (false === $decision) {
                 continue;
@@ -71,6 +72,7 @@ final class FinanceService
             if (null === $decision && !user_can($actorUserId, $cap)) {
                 continue;
             }
+    // phpcs:enable
             try {
                 $this->authorizeScoped($actorUserId, $clinicId, $cap, 'services.read');
                 $allowed = true;

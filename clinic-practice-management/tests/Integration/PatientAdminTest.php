@@ -193,8 +193,16 @@ final class PatientAdminTest extends WP_UnitTestCase
         wp_set_current_user($this->accountantId);
         $this->assertSame(403, $this->dispatch('GET', self::NS . '/patients/search', ['q' => 'کاوه'])->get_status(), 'حسابدار → /patients/search DENIED');
 
+        // The CPMS-scoped model: this administrator ALSO holds an ACTIVE manager
+        // membership of the Clinic, whose preset carries cpms_patient_read, so
+        // the read is CPMS authority — not a WordPress-role bypass.
         wp_set_current_user($this->adminId);
-        $this->assertSame(403, $this->dispatch('GET', self::NS . '/patients/search', ['q' => 'کاوه'])->get_status(), 'WP Admin → /patients/search DENIED');
+        $this->assertSame(200, $this->dispatch('GET', self::NS . '/patients/search', ['q' => 'کاوه'])->get_status(), 'admin WITH manager membership → scoped patient read');
+
+        // An administrator WITHOUT CPMS authority is denied (no WP-role bypass).
+        $bareAdmin = $this->makeUser('pat_bare_admin', 'administrator');
+        wp_set_current_user($bareAdmin);
+        $this->assertSame(403, $this->dispatch('GET', self::NS . '/patients/search', ['q' => 'کاوه'])->get_status(), 'WP Admin without CPMS authority → /patients/search DENIED');
 
         wp_set_current_user($this->secretaryId);
         $res = $this->dispatch('GET', self::NS . '/patients/search', ['q' => 'کاوه']);
