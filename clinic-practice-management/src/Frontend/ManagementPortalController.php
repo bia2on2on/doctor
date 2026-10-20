@@ -28,7 +28,6 @@ namespace ClinicCore\Frontend;
 
 use ClinicCore\Application\Management\ManagementPortalService;
 use ClinicCore\Bootstrap\App;
-use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use WP_Error;
 use WP_User;
 
@@ -131,19 +130,6 @@ final class ManagementPortalController {
 	 * @return array{ok:bool, message:string}
 	 */
 	public static function dispatch( int $actor_wp_user_id, string $action, array $input ): array {
-		// FIX 1 — WordPress reserves POST param `name` (query var → 404 on frontend POST).
-		// The portal's entity name fields now post as `cpms_entity_name`. Map it to
-		// the existing service contract key `name` while preserving backwards compatibility
-		// for controller-level tests that still use `name`.
-		if ( isset( $input['cpms_entity_name'] ) && is_scalar( $input['cpms_entity_name'] ) ) {
-			$cpms_mapped = trim( (string) $input['cpms_entity_name'] );
-			if ( '' !== $cpms_mapped ) {
-				$input['name'] = $cpms_mapped;
-			} elseif ( ! isset( $input['name'] ) || '' === trim( (string) ( $input['name'] ?? '' ) ) ) {
-				$input['name'] = '';
-			}
-		}
-
 		if ( $actor_wp_user_id <= 0 || ! in_array( $action, self::ACTIONS, true ) ) {
 			return self::denied();
 		}
@@ -294,24 +280,11 @@ final class ManagementPortalController {
 				);
 
 			case 'org_facility_site':
-				$__site_address = self::string_value( $input, 'address' );
-				try {
-					$__resolved_site = IranProvinceCityCatalog::resolve_submitted_address(
-						$__site_address !== '' ? $__site_address : null,
-						self::string_value( $input, 'address_province' ) !== '' ? self::string_value( $input, 'address_province' ) : null,
-						self::string_value( $input, 'address_city' ) !== '' ? self::string_value( $input, 'address_city' ) : null
-					);
-					if ( null !== $__resolved_site ) {
-						$__site_address = $__resolved_site;
-					}
-				} catch ( \InvalidArgumentException $e ) {
-					return self::denied();
-				}
 				return $service->add_facility_site(
 					$actor_wp_user_id,
 					self::int_value( $input, 'organization_id' ),
 					self::string_value( $input, 'label' ),
-					$__site_address
+					self::string_value( $input, 'address' )
 				);
 
 			case 'org_facility_clinic':
@@ -477,7 +450,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'cpms_entity_name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel', 'address_province', 'address_city' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
@@ -500,15 +473,6 @@ final class ManagementPortalController {
 			}
 			$value           = sanitize_text_field( (string) $raw );
 			$input[ $field ] = $value;
-		}
-
-		// FIX 1 — map the safe form field `cpms_entity_name` to the service contract `name`.
-		// Preserve `name` for backwards compatibility with controller-level tests that still send `name`.
-		if ( isset( $input['cpms_entity_name'] ) ) {
-			$cpms_mapped = trim( (string) $input['cpms_entity_name'] );
-			if ( '' !== $cpms_mapped || ! isset( $input['name'] ) || '' === trim( (string) $input['name'] ) ) {
-				$input['name'] = $cpms_mapped;
-			}
 		}
 
 		return $input;
