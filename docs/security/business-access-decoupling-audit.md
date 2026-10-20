@@ -347,3 +347,83 @@ be verified. Re-pinning stays a separate, reviewable change.
   SMS settings, clinician/schedule management, executable `simple_practice` /
   `multi_doctor_clinic` onboarding, 12-facility differentiation, separate
   Organization/Clinic manager identities) remains **open**.
+
+## 5. Round 4 — scoped authority hardening and the facility wizard (2026-10-20)
+
+### 5.1 Authorization contract change (`AuthorizationService::scoped_decision`)
+
+The tri-state contract is now fail-closed **per Clinic**:
+
+| Durable membership row in this Clinic | Result |
+| --- | --- |
+| none | `null` — legacy WordPress-capability path (unchanged) |
+| exists, not ACTIVE (suspended/revoked) | `false` — final DENY, **never** rescued by a global WP cap |
+| ACTIVE | `$this->can(...)` — explicit DENY > explicit GRANT > role preset; a missing capability is a final `false` |
+
+Consequences (each covered by a DB-backed negative test in
+`tests/Integration/ScopedAuthorityHardeningTest.php`):
+
+- a WordPress-global capability can no longer substitute for a missing scoped
+  capability, so nothing bleeds across Clinics;
+- a suspended membership makes the actor a nobody in that Clinic — it does not
+  fall back to global WordPress caps;
+- an explicit scoped DENY still outranks an explicit GRANT and any role preset.
+
+### 5.2 Scoped role precedence (identity is durable, not a WP role)
+
+- `VisitService::roleForUser()`: with a trusted scope, the durable membership
+  decides (`doctor` / `secretary`). A WordPress "doctor" with **no** membership in
+  that Clinic stays a *doctor identity* (queue scope = that clinician's own empty
+  set) and is never widened to the clinic-wide staff view; other unknown actors
+  resolve to `null`. WordPress roles answer only when no scope exists.
+- `ClinicalService::search()`: the private-note/clinical widening flag comes from
+  the membership role or the active clinician profile, not from the WP role.
+- `MedicalFileService`: a `doctor_private` upload additionally requires an ACTIVE
+  `cpms_clinicians` profile — an explicit `PRIVATE_NOTE_CREATE` grant held by a
+  non-doctor is refused.
+
+### 5.3 Legacy fixtures corrected (never the engine)
+
+Three suites were written against the old `null`-means-fallback contract and
+relied on **WordPress-global** capabilities (`cpms_patient_read`,
+`cpms_medical_read`, `cpms_report_read`) to reach Clinic-scoped report/export
+surfaces. They now GRANT the same capabilities on the **membership**
+(`MembershipService::set_capability`), which is the only wire that satisfies the
+hardened contract:
+
+- `ReportsClinicIsolationTest`, `ExportClinicIsolationTest`,
+  `ReportsExportClinicAuthorizationTest`, `Phase2JobScopeRedFoundationTest`.
+
+One pre-existing expectation was **strengthened, not weakened**:
+`Phase4Slice4QueueSharedProfessionalTest::testDoctorWithSuspendedParticipationInBNeverSeesClinicQueue`
+now asserts that a suspended participation is an explicit scoped DENY
+(`CLINIC_PERMISSION_DENIED`, 403) at the service layer instead of a bounded empty
+projection. The security property ("Clinic B never leaks") is unchanged and is
+now enforced earlier; the denial message is asserted to carry no Visit detail.
+
+The suspended-Clinic **Reception continuity** contract was kept as-is: a
+suspended Clinic keeps the bounded EMPTY board read (HTTP 200, no lifecycle
+reason leaked). A Round-4 draft that returned `403 CLINIC_SCOPE_UNAVAILABLE`
+there was reverted because it contradicted the established Phase 11 contract and
+the passing `Phase11ReceptionAppointmentCreateRedTest` evidence.
+
+### 5.4 Facility wizard — address step
+
+The Organization wizard's site/address step now renders the **offline** Iranian
+province/city catalog selects (`AddressSelectorField` +
+`IranProvinceCityCatalog`): no network call, no preselected province, free-text
+detail preserved, a city without its province or a city outside the chosen
+province is a validation error and persists nothing, and re-submitting the same
+building stays idempotent. Covered by
+`FacilitySetupJourneyTest::testSiteAddressUsesTheOfflineProvinceCityCatalogAndRejectsAnOrphanCity`.
+
+### 5.5 Evidence status at this head
+
+- Integration suite (WP 7.1 + MySQL 8): 2124 tests, 0 failures / 0 errors at
+  `f88e5ba` (the address-step commit `fcf8abf` adds one test).
+- WPCS (changed code), PHPStan, Unit (8.1–8.4), Closure lanes, Real WP
+  Acceptance (`wp_`, `clinic_`): green.
+- Coexistence lanes (`persian-woocommerce`, `-sms`, `combined-nineteen`): FAIL —
+  upstream pin drift, unchanged from Round 3 and not fixable in this environment
+  (artifact identity cannot be verified without `downloads.wordpress.org`).
+- MariaDB **11.8**: still **NOT RUN** (see §4.3).
