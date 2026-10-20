@@ -954,6 +954,104 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         $this->userIds = array_values( array_unique( $this->userIds ) );
     }
 
+    public function test_hospital_facility_activation_is_atomic_from_the_portal(): void {
+        $service = App::management_portal_service();
+
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_start', array(
+            'organization_id' => (string) $this->orgA,
+            'facility_type'   => 'hospital',
+            'structure'       => 'hospital_network',
+            'display_name'    => 'Atomic Hospital',
+        ) )['ok'] );
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_ack', array( 'organization_id' => (string) $this->orgA ) )['ok'] );
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_site', array(
+            'organization_id' => (string) $this->orgA,
+            'label'           => 'Atomic Building',
+            'address'         => 'Street 2',
+        ) )['ok'] );
+
+        $plan = $service->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $plan );
+        $site_key = (string) $plan['sites'][0]['key'];
+
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_clinic', array(
+            'organization_id' => (string) $this->orgA,
+            'name'            => 'Atomic Clinic',
+            'site_key'        => $site_key,
+            'timezone'        => 'Asia/Tehran',
+        ) )['ok'] );
+
+        $plan = $service->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $plan );
+        $clinic_key = (string) $plan['clinics'][0]['key'];
+        $clinic_id  = (int) $plan['clinics'][0]['clinic_id'];
+        self::assertGreaterThan( 0, $clinic_id );
+
+        // Explicit self-designation is what gives this actor Clinic CONFIG; the
+        // Organization role alone never does (see the previous test).
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_designate', array(
+            'organization_id' => (string) $this->orgA,
+            'clinic_key'      => $clinic_key,
+            'target_user_id'  => (string) $this->orgManager,
+        ) )['ok'] );
+        self::assertTrue( App::authorization_service()->can( $this->orgManager, $clinic_id, RolesAndCapabilities::CONFIG ) );
+
+        self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_room', array(
+            'organization_id' => (string) $this->orgA,
+            'clinic_key'      => $clinic_key,
+            'name'            => 'Room A1',
+            'site_key'        => $site_key,
+        ) )['ok'] );
+
+        $facility = App::facility_setup_service();
+        $clinician = $facility->assign_clinician(
+            $this->orgManager,
+            $this->orgA,
+            $clinic_key,
+            $this->staffMember,
+            'Dr Facility',
+            array( 'primary' )
+        );
+        self::assertArrayHasKey( 'clinician_id', $clinician );
+
+        $facility->add_weekly_schedule(
+            $this->orgManager,
+            $this->orgA,
+            $clinic_key,
+            (int) $clinician['clinician_id'],
+            'primary',
+            array( 'day_of_week' => 1, 'start_time' => '09:00', 'end_time' => '12:00' )
+        );
+        $facility->save_booking_policy(
+            $this->orgManager,
+            $this->orgA,
+            $clinic_key,
+            array( 'duration' => 20, 'capacity' => 1, 'lead' => 2, 'future' => 30, 'cancel' => 6 )
+        );
+
+        $review = $service->review_facility_setup( $this->orgManager, $this->orgA );
+        self::assertIsArray( $review );
+        self::assertTrue( $review['ready'], 'review must be satisfied only by live rows: ' . implode( ' | ', $review['blocking'] ) );
+
+        // A foreign Organization manager cannot activate this plan.
+        self::assertFalse( ManagementPortalController::dispatch( $this->outsider, 'org_facility_activate', array( 'organization_id' => (string) $this->orgA ) )['ok'] );
+        self::assertNotSame( 'active', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            array( $clinic_id )
+        ) );
+
+        $activated = ManagementPortalController::dispatch( $this->orgManager, 'org_facility_activate', array( 'organization_id' => (string) $this->orgA ) );
+        self::assertTrue( $activated['ok'], 'a ready hospital plan activates through the portal' );
+        self::assertSame( 'active', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            array( $clinic_id )
+        ) );
+
+        $after = $service->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $after );
+        self::assertNotSame( '', (string) $after['activated_at'], 'the plan records the activation receipt' );
+    }
+
     // ============ Helpers ============
 
     private function create_org( string $name ): int {
