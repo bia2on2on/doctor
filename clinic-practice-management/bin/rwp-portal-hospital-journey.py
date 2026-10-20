@@ -387,6 +387,10 @@ def main() -> int:
 def report() -> int:
     passed = sum(1 for row in results if row["ok"])
     failed = [row for row in results if not row["ok"]]
+    # GitHub annotations travel with the check-run even when the job log is not
+    # retrievable, so every failed check is emitted as an ::error:: annotation.
+    for row in failed:
+        print(f"::error::portal.{row['check']} :: {row['detail']}")
     payload = {
         "checks": results,
         "passed": passed,
@@ -401,4 +405,9 @@ def report() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except Exception as exc:  # noqa: BLE001 - an unhandled error must be visible as an annotation
+        print(f"::error::portal.harness_exception :: {type(exc).__name__}: {redact(exc)[:300]}")
+        report()
+        raise
