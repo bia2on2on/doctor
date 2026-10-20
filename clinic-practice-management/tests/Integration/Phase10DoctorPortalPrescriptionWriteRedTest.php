@@ -913,12 +913,20 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
         $this->gate(200, $response,
             'P13.RED: an authorized Doctor Portal GET must return a finalized structured prescription print view');
 
-        $doctorUser = get_userdata($fx['doctor']);
-        self::assertNotFalse($doctorUser);
-        $doctorUser->set_role('subscriber');
+        // Owner policy (WordPress-independent business access): the WordPress
+        // business role is no longer an entry requirement — a Subscriber with the
+        // durable doctor membership is the same doctor. The denial is therefore
+        // proven on the SCOPED authority, which is strictly stronger: an explicit
+        // membership DENY on cpms_rx_read must refuse the print view for this very
+        // doctor identity, and removing the override restores it.
+        $membership = App::membership_service()->membership_for((int) $fx['clinic'], (int) $fx['doctor']);
+        self::assertNotNull($membership, 'precondition: the doctor has a durable Clinic membership');
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::RX_READ, 'deny');
         $withoutCapability = $this->dispatch('GET', $printRoute, [], $headers);
-        $this->gate(403, $withoutCapability, 'P13: a clinician identity without the existing prescription-read capability is denied');
-        $doctorUser->set_role(RolesAndCapabilities::ROLE_DOCTOR);
+        $this->gate(403, $withoutCapability, 'P13: an explicit scoped DENY on prescription read is denied');
+        App::membership_service()->remove_capability((int) $membership['id'], RolesAndCapabilities::RX_READ);
+        $restored = $this->dispatch('GET', $printRoute, [], $headers);
+        $this->gate(200, $restored, 'P13: removing the DENY restores the scoped doctor path');
 
         $view = $this->payload($response);
         self::assertSame(

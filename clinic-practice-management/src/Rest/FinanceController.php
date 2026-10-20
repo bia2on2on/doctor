@@ -303,6 +303,7 @@ final class FinanceController extends RestBase
             // WordPress-independent business access: the Clinic-scoped authority of
             // the trusted scope decides first (DENY > GRANT > preset); the legacy
             // WordPress-global path stays as the backward-compatible fallback.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
             $perm = $this->perm_clinic_cap($r, $cap);
             if ($perm instanceof WP_Error) {
                 return $perm;

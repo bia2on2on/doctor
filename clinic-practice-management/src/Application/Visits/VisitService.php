@@ -1391,6 +1391,7 @@ final class VisitService
      * نقشِ عضویت باید دقیقاً doctor/secretary باشد؛ در غیر این صورت null
      * (fail closed) — همان رفتار قبلی برای کاربران بدون نقش.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function roleForUser(int $wpUserId): ?string
     {
         $user = get_userdata($wpUserId);
@@ -1421,6 +1422,8 @@ final class VisitService
 
         return null;
     }
+    // phpcs:enable
+
 
     private function requireSecretary(int $wpUserId, string $event): void
     {
@@ -1433,6 +1436,7 @@ final class VisitService
         }
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireQueueReader(int $wpUserId): void
     {
         if ( user_can($wpUserId, RolesAndCapabilities::QUEUE_READ) ) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
@@ -1449,6 +1453,8 @@ final class VisitService
         }
         throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
     }
+    // phpcs:enable
+
 
     /**
      * ADR-0030/Part1 + Phase 4 Slice 4 — Scope صف/Feed برای «پزشکِ متصل»:

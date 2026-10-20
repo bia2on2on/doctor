@@ -269,12 +269,17 @@ final class Phase13DoctorPortalPrescriptionHistoryRedTest extends WP_UnitTestCas
         $withoutNonce = $this->dispatch('GET', '/' . self::HISTORY, [], $headers, false);
         $this->gateIn([401, 403], $withoutNonce, 'P13S2: the existing nonce/CSRF boundary is required');
 
-        $doctorUser = get_userdata($fx['doctor']);
-        self::assertNotFalse($doctorUser);
-        $doctorUser->set_role('subscriber');
+        // Owner policy (WordPress-independent business access): the WordPress role
+        // is no longer an entry requirement, so the denial is proven on the SCOPED
+        // capability instead — an explicit membership DENY on cpms_rx_read must
+        // refuse history for this same doctor identity (stronger than the previous
+        // role-demotion probe).
+        $membership = App::membership_service()->membership_for((int) $fx['clinic'], (int) $fx['doctor']);
+        self::assertNotNull($membership, 'precondition: durable Clinic membership');
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::RX_READ, 'deny');
         $withoutCapability = $this->dispatch('GET', '/' . self::HISTORY, [], $headers);
-        $this->gateIn([401, 403], $withoutCapability, 'P13S2: the existing prescription-read capability is required');
-        $doctorUser->set_role(RolesAndCapabilities::ROLE_DOCTOR);
+        $this->gateIn([401, 403], $withoutCapability, 'P13S2: an explicit scoped DENY on prescription read is required');
+        App::membership_service()->remove_capability((int) $membership['id'], RolesAndCapabilities::RX_READ);
 
         // Membership alone is insufficient: a member without a clinician mapping is denied.
         $secretary = $this->makeUser('p13h3_sec', RolesAndCapabilities::ROLE_SECRETARY);
@@ -359,12 +364,14 @@ final class Phase13DoctorPortalPrescriptionHistoryRedTest extends WP_UnitTestCas
         self::assertSame($row['prescription_number'], $this->payload($print)['prescription_number']);
 
         // The print route re-validates independently: history presence grants nothing.
-        $doctorUser = get_userdata($fx['doctor']);
-        self::assertNotFalse($doctorUser);
-        $doctorUser->set_role('subscriber');
+        // Independent re-check on the print route, proven with the scoped DENY
+        // (the WordPress role is no longer an entry requirement).
+        $printMembership = App::membership_service()->membership_for((int) $fx['clinic'], (int) $fx['doctor']);
+        self::assertNotNull($printMembership);
+        App::membership_service()->set_capability((int) $printMembership['id'], RolesAndCapabilities::RX_READ, 'deny');
         $deniedPrint = $this->dispatch('GET', $printRoute, [], $headers);
         $this->gateIn([401, 403], $deniedPrint, 'P13S2: the print route independently rechecks capability after a history listing');
-        $doctorUser->set_role(RolesAndCapabilities::ROLE_DOCTOR);
+        App::membership_service()->remove_capability((int) $printMembership['id'], RolesAndCapabilities::RX_READ);
 
         $withoutNoncePrint = $this->dispatch('GET', $printRoute, [], $headers, false);
         $this->gateIn([401, 403], $withoutNoncePrint, 'P13S2: the print route independently requires the nonce');

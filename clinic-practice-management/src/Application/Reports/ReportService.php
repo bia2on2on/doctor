@@ -801,6 +801,7 @@ final class ReportService
         return $missing;
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $actorUserId, string $cap): void
     {
         // WordPress-independent business access: the scoped authority of an
@@ -825,6 +826,8 @@ final class ReportService
             );
         }
     }
+    // phpcs:enable
+
 
     // ================= Range / Helpers =================
 

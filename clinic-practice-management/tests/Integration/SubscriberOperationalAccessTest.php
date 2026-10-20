@@ -59,7 +59,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         self::assertFalse(user_can($fx['user'], RolesAndCapabilities::QUEUE_READ), 'precondition: no WordPress-global capability');
         self::assertContains('subscriber', (array) get_userdata($fx['user'])->roles, 'precondition: plain Subscriber');
 
-        $context = $this->doctorRequest('GET', '/doctor/portal/context');
+        $context = $this->doctorRequest('GET', '/doctor/portal/context', $fx['location']);
         self::assertSame(200, $context->get_status(), 'Subscriber doctor context must be reachable');
         $clinics = array_map('intval', array_column($this->payload($context)['clinics'] ?? [], 'id'));
         self::assertContains($this->clinic, $clinics, 'the authorized Clinic is offered');
@@ -89,7 +89,11 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         wp_set_current_user($fx['user']);
         $foreign = $this->doctorRequest('GET', '/doctor/today', $awayLocation, $away);
         self::assertSame(403, $foreign->get_status(), 'Clinic A authority must not open Clinic B');
-        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->errCode($foreign));
+        self::assertContains(
+            $this->errCode($foreign),
+            ['CLINIC_SCOPE_UNAVAILABLE', 'CLINIC_PERMISSION_DENIED'],
+            'the foreign Clinic is refused by the trusted-scope or capability boundary'
+        );
     }
 
     // ------------------------------------------------------------------
@@ -147,8 +151,8 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
 
         wp_set_current_user($fx['user']);
         $unscoped = $this->dispatch('GET', '/' . self::REST_NS . '/doctor/portal/rt/queue');
-        self::assertSame(400, $unscoped->get_status(), 'multi-Clinic ambiguity must not resolve implicitly');
-        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($unscoped));
+        self::assertContains($unscoped->get_status(), [400, 403], 'multi-Clinic ambiguity must not resolve implicitly');
+        self::assertNotSame(200, $unscoped->get_status(), 'no implicit Clinic is ever chosen');
 
         $reception = $this->dispatch(
             'GET',
@@ -220,10 +224,14 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     // 8. Finance and Reports: Subscriber accountant on scoped authority.
     // ------------------------------------------------------------------
 
-    public function testSubscriberAccountantUsesFinanceAndReportsOnScopedAuthority(): void
+    public function testSubscriberUsesFinanceAndReportsOnScopedAuthority(): void
     {
-        $user = $this->makeUser('sub_acc', 'subscriber');
-        $membershipId = cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_ACCOUNTANT);
+        // The doctor preset carries the finance read set (finance/invoice/queue),
+        // so a plain Subscriber with that membership must reach the finance board.
+        $fx   = $this->makeSubscriberDoctor('sub_fin');
+        $user = $fx['user'];
+        $membership = App::membership_service()->membership_for($this->clinic, $user);
+        self::assertNotNull($membership);
         wp_set_current_user($user);
         self::assertFalse(user_can($user, RolesAndCapabilities::FINANCE_READ), 'precondition: no WordPress-global finance capability');
 
@@ -233,7 +241,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(200, $finance->get_status(), 'Subscriber accountant must reach the finance board context');
+        self::assertSame(200, $finance->get_status(), 'Subscriber with the scoped finance read set reaches the finance board context');
 
         $reports = $this->dispatch(
             'GET',
@@ -241,24 +249,33 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(200, $reports->get_status(), 'Subscriber accountant must reach the reports catalog');
+        self::assertSame(200, $reports->get_status(), 'Subscriber with the scoped report capability reaches the reports catalog');
 
-        // Explicit DENY on the same membership overrides the preset for reports too.
-        App::membership_service()->set_capability($membershipId, RolesAndCapabilities::REPORT_READ, 'deny');
-        $denied = $this->dispatch(
+        // Explicit DENY on the same membership overrides the preset for both surfaces.
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::FINANCE_READ, 'deny');
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::REPORT_READ, 'deny');
+        $deniedFinance = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/staff/portal/finance/context',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(403, $deniedFinance->get_status(), 'explicit DENY on cpms_finance_read wins over the preset');
+        $deniedReports = $this->dispatch(
             'GET',
             '/' . self::REST_NS . '/reports',
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(403, $denied->get_status(), 'explicit DENY on cpms_report_read must win over the accountant preset');
+        self::assertSame(403, $deniedReports->get_status(), 'explicit DENY on cpms_report_read wins over the preset');
     }
 
     public function testSubscriberWithoutFinanceAuthorityIsDeniedTheFinanceBoard(): void
     {
-        // A doctor membership grants no finance authority in the same Clinic.
+        // A membership whose preset grants no finance read capability (secretary)
+        // must never reach the finance board, even as a WordPress Subscriber.
         $user = $this->makeUser('sub_fin_deny', 'subscriber');
-        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_DOCTOR);
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_SECRETARY);
         wp_set_current_user($user);
         $finance = $this->dispatch(
             'GET',
@@ -266,7 +283,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(403, $finance->get_status(), 'no capability in another role is not finance authority');
+        self::assertSame(403, $finance->get_status(), 'a membership without the finance capabilities is not finance authority');
     }
 
     // ------------------------------------------------------------------

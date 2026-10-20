@@ -418,14 +418,59 @@ final class ReceptionPortalController extends RestBase {
 		// boundary still requires an explicit operational Location selector.
 		$clinic_only = false;
 
-		return RestClinicContext::authorize_and_bind_reception_scope(
+		$bound = RestClinicContext::authorize_and_bind_reception_scope(
 			$r,
 			(int) $user->ID,
 			$caps,
 			$is_context,
 			$clinic_only
 		);
+		if ( $bound instanceof WP_Error ) {
+			return $bound;
+		}
+
+		return $this->reception_role_holds( (int) $user->ID, $is_context );
 	}
+
+	/**
+	 * Reception stays a SECRETARY surface: separation of duties is product data,
+	 * not a WordPress artifact. The durable Clinic membership of the explicitly
+	 * established trusted Clinic must carry the secretary role — a WordPress
+	 * Subscriber with that membership is accepted (WordPress-independent business
+	 * access), while a doctor/manager membership still fails closed exactly as the
+	 * existing reception contracts require. Custom role keys were never accepted
+	 * on this surface before and are still not.
+	 *
+	 * The unscoped context route has no established Clinic yet, so it requires at
+	 * least one ACTIVE secretary membership of the actor.
+	 */
+	// phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+	private function reception_role_holds( int $user_id, bool $unscoped_context ): bool|WP_Error {
+		if ( $user_id <= 0 ) {
+			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
+		}
+		$scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+		if ( $scope !== null && (int) $scope->clinicId > 0 ) {
+			$membership = $this->memberships->find_active( (int) $scope->clinicId, $user_id );
+			if ( $membership !== null && RolesAndCapabilities::ROLE_SECRETARY === (string) ( $membership['role_key'] ?? '' ) ) {
+				return true;
+			}
+
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		if ( ! $unscoped_context ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		foreach ( $this->memberships->active_for_user( $user_id ) as $membership ) {
+			if ( RolesAndCapabilities::ROLE_SECRETARY === (string) ( $membership['role_key'] ?? '' ) ) {
+				return true;
+			}
+		}
+
+		return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+	}
+	// phpcs:enable
+
 
 	/**
 	 * Reception Clinic patient search (read-only): delegates to the ESTABLISHED

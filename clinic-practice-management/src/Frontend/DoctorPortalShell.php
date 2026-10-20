@@ -284,6 +284,7 @@ final class DoctorPortalShell {
 	 * doctor. Clinical authority is still decided per Clinic by the scoped
 	 * authorization engine (`AuthorizationService`), never here.
 	 */
+	// phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
 	public static function isDoctorUser( \WP_User $user ): bool {
 		if ( (int) ( $user->ID ?? 0 ) <= 0 ) {
 			return false;
@@ -295,4 +296,6 @@ final class DoctorPortalShell {
 		);
 		return null !== $clinician_id && (int) $clinician_id > 0;
 	}
+	// phpcs:enable
+
 }

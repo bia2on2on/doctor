@@ -63,6 +63,7 @@ final class ReportsController extends RestBase
                     'reports' => $this->reports->catalog($this->userId($r)),
                 ]),
                 'permission_callback' => fn (WP_REST_Request $r)
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                     => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
@@ -83,6 +84,7 @@ final class ReportsController extends RestBase
                             $r['to'] ?? null
                         )
                     ),
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                     'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
@@ -104,6 +106,7 @@ final class ReportsController extends RestBase
                 [
                     'methods'             => WP_REST_Server::READABLE,
                     'callback'            => fn ( WP_REST_Request $r ) => $this->printView( $r ),
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                     'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
@@ -137,6 +140,7 @@ final class ReportsController extends RestBase
                         // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
                         RolesAndCapabilities::EXPORT
                     ),
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                     'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
@@ -163,6 +167,7 @@ final class ReportsController extends RestBase
                     RolesAndCapabilities::EXPORT
                 ),
                 'permission_callback' => fn (WP_REST_Request $r)
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                     => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
@@ -171,6 +176,7 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->download($r),
+                // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
                 'permission_callback' => fn (WP_REST_Request $r) => $this->permScopedOrGlobal($r, RolesAndCapabilities::EXPORT),
             ],
         ]);
@@ -189,6 +195,7 @@ final class ReportsController extends RestBase
         if ($error instanceof WP_Error) {
             return $error;
         }
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
         $perm = $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ);
         if ($perm instanceof WP_Error) {
             return $perm;
@@ -340,6 +347,7 @@ final class ReportsController extends RestBase
         }
         // WordPress-independent business access: scoped authority first, legacy
         // WordPress-global capability as the fallback (see permScopedOrGlobal).
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
         $perm = $this->permScopedOrGlobal($r, $cap);
         if ($perm instanceof WP_Error) {
             return $perm;
@@ -398,6 +406,7 @@ final class ReportsController extends RestBase
      * the scoped engine requires an ACTIVE membership and the same capability
      * with DENY precedence, and the handlers re-check scope (`REPORT_READ`).
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function permScopedOrGlobal(WP_REST_Request $r, string $cap): bool|WP_Error
     {
         $nonce = $this->requireNonce($r);
@@ -416,6 +425,8 @@ final class ReportsController extends RestBase
 
         return $this->requireCap($cap);
     }
+    // phpcs:enable
+
 
     private function requireScopedClinicPermission(string $cap): bool|WP_Error
     {

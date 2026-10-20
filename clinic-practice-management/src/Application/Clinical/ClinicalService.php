@@ -1732,25 +1732,29 @@ final class ClinicalService
      *  - the permission resolution remains DENY > GRANT > preset, and the
      *    object-level scoped guards (authorizeScoped / ownership) still run.
      */
-    private function scopedMembership( int $wpUserId ): ?array
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+    private function scoped_membership( int $wp_user_id ): ?array
     {
         $scope = ScopeContext::tryGet();
-        if ($scope === null || $scope->clinicId <= 0 || $wpUserId <= 0) {
+        if ($scope === null || $scope->clinicId <= 0 || $wp_user_id <= 0) {
             return null;
         }
-        $membership = (new MembershipRepository($this->db))->find_active($scope->clinicId, $wpUserId);
+        $membership = (new MembershipRepository($this->db))->find_active($scope->clinicId, $wp_user_id);
         if ($membership === null) {
             return null;
         }
         return ['clinic_id' => (int) $scope->clinicId, 'membership' => $membership];
     }
+    // phpcs:enable
 
+
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
         if (user_can($wpUserId, $cap)) {
             return;
         }
-        $scoped = $this->scopedMembership($wpUserId);
+        $scoped = $this->scoped_membership($wpUserId);
         if (
             $scoped !== null
             && App::authorization_service()->can($wpUserId, (int) $scoped['clinic_id'], $cap)
@@ -1759,7 +1763,10 @@ final class ClinicalService
         }
         throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
     }
+    // phpcs:enable
 
+
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireRole(int $wpUserId, string $role, string $action): void
     {
         $expected = $role === 'doctor' ? RolesAndCapabilities::ROLE_DOCTOR : RolesAndCapabilities::ROLE_SECRETARY;
@@ -1770,12 +1777,14 @@ final class ClinicalService
         // Scoped path: the durable membership of the explicitly established
         // Clinic carries the required business role. A membership with another
         // role keeps failing closed, exactly as before.
-        $scoped = $this->scopedMembership($wpUserId);
+        $scoped = $this->scoped_membership($wpUserId);
         if ($scoped !== null && (string) ($scoped['membership']['role_key'] ?? '') === $expected) {
             return;
         }
         throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
     }
+    // phpcs:enable
+
 
     /**
      * @return array{wp_user_id: int, role: string}

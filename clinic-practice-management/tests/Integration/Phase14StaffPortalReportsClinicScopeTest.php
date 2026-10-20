@@ -274,16 +274,22 @@ final class Phase14StaffPortalReportsClinicScopeTest extends WP_UnitTestCase
         $res = $this->dispatch(self::ROUTE, ['from' => self::DATE, 'to' => self::DATE], (string) $this->clinicA);
         self::assertSame(403, $res->get_status(), 'a raw Clinic id never creates authority');
 
-        // Membership-only (no global capability) and a user with no membership at all.
+        // Owner policy (WordPress-independent business access): a WordPress
+        // Subscriber whose durable membership grants the scoped report capability
+        // is authorized in THAT Clinic only; an actor without any membership is
+        // still denied (no "authorized anywhere" fallback).
         $memberOnly = $this->makeUser('subscriber');
         cpms_test_seed_membership($memberOnly, $this->clinicA, 'cpms_manager');
+        wp_set_current_user($memberOnly);
+        $allowed = $this->dispatch(self::ROUTE, ['from' => self::DATE, 'to' => self::DATE], (string) $this->clinicA);
+        self::assertSame(200, $allowed->get_status(), 'a Subscriber manager membership grants the report in its own Clinic');
+        self::assertNotSame([], StaffPortalShell::reports_eligible_clinics($memberOnly), 'the scoped Clinic is offered');
+
         $stranger = $this->makeUser(RolesAndCapabilities::ROLE_MANAGER);
-        foreach ([$memberOnly, $stranger] as $actor) {
-            self::assertSame([], StaffPortalShell::reports_eligible_clinics($actor));
-            wp_set_current_user($actor);
-            $r = $this->dispatch(self::ROUTE, ['from' => self::DATE, 'to' => self::DATE], (string) $this->clinicA);
-            self::assertSame(403, $r->get_status());
-        }
+        self::assertSame([], StaffPortalShell::reports_eligible_clinics($stranger));
+        wp_set_current_user($stranger);
+        $r = $this->dispatch(self::ROUTE, ['from' => self::DATE, 'to' => self::DATE], (string) $this->clinicA);
+        self::assertSame(403, $r->get_status(), 'no membership is never report authority');
         self::assertSame([], StaffPortalShell::reports_eligible_clinics(0));
     }
 
