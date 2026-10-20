@@ -84,17 +84,21 @@ def attach(page, tag: str) -> None:
     page.on("pageerror", lambda e: page_errors.append(f"{tag}: {redact(e)[:200]}"))
 
 
-def wp_eval(code: str) -> str:
+def wp_eval(code: str, extra_env: dict | None = None) -> str:
     if not WP_DIR:
         raise RuntimeError("wp_dir_unavailable")
     path = os.path.join(OUT, "logs", "wp-eval.php")
     with open(path, "w", encoding="utf-8") as handle:
         handle.write("<?php\n" + code.strip() + "\n")
+    env = os.environ.copy()
+    if extra_env:
+        env.update(extra_env)
     proc = subprocess.run(
         ["wp", "eval-file", path, f"--path={WP_DIR}", "--allow-root"],
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError("wp_cli_failed: " + redact((proc.stderr or proc.stdout)[:400]))
@@ -225,7 +229,7 @@ def overflow(page) -> int:
 
 
 def main() -> int:
-    seeded = parse_kv(wp_eval(SEED_EVAL))
+    seeded = parse_kv(wp_eval(SEED_EVAL, {"ORG_LOGIN": ORG_USER}))
     portal = seeded.get("PORTAL") or f"{BASE}/"
     check("seed.portal_url", portal.startswith("http"), portal)
     check("seed.no_admin_route", "/wp-admin" not in portal, portal)
