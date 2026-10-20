@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Security\RateLimiter;
 use WP_Error;
@@ -67,7 +68,7 @@ abstract class RestBase
         }
         $caps = (array) $caps;
         foreach ($caps as $cap) {
-            if (!$user->has_cap($cap)) {
+            if ( ! $user->has_cap( $cap ) && ! $this->scopedCapabilityGranted( (string) $cap ) ) {
                 App::audit()->log(
                     'FORBIDDEN_ACCESS_ATTEMPT',
                     ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
@@ -83,6 +84,45 @@ abstract class RestBase
         }
 
         return true;
+    }
+
+    /**
+     * Phase 1 authorization decoupling — Clinic-scoped capability fallback.
+     *
+     * Business authority must not depend on a WordPress-global capability. This
+     * fallback is consulted ONLY when the actor lacks the global capability, and
+     * ONLY against a Clinic scope that this request already bound from durable
+     * storage (RestClinicContext / TrustedClinicEstablisher). It never resolves
+     * an ambient Clinic: ScopeContext::tryGet() returns null unless a trusted
+     * binding happened for this exact request, so an unbound request fails
+     * closed. AuthorizationService::can() then requires an ACTIVE durable
+     * membership in that Clinic plus the exact capability (explicit DENY >
+     * explicit GRANT > membership role preset > deny).
+     *
+     * This widens nothing beyond the scoped engine's own answer: a WordPress
+     * Administrator with no membership still gets false, a suspended membership
+     * still gets false, a foreign Clinic still gets false, and object ownership
+     * continues to be enforced by the calling service.
+     */
+    private function scopedCapabilityGranted( string $cap ): bool
+    {
+        if ( '' === $cap ) {
+            return false;
+        }
+        $scope = ScopeContext::tryGet();
+        if ( $scope === null ) {
+            return false;
+        }
+        $clinic_id = (int) $scope->clinicId;
+        $user_id   = (int) get_current_user_id();
+        if ( $clinic_id <= 0 || $user_id <= 0 ) {
+            return false;
+        }
+        try {
+            return App::authorization_service()->can( $user_id, $clinic_id, $cap );
+        } catch ( \Throwable $e ) {
+            return false;
+        }
     }
 
     // ==================================================================

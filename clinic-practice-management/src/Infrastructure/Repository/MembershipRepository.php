@@ -102,6 +102,28 @@ final class MembershipRepository {
     }
 
     /**
+     * All memberships (any status) of ONE Clinic — durable rows only.
+     *
+     * Tenant scope is the query's own WHERE (clinic_id), never a request value.
+     * Used by the dedicated Management Portal to display staff membership
+     * metadata; authorization for that surface is decided by the caller.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function list_for_clinic( int $clinic_id, int $limit = 500 ): array {
+        if ( $clinic_id <= 0 ) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT * FROM ' . $this->db->table( 'cpms_clinic_memberships' )
+                . ' WHERE clinic_id = %d ORDER BY status ASC, role_key ASC, wp_user_id ASC LIMIT %d',
+            [ $clinic_id, max( 1, min( 1000, $limit ) ) ]
+        );
+
+        return is_array( $rows ) ? array_values( $rows ) : [];
+    }
+
+    /**
      * شناسهٔ کاربران دارای عضویت فعال در Clinic — indexable (idx_membership_role).
      * منبع recipientهای broadcast اعلان staff (C6: publishToStaff clinic-scoped).
      *
