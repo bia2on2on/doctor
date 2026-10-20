@@ -43,6 +43,8 @@ use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Authorization\AuthorizationService;
 use ClinicCore\Application\Location\LocationException;
 use ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\CustomRolePolicy;
@@ -52,6 +54,7 @@ use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
+use WP_User;
 
 /**
  * Read model + authorized write orchestration for the dedicated Management Portal.
@@ -327,12 +330,24 @@ final class ManagementPortalService {
 			}
 			$user_id = (int) ( $membership['wp_user_id'] ?? 0 );
 			$user    = $user_id > 0 ? get_userdata( $user_id ) : false;
-			$staff[] = array(
-				'wp_user_id'   => $user_id,
-				'display_name' => $user === false ? '' : (string) $user->display_name,
-				'role_key'     => (string) ( $membership['role_key'] ?? '' ),
-				'status'       => (string) ( $membership['status'] ?? '' ),
-				'scope_mode'   => (string) ( $membership['scope_mode'] ?? '' ),
+			$membership_id = (int) ( $membership['id'] ?? 0 );
+			$staff[]       = array(
+				'wp_user_id'    => $user_id,
+				'membership_id' => $membership_id,
+				'display_name'  => $user === false ? '' : (string) $user->display_name,
+				'role_key'      => (string) ( $membership['role_key'] ?? '' ),
+				'status'        => (string) ( $membership['status'] ?? '' ),
+				'scope_mode'    => (string) ( $membership['scope_mode'] ?? '' ),
+				'locations'     => $membership_id > 0 ? $this->memberships->location_ids_for( $membership_id ) : array(),
+				'capabilities'  => $membership_id > 0
+					? array_map(
+						static fn( array $row ): array => array(
+							'capability' => (string) ( $row['capability'] ?? '' ),
+							'effect'     => (string) ( $row['effect'] ?? '' ),
+						),
+						$this->memberships->capabilities_for( $membership_id )
+					)
+					: array(),
 			);
 		}
 
@@ -389,6 +404,9 @@ final class ManagementPortalService {
 			'staff'            => $staff,
 			'clinicians'       => $clinicians,
 			'assignable_roles' => self::ASSIGNABLE_BUILT_IN_ROLES,
+			// Delegation vocabulary: only capabilities this actor actually holds in
+			// this Clinic may be granted or denied here (no self-escalation).
+			'delegable_caps'   => $this->delegable_caps( $actor_wp_user_id, $clinic_id ),
 			'custom_roles'     => array_map(
 				static fn( array $role ): array => array(
 					'role_key'     => (string) ( $role['role_key'] ?? '' ),
@@ -645,6 +663,358 @@ final class ManagementPortalService {
 		}
 
 		return array( 'ok' => true, 'message' => 'نقش سفارشی اختصاص یافت.' );
+	}
+
+	/**
+	 * Clinic: enroll a staff member by linking an existing WordPress account or
+	 * provisioning a brand-new plain Subscriber account.
+	 *
+	 * Safety contract:
+	 *  - Clinic management capability + durable ACTIVE membership in the same
+	 *    Clinic are required before anything is created;
+	 *  - the only WordPress role this method can ever assign is `subscriber`;
+	 *    an existing account is linked, never re-roled, and privileged accounts
+	 *    (administrator included) receive no CPMS authority from linking —
+	 *    authority still comes from the durable membership + scoped engine;
+	 *  - an existing membership is never silently overwritten (fail closed);
+	 *  - the new membership role is a CPMS membership role, never a WP role.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function enroll_staff( int $actor_wp_user_id, int $clinic_id, string $identifier, string $role_key ): array {
+		$identifier = trim( $identifier );
+		if ( '' === $identifier || ! in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true ) ) {
+			return self::failure();
+		}
+
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$this->authorization->authorize( $actor_wp_user_id, $trusted, self::CLINIC_MANAGE_CAPABILITY, true );
+
+			$target = $this->resolve_or_provision_subscriber( $identifier );
+			if ( $target <= 0 ) {
+				return self::failure();
+			}
+			if ( $this->memberships->find( $trusted, $target ) !== null ) {
+				return self::failure(); // never overwrite an existing membership
+			}
+			App::membership_service()->create_membership(
+				$trusted,
+				$target,
+				$role_key,
+				'clinic', // MembershipService::SCOPE_CLINIC (Clinic-wide membership).
+				$actor_wp_user_id
+			);
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'کاربر به درمانگاه افزوده شد.' );
+	}
+
+	/**
+	 * Clinic: activate or suspend one membership of this Clinic.
+	 *
+	 * Suspension is a durable deny (AuthorizationService requires an ACTIVE
+	 * membership), so a suspended member keeps history but loses authority.
+	 * Acting on your own membership is refused to avoid lock-out ambiguity.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function set_staff_status( int $actor_wp_user_id, int $clinic_id, int $membership_id, bool $active ): array {
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$this->authorization->authorizeForObject( $actor_wp_user_id, $trusted, self::CLINIC_MANAGE_CAPABILITY, $trusted );
+			$membership = $this->membership_in_clinic( $trusted, $membership_id );
+			if ( $membership === null || (int) ( $membership['wp_user_id'] ?? 0 ) === $actor_wp_user_id ) {
+				return self::failure();
+			}
+
+			if ( $active ) {
+				App::membership_service()->reactivate_membership( $membership_id );
+			} else {
+				App::membership_service()->suspend_membership( $membership_id );
+			}
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => $active ? 'عضویت فعال شد.' : 'عضویت معلق شد.' );
+	}
+
+	/**
+	 * Clinic: set the Location scope of one membership (Clinic-wide or an
+	 * explicit, verified subset of this Clinic's ACTIVE Locations).
+	 *
+	 * @param list<int> $location_ids
+	 * @return array{ok:bool, message:string}
+	 */
+	public function set_staff_locations( int $actor_wp_user_id, int $clinic_id, int $membership_id, array $location_ids ): array {
+		$location_ids = array_values( array_unique( array_filter( array_map( 'intval', $location_ids ), static fn( int $id ): bool => $id > 0 ) ) );
+
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$this->authorization->authorize( $actor_wp_user_id, $trusted, self::CLINIC_MANAGE_CAPABILITY, true );
+			$membership = $this->membership_in_clinic( $trusted, $membership_id );
+			if ( $membership === null ) {
+				return self::failure();
+			}
+			// Every Location must be real, ACTIVE and owned by this Clinic.
+			foreach ( $location_ids as $location_id ) {
+				if ( $this->locations->findActiveForClinic( $trusted, $location_id ) === null ) {
+					return self::failure();
+				}
+			}
+
+			if ( array() === $location_ids ) {
+				App::membership_service()->set_scope_mode( $membership_id, 'clinic' );
+			} else {
+				App::membership_service()->set_scope_mode( $membership_id, 'location', $location_ids );
+			}
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'دامنهٔ مکانی عضویت ذخیره شد.' );
+	}
+
+	/**
+	 * Clinic: record an explicit capability GRANT / DENY on one membership, or
+	 * clear an override so the role preset applies again.
+	 *
+	 * Delegation bound: the actor must already hold the same capability in this
+	 * Clinic. Without that, a manager could hand out (or deny) authority it never
+	 * had, which is an escalation. DENY still outranks GRANT and preset.
+	 *
+	 * @param string $effect One of `grant`, `deny`, `clear`.
+	 * @return array{ok:bool, message:string}
+	 */
+	public function set_staff_capability( int $actor_wp_user_id, int $clinic_id, int $membership_id, string $capability, string $effect ): array {
+		if ( ! in_array( $capability, RolesAndCapabilities::ALL_CAPS, true ) || ! in_array( $effect, array( 'grant', 'deny', 'clear' ), true ) ) {
+			return self::failure();
+		}
+
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$membership = $this->membership_in_clinic( $trusted, $membership_id );
+			if ( $membership === null || (string) ( $membership['status'] ?? '' ) !== 'active' ) {
+				return self::failure();
+			}
+			if ( ! $this->authorization->can( $actor_wp_user_id, $trusted, $capability, true ) ) {
+				return self::failure(); // no delegation beyond your own authority
+			}
+
+			if ( 'clear' === $effect ) {
+				App::membership_service()->remove_capability( $membership_id, $capability );
+			} else {
+				App::membership_service()->set_capability( $membership_id, $capability, $effect );
+			}
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'مجوز عضویت به‌روزرسانی شد.' );
+	}
+
+	/**
+	 * Clinic: register a clinician record owned by this Clinic.
+	 *
+	 * A clinician optionally linked to a WordPress account must already hold an
+	 * ACTIVE staff membership in the SAME Clinic, and one WordPress account can
+	 * be linked to at most one clinician record (1:1 invariant). Multi-Clinic
+	 * participation is therefore expressed as one clinician row per Clinic, each
+	 * with its own durable ownership.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function register_clinician( int $actor_wp_user_id, int $clinic_id, string $full_name, string $specialty, int $wp_user_id = 0 ): array {
+		$full_name = trim( $full_name );
+		if ( '' === $full_name ) {
+			return self::failure();
+		}
+
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$this->authorization->authorize( $actor_wp_user_id, $trusted, self::CLINIC_MANAGE_CAPABILITY, true );
+
+			$linked = 0;
+			if ( $wp_user_id > 0 ) {
+				$membership = $this->memberships->find( $trusted, $wp_user_id );
+				if ( $membership === null || (string) ( $membership['status'] ?? '' ) !== 'active' ) {
+					return self::failure();
+				}
+				if ( $this->clinicians->isUserLinked( $wp_user_id ) ) {
+					return self::failure();
+				}
+				$linked = $wp_user_id;
+			}
+
+			$this->clinicians->create(
+				$trusted,
+				array(
+					'full_name'   => $full_name,
+					'specialty'   => '' !== trim( $specialty ) ? trim( $specialty ) : null,
+					'wp_user_id'  => $linked > 0 ? $linked : null,
+					'is_active'   => 1,
+				)
+			);
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'پزشک ثبت شد.' );
+	}
+
+	/**
+	 * Clinic: create a weekly schedule entry through the published
+	 * ScheduleService contract (same conflict, overlap and lifecycle rules as
+	 * REST). The trusted Clinic scope is established here because the service
+	 * reads it from ScopeContext and never from the payload.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function create_schedule( int $actor_wp_user_id, int $clinic_id, int $clinician_id, int $location_id, int $day_of_week, string $start_time, string $end_time ): array {
+		if ( $clinician_id <= 0 || $location_id <= 0 || $day_of_week < 0 || $day_of_week > 6 ) {
+			return self::failure();
+		}
+
+		try {
+			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id, true );
+			if ( $trusted === null ) {
+				return self::failure();
+			}
+			$this->authorization->authorize( $actor_wp_user_id, $trusted, self::CLINIC_MANAGE_CAPABILITY, true );
+			if ( $this->locations->findActiveForClinic( $trusted, $location_id ) === null ) {
+				return self::failure();
+			}
+			if ( ! $this->memberships->clinician_participates_in( $clinician_id, $trusted ) ) {
+				return self::failure();
+			}
+
+			$previous = ScopeContext::tryGet();
+			try {
+				ScopeContext::set( ClinicScope::forClinic( $trusted, $location_id ) );
+				App::scheduleService()->create(
+					$actor_wp_user_id,
+					array(
+						'clinician_id' => $clinician_id,
+						'location_id'  => $location_id,
+						'day_of_week'  => $day_of_week,
+						'start_time'   => $start_time,
+						'end_time'     => $end_time,
+						'is_active'    => 1,
+					)
+				);
+			} finally {
+				if ( $previous === null ) {
+					ScopeContext::clear();
+				} else {
+					ScopeContext::set( $previous );
+				}
+			}
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'برنامهٔ هفتگی ثبت شد.' );
+	}
+
+	/**
+	 * Capabilities this actor may grant or deny inside the Clinic.
+	 *
+	 * @return list<string>
+	 */
+	private function delegable_caps( int $actor_wp_user_id, int $clinic_id ): array {
+		$held = array();
+		foreach ( RolesAndCapabilities::ALL_CAPS as $capability ) {
+			if ( $this->authorization->can( $actor_wp_user_id, $clinic_id, $capability ) ) {
+				$held[] = $capability;
+			}
+		}
+
+		return $held;
+	}
+
+	/**
+	 * Durable membership row, re-read from storage and required to belong to the
+	 * trusted Clinic (the id submitted by the browser is only a selector).
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	private function membership_in_clinic( int $trusted_clinic_id, int $membership_id ): ?array {
+		if ( $membership_id <= 0 ) {
+			return null;
+		}
+		$membership = $this->memberships->find_by_id( $membership_id );
+		if ( $membership === null || (int) ( $membership['clinic_id'] ?? 0 ) !== $trusted_clinic_id ) {
+			return null;
+		}
+
+		return $membership;
+	}
+
+	/**
+	 * Resolve an existing account by e-mail/login, or provision a plain
+	 * Subscriber account for a new e-mail address. Nothing else can be created
+	 * here: no role other than `subscriber`, no password disclosure, no e-mail.
+	 */
+	private function resolve_or_provision_subscriber( string $identifier ): int {
+		if ( ! is_email( $identifier ) ) {
+			$by_login = get_user_by( 'login', $identifier );
+			if ( $by_login instanceof WP_User ) {
+				return (int) $by_login->ID;
+			}
+
+			return 0; // never provision from a login string
+		}
+
+		$existing = get_user_by( 'email', $identifier );
+		if ( $existing instanceof WP_User ) {
+			return (int) $existing->ID;
+		}
+
+		$local = strtolower( (string) strstr( $identifier, '@', true ) );
+		$local = preg_replace( '/[^a-z0-9._-]/', '', $local );
+		if ( ! is_string( $local ) || '' === $local ) {
+			return 0;
+		}
+
+		$login = $local;
+		$suffix = 1;
+		while ( get_user_by( 'login', $login ) instanceof WP_User || username_exists( $login ) ) {
+			++$suffix;
+			if ( $suffix > 50 ) {
+				return 0; // fail closed instead of guessing forever
+			}
+			$login = $local . '-' . (string) $suffix;
+		}
+
+		$created = wp_insert_user(
+			array(
+				'user_login'   => $login,
+				'user_email'   => $identifier,
+				'user_pass'    => wp_generate_password( 32, true, true ),
+				'display_name' => $local,
+				'role'         => 'subscriber', // the only WP role this path can assign
+			)
+		);
+
+		return is_int( $created ) ? $created : 0;
 	}
 
 	// ==================================================================

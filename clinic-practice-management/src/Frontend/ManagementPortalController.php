@@ -55,6 +55,12 @@ final class ManagementPortalController {
 		'clinic_location_active',
 		'clinic_staff_role',
 		'clinic_staff_custom_role',
+		'clinic_staff_enroll',
+		'clinic_staff_status',
+		'clinic_staff_locations',
+		'clinic_staff_capability',
+		'clinic_clinician_register',
+		'clinic_schedule_create',
 	);
 
 	public static function register(): void {
@@ -204,6 +210,59 @@ final class ManagementPortalController {
 					self::int_value( $input, 'target_user_id' ),
 					self::string_value( $input, 'role_key' )
 				);
+
+			case 'clinic_staff_enroll':
+				return $service->enroll_staff(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::string_value( $input, 'identifier' ),
+					self::string_value( $input, 'role_key' )
+				);
+
+			case 'clinic_staff_status':
+				return $service->set_staff_status(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::int_value( $input, 'membership_id' ),
+					self::bool_value( $input, 'active' )
+				);
+
+			case 'clinic_staff_locations':
+				return $service->set_staff_locations(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::int_value( $input, 'membership_id' ),
+					self::id_list( self::string_value( $input, 'location_ids' ) )
+				);
+
+			case 'clinic_staff_capability':
+				return $service->set_staff_capability(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::int_value( $input, 'membership_id' ),
+					self::string_value( $input, 'capability' ),
+					self::string_value( $input, 'effect' )
+				);
+
+			case 'clinic_clinician_register':
+				return $service->register_clinician(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::string_value( $input, 'full_name' ),
+					self::string_value( $input, 'specialty' ),
+					self::int_value( $input, 'target_user_id' )
+				);
+
+			case 'clinic_schedule_create':
+				return $service->create_schedule(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					self::int_value( $input, 'clinician_id' ),
+					self::int_value( $input, 'location_id' ),
+					self::int_value( $input, 'day_of_week' ),
+					self::string_value( $input, 'start_time' ),
+					self::string_value( $input, 'end_time' )
+				);
 		}
 
 		return self::denied();
@@ -260,7 +319,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
@@ -330,6 +389,23 @@ final class ManagementPortalController {
 		$value = $input[ $key ] ?? 0;
 
 		return is_scalar( $value ) ? absint( (string) $value ) : 0;
+	}
+
+	/**
+	 * Parse a comma/space separated list of positive integer ids.
+	 *
+	 * @return list<int>
+	 */
+	private static function id_list( string $value ): array {
+		$ids = array();
+		foreach ( preg_split( '/[^0-9]+/', $value ) ?: array() as $part ) {
+			$id = absint( $part );
+			if ( $id > 0 ) {
+				$ids[] = $id;
+			}
+		}
+
+		return array_values( array_unique( $ids ) );
 	}
 
 	/**

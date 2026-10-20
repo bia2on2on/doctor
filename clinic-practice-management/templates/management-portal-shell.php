@@ -418,7 +418,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 			<section class="cpms-mgmt-card">
 				<h2>کارکنان و نقش‌های درمانگاه</h2>
 				<table class="cpms-mgmt-table">
-					<thead><tr><th>کاربر</th><th>نقش عضویت</th><th>وضعیت</th><th>انتساب نقش</th></tr></thead>
+					<thead><tr><th>کاربر</th><th>نقش عضویت</th><th>وضعیت</th><th>انتساب نقش</th><th>دامنه و مجوزها</th></tr></thead>
 					<tbody>
 					<?php foreach ( $cpms_mp_clinic_view['staff'] as $cpms_mp_member ) : ?>
 						<tr>
@@ -447,13 +447,65 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 									<?php endif; ?>
 								<?php endif; ?>
 							</td>
+							<td>
+								<?php $cpms_mp_form_open( 'clinic_staff_status', array( 'clinic_id' => $cpms_mp_c['id'], 'membership_id' => $cpms_mp_member['membership_id'], 'active' => 'active' === $cpms_mp_member['status'] ? 0 : 1 ) ); ?>
+									<button class="cpms-mgmt-btn cpms-mgmt-btn--muted cpms-mgmt-btn--small" type="submit">
+										<?php echo 'active' === $cpms_mp_member['status'] ? 'تعلیق عضویت' : 'فعال‌سازی عضویت'; ?>
+									</button>
+								</form>
+								<?php if ( 'active' === $cpms_mp_member['status'] ) : ?>
+									<?php $cpms_mp_form_open( 'clinic_staff_locations', array( 'clinic_id' => $cpms_mp_c['id'], 'membership_id' => $cpms_mp_member['membership_id'] ) ); ?>
+										<p class="cpms-mgmt-field">
+											<label for="cpms-mgmt-mloc-<?php echo esc_attr( (string) $cpms_mp_member['membership_id'] ); ?>">شناسهٔ شعبه‌ها (خالی = کل درمانگاه)</label>
+											<input id="cpms-mgmt-mloc-<?php echo esc_attr( (string) $cpms_mp_member['membership_id'] ); ?>" name="location_ids" type="text" value="<?php echo esc_attr( implode( ',', array_map( 'intval', $cpms_mp_member['locations'] ) ) ); ?>">
+										</p>
+										<button class="cpms-mgmt-btn cpms-mgmt-btn--muted cpms-mgmt-btn--small" type="submit">ثبت دامنهٔ مکانی</button>
+									</form>
+									<?php if ( array() !== $cpms_mp_clinic_view['delegable_caps'] ) : ?>
+										<?php $cpms_mp_form_open( 'clinic_staff_capability', array( 'clinic_id' => $cpms_mp_c['id'], 'membership_id' => $cpms_mp_member['membership_id'] ) ); ?>
+											<select name="capability" aria-label="مجوز مؤثر">
+												<?php foreach ( $cpms_mp_clinic_view['delegable_caps'] as $cpms_mp_cap ) : ?>
+													<option value="<?php echo esc_attr( $cpms_mp_cap ); ?>"><?php echo esc_html( $cpms_mp_cap ); ?></option>
+												<?php endforeach; ?>
+											</select>
+											<select name="effect" aria-label="نوع قاعده">
+												<option value="grant">GRANT</option>
+												<option value="deny">DENY</option>
+												<option value="clear">حذف قاعده</option>
+											</select>
+											<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت مجوز</button>
+										</form>
+									<?php endif; ?>
+								<?php endif; ?>
+								<?php if ( array() !== $cpms_mp_member['capabilities'] ) : ?>
+									<ul class="cpms-mgmt-meta">
+										<?php foreach ( $cpms_mp_member['capabilities'] as $cpms_mp_rule ) : ?>
+											<li><?php echo esc_html( $cpms_mp_rule['capability'] . ' — ' . strtoupper( $cpms_mp_rule['effect'] ) ); ?></li>
+										<?php endforeach; ?>
+									</ul>
+								<?php endif; ?>
+							</td>
 						</tr>
 					<?php endforeach; ?>
 					<?php if ( array() === $cpms_mp_clinic_view['staff'] ) : ?>
-						<tr><td colspan="4" class="cpms-mgmt-empty">عضوی ثبت نشده است.</td></tr>
+						<tr><td colspan="5" class="cpms-mgmt-empty">عضوی ثبت نشده است.</td></tr>
 					<?php endif; ?>
 					</tbody>
 				</table>
+
+				<h3>افزودن کارمند (حساب موجود یا حساب تازهٔ Subscriber)</h3>
+				<?php $cpms_mp_form_open( 'clinic_staff_enroll', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
+					<?php
+					$cpms_mp_field( 'identifier', 'ایمیل یا نام کاربری حساب موجود', '', true );
+					?>
+					<select name="role_key" aria-label="نقش عضویت درمانگاه">
+						<?php foreach ( $cpms_mp_clinic_view['assignable_roles'] as $cpms_mp_role_key ) : ?>
+							<option value="<?php echo esc_attr( $cpms_mp_role_key ); ?>"><?php echo esc_html( $cpms_mp_role_key ); ?></option>
+						<?php endforeach; ?>
+					</select>
+					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">افزودن به درمانگاه</button>
+				</form>
+				<p class="cpms-mgmt-meta">حساب تازه فقط با نقش سراسری Subscriber ساخته می‌شود؛ هیچ نقش مدیریتی وردپرس از این پورتال اعطا نمی‌شود و رمز عبور هرگز نمایش داده نمی‌شود.</p>
 				<p class="cpms-mgmt-meta">انتساب نقش، عضویت درمانگاه (role_key) را تغییر می‌دهد؛ نقش سراسری وردپرس و مجوزهای سراسری هرگز از این‌جا تغییر نمی‌کنند. نقش سفارشی فقط تا سقف مجوزهای مؤثر خودتان قابل واگذاری است.</p>
 			</section>
 
@@ -474,7 +526,57 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					<?php endif; ?>
 					</tbody>
 				</table>
-				<p class="cpms-mgmt-meta">تنظیم برنامهٔ نوبت‌دهی از قرارداد موجود نوبت‌دهی (کلینیک‌محور) استفاده می‌کند و به مجوزهای همان درمانگاه وابسته است.</p>
+				<h3>ثبت پزشک</h3>
+				<?php $cpms_mp_form_open( 'clinic_clinician_register', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
+					<?php
+					$cpms_mp_field( 'full_name', 'نام کامل پزشک', '', true );
+					$cpms_mp_field( 'specialty', 'تخصص' );
+					$cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر وابسته (اختیاری)', '', false, 'number' );
+					?>
+					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت پزشک</button>
+				</form>
+				<p class="cpms-mgmt-meta">اتصال حساب کاربری فقط برای عضویت فعال همین درمانگاه ممکن است و هر حساب تنها به یک رکورد پزشک متصل می‌شود؛ مشارکت چند‌کلینیکی با یک رکورد پزشک در هر درمانگاه بیان می‌شود.</p>
+
+				<h3>برنامهٔ هفتگی</h3>
+				<?php if ( array() !== $cpms_mp_clinic_view['clinicians'] && array() !== $cpms_mp_clinic_view['locations'] ) : ?>
+					<?php $cpms_mp_form_open( 'clinic_schedule_create', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
+						<p class="cpms-mgmt-field">
+							<label for="cpms-mgmt-sched-clinician">پزشک</label>
+							<select id="cpms-mgmt-sched-clinician" name="clinician_id">
+								<?php foreach ( $cpms_mp_clinic_view['clinicians'] as $cpms_mp_clinician_option ) : ?>
+									<option value="<?php echo esc_attr( (string) $cpms_mp_clinician_option['id'] ); ?>"><?php echo esc_html( $cpms_mp_clinician_option['full_name'] ); ?></option>
+								<?php endforeach; ?>
+							</select>
+						</p>
+						<p class="cpms-mgmt-field">
+							<label for="cpms-mgmt-sched-location">شعبه</label>
+							<select id="cpms-mgmt-sched-location" name="location_id">
+								<?php foreach ( $cpms_mp_clinic_view['locations'] as $cpms_mp_location_option ) : ?>
+									<?php if ( ! $cpms_mp_location_option['is_active'] ) : ?>
+										<?php continue; ?>
+									<?php endif; ?>
+									<option value="<?php echo esc_attr( (string) $cpms_mp_location_option['id'] ); ?>"><?php echo esc_html( $cpms_mp_location_option['name'] ); ?></option>
+								<?php endforeach; ?>
+							</select>
+						</p>
+						<p class="cpms-mgmt-field">
+							<label for="cpms-mgmt-sched-day">روز هفته</label>
+							<select id="cpms-mgmt-sched-day" name="day_of_week">
+								<option value="0">شنبه</option><option value="1">یکشنبه</option><option value="2">دوشنبه</option>
+								<option value="3">سه‌شنبه</option><option value="4">چهارشنبه</option><option value="5">پنجشنبه</option>
+								<option value="6">جمعه</option>
+							</select>
+						</p>
+						<?php
+						$cpms_mp_field( 'start_time', 'ساعت شروع (HH:MM)', '09:00', true );
+						$cpms_mp_field( 'end_time', 'ساعت پایان (HH:MM)', '12:00', true );
+						?>
+						<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت برنامه</button>
+					</form>
+				<?php else : ?>
+					<p class="cpms-mgmt-empty">برای ثبت برنامه به یک پزشک و یک شعبهٔ فعال نیاز است.</p>
+				<?php endif; ?>
+				<p class="cpms-mgmt-meta">تنظیم برنامهٔ نوبت‌دهی از قرارداد موجود نوبت‌دهی (کلینیک‌محور) استفاده می‌کند و به مجوزهای همان درمانگاه وابسته است؛ تعارض زمانی و قواعد شعبه دقیقاً همان قواعد REST است.</p>
 			</section>
 
 			<section class="cpms-mgmt-card">

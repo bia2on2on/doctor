@@ -307,7 +307,7 @@ final class ManagementPortalTest extends WP_UnitTestCase {
     public function test_explicit_membership_deny_blocks_the_clinic_workflow(): void {
         $membership = App::membership_service()->active_membership_for( $this->clinicA, $this->clinicManager );
         self::assertNotNull( $membership );
-        ( new MembershipRepository( App::db() ) )->set_capability( (int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny' );
+        MEMREP->set_capability( (int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny' );
 
         self::assertNull(
             App::management_portal_service()->clinic_workspace( $this->clinicManager, $this->clinicA ),
@@ -450,6 +450,379 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         self::assertStringNotContainsString( 'current_user_can', $service_source );
         self::assertStringNotContainsString( 'user_can(', $service_source );
         self::assertStringNotContainsString( 'has_cap', $service_source );
+    }
+
+    // ==================================================================
+    // 7. Clinic Manager: staff enrollment, membership lifecycle, Location
+    //    scope, capability rules, clinician + schedule registration.
+    //    All negative cases must fail closed without touching storage.
+    // ==================================================================
+
+    public function test_subscriber_clinic_manager_enrolls_staff_and_provisions_only_a_subscriber(): void {
+        $email = 'cpms-staff-' . bin2hex( random_bytes( 4 ) ) . '@example.test';
+
+        $result = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => $email, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
+        );
+        self::assertTrue( $result['ok'], 'an ACTIVE Clinic manager may enroll staff through the portal' );
+
+        $created = get_user_by( 'email', $email );
+        self::assertInstanceOf( \WP_User::class, $created );
+        $this->userIds[] = (int) $created->ID;
+
+        $roles = (array) $created->roles;
+        self::assertSame( array( 'subscriber' ), array_values( $roles ), 'only a plain Subscriber account may be provisioned' );
+        self::assertFalse( $created->has_cap( RolesAndCapabilities::CONFIG ), 'no global CPMS capability is granted by enrollment' );
+        self::assertFalse( $created->has_cap( RolesAndCapabilities::MEDICAL_READ ) );
+
+        $membership = App::membership_service()->membership_for( $this->clinicA, (int) $created->ID );
+        self::assertNotNull( $membership );
+        self::assertSame( 'active', (string) $membership['status'] );
+        self::assertSame( RolesAndCapabilities::ROLE_SECRETARY, (string) $membership['role_key'] );
+
+        // The engine (not a WP role) now authorizes the enrolled secretary, and
+        // only inside this Clinic.
+        self::assertTrue( App::authorization_service()->can( (int) $created->ID, $this->clinicA, RolesAndCapabilities::APPT_CREATE ) );
+        self::assertFalse( App::authorization_service()->can( (int) $created->ID, $this->clinicA, RolesAndCapabilities::CONFIG ) );
+        self::assertFalse( App::authorization_service()->can( (int) $created->ID, $this->clinicB, RolesAndCapabilities::APPT_CREATE ) );
+    }
+
+    public function test_staff_enrollment_is_clinic_scoped_and_never_overwrites(): void {
+        // An existing account is linked, not re-roled.
+        $existing = get_userdata( $this->outsider );
+        self::assertInstanceOf( \WP_User::class, $existing );
+
+        $linked = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => (string) $existing->user_login, 'role_key' => RolesAndCapabilities::ROLE_ACCOUNTANT )
+        );
+        self::assertTrue( $linked['ok'] );
+        $membership = App::membership_service()->membership_for( $this->clinicA, $this->outsider );
+        self::assertNotNull( $membership );
+        self::assertSame( RolesAndCapabilities::ROLE_ACCOUNTANT, (string) $membership['role_key'] );
+        $user = get_userdata( $this->outsider );
+        self::assertInstanceOf( \WP_User::class, $user );
+        self::assertSame( array( 'subscriber' ), array_values( (array) $user->roles ), 'linking never changes the WordPress role' );
+
+        $duplicate = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => (string) $existing->user_login, 'role_key' => RolesAndCapabilities::ROLE_MANAGER )
+        );
+        self::assertFalse( $duplicate['ok'], 'an existing membership is never silently overwritten' );
+        $unchanged = App::membership_service()->membership_for( $this->clinicA, $this->outsider );
+        self::assertNotNull( $unchanged );
+        self::assertSame( RolesAndCapabilities::ROLE_ACCOUNTANT, (string) $unchanged['role_key'] );
+
+        // A manager of Clinic A cannot enroll into a Clinic it does not manage,
+        // even though the Clinic exists and the actor is a legitimate manager.
+        $forged = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicB, 'identifier' => (string) $existing->user_login, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
+        );
+        self::assertFalse( $forged['ok'] );
+        self::assertNull( App::membership_service()->membership_for( $this->clinicB, $this->outsider ), 'no cross-Clinic membership may be created' );
+
+        // A WordPress role is never accepted as a membership role.
+        $wp_role = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => 'someone' . bin2hex( random_bytes( 3 ) ) . '@example.test', 'role_key' => 'administrator' )
+        );
+        self::assertFalse( $wp_role['ok'], 'WordPress role keys are not assignable through the portal' );
+    }
+
+    public function test_membership_suspension_is_a_durable_uncached_deny(): void {
+        $membership = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $membership );
+        $membership_id = (int) $membership['id'];
+        self::assertTrue( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::APPT_CREATE ) );
+
+        $suspended = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_status',
+            array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) $membership_id, 'active' => '0' )
+        );
+        self::assertTrue( $suspended['ok'] );
+        self::assertFalse(
+            App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::APPT_CREATE ),
+            'a suspended membership is a durable deny'
+        );
+
+        $workspace = App::management_portal_service()->clinic_workspace( $this->clinicManager, $this->clinicA );
+        self::assertNotNull( $workspace );
+        $statuses = array();
+        foreach ( $workspace['staff'] as $row ) {
+            $statuses[ (int) $row['wp_user_id'] ] = (string) $row['status'];
+        }
+        self::assertSame( 'suspended', $statuses[ $this->staffMember ] ?? '' );
+
+        $reactivated = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_status',
+            array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) $membership_id, 'active' => '1' )
+        );
+        self::assertTrue( $reactivated['ok'] );
+        self::assertTrue(
+            App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::APPT_CREATE ),
+            'reactivation restores authority without any WordPress role change'
+        );
+    }
+
+    public function test_cross_clinic_membership_ids_fail_closed(): void {
+        // The outsider manages Clinic B; Clinic A's manager must not be able to
+        // reach that membership through Clinic A.
+        App::membership_service()->create_membership( $this->clinicB, $this->outsider, RolesAndCapabilities::ROLE_SECRETARY );
+        $foreign = App::membership_service()->membership_for( $this->clinicB, $this->outsider );
+        self::assertNotNull( $foreign );
+        $foreign_id = (int) $foreign['id'];
+
+        foreach ( array(
+            array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) $foreign_id, 'active' => '0' ),
+        ) as $payload ) {
+            $result = ManagementPortalController::dispatch( $this->clinicManager, 'clinic_staff_status', $payload );
+            self::assertFalse( $result['ok'], 'a membership of another Clinic is never addressable' );
+        }
+
+        $still_active = App::membership_service()->membership_for( $this->clinicB, $this->outsider );
+        self::assertNotNull( $still_active );
+        self::assertSame( 'active', (string) $still_active['status'], 'no cross-Clinic suspension may occur' );
+
+        $capability = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_capability',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $foreign_id,
+                'capability'    => RolesAndCapabilities::PATIENT_READ,
+                'effect'        => 'deny',
+            )
+        );
+        self::assertFalse( $capability['ok'] );
+        self::assertSame( array(), ( new MembershipRepository( App::db() ) )->capabilities_for( $foreign_id ) );
+    }
+
+    public function test_capability_rules_are_bounded_by_the_actors_own_authority(): void {
+        $membership = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $membership );
+        $membership_id = (int) $membership['id'];
+
+        // DENY of a capability the actor holds is allowed and takes effect.
+        $denied = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_capability',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $membership_id,
+                'capability'    => RolesAndCapabilities::PATIENT_READ,
+                'effect'        => 'deny',
+            )
+        );
+        self::assertTrue( $denied['ok'] );
+        self::assertFalse( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::PATIENT_READ ) );
+
+        // Clearing the rule restores the role preset.
+        $cleared = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_capability',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $membership_id,
+                'capability'    => RolesAndCapabilities::PATIENT_READ,
+                'effect'        => 'clear',
+            )
+        );
+        self::assertTrue( $cleared['ok'] );
+        self::assertTrue( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::PATIENT_READ ) );
+
+        // A manager may not hand out clinical authority it does not hold.
+        $escalation = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_capability',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $membership_id,
+                'capability'    => RolesAndCapabilities::PRIVATE_NOTE_READ,
+                'effect'        => 'grant',
+            )
+        );
+        self::assertFalse( $escalation['ok'], 'delegation beyond the actor authority is refused' );
+        self::assertFalse( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::PRIVATE_NOTE_READ ) );
+
+        // An unknown capability name is refused outright.
+        self::assertFalse(
+            ManagementPortalController::dispatch(
+                $this->clinicManager,
+                'clinic_staff_capability',
+                array(
+                    'clinic_id'     => (string) $this->clinicA,
+                    'membership_id' => (string) $membership_id,
+                    'capability'    => 'cpms_not_a_capability',
+                    'effect'        => 'grant',
+                )
+            )['ok']
+        );
+    }
+
+    public function test_location_scope_assignments_require_active_locations_of_the_same_clinic(): void {
+        $membership = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $membership );
+        $membership_id = (int) $membership['id'];
+
+        $own = App::db()->fetchAll(
+            'SELECT id FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND is_active = 1',
+            array( $this->clinicA )
+        );
+        self::assertNotEmpty( $own, 'fixture: Clinic A has an active Location' );
+        $own_location = (int) $own[0]['id'];
+
+        $foreign = App::db()->fetchAll(
+            'SELECT id FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
+            array( $this->clinicB )
+        );
+        self::assertNotEmpty( $foreign, 'fixture: Clinic B has a Location' );
+
+        $rejected = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_locations',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $membership_id,
+                'location_ids'  => (string) (int) $foreign[0]['id'],
+            )
+        );
+        self::assertFalse( $rejected['ok'], 'a Location of another Clinic can never be attached' );
+        self::assertSame( array(), ( new MembershipRepository( App::db() ) )->location_ids_for( $membership_id ) );
+
+        $accepted = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_locations',
+            array(
+                'clinic_id'     => (string) $this->clinicA,
+                'membership_id' => (string) $membership_id,
+                'location_ids'  => (string) $own_location,
+            )
+        );
+        self::assertTrue( $accepted['ok'] );
+        self::assertSame( array( $own_location ), ( new MembershipRepository( App::db() ) )->location_ids_for( $membership_id ) );
+        $scoped = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $scoped );
+        self::assertSame( 'location', (string) $scoped['scope_mode'] );
+
+        // Empty selection means Clinic-wide again (explicit, never implicit).
+        $reset = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_locations',
+            array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) $membership_id, 'location_ids' => '' )
+        );
+        self::assertTrue( $reset['ok'] );
+        $wide = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $wide );
+        self::assertSame( 'clinic', (string) $wide['scope_mode'] );
+    }
+
+    public function test_clinician_registration_and_schedule_are_clinic_scoped(): void {
+        $registered = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_clinician_register',
+            array( 'clinic_id' => (string) $this->clinicA, 'full_name' => 'Dr Portal', 'specialty' => 'General' )
+        );
+        self::assertTrue( $registered['ok'] );
+
+        $clinician_id = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d ORDER BY id DESC LIMIT 1',
+            array( $this->clinicA )
+        );
+        self::assertGreaterThan( 0, $clinician_id );
+        self::assertSame( $this->clinicA, (int) App::db()->fetchValue(
+            'SELECT clinic_id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE id = %d',
+            array( $clinician_id )
+        ) );
+
+        // Linking a WordPress account that has no ACTIVE membership here fails.
+        self::assertFalse(
+            ManagementPortalController::dispatch(
+                $this->clinicManager,
+                'clinic_clinician_register',
+                array( 'clinic_id' => (string) $this->clinicA, 'full_name' => 'Dr Outsider', 'target_user_id' => (string) $this->admin )
+            )['ok'],
+            'an account without an ACTIVE membership cannot be linked to a clinician'
+        );
+
+        // A clinician of another Clinic can never be scheduled through this Clinic.
+        $foreign_clinician = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d LIMIT 1',
+            array( $this->clinicB )
+        );
+        $own_location = (int) App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d AND is_active = 1 LIMIT 1',
+            array( $this->clinicA )
+        );
+        self::assertGreaterThan( 0, $own_location );
+
+        if ( $foreign_clinician <= 0 ) {
+            $foreign_clinician = $clinician_id + 1000; // unknown id is equally fail-closed
+        }
+        self::assertFalse(
+            ManagementPortalController::dispatch(
+                $this->clinicManager,
+                'clinic_schedule_create',
+                array(
+                    'clinic_id'    => (string) $this->clinicA,
+                    'clinician_id' => (string) $foreign_clinician,
+                    'location_id'  => (string) $own_location,
+                    'day_of_week'  => '1',
+                    'start_time'   => '09:00',
+                    'end_time'     => '12:00',
+                )
+            )['ok'],
+            'a clinician outside the trusted Clinic is never schedulable'
+        );
+
+        $scheduled = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_schedule_create',
+            array(
+                'clinic_id'    => (string) $this->clinicA,
+                'clinician_id' => (string) $clinician_id,
+                'location_id'  => (string) $own_location,
+                'day_of_week'  => '1',
+                'start_time'   => '09:00',
+                'end_time'     => '12:00',
+            )
+        );
+        self::assertTrue( $scheduled['ok'], 'the publishing ScheduleService contract accepts a valid portal schedule' );
+        self::assertSame( $this->clinicA, (int) App::db()->fetchValue(
+            'SELECT clinic_id FROM ' . App::db()->table( 'cpms_schedule' ) . ' WHERE clinician_id = %d ORDER BY id DESC LIMIT 1',
+            array( $clinician_id )
+        ) );
+    }
+
+    public function test_administrator_alone_cannot_reach_any_clinic_management_workflow(): void {
+        $membership = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $membership );
+
+        foreach ( array(
+            array( 'action' => 'clinic_staff_enroll', 'input' => array( 'clinic_id' => (string) $this->clinicA, 'identifier' => 'admin-probe-' . bin2hex( random_bytes( 3 ) ) . '@example.test', 'role_key' => RolesAndCapabilities::ROLE_SECRETARY ) ),
+            array( 'action' => 'clinic_staff_status', 'input' => array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) (int) $membership['id'], 'active' => '0' ) ),
+            array( 'action' => 'clinic_staff_capability', 'input' => array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) (int) $membership['id'], 'capability' => RolesAndCapabilities::PATIENT_READ, 'effect' => 'grant' ) ),
+            array( 'action' => 'clinic_staff_locations', 'input' => array( 'clinic_id' => (string) $this->clinicA, 'membership_id' => (string) (int) $membership['id'], 'location_ids' => '1' ) ),
+            array( 'action' => 'clinic_clinician_register', 'input' => array( 'clinic_id' => (string) $this->clinicA, 'full_name' => 'Dr Admin' ) ),
+        ) as $case ) {
+            $result = ManagementPortalController::dispatch( $this->admin, $case['action'], $case['input'] );
+            self::assertFalse( $result['ok'], 'Administrator alone must fail closed for ' . $case['action'] );
+        }
+
+        $still_active = App::membership_service()->membership_for( $this->clinicA, $this->staffMember );
+        self::assertNotNull( $still_active );
+        self::assertSame( 'active', (string) $still_active['status'] );
+        self::assertSame( array(), ( new MembershipRepository( App::db() ) )->capabilities_for( (int) $membership['id'] ) );
+        self::assertFalse( App::authorization_service()->can( $this->admin, $this->clinicA, RolesAndCapabilities::CONFIG ) );
+        self::assertFalse( App::authorization_service()->can( $this->admin, $this->clinicA, RolesAndCapabilities::PATIENT_READ ) );
     }
 
     // ============ Helpers ============
