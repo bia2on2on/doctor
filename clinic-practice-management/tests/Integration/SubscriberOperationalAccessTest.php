@@ -60,7 +60,7 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         self::assertContains('subscriber', (array) get_userdata($fx['user'])->roles, 'precondition: plain Subscriber');
 
         $today = $this->doctorRequest('GET', '/doctor/today', $fx['location']);
-        self::assertSame(200, $today->get_status(), 'Subscriber doctor Today must be reachable :: code=' . $this->errCode($today));
+        self::assertSame(200, $today->get_status(), 'Subscriber doctor Today must be reachable :: ' . $this->errDetail($today));
 
         $queue = $this->doctorRequest('GET', '/doctor/portal/rt/queue', $fx['location']);
         self::assertSame(200, $queue->get_status(), 'Subscriber doctor live queue must be reachable :: code=' . $this->errCode($queue));
@@ -450,6 +450,16 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
             return $body['data'];
         }
         return is_array($body) ? $body : [];
+    }
+
+    private function errDetail(WP_REST_Response $response): string
+    {
+        $body = $response->get_data();
+        if ($body instanceof \WP_Error) {
+            return (string) $body->get_error_code() . ' :: ' . (string) $body->get_error_message() . ' :: ' . wp_json_encode($body->get_error_data());
+        }
+
+        return wp_json_encode($body);
     }
 
     private function errCode(WP_REST_Response $response): string
