@@ -1300,6 +1300,32 @@ final class App
         return $service;
     }
 
+    /**
+     * Facility-aware onboarding (hospital network / medical building), same
+     * service the admin wizard uses. It authorizes by Organization authority and
+     * is transport-agnostic, so the frontend portal can drive it without wp-admin.
+     */
+    public static function facility_setup_service(): \ClinicCore\Application\Onboarding\FacilitySetupService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new \ClinicCore\Application\Onboarding\FacilitySetupService(
+                self::db(),
+                self::organization_clinic_provisioning_service(),
+                self::locationService(),
+                self::locationRepository(),
+                self::authorization_service(),
+                self::membership_service(),
+                new MembershipRepository( self::db() ),
+                self::clinicianRepository(),
+                self::scheduleService(),
+                self::settingsFactory(),
+                self::audit()
+            );
+        }
+
+        return $service;
+    }
+
     public static function organization_clinic_provisioning_service(): \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService {
         return new \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService( self::db(), self::audit() );
     }

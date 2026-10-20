@@ -1018,6 +1018,169 @@ final class ManagementPortalService {
 	}
 
 	// ==================================================================
+	// Organization: facility-aware onboarding (frontend, no wp-admin)
+	//
+	// The published FacilitySetupService already owns this journey: it authorizes
+	// by ORGANIZATION authority, keeps the plan durable, and activates every held
+	// Clinic in ONE transaction. The portal only exposes it in the frontend; it
+	// grants no Clinic authority to an Organization Manager (each Clinic step that
+	// needs Clinic authority is delegated to the Clinic manager persona) and it
+	// never lowers any wp-admin gate.
+	// ==================================================================
+
+	/**
+	 * Current durable facility plan for one Organization (null when none exists).
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	public function facility_plan( int $actor_wp_user_id, int $organization_id ): ?array {
+		if ( $actor_wp_user_id <= 0 || $organization_id <= 0 ) {
+			return null;
+		}
+
+		try {
+			return App::facility_setup_service()->plan( $actor_wp_user_id, $organization_id );
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+	}
+
+	/**
+	 * Start (or re-target) the facility plan for one Organization.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function start_facility_setup( int $actor_wp_user_id, int $organization_id, string $facility_type, string $structure, string $display_name ): array {
+		try {
+			App::facility_setup_service()->start( $actor_wp_user_id, $organization_id, $facility_type, $structure, $display_name );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'راه‌اندازی مرکز آغاز شد.' );
+	}
+
+	/**
+	 * Hospital only: explicit outpatient-only acknowledgment.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function acknowledge_facility_outpatient( int $actor_wp_user_id, int $organization_id ): array {
+		try {
+			App::facility_setup_service()->acknowledge_outpatient( $actor_wp_user_id, $organization_id, true );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'محدودهٔ فقط سرپایی تأیید شد.' );
+	}
+
+	/**
+	 * @return array{ok:bool, message:string}
+	 */
+	public function add_facility_site( int $actor_wp_user_id, int $organization_id, string $label, string $address ): array {
+		try {
+			App::facility_setup_service()->add_site( $actor_wp_user_id, $organization_id, $label, $address );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'ساختمان ثبت شد.' );
+	}
+
+	/**
+	 * Clinic creation inside the plan, held suspended until activation.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function add_facility_clinic( int $actor_wp_user_id, int $organization_id, string $name, string $site_key, string $timezone ): array {
+		try {
+			App::facility_setup_service()->add_clinic(
+				$actor_wp_user_id,
+				$organization_id,
+				bin2hex( random_bytes( 16 ) ), // server-issued idempotency key
+				$name,
+				$site_key,
+				$timezone
+			);
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'درمانگاه در برنامه ثبت شد (تا فعال‌سازی معلق).' );
+	}
+
+	/**
+	 * Room/Location inside a plan Clinic.
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function add_facility_room( int $actor_wp_user_id, int $organization_id, string $clinic_key, string $name, string $site_key ): array {
+		try {
+			App::facility_setup_service()->add_room(
+				$actor_wp_user_id,
+				$organization_id,
+				$clinic_key,
+				bin2hex( random_bytes( 16 ) ),
+				$name,
+				$site_key
+			);
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'اتاق/مکان ثبت شد.' );
+	}
+
+	/**
+	 * Explicit Clinic-manager designation for a plan Clinic (Organization authority).
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function designate_facility_manager( int $actor_wp_user_id, int $organization_id, string $clinic_key, int $target_wp_user_id ): array {
+		try {
+			App::facility_setup_service()->designate_manager( $actor_wp_user_id, $organization_id, $clinic_key, $target_wp_user_id );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'مدیر درمانگاه تعیین شد.' );
+	}
+
+	/**
+	 * Consolidated review computed from live rows.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	public function review_facility_setup( int $actor_wp_user_id, int $organization_id ): ?array {
+		if ( $actor_wp_user_id <= 0 || $organization_id <= 0 ) {
+			return null;
+		}
+
+		try {
+			return App::facility_setup_service()->review( $actor_wp_user_id, $organization_id );
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+	}
+
+	/**
+	 * Atomic activation of every held Clinic of the plan (single transaction under
+	 * the Organization row lock; a failure anywhere activates nothing).
+	 *
+	 * @return array{ok:bool, message:string}
+	 */
+	public function activate_facility_setup( int $actor_wp_user_id, int $organization_id ): array {
+		try {
+			App::facility_setup_service()->activate( $actor_wp_user_id, $organization_id, true );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'مرکز به‌صورت اتمیک فعال شد.' );
+	}
+
+	// ==================================================================
 	// Helpers
 	// ==================================================================
 

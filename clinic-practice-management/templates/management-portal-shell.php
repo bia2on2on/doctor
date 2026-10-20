@@ -286,6 +286,107 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				</section>
 			<?php endif; ?>
 
+			<?php if ( $cpms_mp_org_can['create'] ) : ?>
+				<?php $cpms_mp_facility = $cpms_mp_service->facility_plan( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
+				<section class="cpms-mgmt-card">
+					<h2>راه‌اندازی مرکز (بیمارستان / ساختمان پزشکان)</h2>
+					<?php if ( null === $cpms_mp_facility ) : ?>
+						<?php $cpms_mp_form_open( 'org_facility_start', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+							<p class="cpms-mgmt-field">
+								<label for="cpms-mgmt-facility-type">نوع مرکز</label>
+								<select id="cpms-mgmt-facility-type" name="facility_type">
+									<?php foreach ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::all() as $cpms_mp_type ) : ?>
+										<option value="<?php echo esc_attr( (string) $cpms_mp_type['id'] ); ?>"><?php echo esc_html( (string) $cpms_mp_type['label'] ); ?></option>
+									<?php endforeach; ?>
+								</select>
+							</p>
+							<p class="cpms-mgmt-field">
+								<label for="cpms-mgmt-facility-structure">ساختار</label>
+								<select id="cpms-mgmt-facility-structure" name="structure">
+									<option value="hospital_network">شبکهٔ بیمارستانی (چند درمانگاه، فقط سرپایی)</option>
+									<option value="medical_building">ساختمان پزشکان (درمانگاه‌های مستقل)</option>
+									<option value="multi_doctor">درمانگاه چندپزشکی</option>
+									<option value="single">مطب/واحد منفرد</option>
+								</select>
+							</p>
+							<?php $cpms_mp_field( 'display_name', 'نام نمایشی مرکز', '', true ); ?>
+							<button class="cpms-mgmt-btn" type="submit">آغاز راه‌اندازی</button>
+						</form>
+					<?php else : ?>
+						<p class="cpms-mgmt-meta">
+							نوع: <strong><?php echo esc_html( (string) $cpms_mp_facility['facility_type'] ); ?></strong>
+							— جریان: <strong><?php echo esc_html( (string) $cpms_mp_facility['flow'] ); ?></strong>
+							— ساختمان‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['sites'] ) ); ?>
+							— درمانگاه‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['clinics'] ) ); ?>
+							<?php echo '' !== (string) $cpms_mp_facility['activated_at'] ? ' — <strong>فعال‌شده</strong>' : ''; ?>
+						</p>
+
+						<?php if ( 'hospital_network' === (string) $cpms_mp_facility['flow'] && (int) $cpms_mp_facility['outpatient_ack_by'] <= 0 ) : ?>
+							<?php $cpms_mp_form_open( 'org_facility_ack', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<p class="cpms-mgmt-meta">این سامانه فقط درمانگاه و فرایندهای سرپایی را پوشش می‌دهد؛ بستری، HIS و پروندهٔ بیمارستانی پشتیبانی نمی‌شود.</p>
+								<button class="cpms-mgmt-btn" type="submit">تأیید محدودهٔ فقط سرپایی</button>
+							</form>
+						<?php endif; ?>
+
+						<h3>افزودن ساختمان/سایت</h3>
+						<?php $cpms_mp_form_open( 'org_facility_site', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+							<?php
+							$cpms_mp_field( 'label', 'نام ساختمان', '', true );
+							$cpms_mp_field( 'address', 'نشانی' );
+							?>
+							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت ساختمان</button>
+						</form>
+
+						<h3>افزودن درمانگاه به برنامه</h3>
+						<?php $cpms_mp_form_open( 'org_facility_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+							<?php
+							$cpms_mp_field( 'name', 'نام درمانگاه', '', true );
+							$cpms_mp_field( 'site_key', 'شناسهٔ ساختمان (site_key)', '' );
+							$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', 'Asia/Tehran' );
+							?>
+							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">افزودن درمانگاه (معلق)</button>
+						</form>
+
+						<h3>افزودن اتاق/مکان به درمانگاه</h3>
+						<?php $cpms_mp_form_open( 'org_facility_room', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+							<?php
+							$cpms_mp_field( 'clinic_key', 'شناسهٔ درمانگاه در برنامه (clinic_key)', '', true );
+							$cpms_mp_field( 'name', 'نام اتاق/مکان', '', true );
+							$cpms_mp_field( 'site_key', 'شناسهٔ ساختمان (اختیاری)' );
+							?>
+							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت اتاق</button>
+						</form>
+
+						<h3>تعیین مدیر درمانگاه (صریح)</h3>
+						<?php $cpms_mp_form_open( 'org_facility_designate', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+							<?php
+							$cpms_mp_field( 'clinic_key', 'شناسهٔ درمانگاه در برنامه', '', true );
+							$cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر', '', true, 'number' );
+							?>
+							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">تعیین مدیر</button>
+						</form>
+
+						<?php $cpms_mp_facility_review = $cpms_mp_service->review_facility_setup( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
+						<h3>بازبینی و فعال‌سازی اتمیک</h3>
+						<?php if ( is_array( $cpms_mp_facility_review ) ) : ?>
+							<?php if ( $cpms_mp_facility_review['ready'] ) : ?>
+								<p class="cpms-mgmt-meta">همهٔ پیش‌شرط‌ها فراهم است؛ فعال‌سازی همهٔ درمانگاه‌ها را در یک تراکنش فعال می‌کند.</p>
+							<?php else : ?>
+								<ul class="cpms-mgmt-meta">
+									<?php foreach ( $cpms_mp_facility_review['blocking'] as $cpms_mp_blocker ) : ?>
+										<li><?php echo esc_html( (string) $cpms_mp_blocker ); ?></li>
+									<?php endforeach; ?>
+								</ul>
+							<?php endif; ?>
+							<?php $cpms_mp_form_open( 'org_facility_activate', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<button class="cpms-mgmt-btn" type="submit">فعال‌سازی اتمیک مرکز</button>
+							</form>
+						<?php endif; ?>
+						<p class="cpms-mgmt-meta">این جریان همان سرویس راه‌اندازی موجود است که در پورتال فرانت‌اند اجرا می‌شود؛ اختیار سازمانی لازم است و هیچ اختیار درمانگاهی به مدیر سازمان داده نمی‌شود.</p>
+					<?php endif; ?>
+				</section>
+			<?php endif; ?>
+
 			<?php if ( $cpms_mp_org_can['update'] || $cpms_mp_org_can['lifecycle'] || $cpms_mp_org_can['designate'] ) : ?>
 				<section class="cpms-mgmt-card">
 					<h2>مدیریت درمانگاه‌های سازمان</h2>

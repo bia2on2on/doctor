@@ -825,6 +825,135 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         self::assertFalse( App::authorization_service()->can( $this->admin, $this->clinicA, RolesAndCapabilities::PATIENT_READ ) );
     }
 
+    // ==================================================================
+    // 8. Facility-aware onboarding from the frontend portal (Organization
+    //    Manager on a plain Subscriber). The admin wizard keeps working: this
+    //    exercises the same published service through the portal boundary.
+    // ==================================================================
+
+    public function test_subscriber_org_manager_runs_hospital_setup_from_the_portal(): void {
+        $plan_started = ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_start',
+            array(
+                'organization_id' => (string) $this->orgA,
+                'facility_type'   => 'hospital',
+                'structure'       => 'hospital_network',
+                'display_name'    => 'Portal Hospital',
+            )
+        );
+        self::assertTrue( $plan_started['ok'], 'an Organization Manager starts the hospital plan in the frontend' );
+
+        $plan = App::management_portal_service()->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $plan );
+        self::assertSame( 'hospital_network', (string) $plan['flow'] );
+        self::assertSame( 0, (int) $plan['outpatient_ack_by'] );
+
+        // Hospital safety step: no Clinic may be created before the explicit
+        // outpatient-only acknowledgment.
+        $blocked_clinic = ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_clinic',
+            array( 'organization_id' => (string) $this->orgA, 'name' => 'Blocked Clinic', 'site_key' => '', 'timezone' => 'Asia/Tehran' )
+        );
+        self::assertFalse( $blocked_clinic['ok'], 'the hospital outpatient acknowledgment is enforced, not decorative' );
+
+        self::assertTrue( ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_ack',
+            array( 'organization_id' => (string) $this->orgA )
+        )['ok'] );
+
+        self::assertTrue( ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_site',
+            array( 'organization_id' => (string) $this->orgA, 'label' => 'Portal Building', 'address' => 'Somewhere 1' )
+        )['ok'] );
+
+        $plan = App::management_portal_service()->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $plan );
+        self::assertCount( 1, $plan['sites'] );
+        $site_key = (string) $plan['sites'][0]['key'];
+
+        self::assertTrue( ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_clinic',
+            array( 'organization_id' => (string) $this->orgA, 'name' => 'Portal Hospital Clinic', 'site_key' => $site_key, 'timezone' => 'Asia/Tehran' )
+        )['ok'] );
+
+        $plan = App::management_portal_service()->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $plan );
+        self::assertCount( 1, $plan['clinics'] );
+        $clinic_key = (string) $plan['clinics'][0]['key'];
+        $clinic_id  = (int) $plan['clinics'][0]['clinic_id'];
+        self::assertGreaterThan( 0, $clinic_id );
+
+        // The held Clinic belongs to this Organization and is NOT live yet.
+        self::assertSame( $this->orgA, (int) App::db()->fetchValue(
+            'SELECT organization_id FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            array( $clinic_id )
+        ) );
+        self::assertNotSame( 'active', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            array( $clinic_id )
+        ), 'managed Clinics stay suspended until the atomic activation' );
+
+        // Explicit Clinic-manager designation through the portal.
+        self::assertTrue( ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_designate',
+            array( 'organization_id' => (string) $this->orgA, 'clinic_key' => $clinic_key, 'target_user_id' => (string) $this->clinicManager )
+        )['ok'] );
+        $designated = App::membership_service()->membership_for( $clinic_id, $this->clinicManager );
+        self::assertNotNull( $designated );
+        self::assertSame( 'active', (string) $designated['status'] );
+        self::assertSame( RolesAndCapabilities::ROLE_MANAGER, (string) $designated['role_key'] );
+        // Organization authority never becomes Clinic authority implicitly.
+        self::assertFalse( App::authorization_service()->can( $this->orgManager, $clinic_id, RolesAndCapabilities::CONFIG ) );
+
+        $review = App::management_portal_service()->review_facility_setup( $this->orgManager, $this->orgA );
+        self::assertIsArray( $review );
+        self::assertFalse( $review['ready'], 'a hospital without clinicians, schedules and a booking policy is not ready' );
+        self::assertNotEmpty( $review['blocking'] );
+
+        $refused = ManagementPortalController::dispatch(
+            $this->orgManager,
+            'org_facility_activate',
+            array( 'organization_id' => (string) $this->orgA )
+        );
+        self::assertFalse( $refused['ok'], 'activation fails closed while the review is blocking' );
+        self::assertNotSame( 'active', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
+            array( $clinic_id )
+        ), 'a refused activation must not activate any Clinic' );
+
+        // Cross-Organization isolation: the manager of Organization B cannot
+        // touch Organization A's plan through any portal action.
+        foreach ( array(
+            array( 'action' => 'org_facility_ack', 'input' => array( 'organization_id' => (string) $this->orgA ) ),
+            array( 'action' => 'org_facility_site', 'input' => array( 'organization_id' => (string) $this->orgA, 'label' => 'Hijack', 'address' => '' ) ),
+            array( 'action' => 'org_facility_activate', 'input' => array( 'organization_id' => (string) $this->orgA ) ),
+        ) as $case ) {
+            self::assertFalse(
+                ManagementPortalController::dispatch( $this->outsider, $case['action'], $case['input'] )['ok'],
+                'another Organization manager must fail closed for ' . $case['action']
+            );
+        }
+        $untouched = App::management_portal_service()->facility_plan( $this->orgManager, $this->orgA );
+        self::assertIsArray( $untouched );
+        self::assertCount( 1, $untouched['sites'], 'no foreign manager may add to the plan' );
+
+        // A Clinic Manager (no Organization authority) cannot run the plan.
+        self::assertFalse( ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'org_facility_site',
+            array( 'organization_id' => (string) $this->orgA, 'label' => 'Clinic Manager Site', 'address' => '' )
+        )['ok'], 'Clinic authority is not Organization authority' );
+
+        // Cleanup: the plan Clinic is removed with its Organization in tearDown.
+        $this->userIds = array_values( array_unique( $this->userIds ) );
+    }
+
     // ============ Helpers ============
 
     private function create_org( string $name ): int {

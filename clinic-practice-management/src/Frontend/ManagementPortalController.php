@@ -61,6 +61,13 @@ final class ManagementPortalController {
 		'clinic_staff_capability',
 		'clinic_clinician_register',
 		'clinic_schedule_create',
+		'org_facility_start',
+		'org_facility_ack',
+		'org_facility_site',
+		'org_facility_clinic',
+		'org_facility_room',
+		'org_facility_designate',
+		'org_facility_activate',
 	);
 
 	public static function register(): void {
@@ -253,6 +260,61 @@ final class ManagementPortalController {
 					self::int_value( $input, 'target_user_id' )
 				);
 
+			case 'org_facility_start':
+				return $service->start_facility_setup(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'facility_type' ),
+					self::string_value( $input, 'structure' ),
+					self::string_value( $input, 'display_name' )
+				);
+
+			case 'org_facility_ack':
+				return $service->acknowledge_facility_outpatient(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' )
+				);
+
+			case 'org_facility_site':
+				return $service->add_facility_site(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'label' ),
+					self::string_value( $input, 'address' )
+				);
+
+			case 'org_facility_clinic':
+				return $service->add_facility_clinic(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'name' ),
+					self::string_value( $input, 'site_key' ),
+					self::string_value( $input, 'timezone' )
+				);
+
+			case 'org_facility_room':
+				return $service->add_facility_room(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'clinic_key' ),
+					self::string_value( $input, 'name' ),
+					self::string_value( $input, 'site_key' )
+				);
+
+			case 'org_facility_designate':
+				return $service->designate_facility_manager(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' ),
+					self::string_value( $input, 'clinic_key' ),
+					self::int_value( $input, 'target_user_id' )
+				);
+
+			case 'org_facility_activate':
+				return $service->activate_facility_setup(
+					$actor_wp_user_id,
+					self::int_value( $input, 'organization_id' )
+				);
+
 			case 'clinic_schedule_create':
 				return $service->create_schedule(
 					$actor_wp_user_id,
@@ -319,7 +381,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
