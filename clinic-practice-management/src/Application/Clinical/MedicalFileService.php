@@ -455,6 +455,17 @@ final class MedicalFileService
             // doctor_private = سطح Private (P-6): ثبت آن علاوه بر نقش سراسری پزشک،
             // به اختیار Clinic-scoped «ایجاد یادداشت خصوصی» نیاز دارد.
             if ( $visibility === 'doctor_private' ) {
+                // doctor_private is a DOCTOR surface: the durable clinician profile
+                // is required in addition to the scoped private-note capability, so
+                // a non-doctor holding an explicit GRANT can never create private
+                // doctor files. Round-4: no WordPress role is consulted either way.
+                $clinician_id = App::db()->fetchValue(
+                    'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- constant table name + prepared placeholder.
+                    [ $actorUserId ]
+                );
+                if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
+                    $this->auditAndThrow( $actorUserId, 'patient', $patientId, 'فایل خصوصی پزشک فقط توسط پزشک قابل ثبت است' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameter
+                }
                 $this->authorizeScoped( $actorUserId, $patientClinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'patient', $patientId );
             }
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase

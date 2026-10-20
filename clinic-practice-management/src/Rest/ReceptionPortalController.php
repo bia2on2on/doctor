@@ -447,6 +447,16 @@ final class ReceptionPortalController extends RestBase {
 			return $bound;
 		}
 
+		// Lifecycle consistency (Round-4): Reception is a NEW-DEMAND surface, so a
+		// suspended Clinic or a non-active Organization is refused here exactly as
+		// it is refused in the Clinic selector. Historical clinical/finance
+		// continuity keeps its own scope rules elsewhere; it never opens new
+		// reception work.
+		$bound_scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+		if ( $bound_scope !== null && (int) $bound_scope->clinicId > 0 && ! $this->reception_clinic_operational( (int) $bound_scope->clinicId ) ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'clinic_lifecycle' ] );
+		}
+
 		return $this->reception_role_holds( (int) $user->ID, $is_context );
 	}
 

@@ -1394,6 +1394,28 @@ final class VisitService
     // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function roleForUser(int $wpUserId): ?string
     {
+        // Scoped precedence (Round-4 hardening): when the request carries a
+        // trusted Clinic, the DURABLE MEMBERSHIP is the authority. A WordPress
+        // role may never outrank it — a WP "doctor" without a doctor membership
+        // is not a doctor here, and a WP "secretary" with a suspended membership
+        // is nobody. The WordPress role answers only when no scope exists.
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && (int) $scope->clinicId > 0 && $wpUserId > 0 ) {
+            $membership = $this->memberships->find_active( (int) $scope->clinicId, $wpUserId );
+            if ( $membership === null ) {
+                return null;
+            }
+            $role_key = (string) ( $membership['role_key'] ?? '' );
+            if ( RolesAndCapabilities::ROLE_DOCTOR === $role_key ) {
+                return 'doctor';
+            }
+            if ( RolesAndCapabilities::ROLE_SECRETARY === $role_key ) {
+                return 'secretary';
+            }
+
+            return null;
+        }
+
         $user = get_userdata($wpUserId);
         if ( $user !== false && $user->roles !== [] ) {
             if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
@@ -1402,22 +1424,6 @@ final class VisitService
             if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
                 return 'secretary';
             }
-        }
-
-        $scope = ScopeContext::tryGet();
-        if ( $scope === null || $scope->clinicId <= 0 || $wpUserId <= 0 ) {
-            return null;
-        }
-        $membership = $this->memberships->find_active( (int) $scope->clinicId, $wpUserId );
-        if ( $membership === null ) {
-            return null;
-        }
-        $role_key = (string) ( $membership['role_key'] ?? '' );
-        if ( RolesAndCapabilities::ROLE_DOCTOR === $role_key ) {
-            return 'doctor';
-        }
-        if ( RolesAndCapabilities::ROLE_SECRETARY === $role_key ) {
-            return 'secretary';
         }
 
         return null;

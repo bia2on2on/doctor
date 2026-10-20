@@ -1363,9 +1363,26 @@ final class ClinicalService
             }
         }
 
-        // Role-Aware: نتایج بالینی فقط پزشک (ماتریس §4 — منشی فاقد Capهای خواندن بالینی)
-        $user = get_userdata($actorUserId);
-        $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) ($user->roles ?? []), true);
+        // Role-Aware: clinical results belong to the DOCTOR, and "doctor" is
+        // CPMS data (Round-4): the durable membership of the trusted Clinic with
+        // the doctor preset, or the clinician profile linked to this user. A
+        // WordPress role alone never classifies the actor, so a Subscriber doctor
+        // sees clinical results and a WP-role holder without a doctor membership
+        // does not.
+        $scope_for_role = ScopeContext::tryGet();
+        $role_clinic    = ( $scope_for_role !== null && (int) $scope_for_role->clinicId > 0 ) ? (int) $scope_for_role->clinicId : 0;
+        $isDoctor       = false;
+        if ( $role_clinic > 0 ) {
+            $doctor_membership = ( new MembershipRepository( $this->db ) )->find_active( $role_clinic, $actorUserId );
+            $isDoctor          = null !== $doctor_membership
+                && RolesAndCapabilities::ROLE_DOCTOR === (string) ( $doctor_membership['role_key'] ?? '' );
+            if ( ! $isDoctor ) {
+                $isDoctor = null !== $this->active_clinician_id_of_user( $actorUserId );
+            }
+        } else {
+            $user      = get_userdata( $actorUserId );
+            $isDoctor  = $user !== false && in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) ( $user->roles ?? [] ), true );
+        }
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
