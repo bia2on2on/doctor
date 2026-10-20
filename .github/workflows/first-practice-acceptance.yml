@@ -286,13 +286,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          RC=0
           BASE="$WP_URL" \
           ORG_MANAGER_USER="$ORG_MANAGER_USER" ORG_MANAGER_PASS="$ORG_MANAGER_PASS" \
           CLINIC_MANAGER_A_USER="$CLINIC_MANAGER_A_USER" CLINIC_MANAGER_A_PASS="$CLINIC_MANAGER_A_PASS" \
           CLINIC_MANAGER_B_USER="$CLINIC_MANAGER_B_USER" CLINIC_MANAGER_B_PASS="$CLINIC_MANAGER_B_PASS" \
           WP_DIR="$WP_DIR" OUT=/tmp/fp/portal \
-          python3 clinic-practice-management/bin/rwp-portal-hospital-journey.py > /tmp/fp/portal-hospital.log 2>&1
-          RC=$?
+          python3 clinic-practice-management/bin/rwp-portal-hospital-journey.py > /tmp/fp/portal-hospital.log 2>&1 || RC=$?
+          RC=${RC:-0}
           cat /tmp/fp/portal-hospital.log
           if [ -n "$PR_NUMBER" ]; then
             {
