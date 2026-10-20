@@ -64,8 +64,15 @@ final class ExportClinicIsolationTest extends WP_UnitTestCase
         $membership = App::membership_service();
         $membership->create_membership($this->clinicA, $doctorUserId, 'cpms_doctor');
         $membership->create_membership($this->clinicB, $doctorUserId, 'cpms_doctor');
-        $membership->create_membership($this->clinicA, $this->accountantUserId, 'cpms_accountant');
-        $membership->create_membership($this->clinicB, $this->accountantUserId, 'cpms_accountant');
+        // The accountant preset has no cpms_patient_read; this fixture needs the
+        // patient-report surface, so the capability is GRANTED ON THE MEMBERSHIP
+        // (durable scoped authority). A WordPress-global grant would be a cross-
+        // Clinic bypass and is deliberately not used.
+        $memA = $membership->create_membership($this->clinicA, $this->accountantUserId, 'cpms_accountant');
+        $memB = $membership->create_membership($this->clinicB, $this->accountantUserId, 'cpms_accountant');
+        foreach ([$memA, $memB] as $memId) {
+            $membership->set_capability((int) $memId, \ClinicCore\Auth\RolesAndCapabilities::PATIENT_READ, 'grant');
+        }
 
         $this->clinicianId = $this->insertClinician($this->clinicA, $doctorUserId, 'Dr Export Dual');
         $this->patientAId = $this->insertPatient($this->clinicA, 'IsoA');

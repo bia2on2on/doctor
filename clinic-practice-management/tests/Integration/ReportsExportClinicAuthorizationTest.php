@@ -521,7 +521,10 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
         $orgId = $this->createOrganization('allow-read');
         $clinicId = $this->createClinic($orgId, 'allow-read');
         $actorId = $this->makeUser('rep_allow_read', 'cpms_accountant');
-        App::membership_service()->create_membership($clinicId, $actorId, 'cpms_manager');
+        $memId = App::membership_service()->create_membership($clinicId, $actorId, 'cpms_manager');
+        // The revenue report needs finance read; the manager preset has none, so
+        // the fixture grants it on the MEMBERSHIP (scoped authority).
+        App::membership_service()->set_capability($memId, RolesAndCapabilities::FINANCE_READ, 'grant');
 
         $catalog = $this->dispatchGet(self::NS . '/reports', $clinicId, $actorId);
         self::assertSame(200, $catalog->get_status(), 'an authorized reader must still read the catalog');
@@ -625,6 +628,9 @@ final class ReportsExportClinicAuthorizationTest extends WP_UnitTestCase
             'precondition: the preset alone does not grant EXPORT'
         );
         App::membership_service()->set_capability($memId, RolesAndCapabilities::EXPORT, 'grant');
+        // Revenue needs finance read too; the manager preset lacks it, so this is
+        // an explicit membership grant (never a WordPress-global one).
+        App::membership_service()->set_capability($memId, RolesAndCapabilities::FINANCE_READ, 'grant');
         self::assertTrue(
             $this->authz()->can($actorId, $clinicId, RolesAndCapabilities::EXPORT),
             'precondition: the explicit membership grant takes effect'

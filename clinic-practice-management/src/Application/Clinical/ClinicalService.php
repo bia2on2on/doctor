@@ -1369,6 +1369,7 @@ final class ClinicalService
         // WordPress role alone never classifies the actor, so a Subscriber doctor
         // sees clinical results and a WP-role holder without a doctor membership
         // does not.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- established camelCase host variables
         $scope_for_role = ScopeContext::tryGet();
         $role_clinic    = ( $scope_for_role !== null && (int) $scope_for_role->clinicId > 0 ) ? (int) $scope_for_role->clinicId : 0;
         $isDoctor       = false;
@@ -1383,6 +1384,7 @@ final class ClinicalService
             $user      = get_userdata( $actorUserId );
             $isDoctor  = $user !== false && in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) ( $user->roles ?? [] ), true );
         }
+        // phpcs:enable
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables

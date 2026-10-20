@@ -452,10 +452,12 @@ final class ReceptionPortalController extends RestBase {
 		// it is refused in the Clinic selector. Historical clinical/finance
 		// continuity keeps its own scope rules elsewhere; it never opens new
 		// reception work.
+		// phpcs:disable WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract
 		$bound_scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
 		if ( $bound_scope !== null && (int) $bound_scope->clinicId > 0 && ! $this->reception_clinic_operational( (int) $bound_scope->clinicId ) ) {
 			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'clinic_lifecycle' ] );
 		}
+		// phpcs:enable
 
 		return $this->reception_role_holds( (int) $user->ID, $is_context );
 	}
