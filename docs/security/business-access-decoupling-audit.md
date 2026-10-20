@@ -157,4 +157,10 @@ P1-13 of the review). No "authorized in any Clinic" fallback was introduced anyw
   Location selection", `rows=[] today=0 queue=0 history=0`), while 768/1366 passed in
   the same run and the identical plugin code passed this job at `b303b212`. The diff
   between the two SHAs is the first-practice Python harness plus documentation, neither
-  of which the pilot gate loads.
+  of which the pilot gate loads. At the next head `879753f` the same job passed in full
+  (Responsive smoke SUCCESS), which confirms the flake.
+- Second environmental flake at `879753f`: `coexistence-persian-woocommerce-diagnosis`
+  failed after 43 s in step 6 *Tooling (apache + wp-cli + playwright/chromium)*, before
+  any checkout-dependent step could touch this diff; the identical job was SUCCESS at
+  `0e4506cd`. Net result at `879753f`: 25/26 checks green, the single red check being
+  that pre-execution tooling failure.
