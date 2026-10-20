@@ -427,10 +427,13 @@ def main() -> int:
 def report() -> int:
     passed = sum(1 for row in results if row["ok"])
     failed = [row for row in results if not row["ok"]]
-    # GitHub annotations travel with the check-run even when the job log is not
-    # retrievable, so every failed check is emitted as an ::error:: annotation.
-    for row in failed:
-        print(f"::error::portal.{row['check']} :: {row['detail']}")
+    # GitHub keeps only ~10 annotations per check run, so the failures are
+    # emitted as an ordered digest (plus the first failure in full) instead of
+    # one annotation per check -- the earliest failure is the root cause.
+    if failed:
+        digest = "; ".join(f"{row['check']}={row['detail'][:60]}" for row in failed[:12])
+        print(f"::error::portal.failed_checks({len(failed)} elsewhere) :: {digest}")
+        print(f"::error::portal.first_failure :: {failed[0]['check']} :: {failed[0]['detail']}")
     payload = {
         "checks": results,
         "passed": passed,
