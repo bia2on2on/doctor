@@ -1471,6 +1471,20 @@ final class FacilitySetupService {
      * clinic_entry(); nothing is taken from the browser beyond the selector.
      */
     private function assert_clinic_step( int $actor_id, int $organization_id, string $clinic_key ): int {
+        if ( $actor_id <= 0 || $organization_id <= 0 ) {
+            throw new FacilitySetupException( 'denied', 'سازمان باید صریحاً انتخاب شود.' );
+        }
+        // Organization LIFECYCLE still applies (a suspended Organization can host no
+        // new configuration), but Organization AUTHORITY is neither required nor
+        // implied. Order: organization status → plan Clinic ownership → the actor's
+        // own Clinic membership + CONFIG.
+        $status = $this->db->fetchValue(
+            'SELECT status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
+            [ $organization_id ]
+        );
+        if ( 'active' !== (string) $status ) {
+            throw new FacilitySetupException( 'denied', 'سازمان فعال نیست؛ تغییری ثبت نشد.' );
+        }
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );

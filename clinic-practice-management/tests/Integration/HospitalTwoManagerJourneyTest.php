@@ -239,12 +239,16 @@ final class HospitalTwoManagerJourneyTest extends WP_UnitTestCase {
         // (b) Organization authority buys NO implicit Clinic right: the Organization
         //     Manager is not a member of either Clinic, so the wizard's Clinic-level
         //     steps refuse them.
+        $locationsBefore = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
+            [ $clinicA ]
+        );
         self::assertFalse( $this->act( $this->orgManager, 'org_facility_room', [
             'organization_id' => (string) $this->org,
             'clinic_key'      => $clinicKeyA,
             'name'            => 'اتاق سازمانی',
         ] ), 'the Organization Manager cannot add a room without a Clinic membership' );
-        self::assertSame( 1, (int) App::db()->fetchValue(
+        self::assertSame( $locationsBefore, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_locations' ) . ' WHERE clinic_id = %d',
             [ $clinicA ]
         ), 'no Location was created by the Organization Manager' );

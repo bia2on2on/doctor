@@ -178,7 +178,7 @@ def login(page, url: str, user: str, password: str, tag: str) -> bool:
     form.locator('button[type="submit"]').click()
     page.wait_for_load_state("domcontentloaded")
     page.wait_for_timeout(700)
-    ok = page.locator('a[href*="wp-logout"], [data-cpms-management-portal] a').count() > 0 and "ورود به پورتال" not in page.content()
+    ok = page.locator('form:has(input[name="cpms_action"][value="login"])').count() == 0
     check(f"{tag}.login", ok, page.url)
     shot(page, f"{tag}-after-login")
     return ok
@@ -243,7 +243,7 @@ def main() -> int:
         check("org.no_wp_admin_link", org.locator('a[href*="/wp-admin"]').count() == 0, "portal never links to wp-admin")
 
         org_id = int(seeded.get("ORG_ID", "0") or 0)
-        tab = org.locator(f'a[href*="cpms_org={org_id}"]')
+        tab = org.locator(f'a[href*="cpms-org={org_id}"]')
         if tab.count():
             tab.first.click()
             org.wait_for_load_state("domcontentloaded")

@@ -282,6 +282,9 @@ jobs:
       - name: Browser — hospital onboarding by two Subscriber managers (frontend portal only)
         id: portal_journey
         if: always() && steps.cpms_install.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           BASE="$WP_URL" \
           ORG_MANAGER_USER="$ORG_MANAGER_USER" ORG_MANAGER_PASS="$ORG_MANAGER_PASS" \
@@ -291,6 +294,18 @@ jobs:
           python3 clinic-practice-management/bin/rwp-portal-hospital-journey.py > /tmp/fp/portal-hospital.log 2>&1
           RC=$?
           cat /tmp/fp/portal-hospital.log
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo '### Portal hospital journey (two Subscriber managers) — frontend only'
+              echo
+              echo "head: \`${PRODUCING_SHA:-$GITHUB_SHA}\` — exit $RC"
+              echo '```'
+              tail -120 /tmp/fp/portal-hospital.log || true
+              echo '```'
+            } > /tmp/fp/portal-journey-pr.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/fp/portal-journey-pr.md \
+              || echo '::notice::portal journey evidence comment failed (non-fatal)'
+          fi
           if [ "$RC" -ne 0 ]; then echo "PORTAL HOSPITAL BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
 
       - name: Interrupted installation browser fixtures A–G
