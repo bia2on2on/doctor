@@ -23,6 +23,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Frontend\StaffPortalShell;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
@@ -295,6 +296,243 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
         self::assertSame(403, $finance->get_status(), 'an explicit DENY on the finance capability refuses the board :: code=' . $this->errCode($finance));
+    }
+
+    // ------------------------------------------------------------------
+    // 9. TRUE Subscriber accountant (not a doctor fixture): the finance board
+    //    and the report surfaces work on the accountant preset alone.
+    // ------------------------------------------------------------------
+
+    public function testTrueSubscriberAccountantReadsFinanceAndReports(): void
+    {
+        $user = $this->makeUser('sub_acct', 'subscriber');
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_ACCOUNTANT);
+        wp_set_current_user($user);
+
+        self::assertFalse(user_can($user, RolesAndCapabilities::FINANCE_READ), 'precondition: no WordPress-global finance capability');
+        self::assertFalse(user_can($user, RolesAndCapabilities::QUEUE_READ), 'precondition: no WordPress-global queue capability');
+        $membership = App::membership_service()->membership_for($this->clinic, $user);
+        self::assertNotNull($membership);
+        self::assertSame(RolesAndCapabilities::ROLE_ACCOUNTANT, (string) $membership['role_key']);
+
+        // The accountant preset is the finance board's read authority: finance +
+        // invoice read in ONE Clinic, and queue read is NOT required.
+        self::assertTrue(StaffPortalShell::finance_module_eligible($user), 'the accountant membership opens the finance board');
+
+        $finance = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/staff/portal/finance/context',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $finance->get_status(), 'Subscriber accountant finance context — ' . $this->errDetail($finance));
+
+        $reports = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $reports->get_status(), 'Subscriber accountant report catalog — ' . $this->errDetail($reports));
+
+        // Explicit DENY on a report-specific capability is FINAL for the scope,
+        // even though the legacy WordPress role would carry it.
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::REPORT_READ, 'deny');
+        $denied = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(403, $denied->get_status(), 'explicit DENY on cpms_report_read refuses the catalog');
+    }
+
+    // ------------------------------------------------------------------
+    // 10. Explicit scoped DENY overrides a legacy WordPress business role.
+    // ------------------------------------------------------------------
+
+    public function testScopedDenyOverridesALegacyWordPressRoleCapability(): void
+    {
+        $user = $this->makeUser('legacy_acct', RolesAndCapabilities::ROLE_ACCOUNTANT);
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_ACCOUNTANT);
+        $membership = App::membership_service()->membership_for($this->clinic, $user);
+        self::assertNotNull($membership);
+        wp_set_current_user($user);
+        self::assertTrue(user_can($user, RolesAndCapabilities::REPORT_READ), 'precondition: the legacy WordPress role carries report read');
+
+        $allowed = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(200, $allowed->get_status(), 'the baseline read is authorized — ' . $this->errDetail($allowed));
+
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::REPORT_READ, 'deny');
+        $denied = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertSame(403, $denied->get_status(), 'the scoped DENY outranks the WordPress-global capability');
+
+        $export = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/reports/export',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $this->clinic]
+        );
+        self::assertContains($export->get_status(), [400, 403, 404, 422], 'no export payload is produced for a denied actor');
+        self::assertNotSame(200, $export->get_status());
+    }
+
+    // ------------------------------------------------------------------
+    // 11. Reception: an explicit DENY on the required capabilities refuses an
+    //     UNSCOPED request with 403 (never a 400 selector oracle).
+    // ------------------------------------------------------------------
+
+    public function testReceptionUnscopedRequestIsDeniedWhenReceptionAuthorityIsDenied(): void
+    {
+        $user = $this->makeUser('sub_sec_deny', 'subscriber');
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_SECRETARY);
+        $membership = App::membership_service()->membership_for($this->clinic, $user);
+        self::assertNotNull($membership);
+        foreach ([RolesAndCapabilities::QUEUE_READ, RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE] as $cap) {
+            App::membership_service()->set_capability((int) $membership['id'], $cap, 'deny');
+        }
+        wp_set_current_user($user);
+
+        // Unscoped context and unscoped operational read.
+        $context = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/context');
+        self::assertSame(403, $context->get_status(), 'a denied actor is refused, not asked for a Clinic — ' . $this->errDetail($context));
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($context));
+
+        $board = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board');
+        self::assertSame(403, $board->get_status(), 'unscoped operational read of a denied actor is 403');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($board));
+
+        // An actor that DOES hold Reception authority somewhere still gets the
+        // explicit-selector contract (the 400 is never granted to a denied actor).
+        $secretary = $this->makeUser('sub_sec_ok', 'subscriber');
+        cpms_test_seed_membership($secretary, $this->clinic, RolesAndCapabilities::ROLE_SECRETARY);
+        wp_set_current_user($secretary);
+        $selector = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/board');
+        self::assertSame(400, $selector->get_status(), 'an authorized actor is asked for the explicit Clinic');
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errCode($selector));
+    }
+
+    // ------------------------------------------------------------------
+    // 12. Suspended Organization / suspended Clinic never qualify.
+    // ------------------------------------------------------------------
+
+    public function testSuspendedOrganizationAndClinicAreNotOperational(): void
+    {
+        global $wpdb;
+        $user = $this->makeUser('sub_sec_life', 'subscriber');
+        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_SECRETARY);
+        wp_set_current_user($user);
+
+        $context = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/context');
+        self::assertSame(200, $context->get_status(), 'baseline context — ' . $this->errDetail($context));
+        self::assertContains(
+            $this->clinic,
+            array_map('intval', array_column($this->payload($context)['clinics'] ?? [], 'id')),
+            'baseline: the operational Clinic is offered'
+        );
+
+        $location = $this->primaryLocation();
+        $clinic_id = $this->clinic;
+        $org_id = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = ' . $clinic_id);
+
+        // Suspended Organization.
+        $wpdb->update($wpdb->prefix . 'cpms_organizations', ['status' => 'suspended'], ['id' => $org_id]);
+        $suspendedOrg = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/context');
+        self::assertNotContains(
+            $clinic_id,
+            array_map('intval', array_column($this->payload($suspendedOrg)['clinics'] ?? [], 'id')),
+            'a suspended Organization removes the Clinic from the selector'
+        );
+        $boardOrg = $this->dispatch(
+            'GET',
+            '/' . self::REST_NS . '/staff/portal/reception/board',
+            [],
+            ['X-CPMS-Clinic-Id' => (string) $clinic_id, 'X-CPMS-Location-Id' => (string) $location]
+        );
+        self::assertSame(403, $boardOrg->get_status(), 'no operational read under a suspended Organization');
+        $wpdb->update($wpdb->prefix . 'cpms_organizations', ['status' => 'active'], ['id' => $org_id]);
+
+        // Suspended Clinic.
+        $wpdb->update($wpdb->prefix . 'cpms_clinics', ['status' => 'suspended'], ['id' => $clinic_id]);
+        $suspendedClinic = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/reception/context');
+        self::assertNotContains(
+            $clinic_id,
+            array_map('intval', array_column($this->payload($suspendedClinic)['clinics'] ?? [], 'id')),
+            'a suspended Clinic is removed from the selector'
+        );
+        $wpdb->update($wpdb->prefix . 'cpms_clinics', ['status' => 'active'], ['id' => $clinic_id]);
+    }
+
+    // ------------------------------------------------------------------
+    // 13. Authorization before PHI/object lookup: a foreign EXISTING visit and
+    //     a non-existent visit are indistinguishable.
+    // ------------------------------------------------------------------
+
+    public function testAuthorizationPrecedesPhiLookupForForeignAndMissingVisits(): void
+    {
+        $fx = $this->makeSubscriberDoctor('sub_phi');
+        $away = $this->insertClinic('PHI Foreign Clinic', 'sub-phi-foreign-' . bin2hex(random_bytes(3)));
+        $awayLocation = $this->insertLocation($away, 'PHI Foreign Loc', 'sub-phi-foreign-loc-' . bin2hex(random_bytes(3)));
+
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+            $away,
+            'MR-PHI-' . strtoupper(bin2hex(random_bytes(2))),
+            'PhiCanary',
+            'ForeignPatient',
+            '0912' . sprintf('%07d', random_int(1000000, 9999999)),
+            'active',
+            $now,
+            $now
+        ));
+        $foreignPatient = (int) $wpdb->insert_id;
+        $awayClinician = $this->insertClinician('Dr Away', $away, 999999);
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, active, created_at, updated_at)'
+            . ' VALUES (%d, %d, %d, %d, %s, %s, %s, 1, %s, %s)',
+            $away,
+            $awayLocation,
+            $awayClinician,
+            $foreignPatient,
+            'walk_in',
+            'waiting',
+            '2026-01-01',
+            $now,
+            $now
+        ));
+        $foreignVisit = (int) $wpdb->insert_id;
+        $missingVisit = $foreignVisit + 999999;
+
+        wp_set_current_user($fx['user']);
+        $existing = $this->doctorRequest('GET', '/doctor/portal/visits/' . $foreignVisit . '/record', $fx['location']);
+        $missing  = $this->doctorRequest('GET', '/doctor/portal/visits/' . $missingVisit . '/record', $fx['location']);
+
+        self::assertSame(
+            $existing->get_status(),
+            $missing->get_status(),
+            'a foreign EXISTING visit and a NONEXISTENT visit share one envelope (no existence oracle)'
+        );
+        self::assertSame(
+            $this->errCode($existing),
+            $this->errCode($missing),
+            'the denial code never discloses whether the identifier exists'
+        );
+        self::assertNotSame(200, $existing->get_status(), 'no foreign PHI is served');
+        $body = wp_json_encode($existing->get_data());
+        self::assertStringNotContainsString('PhiCanary', (string) $body, 'no foreign patient identity in the denial');
+        self::assertStringNotContainsString('ForeignPatient', (string) $body, 'no foreign patient identity in the denial');
     }
 
     // ------------------------------------------------------------------

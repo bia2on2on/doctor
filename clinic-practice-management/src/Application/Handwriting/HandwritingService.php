@@ -616,8 +616,27 @@ final class HandwritingService
         return $page;
     }
 
+    /**
+     * Scoped-first capability gate (WordPress-independent business access).
+     *
+     * The trusted Clinic of this request decides first: an ACTIVE membership is
+     * final (explicit DENY outranks a WordPress-global capability and a global
+     * `has_cap()` can never bypass it). Only an actor with NO membership in this
+     * Clinic keeps the legacy WordPress-capability path. A request without a
+     * trusted Clinic keeps the original global contract unchanged.
+     */
     private function requireCap(int $wpUserId, string $cap): void
     {
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && (int) $scope->clinicId > 0 ) {
+            $decision = App::authorization_service()->scoped_decision( $wpUserId, (int) $scope->clinicId, $cap );
+            if ( true === $decision ) {
+                return;
+            }
+            if ( false === $decision ) {
+                throw HandwritingException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
+            }
+        }
         if (!user_can($wpUserId, $cap)) {
             throw HandwritingException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }

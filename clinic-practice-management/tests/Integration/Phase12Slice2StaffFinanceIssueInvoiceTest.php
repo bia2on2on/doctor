@@ -260,16 +260,17 @@ final class Phase12Slice2StaffFinanceIssueInvoiceTest extends WP_UnitTestCase
         self::assertSame(403, $managerIssue->get_status(), 'issuance requires the existing cpms_invoice_create authority');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($managerIssue));
 
-        // Accountant: existing finance role — keeps its existing invoice-create
-        // authority on the delegated surface but is not module-eligible, and the
-        // read surface keeps the Slice 1 read boundary.
+        // Accountant (owner delivery 2026-10-20): the finance board is the
+        // accountant surface, so the built-in accountant preset (finance +
+        // invoice read in this Clinic) opens the read boundary WITHOUT queue
+        // read. Nothing widens: every capability is still evaluated per Clinic
+        // by the scoped engine.
         $accountant = $this->makeUser('phase12_slice2_accountant', RolesAndCapabilities::ROLE_ACCOUNTANT);
         cpms_test_seed_membership($accountant, $clinic, 'cpms_accountant');
-        self::assertFalse(StaffPortalShell::finance_module_eligible($accountant), 'accountant stays outside the Finance module read boundary');
+        self::assertTrue(StaffPortalShell::finance_module_eligible($accountant), 'the accountant preset opens the Finance read boundary without queue read');
         wp_set_current_user($accountant);
         $accountantRead = $this->dispatch('GET', self::ELIGIBLE, [], $this->scopeHeaders($clinic, $location));
-        self::assertSame(403, $accountantRead->get_status());
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($accountantRead));
+        self::assertSame(200, $accountantRead->get_status(), 'the accountant reads the finance surface on its own preset — ' . $this->errorCode($accountantRead));
 
         $secretary = $this->makeUser('phase12_slice2_ambiguous_secretary', RolesAndCapabilities::ROLE_SECRETARY);
         cpms_test_seed_membership($secretary, $clinic, 'cpms_secretary');

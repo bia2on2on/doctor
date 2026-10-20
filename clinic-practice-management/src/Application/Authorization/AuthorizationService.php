@@ -147,6 +147,40 @@ final class AuthorizationService
     }
 
     /**
+     * Authoritative scoped decision for a capability, or NULL when the scoped
+     * engine does not govern this actor at all.
+     *
+     * Contract (owner policy: WordPress-independent business access):
+     *  - `null`  — the actor holds NO ACTIVE membership in the Clinic, so a
+     *              caller may fall back to its legacy WordPress-capability path;
+     *  - `true`  — the ACTIVE membership effectively grants the capability;
+     *  - `false` — the membership exists but the capability is not effective
+     *              (explicit DENY, missing preset entry, inactive custom role).
+     *
+     * A `false` result is FINAL for this Clinic: it must never be overridden by
+     * a WordPress-global capability, and it is exactly how an explicit
+     * membership DENY outranks a legacy `has_cap()` grant. Suspended
+     * memberships produce `null` (find_active returns nothing), which keeps the
+     * legacy path only for actors who are not scoped staff at all.
+     */
+    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+    {
+        if ( $actorWpUserId <= 0 || $clinicId <= 0 ) {
+            return null;
+        }
+        if ( '' === trim( $permission ) ) {
+            return null;
+        }
+
+        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+        if ( $membership === null ) {
+            return null;
+        }
+
+        return $this->can( $actorWpUserId, $clinicId, $permission, $for_update ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Preserve the existing published named-argument API and surrounding legacy variable names.
+    }
+
+    /**
      * Clinic-scoped permission check with durable object ownership validation.
      *
      * Contract for $objectClinicId (both canForObject and authorizeForObject):

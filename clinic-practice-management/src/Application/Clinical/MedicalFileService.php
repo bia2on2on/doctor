@@ -98,8 +98,9 @@ final class MedicalFileService
         string $category = 'other',
         string $visibility = 'patient_visible'
     ): array {
-        $this->requireCap($actorUserId, RolesAndCapabilities::FILE_UPLOAD);
-
+        // Scoped authority (ACTIVE membership + cpms_file_upload in the durable
+        // Clinic of the target) is established inside store(); no WordPress-global
+        // capability is required here.
         return $this->store($actorUserId, 'staff', $file, $patientId, $visitId, $category, $visibility);
     }
 
@@ -155,7 +156,7 @@ final class MedicalFileService
      */
     public function staffFiles(int $actorUserId, int $patientId): array
     {
-        $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
+        // Scoped authority is established below on the durable Clinic of the patient.
         // C6-F: فهرست هم Tenant‑aware است (بیمار Clinic دیگر فهرست نمی‌شود)
         $durableClinicId = $this->patientClinicId($patientId);
         $this->assertStaffClinic($actorUserId, $durableClinicId, 'patient', $patientId);
@@ -208,12 +209,23 @@ final class MedicalFileService
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'فایل یافت نشد', 404);
         }
 
-        // نقش و Ownership
+        // Role and ownership come from DURABLE data, not a WordPress role: the
+        // membership of this file's Clinic classifies a Subscriber exactly like
+        // the equivalent staff member, and the clinician identity (not a WP
+        // role) decides who is a doctor. Capability, visibility and scope checks
+        // below are unchanged and still decide.
         $user = get_userdata($actorUserId);
         $roles = $user === false ? [] : (array) $user->roles;
-        $isDoctor = in_array(RolesAndCapabilities::ROLE_DOCTOR, $roles, true);
-        $isSecretary = in_array(RolesAndCapabilities::ROLE_SECRETARY, $roles, true);
-        $isPatient = in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true);
+        $membership = ( new MembershipRepository( App::db() ) )->find_active( (int) $row['clinic_id'], $actorUserId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
+        $role_key = (string) ( $membership['role_key'] ?? '' );
+        $linked_clinician = null !== App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- constant table name + prepared placeholder.
+            [ $actorUserId ]
+        );
+        $isDoctor = RolesAndCapabilities::ROLE_DOCTOR === $role_key || $linked_clinician;
+        $isSecretary = RolesAndCapabilities::ROLE_SECRETARY === $role_key;
+        $isPatient = RolesAndCapabilities::ROLE_PATIENT === $role_key
+            || in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true);
 
         if ($isPatient) {
             // P-8 + Phase 9 Slice 7 — مجوز بر پایهٔ **عضویت پایدار**: فایل باید
@@ -227,12 +239,12 @@ final class MedicalFileService
                 $this->auditAndThrow($actorUserId, 'file', $fileId, 'دسترسی به این فایل مجاز نیست', 'فایل یافت نشد');
             }
         } elseif ($isDoctor) {
-            // لایهٔ دفاعی (سراسری) — تصمیم‌گیرندهٔ نهایی assertStaffFileReadable است.
-            $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
+            // The final decider is assertStaffFileReadable (scoped cpms_file_read on
+            // the durable Clinic of the file, before any disk read).
             // پزشک: هر Visibility (ماتریس 4.3) — اما فقط داخل Clinic context
             $this->assertStaffFileReadable($actorUserId, $row, $fileId);
         } elseif ($isSecretary) {
-            $this->requireCap($actorUserId, RolesAndCapabilities::FILE_READ);
+            // Scoped cpms_file_read is established by assertStaffFileReadable below.
             // منشی: فقط patient_visible (ماتریس 4.2 — Doctor Private ❌). این قاعدهٔ
             // Visibility **مستقل از مجوز** است؛ grant صریحِ FILE_READ هرگز
             // doctor_private را باز نمی‌کند (Phase 3 Slice 5 — لازم، نه کافی).
@@ -278,7 +290,8 @@ final class MedicalFileService
 
     public function softDelete(int $actorUserId, int $fileId): void
     {
-        $this->requireCap($actorUserId, RolesAndCapabilities::FILE_UPLOAD);
+        // Scoped authority (cpms_file_upload on the durable Clinic of the file) is
+        // established below, before any write.
         $row = $this->files->find($fileId);
         if ($row === null) {
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'فایل یافت نشد', 404);
@@ -525,15 +538,22 @@ final class MedicalFileService
      * «خواندن یادداشت خصوصی» در Clinicِ همین فایل. عضویتِ منشی با FILE_READ به‌تنهایی کافی نیست.
      */
     private function can_see_private( int $actorUserId, int $durableClinicId ): bool {
-        $user = get_userdata( $actorUserId );
-        if ( false === $user || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
+        if ( $durableClinicId <= 0 ) {
             return false;
         }
-        if ( $durableClinicId <= 0 || ! user_can( $actorUserId, RolesAndCapabilities::FILE_READ ) ) {
+        // Doctor identity is the durable clinician profile, never a WordPress role.
+        $clinician_id = App::db()->fetchValue(
+            'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- constant table name + prepared placeholder.
+            [ $actorUserId ]
+        );
+        if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
             return false;
         }
 
-        return App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ );
+        // The scoped engine is the authority: FILE_READ and PRIVATE_NOTE_READ in
+        // this Clinic, with explicit DENY winning.
+        return App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::FILE_READ )
+            && App::authorization_service()->can( $actorUserId, $durableClinicId, RolesAndCapabilities::PRIVATE_NOTE_READ );
     }
 
     /**
@@ -860,8 +880,25 @@ final class MedicalFileService
         ));
     }
 
+    /**
+     * Legacy capability gate — scoped-first and final when a trusted Clinic is
+     * established (an explicit membership DENY outranks a WordPress-global
+     * capability); the WordPress-global path only answers for an actor with no
+     * membership in that Clinic. Staff file paths no longer call this: their
+     * authority is authorizeScoped() on the durable Clinic of the row.
+     */
     private function requireCap(int $wpUserId, string $cap): void
     {
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && (int) $scope->clinicId > 0 ) {
+            $decision = App::authorization_service()->scoped_decision( $wpUserId, (int) $scope->clinicId, $cap );
+            if ( true === $decision ) {
+                return;
+            }
+            if ( false === $decision ) {
+                throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
+            }
+        }
         if (!user_can($wpUserId, $cap)) {
             throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }

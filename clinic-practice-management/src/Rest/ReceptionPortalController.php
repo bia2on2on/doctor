@@ -552,8 +552,25 @@ final class ReceptionPortalController extends RestBase {
 		$clinics     = [];
 		foreach ( $memberships as $m ) {
 			$clinic_id = (int) $m['clinic_id'];
+			// Same authoritative eligibility as every operational Reception
+			// request: a durable SECRETARY membership of the Clinic (separation of
+			// duties), an ACTIVE Organization and an active Clinic, and the three
+			// scoped Reception capabilities — each evaluated by the scoped engine,
+			// so an explicit DENY removes the Clinic from the selector.
+			if ( RolesAndCapabilities::ROLE_SECRETARY !== (string) ( $m['role_key'] ?? '' ) ) {
+				continue;
+			}
+			if ( ! $this->reception_clinic_operational( $clinic_id ) ) {
+				continue;
+			}
 			try {
-				$can_read_queue = App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_READ );
+				$can_read_queue = true;
+				foreach ( [ RolesAndCapabilities::QUEUE_READ, RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE ] as $cap ) {
+					if ( ! App::authorization_service()->can( $user_id, $clinic_id, $cap ) ) {
+						$can_read_queue = false;
+						break;
+					}
+				}
 			} catch ( \Throwable $e ) {
 				unset( $e );
 				$can_read_queue = false;
@@ -1914,6 +1931,32 @@ final class ReceptionPortalController extends RestBase {
 			'location_name' => (string) $by_id[ $explicit ]['name'],
 			'timezone'      => (string) ( $by_id[ $explicit ]['timezone'] ?? '' ),
 		];
+	}
+
+	/**
+	 * Lifecycle eligibility shared by the Clinic selector and the operational
+	 * requests: the Organization must be active and the Clinic must not be
+	 * suspended. Membership/capability are evaluated separately by the scoped
+	 * engine. An unreadable row fails closed.
+	 */
+	private function reception_clinic_operational( int $clinic_id ): bool
+	{
+		if ( $clinic_id <= 0 ) {
+			return false;
+		}
+		$row = App::db()->fetchRow(
+			'SELECT c.status AS clinic_status, o.status AS organization_status'
+			. ' FROM ' . App::db()->table( 'cpms_clinics' ) . ' c'
+			. ' INNER JOIN ' . App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+			. ' WHERE c.id = %d LIMIT 1',
+			[ $clinic_id ]
+		);
+		if ( null === $row ) {
+			return false;
+		}
+
+		return 'active' === (string) ( $row['organization_status'] ?? '' )
+			&& 'active' === (string) ( $row['clinic_status'] ?? '' );
 	}
 
 	/**

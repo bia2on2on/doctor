@@ -278,9 +278,9 @@ final class CustomRoleStaffPortalFinanceModuleTest extends WP_UnitTestCase
 
         $accountant = $this->makeUser('sub_board_accountant', RolesAndCapabilities::ROLE_ACCOUNTANT);
         cpms_test_seed_membership($accountant, $clinic, RolesAndCapabilities::ROLE_ACCOUNTANT);
-        self::assertFalse(
+        self::assertTrue(
             StaffPortalShell::finance_module_eligible($accountant),
-            'the built-in Accountant stays outside the Finance module read boundary (no QUEUE_READ)'
+            'the built-in Accountant reads the Finance board (finance + invoice read; queue read is not part of the read boundary)'
         );
 
         $manager = $this->makeUser('sub_board_manager', RolesAndCapabilities::ROLE_MANAGER);

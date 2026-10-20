@@ -71,11 +71,19 @@ final class StaffPortalShell {
 	/** Plugin-owned Finance module template (embed mode). */
 	public const FINANCE_TEMPLATE_REL = 'templates/staff-finance-board.php';
 
-	/** Existing read authority required by the Finance board, all in one Clinic. */
+	/**
+	 * Existing read authority required by the Finance board, all in one Clinic.
+	 *
+	 * Owner delivery (2026-10-20): the board is the ACCOUNTANT surface, so queue
+	 * read is NOT part of this boundary. The built-in accountant preset
+	 * (finance/invoice read + reports + export) therefore opens the board on its
+	 * own authority, while Queue-derived modules keep their own queue
+	 * capabilities. Nothing widens: every capability is still evaluated inside
+	 * ONE ACTIVE Clinic by the scoped engine, with explicit DENY winning.
+	 */
 	public const FINANCE_MODULE_CAPS = array(
 		RolesAndCapabilities::FINANCE_READ,
 		RolesAndCapabilities::INVOICE_READ,
-		RolesAndCapabilities::QUEUE_READ,
 	);
 
 	/** Phase 14 Slice 1 — read-only Average Waiting report for one explicit date. */
@@ -512,11 +520,45 @@ final class StaffPortalShell {
 
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			// Separation of duties is CPMS data: the REST boundary requires a
+			// durable SECRETARY membership of the Clinic, so the shell must not
+			// offer the module to anyone else (e.g. a manager holding the same
+			// queue capabilities), and a suspended Clinic/Organization is never
+			// operational.
+			$membership = App::membership_service()->membership_for( (int) $clinic_id, $user_id );
+			if ( null === $membership || RolesAndCapabilities::ROLE_SECRETARY !== (string) ( $membership['role_key'] ?? '' ) ) {
+				continue;
+			}
+			if ( ! self::clinic_is_operational( (int) $clinic_id ) ) {
+				continue;
+			}
 			if ( self::clinic_grants_all( $auth, $user_id, (int) $clinic_id, self::RECEPTION_MODULE_CAPS ) ) {
 				return true;
 			}
 		}
 		return false;
+	}
+
+	/**
+	 * Active Organization + non-suspended Clinic (lifecycle parity with the
+	 * trusted-scope boundaries). Fails closed on an unreadable row.
+	 */
+	public static function clinic_is_operational( int $clinic_id ): bool {
+		if ( $clinic_id <= 0 ) {
+			return false;
+		}
+		$row = App::db()->fetchRow(
+			'SELECT c.status AS clinic_status, o.status AS organization_status'
+			. ' FROM ' . App::db()->table( 'cpms_clinics' ) . ' c'
+			. ' INNER JOIN ' . App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+			. ' WHERE c.id = %d LIMIT 1',
+			[ $clinic_id ]
+		);
+		if ( null === $row ) {
+			return false;
+		}
+		return 'active' === (string) ( $row['organization_status'] ?? '' )
+			&& 'active' === (string) ( $row['clinic_status'] ?? '' );
 	}
 
 	/**

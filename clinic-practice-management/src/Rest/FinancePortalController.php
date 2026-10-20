@@ -61,10 +61,14 @@ use WP_REST_Response;
 /** Read-only finance board + bounded first issuance + bounded payment capture + bounded paid checkout. */
 final class FinancePortalController extends RestBase {
 
+	/**
+	 * Finance board read authority: finance + invoice read in ONE Clinic. Queue
+	 * read is deliberately NOT required — the board belongs to the accountant
+	 * preset, and queue capabilities decide the queue surfaces instead.
+	 */
 	private const READ_CAPS = array(
 		RolesAndCapabilities::FINANCE_READ,
 		RolesAndCapabilities::INVOICE_READ,
-		RolesAndCapabilities::QUEUE_READ,
 	);
 
 	/** Phase 12 Slice 2 — the existing capability that authorizes first issuance. */

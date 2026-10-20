@@ -646,8 +646,20 @@ final class ExportService
             throw ReportException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403);
         }
 
+        $scope = ScopeContext::tryGet();
+        $clinic_id = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
         $missing = [];
         foreach ($reports->typeCaps($type) as $cap) {
+            if ( $clinic_id > 0 ) {
+                $decision = App::authorization_service()->scoped_decision( $actorUserId, $clinic_id, $cap );
+                if ( true === $decision ) {
+                    continue;
+                }
+                if ( false === $decision ) {
+                    $missing[] = $cap;
+                    continue;
+                }
+            }
             if (!$user->has_cap($cap)) {
                 $missing[] = $cap;
             }
@@ -665,15 +677,29 @@ final class ExportService
     // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $actorUserId, string $cap, string $what): void
     {
-        // WordPress-independent business access: scoped authority of the explicit
-        // Clinic is sufficient; the WordPress-global capability stays as the legacy
-        // path. Scope is never inferred from the single-Clinic system resolution.
+        // Scoped-first and FINAL: an ACTIVE membership decides (grant or deny),
+        // so an explicit DENY outranks any WordPress-global capability and a
+        // global `has_cap()` can never bypass the scoped engine. Only an actor
+        // with no membership in this Clinic keeps the legacy capability path.
+        // Scope is never inferred from the single-Clinic system resolution.
         $scope = ScopeContext::tryGet();
-        if (
-            $scope !== null && $scope->clinicId > 0 && $actorUserId > 0
-            && App::authorization_service()->can($actorUserId, (int) $scope->clinicId, $cap)
-        ) {
-            return;
+        if ( $scope !== null && $scope->clinicId > 0 && $actorUserId > 0 ) {
+            $decision = App::authorization_service()->scoped_decision(
+                $actorUserId,
+                (int) $scope->clinicId,
+                $cap
+            );
+            if ( true === $decision ) {
+                return;
+            }
+            if ( false === $decision ) {
+                throw ReportException::of(
+                    'CLINIC_PERMISSION_DENIED',
+                    "دسترسی لازم برای {$what} را ندارید",
+                    403,
+                    ['capability' => $cap, 'reason' => 'scoped']
+                );
+            }
         }
         $user = get_userdata($actorUserId);
         if ($user === false || !$user->has_cap($cap)) {

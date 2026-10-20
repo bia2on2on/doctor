@@ -1387,8 +1387,11 @@ final class ClinicalService
         // role: the WP role never supplies scoped clinical read (membership DENY
         // and Clinic-local presets win).
         if ($isDoctor && ($type === 'all' || $type === 'note') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ)) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace.ArbitraryParenthesesSpacing,PEAR.Functions.FunctionCallSignature -- Existing legacy camelCase/spacing preserved in this branch.
-            $has_private_read = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                && App::authorization_service()->can(
+            $has_private_read = App::authorization_service()->can( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            ) && App::authorization_service()->can(
                     $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                     $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
                     RolesAndCapabilities::PRIVATE_NOTE_READ
@@ -1506,16 +1509,17 @@ final class ClinicalService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing service naming convention.
     private function canReadPrivateFiles( int $actor_user_id, array $visit ): bool {
+        // Doctor identity is CPMS data, not a WordPress role: the durable
+        // clinician profile linked to this user owns the Visit. A Subscriber who
+        // is the Visit's clinician is the doctor; a privileged WP role without
+        // the clinician identity is not. The scoped capabilities below still
+        // decide (explicit DENY wins).
         $user = get_userdata( $actor_user_id );
-        if (
-            false === $user
-            || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true )
-        ) {
+        if ( false === $user ) {
             return false;
         }
 
         return $this->owns_visit( $actor_user_id, $visit )
-            && user_can( $actor_user_id, RolesAndCapabilities::FILE_READ )
             && $this->has_clinic_read(
                 $actor_user_id,
                 (int) $visit['clinic_id'],
@@ -1576,8 +1580,11 @@ final class ClinicalService
      * @param array<string, mixed> $visit Durable Visit row from the repository.
      */
     private function can_read_private_notes( int $actor_user_id, array $visit ): bool {
+        // Clinician identity (durable ownership) + scoped capability. The
+        // WordPress-global capability is no longer a precondition: a Subscriber
+        // doctor holds the same scoped authority, and an explicit scoped DENY
+        // still revokes it.
         return $this->owns_visit( $actor_user_id, $visit )
-            && user_can( $actor_user_id, RolesAndCapabilities::PRIVATE_NOTE_READ )
             && App::authorization_service()->can(
                 $actor_user_id,
                 (int) $visit['clinic_id'],

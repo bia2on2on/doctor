@@ -418,9 +418,16 @@ final class ReportsController extends RestBase
             return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
         $scope = ScopeContext::tryGet();
-        if ($scope !== null && (int) $scope->clinicId > 0
-            && App::authorization_service()->can($user_id, (int) $scope->clinicId, $cap)) {
-            return true;
+        if ($scope !== null && (int) $scope->clinicId > 0) {
+            $decision = App::authorization_service()->scoped_decision($user_id, (int) $scope->clinicId, $cap);
+            if (true === $decision) {
+                return true;
+            }
+            if (false === $decision) {
+                // An ACTIVE membership is final: explicit DENY outranks a
+                // WordPress-global capability and `has_cap()` never bypasses it.
+                return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+            }
         }
 
         return $this->requireCap($cap);
