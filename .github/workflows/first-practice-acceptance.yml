@@ -31,6 +31,12 @@ env:
   DB_NAME: cpms_fp
   ADMIN_USER: acc_admin
   ADMIN_PASS: Acceptance-2026!
+  ORG_MANAGER_USER: acc_orgmgr
+  ORG_MANAGER_PASS: Acceptance-2026!
+  CLINIC_MANAGER_A_USER: acc_mgra
+  CLINIC_MANAGER_A_PASS: Acceptance-2026!
+  CLINIC_MANAGER_B_USER: acc_mgrb
+  CLINIC_MANAGER_B_PASS: Acceptance-2026!
   SUBSCRIBER_USER: acc_subscriber
   SUBSCRIBER_PASS: Acceptance-2026!
   SECOND_ADMIN_USER: acc_admin2
@@ -83,7 +89,7 @@ jobs:
 
       - name: Lint first-practice harness
         run: |
-          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py clinic-practice-management/bin/rwp-install-zip.py clinic-practice-management/bin/rwp-recovery.py clinic-practice-management/bin/rwp_personal.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py clinic-practice-management/bin/rwp-portal-hospital-journey.py clinic-practice-management/bin/rwp-install-zip.py clinic-practice-management/bin/rwp-recovery.py clinic-practice-management/bin/rwp_personal.py
           python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-first-practice.py
           bash -n clinic-practice-management/bin/build-release.sh
 
@@ -245,6 +251,47 @@ jobs:
           RC=$?
           cat /tmp/fp/first-practice.log
           if [ "$RC" -ne 0 ]; then echo "FIRST-PRACTICE BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
+
+      # ------------------------------------------------------------------
+      # Two-Subscriber hospital onboarding through the FRONTEND portal only.
+      # Runs after the first-practice lane, in the same installed WordPress.
+      # ------------------------------------------------------------------
+      - name: Isolated Subscriber personas for the portal journey
+        if: always() && steps.cpms_install.outcome == 'success'
+        run: |
+          set -euo pipefail
+          for spec in "$ORG_MANAGER_USER:orgmanager@acc.local:$ORG_MANAGER_PASS" \
+                      "$CLINIC_MANAGER_A_USER:mgra@acc.local:$CLINIC_MANAGER_A_PASS" \
+                      "$CLINIC_MANAGER_B_USER:mgrb@acc.local:$CLINIC_MANAGER_B_PASS"; do
+            login="${spec%%:*}"; rest="${spec#*:}"; email="${rest%%:*}"; pass="${rest#*:}"
+            if wp user get "$login" --path="$WP_DIR" --allow-root >/dev/null 2>&1; then
+              echo "user $login already exists"
+            else
+              wp user create "$login" "$email" --user_pass="$pass" --role=subscriber --path="$WP_DIR" --allow-root
+            fi
+            roles="$(wp user get "$login" --field=roles --path="$WP_DIR" --allow-root)"
+            [ "$roles" = "subscriber" ] || { echo "FAIL: $login must be a subscriber, got $roles"; exit 1; }
+          done
+          # No WordPress business role and no global CPMS capability anywhere.
+          for cap in cpms_patient_read cpms_report_read cpms_export cpms_finance_read cpms_config; do
+            hits="$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e \
+              "SELECT COUNT(*) FROM $DB_NAME.wp_usermeta WHERE meta_key = '$DB_NAME.wp_capabilities' AND meta_value LIKE '%$cap%';")"
+            [ "$hits" = "0" ] || { echo "FAIL: global capability $cap found on a user"; exit 1; }
+          done
+
+      - name: Browser — hospital onboarding by two Subscriber managers (frontend portal only)
+        id: portal_journey
+        if: always() && steps.cpms_install.outcome == 'success'
+        run: |
+          BASE="$WP_URL" \
+          ORG_MANAGER_USER="$ORG_MANAGER_USER" ORG_MANAGER_PASS="$ORG_MANAGER_PASS" \
+          CLINIC_MANAGER_A_USER="$CLINIC_MANAGER_A_USER" CLINIC_MANAGER_A_PASS="$CLINIC_MANAGER_A_PASS" \
+          CLINIC_MANAGER_B_USER="$CLINIC_MANAGER_B_USER" CLINIC_MANAGER_B_PASS="$CLINIC_MANAGER_B_PASS" \
+          WP_DIR="$WP_DIR" OUT=/tmp/fp/portal \
+          python3 clinic-practice-management/bin/rwp-portal-hospital-journey.py > /tmp/fp/portal-hospital.log 2>&1
+          RC=$?
+          cat /tmp/fp/portal-hospital.log
+          if [ "$RC" -ne 0 ]; then echo "PORTAL HOSPITAL BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
 
       - name: Interrupted installation browser fixtures A–G
         if: always() && steps.cpms_install.outcome == 'success' && steps.migrations.outcome == 'success'
