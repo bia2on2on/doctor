@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
-use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -1716,49 +1715,22 @@ final class ClinicalService
         return (int) $patientId;
     }
 
-    /**
-     * Capability gate — Phase 1 authorization decoupling.
-     *
-     * A WordPress-GLOBAL capability is not the source of Clinic business
-     * authority. When this request already carries a trusted Clinic scope (bound
-     * from durable membership by RestClinicContext/TrustedClinicEstablisher), the
-     * Clinic-scoped engine decides (explicit DENY > GRANT > preset > deny). With
-     * no trusted scope the legacy global check is kept unchanged, so nothing
-     * widens and unbound callers fail exactly as before. Every caller still runs
-     * authorizeScoped() for the durable object Clinic (defence in depth), and the
-     * same pattern is already published in FinanceService.
-     */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
-    private function requireCap( int $wp_user_id, string $cap, string $scope ): void {
-        $scope_context = ScopeContext::tryGet();
-        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
-        $authorized    = $clinic_id > 0
-            ? App::authorization_service()->can( $wp_user_id, $clinic_id, $cap )
-            : user_can( $wp_user_id, $cap );
-        if ( ! $authorized ) {
-            throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, [ 'scope' => $scope ] );
+    private function requireCap(int $wpUserId, string $cap, string $scope): void
+    {
+        if (!user_can($wpUserId, $cap)) {
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
         }
     }
 
-    /**
-     * Actor-shape gate — Phase 1 authorization decoupling.
-     *
-     * "Doctor" is a durable Clinical identity (an ACTIVE cpms_clinicians row
-     * linked to this WordPress user), NOT a WordPress role: a WP role is
-     * assignment metadata, never tenant authority. The exact capability for the
-     * operation is still required by the following requireCap()/authorizeScoped()
-     * pair, and object ownership remains with the caller, so this gate neither
-     * widens nor replaces authorization. Non-doctor roles (secretary) are
-     * capability-defined and therefore have no actor-shape gate here.
-     */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
-    private function requireRole( int $wp_user_id, string $role, string $action ): void {
-        if ( 'doctor' !== $role ) {
-            return; // capability-defined staff surface; requireCap() is the gate.
+    private function requireRole(int $wpUserId, string $role, string $action): void
+    {
+        $user = get_userdata($wpUserId);
+        if ($user === false || $user->roles === []) {
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
         }
-        $clinician_id = ( new MembershipRepository( $this->db ) )->active_clinician_id_for_wp_user( $wp_user_id );
-        if ( $clinician_id === null || (int) $clinician_id <= 0 ) {
-            throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403 );
+        $expected = $role === 'doctor' ? RolesAndCapabilities::ROLE_DOCTOR : RolesAndCapabilities::ROLE_SECRETARY;
+        if (!in_array($expected, $user->roles, true)) {
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
         }
     }
 

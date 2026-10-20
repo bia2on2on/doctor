@@ -4,7 +4,7 @@
  *
  * Owns the full HTML document: deliberately does NOT call get_header(),
  * get_footer(), wp_head(), wp_footer() or wp_body_open(), so the active Theme
- * never controls the shell. Nothing here links to /wp-admin.
+ * never controls the shell. Nothing here links to the WordPress admin back office.
  *
  * Rendering model: server-rendered forms + Post/Redirect/Get handled by
  * ManagementPortalController on the portal's own URL. No client-side routing and

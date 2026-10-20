@@ -25,20 +25,23 @@ Counts at the branch base (`main` = `6c64a91`):
 
 ## 2. Findings and disposition
 
-### 2.1 Fixed in this slice (business authority no longer WordPress-derived)
+### 2.1 Attempted and reverted (regression evidence at the exact head)
 
-| ID | Location | Dependency | Replacement |
+An initial batch attempted exactly the replacements below. Exact-head Integration
+(2190 tests) reported **16 failures + 3 errors** in pre-existing security-contract
+suites, so the batch was reverted to the base contracts instead of weakening the
+tests:
+
+| ID | Location (reverted) | Attempted replacement | Regression observed |
 |---|---|---|---|
-| A-01 | `RestBase::requireCap()` | Global capability was the only accepted source | Global **or** trusted-scope scoped capability; no ambient Clinic (`ScopeContext::tryGet()` only) |
-| A-02 | `DoctorPortalShell::isDoctorUser()` | WP role `cpms_doctor` | Durable ACTIVE `cpms_clinicians` identity |
-| A-03 | `StaffPortalShell::doctor_module_eligible()` | WP role `cpms_doctor` | Clinician identity + scoped caps (unchanged caps) |
-| A-04 | `StaffPortalShell::reception_module_eligible()` | WP role `cpms_secretary` + global `read` | Scoped `cpms_queue_read/checkin/advance` |
-| A-05 | `StaffPortalShell::reports_eligible_clinics()` | Global `cpms_report_read` | Scoped `cpms_report_read` per Clinic |
-| A-06 | `ClinicalService::requireCap()` | Global `user_can()` | Scoped engine when a trusted scope exists (FinanceService precedent) |
-| A-07 | `ClinicalService::requireRole('doctor')` | WP role `cpms_doctor` | Durable ACTIVE clinician identity |
-| A-08 | `ReportService::requireCap()/missingCaps()` | Global `has_cap()` | Scoped engine when a trusted scope exists |
-| A-09 | `ExportService::requireCap()/typeCaps check` | Global `has_cap()` | Scoped engine when a trusted scope exists |
-| A-10 | All Organization/Clinic management workflows | Required the wp-admin pages (`admin-post.php`) | Dedicated frontend Management Portal (`cpms-management-portal`) |
+| A-01 | `RestBase::requireCap()` | trusted-scope scoped capability fallback | `PatientAdminTest::testRestSearchRequiresPatientRead` (200 vs 403), `ClinicalFilesScopedAuthorizationTest` (`CLINIC_NOT_FOUND` → `CLINIC_PERMISSION_DENIED`) |
+| A-02 | `ClinicalService::requireCap()/requireRole('doctor')` | scoped capability + durable clinician identity | same clinical suites + `Phase1BPrescriptionConcurrencyTest` |
+| A-03 | `ReportService` / `ExportService` capability checks | scoped-first capability | `ReportsAuthzTest`, `ReportsExportClinicAuthorizationTest`, `ReportsClinicIsolationTest`, `ExportClinicIsolationTest`, `Phase2JobScopeRedFoundationTest` |
+| A-04 | `StaffPortalShell` doctor/reception/reports eligibility | capability-only eligibility | `Phase14StaffPortalReportsAvgWaitingRedTest`, `Phase14StaffPortalReportsClinicScopeTest`, `RestTrustedClinicContextTest` |
+| A-05 | `DoctorPortalShell::isDoctorUser()` | durable clinician identity | (no regression observed, but reverted with the batch to keep one coherent state) |
+
+**Delivered instead:** the additive Management Portal (A-10), which introduces no
+new authority source and leaves every existing gate byte-for-byte as published.
 
 ### 2.2 Retained deliberately (documented, not hidden)
 
@@ -55,11 +58,13 @@ Counts at the branch base (`main` = `6c64a91`):
 
 ### 2.3 Remaining gaps (not solved here — must not be claimed as done)
 
-1. **Browser acceptance for Doctor / Reception / Accountant / Patient without
-   privileged WordPress roles is not yet proven in this slice.** The code paths are
-   decoupled (A-01…A-09) and the existing Integration suite is green-by-policy, but a
-   real-browser journey for each role class is only evidenced by CI runs attached to
-   the PR. Treat any role-completeness claim as pending those runs.
+1. **Business-authority decoupling for clinical/financial/report routes is NOT
+   delivered.** The attempted scoped-first gates were reverted after exact-head
+   Integration reported 16 failures + 3 errors in pinned security contracts (see
+   §2.1). Doctor / Reception / Accountant / Patient workflows still depend on the
+   existing WordPress-global gates on the REST/service side, exactly as on `main`.
+   Any claim that those roles can complete their workflows without privileged
+   WordPress roles is **unsupported** by this PR.
 2. **Staff user creation from the portal** is not implemented (roles are assignable
    only to existing ACTIVE memberships).
 3. **Facility wizard reuse outside wp-admin** is architectural only (Phase 4
@@ -87,4 +92,9 @@ Counts at the branch base (`main` = `6c64a91`):
   - Surface source: no `/wp-admin`, no `admin-post.php`, no `current_user_can`,
     `user_can(` or `has_cap` in the portal controller/service.
 - Existing Integration tests for `AuthorizationService`, Doctor/Staff portals,
-  Finance and Custom Roles remain the regression net for 2.1.
+  Finance and Custom Roles are untouched and remained the regression net that
+  caught the attempted decoupling (§2.1).
+- Known issue at head: `ManagementPortalTest::test_portal_surface_never_requires_wp_admin`
+  failed in its first exact-head run because the template docblock contained the
+  literal string "/wp-admin" (the assertion matched documentation, not markup). The
+  wording was corrected; the assertion still fails closed on real links/actions.

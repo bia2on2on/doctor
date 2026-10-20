@@ -53,24 +53,24 @@ on `authenticate` applies unchanged.
   `cpms_report_read` / `cpms_finance_read` capability is effective in that Clinic.
   No clinical or financial row is read by the portal.
 
-### 1.3 Authorization decoupling in existing surfaces
+### 1.3 Authorization decoupling in existing surfaces — ATTEMPTED, REVERTED
 
-| Location | Before | After |
-|---|---|---|
-| `RestBase::requireCap()` | WordPress-global capability only | Global capability **OR** trusted-Clinic-scoped capability (`ScopeContext::tryGet()` + `AuthorizationService::can()`), fail-closed when no scope is bound |
-| `DoctorPortalShell::isDoctorUser()` | Required WordPress role `cpms_doctor` | Requires durable ACTIVE `cpms_clinicians` row linked to the user |
-| `StaffPortalShell::doctor_module_eligible()` | Required WordPress role | Clinician identity + Clinic-scoped capabilities (unchanged) |
-| `StaffPortalShell::reception_module_eligible()` | Required WordPress role + global `read` | Clinic-scoped capability set only |
-| `StaffPortalShell::reports_eligible_clinics()` | Required global `cpms_report_read` | Clinic-scoped `cpms_report_read` per Clinic (no global capability) |
-| `ClinicalService::requireCap()` | Global `user_can()` only | Scoped engine when a trusted scope is bound (same published pattern as `FinanceService`), legacy global answer otherwise |
-| `ClinicalService::requireRole('doctor')` | WordPress role `cpms_doctor` | Durable ACTIVE clinician identity |
-| `ReportService` / `ExportService` capability checks | Global `has_cap()` only | Scoped engine when a trusted scope is bound, legacy global answer otherwise |
+A first batch replaced WordPress-global capability/role gates with Clinic-scoped
+authority in `RestBase::requireCap()`, `ClinicalService` (`requireCap`,
+`requireRole('doctor')`), `ReportService`, `ExportService`,
+`DoctorPortalShell::isDoctorUser()` and the Staff Portal doctor/reception/reports
+eligibility gates.
 
-Every replacement keeps the scoped engine's precedence intact:
-**explicit membership DENY > explicit membership GRANT > membership role preset >
-deny by default**, with `Organization → Clinic → Location` hierarchy, no implicit
-Clinic/Location selection, no Administrator clinical/financial bypass, and object
-ownership read from durable storage before mutation.
+Exact-head Integration proved that batch is **not compatible with the pinned
+security contracts** in this slice: 16 failures + 3 errors, including error-code
+changes (`CLINIC_NOT_FOUND` expected, `CLINIC_PERMISSION_DENIED` observed), report
+authorization expectations (`ReportsAuthzTest`,
+`ReportsExportClinicAuthorizationTest`, `Phase14StaffPortalReports*`), export
+isolation, REST trusted-context denial ordering, and prescription-concurrency
+expectations. The batch was **reverted to the base contracts** (not the tests).
+The decoupling is therefore *not shipped* here; it is tracked as a remaining gap
+in `docs/security/business-access-decoupling-audit.md` §2.3 with the exact
+regression evidence.
 
 ### 1.4 Not changed (deliberately)
 
@@ -99,11 +99,11 @@ ownership read from durable storage before mutation.
 
 ## 3. Known gaps / remaining risks (honest list)
 
-- **Doctor/Reception/Finance/Reports portal QA:** the decoupling above removes the
-  WordPress-role dependency in the portal gates and the REST/service capability
-  gates. Whether every operational REST route now serves a Subscriber-based staff
-  account end-to-end is *not* yet proven by a browser journey in this slice; the
-  existing integration suite is the regression evidence.
+- **Phase 1 decoupling is not delivered.** The attempted scoped-first gates were
+  reverted after exact-head Integration reported 16 failures + 3 errors in pinned
+  security contracts. Doctor/Reception/Accountant/Patient workflows therefore still
+  require their WordPress-global gates on the REST/service side; only the new
+  Management Portal is WordPress-role-free.
 - **`ClinicalService::requireRole` for non-doctor roles** returns immediately and
   relies on capability checks. Only `'doctor'` call sites exist today; a future
   secretary-shaped gate must be expressed as a capability, not a role.
@@ -129,5 +129,6 @@ ownership read from durable storage before mutation.
   suspended Organization membership; forged/cross-Clinic/cross-Organization ids;
   Administrator-alone denial; no-wp-admin/no-WordPress-role source assertions.
 - Existing Integration suite, PHPStan and WPCS run on the exact PR head in CI.
-- Real-browser acceptance: see the PR body for the exact status of the browser
-  evidence at that head (not claimed here before it exists).
+- Real-browser acceptance: the existing browser workflows ran at the PR head for
+  their own scopes; **no browser journey for the new Management Portal is claimed**
+  in this slice.

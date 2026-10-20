@@ -278,13 +278,8 @@ final class DoctorPortalShell {
 
 	// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy camelCase, established contract
 	public static function isDoctorUser( \WP_User $user ): bool {
-		// Phase 1 authorization decoupling: clinician identity is a DURABLE row
-		// (cpms_clinicians.wp_user_id), not a WordPress business role. Checking a
-		// global role here made clinical portal access depend on wp-admin role
-		// assignment. This predicate now answers only "is this actor a durable,
-		// active clinician"; capability, Clinic membership, Location and object
-		// ownership are still enforced independently on every REST call.
-		if ( (int) ( $user->ID ?? 0 ) <= 0 ) {
+		$roles = (array) ( $user->roles ?? [] );
+		if ( ! in_array( \ClinicCore\Auth\RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
 			return false;
 		}
 		$db            = \ClinicCore\Bootstrap\App::db(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability

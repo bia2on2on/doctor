@@ -466,11 +466,9 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return false;
 		}
-		// Phase 1 authorization decoupling: no WordPress business role is read.
-		// Durable clinician identity + the module's Clinic-scoped capabilities
-		// below remain the only conditions, so a valid member without a
-		// privileged WordPress role still reaches authorized clinical work, and
-		// a WordPress role alone still reaches nothing.
+		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
+			return false;
+		}
 		if ( ! DoctorPortalShell::isDoctorUser( $user ) ) {
 			return false;
 		}
@@ -507,9 +505,12 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return false;
 		}
-		// Phase 1 authorization decoupling: reception authority is the Clinic-scoped
-		// capability set below (ACTIVE membership + DENY/GRANT/preset), never a
-		// WordPress business role and never a WordPress-global capability.
+		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, (array) $user->roles, true ) ) {
+			return false;
+		}
+		if ( ! user_can( $user_id, 'read' ) ) {
+			return false;
+		}
 
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
@@ -596,9 +597,11 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return array();
 		}
-		// Phase 1 authorization decoupling: the WordPress-global capability is not
-		// consulted. The Clinic-scoped engine below still requires an ACTIVE
-		// membership and the read capability INSIDE that Clinic, so nothing widens.
+		foreach ( self::REPORTS_MODULE_CAPS as $cap ) {
+			if ( ! $user->has_cap( $cap ) ) {
+				return array();
+			}
+		}
 
 		$auth = App::authorization_service();
 		$ids  = array();

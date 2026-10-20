@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Auth\RolesAndCapabilities;
-use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -784,38 +783,16 @@ final class ReportService
      * @param list<string> $caps
      * @return list<string>
      */
-    /**
-     * Phase 1 authorization decoupling — capability source.
-     *
-     * Report authority is Clinic-scoped CPMS authority, not a WordPress-global
-     * capability. When this request carries a trusted Clinic scope (bound from
-     * durable membership) the scoped engine decides; otherwise the legacy global
-     * answer is preserved unchanged, so nothing widens and unbound callers fail
-     * as before. Every report call still re-authorizes the trusted Clinic and its
-     * own object scope inside the service.
-     */
-    private function report_capability_granted( int $actor_user_id, string $cap ): bool {
-        $scope_context = ScopeContext::tryGet();
-        $clinic_id     = $scope_context === null ? 0 : (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
-        if ( $clinic_id > 0 && $actor_user_id > 0 ) {
-            return App::authorization_service()->can( $actor_user_id, $clinic_id, $cap );
-        }
-
-        $user = get_userdata( $actor_user_id );
-
-        return $user !== false && $user->has_cap( $cap );
-    }
-
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
-    private function missingCaps( int $actor_user_id, array $caps ): array {
-        $user = get_userdata( $actor_user_id );
-        if ( $user === false ) {
+    private function missingCaps(int $actorUserId, array $caps): array
+    {
+        $user = get_userdata($actorUserId);
+        if ($user === false) {
             return $caps; // بدون کاربر → همه مفقود (403)
         }
 
         $missing = [];
-        foreach ( $caps as $cap ) {
-            if ( ! $this->report_capability_granted( $actor_user_id, (string) $cap ) ) {
+        foreach ($caps as $cap) {
+            if (!$user->has_cap($cap)) {
                 $missing[] = $cap;
             }
         }
@@ -823,17 +800,20 @@ final class ReportService
         return $missing;
     }
 
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name shared with the published service API.
-    private function requireCap( int $actor_user_id, string $cap ): void {
-        if ( ! $this->report_capability_granted( $actor_user_id, $cap ) ) {
+    private function requireCap(int $actorUserId, string $cap): void
+    {
+        $user = get_userdata($actorUserId);
+        if ($user === false || !$user->has_cap($cap)) {
             throw ReportException::of(
                 'CLINIC_PERMISSION_DENIED',
                 'دسترسی لازم برای گزارش‌ها را ندارید',
                 403,
-                [ 'capability' => $cap ]
+                ['capability' => $cap]
             );
         }
     }
+
+    // ================= Range / Helpers =================
 
     /**
      * @return array<string, mixed>
