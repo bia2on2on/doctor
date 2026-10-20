@@ -145,7 +145,8 @@ echo 'PORTAL=' . \ClinicCore\Frontend\ManagementPortalShell::portal_url() . PHP_
 
 FACTS_EVAL = r"""
 $db = \ClinicCore\Bootstrap\App::db();
-$rows = $db->fetchAll('SELECT id, name, COALESCE(status, %s) AS status, organization_id FROM ' . $db->table('cpms_clinics') . ' ORDER BY id ASC', ['active']);
+$orgId = (int) getenv('ORG_ID');
+$rows = $db->fetchAll('SELECT id, name, COALESCE(status, %s) AS status, organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE organization_id = %d ORDER BY id ASC', ['active', $orgId]);
 $out = [];
 foreach ($rows as $row) {
     $id = (int) $row['id'];
@@ -316,7 +317,7 @@ def main() -> int:
         for name, site, sshot in ((CLINIC_A_NAME, SITE_EAST, "org-clinic-a"),
                                   (CLINIC_B_NAME, SITE_WEST, "org-clinic-b")):
             def fill_clinic(f, name=name, site=site):
-                f.locator('input[name="name"]').fill(name)
+                f.locator('input[name="cpms_entity_name"]').fill(name)
                 select_by_label_text(f, 'select[name="site_key"]', site)
                 f.locator('input[name="timezone"]').fill("Asia/Tehran")
             submit_on_surface(org, "org_facility_clinic", f"org.clinic.{name}", sshot, org_surface, fill_clinic)
@@ -367,7 +368,7 @@ def main() -> int:
 
             # Location / room
             submit_on_surface(page, "clinic_location_create", f"{tag}.location", f"{sshot_prefix}-location", clinic_surface,
-                        lambda f: (f.locator('input[name="name"]').fill("اتاق ویزیت ۱"),
+                        lambda f: (f.locator('input[name="cpms_entity_name"]').fill("اتاق ویزیت ۱"),
                                    f.locator('input[name="slug"]').fill(f"room-1-{tag}"),
                                    f.locator('input[name="timezone"]').fill("Asia/Tehran")))
             # Clinician
@@ -413,7 +414,7 @@ def main() -> int:
         shot(org, "org-review-ready")
         submit_on_surface(org, "org_facility_activate", "org.activate", "org-activated", org_surface)
 
-        facts = parse_kv(wp_eval(FACTS_EVAL)).get("FACTS", "[]")
+        facts = parse_kv(wp_eval(FACTS_EVAL, {"ORG_ID": str(org_id)})).get("FACTS", "[]")
         try:
             rows = json.loads(facts)
         except Exception:
