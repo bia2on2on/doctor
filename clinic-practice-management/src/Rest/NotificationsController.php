@@ -140,6 +140,23 @@ final class NotificationsController extends RestBase
             || in_array(RolesAndCapabilities::ROLE_SECRETARY, $roles, true)
             || in_array(RolesAndCapabilities::ROLE_DOCTOR, $roles, true);
         if (!$isCpms) {
+            // Workstream 2 — subscriber independence for the same three
+            // CPMS roles via ACTIVE clinic membership (permAnyRole fallback
+            // rationale).
+            $userId = (int) ( $user->ID ?? 0 );
+            try {
+                foreach ( \ClinicCore\Bootstrap\App::membership_service()->active_memberships_for_user( $userId ) as $membership ) {
+                    $roleKey = (string) ( $membership['role_key'] ?? '' );
+                    if ( in_array( $roleKey, [ RolesAndCapabilities::ROLE_PATIENT, RolesAndCapabilities::ROLE_SECRETARY, RolesAndCapabilities::ROLE_DOCTOR ], true ) ) {
+                        $isCpms = true;
+                        break;
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                $isCpms = false;
+            }
+        }
+        if (!$isCpms) {
             return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی به اعلان‌ها برای نقش شما مجاز نیست');
         }
 

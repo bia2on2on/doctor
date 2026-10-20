@@ -599,10 +599,12 @@ final class DoctorPortalController extends RestBase {
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return new WP_Error( 'CLINIC_UNAUTHORIZED', 'Unauthorized', [ 'status' => 401 ] );
 		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
-			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor role required', [ 'status' => 403 ] );
-		}
+		// Workstream 2 P1 — Subscriber independence: the WordPress `cpms_doctor`
+		// role is NOT authority. A `subscriber` with a Clinic `cpms_doctor`
+		// (or custom) membership plus an active clinician row is legitimate.
+		// The scoped `can()` below remains authoritative, and a user without
+		// that membership is still denied. The clinician-identity check below
+		// stays.
 		$db           = App::db();
 		$clinician_id = $db->fetchValue(
 			'SELECT id FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',

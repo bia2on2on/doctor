@@ -60,6 +60,16 @@ abstract class RestBase
         // بی‌اثر می‌ماند چون Service حرف آخر را می‌زد. با انتقال آن به
         // `permission_callback`، منبع کهنه حاکم بر کل درخواست شد و می‌توانست
         // درخواست مجاز را رد کند. یکسان‌سازی منبع، این واگرایی را می‌بندد.
+        //
+        // Workstream 2 — Subscriber independence (P1): a WordPress account with
+        // the ordinary `subscriber` role is legitimate CPMS business authority
+        // when it holds an appropriate ACTIVE Clinic membership granting the
+        // scoped capability (AuthorizationService: DENY > GRANT > preset). The
+        // permission callback therefore falls back to a scoped check across the
+        // actor's ACTIVE clinics when the global WP capability is absent. This
+        // does NOT widen authority: the handler's requireClinicPermission still
+        // re-authorizes the trusted Clinic, and a user without any granting
+        // membership is still denied here.
         $userId = get_current_user_id();
         $user = $userId > 0 ? get_userdata($userId) : false;
         if ($user === false || !$user->exists()) {
@@ -67,8 +77,22 @@ abstract class RestBase
         }
         $caps = (array) $caps;
         foreach ($caps as $cap) {
-            if (!$user->has_cap($cap)) {
-                App::audit()->log(
+            if ($user->has_cap($cap)) {
+                continue;
+            }
+            $has_scoped = false;
+            try {
+                foreach ( \ClinicCore\Bootstrap\App::membership_service()->active_clinic_ids_for_user( $userId ) as $clinicId ) {
+                    if ( \ClinicCore\Bootstrap\App::authorization_service()->can( $userId, (int) $clinicId, $cap ) ) {
+                        $has_scoped = true;
+                        break;
+                    }
+                }
+            } catch ( \Throwable $e ) {
+                $has_scoped = false;
+            }
+            if ( ! $has_scoped ) {
+                \ClinicCore\Bootstrap\App::audit()->log(
                     'FORBIDDEN_ACCESS_ATTEMPT',
                     ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'unknown'],
                     'capability',
@@ -166,11 +190,29 @@ abstract class RestBase
         if (!$user->exists()) {
             return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
         }
-        if (array_intersect($roles, (array) $user->roles) === []) {
-            return $this->error('CLINIC_PERMISSION_DENIED', 403, $denyMessage);
+        if (array_intersect($roles, (array) $user->roles) !== []) {
+            return true;
+        }
+        // Workstream 2 — subscriber independence: a user with `subscriber` WP
+        // role but an ACTIVE clinic membership whose `role_key` is one of
+        // $roles (doctor/secretary/patient/manager/accountant) is also
+        // authorized. The membership query is fail-closed — no DB/membership =>
+        // denied, and a suspended membership does not count. This mirrors the
+        // scoped fallback in requireCap (DENY>GRANT>preset is enforced later by
+        // the handler's requireClinicPermission / service authorize check).
+        $userId = (int) $user->ID;
+        try {
+            foreach ( \ClinicCore\Bootstrap\App::membership_service()->active_memberships_for_user( $userId ) as $membership ) {
+                $roleKey = (string) ( $membership['role_key'] ?? '' );
+                if ( $roleKey !== '' && in_array( $roleKey, $roles, true ) ) {
+                    return true;
+                }
+            }
+        } catch ( \Throwable $e ) {
+            // fail-closed below
         }
 
-        return true;
+        return $this->error('CLINIC_PERMISSION_DENIED', 403, $denyMessage);
     }
 
     // ==================================================================

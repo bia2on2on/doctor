@@ -75,7 +75,7 @@ final class ClinicianAdminPage
             CpmsAdminMenu::parentSlug(),
             'پزشکان و برنامه کاری',
             'پزشکان و برنامه کاری',
-            RolesAndCapabilities::CONFIG,
+            'read',
             'cpms-clinicians',
             [self::class, 'render']
         );
@@ -86,7 +86,7 @@ final class ClinicianAdminPage
     public static function render(): void
     {
         $actorUserId = (int) get_current_user_id();
-        if ($actorUserId <= 0 || !current_user_can(RolesAndCapabilities::CONFIG)) {
+        if ($actorUserId <= 0 || ! is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
 
@@ -855,10 +855,10 @@ final class ClinicianAdminPage
         if (!is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
-        // cap سراسری به‌عنوان لایهٔ اول؛ لایهٔ دوم (scoped) در authorizeAdminWrite.
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
-            wp_die('دسترسی ندارید', 403);
-        }
+        // Workstream 2 P1 — Subscriber independence: global `cpms_config` is NOT
+        // authority. The scoped Clinic check in authorizeAdminWrite is the
+        // authority (DENY > GRANT > preset, ACTIVE membership + CONFIG). A
+        // `subscriber` with a durable Clinic manager membership is legitimate.
         check_admin_referer($nonceAction);
     }
 
@@ -916,7 +916,7 @@ final class ClinicianAdminPage
      */
     public static function can_current_user_access_page(): bool {
         $actor_user_id = (int) get_current_user_id();
-        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+        if ( $actor_user_id <= 0 || ! is_user_logged_in() ) {
             return false;
         }
 

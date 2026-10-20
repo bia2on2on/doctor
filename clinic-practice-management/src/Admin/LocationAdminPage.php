@@ -54,7 +54,7 @@ final class LocationAdminPage
             CpmsAdminMenu::parentSlug(),
             'شعبه‌ها و محل‌ها',
             'شعبه‌ها',
-            RolesAndCapabilities::CONFIG,
+            'read',
             self::PAGE_SLUG,
             [self::class, 'render']
         );
@@ -62,7 +62,7 @@ final class LocationAdminPage
 
     public static function render(): void
     {
-        if ( ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+        if ( ! is_user_logged_in() ) {
             wp_die( 'دسترسی ندارید', 403 );
         }
 

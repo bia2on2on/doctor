@@ -280,9 +280,9 @@ final class QueueController extends RestBase {
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
 		}
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'Doctor role required' );
-		}
+		// Workstream 2 P1 — Subscriber independence: doctor portal authority is
+		// Clinic-scoped membership + active clinician row. WP `cpms_doctor` role
+		// is display, not authority; a `subscriber` with that membership is legit.
 		$clinician_id = App::db()->fetchValue(
 			'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
 			[ (int) $user->ID ]

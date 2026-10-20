@@ -70,7 +70,7 @@ final class StaffManagementPage
             CpmsAdminMenu::parentSlug(),
             'کاربران و دسترسی‌ها',
             'کاربران و دسترسی‌ها',
-            RolesAndCapabilities::CONFIG,
+            'read',
             self::PAGE_SLUG,
             [self::class, 'render']
         );
@@ -78,7 +78,7 @@ final class StaffManagementPage
 
     public static function render(): void
     {
-        if (!current_user_can(RolesAndCapabilities::CONFIG)) {
+        if (! is_user_logged_in()) {
             wp_die('دسترسی ندارید', 403);
         }
 

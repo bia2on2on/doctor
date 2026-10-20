@@ -56,7 +56,15 @@ final class WooCommerceAdminAccess {
     /**
      * Explicit allowlist: CPMS-owned wp-admin page slug => the capability that very page requires.
      *
-     * Values are *existing* CPMS capabilities — no capability is introduced or granted here.
+     * WS2 (global-role-independent portals): clinician/location/staff management are
+     * reachable by a subscriber Clinic Manager who holds no WP global role (see
+     * FacilitySetupService + TrustedClinicEstablisher). Their real gate is
+     * TrustedClinicEstablisher + AuthorizationService::can(CONFIG) per explicit
+     * Clinic — the wp-admin capability is deliberately `read` so the menu is
+     * visible, and the WooCommerce coexistence filter checks only that same
+     * `read` (every authenticated user holds it). PHI/auth is still enforced
+     * per Clinic before any row is loaded (no cross-Clinic data). Other CPMS
+     * pages keep their scoped CONFIG/SMS/Finance capabilities as before.
      * The Integration test asserts this list matches the real page registrations one-to-one,
      * in both directions, so it cannot drift into a widening or keep a stale entry.
      *
@@ -65,9 +73,12 @@ final class WooCommerceAdminAccess {
     public const PAGES = [
         'cpms-dashboard'          => RolesAndCapabilities::CONFIG,
         'cpms-wizard'             => RolesAndCapabilities::CONFIG,
-        'cpms-staff'              => RolesAndCapabilities::CONFIG,
-        'cpms-locations'          => RolesAndCapabilities::CONFIG,
-        'cpms-clinicians'         => RolesAndCapabilities::CONFIG,
+        // Clinic-scoped config surfaces: menu `read`, real gate is
+        // AuthorizationService::can(CONFIG) for the explicit Clinic (see
+        // WooCommerceAdminAccess::PAGES comment and the page render itself).
+        'cpms-staff'              => 'read',
+        'cpms-locations'          => 'read',
+        'cpms-clinicians'         => 'read',
         'cpms-system'             => RolesAndCapabilities::CONFIG,
         'cpms-settings'           => RolesAndCapabilities::CONFIG,
         'cpms-sms'                => RolesAndCapabilities::SMS_CONFIG,

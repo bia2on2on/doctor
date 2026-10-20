@@ -405,10 +405,11 @@ final class ReceptionPortalController extends RestBase {
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
 		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, $roles, true ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
-		}
+		// Workstream 2 P1 — Subscriber independence: reception authority is
+		// purely Clinic-scoped (ACTIVE membership + scoped caps). A `subscriber`
+		// with a durable `cpms_secretary` (or custom) membership is legitimate.
+		// The WP `cpms_secretary` role is display, not authority; the scoped
+		// `authorize_and_bind_reception_scope` below remains authoritative.
 
 		$route      = (string) $r->get_route();
 		$is_context = '/clinic/v1/staff/portal/reception/context' === $route;
