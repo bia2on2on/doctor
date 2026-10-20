@@ -1158,6 +1158,43 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
+    public function testAFailedAuthorizedDesignationSurfacesAsItselfAndLeavesNothingBehind(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه خطای مدیر', $site, self::TZ);
+        $target = $this->makeUser('fs_designation_failure', 'subscriber');
+        $db = App::db();
+        $clinicId = (int) $clinic['clinic_id'];
+        $claimQuery = 'SELECT first_setup_claimed_at FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d';
+        $claim = $db->fetchValue($claimQuery, [$clinicId]);
+        $designated = $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION);
+
+        // An authorized designation that fails at any write boundary surfaces the
+        // failure itself (never re-labelled as an access refusal) and commits nothing.
+        $boundaries = [
+            'manager_membership_insert' => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table('cpms_clinic_memberships'), '/') . '`?\s/i',
+            'setup_claim_update' => '/^\s*UPDATE\s+`?' . preg_quote($db->table('cpms_clinics'), '/') . '`?\s+SET\s+first_setup_claimed_at/i',
+            'manager_audit' => '/^\s*INSERT\s+INTO\s+`?' . preg_quote($db->table('cpms_audit_logs'), '/') . '`?\s.*\'' . OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION . '\'/is',
+        ];
+        foreach ($boundaries as $label => $pattern) {
+            $thrown = $this->failAt($pattern, $label, fn () => $service->designate_manager($this->actor, $this->org, $clinic['key'], $target));
+            $this->assertInjectedFailureSurfaces($thrown, $label);
+            self::assertNull(App::membership_service()->membership_for($clinicId, $target), $label . ': no membership');
+            self::assertSame($claim, $db->fetchValue($claimQuery, [$clinicId]), $label . ': the setup claim is unchanged');
+            self::assertSame($designated, $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION), $label . ': no audit row');
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label . ': audit hash chain intact');
+        }
+
+        // Positive control: the same designation then succeeds once, audited.
+        $result = $service->designate_manager($this->actor, $this->org, $clinic['key'], $target);
+        self::assertFalse($result['noop']);
+        self::assertNotNull(App::membership_service()->membership_for($clinicId, $target));
+        self::assertSame($designated + 1, $this->auditCount(OrganizationClinicProvisioningService::MANAGER_AUDIT_ACTION));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
     public function testEveryClinicianWriteBoundaryRollsBackCompletelyAndPreservesTheExistingProfile(): void
     {
         $service = FacilitySetupPage::service();

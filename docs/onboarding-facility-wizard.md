@@ -294,6 +294,8 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   locking readback) does not see `suspended`, the step fails as `hold_failed`. Any other failure while creating
   (database, audit, rollback) surfaces unchanged as an internal error (the page shows its internal-error notice
   and logs the exception class); only a real authorization or Organization-status refusal is reported as `denied`.
+  Manager designation (step 4) follows the same rule: an authorized designation that fails at a write
+  (membership, setup claim, audit) surfaces that failure, and nothing of it is committed.
 - Setup and Location management continue while a Clinic is held, as documented in
   `post-onboarding-clinic-location-management.md`.
 

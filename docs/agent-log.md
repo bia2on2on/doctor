@@ -1465,4 +1465,11 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **Tests:** a new test answers each hold readback with a non-suspended Clinic and expects `hold_failed` with nothing
   committed (positive control afterwards). The held-provisioning boundary test now requires that the injected
   failure itself surfaces at all five boundaries, and that the page shows the internal-error notice.
+- **Same pattern in step 4:** `designate_manager()` mapped every lower-level failure except "membership exists"
+  to `denied`. Its known refusals (designation denied, Clinic not found in the Organization) still map to `denied`;
+  any other failure now surfaces unchanged. A new test injects failures at the membership insert, setup-claim
+  update and designation audit of an *authorized* designation: the failure itself surfaces, nothing is committed,
+  the chain stays intact, and the same designation then succeeds once. S3 behaviour for unauthorized callers is
+  unchanged: they are refused by `authorize_manager_designation()` before any of this runs.
+- **CI:** `d86cf11` (S2 part only) was followed by this commit, so the final head's CI is the one that counts.
 - **Local validation only:** php-wasm `-l`, WPCS replica. Exact-head CI evidence is posted on PR #253.

@@ -456,10 +456,16 @@ final class FacilitySetupService {
         } catch ( InvalidArgumentException $e ) {
             throw new FacilitySetupException( 'user_not_found', 'کاربر انتخاب‌شده یافت نشد؛ عضویتی ایجاد نشد.' );
         } catch ( RuntimeException $e ) {
-            if ( 'clinic membership already exists' === $e->getMessage() ) {
+            $failure = $e->getMessage();
+            if ( 'clinic membership already exists' === $failure ) {
                 throw new FacilitySetupException( 'membership_exists', 'این کاربر از قبل عضویتی (با نقش یا وضعیت دیگر) در این درمانگاه دارد؛ عضویت موجود بازنویسی نمی‌شود و باید در «کاربران و دسترسی‌ها» همان درمانگاه بررسی شود.' );
             }
-            throw new FacilitySetupException( 'denied', 'تعیین مدیر درمانگاه مجاز نیست (اختیار سازمانی cpms_org_clinic_manager_assign لازم است؛ DENY صریح اولویت دارد).' );
+            if ( 'organization clinic manager designation denied' === $failure || 'clinic not found in organization' === $failure ) {
+                throw new FacilitySetupException( 'denied', 'تعیین مدیر درمانگاه مجاز نیست (اختیار سازمانی cpms_org_clinic_manager_assign لازم است؛ DENY صریح اولویت دارد).' );
+            }
+            // Any other failure (database, audit, rollback) surfaces as itself: it is
+            // never re-labelled as a refusal.
+            throw $e;
         }
     }
 
