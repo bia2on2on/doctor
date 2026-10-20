@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -1715,23 +1716,65 @@ final class ClinicalService
         return (int) $patientId;
     }
 
+    /**
+     * Business-role/capability precondition (defence layer).
+     *
+     * Owner policy (WordPress-independent business access): a Clinic membership
+     * plus the effective scoped permission of the SAME explicitly established
+     * Clinic is sufficient authority. The WordPress-global capability/role stays
+     * a valid LEGACY path, but it is no longer required.
+     *
+     * The scoped path can never widen access:
+     *  - it is consulted only when the request already carries an EXPLICIT
+     *    trusted scope (ScopeContext::tryGet()); the single-Clinic system
+     *    resolution is never used to infer scope here;
+     *  - the membership must be ACTIVE in exactly that Clinic;
+     *  - the permission resolution remains DENY > GRANT > preset, and the
+     *    object-level scoped guards (authorizeScoped / ownership) still run.
+     */
+    private function scopedMembership( int $wpUserId ): ?array
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope === null || $scope->clinicId <= 0 || $wpUserId <= 0) {
+            return null;
+        }
+        $membership = (new MembershipRepository($this->db))->find_active($scope->clinicId, $wpUserId);
+        if ($membership === null) {
+            return null;
+        }
+        return ['clinic_id' => (int) $scope->clinicId, 'membership' => $membership];
+    }
+
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
-        if (!user_can($wpUserId, $cap)) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+        if (user_can($wpUserId, $cap)) {
+            return;
         }
+        $scoped = $this->scopedMembership($wpUserId);
+        if (
+            $scoped !== null
+            && App::authorization_service()->can($wpUserId, (int) $scoped['clinic_id'], $cap)
+        ) {
+            return;
+        }
+        throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
     }
 
     private function requireRole(int $wpUserId, string $role, string $action): void
     {
-        $user = get_userdata($wpUserId);
-        if ($user === false || $user->roles === []) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
-        }
         $expected = $role === 'doctor' ? RolesAndCapabilities::ROLE_DOCTOR : RolesAndCapabilities::ROLE_SECRETARY;
-        if (!in_array($expected, $user->roles, true)) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
+        $user     = get_userdata($wpUserId);
+        if ($user !== false && $user->roles !== [] && in_array($expected, $user->roles, true)) {
+            return;
         }
+        // Scoped path: the durable membership of the explicitly established
+        // Clinic carries the required business role. A membership with another
+        // role keeps failing closed, exactly as before.
+        $scoped = $this->scopedMembership($wpUserId);
+        if ($scoped !== null && (string) ($scoped['membership']['role_key'] ?? '') === $expected) {
+            return;
+        }
+        throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
     }
 
     /**

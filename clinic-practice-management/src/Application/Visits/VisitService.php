@@ -1382,18 +1382,40 @@ final class VisitService
     }
 
     /**
-     * نقش منطقی برای ماشین — از WP Role (نه فقط Capability).
+     * نقش منطقی برای ماشین.
+     *
+     * مسیر قدیمی: WP Role. مسیر سیاستِ «دسترسی کسب‌وکار مستقل از وردپرس»:
+     * یک Subscriber بدون نقش تجاری وردپرس، نقشِ منطقی را از **عضویت پایدارِ
+     * فعالِ همان Clinicِ صریحاً مستقرشده** می‌گیرد (`ScopeContext::tryGet()`).
+     * این مسیر عمداً فقط با Scope صریح کار می‌کند (نه «تنها Clinic» سیستمی) و
+     * نقشِ عضویت باید دقیقاً doctor/secretary باشد؛ در غیر این صورت null
+     * (fail closed) — همان رفتار قبلی برای کاربران بدون نقش.
      */
     private function roleForUser(int $wpUserId): ?string
     {
         $user = get_userdata($wpUserId);
-        if ( $user === false || $user->roles === [] ) {
+        if ( $user !== false && $user->roles !== [] ) {
+            if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                return 'doctor';
+            }
+            if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                return 'secretary';
+            }
+        }
+
+        $scope = ScopeContext::tryGet();
+        if ( $scope === null || $scope->clinicId <= 0 || $wpUserId <= 0 ) {
             return null;
         }
-        if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+        $membership = $this->memberships->find_active( (int) $scope->clinicId, $wpUserId );
+        if ( $membership === null ) {
+            return null;
+        }
+        $role_key = (string) ( $membership['role_key'] ?? '' );
+        if ( RolesAndCapabilities::ROLE_DOCTOR === $role_key ) {
             return 'doctor';
         }
-        if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+        if ( RolesAndCapabilities::ROLE_SECRETARY === $role_key ) {
             return 'secretary';
         }
 
@@ -1413,9 +1435,19 @@ final class VisitService
 
     private function requireQueueReader(int $wpUserId): void
     {
-        if ( !user_can($wpUserId, RolesAndCapabilities::QUEUE_READ )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
-            throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
+        if ( user_can($wpUserId, RolesAndCapabilities::QUEUE_READ) ) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
+            return;
         }
+        // Scoped path (WordPress-independent business access): the ACTIVE
+        // membership of the explicitly established Clinic must itself grant
+        // cpms_queue_read through the authorization engine (DENY > GRANT > preset).
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && $scope->clinicId > 0 && $wpUserId > 0 ) {
+            if ( App::authorization_service()->can( $wpUserId, (int) $scope->clinicId, RolesAndCapabilities::QUEUE_READ ) ) {
+                return;
+            }
+        }
+        throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
     }
 
     /**

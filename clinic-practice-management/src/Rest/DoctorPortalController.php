@@ -546,22 +546,26 @@ final class DoctorPortalController extends RestBase {
 	}
 
 
+	/**
+	 * Portal entry boundary (WordPress-independent business access).
+	 *
+	 * Authority is CPMS data only: authenticated actor + server-derived ACTIVE
+	 * clinician identity + at least one ACTIVE Clinic membership. The WordPress
+	 * business role and the WordPress-global capability are NOT entry
+	 * requirements any more — a Subscriber with a durable doctor membership uses
+	 * the same portal. Nothing is widened by this: every Clinic the portal may
+	 * offer is filtered by {@see self::eligible_portal_clinics()} (active
+	 * Organization, clinician participation, scoped capability per Clinic) and
+	 * every operational route re-authorizes through the trusted scope below.
+	 */
 	private function perm_doctor( WP_REST_Request $r ): bool|WP_Error {
 		$nonce = $this->requireNonce( $r );
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
 		}
-		$cap = $this->requireCap( RolesAndCapabilities::QUEUE_READ );
-		if ( $cap instanceof WP_Error ) {
-			return $cap;
-		}
 		$user = wp_get_current_user();
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return new WP_Error( 'CLINIC_UNAUTHORIZED', 'Unauthorized', [ 'status' => 401 ] );
-		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
-			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor role required', [ 'status' => 403 ] );
 		}
 		$db            = App::db(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability
 		$clinician_id = $db->fetchValue(
@@ -591,17 +595,9 @@ final class DoctorPortalController extends RestBase {
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
 		}
-		$perm = $this->requireCap( $cap );
-		if ( $perm instanceof WP_Error ) {
-			return $perm;
-		}
 		$user = wp_get_current_user();
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return new WP_Error( 'CLINIC_UNAUTHORIZED', 'Unauthorized', [ 'status' => 401 ] );
-		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
-			return new WP_Error( 'CLINIC_PERMISSION_DENIED', 'Doctor role required', [ 'status' => 403 ] );
 		}
 		$db           = App::db();
 		$clinician_id = $db->fetchValue(

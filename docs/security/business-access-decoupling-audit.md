@@ -164,3 +164,44 @@ P1-13 of the review). No "authorized in any Clinic" fallback was introduced anyw
   any checkout-dependent step could touch this diff; the identical job was SUCCESS at
   `0e4506cd`. Net result at `879753f`: 25/26 checks green, the single red check being
   that pre-execution tooling failure.
+
+## 4. WordPress-independent business access (round 3, in progress)
+
+Owner policy: a WordPress **Subscriber** holding a durable CPMS membership and the
+effective scoped permission of an explicitly selected Clinic/Location uses the same
+operational portals without any privileged WordPress role. WordPress roles/capabilities
+remain a *valid legacy path* but are no longer entry requirements; CPMS data is the
+authority.
+
+### 4.1 Delivered in this round (code + regression contract)
+
+| Area | Change | Authority now |
+| --- | --- | --- |
+| Doctor Portal entry | `DoctorPortalController::perm_doctor`, `QueueController::permDoctorPortal` | nonce + authenticated actor + server-derived ACTIVE clinician identity + ≥1 ACTIVE membership; the eligible Clinic list is filtered by scoped capability per Clinic |
+| Visit Workspace boundary | `DoctorPortalController::perm_workspace` | removed WP-global `requireCap`/WP-role gates; explicit trusted Clinic (establisher) → `AuthorizationService::can(cap)` → explicit Location → ownership |
+| Doctor queue/today `guard()` | `QueueController::guard` | the WP-global capability is no longer a precondition; the scoped permission of the bound Clinic (`requireClinicPermission`) still decides and still fails closed without a scope |
+| Clinical writes/reads | `ClinicalService::requireCap` / `requireRole` | scoped fallback: explicit `ScopeContext` + ACTIVE membership + `can(cap)` (DENY > GRANT > preset); business role may come from the durable membership `role_key` |
+| Visit workflow | `VisitService::roleForUser` / `requireQueueReader` | logical role and queue authority may come from the ACTIVE membership role of the explicit scope; WP role stays first (legacy) and unknown keeps failing closed |
+| Reception boundary | `ReceptionPortalController::perm_reception` | removed the WP-global capability loop and WP-secretary gate; `authorize_and_bind_reception_scope()` (explicit Clinic → scoped authorization → trusted scope + Location) is the authority |
+| Module visibility | `StaffPortalShell::doctor_module_eligible`, `reception_module_eligible`, `DoctorPortalShell::isDoctorUser` | CPMS only (identity + ACTIVE membership + all module capabilities in the SAME Clinic); visibility is never authority |
+
+Regression contract: `tests/Integration/SubscriberOperationalAccessTest.php`
+(Subscriber doctor positive path incl. visit record, cross-Clinic refusal, explicit DENY
+override, suspended membership, inactive Location, ambiguous/missing scope, WordPress
+administrator without CPMS authority, membership-without-identity and
+identity-without-membership, Subscriber secretary Reception context + foreign-Clinic
+probe).
+
+### 4.2 Not delivered in this round (explicit)
+
+- Subscriber **Accountant/Finance** and **Reports/Export**: module visibility and the
+  REST boundaries still require the WordPress-global `cpms_finance_read` /
+  `cpms_report_read` capability, so the module is not exposed to a Subscriber either
+  (deliberately kept consistent — no visible module that would 403).
+- `MedicalFileService`, `HandwritingService`, `FinanceService`, `ReportService`,
+  `ExportService` still carry WordPress-global `has_cap` layers at their own call sites.
+- `RestClinicContext` generic staff routing signal and `NotificationsController`
+  role lists are unchanged.
+- MariaDB 11.8 migration-0027 gate: **NOT RUN** (no MariaDB 11.8 instance available in
+  this environment; no compatibility change was inferred or applied).
+- Real-browser Subscriber journeys: **NOT RUN** in this round.

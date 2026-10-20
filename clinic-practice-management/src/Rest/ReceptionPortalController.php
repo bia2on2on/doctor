@@ -394,20 +394,16 @@ final class ReceptionPortalController extends RestBase {
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
 		}
-		foreach ( $caps as $cap ) {
-			$allowed = $this->requireCap( $cap );
-			if ( $allowed instanceof WP_Error ) {
-				return $allowed;
-			}
-		}
-
+		// WordPress-independent business access: the required capabilities are
+		// evaluated per Clinic by authorize_and_bind_reception_scope() below
+		// (DENY > GRANT > preset, explicit Clinic first). The WordPress business
+		// role and the WordPress-global capability are therefore not entry
+		// requirements any more; a Subscriber with a durable secretary membership
+		// uses this same boundary and nothing widens, because the scoped
+		// authorization and the trusted-scope establishment still run.
 		$user = wp_get_current_user();
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
-		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, $roles, true ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
 		}
 
 		$route      = (string) $r->get_route();

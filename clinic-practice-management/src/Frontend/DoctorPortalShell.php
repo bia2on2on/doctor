@@ -277,9 +277,15 @@ final class DoctorPortalShell {
 	}
 
 	// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy camelCase, established contract
+	/**
+	 * Doctor identity = a server-derived ACTIVE clinician profile for this
+	 * account. The WordPress business role is deliberately NOT part of the
+	 * identity test: a Subscriber with a durable doctor membership is the same
+	 * doctor. Clinical authority is still decided per Clinic by the scoped
+	 * authorization engine (`AuthorizationService`), never here.
+	 */
 	public static function isDoctorUser( \WP_User $user ): bool {
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( \ClinicCore\Auth\RolesAndCapabilities::ROLE_DOCTOR, $roles, true ) ) {
+		if ( (int) ( $user->ID ?? 0 ) <= 0 ) {
 			return false;
 		}
 		$db            = \ClinicCore\Bootstrap\App::db(); // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- legacy alignment, keep readability

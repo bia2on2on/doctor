@@ -466,9 +466,9 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return false;
 		}
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
-			return false;
-		}
+		// Identity only: an ACTIVE clinician profile. The WordPress business role
+		// is not an entry requirement (WordPress-independent business access); the
+		// per-Clinic capability check below is unchanged and still decides.
 		if ( ! DoctorPortalShell::isDoctorUser( $user ) ) {
 			return false;
 		}
@@ -505,12 +505,10 @@ final class StaffPortalShell {
 		if ( false === $user || ! $user->exists() ) {
 			return false;
 		}
-		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, (array) $user->roles, true ) ) {
-			return false;
-		}
-		if ( ! user_can( $user_id, 'read' ) ) {
-			return false;
-		}
+		// Identity/visibility only: an ACTIVE membership whose scoped capabilities
+		// open the reception module. The WordPress business role is not required
+		// (WordPress-independent business access); the scoped capability check
+		// below still decides, and every REST call re-authorizes.
 
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {

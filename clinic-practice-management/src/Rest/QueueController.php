@@ -271,17 +271,22 @@ final class QueueController extends RestBase {
 		);
 	}
 
+	/**
+	 * Doctor Portal entry boundary (WordPress-independent business access).
+	 *
+	 * Same contract as the Doctor Portal controller boundary: authenticated actor
+	 * + server-derived ACTIVE clinician identity + explicit trusted Clinic. The
+	 * WordPress business role / global capability are not entry requirements; the
+	 * scoped capability of the selected Clinic is enforced by guard() below.
+	 */
 	private function permDoctorPortal( WP_REST_Request $r ): bool|WP_Error {
-		$base = $this->permCap( $r, RolesAndCapabilities::QUEUE_READ );
-		if ( $base instanceof WP_Error ) {
-			return $base;
+		$nonce = $this->requireNonce( $r );
+		if ( $nonce instanceof WP_Error ) {
+			return $nonce;
 		}
 		$user = wp_get_current_user();
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
-		}
-		if ( ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'Doctor role required' );
 		}
 		$clinician_id = App::db()->fetchValue(
 			'SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d AND is_active = 1 LIMIT 1',
@@ -439,10 +444,11 @@ final class QueueController extends RestBase {
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
 		}
-		$perm = $this->requireCap( $cap );
-		if ( $perm instanceof WP_Error ) {
-			return $perm;
-		}
+		// Authority for this operation is the scoped capability of the explicitly
+		// established trusted Clinic (requireClinicPermission below). The
+		// WordPress-global capability is no longer a precondition, so a Subscriber
+		// with a durable staff membership uses the same boundary; nothing widens,
+		// because the scoped check still runs and fails closed without a scope.
 		$portal_context = $this->requireExplicitPortalClinic( $r );
 		if ( $portal_context instanceof WP_Error ) {
 			return $portal_context;
