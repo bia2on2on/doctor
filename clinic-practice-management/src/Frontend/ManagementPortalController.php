@@ -272,8 +272,8 @@ final class ManagementPortalController {
 			if ( ! is_scalar( $raw ) ) {
 				continue;
 			}
-			$value              = sanitize_text_field( (string) $raw );
-			$input[ $field ]    = $value;
+			$value           = sanitize_text_field( (string) $raw );
+			$input[ $field ] = $value;
 		}
 
 		return $input;

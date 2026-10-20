@@ -648,7 +648,7 @@ final class ExportService
 
         $missing = [];
         foreach ($reports->typeCaps($type) as $cap) {
-            if ( ! $this->export_capability_granted( $actorUserId, (string) $cap ) ) {
+            if ( ! $this->export_capability_granted( $actorUserId, (string) $cap ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established host parameter name in this legacy method.
                 $missing[] = $cap;
             }
         }
