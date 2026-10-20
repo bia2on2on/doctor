@@ -600,6 +600,37 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					وضعیت: <?php echo esc_html( 'active' === $cpms_mp_c['status'] ? 'فعال' : 'غیرفعال' ); ?>
 				</p>
 
+				<?php $cpms_mp_readiness = $cpms_mp_service->clinic_facility_readiness( $cpms_mp_actor, (int) $cpms_mp_c['id'] ); ?>
+				<?php if ( is_array( $cpms_mp_readiness ) && ! empty( $cpms_mp_readiness['hospital'] ) ) : ?>
+					<section class="cpms-mgmt-card" data-cpms-clinic-readiness="<?php echo esc_attr( $cpms_mp_readiness['ready'] ? 'ready' : 'blocked' ); ?>">
+						<h3>تکمیل راه‌اندازی بیمارستان — همین درمانگاه</h3>
+						<p class="cpms-mgmt-meta">
+							این بخش فقط برای درمانگاهی است که مدیر آن هستید؛ اختیار سازمانی به‌تنهایی دسترسی این درمانگاه را نمی‌دهد و هیچ درمانگاه دیگری در این گزارش دیده نمی‌شود.
+						</p>
+						<?php if ( $cpms_mp_readiness['ready'] ) : ?>
+							<p data-cpms-clinic-ready="1">✅ این درمانگاه همهٔ موارد لازم را دارد؛ فعال‌سازی نهایی را مدیر سازمان انجام می‌دهد.</p>
+						<?php else : ?>
+							<p data-cpms-clinic-ready="0">موارد باقی‌ماندهٔ این درمانگاه:</p>
+							<ul>
+								<?php foreach ( (array) $cpms_mp_readiness['blocking'] as $cpms_mp_blocker ) : ?>
+									<li><?php echo esc_html( (string) $cpms_mp_blocker ); ?></li>
+								<?php endforeach; ?>
+							</ul>
+						<?php endif; ?>
+						<p class="cpms-mgmt-meta">مکان/اتاق، پزشکان و برنامهٔ هفتگی همین درمانگاه را در بخش‌های پایین همین صفحه ثبت کنید.</p>
+
+						<h4>سیاست رزرو و ظرفیت</h4>
+						<?php $cpms_mp_form_open( 'clinic_facility_booking', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
+							<label>مدت هر نوبت (دقیقه) <input type="number" name="duration" min="5" max="240" value="15" required></label>
+							<label>ظرفیت هر نوبت <input type="number" name="capacity" min="1" max="20" value="1" required></label>
+							<label>حداقل فاصلهٔ رزرو (ساعت) <input type="number" name="lead" min="1" max="72" value="2" required></label>
+							<label>حداکثر روز آینده <input type="number" name="future" min="1" max="365" value="30" required></label>
+							<label>مهلت لغو (ساعت) <input type="number" name="cancel" min="0" max="168" value="12" required></label>
+							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ سیاست رزرو</button>
+						</form>
+					</section>
+				<?php endif; ?>
+
 				<h3>پروفایل درمانگاه</h3>
 				<?php $cpms_mp_form_open( 'clinic_update_profile', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php

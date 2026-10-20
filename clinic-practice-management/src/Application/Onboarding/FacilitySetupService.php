@@ -489,7 +489,7 @@ final class FacilitySetupService {
      * @return array<string, mixed> The room entry.
      */
     public function add_room( int $actor_id, int $organization_id, string $clinic_key, string $request_key, string $name, string $site_key ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_clinic_step( $actor_id, $organization_id, $clinic_key );
         $this->assert_request_key( $request_key );
         $name = trim( $name );
         if ( '' === $name || mb_strlen( $name ) > 190 ) {
@@ -621,7 +621,7 @@ final class FacilitySetupService {
      * @return array{clinician_id:int, profile_created:bool, membership_created:bool, location_ids:list<int>, noop:bool}
      */
     public function assign_clinician( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $full_name, array $room_keys ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_clinic_step( $actor_id, $organization_id, $clinic_key );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -847,7 +847,7 @@ final class FacilitySetupService {
      * @return array{membership_id:int, noop:bool, scope_mode:string, location_ids:list<int>, denied:list<string>}
      */
     public function assign_staff( int $actor_id, int $organization_id, string $clinic_key, int $wp_user_id, string $role_key, string $access, array $room_keys, array $deny_caps ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_clinic_step( $actor_id, $organization_id, $clinic_key );
         $entry     = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id = (int) $entry['clinic_id'];
         $this->clinic_scope( $actor_id, $clinic_id );
@@ -1009,7 +1009,7 @@ final class FacilitySetupService {
      * @return array{schedule_id:int, noop:bool}
      */
     public function add_weekly_schedule( int $actor_id, int $organization_id, string $clinic_key, int $clinician_id, string $room_key, array $input ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
+        $this->assert_clinic_step( $actor_id, $organization_id, $clinic_key );
         $entry       = $this->clinic_entry( $organization_id, $clinic_key );
         $clinic_id   = (int) $entry['clinic_id'];
         $scope       = $this->clinic_scope( $actor_id, $clinic_id );
@@ -1076,11 +1076,35 @@ final class FacilitySetupService {
      * @return array<string, int>
      */
     public function save_booking_policy( int $actor_id, int $organization_id, string $clinic_key, array $input ): array {
-        $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
-        $entry     = $this->clinic_entry( $organization_id, $clinic_key );
-        $clinic_id = (int) $entry['clinic_id'];
+        $clinic_id = $this->assert_clinic_step( $actor_id, $organization_id, $clinic_key );
+
+        return $this->apply_booking_policy( $actor_id, $clinic_id, $input );
+    }
+
+    /**
+     * Booking policy addressed by Clinic id — the path the designated Clinic
+     * Manager's own portal uses (no Organization capability, no plan key typed).
+     * Authority is the actor's ACTIVE membership + CONFIG in that Clinic.
+     *
+     * @param array<string,mixed> $input
+     * @return array<string,int>
+     */
+    public function save_booking_policy_for_clinic( int $actor_id, int $clinic_id, array $input ): array {
+        if ( $clinic_id <= 0 ) {
+            throw new FacilitySetupException( 'not_found', 'درمانگاه باید صریحاً انتخاب شود.' );
+        }
         $this->clinic_scope( $actor_id, $clinic_id );
 
+        return $this->apply_booking_policy( $actor_id, $clinic_id, $input );
+    }
+
+    /**
+     * Shared booking-policy write (validation + settings + setup progress).
+     *
+     * @param array<string,mixed> $input
+     * @return array<string,int>
+     */
+    private function apply_booking_policy( int $actor_id, int $clinic_id, array $input ): array {
         foreach ( [ 'duration', 'capacity', 'lead', 'future', 'cancel' ] as $required ) {
             if ( ! isset( $input[ $required ] ) || ! is_scalar( $input[ $required ] ) || '' === trim( (string) $input[ $required ] ) ) {
                 throw new FacilitySetupException( 'invalid_booking', 'تمام گزینه‌های سیاست رزرو الزامی هستند.' );
@@ -1105,6 +1129,60 @@ final class FacilitySetupService {
         }
 
         return $policy;
+    }
+
+    /**
+     * Readiness of ONE Clinic from its own manager's point of view.
+     *
+     * The designated Clinic Manager holds no Organization capability, so the
+     * Organization-wide review() is not available to them. This reports the same
+     * live-row facts for their Clinic only (active Locations, clinicians with an
+     * active weekly schedule, booking policy) and is authorized by their own
+     * ACTIVE membership + CONFIG in that Clinic. It never discloses another
+     * Clinic and never reports completion from typed-in numbers.
+     *
+     * @return array{clinic_id:int, organization_id:int, name:string, status:string, hospital:bool, summary:array<string,mixed>, blocking:list<string>, ready:bool}
+     */
+    public function clinic_readiness( int $actor_id, int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
+            throw new FacilitySetupException( 'not_found', 'درمانگاه باید صریحاً انتخاب شود.' );
+        }
+        $this->clinic_scope( $actor_id, $clinic_id );
+        $row = $this->db->fetchRow(
+            'SELECT id, organization_id, name, COALESCE(status, %s) AS status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+            [ 'active', $clinic_id ]
+        );
+        if ( null === $row ) {
+            throw new FacilitySetupException( 'not_found', 'درمانگاه یافت نشد.' );
+        }
+        $organization_id = (int) $row['organization_id'];
+        $plan            = $this->read_plan( $organization_id );
+        $hospital        = is_array( $plan ) && 'hospital_network' === (string) ( $plan['flow'] ?? '' );
+
+        $summary  = $this->clinic_summary( $clinic_id );
+        $blocking = [];
+        if ( $summary['active_locations'] < 1 ) {
+            $blocking[] = 'هیچ مکان فعالی ندارد؛ دست‌کم یک مکان/اتاق ویزیت ثبت کنید.';
+        }
+        if ( $hospital ) {
+            if ( $summary['scheduled_clinicians'] < 1 ) {
+                $blocking[] = 'دست‌کم یک پزشک با برنامهٔ هفتگی لازم است.';
+            }
+            if ( ! $summary['booking_policy'] ) {
+                $blocking[] = 'سیاست رزرو و ظرفیت ثبت نشده است.';
+            }
+        }
+
+        return [
+            'clinic_id'       => $clinic_id,
+            'organization_id' => $organization_id,
+            'name'            => (string) $row['name'],
+            'status'          => (string) $row['status'],
+            'hospital'        => $hospital,
+            'summary'         => $summary,
+            'blocking'        => $blocking,
+            'ready'           => [] === $blocking,
+        ];
     }
 
     /**
@@ -1378,6 +1456,26 @@ final class FacilitySetupService {
         }
 
         return $scope;
+    }
+
+    /**
+     * Clinic-level wizard step: authority comes from the actor's OWN membership in
+     * that plan Clinic (ACTIVE + CONFIG), never from Organization authority.
+     *
+     * "Do not grant Organization Managers implicit Clinic rights": an Organization
+     * Manager who is not a member of the Clinic is refused here by clinic_scope(),
+     * exactly as before. A designated Subscriber Clinic Manager — who holds no
+     * Organization capability at all — may now complete their own Clinic.
+     *
+     * The Clinic↔Organization ownership is re-read from the database inside
+     * clinic_entry(); nothing is taken from the browser beyond the selector.
+     */
+    private function assert_clinic_step( int $actor_id, int $organization_id, string $clinic_key ): int {
+        $entry     = $this->clinic_entry( $organization_id, $clinic_key );
+        $clinic_id = (int) $entry['clinic_id'];
+        $this->clinic_scope( $actor_id, $clinic_id );
+
+        return $clinic_id;
     }
 
     /**

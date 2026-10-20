@@ -61,6 +61,7 @@ final class ManagementPortalController {
 		'clinic_staff_capability',
 		'clinic_clinician_register',
 		'clinic_schedule_create',
+		'clinic_facility_booking',
 		'org_facility_start',
 		'org_facility_ack',
 		'org_facility_site',
@@ -352,6 +353,22 @@ final class ManagementPortalController {
 				return $service->activate_facility_setup(
 					$actor_wp_user_id,
 					self::int_value( $input, 'organization_id' )
+				);
+
+			case 'clinic_facility_booking':
+				// The designated Clinic Manager completes their own Clinic's booking
+				// policy from their own portal: clinic_id is a selector only and the
+				// service re-establishes ACTIVE membership + CONFIG in that Clinic.
+				return $service->save_clinic_booking_policy(
+					$actor_wp_user_id,
+					self::int_value( $input, 'clinic_id' ),
+					array(
+						'duration' => self::string_value( $input, 'duration' ),
+						'capacity' => self::string_value( $input, 'capacity' ),
+						'lead'     => self::string_value( $input, 'lead' ),
+						'future'   => self::string_value( $input, 'future' ),
+						'cancel'   => self::string_value( $input, 'cancel' ),
+					)
 				);
 
 			case 'clinic_schedule_create':

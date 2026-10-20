@@ -1613,6 +1613,49 @@ final class ManagementPortalService {
 	}
 
 	/**
+	 * The designated Clinic Manager's own view of the held Clinic they must
+	 * complete: live-row readiness + what is still missing. Authorized by their
+	 * own ACTIVE membership + CONFIG in that Clinic (never by Organization
+	 * authority), and it never exposes another Clinic.
+	 *
+	 * @return array<string,mixed>|null
+	 */
+	public function clinic_facility_readiness( int $actor_wp_user_id, int $clinic_id ): ?array {
+		if ( $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id ) === null ) {
+			return null;
+		}
+
+		try {
+			return App::facility_setup_service()->clinic_readiness( $actor_wp_user_id, $clinic_id );
+		} catch ( \Throwable $e ) {
+			return null;
+		}
+	}
+
+	/**
+	 * Booking policy of one Clinic, written from that Clinic's own manager portal.
+	 * The Clinic id is a selector only: FacilitySetupService re-establishies the
+	 * actor's ACTIVE membership + CONFIG in exactly that Clinic.
+	 *
+	 * @param array<string,mixed> $input
+	 * @return array{ok:bool, message:string}
+	 */
+	public function save_clinic_booking_policy( int $actor_wp_user_id, int $clinic_id, array $input ): array {
+		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id );
+		if ( $trusted === null ) {
+			return self::failure();
+		}
+
+		try {
+			App::facility_setup_service()->save_booking_policy_for_clinic( $actor_wp_user_id, $trusted, $input );
+		} catch ( \Throwable $e ) {
+			return self::failure();
+		}
+
+		return array( 'ok' => true, 'message' => 'سیاست رزرو و ظرفیت این درمانگاه ذخیره شد.' );
+	}
+
+	/**
 	 * Consolidated review computed from live rows.
 	 *
 	 * @return array<string,mixed>|null
