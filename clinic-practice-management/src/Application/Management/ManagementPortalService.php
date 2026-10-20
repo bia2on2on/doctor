@@ -50,6 +50,7 @@ use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
@@ -451,6 +452,15 @@ final class ManagementPortalService {
 	 */
 	public function create_clinic( int $actor_wp_user_id, int $organization_id, array $input ): array {
 		try {
+			// FIX 3 — Iranian address: validate province/city via offline catalog (Persian RTL, no external service).
+			try {
+				$__resolved = self::resolve_portal_address( $input );
+				if ( null !== $__resolved ) {
+					$input['address'] = $__resolved;
+				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::failure();
+			}
 			$result = $this->organizations->provision(
 				$actor_wp_user_id,
 				$organization_id,
@@ -479,6 +489,15 @@ final class ManagementPortalService {
 	 */
 	public function update_clinic_profile( int $actor_wp_user_id, int $organization_id, int $clinic_id, array $input ): array {
 		try {
+			// FIX 3 — Iranian address: validate province/city via offline catalog (Persian RTL, no external service).
+			try {
+				$__resolved = self::resolve_portal_address( $input );
+				if ( null !== $__resolved ) {
+					$input['address'] = $__resolved;
+				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::failure();
+			}
 			$this->organizations->update_clinic_profile( $actor_wp_user_id, $organization_id, $clinic_id, $input );
 		} catch ( \Throwable $e ) {
 			return self::failure();
@@ -544,6 +563,15 @@ final class ManagementPortalService {
 	 */
 	public function update_clinic_settings( int $actor_wp_user_id, int $clinic_id, array $input ): array {
 		try {
+			// FIX 3 — Iranian address: validate province/city via offline catalog (Persian RTL, no external service).
+			try {
+				$__resolved = self::resolve_portal_address( $input );
+				if ( null !== $__resolved ) {
+					$input['address'] = $__resolved;
+				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::failure();
+			}
 			$trusted = $this->trusted_clinic( $actor_wp_user_id, $clinic_id );
 			if ( $trusted === null ) {
 				return self::failure();
@@ -579,6 +607,15 @@ final class ManagementPortalService {
 		}
 
 		try {
+			try {
+				$__resolved = self::resolve_portal_address( $input );
+				if ( null !== $__resolved ) {
+					$input['address'] = $__resolved;
+				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::failure();
+			}
+
 			App::locationService()->createLocation( $actor_wp_user_id, $trusted, $input );
 		} catch ( LocationException $e ) {
 			return self::failure();
@@ -620,6 +657,15 @@ final class ManagementPortalService {
 
 		$location = array();
 		try {
+			try {
+				$__resolved = self::resolve_portal_address( $input );
+				if ( null !== $__resolved ) {
+					$input['address'] = $__resolved;
+				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::failure();
+			}
+
 			$found = $this->locations->find( $location_id );
 			if ( $found === null || (int) ( $found['clinic_id'] ?? 0 ) !== $trusted ) {
 				return self::failure(); // durable ownership mismatch / forged id
@@ -1773,6 +1819,36 @@ final class ManagementPortalService {
 		$string = trim( (string) $value );
 
 		return '' === $string ? null : $string;
+	}
+
+	/**
+	 * Offline Iran province/city address resolution for portal forms (FIX 3).
+	 *
+	 * Uses IranProvinceCityCatalog (31 provinces, offline, no external call) to validate
+	 * province-city relationship server-side, preserve Persian RTL and allow safe retries
+	 * (composed as `province، city، detail`). Returns resolved address or null if nothing
+	 * submitted; throws InvalidArgumentException on mismatch (city without province or
+	 * city not belonging to province) — caller maps it to a uniform failure.
+	 *
+	 * @param array<string,mixed> $input
+	 */
+	private static function resolve_portal_address( array $input ): ?string {
+		$raw_address  = $input['address'] ?? null;
+		$raw_province = $input['address_province'] ?? null;
+		$raw_city     = $input['address_city'] ?? null;
+		if (
+			( null === $raw_address || '' === trim( (string) $raw_address ) )
+			&& ( null === $raw_province || '' === trim( (string) $raw_province ) )
+			&& ( null === $raw_city || '' === trim( (string) $raw_city ) )
+		) {
+			return null;
+		}
+
+		return IranProvinceCityCatalog::resolve_submitted_address(
+			is_scalar( $raw_address ) ? (string) $raw_address : null,
+			is_scalar( $raw_province ) ? (string) $raw_province : null,
+			is_scalar( $raw_city ) ? (string) $raw_city : null
+		);
 	}
 
 	/**

@@ -26,6 +26,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Frontend\ManagementPortalController;
 use ClinicCore\Frontend\ManagementPortalShell;
 use ClinicCore\Frontend\StaffPortalShell;
+use ClinicCore\Admin\AddressSelectorField;
 
 if ( ! function_exists( 'wp_get_current_user' ) ) {
 	return;
@@ -274,11 +275,12 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					<h2>ایجاد درمانگاه جدید</h2>
 					<?php $cpms_mp_form_open( 'org_create_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 						<?php
-						$cpms_mp_field( 'name', 'نام درمانگاه', '' );
+						$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', '' );
 						$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 						$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA (مثال: Asia/Tehran)' );
 						$cpms_mp_field( 'location_name', 'نام شعبهٔ اصلی' );
-						$cpms_mp_field( 'address', 'نشانی' );
+						<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
+						<?php $cpms_mp_field( 'address', 'نشانی' );
 						$cpms_mp_field( 'phone', 'تلفن' );
 						?>
 						<button class="cpms-mgmt-btn" type="submit">ایجاد درمانگاه و شعبهٔ اصلی</button>
@@ -332,7 +334,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php $cpms_mp_form_open( 'org_facility_site', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 							<?php
 							$cpms_mp_field( 'label', 'نام ساختمان', '', true );
-							$cpms_mp_field( 'address', 'نشانی' );
+							<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
+						<?php $cpms_mp_field( 'address', 'نشانی' );
 							?>
 							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت ساختمان</button>
 						</form>
@@ -340,7 +343,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<h3>افزودن درمانگاه به برنامه</h3>
 						<?php if ( array() !== (array) $cpms_mp_facility['sites'] ) : ?>
 							<?php $cpms_mp_form_open( 'org_facility_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
-								<?php $cpms_mp_field( 'name', 'نام درمانگاه', '', true ); ?>
+								<?php $cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', '', true ); ?>
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-site-key">ساختمان</label>
 									<select id="cpms-mgmt-site-key" name="site_key">
@@ -392,7 +395,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 										<?php endforeach; ?>
 									</select>
 								</p>
-								<?php $cpms_mp_field( 'name', 'نام اتاق/مکان', '', true ); ?>
+								<?php $cpms_mp_field( 'cpms_entity_name', 'نام اتاق/مکان', '', true ); ?>
 								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت اتاق</button>
 							</form>
 							<p class="cpms-mgmt-meta">ایجاد اتاق یک عملیات درمانگاهی است: اختیار سازمانی به‌تنهایی کافی نیست و مدیر تعیین‌شدهٔ همان درمانگاه (عضویت فعال + مجوز پیکربندی) لازم است.</p>
@@ -540,8 +543,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php if ( $cpms_mp_org_can['update'] ) : ?>
 							<?php $cpms_mp_form_open( 'org_update_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'], 'clinic_id' => $cpms_mp_row['id'] ) ); ?>
 								<?php
-								$cpms_mp_field( 'name', 'نام درمانگاه', $cpms_mp_row['name'] );
-								$cpms_mp_field( 'address', 'نشانی' );
+								$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_row['name'] );
+								<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
+						<?php $cpms_mp_field( 'address', 'نشانی' );
 								$cpms_mp_field( 'phone', 'تلفن' );
 								?>
 								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
@@ -648,8 +652,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				<h3>پروفایل درمانگاه</h3>
 				<?php $cpms_mp_form_open( 'clinic_update_profile', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php
-					$cpms_mp_field( 'name', 'نام درمانگاه', $cpms_mp_c['name'] );
-					$cpms_mp_field( 'address', 'نشانی', $cpms_mp_c['address'] );
+					$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_c['name'] );
+					<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
+						<?php $cpms_mp_field( 'address', 'نشانی', $cpms_mp_c['address'] );
 					$cpms_mp_field( 'phone', 'تلفن', $cpms_mp_c['phone'] );
 					?>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
@@ -682,10 +687,11 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				<h3>افزودن شعبه</h3>
 				<?php $cpms_mp_form_open( 'clinic_location_create', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php
-					$cpms_mp_field( 'name', 'نام شعبه', '' );
+					$cpms_mp_field( 'cpms_entity_name', 'نام شعبه', '' );
 					$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 					$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', $cpms_mp_c['timezone'] );
-					$cpms_mp_field( 'address', 'نشانی' );
+					<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
+						<?php $cpms_mp_field( 'address', 'نشانی' );
 					$cpms_mp_field( 'phone', 'تلفن' );
 					?>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ایجاد شعبه</button>

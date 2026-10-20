@@ -359,14 +359,14 @@ final class MedicalFileService
         if (!in_array($visibility, ['patient_visible', 'doctor_private'], true)) {
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'سطح دسترسی فایل نامعتبر است', 422, ['visibility' => $visibility]);
         }
-        // doctor_private فقط پزشک (P-6 — ماتریس Private)
-        if ($visibility === 'doctor_private') {
-            $user = get_userdata($actorUserId);
-            $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true);
-            if (!$isDoctor) {
-                throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'فایل خصوصی پزشک فقط توسط پزشک قابل ثبت است', 403);
-            }
-        }
+        // FIX 2 — Subscriber Doctor private upload: the premature WordPress-global
+        // `ROLE_DOCTOR` check is removed. `doctor_private` authority is instead
+        // established via explicit trusted Clinic scope, active clinician identity
+        // in the correct Organization/Clinic, and effective scoped `FILE_UPLOAD` +
+        // `PRIVATE_NOTE_CREATE` (plus clinical privacy/audit) inside
+        // `assertPrivateFileUploadAuthority()` below — Subscriber Doctors with an
+        // ACTIVE clinic membership and clinician row now succeed; non-clinicians
+        // still fail via Visit-ownership.
 
         // Private attachment authority is resolved before even validating/opening
         // the presented temp path: the Visit and active clinician identity are the
