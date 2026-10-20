@@ -1,0 +1,312 @@
+name: MariaDB 11.8 Compatibility (CPMS + WordPress)
+
+# Weekly, real-server compatibility evidence for the WordPress-recommended
+# MariaDB 11.8 series. This is deliberately separate from the MySQL 8 PR
+# integration check and the MariaDB 11.4.13 browser acceptance lane.
+# No pull_request trigger: preserve the existing PR-check architecture.
+
+on:
+  schedule:
+    # Wednesday 03:37 UTC; one isolated runner/service per weekly measurement.
+    - cron: '47 3 * * 4'
+  workflow_dispatch:
+
+concurrency:
+  # Unique per execution: never cancel a scheduled/manual compatibility run.
+  group: mariadb-11-8-compat-${{ github.run_id }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: clinic-practice-management
+
+env:
+  WP_VERSION: '7.1.3'
+  PHP_VERSION: '8.3'
+  MARIADB_IMAGE: mariadb:11.8
+  WP_DIR: /home/runner/wp-mariadb-11.8
+  WP_URL: http://mariadb118.test
+  WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb-11.8
+  WP_CORE_DIR: /tmp/wordpress-core-mariadb-11.8
+  DB_NAME: cpms_mariadb_118
+  TEST_DB_NAME: cpms_mariadb_118_tests
+  RESTORE_DB_NAME: cpms_mariadb_118_restore
+  WP_ADMIN_USER: cpms_compat_admin
+  WP_ADMIN_PASSWORD: 'Compat-2026-Local!'
+  MYSQL_PWD: root
+
+jobs:
+  compat:
+    name: WordPress 7.1.3 + PHP 8.3 + MariaDB 11.8.3
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      mariadb:
+        image: mariadb:11.8
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, mbstring, xml, pcntl, curl, zip, sodium
+          coverage: none
+
+      - name: Install MariaDB client and WP-CLI
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/mariadb-compat
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mariadb-client > /tmp/mariadb-compat/apt.log 2>&1 \
+            || { tail -n 80 /tmp/mariadb-compat/apt.log; exit 1; }
+          command -v mysql
+          command -v mariadb-dump
+          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+            -o /tmp/wp-cli.phar
+          sudo install -m 0755 /tmp/wp-cli.phar /usr/local/bin/wp
+          wp --allow-root --version
+
+      - name: Fail closed on database identity (exact MariaDB image release)
+        id: database_identity
+        run: |
+          set -euo pipefail
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names --execute='SELECT VERSION()')"
+          version_comment="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names --execute='SELECT @@version_comment')"
+          check_constraints="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names --execute='SELECT @@SESSION.check_constraint_checks')"
+          printf 'MariaDB image ref: %s\n' "$MARIADB_IMAGE"
+          printf 'MariaDB server VERSION(): %s\n' "$server_version"
+          printf 'MariaDB version_comment: %s\n' "$version_comment"
+          printf '%s\n' "$MARIADB_IMAGE" > /tmp/mariadb-compat/database-image.txt
+          printf 'CHECK enforcement: %s\n' "$check_constraints"
+          case "$server_version" in
+            11.8*-MariaDB*) ;;
+            *) echo "Expected MariaDB 11.8, received: $server_version" >&2; exit 1 ;;
+          esac
+          printf '%s' "$version_comment" | grep -qi 'mariadb' \
+            || { echo "MariaDB identity missing from @@version_comment: $version_comment" >&2; exit 1; }
+          case "${check_constraints^^}" in
+            1|ON) ;;
+            *) echo "CHECK constraints must be enabled, got: $check_constraints" >&2; exit 1 ;;
+          esac
+          printf '%s\n' "$server_version" > /tmp/mariadb-compat/database-version.txt
+          printf '%s\n' "$server_version" >> "$GITHUB_STEP_SUMMARY"
+          printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          echo "MariaDB image: \`$MARIADB_IMAGE\`; VERSION(): \`$server_version\`; CHECK enforcement: \`$check_constraints\`." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build release ZIP from this exact checkout
+        run: |
+          set -euo pipefail
+          bash bin/build-release.sh
+          ZIP_PATH="$(find dist -maxdepth 1 -name 'clinic-practice-management-*.zip' -print -quit)"
+          test -n "$ZIP_PATH" && test -f "$ZIP_PATH"
+          sha256sum "$ZIP_PATH" | tee /tmp/mariadb-compat/release-zip.sha256
+          echo "ZIP_PATH=$GITHUB_WORKSPACE/clinic-practice-management/$ZIP_PATH" >> "$GITHUB_ENV"
+
+      - name: Install clean WordPress and activate CPMS release ZIP
+        id: wordpress_install
+        run: |
+          set -euo pipefail
+          test ! -e "$WP_DIR" || { echo "Refusing to reuse existing WordPress path: $WP_DIR" >&2; exit 1; }
+          curl -fsSL "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" \
+            -o /tmp/mariadb-compat/wordpress.tar.gz
+          tar -xzf /tmp/mariadb-compat/wordpress.tar.gz -C /tmp
+          mv /tmp/wordpress "$WP_DIR"
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root --execute="CREATE DATABASE ${DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE DATABASE ${RESTORE_DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; CREATE DATABASE ${TEST_DB_NAME} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass="$MYSQL_PWD" \
+            --dbhost=127.0.0.1:3306 --dbprefix=wp_ --skip-salts --allow-root
+          for salt_name in AUTH_KEY SECURE_AUTH_KEY LOGGED_IN_KEY NONCE_KEY AUTH_SALT SECURE_AUTH_SALT LOGGED_IN_SALT NONCE_SALT; do
+            salt_value="$(php -r 'echo bin2hex(random_bytes(32));')"
+            wp config set "$salt_name" "$salt_value" --allow-root
+          done
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp core install --url="$WP_URL" --title="CPMS MariaDB 11.8 Compatibility" \
+            --admin_user="$WP_ADMIN_USER" --admin_password="$WP_ADMIN_PASSWORD" \
+            --admin_email=cpms-compat@example.test --skip-email --allow-root
+          wp core version --allow-root | tee /tmp/mariadb-compat/wordpress-version.txt
+          test "$(wp core version --allow-root)" = "$WP_VERSION"
+          wp core is-installed --allow-root
+          wp plugin install "$ZIP_PATH" --activate --allow-root
+          wp plugin is-active clinic-practice-management --allow-root
+          wp plugin get clinic-practice-management --field=version --allow-root \
+            | tee /tmp/mariadb-compat/plugin-version.txt
+          echo "WordPress $WP_VERSION installed; CPMS release ZIP activated." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify migration head and repeat migration no-op
+        id: migration_head
+        run: |
+          set -euo pipefail
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root "$DB_NAME" \
+            --batch --raw --execute='SELECT version, applied_at FROM wp_cpms_schema_migrations ORDER BY version' \
+            | tee /tmp/mariadb-compat/schema-migrations.txt
+          grep -q '^2026_10_18_0029[[:space:]]' /tmp/mariadb-compat/schema-migrations.txt
+          cat > /tmp/mariadb-compat/migrate-twice.php <<'PHP'
+          <?php
+          $migrations = \ClinicCore\Bootstrap\App::migrations();
+          $head = $migrations->currentVersion();
+          $first = $migrations->migrate();
+          $second = $migrations->migrate();
+          echo 'schema_head=' . (string) $head . "\n";
+          echo 'repeat_migrate_first=' . json_encode($first, JSON_THROW_ON_ERROR) . "\n";
+          echo 'repeat_migrate_second=' . json_encode($second, JSON_THROW_ON_ERROR) . "\n";
+          exit($head === '2026_10_18_0029' && $first === [] && $second === [] ? 0 : 1);
+          PHP
+          wp eval-file /tmp/mariadb-compat/migrate-twice.php --path="$WP_DIR" --allow-root \
+            | tee /tmp/mariadb-compat/migration-repeat.txt
+          grep -q 'schema_head=2026_10_18_0029' /tmp/mariadb-compat/migration-repeat.txt
+          grep -q 'repeat_migrate_first=\[\]' /tmp/mariadb-compat/migration-repeat.txt
+          grep -q 'repeat_migrate_second=\[\]' /tmp/mariadb-compat/migration-repeat.txt
+
+      - name: Safe MariaDB dump and isolated clone restore
+        id: safe_db_clone
+        run: |
+          set -euo pipefail
+          mariadb-dump --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --single-transaction --skip-lock-tables --default-character-set=utf8mb4 "$DB_NAME" \
+            > /tmp/mariadb-compat/installation-db.sql
+          test -s /tmp/mariadb-compat/installation-db.sql
+          mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root "$RESTORE_DB_NAME" \
+            < /tmp/mariadb-compat/installation-db.sql
+          source_head="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names "$DB_NAME" \
+            --execute='SELECT version FROM wp_cpms_schema_migrations ORDER BY version DESC LIMIT 1')"
+          clone_head="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names "$RESTORE_DB_NAME" \
+            --execute='SELECT version FROM wp_cpms_schema_migrations ORDER BY version DESC LIMIT 1')"
+          source_tables="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names "$DB_NAME" \
+            --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'wp_cpms_%'")"
+          clone_tables="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root \
+            --batch --skip-column-names "$RESTORE_DB_NAME" \
+            --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE 'wp_cpms_%'")"
+          test "$source_head" = '2026_10_18_0029'
+          test "$clone_head" = "$source_head"
+          test "$source_tables" -gt 0
+          test "$clone_tables" = "$source_tables"
+          printf 'schema_head=%s tables=%s\n' "$clone_head" "$clone_tables" \
+            | tee /tmp/mariadb-compat/backup-clone-summary.txt
+          rm -f /tmp/mariadb-compat/installation-db.sql
+          echo "MariaDB dump imported into isolated clone; schema head and CPMS table count match." \
+            >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install WP Test Suite and PHPUnit 9.6
+        run: |
+          set -euo pipefail
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+          bash tests/bin/install-wp-tests.sh "$TEST_DB_NAME" root "$MYSQL_PWD" 127.0.0.1 "$WP_VERSION" 3306
+
+      - name: Validate exact PHPUnit selection and red-result guard
+        run: |
+          set -euo pipefail
+          regression_log=/tmp/mariadb-compat/reporter-regression.private
+          mkdir -p /tmp/mariadb-compat
+          trap 'rm -f "$regression_log"' EXIT
+          set +e
+          python3 tests/bin/test_mariadb_compat_report.py > "$regression_log" 2>&1
+          regression_exit=$?
+          set -e
+          if grep -Eq '::[[:alpha:]][[:alnum:]-]*( |::)' "$regression_log"; then
+            echo 'Reporter regression output contained a workflow-command pattern; raw output withheld.' >&2
+            exit 1
+          fi
+          if [ "$regression_exit" -ne 0 ]; then
+            echo "Reporter regression tests failed with exit code $regression_exit; raw output withheld." >&2
+            exit "$regression_exit"
+          fi
+          test_count="$(sed -n 's/^Ran \([0-9][0-9]*\) tests\{0,1\}.*/\1/p' "$regression_log" | tail -n 1)"
+          if [ -z "$test_count" ]; then
+            echo 'Reporter regression output did not contain a test count; raw output withheld.' >&2
+            exit 1
+          fi
+          echo "Reporter regression tests passed ($test_count); no GitHub workflow-command patterns were emitted."
+
+      - name: Run focused database-backed CPMS compatibility suites
+        id: focused_tests
+        run: |
+          set +e
+          umask 077
+          startup_diagnostics=/tmp/mariadb-compat/phpunit-startup.private
+          printf 'STAGE=PHPUNIT_PROCESS_STARTED\n' > "$startup_diagnostics"
+          CPMS_MARIADB_STARTUP_DIAGNOSTICS=1 \
+          CPMS_MARIADB_STARTUP_DIAGNOSTICS_FILE="$startup_diagnostics" \
+          php -d memory_limit=1G vendor/bin/phpunit \
+            --configuration phpunit.mariadb-10.11.xml \
+            --log-junit /tmp/mariadb-compat/focused-junit.xml \
+            > /tmp/mariadb-compat/phpunit-output.private 2>&1
+          phpunit_exit=$?
+          set -e
+          printf '%s\n' "$phpunit_exit" > /tmp/mariadb-compat/phpunit-exit-code.txt
+          if [ "$phpunit_exit" -eq 0 ]; then
+            echo 'PHPUnit completed with exit code 0; raw output is withheld.'
+          else
+            echo "PHPUnit returned exit code $phpunit_exit; raw output is withheld; sanitized JUnit results follow."
+          fi
+          exit "$phpunit_exit"
+
+      - name: Publish sanitized JUnit summary and enforce completeness
+        if: always()
+        run: |
+          python3 tests/bin/mariadb_compat_report.py \
+            --junit /tmp/mariadb-compat/focused-junit.xml \
+            --selection-config phpunit.mariadb-10.11.xml \
+            --phpunit-exit-file /tmp/mariadb-compat/phpunit-exit-code.txt \
+            --startup-diagnostics-file /tmp/mariadb-compat/phpunit-startup.private \
+            --summary-file "$GITHUB_STEP_SUMMARY" \
+            --json-output /tmp/mariadb-compat/focused-results.json \
+            --check-annotation
+
+      - name: Upload bounded compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-10.11-compat-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/mariadb-compat/database-image.txt
+            /tmp/mariadb-compat/database-version.txt
+            /tmp/mariadb-compat/wordpress-version.txt
+            /tmp/mariadb-compat/plugin-version.txt
+            /tmp/mariadb-compat/release-zip.sha256
+            /tmp/mariadb-compat/backup-clone-summary.txt
+            /tmp/mariadb-compat/phpunit-exit-code.txt
+            /tmp/mariadb-compat/focused-results.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Compatibility run summary
+        if: always()
+        run: |
+          {
+            echo
+            echo '## MariaDB 11.8 Compatibility (separate, non-PR lane)'
+            echo
+            echo "- run: \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- checkout: \`${GITHUB_SHA}\`"
+            echo "- MariaDB image: \`$MARIADB_IMAGE\`"
+            echo "- MariaDB: \`$(cat /tmp/mariadb-compat/database-version.txt 2>/dev/null || echo NOT VERIFIED)\`"
+            echo "- WordPress: \`$(cat /tmp/mariadb-compat/wordpress-version.txt 2>/dev/null || echo NOT INSTALLED)\`"
+            echo "- CPMS plugin version: \`$(cat /tmp/mariadb-compat/plugin-version.txt 2>/dev/null || echo NOT ACTIVATED)\`"
+            echo "- job conclusion: \`${{ job.status }}\`"
+            echo '- never substitutes for the MySQL 8 PR integration check or MariaDB 11.4.13 browser acceptance.'
+          } >> "$GITHUB_STEP_SUMMARY"
