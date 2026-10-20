@@ -2,7 +2,9 @@
 
 - **PR:** #255 `bia2on2on/doctor` (Draft, not merged)
 - **Branch:** `arena/4be58c19-doctor`
-- **Head SHA of this round:** `6ff07e8`
+- **Head SHA of this round (code under test):** `6ff07e8` — this document is committed on top of it
+  as a docs-only commit (`195c940`); all CI results quoted below were produced on `6ff07e8`, and no
+  code differs between the two.
 - **Base:** `main` @ `6c64a91`
 - **Receipt (UTC):** 2026-10-20T18:36Z · **report written:** 2026-10-20T20:47Z
 - **Verdict: BLOCKED** — the two-Subscriber Chromium journey does **not** pass on the exact head SHA.
