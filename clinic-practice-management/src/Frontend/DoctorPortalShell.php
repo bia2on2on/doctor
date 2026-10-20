@@ -296,6 +296,5 @@ final class DoctorPortalShell {
 		);
 		return null !== $clinician_id && (int) $clinician_id > 0;
 	}
-	// phpcs:enable
 
 }

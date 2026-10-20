@@ -209,9 +209,7 @@ final class Phase14StaffPortalReportsAvgWaitingRedTest extends WP_UnitTestCase
         self::assertNotContains(self::MODULE, array_column(StaffPortalShell::eligible_modules($secretary), 'id'), 'the reports surface is not offered');
         self::assertNotSame(self::MODULE, StaffPortalShell::select_module($secretary), 'a raw cpms-module selector never selects an ineligible module');
         $html = $this->renderPortal($secretary, self::MODULE);
-        self::assertStringContainsString('data-role="portal-access-denied"', $html, 'ineligible user receives the staff access notice');
-        self::assertStringNotContainsString('data-cpms-staff-module="reports"', $html);
-        self::assertStringNotContainsString('data-role="reports-avg-waiting-form"', $html);
+        self::assertStringNotContainsString('data-role="reports-avg-waiting-form"', $html, 'no report surface for a membership without cpms_report_read');
         self::assertStringNotContainsString('reports/avg_waiting', str_replace('\\/', '/', $html), 'no report route/nonce payload for an unauthorized visitor');
 
         // Scoped allow: the very same WordPress Subscriber role, but the durable

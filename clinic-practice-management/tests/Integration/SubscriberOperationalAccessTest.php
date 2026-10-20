@@ -59,21 +59,23 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
         self::assertFalse(user_can($fx['user'], RolesAndCapabilities::QUEUE_READ), 'precondition: no WordPress-global capability');
         self::assertContains('subscriber', (array) get_userdata($fx['user'])->roles, 'precondition: plain Subscriber');
 
-        $context = $this->doctorRequest('GET', '/doctor/portal/context', $fx['location']);
-        self::assertSame(200, $context->get_status(), 'Subscriber doctor context must be reachable');
-        $clinics = array_map('intval', array_column($this->payload($context)['clinics'] ?? [], 'id'));
-        self::assertContains($this->clinic, $clinics, 'the authorized Clinic is offered');
-
         $today = $this->doctorRequest('GET', '/doctor/today', $fx['location']);
-        self::assertSame(200, $today->get_status(), 'Subscriber doctor Today must be reachable');
+        self::assertSame(200, $today->get_status(), 'Subscriber doctor Today must be reachable :: code=' . $this->errCode($today));
 
         $queue = $this->doctorRequest('GET', '/doctor/portal/rt/queue', $fx['location']);
-        self::assertSame(200, $queue->get_status(), 'Subscriber doctor live queue must be reachable');
+        self::assertSame(200, $queue->get_status(), 'Subscriber doctor live queue must be reachable :: code=' . $this->errCode($queue));
 
         // Workspace boundary: identity + scoped capability are enough; the record
         // itself is still owned by the durable visit.
         $workspace = $this->doctorRequest('GET', '/doctor/portal/visits/' . $fx['visit'] . '/record', $fx['location']);
-        self::assertSame(200, $workspace->get_status(), 'Subscriber doctor opens the visit record on scoped authority');
+        self::assertSame(200, $workspace->get_status(), 'Subscriber doctor opens the visit record on scoped authority :: code=' . $this->errCode($workspace));
+
+        // Bootstrap context/selector: lists only the Clinics the scoped engine
+        // allows for this actor (never authority by itself).
+        $context = $this->doctorRequest('GET', '/doctor/portal/context', $fx['location']);
+        self::assertSame(200, $context->get_status(), 'Subscriber doctor context must be reachable :: code=' . $this->errCode($context));
+        $clinics = array_map('intval', array_column($this->payload($context)['clinics'] ?? [], 'id'));
+        self::assertContains($this->clinic, $clinics, 'the authorized Clinic is offered');
     }
 
     // ------------------------------------------------------------------
@@ -272,18 +274,20 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
 
     public function testSubscriberWithoutFinanceAuthorityIsDeniedTheFinanceBoard(): void
     {
-        // A membership whose preset grants no finance read capability (secretary)
-        // must never reach the finance board, even as a WordPress Subscriber.
-        $user = $this->makeUser('sub_fin_deny', 'subscriber');
-        cpms_test_seed_membership($user, $this->clinic, RolesAndCapabilities::ROLE_SECRETARY);
-        wp_set_current_user($user);
+        // A finance-capable membership with an explicit DENY on the finance read
+        // capability must be refused, even as a WordPress Subscriber.
+        $fx = $this->makeSubscriberDoctor('sub_fin_deny');
+        $membership = App::membership_service()->membership_for($this->clinic, $fx['user']);
+        self::assertNotNull($membership);
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::FINANCE_READ, 'deny');
+        wp_set_current_user($fx['user']);
         $finance = $this->dispatch(
             'GET',
             '/' . self::REST_NS . '/staff/portal/finance/context',
             [],
             ['X-CPMS-Clinic-Id' => (string) $this->clinic]
         );
-        self::assertSame(403, $finance->get_status(), 'a membership without the finance capabilities is not finance authority');
+        self::assertSame(403, $finance->get_status(), 'an explicit DENY on the finance capability refuses the board :: code=' . $this->errCode($finance));
     }
 
     // ------------------------------------------------------------------
