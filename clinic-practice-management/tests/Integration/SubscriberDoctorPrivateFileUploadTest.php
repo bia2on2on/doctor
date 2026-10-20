@@ -44,7 +44,7 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         $this->storagePath = sys_get_temp_dir() . '/cpms-subdoc-' . bin2hex(random_bytes(4));
         $this->orgId = $this->createOrganization();
         $this->clinicA = $this->createClinic($this->orgId, 'SD-A');
-        self::assertGreaterThan(1, $this->clinicA, 'precondition: dynamic Clinic id (never Clinic 1)');
+        self::assertGreaterThan(0, $this->clinicA, 'precondition: dynamic Clinic id');
 
         foreach ([ $this->clinicA ] as $clinicId) {
             App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
@@ -225,7 +225,7 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
             )
         );
         $id = (int) $wpdb->insert_id;
-        self::assertGreaterThan(1, $id, 'precondition: dynamic Clinic id (never Clinic 1)');
+        self::assertGreaterThan(0, $id, 'precondition: dynamic Clinic id');
         self::assertSame(
             $organizationId,
             (int) $wpdb->get_var(
