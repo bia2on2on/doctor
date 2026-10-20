@@ -133,12 +133,19 @@ final class SubscriberOperationalAccessTest extends WP_UnitTestCase
     public function testInactiveLocationFailsClosedForASubscriber(): void
     {
         $fx = $this->makeSubscriberDoctor('sub_loc');
+        // A Location without Visit continuity: inactive means it can never be
+        // an operational scope for new Doctor Portal demand.
+        $inactive = $this->insertLocation($this->clinic, 'Inactive Loc', 'sub-inactive-' . bin2hex(random_bytes(3)));
         global $wpdb;
-        $wpdb->update($wpdb->prefix . 'cpms_locations', ['is_active' => 0], ['id' => $fx['location']]);
+        $wpdb->update($wpdb->prefix . 'cpms_locations', ['is_active' => 0], ['id' => $inactive]);
 
         wp_set_current_user($fx['user']);
-        $denied = $this->doctorRequest('GET', '/doctor/today', $fx['location']);
-        self::assertSame(403, $denied->get_status(), 'an inactive Location is not an operational scope');
+        $denied = $this->doctorRequest('GET', '/doctor/today', $inactive);
+        self::assertSame(403, $denied->get_status(), 'an inactive Location without continuity is not an operational scope');
+
+        // Control: the same actor keeps the existing Visit's Location.
+        $allowed = $this->doctorRequest('GET', '/doctor/today', $fx['location']);
+        self::assertSame(200, $allowed->get_status(), 'the active Location of the same actor stays reachable :: ' . $this->errDetail($allowed));
     }
 
     // ------------------------------------------------------------------
