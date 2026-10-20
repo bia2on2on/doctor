@@ -359,8 +359,17 @@ final class FacilitySetupService {
         } catch ( InvalidArgumentException $e ) {
             throw new FacilitySetupException( 'invalid_clinic', 'مشخصات درمانگاه معتبر نیست؛ چیزی ایجاد نشد.' );
         } catch ( RuntimeException $e ) {
-            if ( 'clinic slug unavailable' !== $e->getMessage() ) {
+            $failure = $e->getMessage();
+            if ( 'organization provisioning denied' === $failure ) {
                 throw new FacilitySetupException( 'denied', 'ایجاد درمانگاه انجام نشد؛ دسترسی سازمانی یا وضعیت سازمان معتبر نیست و تغییری ثبت نشد.' );
+            }
+            if ( 'held clinic readback failed' === $failure ) {
+                throw self::hold_failure();
+            }
+            if ( 'clinic slug unavailable' !== $failure ) {
+                // Any other failure (database, audit, rollback) aborts the plan
+                // transaction as itself: it is never re-labelled as a refusal.
+                throw $e;
             }
             // Retry after a lost response: the deterministic slug already exists.
             // Adopt it only when it belongs to this same Organization AND is still
@@ -389,7 +398,7 @@ final class FacilitySetupService {
             [ $clinic_id, $organization_id ]
         );
         if ( 'suspended' !== (string) $status ) {
-            throw new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
+            throw self::hold_failure();
         }
 
         $entry = [
@@ -405,6 +414,14 @@ final class FacilitySetupService {
         ];
 
         return $entry;
+    }
+
+    /**
+     * A Clinic whose held (suspended) status cannot be proven is never recorded:
+     * the step fails as a hold failure, and nothing of it is committed.
+     */
+    private static function hold_failure(): FacilitySetupException {
+        return new FacilitySetupException( 'hold_failed', 'درمانگاه در حالت تعلیق (بدون پذیرش نوبت تا فعال‌سازی نهایی) نگه داشته نشد؛ هیچ درمانگاهی ایجاد نشد و تغییری ثبت نشد.' );
     }
 
     /**

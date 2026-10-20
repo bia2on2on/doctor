@@ -1449,3 +1449,20 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
     row with the Organization condition under the Organization lock and refuses with `not_found`; a test moves the
     Clinic to another Organization inside the locked step and proves nothing is written.
 - **Local validation only:** php-wasm `-l`, WPCS replica 0 violations. Exact-head CI evidence is posted on PR #253.
+
+## [2026-10-20 00:02 UTC] — PR #253 final blocker re-check (Draft, unmerged)
+
+- **Start (verified live):** head `292f87b` (clean, equal to remote, no stashes), base `main` `b7ae469`, 26/26 green.
+  The brief expected head `de1e8da`, which is 4 commits behind; S1, S2, S3 and the concurrency fix were already in
+  `2adfd54`, `e98f6e8`, `7fdc4cd` and `292f87b`.
+- **Re-review of the live source against the brief:** S1, S3 and the concurrency sections hold as committed.
+  One genuine S2 gap: `create_held_clinic()` turned *every* provisioning failure except a slug conflict into a
+  `denied` refusal. A Clinic whose held status could not be verified (provisioning readback) was therefore
+  reported as an access problem, and database/audit failures were disguised as refusals (fail-closed, but the
+  failure was concealed).
+- **Fix:** only `organization provisioning denied` maps to `denied`; `held clinic readback failed` maps to
+  `hold_failed` (as the plan step's own readback already did); any other failure propagates unchanged.
+- **Tests:** a new test answers each hold readback with a non-suspended Clinic and expects `hold_failed` with nothing
+  committed (positive control afterwards). The held-provisioning boundary test now requires that the injected
+  failure itself surfaces at all five boundaries, and that the page shows the internal-error notice.
+- **Local validation only:** php-wasm `-l`, WPCS replica. Exact-head CI evidence is posted on PR #253.

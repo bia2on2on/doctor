@@ -290,6 +290,10 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   no Clinic, Location, audit row or plan entry is committed. A retry adopts an existing Clinic with the request's
   deterministic slug only when it is still suspended; an active one is refused (`hold_failed`) and is never
   recorded as held or silently suspended.
+- Failures are reported as what they are. If either hold check (the provisioning readback or the plan step's
+  locking readback) does not see `suspended`, the step fails as `hold_failed`. Any other failure while creating
+  (database, audit, rollback) surfaces unchanged as an internal error (the page shows its internal-error notice
+  and logs the exception class); only a real authorization or Organization-status refusal is reported as `denied`.
 - Setup and Location management continue while a Clinic is held, as documented in
   `post-onboarding-clinic-location-management.md`.
 

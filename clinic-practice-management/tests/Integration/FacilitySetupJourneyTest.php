@@ -783,7 +783,8 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
 
         $key = FacilitySetupService::new_request_key();
         foreach ($boundaries as $label => $pattern) {
-            $this->failAt($pattern, $label, fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ));
+            $thrown = $this->failAt($pattern, $label, fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ));
+            $this->assertInjectedFailureSurfaces($thrown, $label);
             $nothingEscaped($label);
         }
 
@@ -796,6 +797,7 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
             throw new \RuntimeException('dispatch returned');
         });
         self::assertStringStartsWith('خطا', $notice);
+        self::assertStringContainsString('خطای داخلی', $notice, 'the page reports an internal failure, not an access refusal');
         $nothingEscaped('page');
 
         // The Clinic row is INSERTED suspended; nothing ever updates it during creation.
@@ -834,6 +836,61 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertTrue(json_decode((string) $row['meta_json'], true)['held'] ?? false);
         self::assertSame((int) $clinic['clinic_id'], (int) $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه مرزی', $site, self::TZ)['clinic_id'], 'a retry adopts it');
         self::assertSame(1, $this->clinicCount($this->org));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
+    public function testAHoldThatCannotBeVerifiedFailsAsAHoldFailureAndLeavesNothingBehind(): void
+    {
+        $service = FacilitySetupPage::service();
+        $this->hospitalReady($service);
+        $site = $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $db = App::db();
+        $clinicTable = preg_quote($db->table('cpms_clinics'), '/');
+        $countLocations = static fn (): int => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_locations'));
+        $locations = $countLocations();
+        $provisioned = $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION);
+        $planChanges = $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION);
+        $key = FacilitySetupService::new_request_key();
+
+        // Both hold checks — the provisioning service's readback and the plan step's
+        // locking readback — are answered with a Clinic that is NOT suspended. Each
+        // must fail as a hold failure (not swallowed, not re-labelled as an access
+        // refusal) and leave no Clinic, Location, plan entry or audit row behind.
+        $readbacks = [
+            'provisioning_readback' => '/^\s*SELECT\s+status\s+FROM\s+`?' . $clinicTable . '`?\s+WHERE\s+id\s*=\s*\d+\s+AND\s+organization_id\s*=\s*' . $this->org . '\s+LIMIT\s+1\s*$/i',
+            'plan_step_readback' => '/^\s*SELECT\s+status\s+FROM\s+`?' . $clinicTable . '`?\s+WHERE\s+id\s*=\s*\d+\s+AND\s+organization_id\s*=\s*' . $this->org . '\s+LIMIT\s+1\s+FOR\s+UPDATE\s*$/i',
+        ];
+        foreach ($readbacks as $label => $pattern) {
+            $answered = 0;
+            $notHeld = static function (string $sql) use ($pattern, &$answered): string {
+                if (1 === preg_match($pattern, $sql)) {
+                    ++$answered;
+
+                    return "SELECT 'active' AS status";
+                }
+
+                return $sql;
+            };
+            add_filter('query', $notHeld);
+            try {
+                $this->assertRefused('hold_failed', fn () => $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشت', $site, self::TZ));
+            } finally {
+                remove_filter('query', $notHeld);
+            }
+            self::assertSame(1, $answered, $label . ': the hold check ran and saw a non-suspended Clinic');
+            self::assertSame(0, $this->clinicCount($this->org), $label . ': no Clinic survives');
+            self::assertSame($locations, $countLocations(), $label . ': no Location survives');
+            self::assertSame([], $service->plan($this->actor, $this->org)['clinics'], $label . ': no plan entry');
+            self::assertSame($provisioned, $this->auditCount(OrganizationClinicProvisioningService::AUDIT_ACTION), $label . ': no provisioning audit row');
+            self::assertSame($planChanges, $this->auditCount(FacilitySetupService::PLAN_AUDIT_ACTION), $label . ': no plan audit row');
+            self::assertTrue(App::audit()->verifyChain(5000)['ok'], $label . ': audit hash chain intact');
+        }
+
+        // Positive control: the same request then creates exactly one held Clinic.
+        $clinic = $service->add_clinic($this->actor, $this->org, $key, 'درمانگاه نگه‌داشت', $site, self::TZ);
+        self::assertSame('suspended', $this->clinicStatus((int) $clinic['clinic_id']));
+        self::assertSame(1, $this->clinicCount($this->org));
+        self::assertSame($locations + 1, $countLocations());
         self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
@@ -1393,7 +1450,7 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     }
 
     /** Runs $operation with a database failure injected at the first statement matching $pattern. */
-    private function failAt(string $pattern, string $label, callable $operation): void
+    private function failAt(string $pattern, string $label, callable $operation): \Throwable
     {
         $inject = static function (string $sql) use ($pattern, $label): string {
             if (1 === preg_match($pattern, $sql)) {
@@ -1413,6 +1470,23 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         }
         self::assertNotNull($thrown, $label . ': the injected failure must abort the step');
         self::assertNotInstanceOf(\PHPUnit\Framework\AssertionFailedError::class, $thrown, $label . ': ' . $thrown->getMessage());
+
+        return $thrown;
+    }
+
+    /**
+     * The injected failure itself surfaces (a rollback may wrap it) — an internal
+     * failure is never re-labelled as a refusal.
+     */
+    private function assertInjectedFailureSurfaces(\Throwable $thrown, string $label): void
+    {
+        self::assertNotInstanceOf(FacilitySetupException::class, $thrown, $label . ': an internal failure is not reported as a refusal (' . $thrown->getMessage() . ')');
+        for ($cause = $thrown; null !== $cause; $cause = $cause->getPrevious()) {
+            if ('injected failure at ' . $label === $cause->getMessage()) {
+                return;
+            }
+        }
+        self::fail($label . ': the injected failure must surface, got ' . get_class($thrown) . ': ' . $thrown->getMessage());
     }
 
     private function refusalMessage(string $reason, callable $operation): string
