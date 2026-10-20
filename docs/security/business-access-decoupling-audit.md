@@ -142,3 +142,19 @@ P1-13 of the review). No "authorized in any Clinic" fallback was introduced anyw
   lane; the audit-row test also verifies the global hash-chain linkage of the recent
   window.
 - WPCS runs on added lines only; PHPStan level 3 covers the modified services.
+- Exact-head browser evidence at `0e4506cd` (run 39407879447, MariaDB 11.4.13 **and**
+  MySQL 8.4.11): both First-Practice jobs are SUCCESS — the full installer → wizard →
+  bootstrap → independent-Clinic/hospital facility journey runs in Chromium with no
+  WordPress role change, including `building.cpms_entry_from_membership` and
+  `building.cpms_entry_unaffected_by_wordpress_role`, and `facility.delegated_manager.other_clinic_denied`.
+- Exact-head `Real WordPress Acceptance (ZIP → clean WP → browser)` at `0e4506cd`:
+  SUCCESS. The CI workflow (lint, WPCS, PHPStan, Integration, unit) is SUCCESS at the
+  same SHA.
+- Known flake (not caused by this diff, tracked as NOT RUN evidence): in the
+  Pilot/Staging Readiness Gate at `0e4506cd`, `Responsive smoke` step
+  *Doctor Portal — real browser* failed at the mobile-390 viewport only on
+  `assert_scope_unselected` ("operational data was requested before explicit Clinic and
+  Location selection", `rows=[] today=0 queue=0 history=0`), while 768/1366 passed in
+  the same run and the identical plugin code passed this job at `b303b212`. The diff
+  between the two SHAs is the first-practice Python harness plus documentation, neither
+  of which the pilot gate loads.
