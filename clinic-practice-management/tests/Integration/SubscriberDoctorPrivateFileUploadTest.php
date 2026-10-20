@@ -44,7 +44,7 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         $this->storagePath = sys_get_temp_dir() . '/cpms-subdoc-' . bin2hex(random_bytes(4));
         $this->orgId = $this->createOrganization();
         $this->clinicA = $this->createClinic($this->orgId, 'SD-A');
-        self::assertGreaterThan(0, $this->clinicA);
+        self::assertGreaterThan(1, $this->clinicA, 'precondition: dynamic Clinic id (never Clinic 1)');
 
         foreach ([ $this->clinicA ] as $clinicId) {
             App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
@@ -52,7 +52,7 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
             App::settings()->set('files.max_upload_bytes', 10485760);
             $this->locations[$clinicId] = $this->createLocation($clinicId);
         }
-        App::replaceExplicitScope(ClinicScope::forClinic($this->clinicA));
+        $this->bindClinic($this->clinicA);
     }
 
     protected function tearDown(): void
@@ -61,14 +61,21 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         Settings::flushCache();
         App::resetScope();
         foreach ($this->storedFiles as $relative) {
-            foreach ([ $this->storagePath ] as $root) {
+            foreach ([ $this->storagePath, \ClinicCore\Infrastructure\Storage\LocalFileStorage::defaultBasePath() ] as $root) {
                 $p = rtrim($root, '/') . '/' . ltrim($relative, '/');
                 if (is_file($p)) {
                     @unlink($p);
                 }
             }
         }
-        if (is_dir($this->storagePath)) {
+        if ($this->storagePath !== '' && is_dir($this->storagePath)) {
+            $it = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($this->storagePath, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST
+            );
+            foreach ($it as $f) {
+                $f->isDir() ? @rmdir($f->getPathname()) : @unlink($f->getPathname());
+            }
             @rmdir($this->storagePath);
         }
         parent::tearDown();
@@ -82,7 +89,6 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         $patient = $this->createPatient($this->clinicA);
         $visitId = $this->createVisit($this->clinicA, $patient, $clinicianId);
 
-        // Verify subscriber has no global ROLE_DOCTOR
         $user = get_userdata($doctor);
         self::assertNotFalse($user);
         self::assertNotContains(RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, 'precondition: WP role is subscriber, not doctor');
@@ -106,18 +112,16 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         );
         $fileId = (int) ($row['id'] ?? 0);
         self::assertGreaterThan(0, $fileId, 'Subscriber Doctor must succeed for doctor_private upload');
-        $this->storedFiles[] = (string) ($row['storage_path'] ?? '');
+        $this->trackStoredFile($fileId);
     }
 
     public function testNonClinicianCannotUploadDoctorPrivateEvenWithFileUploadGrant(): void
     {
         $secretary = $this->makeUser('sd_secretary', 'subscriber');
         $membershipId = $this->createMembership($secretary, $this->clinicA, RolesAndCapabilities::ROLE_SECRETARY);
-        // grant FILE_UPLOAD explicitly to ensure failure is not due to missing cap but due to clinician identity
         App::membership_service()->set_capability($membershipId, RolesAndCapabilities::FILE_UPLOAD, 'grant');
         App::membership_service()->set_capability($membershipId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'grant');
 
-        // Create a visit owned by a real doctor (different user) in same clinic
         $realDoctor = $this->makeUser('sd_real_doctor', 'subscriber');
         $this->createMembership($realDoctor, $this->clinicA, RolesAndCapabilities::ROLE_DOCTOR);
         $realClinician = $this->createClinician($this->clinicA, $realDoctor);
@@ -143,91 +147,122 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         self::assertContains($threw->errorCode, ['CLINIC_PERMISSION_DENIED', 'CLINIC_NOT_FOUND'], 'denied with permission/not-found shape');
     }
 
-    // ===== helpers (copied from ClinicalFilesScopedAuthorizationTest) =====
+    // ===== helpers copied from ClinicalFilesScopedAuthorizationTest (exact) =====
 
     private function bindClinic(int $clinicId): void
     {
         App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
-        // Also set the REST trusted scope via Membership? For service-level upload, explicit App::scope is sufficient via TrustedClinicId fallback.
-        // We bind via App::scope directly: MedicalFileService::store uses patientClinicId -> assertPrivateFileUploadAuthority which checks trustedClinicId via ScopeContext/App::scope or membership.
-        // So we ensure App::scope is set.
-        try {
-            App::scope();
-        } catch (\Throwable $e) {
-            App::replaceExplicitScope(ClinicScope::forClinic($clinicId));
-        }
     }
 
     private function makeUser(string $login, string $role): int
     {
         $unique = $login . '_' . bin2hex(random_bytes(3));
-        $userId = (int) wp_create_user($unique, wp_generate_password(24), $unique . '@sd.test');
-        self::assertGreaterThan(0, $userId);
+        $userId = (int) wp_create_user($unique, wp_generate_password(24), $unique . '@s5.test');
+        self::assertGreaterThan(0, $userId, 'precondition: user ' . $login . ' created');
         $user = get_userdata($userId);
-        self::assertNotFalse($user);
+        self::assertNotFalse($user, 'precondition: user readable');
         $user->set_role($role);
+
         return $userId;
     }
 
     private function createMembership(int $userId, int $clinicId, string $roleKey): int
     {
         $id = App::membership_service()->create_membership($clinicId, $userId, $roleKey);
-        self::assertGreaterThan(0, $id);
+        self::assertGreaterThan(0, $id, 'precondition: durable membership row');
+
         return $id;
     }
 
     private function createOrganization(): int
     {
         global $wpdb;
-        $db = App::db();
-        $now = $db->nowUtcSql();
-        $slug = 'sd-org-' . bin2hex(random_bytes(4));
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)',
-            'SD Org ' . $slug,
-            $slug,
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at)
+                 VALUES (%s, %s, %s, %s, %s)',
+                'Slice5 Org ' . $unique,
+                's5-org-' . $unique,
+                'active',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: explicit Organization row');
+        self::assertSame(
             'active',
-            $now,
-            $now
-        ));
-        return (int) $wpdb->insert_id;
+            (string) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT status FROM ' . $wpdb->prefix . 'cpms_organizations WHERE id = %d',
+                    $id
+                )
+            ),
+            'precondition: the Organization is durable and active'
+        );
+
+        return $id;
     }
 
-    private function createClinic(int $orgId, string $suffix): int
+    private function createClinic(int $organizationId, string $tag): int
     {
         global $wpdb;
-        $db = App::db();
-        $now = $db->nowUtcSql();
-        $slug = 'sd-clinic-' . $suffix . '-' . bin2hex(random_bytes(3));
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s)',
-            $orgId,
-            'SD Clinic ' . $suffix,
-            $slug,
-            'Asia/Tehran',
-            'active',
-            $now,
-            $now
-        ));
-        $clinicId = (int) $wpdb->insert_id;
-        // primary location required for visits
-        return $clinicId;
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics
+                     (organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, %s)',
+                $organizationId,
+                'Slice5 Clinic ' . $tag . ' ' . $unique,
+                's5-clinic-' . strtolower($tag) . '-' . $unique,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(1, $id, 'precondition: dynamic Clinic id (never Clinic 1)');
+        self::assertSame(
+            $organizationId,
+            (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d',
+                    $id
+                )
+            ),
+            'precondition: the Clinic is linked to the explicit Organization'
+        );
+        App::resetScope();
+
+        return $id;
     }
 
     private function createLocation(int $clinicId): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_locations (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
-            $clinicId,
-            'SD Loc ' . $clinicId,
-            'sd-loc-' . $clinicId . '-' . bin2hex(random_bytes(2)),
-            'Asia/Tehran',
-            $now,
-            $now
-        ));
-        return (int) $wpdb->insert_id;
+        $unique = bin2hex(random_bytes(4));
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
+                     (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, 1, 1, %s, %s)',
+                $clinicId,
+                'S5 Location ' . $unique,
+                's5-loc-' . $unique,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: durable Location row (' . $wpdb->last_error . ')');
+
+        return $id;
     }
 
     private function createPatient(int $clinicId): int
@@ -235,33 +270,47 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $seq = random_int(100000, 9999999);
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_patients (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
-            $clinicId,
-            'MR-SD-' . $seq,
-            'SD',
-            'Patient' . $seq,
-            '0912' . sprintf('%07d', $seq % 10000000),
-            'active',
-            $now,
-            $now
-        ));
-        return (int) $wpdb->insert_id;
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, %s, %s, %s)',
+                $clinicId,
+                'MR-S5-' . $seq,
+                'Slice5',
+                'Patient' . $seq,
+                '0912' . sprintf('%07d', $seq % 10000000),
+                'active',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: patient row (' . $wpdb->last_error . ')');
+
+        return $id;
     }
 
     private function createClinician(int $clinicId, int $wpUserId): int
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at) VALUES (%d, %s, %d, 1, %s, %s)',
-            $clinicId,
-            'Dr SD ' . $wpUserId,
-            $wpUserId,
-            $now,
-            $now
-        ));
-        return (int) $wpdb->insert_id;
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
+                     (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
+                 VALUES (%d, %s, %d, 1, %s, %s)',
+                $clinicId,
+                'Dr S5 ' . $wpUserId,
+                $wpUserId,
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: clinician row (' . $wpdb->last_error . ')');
+
+        return $id;
     }
 
     private function createVisit(int $clinicId, int $patientId, int $clinicianId): int
@@ -270,42 +319,67 @@ final class SubscriberDoctorPrivateFileUploadTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $date = gmdate('Y-m-d');
         $locationId = (int) ($this->locations[$clinicId] ?? 0);
-        self::assertGreaterThan(0, $locationId);
-        $wpdb->query($wpdb->prepare(
-            'INSERT INTO ' . $wpdb->prefix . 'cpms_visits (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, called_at, consultation_started_at, active, created_at, updated_at) VALUES (%d, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)',
-            $clinicId,
-            $locationId,
-            $clinicianId,
-            $patientId,
-            'walk_in',
-            'in_consultation',
-            $date,
-            $date . ' 10:00:00.000',
-            $date . ' 10:00:00.000',
-            $date . ' 10:05:00.000',
-            $date . ' 10:10:00.000',
-            $now,
-            $now
-        ));
-        return (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $locationId, 'precondition: fixture Location for the Clinic');
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
+                     (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date,
+                      check_in_at, waiting_since, called_at, consultation_started_at, active, created_at, updated_at)
+                 VALUES (%d, %d, %d, %d, %s, %s, %s, %s, %s, %s, %s, 1, %s, %s)',
+                $clinicId,
+                $locationId,
+                $clinicianId,
+                $patientId,
+                'walk_in',
+                'in_consultation',
+                $date,
+                $date . ' 10:00:00.000',
+                $date . ' 10:00:00.000',
+                $date . ' 10:05:00.000',
+                $date . ' 10:10:00.000',
+                $now,
+                $now
+            )
+        );
+        $id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $id, 'precondition: durable visit row (' . $wpdb->last_error . ')');
+
+        return $id;
     }
 
     private function uploadedFileArgs(string $name, string $content): array
     {
-        $tmp = tempnam(sys_get_temp_dir(), 'sdup_');
+        $tmp = tempnam(sys_get_temp_dir(), 's5svc_');
         self::assertIsString($tmp);
         file_put_contents($tmp, $content);
-        // Keep path for cleanup via service's storage? We track storage_path from result instead.
+
         return [
             'name' => $name,
             'tmp_name' => $tmp,
-            'size' => strlen($content),
-            'error' => 0,
+            'size' => (int) filesize($tmp),
+            'error' => UPLOAD_ERR_OK,
+            'type' => 'application/pdf',
         ];
     }
 
     private function pdfContent(): string
     {
-        return "%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\nSD-MARKER-" . bin2hex(random_bytes(4));
+        return "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n"
+            . "2 0 obj\n<< /Type /Pages /Kids[] /Count 0 >>\nendobj\n"
+            . '%' . 'SLICE5-CONFIDENTIAL-PDF-MARKER' . "\n%%EOF\n";
+    }
+
+    private function trackStoredFile(int $fileId): void
+    {
+        global $wpdb;
+        $path = $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT storage_path FROM ' . $wpdb->prefix . 'cpms_medical_attachments WHERE id = %d',
+                $fileId
+            )
+        );
+        if (is_string($path) && $path !== '') {
+            $this->storedFiles[] = $path;
+        }
     }
 }
