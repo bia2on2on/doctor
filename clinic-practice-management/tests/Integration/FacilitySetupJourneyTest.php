@@ -196,6 +196,61 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertTrue(App::audit()->verifyChain(5000)['ok']);
     }
 
+    public function testMultiClinicActivationIsAtomicAndDoesNotMisreportAnOperationalFailureAsDenied(): void
+    {
+        $service = FacilitySetupPage::service();
+        $service->start($this->actor, $this->org, 'other', 'medical_building', 'مجتمع فعال‌سازی اتمیک');
+        $service->add_site($this->actor, $this->org, 'ساختمان فعال‌سازی', 'تهران');
+        $site = (string) $service->plan($this->actor, $this->org)['sites'][0]['key'];
+        $clinicA = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'مطب فعال‌سازی الف', $site, self::TZ);
+        $clinicB = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'مطب فعال‌سازی ب', $site, self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinicA['key'], $this->actor);
+        $service->designate_manager($this->actor, $this->org, $clinicB['key'], $this->actor);
+        self::assertTrue($service->review($this->actor, $this->org)['ready']);
+
+        $planBefore = $service->plan($this->actor, $this->org);
+        $auditsBefore = $this->auditCount('CLINIC_REACTIVATED');
+        $clinicTable = preg_quote(App::db()->table('cpms_clinics'), '/');
+        $updates = 0;
+        $failSecond = static function (string $sql) use ($clinicTable, &$updates): string {
+            if (1 === preg_match('/^\s*UPDATE\s+`?' . $clinicTable . '`?\s+SET\s+.*`?status`?\s*=\s*[\'\"]active[\'\"]/is', $sql)) {
+                ++$updates;
+                if (2 === $updates) {
+                    throw new \RuntimeException('injected failure at second activation');
+                }
+            }
+
+            return $sql;
+        };
+        add_filter('query', $failSecond);
+        $thrown = null;
+        try {
+            $service->activate($this->actor, $this->org, true);
+        } catch (\RuntimeException $e) {
+            $thrown = $e;
+        } finally {
+            remove_filter('query', $failSecond);
+        }
+
+        self::assertSame(2, $updates, 'both Clinic lifecycle writes were reached');
+        self::assertNotNull($thrown, 'the injected operational failure must surface');
+        self::assertSame('injected failure at second activation', $thrown->getMessage());
+        self::assertNotInstanceOf(FacilitySetupException::class, $thrown, 'an operational failure is not mislabeled as denied');
+        self::assertSame('suspended', $this->clinicStatus((int) $clinicA['clinic_id']), 'Clinic A activation rolls back');
+        self::assertSame('suspended', $this->clinicStatus((int) $clinicB['clinic_id']), 'Clinic B remains held');
+        self::assertSame($auditsBefore, $this->auditCount('CLINIC_REACTIVATED'), 'lifecycle audits roll back with statuses');
+        self::assertSame($planBefore, $service->plan($this->actor, $this->org), 'the setup progress marker remains unchanged');
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+
+        $activated = $service->activate($this->actor, $this->org, true);
+        self::assertCount(2, $activated['activated'], 'a clean retry activates the complete plan');
+        self::assertSame('active', $this->clinicStatus((int) $clinicA['clinic_id']));
+        self::assertSame('active', $this->clinicStatus((int) $clinicB['clinic_id']));
+        self::assertNotSame('', (string) $service->plan($this->actor, $this->org)['activated_at']);
+        self::assertSame($auditsBefore + 2, $this->auditCount('CLINIC_REACTIVATED'));
+        self::assertTrue(App::audit()->verifyChain(5000)['ok']);
+    }
+
     // ------------------------------------------------------------------
     // Medical building — independent Clinics, explicit managers
     // ------------------------------------------------------------------
