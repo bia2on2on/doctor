@@ -277,6 +277,8 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         ) );
 
         // Staff membership role assignment (Clinic-local membership data only).
+        // Delegation bound: the manager must already hold the accountant preset.
+        $this->grant_caps( $this->clinicA, $this->clinicManager, array_keys( RolesAndCapabilities::capsMap( RolesAndCapabilities::ROLE_ACCOUNTANT ) ) );
         $role_change = ManagementPortalController::dispatch(
             $this->clinicManager,
             'clinic_staff_role',
@@ -468,7 +470,7 @@ final class ManagementPortalTest extends WP_UnitTestCase {
             'clinic_staff_enroll',
             array( 'clinic_id' => (string) $this->clinicA, 'identifier' => $email, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
         )['ok'], 'a manager cannot delegate a role whose capabilities it does not hold' );
-        self::assertNull( get_user_by( 'email', $email ), 'a refused enrollment must not provision an account' );
+        self::assertFalse( get_user_by( 'email', $email ), 'a refused enrollment must not provision an account' );
 
         // Once the manager actually holds the secretary capability set (explicit
         // membership grants), delegation is allowed and stays Clinic-scoped.
@@ -1171,7 +1173,9 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         self::assertNotNull( $unchanged );
         self::assertSame( RolesAndCapabilities::ROLE_SECRETARY, (string) $unchanged['role_key'] );
         self::assertFalse( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::MEDICAL_READ ) );
-        self::assertFalse( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::FINANCE_READ ) );
+        // The secretary preset does hold FINANCE_READ, but the owner policy denies
+        // void/refund; neither that nor any clinical capability may be added here.
+        self::assertFalse( App::authorization_service()->can( $this->staffMember, $this->clinicA, RolesAndCapabilities::PAYMENT_REFUND ) );
 
         // A role whose preset is a subset of the actor's own caps is delegable.
         self::assertTrue( ManagementPortalController::dispatch(
@@ -1293,7 +1297,7 @@ final class ManagementPortalTest extends WP_UnitTestCase {
     public function test_organization_authority_alone_cannot_create_clinic_rooms(): void {
         self::assertTrue( ManagementPortalController::dispatch( $this->orgManager, 'org_facility_start', array(
             'organization_id' => (string) $this->orgA,
-            'facility_type'   => 'medical_building',
+            'facility_type'   => 'general_clinic',
             'structure'       => 'medical_building',
             'display_name'    => 'Boundary Building',
         ) )['ok'] );
@@ -1382,11 +1386,15 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         self::assertNotNull( $workspace );
         $ids = array_map( static fn( array $row ): int => (int) $row['id'], $workspace['clinicians'] );
         self::assertContains( $clinician_id, $ids, 'a clinician serving a secondary Clinic must be visible there' );
+        $seen_row = null;
         foreach ( $workspace['clinicians'] as $row ) {
             if ( (int) $row['id'] === $clinician_id ) {
-                self::assertFalse( (bool) $row['home_clinic_matches'], 'home Clinic is elsewhere' );
+                $seen_row = $row;
             }
         }
+        self::assertNotNull( $seen_row );
+        self::assertFalse( (bool) $seen_row['home_clinic_matches'], 'home Clinic is elsewhere' );
+        self::assertSame( $this->clinicB, (int) $seen_row['home_clinic'] );
 
         // ... and schedulable in the secondary Clinic through the portal.
         $location_id = (int) App::db()->fetchValue(

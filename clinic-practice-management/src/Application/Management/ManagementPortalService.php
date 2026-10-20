@@ -384,7 +384,13 @@ final class ManagementPortalService {
 				continue;
 			}
 			$seen[ $clinician_id ] = true;
-			$home_clinic           = (int) ( $clinician['clinic_id'] ?? $clinic_id );
+			// Participating rows are read from another Clinic and do not carry
+			// clinic_id; the durable home Clinic is re-read instead of assumed.
+			$home_clinic = (int) ( $clinician['clinic_id'] ?? 0 );
+			if ( $home_clinic <= 0 ) {
+				$profile     = $this->clinicians->find( $clinician_id );
+				$home_clinic = $profile === null ? 0 : (int) ( $profile['clinic_id'] ?? 0 );
+			}
 			$clinicians[]          = array(
 				'id'          => $clinician_id,
 				'full_name'   => (string) ( $clinician['full_name'] ?? '' ),

@@ -286,8 +286,11 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         foreach ($review['clinics'] as $clinic) {
             self::assertSame(1, $clinic['managers']);
             self::assertFalse($clinic['can_configure'], 'the Organization Manager is not a member of independent Clinics');
-            self::assertSame(1, $clinic['entry_missing'], 'a subscriber manager is reported without CPMS admin entry');
-            self::assertSame(1, $clinic['managers_no_entry']);
+            // Entry eligibility is CPMS data (ACTIVE membership + scoped
+            // capability), not a WordPress role: the designated subscriber manager
+            // IS eligible for the frontend portal, and its WP role stays subscriber.
+            self::assertSame(0, $clinic['entry_missing'], 'a designated subscriber manager has CPMS frontend entry');
+            self::assertSame(0, $clinic['managers_no_entry']);
         }
         foreach ([$managerA, $managerB] as $manager) {
             self::assertSame(['subscriber'], array_values(get_userdata($manager)->roles), 'designation never changes a WordPress role');
@@ -720,7 +723,10 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertSame('location', $roster[0]['scope_mode']);
         self::assertSame(1, $roster[0]['locations']);
         self::assertSame(1, $roster[0]['denied']);
-        self::assertFalse($roster[0]['entry'], 'a subscriber staff account is reported without CPMS admin entry; its WordPress role is untouched');
+        // Entry eligibility follows the durable membership + scoped capability
+        // (frontend portal), so an ACTIVE subscriber secretary is eligible while
+        // its WordPress role remains untouched.
+        self::assertTrue($roster[0]['entry'], 'CPMS frontend entry follows the membership, not the WordPress role');
         self::assertSame(['subscriber'], array_values(get_userdata($secretary)->roles));
 
         // The admin-post dispatcher path and the rendered step are explicit (no preselection).
