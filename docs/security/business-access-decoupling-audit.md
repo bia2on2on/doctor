@@ -205,3 +205,24 @@ probe).
 - MariaDB 11.8 migration-0027 gate: **NOT RUN** (no MariaDB 11.8 instance available in
   this environment; no compatibility change was inferred or applied).
 - Real-browser Subscriber journeys: **NOT RUN** in this round.
+
+### 4.3 MariaDB 11.8 — migration-0027 version gate (investigation, no code change)
+
+`2026_10_13_0027_custom_role_archival.php` identifies the engine with a strict
+allowlist before any DDL: MySQL `8.x`, MariaDB `10.11.x` and MariaDB `11.4.13`
+(the runtimes the integration lanes actually execute). A MariaDB **11.8** server is
+therefore rejected with `migration 0027: unsupported database server ...` and **no
+DDL runs** — the migration fails closed, it does not silently guess.
+
+Decision: **no compatibility change applied.** Widening the pattern to `11.x` (or to
+11.8 specifically) would be an inference about a runtime nobody has replayed, and the
+owner's rule is explicit that a compatibility correction must be evidence-supported.
+Evidence available in this round: a mocked-metadata regression
+(`CustomRoleArchivalMigrationTest::test_mariadb_118_is_outside_the_verified_gate_and_fails_closed_before_ddl`)
+proving the refusal and the absence of DDL.
+
+**NOT RUN:** a real MariaDB 11.8 migrate → rollback → replay on a live server. It needs
+a MariaDB 11.8 instance, which this environment does not provide. Required evidence to
+change the gate: full migrate to schema `2026_10_18_0029`, `rollbackOne()` from 0027,
+repeat apply, `SHOW CREATE TABLE cpms_custom_role_defs` equality, and the CHECK /
+`@@SESSION.check_constraint_checks` probes the migration already performs.
