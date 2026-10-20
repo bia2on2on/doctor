@@ -1096,7 +1096,10 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         // never substitutes for scoped authority — so the fixture GRANTS EXPORT
         // on the membership (the wire the account must really use).
         $memId = App::membership_service()->create_membership($this->fxClinicA, $userId, 'cpms_accountant');
-        App::membership_service()->set_capability((int) $memId, 'cpms_export', 'grant');
+        // The accountant preset carries EXPORT/REPORT_READ but no PATIENT_READ,
+        // which the `visits` report type additionally requires. Grant it on the
+        // membership — the only wire that satisfies the hardened contract.
+        App::membership_service()->set_capability((int) $memId, 'cpms_patient_read', 'grant');
 
         return $userId;
     }
