@@ -4,7 +4,10 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin;
 
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\System\SystemHealthService;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
@@ -15,6 +18,12 @@ use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
  * با تأیید صریح. فقط برای دارندگان `cpms_config`.
  *
  * بدون PHI در HTML (ADR-0002)؛ همه‌ی فرم‌ها با Nonce + Capability.
+ *
+ * Multi-Clinic: بخش‌های سطح نصب (مجوز، بکاپ، Restore و Health) بدون Clinic
+ * رندر می‌شوند. تنظیمات به‌روزرسانی در پیکربندی Clinic ذخیره می‌شوند، پس فقط
+ * با انتخاب صریح یک Clinic مجاز (عضویت فعال + CONFIG همان Clinic) خوانده/نوشته
+ * می‌شوند؛ هیچ Clinic تنها/اولی حدس زده نمی‌شود و ScopeRequiredException به
+ * Fatal تبدیل نمی‌شود.
  */
 final class SystemPage
 {
@@ -64,6 +73,9 @@ final class SystemPage
         $backups = [];
         $licError = null;
         $health_error = null;
+        // Multi-Clinic: a health probe that needs Clinic configuration is a scope
+        // requirement, not a page failure; it gets its own informational notice.
+        $health_scope_required = false;
         $backupsError = null;
         try {
             $lic = App::licenseService()->statusMeta();
@@ -75,6 +87,10 @@ final class SystemPage
         } else {
             try {
                 $health = App::systemHealthService()->run();
+            } catch ( ScopeRequiredException ) {
+                // Multi-Clinic install: some health probes read Clinic configuration.
+                // No Clinic is inferred; the rest of the page stays available.
+                $health_scope_required = true;
             } catch ( \Throwable $e ) {
                 $health_error = $e->getMessage();
             }
@@ -84,7 +100,15 @@ final class SystemPage
         } catch (\Throwable $e) {
             $backupsError = $e->getMessage();
         }
-        $settings = App::settings();
+        // Update channel/interval are persisted per Clinic: explicit authorized
+        // Clinic only. App::settings() would throw CLINIC_SCOPE_REQUIRED here.
+        $actor_user_id       = (int) get_current_user_id();
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only display selector; verified against membership + CONFIG
+        $clinic_choices      = AdminClinicSelector::choices( $actor_user_id, RolesAndCapabilities::CONFIG );
+        $clinic_scope        = AdminClinicSelector::establish( $actor_user_id, $requested_clinic_id, RolesAndCapabilities::CONFIG );
+        $selected_clinic_id  = null !== $clinic_scope ? (int) $clinic_scope->clinicId : 0; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+        $settings            = $selected_clinic_id > 0 ? App::settingsFactory()->forClinic( $selected_clinic_id ) : null;
+
         $installationSettings = App::installationSettings();
         $notice = get_transient(self::NOTICE_KEY);
         if ($notice !== false) {
@@ -98,7 +122,9 @@ final class SystemPage
             <?php endif; ?>
 
             <h2>وضعیت Health / سازگاری میزبان</h2>
-            <?php if ( $health_error !== null || $health === null ) : ?>
+            <?php if ( $health_scope_required ) : ?>
+                <div class="notice notice-info inline" data-cpms-health-scope="required"><p>بخشی از بررسی‌های Health به پیکربندی Clinic وابسته است و در نصب چند-Clinic بدون Clinic صریح اجرا نمی‌شود؛ هیچ Clinic پیش‌فرضی حدس زده نشد. بخش‌های سطح نصب (مجوز، بکاپ، بازیابی) در دسترس می‌مانند.</p></div>
+            <?php elseif ( $health_error !== null || $health === null ) : ?>
                 <div class="notice notice-error inline"><p>⛔ بخش Health با خطا مواجه شد (به‌جای Critical Error صفحه فقط این بخش را نشان نمی‌دهد):
                     <code><?php echo esc_html( $health_error ); ?></code></p></div>
             <?php else : ?>
@@ -272,9 +298,21 @@ final class SystemPage
             </form>
 
             <h2>به‌روزرسانی امن (ADR-0029)</h2>
+            <p class="description">کانال و بازهٔ بررسی به‌روزرسانی در پیکربندی Clinic ذخیره می‌شود؛ برای خواندن یا تغییر آن Clinic را صریحاً انتخاب کنید.</p>
+            <?php AdminClinicSelector::render_selector( 'cpms-system', 'cpms_system_clinic', $clinic_choices, $selected_clinic_id, 'Clinic' ); ?>
+            <?php if ( null === $settings ) : ?>
+                <?php if ( null !== $requested_clinic_id ) : ?>
+                    <div class="notice notice-error inline" data-cpms-clinic-scope="denied"><p>Clinic درخواست‌شده معتبر نیست یا عضویت فعال و مجوز CONFIG آن را ندارید؛ هیچ تنظیم Clinic-specific نمایش داده نشد.</p></div>
+                <?php elseif ( [] === $clinic_choices ) : ?>
+                    <div class="notice notice-info inline" data-cpms-clinic-scope="unavailable"><p>برای تنظیمات Clinic-specific، عضویت فعال و مجوز CONFIG در یک Clinic لازم است. مدیر وردپرس به‌تنهایی مرجع Clinic نیست.</p></div>
+                <?php else : ?>
+                    <div class="notice notice-info inline" data-cpms-clinic-scope="required"><p>برای تنظیمات Clinic-specific، Clinic را صریحاً از فهرست بالا انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.</p></div>
+                <?php endif; ?>
+            <?php else : ?>
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="margin-bottom:10px">
                 <?php wp_nonce_field('cpms_update_settings'); ?>
                 <input type="hidden" name="action" value="cpms_update_settings">
+                <input type="hidden" name="clinic_id" value="<?php echo (int) $selected_clinic_id; ?>" data-cpms-clinic-settings="<?php echo (int) $selected_clinic_id; ?>">
                 <label>Channel:
                     <select name="channel">
                         <option value="stable" <?php selected((string) $settings->get('update.channel'), 'stable'); ?>>stable</option>
@@ -287,8 +325,10 @@ final class SystemPage
             <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                 <?php wp_nonce_field('cpms_update_check'); ?>
                 <input type="hidden" name="action" value="cpms_update_check">
+                <input type="hidden" name="clinic_id" value="<?php echo (int) $selected_clinic_id; ?>">
                 <button class="button">بررسی به‌روزرسانی (شبکه)</button>
             </form>
+            <?php endif; ?>
         </div>
         <?php
     }
@@ -406,6 +446,14 @@ final class SystemPage
     public static function updateCheck(): void
     {
         self::guard('cpms_update_check');
+        $scope = self::authorized_clinic_for_write();
+        if ( null === $scope ) {
+            self::notify( 'Clinic را صریحاً انتخاب کنید؛ Clinic درخواست‌شده معتبر نیست یا مجوز CONFIG آن را ندارید. هیچ بررسی‌ای انجام نشد.' );
+            return;
+        }
+        // Bind only the verified explicit Clinic, so App::settings() and the
+        // UpdateService resolve it instead of guessing a Clinic.
+        App::replaceExplicitScope( $scope );
         $channel = (string) App::settings()->get('update.channel', 'stable');
         $r = App::updateService()->checkForUpdates(true, $channel);
         if (($r['available'] ?? false) === true) {
@@ -418,6 +466,12 @@ final class SystemPage
     public static function updateSettings(): void
     {
         self::guard('cpms_update_settings');
+        $scope = self::authorized_clinic_for_write();
+        if ( null === $scope ) {
+            self::notify( 'Clinic را صریحاً انتخاب کنید؛ Clinic درخواست‌شده معتبر نیست یا مجوز CONFIG آن را ندارید. هیچ تنظیمی ذخیره نشد.' );
+            return;
+        }
+        App::replaceExplicitScope( $scope );
         $channel = (string) ($_POST['channel'] ?? 'stable');
         $s = App::settings();
         $s->set('update.channel', in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable');
@@ -426,6 +480,17 @@ final class SystemPage
     }
 
     // ================= helpers =================
+
+    /**
+     * Explicit Clinic for Clinic-scoped System writes. The posted clinic_id is
+     * only a selector, verified against active membership + CONFIG; it is never
+     * inferred from the installation's sole/first Clinic.
+     */
+    private static function authorized_clinic_for_write(): ?ClinicScope {
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $_POST ); // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified by guard() before every caller
+
+        return AdminClinicSelector::establish( (int) get_current_user_id(), $requested_clinic_id, RolesAndCapabilities::CONFIG );
+    }
 
     private static function guard(string $action): void
     {

@@ -224,3 +224,204 @@ Receipt: 2026-10-19T06:36:47Z. Base for this batch: the prior batch's final head
 `CpmsSetupWizard.php`'s shared page shell and several step bodies hardcoded generic words (`مطب`, `کلینیک`, `پزشک`) regardless of the selected facility type, even though the step-2 `<h2>` right next to them already used `FacilityTypeCatalog`'s facility-aware `unit`/`clinician`/`clinicians` terminology. The welcome paragraph, the completion banner, the clinic-info description, the weekly-schedule description, the finish-step heading, and the finish-step unmet-prerequisites warning now all interpolate `current_facility_profile()`/`$facility_profile` the same way the rest of the file already does; for an unselected facility (or a pre-existing install with no facility type), the defaults (`کلینیک`/`پزشک`) are unchanged byte-for-byte from before this batch, so no existing test asserting the generic wording was weakened — only the facility-aware case (previously silently wrong) was fixed.
 
 The two paragraphs above in this same document (the ones headed "an activation redirect was attempted, then reverted" and "Jalali (Shamsi) date UX — delivered vs. deferred") were flagged as contradictory when read in isolation, since both were later superseded by subsequent batches further down this same file. Rather than rewriting history, each now carries an explicit **"SUPERSEDED later in this same document"** callout at its top, pointing forward to the batch that re-added the redirect and the batch that added real Jalali entry, so a reader stopping at either paragraph cannot mistake a since-reversed interim state for the current one.
+
+### Multi-Clinic installs — explicit per-Clinic configuration (PR #253)
+
+**Before:** once an installation had more than one Clinic, the wizard stopped at the "ambiguous Clinic" notice
+(`data-cpms-scope-required="1"`), and `save()` fataled with `CLINIC_SCOPE_REQUIRED`.
+
+**Now:**
+
+- The same notice also offers an explicit Clinic choice (`#cpms_wizard_clinic`). It lists only Clinics with an
+  ACTIVE membership and scoped `cpms_config`, and nothing is pre-selected.
+- After a verified choice, the wizard runs its existing facility-adaptive steps for that Clinic only.
+  `data-cpms-wizard-clinic` names that Clinic, and every step link, form, redirect and per-Clinic deep link
+  (clinicians, Locations, staff) carries the selected `clinic_id`.
+- `save()` and `restart()` re-verify the selector and refuse a foreign one with 403. Without a selector they
+  redirect with guidance and never infer a Clinic.
+
+**Single-Clinic installs** behave exactly as before.
+
+**Organization-level journey:** see the next section. The per-Clinic wizard links hospital and medical-building flows
+to it (`data-cpms-org-facility-journey="1"`). Existing markers and the «مدیریت سازمان و درمانگاه‌ها» entry point stay.
+
+### Top-down Organization facility setup — hospital outpatient network and medical building (PR #253)
+
+Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمانگاهی» (`admin.php?page=cpms-facility-setup`), service:
+`FacilitySetupService`. The facility type is chosen first and adapts the remaining steps:
+
+| Step | Hospital (outpatient only) | Medical building | Authority |
+|---|---|---|---|
+| 1 Facility type + identity | `hospital` → `hospital_network`; explicit outpatient-only acknowledgment | type + structure `medical_building` | Organization (`cpms_org_clinic_create` + `cpms_org_clinic_lifecycle`) |
+| 2 Physical sites | 1..20 sites | same | Organization |
+| 3 Clinics (repeatable) | outpatient Clinics | independent Clinics | Organization (create + lifecycle) |
+| 4 Clinic manager | explicit user (may be self) | a distinct explicit manager per Clinic | Organization (`cpms_org_clinic_manager_assign`) |
+| 5 Rooms | Locations of that Clinic | same | the actor's own Clinic membership + `cpms_config` |
+| 6 Clinicians | one profile per user; other Clinics get an explicit `cpms_doctor` membership; additive Location assignment | — (each Clinic's own manager) | Clinic |
+| 7 Staff roles | reception (`cpms_secretary`) or finance (`cpms_accountant`) membership; explicit access scope: the whole Clinic, or an explicit subset of its active Locations (location-scoped membership); optional explicit DENY rows from the role preset only; the per-Clinic «کاربران و دسترسی‌ها» link stays for later changes | — | Clinic |
+| 8 Weekly schedules | per clinician × Clinic × Location via `ScheduleService` | — | Clinic |
+| 9 Booking policy | per Clinic, same keys/bounds as the wizard booking step | — | Clinic |
+| 10 Review + activation | live-row review; explicit confirmation | same | Organization (lifecycle) |
+
+**Entities and boundaries**
+
+- Clinics are created by `OrganizationClinicProvisioningService::provision` and always belong to the chosen
+  Organization; each has its primary Location at the chosen site.
+- Rooms are created by `LocationService::createLocation` inside their Clinic.
+- No new tenant layer is added: Organization → Clinic → Location is unchanged.
+
+**Physical sites (documented limitation)**
+
+- A site is descriptive metadata in the setup plan (label + address).
+- Its address is copied onto the Locations created at that site.
+- It is not a Clinic, not a Location and not a tenant boundary.
+- There is no site entity outside the plan.
+
+**Holding and activation**
+
+- New Clinics are held suspended (the existing lifecycle control: no new demand) until the consolidated review is
+  ready and activation is explicitly confirmed.
+- Clinics are **created** held: `OrganizationClinicProvisioningService::provision_held` inserts the Clinic row with
+  status `suspended` (it needs both `cpms_org_clinic_create` and `cpms_org_clinic_lifecycle`, DENY > GRANT > preset,
+  under the Organization row lock; the status is read back before commit and recorded in the provisioning audit
+  row). The row never exists as `active`, not even inside the creating transaction. Post-onboarding provisioning
+  on «سازمان‌ها» (`provision`) is unchanged and still creates an active Clinic.
+- Any failure while creating (Clinic, primary Location, audit, plan write, plan audit) rolls the whole step back:
+  no Clinic, Location, audit row or plan entry is committed. A retry adopts an existing Clinic with the request's
+  deterministic slug only when it is still suspended; an active one is refused (`hold_failed`) and is never
+  recorded as held or silently suspended.
+- Failures are reported as what they are. If either hold check (the provisioning readback or the plan step's
+  locking readback) does not see `suspended`, the step fails as `hold_failed`. Any other failure while creating
+  (database, audit, rollback) surfaces unchanged as an internal error (the page shows its internal-error notice
+  and logs the exception class); only a real authorization or Organization-status refusal is reported as `denied`.
+  Manager designation (step 4) follows the same rule: an authorized designation that fails at a write
+  (membership, setup claim, audit) surfaces that failure, and nothing of it is committed.
+- Setup and Location management continue while a Clinic is held, as documented in
+  `post-onboarding-clinic-location-management.md`.
+
+**Retry, resume and authority**
+
+- *Idempotency and resume:*
+  - every create form carries a server-issued `request_key`;
+  - Clinic and room slugs derive from it deterministically;
+  - a retry, including after a lost plan write, adopts the existing row (only inside the same Organization or Clinic)
+    instead of duplicating it;
+  - duplicate names are refused;
+  - the plan (`cpms_facility_setup_plan_{organization}`, non-autoload) is written under the Organization row lock;
+  - Clinic and room creation is one transaction under that lock: the request-key, duplicate-name and limit checks
+    run against the locked plan, and the Clinic (with its primary Location and hold) or room Location is written
+    together with its plan entry. Concurrent submissions for one Organization therefore serialize, a duplicate name
+    cannot slip past a stale check, and a failure at any point leaves no Clinic or Location outside the plan;
+  - room creation re-checks Clinic ownership under that lock (Organization → Clinic → Location order): the Clinic
+    row is locked and must still belong to the Organization before its Location is written (`not_found` otherwise);
+  - the plan (a WordPress option) is read straight from the database — under the Organization row lock with a
+    locking read inside a step — and never from the object cache, which is not transactional; the plan write is
+    verified by a readback before commit (a skipped or partial write rolls the step back); the cached option is
+    invalidated after every commit or rollback; and the setup refuses to run (`storage`) unless the options table
+    is transactional (InnoDB), so plan writes really roll back with the Clinic/Location writes;
+  - an unexpected internal failure is shown as a Persian error notice, never as a fatal error page; the operational
+    log keeps only ids, the step and the exception class;
+  - every real plan change (identity, outpatient acknowledgment, sites, Clinic/room records, activation) is audited
+    as `FACILITY_SETUP_PLAN_CHANGED` in the same transaction, listing only the changed plan sections; an identical
+    retry is not re-audited.
+- *Organization vs. Clinic authority:*
+  - Organization authority never configures a Clinic;
+  - steps 5–9 need the actor's own active membership and `cpms_config` in that Clinic;
+  - WordPress Administrator status grants nothing;
+  - DENY wins for every Organization capability;
+  - existing memberships are never overwritten or reactivated;
+  - inactive Locations and suspended memberships fail closed;
+  - a suspended Organization refuses every step (reads included) and changes nothing; setup resumes after
+    explicit reactivation.
+- *Manager designation (step 4) — authorize before identifying:*
+  - the exact `cpms_org_clinic_manager_assign` authority (DENY > GRANT > preset) and the Clinic's ownership are
+    established, under the Organization row lock, before anything about the target user is evaluated;
+  - a caller without that authority (explicit DENY, another Organization) gets the same refusal for an existing
+    account, a nonexistent account and an invalid id, on the page and in both services, so it cannot probe which
+    accounts exist; a foreign Clinic is refused as not found before the target is resolved;
+  - only an authorized caller is told that the chosen account does not exist;
+  - on the admin page the submitted login/email is resolved only after
+    `FacilitySetupService::authorize_manager_designation()` has passed, so an unauthorized request never looks the
+    account up at all (verified in the tests by watching the users-table queries).
+- *Clinicians (step 6) — one atomic step:*
+  - the whole step runs in one transaction under the Organization row lock (lock order Organization → Clinic →
+    membership → profile, as in the plan and schedule writes); the nested service writes are savepoints of it;
+  - every refusal — including a suspended (or otherwise inactive) existing membership, which is never re-activated
+    or overwritten — happens before the first write, so a refused step never leaves a profile behind;
+  - the one professional profile per account is adopted only inside the same Organization; a new profile's id is
+    read back through the unique account link;
+  - the Location set stays additive across Clinics; it is read, merged and replaced under the same lock and then
+    read back, so concurrent assignments of one professional serialize instead of overwriting each other, and a
+    silently incomplete replacement never commits;
+  - audit rows commit with the change: `CLINICIAN_CREATED` for a new profile and `FACILITY_CLINICIAN_ASSIGNED`
+    (resource `clinic_membership`) for a new membership or a changed Location set, listing only that Clinic's
+    Locations; any failure rolls back the profile, the membership, the Location rows and these audit rows
+    together (the hash chain stays continuous); an identical retry is a no-op without an audit row.
+- *Staff roles (step 7):*
+  - only the built-in staff roles are offered (manager and clinician have their own steps; custom roles stay
+    on the existing per-Clinic page);
+  - a WordPress Administrator account is not a staff account and is refused;
+  - Location-scoped access uses the existing membership model (`scope_mode = location` +
+    `cpms_membership_locations`), enforced by `TrustedClinicEstablisher` at every staff entry point;
+  - DENY rows can only remove capabilities of the chosen role preset (DENY > GRANT > preset); the step never
+    writes a GRANT, so it cannot widen access;
+  - membership, Location scope and DENY rows are written in one transaction (no Clinic-wide window after a
+    partial failure) and audited as `FACILITY_STAFF_ROLE_ASSIGNED`;
+  - an identical retry is a no-op; any other existing membership (role, status, scope or overrides differ) is
+    refused, never overwritten or reactivated.
+- *Admin entry vs. authority (WordPress roles):*
+  - Clinic memberships created here (manager, clinician, staff) are the only source of Clinic authority; no facility
+    step adds, removes or replaces a WordPress role — the same rule as attaching an existing account in
+    «کاربران و دسترسی‌ها»;
+  - the CPMS screens themselves still need the matching WordPress role (entry capability: `cpms_config` for
+    managers, `cpms_queue_read` for clinicians and reception, `cpms_finance_read` for finance), so an existing
+    subscriber who received a membership cannot open them yet;
+  - the review therefore reports, per Clinic and as counts only, how many active members (and managers) still lack
+    that WordPress role (`data-cpms-facility-entry-missing`), and the staff roster flags such accounts; this is
+    informational and never blocks activation;
+  - the Clinic's manager assigns the role from «کاربران و دسترسی‌ها» (edit user); for the delegated Clinic manager
+    themself it is a technical WordPress step (Users screen) — a WordPress role still grants no Clinic authority.
+- *Out of scope:* inpatient wards, beds, inpatient OR and HIS are excluded.
+
+**Dates.** The journey has no calendar-date fields: weekly schedules use weekdays and times, and the booking policy
+uses durations. Schedule exceptions with Jalali dates remain on each Clinic's «پزشکان» page.
+
+**Tests and browser evidence**
+
+- `tests/Integration/FacilitySetupJourneyTest.php` (integration), including injected-failure regressions: a failing
+  hold (exception, and an update that matches no row) leaves no Clinic, no active Clinic, no plan entry and no audit
+  row and keeps the audit chain valid; a failing Location write at the end of the clinician step leaves no profile,
+  membership, Location association or audit row, and the retry is audited exactly once; a suspended membership is
+  refused before any profile is written; and unauthorized manager designation (explicit DENY, foreign Organization,
+  foreign Clinic) returns one refusal for existing, nonexistent and invalid user ids — from both services, the page
+  dispatcher and the real admin request handler (`FacilitySetupPage::handle`; there is no REST route for this
+  step). Failures are injected at every write boundary: Clinic, primary Location, provisioning audit, plan write
+  and plan audit (no Clinic, active Clinic, Location, plan entry, audit row or stale cached plan survives); and
+  profile, membership, Location delete/insert and both clinician audit rows, for a new professional and for an
+  existing profile joining a second Clinic (the existing profile, membership and Locations stay untouched).
+- `tests/Integration/FacilitySetupConcurrencyTest.php`: genuine two-connection concurrency. The test process holds
+  the Organization row lock in its own transaction (manager A) while a forked worker on a new MySQL connection runs
+  the real step (manager B); InnoDB's lock tables must show B in LOCK WAIT on the Organization PRIMARY record held by
+  A's connection, still waiting after A finished its own step. Cases: same Clinic name (B refuses the duplicate), a
+  lost-response retry with the same request key (B adopts A's Clinic), same room name (B refuses), and one
+  professional assigned to two Clinics at once (one profile, two memberships, no lost Location assignment).
+- `bin/rwp-first-practice.py`, the "facility" journeys: hospital and medical-building setup (including a
+  location-scoped reception role with an explicit DENY, a refused room of the other Clinic and a no-op retry),
+  explicit Clinic → Location switching for the shared clinician on the «پزشکان» page, forged Organization,
+  WordPress Administrator and subscriber refusal, and 390px RTL.
+- Real concurrency (a third Organization): two tabs of the same session submit, at the same time, two separately
+  rendered Clinic forms with the same name, one Clinic form twice (same request key), and two room forms with the
+  same name (real browser form POSTs against MySQL/MariaDB); each case yields exactly one Clinic or room Location
+  and one plan entry.
+- Delegated manager hand-off (medical building): the review reports both subscriber managers without admin entry;
+  after the technical WordPress role step (WP-CLI, outside CPMS) only that Clinic turns ready; the delegated manager
+  then logs in, manages their own Clinic on «پزشکان» with an explicit `clinic_id`, is refused for the other
+  independent Clinic, and gets no Organization setup.
+- **Known limitation:** the hospital journey designates the Organization Manager as manager of each outpatient Clinic.
+  Delegated per-Clinic managers are exercised in the browser only in the medical-building hand-off above.
+- **Known limitation (follow-up):** steps 5–9 of this Organization setup also require Organization authority, so a
+  delegated Clinic manager without it completes their Clinic on that Clinic's own existing pages (for example
+  «پزشکان» and «کاربران و دسترسی‌ها») rather than in this wizard. Opening the Organization plan to Clinic-only managers
+  would disclose the other (independent) Clinics of the Organization and is deliberately not done here.
+- Room Locations persist the address of their chosen site (asserted in the hospital journey test); duplicate Clinic
+  and room names are checked against the locked plan in the same transaction as the write (see above).

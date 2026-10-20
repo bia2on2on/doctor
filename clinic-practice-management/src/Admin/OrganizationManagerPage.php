@@ -20,6 +20,8 @@ final class OrganizationManagerPage {
         add_action( 'admin_post_' . OrganizationManagerBootstrapPage::ACTION, [ OrganizationManagerBootstrapPage::class, 'handle' ] );
         add_action( 'admin_menu', [ OrganizationManagerMembershipPage::class, 'menu' ] );
         add_action( 'admin_post_' . OrganizationManagerMembershipPage::ACTION, [ OrganizationManagerMembershipPage::class, 'handle' ] );
+        add_action( 'admin_menu', [ FacilitySetupPage::class, 'menu' ] );
+        add_action( 'admin_post_' . FacilitySetupPage::ACTION, [ FacilitySetupPage::class, 'handle' ] );
     }
 
     public static function menu(): void {

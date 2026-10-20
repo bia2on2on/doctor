@@ -1190,3 +1190,286 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **Changed-line cleanup:** 275 → 23 findings. Work was restricted to lines the branch already adds: `phpcbf` output was hunk-filtered against the collector's added-line set so legacy formatting was never rewritten, and the remaining whitespace/alignment corrections were applied by a token-aware pass (never inside strings or comments). `token_get_all(..., TOKEN_PARSE)` passes on every touched file.
 - **Remaining 23 (all naming):** 21 are `$clinicianId`/`$slotDate`/`$slotTime`/`$slotId`/`$wpUserId`/`$patientId` usages of the **published `BookingService::hold()` parameter names**, and 2 are `$scope->locationId` / `$scope->clinicId` reads of the shared `ClinicScope` value object. Clearing them requires either renaming published named-argument parameters (a BC break the repository convention explicitly forbids) or adding `phpcs:ignore` comments (excluded by the governing directive), so they are intentionally left open rather than silently suppressed.
 - **Other checks on `72ce575e`:** Unit 8.1–8.4, PHPStan, Closure ×4, First-practice ×2, Real WP Acceptance `clinic_`, Release Artifact, Tenant Tripwire, Upgrade path and coexistence all green; Responsive smoke and Staging Gate still running at this entry. Staging Gate earlier failed in `appt.reminder` with `DateInvalidTimeZoneException` (job retried 3/3) — a background path this branch's final commits do not modify; provenance is not established and it is not claimed as fixed.
+
+### [2026-10-19 16:55 UTC] — Classic multi-Clinic: explicit Clinic selection (PR #253, Draft, unmerged)
+
+- **Basis:** fixed branch `arena/a4b51631-doctor`, from `main` @ `b7ae4691a63ddbeed6af9e03838a0309868d8755` (merge of PR #252). Main had not advanced when this entry was written. Task received 2026-10-19T16:16:24Z.
+- **PR #251 disposition:** the live evidence matched the independent audit.
+  - Its 6 unique commits were superseded by #252 / main (`normalize_slot_time`, `is_clinic_wide_report_route`, DoctorPortal order verify → capability → Location bind, retained `[-1]` sentinels), or they were a token-changing WPCS transplant plus its exact revert (tree of `6915c3f` == `f644b65`).
+  - Closed without merging, with a comment: https://github.com/bia2on2on/doctor/pull/251#issuecomment-6271833699. Branch `arena/5f15f305-doctor` is kept at `6915c3f`. Nothing was cherry-picked.
+  - Residual, unverified: the legacy tuple path in `BookingService` passes raw `H:i` to `SlotRepository::findAllByClinicianSlot` and relies on MySQL TIME coercion.
+- **Commits:**
+  1. `17c0e79` fixes defects A and B. System and Settings no longer fatal on multi-Clinic installs: installation info renders without a Clinic, and Clinic-specific settings require an explicit, verified Clinic. The Clinicians page gets an explicit selector, and every form, link and redirect carries the verified Clinic. The shared helper is `AdminClinicSelector`.
+  2. `d1971ae` adds wp-admin schedule and exception management for a professional shared via the Phase 4 participation rule. The profile stays home-only. Deletes are bound to the row's own Clinic.
+  3. `cbff619` makes the wizard offer explicit, verified per-Clinic configuration on multi-Clinic installs instead of the dead end. `save()` no longer fatals without a selector.
+  4. A docs commit (this entry, plus `docs/post-onboarding-clinic-location-management.md` and `docs/onboarding-facility-wizard.md`).
+- **Local validation (exact heads):**
+  - `php -l` under PHP 8.5 WASM (`@php-wasm/cli`) on every changed PHP file.
+  - The exact CI WPCS changed-lines gate, reproduced locally: same baseline `2263ed6`, same `bin/wpcs-changed-lines.py`, same `--basepath` filter, PHPCS 3.13.6 + WPCS 3.4.1 + PHPCSUtils 1.2.3 + PHPCSExtra 1.5.1 assembled from GitHub tarballs. Result: 0 violations on added lines at `17c0e79` and `cbff619`.
+  - PHPUnit, WordPress, MySQL and a browser are unavailable locally, so no local test PASS is claimed.
+- **Exact-head CI, `17c0e79` (PR merge ref `e87a451`):**
+  - CI run `39287276984` succeeded: Unit 8.1–8.4, PHPStan, WPCS, Tenant Tripwire, and Integration `OK (2151 tests, 62680 assertions)` with 0 failures, errors or skips.
+  - First-Practice Browser `39287277005`, Real WordPress Acceptance `39287277018` (both prefixes) and Closure Gate `39287268381` succeeded.
+  - Coexistence and Pilot/Staging were still running when superseded.
+  - Later heads are reported on PR #253 only after they complete.
+- **Not implemented / open:**
+  - The Organization-level top-down hospital outpatient and medical-building journeys inside the wizard (repeatable Clinic creation, rooms, staff and permissions, booking policies, consolidated review and activation).
+  - Dedicated browser journeys for the multi-Clinic screens, multi-Clinic hospital and building flows, and mobile/desktop layouts of the new selectors.
+  - A shared professional identity across Clinics as a *profile*. This is structurally blocked by `u_clinician_user`, on which the financial-authorization decision relies, so it needs an owner decision. Participation via membership is what is delivered.
+  - `update.channel` is persisted per Clinic while updates are installation-wide (owner decision).
+
+### [2026-10-19 17:00 UTC] — PR #253 addendum: browser journey + health scope notice
+
+- **`6538d4a`** adds real Chromium journeys to `bin/rwp-first-practice.py`, which runs in the First-Practice Browser Acceptance workflow (MySQL and MariaDB).
+  - An Administrator with zero memberships on the existing multi-Clinic fixture now also visits `cpms-system`, `cpms-settings` and `cpms-clinicians`, using the existing no-uncaught-PHP and no-recovery-screen checks.
+  - A new `multiclinic_manager` fixture covers a manager with ACTIVE memberships in two Clinics:
+    - an explicit selector with exactly the two Clinics and no default
+    - real-form selection that shows only the selected Clinic's clinician, with forms carrying the Clinic
+    - a forged ID denied without disclosure
+    - Settings showing installation info only until an explicit Clinic is chosen
+    - System rendering with a selector
+    - 390px with `dir="rtl"` and horizontal overflow ≤ 8px (same metric as the existing check)
+  - Validated locally only by `py_compile`, plus `php -l` on the extracted fixture PHP. Browser results come from exact-head CI only.
+- **`4cd69d2`**: on multi-Clinic installs, a Clinic-dependent health probe now renders a dedicated informational notice (`data-cpms-health-scope="required"`). Before, it reused the generic health-error notice, whose literal "Critical Error" text misreported a scope requirement as a failure and would trip the harness's critical-error detector. The local WPCS replica still reports 0 violations.
+- Exact-head CI results for the final head are reported on PR #253 only after the runs complete.
+- **Correction (17:10 UTC):** commit `17c0e79` contained **16** tests in `MultiClinicAdminPagesTest`, not 15 as first written in the docs. Head `e8351dd` (24 tests) passed the full Integration suite: CI run `39290307489`, `OK (2159 tests, 63000 assertions)`, with 0 failures, errors or skips. Both First-Practice browser jobs (MySQL 8.4.11 and MariaDB 11.4.13), both Real-WP acceptance prefixes, WPCS, PHPStan, Unit 8.1–8.4, the Closure Gate, Tripwire, Upgrade and Release Artifact also passed on that head.
+
+### [2026-10-19 17:30 UTC] — PR #253 continuation: top-down Organization facility setup (Draft, unmerged)
+
+- **Scope:** this session delivers the Organization-level journey that the earlier PR #253 slices left unimplemented.
+  - **Hospital outpatient network:** facility type first; then identity and outpatient-only acknowledgment, physical
+    sites, repeatable Clinics, Clinic managers, rooms (Locations), clinicians, staff handoff, weekly schedules,
+    booking policy, and review plus activation.
+  - **Medical building:** independent Clinics, each with a distinct explicit manager.
+  - **Unchanged:** the simple-practice seven-step wizard.
+- **`e3a571d`:** `FacilitySetupService`, `FacilitySetupException` and `FacilitySetupPage` (`cpms-facility-setup`).
+  - Also adds `OrganizationClinicProvisioningService::designate_clinic_manager` (capability
+    `cpms_org_clinic_manager_assign`, audited, never overwrites a membership).
+  - Adds the wizard link marker `data-cpms-org-facility-journey`.
+  - Adds 9 integration tests in `tests/Integration/FacilitySetupJourneyTest.php`.
+  - Exact-head CI on `e3a571d`: CI run `39298009440` passed with Integration `OK (2168 tests, 63175 assertions)`
+    (2159 + 9) and 0 failures, errors or skips. First-Practice, Real-WP and the Closure Gate also passed on that head
+    (before the browser journeys were added).
+- **Follow-up commit:** browser journeys in `bin/rwp-first-practice.py` (fixture `facility`).
+  - Full hospital setup through the real page: 2 sites, 2 outpatient Clinics, self-designated managers, 2 rooms,
+    one shared clinician with separate schedules in both Clinics, booking policy, and review plus activation.
+  - Full medical-building setup with two distinct managers.
+  - Negative checks: Organization Manager refused for Clinic configuration, forged Organization, WordPress
+    Administrator without membership, and subscriber.
+  - 390px RTL overflow checks.
+  - Live DB facts are asserted through WP-CLI.
+- **Local validation only:**
+  - php-wasm `-l`;
+  - the WPCS replica (0 violations on added lines);
+  - `py_compile`;
+  - `acceptance-isolation-check.py`.
+  - PHPUnit, MySQL and Chromium are not available locally, so test and browser results come from exact-head CI.
+- **Known limitations, documented in `docs/onboarding-facility-wizard.md`:**
+  - physical sites are plan metadata only;
+  - staff roles are a handoff to the existing per-Clinic page;
+  - delegated hospital Clinic managers are supported but not exercised in the browser path.
+
+### [2026-10-19 18:46 UTC] — PR #253 continuation: real staff-role step and Location switching evidence (Draft, unmerged)
+
+- **Start:** branch `arena/a4b51631-doctor` at `b800dc1` (clean, equal to remote); base `main` `b7ae469` unchanged;
+  PR #253 Draft/OPEN/MERGEABLE with 26/26 exact-head checks green (verified live).
+- **Scope:** closes the main gap reported for `b800dc1` — hospital step "staff roles with explicit Clinic/Location
+  permissions" was only a handoff link.
+  - `FacilitySetupService::assign_staff()` plus a read-only `clinic_staff()` roster.
+    - Built-in reception/finance roles only.
+    - Explicit access scope: the whole Clinic, or an explicit subset of its active Locations (existing
+      location-scoped membership model).
+    - Optional DENY rows, limited to the role preset; the step never writes a GRANT.
+    - One transaction for membership, Location scope and DENY rows; audited as `FACILITY_STAFF_ROLE_ASSIGNED`.
+    - An identical retry is a no-op; other existing memberships are refused, never overwritten or reactivated.
+  - `FacilitySetupPage`: the staff step is now a real form, with no preselected Clinic, role, scope, room or DENY.
+    The per-Clinic link to «کاربران و دسترسی‌ها» is kept. The review shows location-scoped staff counts.
+  - 2 new integration tests in `tests/Integration/FacilitySetupJourneyTest.php`:
+    - staff roles (scope, DENY precedence, forged/inactive rooms, WordPress Administrator refusal, retries, no
+      overwrite, audit, dispatcher and render);
+    - a suspended Organization refuses every step without mutation until reactivated.
+  - Browser (`bin/rwp-first-practice.py`):
+    - hospital staff step: refused room of the other Clinic, a location-scoped reception role with one DENY, and a
+      no-op retry, with live DB facts;
+    - explicit Clinic → Location switching for the shared clinician on the «پزشکان» page;
+    - the 390px RTL check now also covers the staff step.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`, and
+  `acceptance-isolation-check.py`. PHPUnit, MySQL and Chromium are not available locally; exact-head CI evidence is
+  posted on PR #253, not in this log.
+- **Still open (documented):** physical sites are plan metadata only; delegated hospital Clinic managers are not
+  exercised in the browser path; custom roles and GRANT overrides stay on the existing per-Clinic pages.
+- **Second commit:** Organization-level plan changes (identity, outpatient acknowledgment, sites, Clinic/room records,
+  activation) are audited as `FACILITY_SETUP_PLAN_CHANGED` inside the plan-write transaction (identical retries are
+  not re-audited); covered by the suspended-Organization test.
+
+## [2026-10-19 19:45 UTC] — PR #253 continuation: admin-entry readiness and delegated-manager hand-off (Draft, unmerged)
+
+- **Start:** the restored sandbox had the local branch ref at the base `b7ae469` with the full PR diff as
+  uncommitted files. The working tree was verified byte-identical (tree `b61f960`) to the pushed head `6d41b7b`;
+  the local ref was fast-forwarded to `6d41b7b` with `git update-ref` (old value checked) and the index re-read.
+  Nothing was reset, cleaned, rebased or force-pushed. Base `main` `b7ae469` unchanged; PR #253 Draft with 26/26
+  exact-head checks green.
+- **Finding:** facility steps create Clinic memberships for existing accounts but (like «کاربران و دسترسی‌ها»
+  attach-existing-user) never change WordPress roles, while CPMS screens are gated by the matching WordPress
+  capability. A subscriber designated as Clinic manager, clinician or staff could therefore not open the CPMS
+  screens, and the review did not say so.
+- **Change:** `FacilitySetupService::ENTRY_CAPABILITIES` / `has_admin_entry()`; the review reports per Clinic
+  (counts only) how many active members and managers lack admin entry, with guidance; the staff roster flags such
+  accounts. Informational only: activation is not blocked and no WordPress role is ever changed by the journey.
+- **Tests:** the medical-building and staff integration tests assert the counts, the rendered markers, that no
+  WordPress role changed, and that a WordPress role added outside CPMS opens entry for that Clinic only while
+  granting no authority in the other Clinic. Browser: the medical-building review flags both managers; after the
+  technical WordPress role step (WP-CLI) only that Clinic is ready; the delegated manager logs in, manages their own
+  Clinic with an explicit `clinic_id`, is refused for the other independent Clinic, and gets no Organization setup.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
+  `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.
+- **CI convergence note:** on `00d7710` every check passed except Responsive smoke (Pilot/Staging Gate run
+  39315617708). It failed at the pre-existing Staff/Doctor Portal check `doctor-portal-tablet-768-one` ("history
+  reload operational data was requested before explicit Clinic and Location selection"); the mobile-390 and
+  desktop-1366 variants passed in the same run, and the identical failure occurred on PR #252 head `be0f3c9`
+  (run 39262675829). This PR does not touch the Staff/Doctor Portal. Re-running the failed job and dispatching the
+  workflow are refused for this integration (HTTP 403), so this log-only commit re-triggers the full exact-head
+  cycle. No test, rule, timeout or baseline was changed.
+- **Second convergence note:** on `1e20ba2` the same Responsive smoke job failed again in the same Staff/Doctor
+  Portal journey, this time with 20 s waits timing out from `doctor-portal-tablet-768-one` onwards (`rows=[]`). The
+  fixture binds its rows to the Asia/Tehran date at fixture time (`today=2026-10-19`), and the journey ran across
+  Tehran midnight (≈20:30 UTC), so the portal's "today" no longer matched the fixture rows. This is time-of-day
+  dependent and unrelated to this PR's code (facility setup, its test, the First-Practice harness and docs). This
+  log-only commit re-runs the exact-head cycle after midnight; no test, rule, timeout or baseline was changed.
+
+## [2026-10-19 20:58 UTC] — PR #253 continuation: all-or-nothing Clinic/room creation under the Organization lock (Draft, unmerged)
+
+- **Start:** branch `arena/a4b51631-doctor` at `a5a84cd` (clean, equal to remote); base `main` `b7ae469` unchanged;
+  PR #253 Draft with 26/26 exact-head checks green (verified live).
+- **Finding:** `add_clinic()` / `add_room()` checked the request key and duplicate names against a plan read before
+  the write, created the Clinic or Location in their own transactions, and only then wrote the plan entry under
+  the Organization row lock. Two concurrent submissions with different request keys (for example a re-rendered form
+  submitted while the first request was still running) could both pass the duplicate-name check; and a failure
+  after provisioning (or a crash before the hold) could leave a Clinic or Location outside the plan.
+- **Change:** both steps now run their checks against the locked plan and write the Clinic (primary Location and
+  hold) or the room Location in the same transaction as the plan entry (nested writes become savepoints of the one
+  `App::db()` transaction). Concurrent submissions per Organization serialize; a failure leaves nothing behind.
+  The page dispatcher converts an unexpected internal exception into a Persian error notice and an operational log
+  entry with ids, step and exception class only (no message, no PHI), instead of a fatal error page.
+- **Tests:** a new integration test injects a failing plan write and asserts that no Clinic, primary Location,
+  room Location or provisioning audit row survives; that the page path returns an error notice; and that the same
+  request then creates exactly one held Clinic / one room, retries adopt, and duplicates are refused. Existing
+  tests unchanged.
+- **Not covered:** no test drives two real concurrent HTTP requests; serialization rests on the Organization row
+  lock held for the whole step.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations on added lines), `py_compile`,
+  `acceptance-isolation-check.py`. Exact-head CI evidence is posted on PR #253, not in this log.
+- **Second commit (browser):** a third fixture Organization is used for real parallel HTTP submissions from the
+  browser (same session): two separately rendered Clinic forms with the same name, one Clinic form submitted twice
+  at once, and two room forms with the same name. Each case must yield exactly one Clinic or room Location and one
+  plan entry (live DB facts). Manager, clinician, staff and schedule steps still have no parallel-request test.
+- **Correction (third commit):** the first harness attempt POSTed the forms with `fetch()` from the page; on `aee1ccf`
+  the server answered without the usual redirect and nothing was created (both databases), so the checks failed and
+  the later facility checks were skipped by the resulting timeout. The concurrency checks now submit the real forms
+  from two tabs of the same session, dispatching both clicks before awaiting either navigation, and a failure in this
+  journey is recorded as a failed check without aborting the remaining facility checks. The cause of the `fetch()`
+  refusal was not diagnosed.
+
+## [2026-10-19 22:10 UTC] — PR #253 pre-merge security hardening S1–S3 (Draft, unmerged)
+
+- **Start (verified live):** branch `arena/a4b51631-doctor` at `de1e8da` (clean, equal to remote; no stashes); base
+  `main` `b7ae469` unchanged; PR #253 Draft, mergeable, 26/26 exact-head checks green. The brief expected head
+  `b800dc1`; that commit is an ancestor of the live head (later commits: staff step, plan audit, admin-entry
+  readiness, all-or-nothing Clinic/room creation, browser race checks), so the review line numbers were stale.
+- **S2 — fail-closed hold:** `create_held_clinic()` swallowed every exception from the hold
+  (`set_clinic_status(…, false)`) and recorded `held = false`, which could commit an active, bookable Clinic before
+  activation. The catch-all is removed: a refused or failed hold (or a readback that is not `suspended`) now throws
+  `hold_failed` inside the plan transaction, so the Clinic, its primary Location, their audit rows and the plan entry
+  roll back together and the same request key retries cleanly.
+- **S1 — atomic clinician step:** `assign_clinician()` created the profile before checking the membership state
+  (a suspended membership left a new profile behind), ran profile, membership and Location writes in separate
+  transactions, merged the Location set without a lock (concurrent assignments of one professional to two Clinics
+  could drop one Clinic's Locations) and wrote no audit row. It now runs as one transaction under the Organization
+  row lock (Organization → Clinic → membership → profile); every refusal precedes the first write; the new profile id
+  is read back through the unique account link; the merged Location set is read back before commit; and
+  `CLINICIAN_CREATED` / `FACILITY_CLINICIAN_ASSIGNED` audit rows commit with the change (an identical retry writes
+  nothing). The existing services' nested transactions become savepoints of the one `App::db()` transaction; the
+  only WordPress call inside it is the read-only account lookup inside `create_membership()`.
+- **S3 — authorize before identifying:** `designate_clinic_manager()` resolved the target account before checking
+  `cpms_org_clinic_manager_assign`, and the facility step checked only `cpms_org_clinic_create`, so an Organization
+  Manager with an explicit DENY could tell existing from nonexistent accounts. The facility step now asserts the
+  exact capability first, and the Organization service evaluates the target only after authority and Clinic
+  ownership are established under the Organization row lock.
+- **Lower-severity review items:** room address persistence verified (rooms already pass their site address to
+  `LocationService::createLocation`, which persists and reads it back) and now asserted; duplicate Clinic/room name
+  checks already run against the locked plan since `20fcf53`; Clinic-scoped wizard steps still require Organization
+  authority — documented as a follow-up (opening the Organization plan to Clinic-only managers would disclose the
+  other independent Clinics).
+- **Tests:** four new integration tests (injected hold failure in two forms, injected failure of the last clinician
+  write, suspended membership before any profile, enumeration-safe manager designation) plus two room-address
+  assertions; existing tests unchanged. No new browser journey: concurrency of the clinician step rests on the
+  Organization row lock and is not driven by a real parallel-request test.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
+  PR #253, not in this log.
+
+## [2026-10-19 22:49 UTC] — PR #253 security and atomicity closure (four findings; Draft, unmerged)
+
+- **Start (verified live):** head `2adfd54` (clean, equal to remote, no stashes), base `main` `b7ae469`, PR #253
+  Draft with 26/26 green. The brief expected head `6d41b7b`, an ancestor 7 commits back: findings 1, 3 and 4 had
+  already been addressed on the live head (`2adfd54`, `20fcf53`), so this cycle closes the remaining gaps.
+- **Finding 2 (root cause):** Clinics were provisioned `active` and then suspended in the same transaction. The new
+  explicit API `provision_held` inserts the row `suspended` (create + lifecycle authority under the Organization
+  lock, readback, audit records status/held), so the row never exists as active. Adoption on retry requires the
+  existing row to be suspended (locking read); an active one is refused and never silently suspended.
+- **Finding 4 (remaining gap):** the plan was read through `get_option` (object cache / `notoptions` could be
+  stale, and the read was not a locking read) and the plan write was not verified. Plans are now read from the
+  database (locking read under the Organization lock inside a step), written through `update_option` and verified
+  by readback, the cache entry is invalidated after commit and rollback, and the setup refuses to run unless the
+  options table is InnoDB.
+- **Finding 1:** inspected `MembershipService`, `ClinicianRepository`, `MembershipRepository` and `LocationService`:
+  all use the one `App::db()` instance (the only production `CpmsDb`), so their `transactional()` calls become
+  savepoints of the step's transaction and never commit it; failure injection at every write boundary proves it.
+- **Finding 3:** unchanged code; added a test through the real admin request handler (no REST route exists).
+- **Tests:** a new two-connection concurrency test (forked worker on its own MySQL connection, verified InnoDB lock
+  wait on the Organization PRIMARY record held by the test connection) and failure injection at every write
+  boundary of Clinic creation and of the clinician step. One earlier test of this PR (injected failure of the
+  separate hold UPDATE) was replaced, because that UPDATE no longer exists; its assertions are kept and extended.
+- **Local validation only:** php-wasm `-l`, the WPCS replica (0 violations). Exact-head CI evidence is posted on
+  PR #253, not in this log.
+
+## [2026-10-19 23:40 UTC] — PR #253 blocking-defect closure check (Draft, unmerged)
+
+- **Start (verified live):** head `7fdc4cd` (clean, equal to remote, no stashes), base `main` `b7ae469`, 26/26 green.
+  The brief reported head `a5a84cd` — an ancestor 6 commits back — and asked again for S1, S2, S3 and the
+  concurrent-manager fix. Those fixes are on the live head (`20fcf53`, `2adfd54`, `e98f6e8`, `7fdc4cd`).
+- **Correction to the previous entry:** the first CI run of the two-connection test (`e98f6e8`) failed, and the
+  failure cascaded into later Integration tests; `7fdc4cd` fixed the test harness (see its commit message).
+- **Gaps found against the exact wording and fixed here:**
+  - S3: the admin page resolved the submitted login/email *before* the service checked
+    `cpms_org_clinic_manager_assign` (responses were identical, but a lookup still happened). New
+    `FacilitySetupService::authorize_manager_designation()` runs first on the page; `designate_manager()` uses it
+    too. The handler test now proves zero users-table lookups for an unauthorized request (positive control with
+    GRANT).
+  - Concurrency: room creation re-checked Clinic ownership only indirectly. `create_room()` now locks the Clinic
+    row with the Organization condition under the Organization lock and refuses with `not_found`; a test moves the
+    Clinic to another Organization inside the locked step and proves nothing is written.
+- **Local validation only:** php-wasm `-l`, WPCS replica 0 violations. Exact-head CI evidence is posted on PR #253.
+
+## [2026-10-20 00:02 UTC] — PR #253 final blocker re-check (Draft, unmerged)
+
+- **Start (verified live):** head `292f87b` (clean, equal to remote, no stashes), base `main` `b7ae469`, 26/26 green.
+  The brief expected head `de1e8da`, which is 4 commits behind; S1, S2, S3 and the concurrency fix were already in
+  `2adfd54`, `e98f6e8`, `7fdc4cd` and `292f87b`.
+- **Re-review of the live source against the brief:** S1, S3 and the concurrency sections hold as committed.
+  One genuine S2 gap: `create_held_clinic()` turned *every* provisioning failure except a slug conflict into a
+  `denied` refusal. A Clinic whose held status could not be verified (provisioning readback) was therefore
+  reported as an access problem, and database/audit failures were disguised as refusals (fail-closed, but the
+  failure was concealed).
+- **Fix:** only `organization provisioning denied` maps to `denied`; `held clinic readback failed` maps to
+  `hold_failed` (as the plan step's own readback already did); any other failure propagates unchanged.
+- **Tests:** a new test answers each hold readback with a non-suspended Clinic and expects `hold_failed` with nothing
+  committed (positive control afterwards). The held-provisioning boundary test now requires that the injected
+  failure itself surfaces at all five boundaries, and that the page shows the internal-error notice.
+- **Same pattern in step 4:** `designate_manager()` mapped every lower-level failure except "membership exists"
+  to `denied`. Its known refusals (designation denied, Clinic not found in the Organization) still map to `denied`;
+  any other failure now surfaces unchanged. A new test injects failures at the membership insert, setup-claim
+  update and designation audit of an *authorized* designation: the failure itself surfaces, nothing is committed,
+  the chain stays intact, and the same designation then succeeds once. S3 behaviour for unauthorized callers is
+  unchanged: they are refused by `authorize_manager_designation()` before any of this runs.
+- **CI:** `d86cf11` (S2 part only) was followed by this commit, so the final head's CI is the one that counts.
+- **Local validation only:** php-wasm `-l`, WPCS replica. Exact-head CI evidence is posted on PR #253.

@@ -45,6 +45,33 @@ final class ClinicianRepository
         return is_array($rows) ? $rows : [];
     }
 
+    /**
+     * Phase 4 participation for wp-admin: ACTIVE professionals whose HOME Clinic is
+     * another Clinic but who hold an ACTIVE durable membership in this Clinic — the
+     * same rule as MembershipRepository::clinician_participates_in(), which
+     * ScheduleService enforces. Home-Clinic rows are listed by listAll(). Only
+     * Clinic-local data is selected (no home-Clinic identity), and schedule_days
+     * counts this Clinic's active schedule rows only.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function list_participating_in_clinic( int $clinic_id ): array {
+        if ( $clinic_id <= 0 ) {
+            return [];
+        }
+        $rows = $this->db->fetchAll(
+            'SELECT c.id, c.full_name, c.specialty,' .
+            ' (SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_schedule' ) . ' s WHERE s.clinician_id = c.id AND s.clinic_id = %d AND s.is_active = 1) AS schedule_days' .
+            ' FROM ' . $this->db->table( 'cpms_clinicians' ) . ' c' .
+            ' JOIN ' . $this->db->table( 'cpms_clinic_memberships' ) . ' m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d AND m.status = \'active\'' .
+            ' WHERE c.clinic_id <> %d AND c.is_active = 1 AND c.wp_user_id IS NOT NULL' .
+            ' ORDER BY c.full_name ASC LIMIT 500',
+            [ $clinic_id, $clinic_id, $clinic_id ]
+        );
+
+        return is_array( $rows ) ? $rows : [];
+    }
+
     public function find(int $id): ?array
     {
         return $this->db->fetchRow(

@@ -212,3 +212,65 @@ active-Location + active-`cpms_schedule` positive control),
 incomplete. Teardown deletes children before parents (`cpms_audit_logs`, holds, appointments,
 slots/schedule before clinicians, then Locations/Clinics/Organizations) so no committed row leaks into
 a later test.
+
+## Multi-Clinic: explicit Clinic selection on System, Settings, Clinicians and the wizard (PR #253)
+
+**Problem (verified by reading the code at `b7ae469`):** several Classic wp-admin screens resolved
+Clinic data through the implicit "sole Clinic" path.
+
+- `SettingsAdmin::render()` and `SystemPage::render()` called `App::settings()` outside any guard. On an
+  installation with more than one Clinic, `SystemClinicResolver` raises `CLINIC_SCOPE_REQUIRED`, so both
+  pages ended in a PHP fatal.
+- `CpmsSetupWizard::save()` had the same unguarded call, so a wizard POST also fataled.
+- `ClinicianAdminPage` accepted only the actor's *unique* active membership. A manager of two Clinics got
+  a dead-end shell, and every write failed.
+
+**Behavior now:**
+
+| Screen | Without a Clinic | With an explicit `clinic_id` |
+|---|---|---|
+| Settings (`cpms-settings`) | Installation info only: queue, failed jobs, version, schema, table count, notification retention from `InstallationSettings` | Clinic-specific settings of that Clinic (OTP, hold, grace, booking horizon, retention, SMS, quiet hours, report range) |
+| System (`cpms-system`) | Health, licence, backups, restore. A health probe that needs Clinic configuration degrades to an inline notice | Update channel and interval, which are persisted per Clinic, are read and written for that Clinic only |
+| Clinicians (`cpms-clinicians`) | Single membership: unchanged, and the active Clinic is now shown. Several memberships: a selector and no data | Home clinicians plus participating professionals of that Clinic, with schedules and exceptions at that Clinic's Locations |
+| Wizard (`cpms-wizard`) | Single membership: unchanged. Multi-Clinic: an explicit choice instead of a dead end | Every step, form, redirect and deep link is bound to that Clinic, and a banner names it |
+
+**Security invariants:**
+
+1. A `clinic_id` is only a selector. `AdminClinicSelector::establish()` verifies it on every render and write
+   with `TrustedClinicEstablisher`, which requires an ACTIVE membership, plus
+   `AuthorizationService::authorize(…, cpms_config)`, which applies DENY > GRANT.
+2. No sole, first, primary or unique Clinic is inferred for Clinic-specific data. The selector has no
+   pre-selected default.
+3. Foreign, forged (for example `2147483647`) and malformed selectors are rejected and nothing is disclosed.
+   Installation-wide information still renders.
+4. A WordPress administrator without a membership is not Clinic authority. No Clinic is offered.
+5. Shared professional (Phase 4 participation):
+   - The identity stays unique (`u_clinician_user`) and the profile is edited in the home Clinic only.
+   - Another Clinic manages that professional's schedule and exceptions only while the professional holds an
+     ACTIVE membership there. The rule is `MembershipRepository::clinician_participates_in`, the same one
+     `ScheduleService` enforces.
+   - Schedule and exception deletes are bound to the row's own Clinic and clinician.
+6. The wizard honours an explicit binding only while the live `ScopeContext` still holds that Clinic. With
+   no selector it keeps the unique-membership rule.
+
+**Tests:** `tests/Integration/MultiClinicAdminPagesTest.php` (24 tests) runs on a real fixture of two
+dynamic Clinics. Exact-head CI evidence:
+
+- Head `17c0e79` had 16 of these tests. Full Integration suite, CI run `39287276984`: `OK (2151 tests, 62680 assertions)`, with 0 failures, errors or skips.
+- Head `e8351dd` had all 24 tests. Full Integration suite, CI run `39290307489`: `OK (2159 tests, 63000 assertions)`, with 0 failures, errors or skips. The +8 tests between the two heads match the tests added to this file, and no other test file changed.
+
+Results for any later head are reported on PR #253.
+
+**Not claimed / open:**
+
+- **Organization-level top-down journey.** The wizard does not yet offer this journey: hospital outpatient
+  identity, repeatable Clinic creation inside the wizard, medical-building provisioning inside the wizard,
+  and a consolidated multi-Clinic review. Clinics are still created through «مدیریت سازمان و درمانگاه‌ها»
+  (`OrganizationClinicProvisioningService`). Each created Clinic can then be configured through the wizard
+  with explicit selection.
+- **No browser journey yet.** None of the new multi-Clinic screens has a dedicated browser journey. The
+  existing First-Practice and Real-WP acceptance suites only show that single-Clinic behavior did not
+  regress.
+- **Per-Clinic update channel.** `update.channel` / `update.check_interval_hours` are still persisted per
+  Clinic, even though plugin updates are installation-wide. This pre-existing design needs an owner decision
+  before it can move to `InstallationSettings`.

@@ -368,12 +368,174 @@ if ($kind === "reset_unclaimed") {
         ]
     );
     echo "FP_FIXTURE=multiclinic second=" . (int) $wpdb->insert_id . PHP_EOL;
+} elseif ($kind === "multiclinic_manager") {
+    // PR #253: explicit Clinic selection evidence. Requires the multiclinic fixture.
+    $second = $db->fetchRow(
+        "SELECT id FROM " . $db->table("cpms_clinics") . " WHERE id <> %d ORDER BY id DESC LIMIT 1",
+        [$clinicId]
+    );
+    if (!is_array($second)) { fwrite(STDERR, "no second clinic\n"); exit(1); }
+    $secondId = (int) $second["id"];
+    $staff = get_user_by("login", (string) getenv("SECOND_ADMIN_USER"));
+    if (!$staff instanceof WP_User) { fwrite(STDERR, "missing staff\n"); exit(1); }
+    $svc = \ClinicCore\Bootstrap\App::membership_service();
+    foreach ([$clinicId, $secondId] as $cid) {
+        if ($svc->membership_for($cid, (int) $staff->ID) === null) {
+            $svc->create_membership($cid, (int) $staff->ID, \ClinicCore\Auth\RolesAndCapabilities::ROLE_MANAGER);
+        }
+    }
+    foreach ([[$clinicId, "FP Dr First Clinic"], [$secondId, "FP Dr Second Clinic"]] as $row) {
+        $wpdb->insert(
+            $db->table("cpms_clinicians"),
+            ["clinic_id" => $row[0], "full_name" => $row[1], "is_active" => 1, "created_at" => $now, "updated_at" => $now]
+        );
+    }
+    echo "FP_FIXTURE=multiclinic_manager first=" . $clinicId . " second=" . $secondId . PHP_EOL;
+} elseif ($kind === "facility") {
+    // PR #253: top-down Organization facility setup evidence (hospital + medical
+    // building). Two fresh Organizations whose ONLY manager is SECOND_ADMIN_USER,
+    // plus plain WordPress users chosen explicitly (by login) inside the journey.
+    $mgr = get_user_by("login", (string) getenv("SECOND_ADMIN_USER"));
+    if (!$mgr instanceof WP_User) { fwrite(STDERR, "missing manager\n"); exit(1); }
+    $out = [];
+    foreach (["hospital" => "FP Hospital Org", "building" => "FP Medical Building Org", "race" => "FP Concurrency Org"] as $key => $label) {
+        $wpdb->insert($db->table("cpms_organizations"), ["name" => $label, "slug" => "fp-" . $key . "-" . bin2hex(random_bytes(3)), "status" => "active", "created_at" => $now, "updated_at" => $now]);
+        $orgId = (int) $wpdb->insert_id;
+        if ($orgId <= 0) { fwrite(STDERR, "organization insert failed\n"); exit(1); }
+        $wpdb->insert($db->table("cpms_organization_memberships"), ["organization_id" => $orgId, "wp_user_id" => (int) $mgr->ID, "role_key" => "organization_manager", "status" => "active", "created_by_wp_user_id" => (int) $mgr->ID, "created_at" => $now, "updated_at" => $now]);
+        $out[] = $key . "=" . $orgId;
+    }
+    foreach (["doctor" => "fpfacdoc", "mgra" => "fpfacmgra", "mgrb" => "fpfacmgrb", "staff" => "fpfacstaff"] as $key => $prefix) {
+        $login = $prefix . bin2hex(random_bytes(2));
+        $uid = wp_create_user($login, wp_generate_password(24), $login . "@acc.local");
+        if (is_wp_error($uid)) { fwrite(STDERR, "user create failed\n"); exit(1); }
+        $out[] = $key . "=" . $login;
+    }
+    echo "FP_FIXTURE=facility " . implode(" ", $out) . PHP_EOL;
 } else {
     fwrite(STDERR, "unknown fixture\n");
     exit(1);
 }
 '''
     return wp_eval(code, {"FP_FIXTURE": kind})
+
+
+def facility_db_facts(org_id):
+    """Live DB facts of one Organization created through the facility journey."""
+    code = r'''
+$org = (int) getenv("FP_ORG");
+$db = \ClinicCore\Bootstrap\App::db();
+$actor = get_user_by("login", (string) getenv("SECOND_ADMIN_USER"));
+$actorId = $actor instanceof WP_User ? (int) $actor->ID : 0;
+$clinics = $db->fetchAll("SELECT id, status FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d", [$org]);
+$active = 0; $locations = 0; $schedules = 0; $managers = 0; $actorMembers = 0;
+foreach ($clinics as $c) {
+    $cid = (int) $c["id"];
+    if ((string) $c["status"] === "active") { $active++; }
+    $locations += (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_locations") . " WHERE clinic_id = %d", [$cid]);
+    $schedules += (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_schedule") . " WHERE clinic_id = %d", [$cid]);
+    $managers += (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " WHERE clinic_id = %d AND role_key = %s AND status = %s", [$cid, "cpms_manager", "active"]);
+    $actorMembers += (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " WHERE clinic_id = %d AND wp_user_id = %d", [$cid, $actorId]);
+}
+$profiles = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinicians") . " c INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = c.clinic_id WHERE k.organization_id = %d", [$org]);
+$scheduleClinics = (int) $db->fetchValue("SELECT COUNT(DISTINCT s.clinic_id) FROM " . $db->table("cpms_schedule") . " s INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = s.clinic_id WHERE k.organization_id = %d", [$org]);
+$staffJoin = " INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = m.clinic_id WHERE k.organization_id = %d AND m.role_key IN (%s, %s)";
+$staffArgs = [$org, "cpms_secretary", "cpms_accountant"];
+$staff = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " m" . $staffJoin, $staffArgs);
+$staffScoped = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " m" . $staffJoin . " AND m.scope_mode = %s AND m.status = %s", array_merge($staffArgs, ["location", "active"]));
+$staffLocations = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_membership_locations") . " ml INNER JOIN " . $db->table("cpms_clinic_memberships") . " m ON m.id = ml.membership_id" . $staffJoin, $staffArgs);
+$staffDenies = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_membership_capabilities") . " mc INNER JOIN " . $db->table("cpms_clinic_memberships") . " m ON m.id = mc.membership_id" . $staffJoin . " AND mc.effect = %s", array_merge($staffArgs, ["deny"]));
+echo "clinics=" . count($clinics) . " active=" . $active . " locations=" . $locations . " schedules=" . $schedules . " schedule_clinics=" . $scheduleClinics . " managers=" . $managers . " actor_members=" . $actorMembers . " profiles=" . $profiles . " staff=" . $staff . " staff_scoped=" . $staffScoped . " staff_locations=" . $staffLocations . " staff_denies=" . $staffDenies . PHP_EOL;
+'''
+    out = wp_eval(code, {"FP_ORG": str(org_id)})
+    return dict(tok.split("=", 1) for tok in (out or "").split() if "=" in tok)
+
+
+def facility_clinic_locations(org_id):
+    """Active Location ids per Clinic of one Organization (live DB), for switch checks."""
+    code = r'''
+$org = (int) getenv("FP_ORG");
+$db = \ClinicCore\Bootstrap\App::db();
+$out = [];
+foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d ORDER BY id", [$org]) as $c) {
+    $ids = [];
+    foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_locations") . " WHERE clinic_id = %d AND is_active = 1 ORDER BY id", [(int) $c["id"]]) as $l) {
+        $ids[] = (int) $l["id"];
+    }
+    $out[] = (int) $c["id"] . ":" . implode(",", $ids);
+}
+echo "FP_LAYOUT=" . implode(";", $out) . PHP_EOL;
+'''
+    layout = {}
+    for line in (wp_eval(code, {"FP_ORG": str(org_id)}) or "").splitlines():
+        if not line.startswith("FP_LAYOUT="):
+            continue
+        for part in line.split("=", 1)[1].split(";"):
+            if ":" in part:
+                clinic, locs = part.split(":", 1)
+                if clinic.isdigit():
+                    layout[int(clinic)] = sorted(int(x) for x in locs.split(",") if x.isdigit())
+    return layout
+
+
+def facility_race_facts(org_id, clinic_name, room_name=""):
+    """Live counts for the concurrency checks: Clinics of one Organization with one name and their
+    plan entries, and (optionally) room Locations with one name and their plan entries."""
+    code = r'''
+$org = (int) getenv("FP_ORG");
+$name = (string) getenv("FP_NAME");
+$room = (string) getenv("FP_ROOM");
+$db = \ClinicCore\Bootstrap\App::db();
+$clinics = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d AND name = %s", [$org, $name]);
+$locations = $room === "" ? 0 : (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_locations") . " l INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = l.clinic_id WHERE k.organization_id = %d AND l.name = %s", [$org, $room]);
+wp_cache_delete("cpms_facility_setup_plan_" . $org, "options");
+$plan = get_option("cpms_facility_setup_plan_" . $org, []);
+$entries = 0;
+$roomEntries = 0;
+foreach ((array) ($plan["clinics"] ?? []) as $clinic) {
+    if ($name !== "" && (string) ($clinic["name"] ?? "") === $name) { $entries++; }
+    foreach ((array) ($clinic["rooms"] ?? []) as $entry) {
+        if ($room !== "" && (string) ($entry["name"] ?? "") === $room) { $roomEntries++; }
+    }
+}
+echo "FP_RACE clinics=" . $clinics . " plan_entries=" . $entries . " room_locations=" . $locations . " room_entries=" . $roomEntries . PHP_EOL;
+'''
+    out = wp_eval(code, {"FP_ORG": str(org_id), "FP_NAME": clinic_name, "FP_ROOM": room_name}) or ""
+    line = next((ln for ln in out.splitlines() if ln.startswith("FP_RACE ")), "")
+    return dict(tok.split("=", 1) for tok in line.split()[1:] if "=" in tok)
+
+
+def facility_prepare_delegated_manager(login_name, org_id, password):
+    """Technical WordPress step OUTSIDE CPMS for one delegated Clinic manager.
+
+    This is what a WordPress administrator does on the Users screen: add the WordPress
+    role that opens the CPMS screens and set a password for this browser session.
+    The facility journey itself never changes a WordPress role; Clinic authority
+    still comes only from the explicit Clinic membership. Returns the manager's own
+    Clinic id(s) and the Organization's other Clinic id(s).
+    """
+    code = r'''
+$user = get_user_by("login", (string) getenv("FP_LOGIN"));
+if (!$user instanceof WP_User) { fwrite(STDERR, "missing delegated manager\n"); exit(1); }
+$roles = implode(",", (array) $user->roles);
+wp_set_password((string) getenv("FP_PASS"), (int) $user->ID);
+$user = new WP_User((int) $user->ID);
+$user->add_role("cpms_manager");
+$db = \ClinicCore\Bootstrap\App::db();
+$org = (int) getenv("FP_ORG");
+$own = [];
+foreach ($db->fetchAll("SELECT m.clinic_id FROM " . $db->table("cpms_clinic_memberships") . " m INNER JOIN " . $db->table("cpms_clinics") . " k ON k.id = m.clinic_id WHERE m.wp_user_id = %d AND m.role_key = %s AND m.status = %s AND k.organization_id = %d ORDER BY m.clinic_id", [(int) $user->ID, "cpms_manager", "active", $org]) as $row) {
+    $own[] = (int) $row["clinic_id"];
+}
+$other = [];
+foreach ($db->fetchAll("SELECT id FROM " . $db->table("cpms_clinics") . " WHERE organization_id = %d ORDER BY id", [$org]) as $row) {
+    if (!in_array((int) $row["id"], $own, true)) { $other[] = (int) $row["id"]; }
+}
+echo "FP_DELEGATED own=" . implode(",", $own) . " other=" . implode(",", $other) . " roles_before=" . $roles . PHP_EOL;
+'''
+    out = wp_eval(code, {"FP_LOGIN": login_name, "FP_PASS": password, "FP_ORG": str(org_id)}) or ""
+    line = next((ln for ln in out.splitlines() if ln.startswith("FP_DELEGATED ")), "")
+    return dict(tok.split("=", 1) for tok in line.split()[1:] if "=" in tok)
 
 
 def body_has(body, needle):
@@ -399,6 +561,340 @@ def denied_response(page, status, body):
         or not path.startswith("/wp-admin/")
         or "wp-login.php" in page.url
     )
+
+
+FACILITY_PAGE = "admin.php?page=cpms-facility-setup"
+
+
+def facility_url(org_id, step):
+    return f"{FACILITY_PAGE}&organization_id={org_id}&step={step}"
+
+
+def facility_submit(page, tag, op, shot_name):
+    """Submit one facility form (POST → admin-post → PRG) and return the notice kind."""
+    form = page.locator(f'form[data-cpms-facility-form="{op}"]')
+    if form.count() != 1:
+        check(f"{tag}.{shot_name}.form_present", False, f"op={op} forms={form.count()}")
+        return ""
+    with page.expect_navigation(wait_until="domcontentloaded"):
+        form.locator('button[type="submit"]').click()
+    page.wait_for_timeout(300)
+    shot(page, shot_name)
+    body = page.content()
+    check(f"{tag}.{shot_name}.no_critical_error", CRITICAL_RE.search(body or "") is None, "after PRG")
+    notice = page.locator("[data-cpms-facility-notice]")
+    return (notice.first.get_attribute("data-cpms-facility-notice") or "") if notice.count() else ""
+
+
+def facility_option_values(page, selector):
+    values = []
+    options = page.locator(f"{selector} option")
+    for i in range(options.count()):
+        value = options.nth(i).get_attribute("value") or ""
+        if value:
+            values.append(value)
+    return values
+
+
+def run_hospital_facility_journey(page, tag, org, fac):
+    goto_admin(page, tag, FACILITY_PAGE, "facility-org-choice")
+    org_select = page.locator("#cpms_facility_org")
+    check(f"{tag}.org_choice.explicit_no_default", org_select.count() == 1 and org_select.input_value() == "",
+          "Organization selector present without a default")
+
+    goto_admin(page, tag, facility_url(org, "identity"), "facility-hospital-identity")
+    page.check('input[name="facility_type"][value="hospital"]')
+    page.fill("#cpms_facility_display_name", "بیمارستان آزمون پذیرش")
+    check(f"{tag}.hospital.start", facility_submit(page, tag, "start", "facility-hospital-started") == "ok",
+          "facility type chosen first + Organization identity saved")
+    check(f"{tag}.hospital.flow", page.locator('[data-cpms-facility-flow="hospital_network"]').count() == 1,
+          "hospital outpatient flow resolved from the facility type")
+    check(f"{tag}.hospital.inpatient_unsupported", page.locator('[data-cpms-inpatient-unsupported="1"]').count() == 1,
+          "inpatient/HIS explicitly unsupported")
+    page.check('input[name="outpatient_ack"]')
+    check(f"{tag}.hospital.outpatient_ack", facility_submit(page, tag, "ack", "facility-hospital-ack") == "ok",
+          "explicit outpatient-only acknowledgment")
+
+    for label, address in (("ساختمان شرقی", "تهران، خیابان یکم"), ("ساختمان غربی", "تهران، خیابان دوم")):
+        page.fill("#cpms_facility_site_label", label)
+        page.fill("#cpms_facility_site_address", address)
+        facility_submit(page, tag, "site", "facility-hospital-site")
+    check(f"{tag}.hospital.two_sites", page.locator('[data-cpms-facility-sites="2"]').count() == 1,
+          "two physical sites recorded as descriptive metadata")
+
+    goto_admin(page, tag, facility_url(org, "clinics"), "facility-hospital-clinics")
+    for index, name in ((1, "درمانگاه قلب"), (2, "درمانگاه پوست")):
+        page.fill("#cpms_facility_clinic_name", name)
+        page.select_option("#cpms_facility_clinic_site", index=index)
+        page.select_option("#cpms_facility_timezone", "Asia/Tehran")
+        check(f"{tag}.hospital.clinic_{index}", facility_submit(page, tag, "clinic", f"facility-hospital-clinic-{index}") == "ok",
+              "outpatient Clinic created with its primary Location (held until activation)")
+    check(f"{tag}.hospital.two_clinics", page.locator('[data-cpms-facility-clinics="2"]').count() == 1,
+          "two outpatient Clinics in the Organization")
+
+    goto_admin(page, tag, facility_url(org, "managers"), "facility-hospital-managers")
+    keys = facility_option_values(page, "#cpms_facility_manager_clinic")
+    check(f"{tag}.hospital.clinic_choice_no_default", len(keys) == 2 and page.locator("#cpms_facility_manager_clinic").input_value() == "",
+          f"explicit Clinic choice without default ({len(keys)} Clinics)")
+    for index in (1, 2):
+        page.select_option("#cpms_facility_manager_clinic", index=index)
+        page.fill("#cpms_facility_user_login", SECOND_ADMIN_USER)
+        check(f"{tag}.hospital.manager_{index}", facility_submit(page, tag, "manager", f"facility-hospital-manager-{index}") == "ok",
+              "explicit, audited Clinic manager designation")
+
+    goto_admin(page, tag, facility_url(org, "rooms"), "facility-hospital-rooms")
+    for index, name in ((1, "اتاق ویزیت قلب ۱"), (2, "اتاق ویزیت پوست ۱")):
+        page.select_option("#cpms_facility_room_clinic", index=index)
+        page.fill("#cpms_facility_room_name", name)
+        page.select_option("#cpms_facility_room_site", index=index)
+        check(f"{tag}.hospital.room_{index}", facility_submit(page, tag, "room", f"facility-hospital-room-{index}") == "ok",
+              "consultation room created as a Location of that Clinic")
+
+    goto_admin(page, tag, facility_url(org, "clinicians"), "facility-hospital-clinicians")
+    for index, key in ((1, keys[0] if keys else ""), (2, keys[1] if len(keys) > 1 else "")):
+        page.select_option("#cpms_facility_clinician_clinic", index=index)
+        page.fill("#cpms_facility_user_login", fac.get("doctor", ""))
+        page.fill("#cpms_facility_full_name", "دکتر مشترک پذیرش")
+        page.check(f'[data-cpms-room-group="{key}"] input[value="primary"]')
+        check(f"{tag}.hospital.clinician_{index}", facility_submit(page, tag, "clinician", f"facility-hospital-clinician-{index}") == "ok",
+              "clinician assigned to this Clinic and its Location (one profile, explicit membership)")
+
+    goto_admin(page, tag, facility_url(org, "staff"), "facility-hospital-staff")
+    check(f"{tag}.hospital.staff_handoff", page.locator('a[href*="page=cpms-staff"][href*="clinic_id="]').count() == 2,
+          "post-onboarding staff management stays available per explicitly selected Clinic")
+    staff_form = page.locator('form[data-cpms-facility-form="staff"]')
+    check(f"{tag}.hospital.staff_explicit_choices",
+          staff_form.count() == 1 and page.locator("#cpms_facility_staff_role").input_value() == ""
+          and page.locator("#cpms_facility_staff_clinic").input_value() == ""
+          and staff_form.locator("input:checked").count() == 0,
+          "Clinic, staff role, access scope, rooms and DENY all start without a default")
+    staff_login = fac.get("staff", "")
+    key_a = keys[0] if keys else ""
+    key_b = keys[1] if len(keys) > 1 else ""
+
+    def fill_staff(room_group_key):
+        page.select_option("#cpms_facility_staff_clinic", index=1)
+        page.fill("#cpms_facility_user_login", staff_login)
+        page.select_option("#cpms_facility_staff_role", "cpms_secretary")
+        page.check('form[data-cpms-facility-form="staff"] input[name="access"][value="locations"]')
+        page.locator(f'[data-cpms-staff-room-group="{room_group_key}"] input[name="room_keys[]"]:not([value="primary"])').first.check()
+        page.check('form[data-cpms-facility-form="staff"] input[name="deny_caps[]"][value="cpms_invoice_void"]')
+
+    fill_staff(key_b)
+    check(f"{tag}.hospital.staff_foreign_room_refused",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-forged") == "error",
+          "a room of the other Clinic is refused for this Clinic's staff role; nothing is written")
+    fill_staff(key_a)
+    check(f"{tag}.hospital.staff_location_scoped",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-1") == "ok",
+          "reception role limited to one explicitly chosen room, with one explicit DENY")
+    fill_staff(key_a)
+    check(f"{tag}.hospital.staff_retry_noop",
+          facility_submit(page, tag, "staff", "facility-hospital-staff-retry") == "ok",
+          "an identical retry is a no-op (no duplicate membership)")
+    roster = page.locator(f'[data-cpms-facility-staff-roster="{key_a}"]')
+    check(f"{tag}.hospital.staff_roster",
+          roster.count() == 1 and bool(staff_login) and staff_login in (roster.inner_text() or ""),
+          "the live staff roster of the chosen Clinic shows the new location-scoped role")
+
+    goto_admin(page, tag, facility_url(org, "schedules"), "facility-hospital-schedules")
+    for index, day, start, end in ((1, "1", "08:00", "12:00"), (2, "3", "14:00", "18:00")):
+        page.select_option("#cpms_facility_schedule_clinic", index=index)
+        page.select_option("#cpms_facility_schedule_clinician", index=1)
+        page.select_option("#cpms_facility_schedule_room", "primary")
+        page.select_option("#cpms_facility_schedule_day", day)
+        page.fill("#cpms_facility_schedule_start", start)
+        page.fill("#cpms_facility_schedule_end", end)
+        check(f"{tag}.hospital.schedule_{index}", facility_submit(page, tag, "schedule", f"facility-hospital-schedule-{index}") == "ok",
+              "separate weekly schedule for the shared clinician in this Clinic")
+
+    goto_admin(page, tag, facility_url(org, "booking"), "facility-hospital-booking")
+    for index in (1, 2):
+        page.select_option("#cpms_facility_booking_clinic", index=index)
+        check(f"{tag}.hospital.booking_{index}", facility_submit(page, tag, "booking", f"facility-hospital-booking-{index}") == "ok",
+              "per-Clinic booking policy and capacity")
+
+    goto_admin(page, tag, facility_url(org, "review"), "facility-hospital-review")
+    check(f"{tag}.hospital.review_ready", page.locator('[data-cpms-facility-review="ready"]').count() == 1,
+          "consolidated review computed from live rows is ready")
+    check(f"{tag}.hospital.review_two_clinics", page.locator("[data-cpms-review-clinic]").count() == 2, "both Clinics reviewed")
+    check(f"{tag}.hospital.review_admin_entry_reported",
+          page.locator("[data-cpms-review-clinic] [data-cpms-facility-entry-missing]").count() == 2,
+          "each Clinic reports which members still lack the WordPress role that opens their CPMS screens")
+    page.check('input[name="confirm"]')
+    check(f"{tag}.hospital.activate", facility_submit(page, tag, "activate", "facility-hospital-activated") == "ok",
+          "explicit activation after review")
+    check(f"{tag}.hospital.activated_marker", page.locator('[data-cpms-facility-activated="1"]').count() == 1, "activation recorded")
+
+
+def facility_form_key(page, op):
+    field = page.locator(f'form[data-cpms-facility-form="{op}"] input[name="request_key"]')
+    return field.input_value() if field.count() == 1 else ""
+
+
+def facility_parallel_submit(tabs, op):
+    """Submit the same facility form in several tabs of ONE session without waiting in between.
+
+    Real browser form POSTs (identical to the sequential journeys); every click is dispatched
+    before any navigation is awaited, so the requests are in flight at the same time.
+    """
+    with tabs[0].expect_navigation(wait_until="domcontentloaded"):
+        with tabs[1].expect_navigation(wait_until="domcontentloaded"):
+            for tab in tabs:
+                tab.locator(f'form[data-cpms-facility-form="{op}"] button[type="submit"]').click(no_wait_after=True)
+    notices = []
+    for tab in tabs:
+        tab.wait_for_timeout(300)
+        notice = tab.locator("[data-cpms-facility-notice]")
+        notices.append((notice.first.get_attribute("data-cpms-facility-notice") or "") if notice.count() else "none")
+    return notices
+
+
+def run_facility_race_journey(page, tag, org):
+    """Real concurrent HTTP submissions against one Organization's plan (row lock in MySQL/MariaDB).
+
+    Two tabs of the same session submit, at the same time: two separately rendered Clinic forms
+    carrying the same name; one Clinic form twice (same request key); two room forms carrying the
+    same name. Each case must yield exactly one Clinic or room Location and one plan entry.
+    """
+    goto_admin(page, tag, facility_url(org, "identity"), "facility-race-identity")
+    page.check('input[name="facility_type"][value="other"]')
+    page.select_option("#cpms_facility_structure", "medical_building")
+    page.fill("#cpms_facility_display_name", "مجتمع آزمون هم‌زمانی")
+    check(f"{tag}.race.start", facility_submit(page, tag, "start", "facility-race-started") == "ok", "concurrency Organization started")
+    goto_admin(page, tag, facility_url(org, "sites"), "facility-race-sites")
+    page.fill("#cpms_facility_site_label", "ساختمان هم‌زمانی")
+    page.fill("#cpms_facility_site_address", "شیراز، خیابان آزمون")
+    facility_submit(page, tag, "site", "facility-race-site")
+
+    tab = page.context.new_page()
+    attach_watchers(tab, tag)
+    tabs = [page, tab]
+    try:
+        cases = (("same_name_parallel_one_clinic", "درمانگاه هم‌زمان", False),
+                 ("double_submit_parallel_one_clinic", "درمانگاه ارسال دوباره", True))
+        for case, name, same_key in cases:
+            for index, current in enumerate(tabs, 1):
+                goto_admin(current, tag, facility_url(org, "clinics"), f"facility-race-{case}-{index}")
+                current.fill("#cpms_facility_clinic_name", name)
+                current.select_option("#cpms_facility_clinic_site", index=1)
+                current.select_option("#cpms_facility_timezone", "Asia/Tehran")
+            keys = [facility_form_key(current, "clinic") for current in tabs]
+            if same_key:
+                tabs[1].locator('form[data-cpms-facility-form="clinic"] input[name="request_key"]').evaluate(
+                    "(el, value) => { el.value = value; }", keys[0])
+                keys = [facility_form_key(current, "clinic") for current in tabs]
+            notices = facility_parallel_submit(tabs, "clinic")
+            facts = facility_race_facts(org, name)
+            check(f"{tag}.race.{case}",
+                  all(keys) and (len(set(keys)) == 1) == same_key
+                  and facts.get("clinics") == "1" and facts.get("plan_entries") == "1",
+                  f"parallel_submits=2 distinct_keys={len(set(keys))} notices={sorted(notices)} "
+                  f"clinics={facts.get('clinics')} plan_entries={facts.get('plan_entries')}")
+
+        goto_admin(page, tag, facility_url(org, "managers"), "facility-race-managers")
+        if not facility_option_values(page, "#cpms_facility_manager_clinic"):
+            check(f"{tag}.race.manager", False, "no Clinic to designate a manager for")
+            return
+        page.select_option("#cpms_facility_manager_clinic", index=1)
+        page.fill("#cpms_facility_user_login", SECOND_ADMIN_USER)
+        check(f"{tag}.race.manager", facility_submit(page, tag, "manager", "facility-race-manager") == "ok",
+              "explicit manager for the room concurrency check")
+        for index, current in enumerate(tabs, 1):
+            goto_admin(current, tag, facility_url(org, "rooms"), f"facility-race-rooms-{index}")
+            current.select_option("#cpms_facility_room_clinic", index=1)
+            current.fill("#cpms_facility_room_name", "اتاق هم‌زمان")
+            current.select_option("#cpms_facility_room_site", index=1)
+        keys = [facility_form_key(current, "room") for current in tabs]
+        notices = facility_parallel_submit(tabs, "room")
+        facts = facility_race_facts(org, "", "اتاق هم‌زمان")
+        check(f"{tag}.race.same_name_parallel_one_room",
+              all(keys) and len(set(keys)) == 2 and facts.get("room_locations") == "1" and facts.get("room_entries") == "1",
+              f"parallel_submits=2 distinct_keys={len(set(keys))} notices={sorted(notices)} "
+              f"room_locations={facts.get('room_locations')} room_entries={facts.get('room_entries')}")
+    finally:
+        tab.close()
+
+
+def run_facility_location_switch_journey(page, tag, org):
+    """Explicit Clinic → Location switching on the post-onboarding Clinicians page.
+
+    For the clinician shared by both hospital Clinics: each explicitly chosen Clinic
+    lists the clinician, its manage link keeps that explicit Clinic, and the Location
+    selector offers exactly that Clinic's active Locations — switching the Clinic
+    switches the Location set, and no Location is offered in both Clinics.
+    """
+    layout = facility_clinic_locations(org)
+    check(f"{tag}.switch.layout", len(layout) == 2 and all(len(v) == 2 for v in layout.values()),
+          " ".join(f"clinic{i}:{len(v)}" for i, v in enumerate(layout.values(), 1)))
+    offered = {}
+    for index, clinic_id in enumerate(sorted(layout), 1):
+        goto_admin(page, tag, f"admin.php?page=cpms-clinicians&clinic_id={clinic_id}", f"facility-switch-clinicians-{index}")
+        manage = page.locator('a:has-text("مدیریت برنامه")')
+        href = (manage.first.get_attribute("href") or "") if manage.count() else ""
+        explicit = parse_qs(urlparse(href).query).get("clinic_id", [""])[0] == str(clinic_id)
+        path = href.split("/wp-admin/", 1)[-1] if "/wp-admin/" in href else ""
+        check(f"{tag}.switch.clinic_{index}.shared_clinician_listed", bool(path) and explicit,
+              "the shared clinician is listed in this Clinic and its manage link keeps the explicit Clinic")
+        if not path:
+            continue
+        goto_admin(page, tag, path, f"facility-switch-manage-{index}")
+        values = {int(v) for v in facility_option_values(page, 'select[name="location_id"]') if v.isdigit()}
+        offered[clinic_id] = values
+        check(f"{tag}.switch.clinic_{index}.own_locations_only", values == set(layout[clinic_id]),
+              f"offered={len(values)} expected={len(layout[clinic_id])} (only this Clinic's active Locations)")
+    ids = sorted(offered)
+    check(f"{tag}.switch.locations_disjoint", len(ids) == 2 and not (offered[ids[0]] & offered[ids[1]]),
+          "switching the Clinic switches the Location set; no Location is offered in both Clinics")
+
+
+def run_building_facility_journey(page, tag, org, fac):
+    goto_admin(page, tag, facility_url(org, "identity"), "facility-building-identity")
+    page.check('input[name="facility_type"][value="other"]')
+    page.select_option("#cpms_facility_structure", "medical_building")
+    page.fill("#cpms_facility_display_name", "مجتمع پزشکی آزمون پذیرش")
+    check(f"{tag}.building.start", facility_submit(page, tag, "start", "facility-building-started") == "ok",
+          "medical building chosen explicitly")
+    check(f"{tag}.building.flow", page.locator('[data-cpms-facility-flow="medical_building"]').count() == 1, "medical building flow")
+
+    goto_admin(page, tag, facility_url(org, "sites"), "facility-building-sites")
+    page.fill("#cpms_facility_site_label", "ساختمان مجتمع")
+    page.fill("#cpms_facility_site_address", "اصفهان، خیابان آزمون")
+    facility_submit(page, tag, "site", "facility-building-site")
+
+    goto_admin(page, tag, facility_url(org, "clinics"), "facility-building-clinics")
+    for index, name in ((1, "مطب دندانپزشکی مستقل"), (2, "مطب چشم‌پزشکی مستقل")):
+        page.fill("#cpms_facility_clinic_name", name)
+        page.select_option("#cpms_facility_clinic_site", index=1)
+        page.select_option("#cpms_facility_timezone", "Asia/Tehran")
+        check(f"{tag}.building.clinic_{index}", facility_submit(page, tag, "clinic", f"facility-building-clinic-{index}") == "ok",
+              "independent Clinic created")
+
+    goto_admin(page, tag, facility_url(org, "managers"), "facility-building-managers")
+    for index, login_key in ((1, "mgra"), (2, "mgrb")):
+        page.select_option("#cpms_facility_manager_clinic", index=index)
+        page.fill("#cpms_facility_user_login", fac.get(login_key, ""))
+        check(f"{tag}.building.manager_{index}", facility_submit(page, tag, "manager", f"facility-building-manager-{index}") == "ok",
+              "distinct explicit manager per independent Clinic")
+
+    goto_admin(page, tag, facility_url(org, "rooms"), "facility-building-rooms")
+    page.select_option("#cpms_facility_room_clinic", index=1)
+    page.fill("#cpms_facility_room_name", "اتاق بدون مجوز")
+    page.select_option("#cpms_facility_room_site", index=1)
+    check(f"{tag}.building.org_manager_cannot_configure_clinic",
+          facility_submit(page, tag, "room", "facility-building-room-denied") == "error",
+          "Organization authority alone cannot configure an independent Clinic")
+
+    goto_admin(page, tag, facility_url(org, "review"), "facility-building-review")
+    check(f"{tag}.building.review_ready", page.locator('[data-cpms-facility-review="ready"]').count() == 1, "review ready")
+    check(f"{tag}.building.no_clinic_access_notice", page.locator("[data-cpms-review-no-clinic-access]").count() == 2,
+          "no silent Clinic access for the Organization Manager")
+    check(f"{tag}.building.admin_entry_gap_reported",
+          page.locator('[data-cpms-review-clinic] [data-cpms-facility-entry-missing="1"]').count() == 2
+          and page.locator('[data-cpms-facility-entry-guidance="2"]').count() == 1,
+          "each independent Clinic's manager is reported without CPMS admin entry; no WordPress role was changed")
+    page.check('input[name="confirm"]')
+    check(f"{tag}.building.activate", facility_submit(page, tag, "activate", "facility-building-activated") == "ok", "activation")
 
 
 # ---------------------------------------------------------------------------
@@ -1086,6 +1582,9 @@ with sync_playwright() as p:
                 ("admin.php?page=cpms-dashboard", "multiclinic-dashboard"),
                 ("admin.php?page=cpms-wizard&step=clinic", "multiclinic-wizard-clinic"),
                 ("admin.php?page=cpms-first-practice-setup", "multiclinic-first-practice"),
+                ("admin.php?page=cpms-system", "multiclinic-system"),
+                ("admin.php?page=cpms-settings", "multiclinic-settings"),
+                ("admin.php?page=cpms-clinicians", "multiclinic-clinicians"),
             ):
                 status, body = goto_admin(multi_page, "admin-multiclinic", path, shot_name)
                 excerpt = uncaught_debug_excerpt()
@@ -1131,6 +1630,225 @@ with sync_playwright() as p:
     except Exception as cop:
         check("multiclinic.takeover_denied", False, type(cop).__name__)
 
+    # --- Multi-Clinic manager: explicit Clinic selection (PR #253) ---
+    # A manager with ACTIVE memberships in two Clinics must choose a Clinic
+    # explicitly; data is bound to the verified choice; a forged id discloses
+    # nothing; installation info renders without a Clinic.
+    try:
+        fixture_out = apply_fixture("multiclinic_manager")
+        ids = dict(tok.split("=", 1) for tok in (fixture_out or "").split() if "=" in tok)
+        first_id = ids.get("first", "")
+        second_id = ids.get("second", "")
+        check("multiclinic_manager.fixture", first_id.isdigit() and second_id.isdigit() and first_id != second_id,
+              f"first={first_id} second={second_id}")
+        mgr_ctx = new_persona_context(browser)
+        mgr_page = mgr_ctx.new_page()
+        if login(mgr_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "manager-multiclinic"):
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-clinicians", "multiclinic-clinicians-choose")
+            select = mgr_page.locator("#cpms_clinicians_clinic")
+            options = select.locator("option").evaluate_all("els => els.map(el => el.value).filter(Boolean)") if select.count() == 1 else []
+            check("multiclinic_manager.clinicians.explicit_selector",
+                  sorted(options) == sorted([first_id, second_id])
+                  and mgr_page.locator('[data-cpms-clinic-scope="required"]').count() == 1,
+                  f"authorized options={options}")
+            check("multiclinic_manager.clinicians.no_default",
+                  select.count() == 1 and select.input_value() == ""
+                  and not body_has(body, "FP Dr First Clinic") and not body_has(body, "FP Dr Second Clinic"),
+                  "no Clinic is guessed and no clinician data is shown before selection")
+            if select.count() == 1 and second_id in options:
+                select.select_option(second_id)
+                with mgr_page.expect_navigation(wait_until="domcontentloaded"):
+                    select.evaluate("el => el.form.submit()")
+                mgr_page.wait_for_timeout(500)
+                body = mgr_page.content()
+                shot(mgr_page, "multiclinic-clinicians-second")
+                check("multiclinic_manager.clinicians.selected_clinic_only",
+                      mgr_page.locator(f'[data-cpms-active-clinic="{second_id}"]').count() == 1
+                      and body_has(body, "FP Dr Second Clinic") and not body_has(body, "FP Dr First Clinic"),
+                      "only the explicitly selected Clinic's clinicians are shown")
+                check("multiclinic_manager.clinicians.forms_carry_clinic",
+                      mgr_page.locator(f'input[name="clinic_id"][value="{second_id}"]').count() >= 1,
+                      "mutation forms carry the verified Clinic")
+            status, body = goto_admin(mgr_page, "manager-multiclinic",
+                                      "admin.php?page=cpms-clinicians&clinic_id=2147483647", "multiclinic-clinicians-forged")
+            check("multiclinic_manager.clinicians.forged_denied",
+                  mgr_page.locator('[data-cpms-clinic-scope="denied"]').count() == 1
+                  and not body_has(body, "FP Dr First Clinic") and not body_has(body, "FP Dr Second Clinic"),
+                  "forged Clinic id is denied without disclosure")
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-settings", "multiclinic-manager-settings")
+            check("multiclinic_manager.settings.installation_info_without_clinic",
+                  body_has(body, "تعداد جداول")
+                  and mgr_page.locator('[data-cpms-clinic-scope="required"]').count() == 1
+                  and mgr_page.locator("[data-cpms-clinic-settings]").count() == 0,
+                  "installation info renders; Clinic settings need explicit selection")
+            status, body = goto_admin(mgr_page, "manager-multiclinic",
+                                      f"admin.php?page=cpms-settings&clinic_id={second_id}", "multiclinic-manager-settings-second")
+            check("multiclinic_manager.settings.explicit_clinic",
+                  mgr_page.locator(f'[data-cpms-clinic-settings="{second_id}"]').count() == 1,
+                  "Clinic-specific settings for the explicit Clinic only")
+            status, body = goto_admin(mgr_page, "manager-multiclinic", "admin.php?page=cpms-system", "multiclinic-manager-system")
+            check("multiclinic_manager.system.renders_with_selector",
+                  body_has(body, "وضعیت Health") and mgr_page.locator("#cpms_system_clinic").count() == 1,
+                  "System page renders on a multi-Clinic install and offers explicit selection")
+        mgr_page.close()
+        mgr_ctx.close()
+
+        mob_ctx = new_persona_context(browser, 390, 844)
+        mob_page = mob_ctx.new_page()
+        if login(mob_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "manager-multiclinic-mobile"):
+            for path, shot_name in (
+                ("admin.php?page=cpms-clinicians", "multiclinic-selector-mobile"),
+                (f"admin.php?page=cpms-clinicians&clinic_id={second_id}", "multiclinic-clinicians-mobile"),
+            ):
+                goto_admin(mob_page, "manager-multiclinic-mobile", path, shot_name)
+                rtl = mob_page.locator('.wrap[dir="rtl"]').count() >= 1
+                overflow = mob_page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+                check(f"multiclinic_manager.mobile.{shot_name}.rtl_no_overflow", rtl and overflow <= 8,
+                      f"rtl={rtl} overflow={overflow}px at 390px")
+        mob_page.close()
+        mob_ctx.close()
+    except Exception as cop:
+        check("multiclinic_manager.explicit_selection", False, type(cop).__name__)
+
+    # --- Top-down Organization facility setup (PR #253) ---
+    # Hospital outpatient network + medical building through the real admin page:
+    # explicit Organization/Clinic/site/user choices, real entities, Clinics held
+    # until the consolidated review, Organization authority != Clinic authority.
+    try:
+        fac = dict(tok.split("=", 1) for tok in (apply_fixture("facility") or "").split() if "=" in tok)
+        hospital_org = fac.get("hospital", "")
+        building_org = fac.get("building", "")
+        check("facility.fixture", hospital_org.isdigit() and building_org.isdigit() and bool(fac.get("doctor")),
+              f"hospital={hospital_org} building={building_org}")
+        delegated_own = ""
+        delegated_other = ""
+        delegated_pass = "Fp-Dlg-" + os.urandom(9).hex() + "!"
+        fac_ctx = new_persona_context(browser)
+        fac_page = fac_ctx.new_page()
+        if login(fac_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "facility-org-manager"):
+            run_hospital_facility_journey(fac_page, "facility-org-manager", hospital_org, fac)
+            run_facility_location_switch_journey(fac_page, "facility-org-manager", hospital_org)
+            run_building_facility_journey(fac_page, "facility-org-manager", building_org, fac)
+            race_org = fac.get("race", "")
+            check("facility.race.fixture", race_org.isdigit(), f"race_org_set={race_org.isdigit()}")
+            if race_org.isdigit():
+                try:
+                    run_facility_race_journey(fac_page, "facility-org-manager", race_org)
+                except Exception as race_exc:
+                    check("facility.race.journey", False, type(race_exc).__name__)
+            # Delegated manager hand-off: only the technical WordPress role is added
+            # outside CPMS; the Clinic membership from the journey is the authority.
+            delegated = facility_prepare_delegated_manager(fac.get("mgra", ""), building_org, delegated_pass)
+            delegated_own = delegated.get("own", "")
+            delegated_other = delegated.get("other", "")
+            check("facility.delegated.technical_wordpress_role",
+                  delegated_own.isdigit() and delegated_other.isdigit() and delegated_own != delegated_other
+                  and "cpms_manager" not in delegated.get("roles_before", "").split(","),
+                  f"own_clinics={len(delegated_own.split(','))} other_clinics={len(delegated_other.split(','))} "
+                  f"wordpress_roles_before={delegated.get('roles_before', '')} (the journey added no WordPress role)")
+            goto_admin(fac_page, "facility-org-manager", facility_url(building_org, "review"), "facility-building-review-entry")
+            check("facility-org-manager.building.admin_entry_after_wordpress_role",
+                  fac_page.locator(f'[data-cpms-review-clinic="{delegated_own}"] [data-cpms-facility-entry-missing="0"]').count() == 1
+                  and fac_page.locator(f'[data-cpms-review-clinic="{delegated_other}"] [data-cpms-facility-entry-missing="1"]').count() == 1,
+                  "only the Clinic whose manager received the WordPress role is ready for admin entry")
+            goto_admin(fac_page, "facility-org-manager", f"{FACILITY_PAGE}&organization_id=2147483647", "facility-forged-org")
+            check("facility.forged_organization_denied",
+                  fac_page.locator('[data-cpms-facility-setup="org-denied"]').count() == 1
+                  and fac_page.locator("[data-cpms-facility-form]").count() == 0,
+                  "a forged Organization id discloses nothing")
+        fac_page.close()
+        fac_ctx.close()
+
+        fac_dlg_ctx = new_persona_context(browser)
+        fac_dlg_page = fac_dlg_ctx.new_page()
+        if delegated_own.isdigit() and delegated_other.isdigit() and login(
+            fac_dlg_page, fac.get("mgra", ""), delegated_pass, "facility-delegated-manager"
+        ):
+            # Same core user-profile.js race as for the subscriber: let the landing page load.
+            fac_dlg_page.wait_for_load_state("load")
+            fac_dlg_page.wait_for_timeout(800)
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"admin.php?page=cpms-clinicians&clinic_id={delegated_own}", "facility-delegated-own-clinic")
+            check("facility.delegated_manager.own_clinic_managed",
+                  fac_dlg_page.locator(f'[data-cpms-active-clinic="{delegated_own}"]').count() == 1,
+                  "the independent Clinic's own manager manages it after explicit selection")
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"admin.php?page=cpms-clinicians&clinic_id={delegated_other}", "facility-delegated-other-clinic")
+            check("facility.delegated_manager.other_clinic_denied",
+                  fac_dlg_page.locator('[data-cpms-clinic-scope="denied"]').count() == 1
+                  and fac_dlg_page.locator(f'[data-cpms-active-clinic="{delegated_other}"]').count() == 0,
+                  "the other independent Clinic is refused without disclosure")
+            goto_admin(fac_dlg_page, "facility-delegated-manager",
+                       f"{FACILITY_PAGE}&organization_id={building_org}", "facility-delegated-no-org-setup")
+            check("facility.delegated_manager.no_organization_setup",
+                  fac_dlg_page.locator("[data-cpms-facility-form]").count() == 0
+                  and fac_dlg_page.locator("[data-cpms-facility-flow]").count() == 0,
+                  "Clinic authority is not Organization authority")
+        fac_dlg_page.close()
+        fac_dlg_ctx.close()
+
+        facts = facility_db_facts(hospital_org)
+        check("facility.hospital.db_entities",
+              facts.get("clinics") == "2" and facts.get("active") == "2" and facts.get("locations") == "4"
+              and facts.get("schedules") == "2" and facts.get("schedule_clinics") == "2"
+              and facts.get("managers") == "2" and facts.get("profiles") == "1",
+              " ".join(f"{k}={v}" for k, v in sorted(facts.items())))
+        check("facility.hospital.db_staff_location_scope",
+              facts.get("staff") == "1" and facts.get("staff_scoped") == "1"
+              and facts.get("staff_locations") == "1" and facts.get("staff_denies") == "1",
+              " ".join(f"{k}={v}" for k, v in sorted(facts.items()) if k.startswith("staff")))
+        facts = facility_db_facts(building_org)
+        check("facility.building.db_entities",
+              facts.get("clinics") == "2" and facts.get("active") == "2" and facts.get("locations") == "2"
+              and facts.get("managers") == "2" and facts.get("actor_members") == "0",
+              " ".join(f"{k}={v}" for k, v in sorted(facts.items())))
+
+        adm_ctx = new_persona_context(browser)
+        adm_page = adm_ctx.new_page()
+        if login(adm_page, ADMIN_USER, ADMIN_PASS, "facility-wp-admin"):
+            goto_admin(adm_page, "facility-wp-admin", f"{FACILITY_PAGE}&organization_id={hospital_org}", "facility-wp-admin-denied")
+            check("facility.wp_administrator_without_membership_denied",
+                  adm_page.locator("[data-cpms-facility-form]").count() == 0
+                  and adm_page.locator("[data-cpms-facility-flow]").count() == 0,
+                  "WordPress Administrator status grants no Organization setup authority")
+        adm_page.close()
+        adm_ctx.close()
+
+        fac_sub_ctx = new_persona_context(browser)
+        sub_fac_page = fac_sub_ctx.new_page()
+        if login(sub_fac_page, SUBSCRIBER_USER, SUBSCRIBER_PASS, "facility-subscriber"):
+            # Let the post-login landing page (wp-admin/profile.php for a subscriber) finish
+            # loading first: WordPress core user-profile.js assigns its form in a jQuery ready
+            # callback but reads it in a beforeunload handler, so leaving the page before
+            # ready throws a core TypeError (observed on 82e013a in both DB jobs). Errors are
+            # still collected and counted exactly as before.
+            sub_fac_page.wait_for_load_state("load")
+            sub_fac_page.wait_for_timeout(800)
+            sub_fac_page.goto(f"{BASE}/wp-admin/{FACILITY_PAGE}&organization_id={hospital_org}", wait_until="domcontentloaded")
+            sub_fac_page.wait_for_timeout(500)
+            shot(sub_fac_page, "facility-subscriber-denied")
+            check("facility.subscriber_denied",
+                  sub_fac_page.locator("[data-cpms-facility-form]").count() == 0
+                  and sub_fac_page.locator("[data-cpms-facility-flow]").count() == 0,
+                  "no Organization membership → no setup data or forms")
+        sub_fac_page.close()
+        fac_sub_ctx.close()
+
+        fac_mob_ctx = new_persona_context(browser, 390, 844)
+        fac_mob_page = fac_mob_ctx.new_page()
+        if login(fac_mob_page, SECOND_ADMIN_USER, SECOND_ADMIN_PASS, "facility-org-manager-mobile"):
+            for step, shot_name in (("review", "facility-review-mobile"), ("clinicians", "facility-clinicians-mobile"),
+                                    ("staff", "facility-staff-mobile"), ("schedules", "facility-schedules-mobile")):
+                goto_admin(fac_mob_page, "facility-org-manager-mobile", facility_url(hospital_org, step), shot_name)
+                rtl = fac_mob_page.locator('.wrap[dir="rtl"]').count() >= 1
+                overflow = fac_mob_page.evaluate("document.documentElement.scrollWidth - document.documentElement.clientWidth")
+                check(f"facility.mobile.{shot_name}.rtl_no_overflow", rtl and overflow <= 8,
+                      f"rtl={rtl} overflow={overflow}px at 390px")
+        fac_mob_page.close()
+        fac_mob_ctx.close()
+    except Exception as cop:
+        check("facility.journeys", False, type(cop).__name__)
+
     browser.close()
 
 # ---------------------------------------------------------------------------
@@ -1147,8 +1865,22 @@ cm_errors = [e for e in console_errors if is_cpms_url(e[2])]
 pg_errors = [e for e in page_errors if is_cpms_url(e[2])]
 check("browser.no_console_errors", len(cm_errors) == 0,
       f"{len(cm_errors)} console errors on CPMS/admin pages (messages suppressed)")
+
+
+def error_locations(errors):
+    """Privacy-safe locations of browser errors: persona tag, JS error class and admin page/step only (never the message)."""
+    where = []
+    for tag, msg, url in errors[:5]:
+        parsed = urlparse(url or "")
+        query = parse_qs(parsed.query)
+        kind = next((k for k in ("TypeError", "ReferenceError", "SyntaxError", "RangeError", "URIError")
+                     if k in str(msg)), "JSError")
+        where.append(f"[{tag}] {kind} {parsed.path} page={query.get('page', [''])[0]} step={query.get('step', [''])[0]}")
+    return ("; at: " + " | ".join(where)) if where else ""
+
+
 check("browser.no_page_errors", len(pg_errors) == 0,
-      f"{len(pg_errors)} page errors on CPMS/admin pages (messages suppressed)")
+      f"{len(pg_errors)} page errors on CPMS/admin pages (messages suppressed)" + error_locations(pg_errors))
 
 failed = [r for r in results if not r[1]]
 with open(f"{OUT}/results.json", "w") as f:
