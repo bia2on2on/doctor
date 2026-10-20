@@ -72,6 +72,30 @@ The decoupling is therefore *not shipped* here; it is tracked as a remaining gap
 in `docs/security/business-access-decoupling-audit.md` §2.3 with the exact
 regression evidence.
 
+### 1.3b Delegated verticals delivered in the portal (2026-10-20, second slice)
+
+Clinic Manager (Clinic authority, ordinary Subscriber):
+staff enrollment (`subscriber`-only provisioning or account linking), membership
+activation/suspension, Location scope, capability GRANT/DENY/clear bounded by the
+actor's own authority, clinician registration, weekly schedules.
+
+Organization Manager (Organization authority only):
+facility-aware onboarding reusing `FacilitySetupService` — plan start across the 12
+facility types, hospital outpatient-only acknowledgment, sites, held Clinics, rooms,
+explicit Clinic-manager designation, consolidated review and atomic activation.
+Clinic-scoped facility steps (rooms/clinicians/schedules/booking policy execution)
+still require an explicit Clinic membership + `cpms_config`, exactly as published;
+this is why full hospital activation needs a designated Clinic manager, not the
+Organization Manager alone.
+
+### 1.3c Still not delivered
+
+- Decoupling of the operational REST/service/portal gates from WordPress-global
+  capabilities (see §1.3): Doctor, Reception, Accountant and Patient journeys still
+  depend on the published global gates on those paths.
+- Reports/finance *data* inside the portal: only capability-decided links are shown,
+  because the report services still authorize the legacy way in this slice.
+
 ### 1.4 Not changed (deliberately)
 
 - No schema/migration change; no destructive data change.

@@ -2,6 +2,20 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — Business access: frontend Management Portal, Clinic Manager and facility verticals (2026-10-20, Draft)
+
+### Added
+- **Clinic Manager verticals** in the dedicated frontend Management Portal: staff enrollment (link an existing account by e-mail/login or provision a plain Subscriber — the only WordPress role that path can assign), membership activation/suspension, explicit Location scope assignment (ACTIVE Locations of the same Clinic only), explicit capability GRANT/DENY/clear bounded by the actor's own authority, clinician registration (optional link to an ACTIVE member, 1:1 account link) and weekly schedule creation through the published `ScheduleService` contract.
+- **Facility-aware onboarding in the frontend**: the existing `FacilitySetupService` (same service the wp-admin wizard uses) is now reachable from the portal for Organization Managers — plan start over all 12 facility types, hospital outpatient-only acknowledgment (enforced before any Clinic is created), sites, held Clinics, rooms, explicit Clinic-manager designation, consolidated review and atomic activation. No wp-admin gate was lowered; Clinic-scoped facility steps still require an explicit Clinic membership + `cpms_config`.
+- `App::facility_setup_service()` accessor (single shared instance of the published service).
+- `docs/operations/2026-10-20-mariadb-11.8-activation-diagnosis.md` — evidence-based diagnosis of the MariaDB 11.8 activation abort (migration 0027 engine gate) with a reproducible isolated-installer test; **11.8 execution NOT RUN**.
+
+### Changed
+- Portal staff rows now expose membership id, Location scope, overrides and the delegation vocabulary they may grant.
+
+### Security
+- No new authority source. Enrollment/role/scope/capability writes are Clinic-scoped and re-authorized inside the domain services; DENY still outranks GRANT and presets; a suspended membership remains a durable deny; a foreign membership/Location identifier is only a selector and never grants access; a WordPress Administrator alone still gains nothing.
+
 ## [Unreleased] — Business access: dedicated frontend Management Portal (2026-10-20, Draft)
 
 ### Added
