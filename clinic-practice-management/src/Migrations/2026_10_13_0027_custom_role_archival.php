@@ -6,11 +6,21 @@
  * and data, and fail closed when either database engine's guard is uncertain.
  *
  * MySQL 8 reports CHECK enforcement through TABLE_CONSTRAINTS.ENFORCED.
- * MariaDB 10.11.x and 11.4.13 report CHECK ownership through
+ * MariaDB 10.11.x, 11.4.13 and 11.8.x report CHECK ownership through
  * CHECK_CONSTRAINTS.TABLE_NAME and expose no ENFORCED column; CHECK evaluation
  * is controlled by @@SESSION.check_constraint_checks. These engine-specific
  * metadata paths follow the official MySQL 8.0 TABLE_CONSTRAINTS and MariaDB
  * CHECK_CONSTRAINTS documentation.
+ *
+ * 2026-10-21 — MariaDB 11.8 activation failure: the engine gate below refused
+ * any `11.8.x-MariaDB` VERSION() string (allowlist was 10.11.x and 11.4.13
+ * only), so the migration aborted with "unsupported database server" before
+ * any schema change and activation failed. The MariaDB 11.8.x series is now
+ * admitted through the SAME MariaDB metadata path (fail-closed on any
+ * unexpected metadata, so nothing is silently weakened). Real-server
+ * verification on MariaDB 11.8 (fresh install, migration, replay) is tracked
+ * by the MariaDB 11.8 CI lane; until that lane runs green this is a fix of the
+ * reproduced gate refusal, NOT a claim of certified 11.8 support.
  */
 
 declare(strict_types=1);
@@ -35,7 +45,7 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
     if (
         ( stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false )
         && preg_match(
-            '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13)(?:-MariaDB)?(?:[-+][a-zA-Z0-9._-]+)?\\z/i',
+            '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13|11\\.8\\.\\d+)(?:-MariaDB)?(?:[-+][a-zA-Z0-9._-]+)?\\z/i',
             $version
         ) === 1
     ) {
@@ -48,7 +58,7 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
     }
 
     throw new \RuntimeException(
-        'migration 0027: unsupported database server; expected MySQL 8, MariaDB 10.11.x, or MariaDB 11.4.13'
+        'migration 0027: unsupported database server; expected MySQL 8, MariaDB 10.11.x, MariaDB 11.4.13, or MariaDB 11.8.x'
     );
 };
 
