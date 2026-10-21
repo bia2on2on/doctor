@@ -186,16 +186,29 @@ jobs:
             exit 1
           fi
 
-      - name: Isolated business identities
+      # Split from the pristine checks on purpose (no log access in the authoring
+      # sandbox): a failure must be attributable from the step name alone.
+      - name: Create the isolated organization-manager identity
         run: |
           set -euo pipefail
-          wp user create "$ORG_MANAGER_USER" 'orgmgr@acc.local' --user_pass="$ORG_MANAGER_PASS" --role=subscriber --path="$WP_DIR" --allow-root
+          if wp user get "$ORG_MANAGER_USER" --path="$WP_DIR" --allow-root >/dev/null 2>&1; then
+            echo "organization manager already present"
+          else
+            wp user create "$ORG_MANAGER_USER" 'orgmgr@acc.local' --user_pass="$ORG_MANAGER_PASS" --role=subscriber --path="$WP_DIR" --allow-root
+          fi
+          wp user get "$ORG_MANAGER_USER" --field=roles --path="$WP_DIR" --allow-root | tee /tmp/mtx/org-manager-role.txt
+
+      - name: Assert pristine tenant tables before the browser matrix
+        run: |
+          set -euo pipefail
           MEMBERS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_clinic_memberships;")
           echo "pre-browser membership rows: $MEMBERS"
           [ "$MEMBERS" = "0" ] || { echo 'FAIL: memberships must be zero before the matrix (no pre-seeded Clinic authority)'; exit 1; }
           CLINICS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_clinics;")
           echo "pre-browser clinic rows: $CLINICS"
           [ "$CLINICS" = "0" ] || { echo 'FAIL: clinics must be zero before the matrix'; exit 1; }
+          ORGS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_organizations;")
+          echo "pre-browser organization rows: $ORGS"
 
       - name: Browser matrix — all 12 types + medical-building structure
         run: |
