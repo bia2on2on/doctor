@@ -19,9 +19,9 @@ is a union, substitute or prerequisite for another.
 
 | New job / group | Exact CPMS-free Stage A subject set | Stage B boundary |
 | --- | --- | --- |
-| `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.5 | Explicitly disabled; this scenario never installs CPMS |
-| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.1 | Reused Stage B is eligible only after materially healthy, complete A |
-| `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.5 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.6 | Explicitly disabled; this scenario never installs CPMS |
+| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.2 | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.6 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
 
 The original five-plugin lane remains `persian-five`; its selection and pins are
 unchanged. The two-plugin security/authentication lane remains
@@ -35,7 +35,7 @@ fail-closed Stage A/B interlock.
 
 The canonical lane is a clean WordPress **7.1.3**, PHP **8.3**, MySQL **8.4.11**,
 `fa_IR` environment with only WooCommerce **11.2.0** and Persian WooCommerce
-**10.0.5** as the group subjects. Existing third-party baseline retrieval,
+**10.0.6** as the group subjects. Existing third-party baseline retrieval,
 identity, bootstrap, locale, browser and public-page probes are reused. CPMS is
 absent, no CPMS ZIP is built or installed, and the output makes no CPMS
 compatibility attribution.
@@ -89,9 +89,10 @@ review; no result is automatically labeled D.
 ### Persian WooCommerce SMS group
 
 The independent baseline pins exactly WooCommerce **11.2.0** and Persian
-WooCommerce SMS **7.3.1**. The official WordPress.org Plugins API response verified
-on 2026-10-14 advertises stable 7.3.1 (`last_updated`: 2026-10-14 07:37 GMT); the
-previous pin was 7.3.0 (after 7.2.3 on 2026-10-11). Earlier results remain bound
+WooCommerce SMS **7.3.2**. The official WordPress.org Plugins API response verified
+on 2026-10-20 advertises stable 7.3.2 (`last_updated` 2026-10-20 via CI runner and
+WordPressBugBounty mirror 2026-10-20); the previous pin was 7.3.1 (7.3.0 after 7.2.3
+on 2026-10-11, then 7.3.1 on 2026-10-14). Earlier results remain bound
 to the exact version they measured. Stage A begins with clean WordPress
 and CPMS absent. It
 records exact package/version/active-set identity, bootstrap and administrator
@@ -118,7 +119,7 @@ scenario's set and versions directly to that matrix. Every active subject is
 installed before activation and all remain active together. WP Rocket and
 Gravity Forms are not subjects.
 
-Phase 19 owner decision (2026-10-09): **Persian WooCommerce 10.0.5 is
+Phase 19 owner decision (2026-10-09, pins refreshed 2026-10-20): **Persian WooCommerce 10.0.6 is
 temporarily excluded from this active combined set** — 18 of the 19 authoritative
 free subjects remain, each at its unchanged exact pin. This is a narrow
 quarantine for the combined scenario, **not** a declaration that Persian
@@ -135,12 +136,12 @@ their original names; that evidence is preserved, not rewritten or reclassified.
 | 1 | `litespeed-cache` | 7.9.1 | yes |
 | 2 | `wordpress-seo` | 28.6 | yes |
 | 3 | `seo-by-rank-math` | 1.0.280 | yes |
-| 4 | `persian-woocommerce` | 10.0.5 | no — Phase 19 quarantine; covered by the diagnosis lane and its individual baseline |
+| 4 | `persian-woocommerce` | 10.0.6 | no — Phase 19 quarantine; covered by the diagnosis lane and its individual baseline |
 | 5 | `woocommerce` | 11.2.0 | yes |
 | 6 | `elementor` | 4.3.4 | yes |
 | 7 | `persian-elementor` | 2.8.4 | yes |
 | 8 | `wp-parsidate` | 6.4 | yes |
-| 9 | `persian-woocommerce-sms` | 7.3.1 | yes |
+| 9 | `persian-woocommerce-sms` | 7.3.2 | yes |
 | 10 | `contact-form-7` | 6.2 | yes |
 | 11 | `wordfence` | 9.0.2 | yes |
 | 12 | `really-simple-ssl` | 9.8.3 | yes |
