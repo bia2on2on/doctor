@@ -2,7 +2,7 @@
 
 **PR:** https://github.com/bia2on2on/doctor/pull/257 (Draft — not merged)
 **Branch:** `arena/ebafaac0-doctor`
-**Head:** `9db835d18b0245be12970e3032b5c94bc6b69ea1` (full SHA; may advance if CI fixes land)
+**Head (final):** `6e0e43ba428d699bf8621150e120531c95a55996`
 **Accepted main base:** `6689228a84dd9ab26741d8132e177cbe05a6543e` (verified identical to `origin/main` at start)
 **UTC start:** 2026-10-21 10:29:00 UTC (authorization receipt)
 **UTC end:** see "Runtime" below (hard stop 12:29:00 UTC)
@@ -74,20 +74,27 @@ No tenant topology, membership state, patient data, SQL or exception text is exp
 
 | File | Change |
 |---|---|
-| `src/Migrations/2026_10_13_0027_custom_role_archival.php` | Engine gate admits MariaDB `11.8.x` through the same fail-closed MariaDB metadata path; error message updated. |
+| `src/Migrations/2026_10_13_0027_custom_role_archival.php` | Docblock only: root-cause record + the exact candidate one-line patch; runtime gate LEFT at the verified fail-closed set (MySQL 8.x, MariaDB 10.11.x, MariaDB 11.4.13). |
 
-**Cause (reproduced at gate-logic level):** the migration's engine gate allowlisted only
-MariaDB `10.11.x` and exactly `11.4.13`. Executing the gate's exact version regex against
-a real MariaDB 11.8 `VERSION()` string (`11.8.x-MariaDB`) deterministically throws
-`RuntimeException('migration 0027: unsupported database server…')`, the migration aborts
-before any schema change, and activation fails — matching the reported finding.
+**Cause (reproduced at gate-logic level):** the migration's engine gate allowlists only
+MariaDB `10.11.x` and exactly `11.4.13` (`/\A(?:10\.11\.\d+|11\.4\.13)(?:-MariaDB)?(?:[-+][a-zA-Z0-9._-]+)?\z/i`).
+Any real MariaDB 11.8 `VERSION()` string (e.g. `11.8.2-MariaDB-ubu2404`) deterministically
+throws `RuntimeException('migration 0027: unsupported database server…')`, the migration
+aborts before any schema change, and activation fails — matching the reported finding.
+
+**Why the fix is NOT applied:** the repository's own fail-closed policy test
+`CustomRoleArchivalMigrationTest::test_mariadb_118_is_outside_the_verified_gate_and_fails_closed_before_ddl`
+pins the refusal and states that widening the pattern “must be backed by a real MariaDB
+11.8 migrate + rollback + replay run”. Real MariaDB 11.8 execution is **NOT possible in
+this change's environment** (no database runtime; MariaDB distribution hosts unreachable),
+and the brief forbids claiming MariaDB support without real execution. Widening the gate
+and deleting/weakening that policy test would violate both. The exact candidate patch —
+add `|11\.8\.\d+` to the allowlist alternation — is recorded in the migration docblock
+and is a one-line follow-up once the MariaDB 11.8 lane performs the replay run.
 
 **Verification honesty:** real MariaDB 11.8 execution (fresh install + activation,
-migration, replay/idempotency, constraint checks) was **NOT RUN** — this sandbox has no
-database runtime and its network allowlist blocks MariaDB distribution sources. The fix
-is fail-closed on unexpected metadata (no silent schema weakening), and **this report
-does not claim certified MariaDB 11.8 support**; that claim requires a green MariaDB 11.8
-CI lane on this exact head.
+migration, replay/idempotency, constraint checks) = **NOT RUN**. This report does **not**
+claim MariaDB 11.8 support.
 
 ---
 
@@ -163,10 +170,39 @@ Real-browser (Chromium) interaction with the frontend portal per type: see §5.
   syntax-verified with `php-parser` (Node), and the migration gate was executed
   logic-level (exact regex) before/after the fix. Authoritative execution is CI only.
 
-## 6. CI results (exact head)
+## 6. CI results
 
-Filled in from `gh pr checks 257` on the final head before the hard stop — see the PR
-check list and the mirrored WPCS/Integration evidence comments on PR #257.
+Authoritative CI ran on intermediate head `9db835d` (all functional commits included;
+the last three commits are harness-contract/style fixes discovered from that run's
+evidence). Results on `9db835d`:
+
+| Lane | Result |
+|---|---|
+| Unit Tests PHP 8.1 / 8.2 / 8.3 / 8.4 | **PASS** |
+| Static Analysis (PHPStan) | **PASS** |
+| Closure Gate (runtime 8.1/8.3/8.4 + destructive restoreApply) ×4 | **PASS** |
+| Tenant Tripwire (hardcode scan) | **PASS** |
+| Release Artifact (build + policy) | **PASS** |
+| Upgrade path (pinned pre-#191 source → candidate) | **PASS** |
+| Staging Gate (fresh install → restore drill) | **PASS** |
+| Responsive smoke (Chromium ×4 viewport, 390px RTL) | **PASS** |
+| Real WP Acceptance (prefix clinic_ / wp_) + 6 Persian coexistence lanes | **PASS** |
+| WPCS (changed code) | **FAIL** — 2 alignment warnings on added template lines (fixed in `f99891f`) |
+| Integration (WP 7.1 + MySQL 8) | **FAIL** — step “Run focused custom-role migrations on MariaDB 11.4.13”: my temporary 11.8 gate widening contradicted the repo's pinned fail-closed policy test (fixed by reverting in `f99891f`/`6e0e43b`) |
+| First-practice browser (MariaDB 11.4.13) | **FAIL** — browser journey itself **577/577 + recovery 287/287 PASS** (all 12-type matrix, hospital two-manager atomic activation, medical building, 390px RTL); the failing step was “Portal hospital journey”: 48/50 — 2 harness-contract mismatches (org-start success notice wording after my P3 message surfacing; `hospital_network` literal no longer present in rendered content). Both fixed in `f99891f` (notice wording + `data-cpms-flow`/`data-cpms-structure` attributes) |
+| First-practice browser (MySQL) | **FAIL** — same 2 harness-contract mismatches (same fixes) |
+
+CI on final head `6e0e43b` was dispatched before the 12:29:00 UTC hard stop; its results
+are visible on PR #257. The three failing lanes above each failed for a reason identified
+from the mirrored CI evidence and addressed by the final commits — no lane was silenced,
+no check was disabled, no test policy was weakened.
+
+Strongest single-journey evidence on this code: the MariaDB 11.4.13 first-practice browser
+suite ran **577/577 browser checks + 287/287 recovery checks green** against the exact
+plugin ZIP built from this branch — including every facility type's UI matrix (exact
+headings, resume-as-same-type, no silent Clinic switching), the hospital outpatient
+journey (2 Subscriber managers, atomic activation), medical-building independence,
+DENY/forged-Clinic refusals, and 390px RTL no-overflow.
 
 ## 7. MariaDB 11.8 result
 
@@ -176,14 +212,25 @@ constraint verification on real MariaDB 11.8 remain **BLOCKED** on a MariaDB 11.
 
 ## 8. Remaining blockers
 
-1. Real MariaDB 11.8 server verification (no DB runtime in sandbox; distribution hosts
-   not reachable) — needs a dedicated CI lane (note: PR #256 is an independent effort
-   and was not consulted or modified).
-2. Real-browser interaction with the new form-error/stale-value behavior is covered by
-   CI browser lanes only insofar as they exercise the portal; dedicated new browser
-   assertions for `data-cpms-notice-kind` were not written (time-boxed).
-3. WPCS/PHPStan/Integration verdicts on the final head are CI-owned — see §6.
+1. **MariaDB 11.8 real-server verification** — no DB runtime in the sandbox and MariaDB
+   distribution hosts are not reachable. The activation-failure root cause is identified
+   and the one-line candidate fix is documented, but per the repository's own policy test
+   it must land together with a real MariaDB 11.8 migrate + rollback + replay run
+   (note: PR #256 is an independent effort and was not consulted or modified).
+2. **CI verdict on final head `6e0e43b`** — dispatched before the hard stop; the three
+   lanes that failed on `9db835d` each have a diagnosed cause fixed by the final commits;
+   confirm green on the PR's check list.
+3. Dedicated new Playwright assertions for the P3 notice taxonomy
+   (`data-cpms-notice-kind`) were not written (time-boxed); the behavior is covered by
+   the existing journeys' notice checks and integration tests.
 
+## 9. Verdict
+
+**READY FOR REVIEW (Draft)** — 12-type wizard, staff-enrollment delegation policy, and
+safe Persian form errors implemented and tested (Unit/PHPStan/Closure/Tripwire/Artifact/
+Upgrade/Staging/Acceptance/Responsive green on the code of this PR). MariaDB 11.8 = root
+cause reproduced at gate-logic level, fix **prepared but deliberately not certified**;
+real-server verification remains **NOT RUN**. Not merged; PR kept in Draft.
 ## 9. Verdict
 
 **READY FOR REVIEW (Draft)** — pending the CI matrix on the final head (§6) and with
