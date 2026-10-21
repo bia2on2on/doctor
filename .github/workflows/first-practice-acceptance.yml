@@ -89,7 +89,7 @@ jobs:
 
       - name: Lint first-practice harness
         run: |
-          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py clinic-practice-management/bin/rwp-portal-hospital-journey.py clinic-practice-management/bin/rwp-install-zip.py clinic-practice-management/bin/rwp-recovery.py clinic-practice-management/bin/rwp_personal.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-first-practice.py clinic-practice-management/bin/rwp-portal-hospital-journey.py clinic-practice-management/bin/rwp-portal-delegated-journey.py clinic-practice-management/bin/rwp-install-zip.py clinic-practice-management/bin/rwp-recovery.py clinic-practice-management/bin/rwp_personal.py
           python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-first-practice.py
           bash -n clinic-practice-management/bin/build-release.sh
 
@@ -308,6 +308,36 @@ jobs:
               || echo '::notice::portal journey evidence comment failed (non-fatal)'
           fi
           if [ "$RC" -ne 0 ]; then echo "PORTAL HOSPITAL BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
+
+      - name: Browser — delegated non-hospital Clinic completion (frontend portal only)
+        id: portal_delegated_journey
+        if: always() && steps.cpms_install.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          RC=0
+          BASE="$WP_URL" \
+          ORG_MANAGER_USER="$ORG_MANAGER_USER" ORG_MANAGER_PASS="$ORG_MANAGER_PASS" \
+          CLINIC_MANAGER_A_USER="$CLINIC_MANAGER_A_USER" CLINIC_MANAGER_A_PASS="$CLINIC_MANAGER_A_PASS" \
+          CLINIC_MANAGER_B_USER="$CLINIC_MANAGER_B_USER" CLINIC_MANAGER_B_PASS="$CLINIC_MANAGER_B_PASS" \
+          WP_DIR="$WP_DIR" OUT=/tmp/fp/portal-delegated \
+          python3 clinic-practice-management/bin/rwp-portal-delegated-journey.py > /tmp/fp/portal-delegated.log 2>&1 || RC=$?
+          RC=${RC:-0}
+          cat /tmp/fp/portal-delegated.log
+          if [ -n "$PR_NUMBER" ]; then
+            {
+              echo '### Portal delegated non-hospital journey (two Subscriber managers) — frontend only'
+              echo
+              echo "head: \`${PRODUCING_SHA:-$GITHUB_SHA}\` — exit $RC"
+              echo '```'
+              tail -120 /tmp/fp/portal-delegated.log || true
+              echo '```'
+            } > /tmp/fp/portal-delegated-pr.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/fp/portal-delegated-pr.md \
+              || echo '::notice::portal delegated journey evidence comment failed (non-fatal)'
+          fi
+          if [ "$RC" -ne 0 ]; then echo "PORTAL DELEGATED BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
 
       - name: Interrupted installation browser fixtures A–G
         if: always() && steps.cpms_install.outcome == 'success' && steps.migrations.outcome == 'success'

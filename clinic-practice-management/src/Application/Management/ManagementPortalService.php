@@ -1602,7 +1602,8 @@ final class ManagementPortalService {
 	public function designate_facility_manager_by_identifier( int $actor_wp_user_id, int $organization_id, string $clinic_key, string $identifier ): array {
 		$identifier = trim( $identifier );
 		if ( '' === $identifier ) {
-			return self::failure();
+			// Invalid INPUT (empty field), distinct from an authorization refusal.
+			return self::invalid( 'برای تعیین مدیر باید نام کاربری یا ایمیل وارد شود؛ هیچ تغییری ثبت نشد.' );
 		}
 
 		// Authorize (and resolve the plan Clinic) BEFORE identifying any user, so a
@@ -1626,7 +1627,10 @@ final class ManagementPortalService {
 			$target   = $by_login instanceof WP_User ? (int) $by_login->ID : 0;
 		}
 		if ( $target <= 0 ) {
-			return self::failure();
+			// Authorization already succeeded; the referenced WordPress account is
+			// a missing PREREQUISITE of designation (never a permission denial and
+			// never a probe of any tenant row).
+			return self::prerequisite( 'کاربری با این شناسه یافت نشد؛ حساب کاربری باید از قبل موجود باشد و هیچ تغییری ثبت نشد.' );
 		}
 
 		return $this->designate_facility_manager( $actor_wp_user_id, $organization_id, $clinic_key, $target );
@@ -1794,7 +1798,9 @@ final class ManagementPortalService {
 		try {
 			App::facility_setup_service()->save_booking_policy_for_clinic( $actor_wp_user_id, $trusted, $input );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			// Classify: invalid input vs missing prerequisites vs operational
+			// failure (never relabel a validation problem as a permission denial).
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'سیاست رزرو و ظرفیت این درمانگاه ذخیره شد.' );
@@ -1827,7 +1833,9 @@ final class ManagementPortalService {
 		try {
 			App::facility_setup_service()->activate( $actor_wp_user_id, $organization_id, true );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			// Classify: not_ready/confirm_required/ack_required are MISSING
+			// PREREQUISITES for an authorized manager — not permission denials.
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'مرکز به‌صورت اتمیک فعال شد.' );

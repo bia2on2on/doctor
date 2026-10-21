@@ -1172,7 +1172,7 @@ final class FacilitySetupService {
      * ACTIVE membership + CONFIG in that Clinic. It never discloses another
      * Clinic and never reports completion from typed-in numbers.
      *
-     * @return array{clinic_id:int, organization_id:int, name:string, status:string, hospital:bool, summary:array<string,mixed>, blocking:list<string>, ready:bool}
+     * @return array{clinic_id:int, organization_id:int, name:string, status:string, hospital:bool, flow:string, requires_booking:bool, summary:array<string,mixed>, blocking:list<string>, ready:bool}
      */
     public function clinic_readiness( int $actor_id, int $clinic_id ): array {
         if ( $clinic_id <= 0 ) {
@@ -1210,6 +1210,8 @@ final class FacilitySetupService {
             'name'            => (string) $row['name'],
             'status'          => (string) $row['status'],
             'hospital'        => $hospital,
+            'flow'            => $flow,
+            'requires_booking' => (bool) $rules['require_booking_policy'],
             'summary'         => $summary,
             'blocking'        => $blocking,
             'ready'           => [] === $blocking,

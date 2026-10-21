@@ -70,6 +70,11 @@ $cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_notice_key ] ?? null;
 $cpms_mp_kind   = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['notice'] ) ? (string) $cpms_mp_form_state['notice'] : '';
 $cpms_mp_msg    = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['message'] ) ? trim( (string) $cpms_mp_form_state['message'] ) : '';
 $cpms_mp_stale  = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['fields'] ) && is_array( $cpms_mp_form_state['fields'] ) ? $cpms_mp_form_state['fields'] : array();
+
+// The failed form's action key: stale values are restored ONLY into that form.
+$cpms_mp_stale_action = is_array( $cpms_mp_form_state ) ? (string) ( $cpms_mp_form_state['action'] ?? '' ) : '';
+// Action key of the form currently being rendered (set by $cpms_mp_form_open).
+$cpms_mp_current_action = '';
 if ( '' !== $cpms_mp_kind && isset( $cpms_mp_notices[ $cpms_mp_kind ] ) ) {
 	$cpms_mp_notice         = $cpms_mp_notices[ $cpms_mp_kind ];
 	$cpms_mp_notice['kind'] = $cpms_mp_kind;
@@ -107,8 +112,8 @@ $cpms_mp_title_full = 'پورتال مدیریت' . ( '' !== $cpms_mp_site_name 
  * @param bool   $required Whether the field is required.
  * @param string $type  Input type.
  */
-$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ) use ( &$cpms_mp_stale ): void {
-	if ( isset( $cpms_mp_stale[ $name ] ) && is_string( $cpms_mp_stale[ $name ] ) ) {
+$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ) use ( &$cpms_mp_stale, &$cpms_mp_stale_action, &$cpms_mp_current_action ): void {
+	if ( '' !== $cpms_mp_stale_action && $cpms_mp_stale_action === $cpms_mp_current_action && isset( $cpms_mp_stale[ $name ] ) && is_string( $cpms_mp_stale[ $name ] ) ) {
 		$value = $cpms_mp_stale[ $name ];
 	}
 	echo '<p class="cpms-mgmt-field"><label for="cpms-mgmt-' . esc_attr( $name ) . '">' . esc_html( $label ) . '</label>';
@@ -123,7 +128,8 @@ $cpms_mp_field = static function ( string $name, string $label, string $value = 
  * @param string $action Portal action key.
  * @param array<string,int> $ids  Explicit selector ids (never trusted as authority).
  */
-$cpms_mp_form_open = static function ( string $action, array $ids = array() ): void {
+$cpms_mp_form_open = static function ( string $action, array $ids = array() ) use ( &$cpms_mp_current_action ): void {
+	$cpms_mp_current_action = $action;
 	echo '<form class="cpms-mgmt-form" method="post" action="' . esc_url( ManagementPortalShell::portal_url() ) . '">';
 	echo '<input type="hidden" name="cpms_action" value="' . esc_attr( $action ) . '">';
 	wp_nonce_field( ManagementPortalController::NONCE_ACTION, '_cpms_nonce', true, true );
@@ -445,9 +451,6 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 								<p class="cpms-mgmt-field">
 									<label for="cpms-mgmt-room-site">ساختمان (اختیاری)</label>
 									<select id="cpms-mgmt-room-site" name="site_key">
-										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_primary_site ) : ?>
-											<option value="<?php echo esc_attr( (string) $cpms_mp_primary_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_primary_site['label'] ); ?></option>
-										<?php endforeach; ?>
 										<?php foreach ( (array) $cpms_mp_facility['sites'] as $cpms_mp_site ) : ?>
 											<option value="<?php echo esc_attr( (string) $cpms_mp_site['key'] ); ?>"><?php echo esc_html( (string) $cpms_mp_site['label'] ); ?></option>
 										<?php endforeach; ?>
@@ -677,9 +680,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				</p>
 
 				<?php $cpms_mp_readiness = $cpms_mp_service->clinic_facility_readiness( $cpms_mp_actor, (int) $cpms_mp_c['id'] ); ?>
-				<?php if ( is_array( $cpms_mp_readiness ) && ! empty( $cpms_mp_readiness['hospital'] ) ) : ?>
+				<?php if ( is_array( $cpms_mp_readiness ) && ! empty( $cpms_mp_readiness['requires_booking'] ) ) : ?>
 					<section class="cpms-mgmt-card" data-cpms-clinic-readiness="<?php echo esc_attr( $cpms_mp_readiness['ready'] ? 'ready' : 'blocked' ); ?>">
-						<h3>تکمیل راه‌اندازی بیمارستان — همین درمانگاه</h3>
+						<h3>تکمیل راه‌اندازی مرکز — همین درمانگاه</h3>
 						<p class="cpms-mgmt-meta">
 							این بخش فقط برای درمانگاهی است که مدیر آن هستید؛ اختیار سازمانی به‌تنهایی دسترسی این درمانگاه را نمی‌دهد و هیچ درمانگاه دیگری در این گزارش دیده نمی‌شود.
 						</p>
