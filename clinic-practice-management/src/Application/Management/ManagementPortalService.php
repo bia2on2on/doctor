@@ -1500,7 +1500,7 @@ final class ManagementPortalService {
 			return self::facility_failure( $e );
 		}
 
-		return array( 'ok' => true, 'message' => 'راه‌اندازی مرکز آغاز شد.' );
+		return array( 'ok' => true, 'message' => 'راه‌اندازی مرکز آغاز شد؛ اطلاعات مرکز ذخیره شد.' );
 	}
 
 	/**

@@ -58,7 +58,7 @@ $cpms_mp_notices = array(
 // the form). Consumed on first render; never shared across users.
 $cpms_mp_form_state = null;
 if ( $cpms_mp_logged_in ) {
-	$cpms_mp_state_key   = \ClinicCore\Frontend\ManagementPortalController::form_state_key( $cpms_mp_actor );
+	$cpms_mp_state_key  = \ClinicCore\Frontend\ManagementPortalController::form_state_key( $cpms_mp_actor );
 	$cpms_mp_form_state = get_transient( $cpms_mp_state_key );
 	if ( is_array( $cpms_mp_form_state ) ) {
 		delete_transient( $cpms_mp_state_key );
@@ -71,7 +71,7 @@ $cpms_mp_kind   = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state[
 $cpms_mp_msg    = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['message'] ) ? trim( (string) $cpms_mp_form_state['message'] ) : '';
 $cpms_mp_stale  = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['fields'] ) && is_array( $cpms_mp_form_state['fields'] ) ? $cpms_mp_form_state['fields'] : array();
 if ( '' !== $cpms_mp_kind && isset( $cpms_mp_notices[ $cpms_mp_kind ] ) ) {
-	$cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_kind ];
+	$cpms_mp_notice         = $cpms_mp_notices[ $cpms_mp_kind ];
 	$cpms_mp_notice['kind'] = $cpms_mp_kind;
 }
 if ( '' !== $cpms_mp_msg && is_array( $cpms_mp_notice ) ) {
@@ -365,7 +365,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						$cpms_mp_plan_flow  = (string) $cpms_mp_facility['flow'];
 						$cpms_mp_plan_rules = \ClinicCore\Application\Onboarding\FacilityTypeCatalog::plan_rules( $cpms_mp_plan_flow );
 						?>
-						<p class="cpms-mgmt-meta">
+						<p class="cpms-mgmt-meta" data-cpms-flow="<?php echo esc_attr( (string) $cpms_mp_facility['flow'] ); ?>" data-cpms-structure="<?php echo esc_attr( (string) ( $cpms_mp_facility['structure'] ?? '' ) ); ?>">
 							نوع: <strong><?php echo esc_html( (string) ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::find( (string) $cpms_mp_facility['facility_type'] )['label'] ?? (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
 							— جریان: <strong><?php echo esc_html( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::wizard_heading( (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
 							— ساختمان‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['sites'] ) ); ?>
