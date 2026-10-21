@@ -62,7 +62,7 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
     }
 
     throw new \RuntimeException(
-        'migration 0027: unsupported database server; expected MySQL 8, MariaDB 10.11.x, MariaDB 11.4.13, or MariaDB 11.8.x'
+        'migration 0027: unsupported database server; expected MySQL 8, MariaDB 10.11.x, or MariaDB 11.4.13'
     );
 };
 
