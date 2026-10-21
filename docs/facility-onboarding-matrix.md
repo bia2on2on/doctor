@@ -3,11 +3,14 @@
 Receipt: 2026-10-21T19:00Z · Base: `048b1ba4aff8839ff7067de5d1cc7e4932e8d237` (verified equal to `main`
 at start; no open PRs, branch clean) · Branch: `arena/e0970f70-doctor` · Draft PR: #259.
 
-> **Status honesty:** the code, harness, CI lane and documentation are delivered. The matrix has
-> **not yet produced a completed browser run**: the last observed runs stopped in fixture setup
-> because of a defect in *this slice's own* gate (see §6), which is fixed at head `e4c4109`.
-> Reruns were queued when the timebox expired. No per-type browser result is claimed anywhere
-> below except where an exact head is named.
+> **Status:** the matrix **executed and passed on both engines** at head
+> `30c630829afed13fa70f62a30a26915ed2b2f7da` — `Facility matrix (mysql)` 7m13s and
+> `Facility matrix (mariadb)` 5m43s, both `success`, in run
+> [39662236441](https://github.com/bia2on2on/doctor/actions/runs/39662236441). Because the harness
+> exits non-zero if **any** per-type check fails, a green job means every check of every scenario
+> passed. The per-check JSON artifact could **not be downloaded from the authoring sandbox**
+> (Actions artifact/log blob storage returns `EOF` there); reviewers can download
+> `facility-matrix-mysql-*` / `facility-matrix-mariadb-*` from that run.
 
 ## 1. What existed before this slice (verified, not assumed)
 
@@ -88,9 +91,43 @@ diagnosis had to proceed from job/step names only.
 | `cd35e44` | Tenant Tripwire | PASS |
 | `e4c4109` | WPCS (changed code) | PASS |
 | `e4c4109` | Static Analysis (PHPStan) | PASS |
-| `e4c4109` | Integration (WP 7.1 + MySQL 8) | NOT RUN (queued at timebox end) |
-| `e4c4109` | Facility matrix (mysql / mariadb) | NOT RUN (queued at timebox end) |
-| `e4c4109` | First-practice browser (mysql / mariadb) | NOT RUN (queued at timebox end) |
+| `30c6308` | **Facility matrix (mysql)** | **PASS** (7m13s) |
+| `30c6308` | **Facility matrix (mariadb)** | **PASS** (5m43s) |
+| `30c6308` | Integration (WP 7.1 + MySQL 8) — includes the new portal regression test | PASS (6m13s) |
+| `30c6308` | Real WP Acceptance (prefix `wp_` / `clinic_`) | PASS |
+| `30c6308` | Release Artifact (build + policy) · Upgrade path | PASS |
+| `30c6308` | Closure gate (PHP 8.1/8.3/8.4, destructive restoreApply) | PASS |
+| `30c6308` | Persian coexistence matrix (all jobs reported) | PASS |
+| `30c6308` | First-practice browser (mysql / mariadb) · Responsive smoke · Staging Gate | NOT RUN at handoff (queued) |
+
+### Per-type browser result (both engines)
+
+Both matrix jobs passed, so the harness's own per-type digest (printed as
+`PASS <type> (N checks)` and in `facility-matrix-results.json`) reported zero failures for:
+`doctor_practice`, `general_clinic`, `specialized_clinic`, `dental_clinic`,
+`diagnostic_center`, `rehabilitation_center`, `mental_health_center`,
+`specialized_outpatient_center`, `limited_surgery_center`, `hospital`,
+`comprehensive_health_center`, `other`, plus `structure_medical_building`.
+
+| Facility type | MySQL 8 | MariaDB 11.4.13 |
+|---|---|---|
+| doctor_practice (compact solo, auto site, 1 clinician) | PASS | PASS |
+| general_clinic (2 clinicians) | PASS | PASS |
+| specialized_clinic | PASS | PASS |
+| dental_clinic | PASS | PASS |
+| diagnostic_center | PASS | PASS |
+| rehabilitation_center | PASS | PASS |
+| mental_health_center | PASS | PASS |
+| specialized_outpatient_center | PASS | PASS |
+| limited_surgery_center | PASS | PASS |
+| hospital (ack · 2 sites · 2 held Clinics · 2 distinct managers · outpatient only) | PASS | PASS |
+| comprehensive_health_center | PASS | PASS |
+| other | PASS | PASS |
+| medical-building **structure** (2 independent Clinics, no booking/clinician prerequisite) | PASS | PASS |
+
+**Evidence boundary:** PASS here means the browser journey completed, every per-type assertion in
+the harness held, and the persisted-scope readback matched on live rows. It does **not** mean the
+per-check JSON was read by a human in this sandbox — that file is a downloadable CI artifact.
 
 ## 6. Defects found in this slice's own CI wiring (fixed, disclosed)
 
@@ -108,9 +145,9 @@ because three red runs were caused by them.
 
 ## 7. Remaining work (explicit)
 
-- Wait for the queued matrix runs at head `e4c4109`+ and record per-type PASS/FAIL for MySQL 8 and
-  MariaDB 11.4.13 in this document and the PR body.
-- If a per-type failure appears, fix the product defect it exposes (or the harness, if it is a
-  harness defect) — do not weaken an assertion to reach green.
-- The matrix does not yet cover: hospital third+ Clinics, staff/role assignment per type
-  (covered by `ManagementPortalTest`), patient-facing booking after activation per type.
+- First-practice browser (mysql/mariadb), Responsive smoke and Staging Gate were still queued at
+  handoff; they must be green on the final head before merge review.
+- The matrix does not cover: hospital third+ Clinics, staff/role assignment per type (covered by
+  `ManagementPortalTest`), patient-facing booking after activation per type.
+- If any per-type failure appears on a later head, fix the product defect it exposes (or the
+  harness, if it is a harness defect) — do not weaken an assertion to reach green.
