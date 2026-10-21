@@ -198,12 +198,10 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         self::assertSame('hospital_network', $plan['flow']);
 
         $service->add_site($this->actor, $org, 'ساختمان مرکزی', 'تهران');
-        $site   = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
-        $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه قلب', $site, self::TZ);
-        $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
-        $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
+        $site = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
 
-        // The outpatient acknowledgment is a hospital-ONLY required step.
+        // The outpatient acknowledgment is a hospital-ONLY required step, and
+        // add_clinic requires it BEFORE any Clinic of a hospital plan exists.
         $review = $service->review($this->actor, $org);
         self::assertFalse($review['ready']);
         $otherOrg  = $this->freshOrg('FTA other ack');
@@ -211,6 +209,10 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         self::assertSame('multi_doctor_clinic', $otherPlan['flow']);
         $this->assertRefused('not_hospital', fn () => $service->acknowledge_outpatient($this->actor, $otherOrg, true));
         $service->acknowledge_outpatient($this->actor, $org, true);
+
+        $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه قلب', $site, self::TZ);
+        $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
+        $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
         } catch (\Throwable $e) {
             file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG ack-gate ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . PHP_EOL);
             throw $e;
@@ -225,12 +227,14 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $plan    = $service->start($this->actor, $org, 'hospital', '', 'بیمارستان نمونه');
         self::assertSame('hospital_network', $plan['flow']);
 
+        // add_clinic requires the outpatient scope ack BEFORE any Clinic exists
+        // (FacilitySetupService::add_clinic gate) — same order as hospitalReady().
+        $service->acknowledge_outpatient($this->actor, $org, true);
         $service->add_site($this->actor, $org, 'ساختمان مرکزی', 'تهران');
         $site   = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
         $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه قلب', $site, self::TZ);
         $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
         $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
-        $service->acknowledge_outpatient($this->actor, $org, true);
 
         $doctor = $this->makeUser('fta_h_doc', 'subscriber');
         $a      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor, 'دکتر قلب', [$room['key']]);
