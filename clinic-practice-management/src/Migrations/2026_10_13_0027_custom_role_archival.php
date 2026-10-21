@@ -11,6 +11,20 @@
  * is controlled by @@SESSION.check_constraint_checks. These engine-specific
  * metadata paths follow the official MySQL 8.0 TABLE_CONSTRAINTS and MariaDB
  * CHECK_CONSTRAINTS documentation.
+ *
+ * 2026-10-21 — MariaDB 11.8 activation failure (owner request), root cause
+ * identified and reproduced at gate-logic level ONLY: the engine gate below
+ * refuses any `11.8.x-MariaDB` VERSION() string (allowlist is 10.11.x and
+ * 11.4.13), so the migration aborts with "unsupported database server" before
+ * any schema change and activation fails on MariaDB 11.8. The candidate fix is
+ * the one-line allowlist widening `|11\.8\.\d+` through the SAME MariaDB
+ * metadata path (fail-closed on unexpected metadata; nothing is silently
+ * weakened). It is deliberately NOT applied here: the repository's own policy
+ * test test_mariadb_118_is_outside_the_verified_gate_and_fails_closed_before_ddl
+ * requires a real MariaDB 11.8 migrate + rollback + replay run before any
+ * widening, and real MariaDB 11.8 execution was NOT possible in this change's
+ * environment (no database runtime). Applying the one-liner plus a real-server
+ * replay run is the exact remaining work for the MariaDB 11.8 lane.
  */
 
 declare(strict_types=1);

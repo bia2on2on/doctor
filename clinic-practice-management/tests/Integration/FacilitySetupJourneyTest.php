@@ -459,7 +459,12 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         $this->assertRefused('flow_locked', fn () => $service->start($this->actor, $this->org, 'other', 'medical_building', 'تغییر جریان'));
         self::assertSame('hospital_network', $service->plan($this->actor, $this->org)['flow']);
         $this->assertRefused('incompatible_structure', fn () => $service->start($this->actor, $this->org, 'hospital', 'single', 'x'));
-        $this->assertRefused('not_multi_clinic', fn () => $service->start($this->actor, $this->otherOrgManagedByActor(), 'doctor_practice', '', 'مطب'));
+        // Type-adaptive contract (2026-10-21): a solo practice now starts a REAL
+        // compact wizard in its own Organization (flow simple_practice, automatic
+        // central site) instead of being refused as "not multi-clinic".
+        $soloPlan = $service->start($this->actor, $this->otherOrgManagedByActor(), 'doctor_practice', '', 'مطب');
+        self::assertSame('simple_practice', $soloPlan['flow']);
+        self::assertCount(1, $soloPlan['sites'], 'the compact flow seeds its central site automatically');
     }
 
     // ------------------------------------------------------------------

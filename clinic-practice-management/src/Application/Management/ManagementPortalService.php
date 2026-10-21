@@ -42,6 +42,7 @@ namespace ClinicCore\Application\Management;
 use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Authorization\AuthorizationService;
 use ClinicCore\Application\Location\LocationException;
+use ClinicCore\Application\Onboarding\FacilitySetupException;
 use ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
@@ -69,9 +70,18 @@ final class ManagementPortalService {
 	public const SECTION_CLINIC = 'clinic';
 
 	/**
-	 * Built-in staff role keys a Clinic Manager may assign through the portal.
-	 * WordPress roles (administrator, editor, …) are deliberately absent: portal
-	 * role assignment is Clinic membership data, never a WordPress-global role.
+	 * Built-in staff role keys a Clinic Manager may assign through the portal —
+	 * the APPROVED OPERATIONAL roles (doctors, receptionists/secretaries,
+	 * accountants) plus the empty-preset patient membership role. WordPress
+	 * roles (administrator, editor, …) are deliberately absent: portal role
+	 * assignment is Clinic membership data, never a WordPress-global role.
+	 *
+	 * The Clinic Manager role is deliberately absent too: designating a Clinic
+	 * Manager is EXPLICIT Organization authority
+	 * (cpms_org_clinic_manager_assign, OrganizationClinicProvisioningService)
+	 * and is never delegated through the staff surface — and nothing on this
+	 * path ever touches cpms_organization_memberships, so no Organization
+	 * Manager delegation can happen here.
 	 *
 	 * @var list<string>
 	 */
@@ -79,7 +89,6 @@ final class ManagementPortalService {
 		RolesAndCapabilities::ROLE_DOCTOR,
 		RolesAndCapabilities::ROLE_SECRETARY,
 		RolesAndCapabilities::ROLE_ACCOUNTANT,
-		RolesAndCapabilities::ROLE_MANAGER,
 		RolesAndCapabilities::ROLE_PATIENT,
 	);
 
@@ -448,7 +457,7 @@ final class ManagementPortalService {
 	 * Organization: create a Clinic (Organization authority + per-op DENY).
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function create_clinic( int $actor_wp_user_id, int $organization_id, array $input ): array {
 		try {
@@ -485,7 +494,7 @@ final class ManagementPortalService {
 	 * Organization: update Clinic profile (name/address/phone).
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function update_clinic_profile( int $actor_wp_user_id, int $organization_id, int $clinic_id, array $input ): array {
 		try {
@@ -509,7 +518,7 @@ final class ManagementPortalService {
 	/**
 	 * Organization: activate/deactivate a Clinic (history is preserved).
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_clinic_status( int $actor_wp_user_id, int $organization_id, int $clinic_id, bool $active ): array {
 		try {
@@ -527,7 +536,7 @@ final class ManagementPortalService {
 	/**
 	 * Organization: designate an explicit Clinic manager.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function designate_clinic_manager( int $actor_wp_user_id, int $organization_id, int $clinic_id, int $target_wp_user_id ): array {
 		try {
@@ -542,7 +551,7 @@ final class ManagementPortalService {
 	/**
 	 * Organization: grant/revoke an Organization manager membership.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_organization_manager( int $actor_wp_user_id, int $organization_id, int $target_wp_user_id, bool $active ): array {
 		try {
@@ -559,7 +568,7 @@ final class ManagementPortalService {
 	 * (ACTIVE membership + CONFIG in the explicitly selected Clinic).
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function update_clinic_settings( int $actor_wp_user_id, int $clinic_id, array $input ): array {
 		try {
@@ -588,7 +597,7 @@ final class ManagementPortalService {
 	 * Clinic: create a Location inside the trusted Clinic.
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	/**
 	 * Clinic: create a Location.
@@ -598,7 +607,7 @@ final class ManagementPortalService {
 	 * only then is any caller-controlled value examined.
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function create_location( int $actor_wp_user_id, int $clinic_id, array $input ): array {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
@@ -647,7 +656,7 @@ final class ManagementPortalService {
 	 * read, so an unauthorized actor cannot use this path as an existence probe.
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function update_location( int $actor_wp_user_id, int $clinic_id, int $location_id, array $input ): array {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
@@ -702,7 +711,7 @@ final class ManagementPortalService {
 	 *
 	 * Capability is authorized before the row is read.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_location_active( int $actor_wp_user_id, int $clinic_id, int $location_id, bool $active ): array {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
@@ -738,36 +747,44 @@ final class ManagementPortalService {
 	/**
 	 * Clinic: assign an existing ACTIVE member a built-in CPMS membership role.
 	 *
-	 * Security contract (review P0-2):
-	 *  - trusted Clinic scope + scoped management capability are authorized BEFORE
-	 *    the target membership is read (no probing, no ordering leak);
+	 * Security contract (review P0-2, corrected role-assignment policy 2026-10-21):
+	 *  - trusted Clinic scope + scoped staff-management capability are authorized
+	 *    BEFORE the target membership is read (no probing, no ordering leak);
 	 *  - an actor may never change its OWN membership role (no self-escalation);
-	 *  - every capability the target role would carry must already be effective for
-	 *    the actor in this Clinic, so clinical/financial roles cannot be delegated
-	 *    by a manager who does not hold that authority itself.
+	 *  - delegation follows the precise, auditable role-assignment policy
+	 *    (may_assign_role): explicit staff-management authority in this Clinic
+	 *    may hand out the APPROVED OPERATIONAL roles without possessing every
+	 *    clinical or financial capability being delegated. The assignment
+	 *    confers exactly the role preset — never an arbitrary capability set,
+	 *    never a manager/manager designation, never a WordPress role.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function assign_built_in_role( int $actor_wp_user_id, int $clinic_id, int $target_wp_user_id, string $role_key ): array {
-		if ( ! in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true ) ) {
-			return self::failure(); // never a WordPress role, never an unknown key
+		if ( ! $this->may_assign_role( $role_key ) ) {
+			// Input-level refusal: unknown/non-operational role keys (including
+			// manager and any WordPress role) are never assignable here.
+			return self::invalid( 'نقش انتخابی از این صفحه قابل انتساب نیست؛ انتساب مدیر درمانگاه فقط با اختیار سازمانی و از گام تعیین مدیر انجام می‌شود.' );
 		}
-		if ( $target_wp_user_id <= 0 || $target_wp_user_id === $actor_wp_user_id ) {
-			return self::failure(); // self-role changes are never allowed here
+		if ( $target_wp_user_id <= 0 ) {
+			return self::invalid( 'کاربر هدف باید صریحاً انتخاب شود.' );
+		}
+		if ( $target_wp_user_id === $actor_wp_user_id ) {
+			return self::invalid( 'تغییر نقش عضویت خودتان مجاز نیست.' ); // self-role changes are never allowed here.
 		}
 
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
 		if ( $trusted === null ) {
 			return self::failure();
 		}
-		if ( ! $this->may_delegate_role( $actor_wp_user_id, $trusted, $role_key ) ) {
-			return self::failure(); // delegation beyond the actor's own authority
-		}
 
 		$membership = array();
 		try {
 			$membership = (array) $this->memberships->find( $trusted, $target_wp_user_id );
 			if ( $membership === null || (string) ( $membership['status'] ?? '' ) !== 'active' ) {
+				return self::failure();
+			}
+			if ( ! $this->staff_target_is_eligible( $target_wp_user_id ) ) {
 				return self::failure();
 			}
 			$this->authorization->authorizeForObject(
@@ -780,7 +797,7 @@ final class ManagementPortalService {
 		} catch ( AuthorizationException $e ) {
 			return self::failure();
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::operational_failure();
 		}
 
 		$this->audit_change(
@@ -801,7 +818,7 @@ final class ManagementPortalService {
 	 * enforced inside CustomRoleAssignmentService; capability is authorized here
 	 * before the call, and the assignment is audited).
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function assign_custom_role( int $actor_wp_user_id, int $clinic_id, int $target_wp_user_id, string $role_key ): array {
 		if ( ! CustomRolePolicy::is_well_formed_role_key( $role_key ) || $target_wp_user_id <= 0 ) {
@@ -840,42 +857,53 @@ final class ManagementPortalService {
 	 * Clinic: enroll a staff member by linking an existing WordPress account or
 	 * provisioning a brand-new plain Subscriber account.
 	 *
-	 * Safety contract:
-	 *  - trusted Clinic scope + scoped management capability are authorized BEFORE
-	 *    the target account is resolved or provisioned;
-	 *  - the requested membership role is bounded by the actor's own effective
-	 *    capability set in this Clinic (no clinical/financial delegation without
-	 *    holding that authority);
+	 * Safety contract (corrected role-assignment policy 2026-10-21):
+	 *  - trusted Clinic scope + scoped staff-management capability are authorized
+	 *    BEFORE the target account is resolved or provisioned;
+	 *  - delegation follows may_assign_role(): the approved operational roles
+	 *    (doctor, secretary/receptionist, accountant) and the patient membership
+	 *    role are assignable on staff-management authority ALONE — the Clinic
+	 *    Manager does not need to hold the clinical/financial capabilities being
+	 *    delegated (they come from the role preset, never an arbitrary set);
+	 *  - manager/manager designation is never assignable here (explicit
+	 *    Organization authority only) and no Organization membership is touched;
 	 *  - the only WordPress role this method can ever assign is `subscriber`; an
-	 *    existing account is linked, never re-roled;
+	 *    existing account is linked, never re-roled, and a WordPress
+	 *    Administrator is never a CPMS staff target;
 	 *  - an existing membership is never silently overwritten (fail closed);
 	 *  - the write is audited (hash-chained log).
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function enroll_staff( int $actor_wp_user_id, int $clinic_id, string $identifier, string $role_key ): array {
 		$identifier = trim( $identifier );
-		if ( '' === $identifier || ! in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true ) ) {
-			return self::failure();
+		if ( '' === $identifier ) {
+			return self::invalid( 'نام کاربری یا ایمیل کاربر الزامی است.' );
+		}
+		if ( ! $this->may_assign_role( $role_key ) ) {
+			return self::invalid( 'نقش انتخابی برای ثبت کارکنان مجاز نیست؛ نقش‌های مجاز پزشک، منشی/پذیرش و حسابدار هستند (انتساب مدیر درمانگاه فقط با اختیار سازمانی).' );
 		}
 
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
 		if ( $trusted === null ) {
 			return self::failure();
 		}
-		if ( ! $this->may_delegate_role( $actor_wp_user_id, $trusted, $role_key ) ) {
-			return self::failure(); // delegation beyond the actor's own authority
-		}
 
 		$membership_id = 0;
 		$target        = 0;
 		try {
 			$target = $this->resolve_or_provision_subscriber( $identifier );
-			if ( $target <= 0 || $target === $actor_wp_user_id ) {
+			if ( $target <= 0 ) {
+				return self::invalid( 'کاربری با این نام کاربری/ایمیل یافت نشد و ساخت حساب فقط با ایمیل معتبر انجام می‌شود.' );
+			}
+			if ( $target === $actor_wp_user_id ) {
+				return self::invalid( 'افزودن خودتان به کارکنان این درمانگاه مجاز نیست.' );
+			}
+			if ( ! $this->staff_target_is_eligible( $target ) ) {
 				return self::failure();
 			}
 			if ( $this->memberships->find( $trusted, $target ) !== null ) {
-				return self::failure(); // never overwrite an existing membership
+				return self::prerequisite( 'این کاربر از قبل در همین درمانگاه عضویت دارد؛ برای تغییر نقش یا وضعیت از فهرست کارکنان همان درمانگاه اقدام کنید.' );
 			}
 			$membership_id = App::membership_service()->create_membership(
 				$trusted,
@@ -884,8 +912,10 @@ final class ManagementPortalService {
 				'clinic', // MembershipService::SCOPE_CLINIC (Clinic-wide membership).
 				$actor_wp_user_id
 			);
-		} catch ( \Throwable $e ) {
+		} catch ( AuthorizationException $e ) {
 			return self::failure();
+		} catch ( \Throwable $e ) {
+			return self::operational_failure();
 		}
 
 		$this->audit_change(
@@ -913,7 +943,7 @@ final class ManagementPortalService {
 	 * own membership is refused (no self-suspension lock-out, no self-reactivation).
 	 * Suspension is a durable deny because AuthorizationService requires ACTIVE.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_staff_status( int $actor_wp_user_id, int $clinic_id, int $membership_id, bool $active ): array {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
@@ -962,7 +992,7 @@ final class ManagementPortalService {
 	 * Capability is authorized before the membership row is read.
 	 *
 	 * @param list<int> $location_ids
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_staff_locations( int $actor_wp_user_id, int $clinic_id, int $membership_id, array $location_ids ): array {
 		$location_ids = array_values( array_unique( array_filter( array_map( 'intval', $location_ids ), static fn( int $id ): bool => $id > 0 ) ) );
@@ -1033,7 +1063,7 @@ final class ManagementPortalService {
 	 *  - every mutation is audited with before/after state.
 	 *
 	 * @param string $effect One of `grant`, `deny`, `clear`.
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function set_staff_capability( int $actor_wp_user_id, int $clinic_id, int $membership_id, string $capability, string $effect ): array {
 		if ( ! in_array( $capability, RolesAndCapabilities::ALL_CAPS, true ) || ! in_array( $effect, array( 'grant', 'deny', 'clear' ), true ) ) {
@@ -1097,7 +1127,7 @@ final class ManagementPortalService {
 	 * same Organization reuses that profile through the membership, never a second
 	 * profile row and never a WordPress role change.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function register_clinician( int $actor_wp_user_id, int $clinic_id, string $full_name, string $specialty, int $wp_user_id = 0 ): array {
 		$full_name = trim( $full_name );
@@ -1179,7 +1209,7 @@ final class ManagementPortalService {
 	 * Clinic scope is established here because the service reads it from
 	 * ScopeContext and never from the payload.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function create_schedule( int $actor_wp_user_id, int $clinic_id, int $clinician_id, int $location_id, int $day_of_week, string $start_time, string $end_time ): array {
 		if ( $clinician_id <= 0 || $location_id <= 0 || $day_of_week < 0 || $day_of_week > 6 ) {
@@ -1271,18 +1301,42 @@ final class ManagementPortalService {
 	}
 
 	/**
-	 * Whether the actor may hand a built-in membership role to somebody else in
-	 * this Clinic: every capability the role preset carries must already be
-	 * effective for the actor there.
+	 * Precise, auditable role-assignment policy for the staff surface.
+	 *
+	 * Delegation is authorized by STAFF-MANAGEMENT AUTHORITY, not by capability
+	 * possession: the actor must hold explicit staff-management authority
+	 * (CLINIC_MANAGE_CAPABILITY = cpms_config) in this Clinic — already
+	 * established by clinic_manager_scope() with DENY > GRANT > role preset
+	 * precedence (an explicit DENY on cpms_config therefore blocks every staff
+	 * write) — and the requested role must be one of the approved operational
+	 * roles in ASSIGNABLE_BUILT_IN_ROLES. A Clinic Manager does NOT need to
+	 * possess the clinical or financial capabilities of the role being handed
+	 * out: the assignment confers exactly that role's preset (plus the target's
+	 * own explicit overrides), never an arbitrary capability set, so it can
+	 * never escalate beyond the approved preset. Manager designation and
+	 * Organization Manager membership are NOT assignable here (explicit
+	 * Organization authority only), and no WordPress role is ever written.
 	 */
-	private function may_delegate_role( int $actor_wp_user_id, int $trusted_clinic_id, string $role_key ): bool {
-		foreach ( array_keys( RolesAndCapabilities::capsMap( $role_key ) ) as $capability ) {
-			if ( ! $this->authorization->can( $actor_wp_user_id, $trusted_clinic_id, (string) $capability ) ) {
-				return false;
-			}
+	private function may_assign_role( string $role_key ): bool {
+		return in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true );
+	}
+
+	/**
+	 * Whether a resolved enrollment/role target may receive a Clinic staff
+	 * membership: an existing WordPress Administrator is never a CPMS staff
+	 * target (the boundary the Classic staff screen enforces too), and a plain
+	 * Subscriber (or any non-administrator account) is.
+	 */
+	private function staff_target_is_eligible( int $target_wp_user_id ): bool {
+		if ( $target_wp_user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $target_wp_user_id );
+		if ( false === $user ) {
+			return false;
 		}
 
-		return true;
+		return ! in_array( 'administrator', (array) $user->roles, true );
 	}
 
 	/**
@@ -1437,41 +1491,41 @@ final class ManagementPortalService {
 	/**
 	 * Start (or re-target) the facility plan for one Organization.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function start_facility_setup( int $actor_wp_user_id, int $organization_id, string $facility_type, string $structure, string $display_name ): array {
 		try {
 			App::facility_setup_service()->start( $actor_wp_user_id, $organization_id, $facility_type, $structure, $display_name );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
-		return array( 'ok' => true, 'message' => 'راه‌اندازی مرکز آغاز شد.' );
+		return array( 'ok' => true, 'message' => 'راه‌اندازی مرکز آغاز شد؛ اطلاعات مرکز ذخیره شد.' );
 	}
 
 	/**
 	 * Hospital only: explicit outpatient-only acknowledgment.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function acknowledge_facility_outpatient( int $actor_wp_user_id, int $organization_id ): array {
 		try {
 			App::facility_setup_service()->acknowledge_outpatient( $actor_wp_user_id, $organization_id, true );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'محدودهٔ فقط سرپایی تأیید شد.' );
 	}
 
 	/**
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function add_facility_site( int $actor_wp_user_id, int $organization_id, string $label, string $address ): array {
 		try {
 			App::facility_setup_service()->add_site( $actor_wp_user_id, $organization_id, $label, $address );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'ساختمان ثبت شد.' );
@@ -1480,7 +1534,7 @@ final class ManagementPortalService {
 	/**
 	 * Clinic creation inside the plan, held suspended until activation.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function add_facility_clinic( int $actor_wp_user_id, int $organization_id, string $name, string $site_key, string $timezone ): array {
 		try {
@@ -1493,7 +1547,7 @@ final class ManagementPortalService {
 				$timezone
 			);
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'درمانگاه در برنامه ثبت شد (تا فعال‌سازی معلق).' );
@@ -1502,7 +1556,7 @@ final class ManagementPortalService {
 	/**
 	 * Room/Location inside a plan Clinic.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function add_facility_room( int $actor_wp_user_id, int $organization_id, string $clinic_key, string $name, string $site_key ): array {
 		try {
@@ -1515,7 +1569,7 @@ final class ManagementPortalService {
 				$site_key
 			);
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'اتاق/مکان ثبت شد.' );
@@ -1524,13 +1578,13 @@ final class ManagementPortalService {
 	/**
 	 * Explicit Clinic-manager designation for a plan Clinic (Organization authority).
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function designate_facility_manager( int $actor_wp_user_id, int $organization_id, string $clinic_key, int $target_wp_user_id ): array {
 		try {
 			App::facility_setup_service()->designate_manager( $actor_wp_user_id, $organization_id, $clinic_key, $target_wp_user_id );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'مدیر درمانگاه تعیین شد.' );
@@ -1543,12 +1597,13 @@ final class ManagementPortalService {
 	 * provisions an account and never changes a WordPress role. Authority stays
 	 * the actor's Organization designation capability.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function designate_facility_manager_by_identifier( int $actor_wp_user_id, int $organization_id, string $clinic_key, string $identifier ): array {
 		$identifier = trim( $identifier );
 		if ( '' === $identifier ) {
-			return self::failure();
+			// Invalid INPUT (empty field), distinct from an authorization refusal.
+			return self::invalid( 'برای تعیین مدیر باید نام کاربری یا ایمیل وارد شود؛ هیچ تغییری ثبت نشد.' );
 		}
 
 		// Authorize (and resolve the plan Clinic) BEFORE identifying any user, so a
@@ -1556,7 +1611,7 @@ final class ManagementPortalService {
 		try {
 			App::facility_setup_service()->authorize_manager_designation( $actor_wp_user_id, $organization_id, $clinic_key );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		$target = 0;
@@ -1572,7 +1627,10 @@ final class ManagementPortalService {
 			$target   = $by_login instanceof WP_User ? (int) $by_login->ID : 0;
 		}
 		if ( $target <= 0 ) {
-			return self::failure();
+			// Authorization already succeeded; the referenced WordPress account is
+			// a missing PREREQUISITE of designation (never a permission denial and
+			// never a probe of any tenant row).
+			return self::prerequisite( 'کاربری با این شناسه یافت نشد؛ حساب کاربری باید از قبل موجود باشد و هیچ تغییری ثبت نشد.' );
 		}
 
 		return $this->designate_facility_manager( $actor_wp_user_id, $organization_id, $clinic_key, $target );
@@ -1642,7 +1700,7 @@ final class ManagementPortalService {
 	 * delegated Clinic authority, enforced inside FacilitySetupService).
 	 *
 	 * @param list<string> $room_keys
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function assign_facility_clinician( int $actor_wp_user_id, int $organization_id, string $clinic_key, int $target_wp_user_id, string $full_name, array $room_keys ): array {
 		try {
@@ -1655,7 +1713,7 @@ final class ManagementPortalService {
 				$room_keys
 			);
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'پزشک به درمانگاه اختصاص یافت.' );
@@ -1664,7 +1722,7 @@ final class ManagementPortalService {
 	/**
 	 * Weekly schedule for one assigned clinician at one room/Location.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function add_facility_schedule( int $actor_wp_user_id, int $organization_id, string $clinic_key, int $clinician_id, string $room_key, int $day_of_week, string $start_time, string $end_time ): array {
 		try {
@@ -1681,7 +1739,7 @@ final class ManagementPortalService {
 				)
 			);
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'برنامهٔ هفتگی ثبت شد.' );
@@ -1691,13 +1749,13 @@ final class ManagementPortalService {
 	 * Booking policy for one plan Clinic (required by hospital readiness).
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function save_facility_booking_policy( int $actor_wp_user_id, int $organization_id, string $clinic_key, array $input ): array {
 		try {
 			App::facility_setup_service()->save_booking_policy( $actor_wp_user_id, $organization_id, $clinic_key, $input );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'سیاست رزرو ذخیره شد.' );
@@ -1729,7 +1787,7 @@ final class ManagementPortalService {
 	 * actor's ACTIVE membership + CONFIG in exactly that Clinic.
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function save_clinic_booking_policy( int $actor_wp_user_id, int $clinic_id, array $input ): array {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id );
@@ -1740,7 +1798,9 @@ final class ManagementPortalService {
 		try {
 			App::facility_setup_service()->save_booking_policy_for_clinic( $actor_wp_user_id, $trusted, $input );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			// Classify: invalid input vs missing prerequisites vs operational
+			// failure (never relabel a validation problem as a permission denial).
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'سیاست رزرو و ظرفیت این درمانگاه ذخیره شد.' );
@@ -1767,13 +1827,15 @@ final class ManagementPortalService {
 	 * Atomic activation of every held Clinic of the plan (single transaction under
 	 * the Organization row lock; a failure anywhere activates nothing).
 	 *
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public function activate_facility_setup( int $actor_wp_user_id, int $organization_id ): array {
 		try {
 			App::facility_setup_service()->activate( $actor_wp_user_id, $organization_id, true );
 		} catch ( \Throwable $e ) {
-			return self::failure();
+			// Classify: not_ready/confirm_required/ack_required are MISSING
+			// PREREQUISITES for an authorized manager — not permission denials.
+			return self::facility_failure( $e );
 		}
 
 		return array( 'ok' => true, 'message' => 'مرکز به‌صورت اتمیک فعال شد.' );
@@ -1856,15 +1918,108 @@ final class ManagementPortalService {
 	}
 
 	/**
-	 * Uniform, non-disclosing failure. Never reveals tenant topology, whether a
-	 * Clinic exists, or whether a membership is suspended.
+	 * Map one facility-setup refusal to a categorized, safe user-facing result.
 	 *
-	 * @return array{ok:bool, message:string}
+	 * FacilitySetupException messages are already crafted safe Persian (stable
+	 * machine reason + a short sentence with no SQL, no patient data and no
+	 * other tenant's information), so they are surfaced verbatim, grouped into
+	 * the three user-facing categories — invalid input, missing prerequisites,
+	 * insufficient permissions. Anything else (database, transaction, runtime)
+	 * is an operational failure that never leaks exception text.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function facility_failure( \Throwable $e ): array {
+		if ( $e instanceof FacilitySetupException ) {
+			$reason = $e->reason();
+			if ( str_starts_with( $reason, 'invalid' )
+				|| in_array( $reason, [ 'incompatible_structure', 'duplicate_clinic', 'duplicate_room', 'limit', 'conflict', 'unsupported_flow', 'not_hospital' ], true ) ) {
+				return self::invalid( $e->getMessage() );
+			}
+			if ( in_array( $reason, [ 'no_plan', 'ack_required', 'confirm_required', 'not_ready', 'not_found', 'user_not_found', 'user_not_eligible', 'membership_exists', 'membership_suspended', 'membership_failed', 'flow_locked', 'hold_failed', 'plan_write_failed' ], true ) ) {
+				return self::prerequisite( $e->getMessage() );
+			}
+
+			return array(
+				'ok'      => false,
+				'message' => $e->getMessage(),
+				'notice'  => 'denied',
+			);
+		}
+
+		return self::operational_failure();
+	}
+
+	/**
+	 * Uniform, non-disclosing authorization failure. Never reveals tenant
+	 * topology, whether a Clinic exists, or whether a membership is suspended.
+	 * The notice kind ('denied') distinguishes INSUFFICIENT PERMISSIONS from
+	 * invalid input and missing prerequisites without saying which check failed.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	private static function failure(): array {
 		return array(
 			'ok'      => false,
-			'message' => 'عملیات انجام نشد؛ دسترسی یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.',
+			'message' => 'عملیات انجام نشد؛ دسترسی لازم را ندارید یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.',
+			'notice'  => 'denied',
+		);
+	}
+
+	/**
+	 * Validation failure: the INPUT is invalid (unknown role, empty identifier,
+	 * malformed value). Distinct from an authorization refusal so the form can
+	 * show an actionable Persian hint without disclosing any tenant state.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function invalid( string $message ): array {
+		return array(
+			'ok'      => false,
+			'message' => $message,
+			'notice'  => 'invalid',
+		);
+	}
+
+	/**
+	 * Missing-prerequisite failure: the input is valid and the actor is
+	 * authorized, but a precondition of the operation is not met (e.g. the
+	 * facility plan step must happen first). Never discloses tenant data.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function prerequisite( string $message ): array {
+		return array(
+			'ok'      => false,
+			'message' => $message,
+			'notice'  => 'prerequisite',
+		);
+	}
+
+	/**
+	 * Operational failure (database/transaction/runtime) — never a refusal
+	 * label and never an exception or SQL detail. Fail closed with a retry hint.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function operational_failure(): array {
+		return array(
+			'ok'      => false,
+			'message' => 'خطای داخلی در انجام عملیات رخ داد و هیچ تغییری ثبت نشد؛ لطفاً دوباره تلاش کنید.',
+			'notice'  => 'failed',
+		);
+	}
+
+	/**
+	 * Success result with its user-facing Persian message.
+	 *
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function success( string $message ): array {
+		return array(
+			'ok'      => true,
+			'message' => $message,
+			'notice'  => 'done',
 		);
 	}
 
