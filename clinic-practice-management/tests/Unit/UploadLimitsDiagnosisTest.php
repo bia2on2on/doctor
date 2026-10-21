@@ -24,7 +24,7 @@ final class UploadLimitsDiagnosisTest extends TestCase {
         self::assertStringContainsString( 'post_max_size=8M', $check['detail'] );
         self::assertStringContainsString( 'upload_max_filesize=2M', $check['detail'] );
         self::assertStringContainsString( 'پیوند منقضی شده', $check['detail'], 'the misleading WordPress message is named' );
-        self::assertStringContainsString( '20M', $check['detail'], 'the host-level remediation threshold is stated' );
+        self::assertStringContainsString( '۲۰M', $check['detail'], 'the host-level remediation threshold is stated (Persian digits, matching the UI)' );
         self::assertStringContainsString( 'wp plugin install', $check['detail'], 'a no-limit-change installation path is offered' );
     }
 
