@@ -137,9 +137,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 .cpms-mgmt-meta { color: var(--cpms-muted); font-size: .85rem; }
 .cpms-address-geography { max-width:100% !important; box-sizing:border-box; }
 @media (max-width: 420px) {
-  .cpms-mgmt-shell { padding-left:.5rem; padding-right:.5rem; }
-  .cpms-mgmt-table { display:block; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
-  .cpms-address-geography { flex-direction:column; }
+.cpms-mgmt-shell { padding-left:.5rem; padding-right:.5rem; }
+.cpms-mgmt-table { display:block; max-width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+.cpms-address-geography { flex-direction:column; }
 }
 </style>
 </head>
