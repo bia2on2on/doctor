@@ -73,6 +73,9 @@ def redact(value) -> str:
 def check(name: str, ok: bool, detail: str = "") -> bool:
     results.append({"check": name, "ok": bool(ok), "detail": redact(detail)[:400]})
     print(("PASS " if ok else "FAIL ") + name + ((f" — {redact(detail)[:300]}") if detail else ""))
+    if not ok:
+        # Workflow command: surfaces the failing check + detail as a CI annotation.
+        print(f"::error::delegated-journey {name} :: {redact(detail)[:300]}")
     return bool(ok)
 
 
@@ -551,7 +554,9 @@ if __name__ == "__main__":
         sys.exit(main())
     except PlaywrightTimeoutError as exc:
         print(f"FAIL playwright_timeout: {redact(exc)}")
+        print(f"::error::delegated-journey playwright_timeout :: {redact(exc)[:300]}")
         sys.exit(2)
     except Exception as exc:  # noqa: BLE001
         print(f"FAIL harness_error: {redact(exc)}")
+        print(f"::error::delegated-journey harness_error :: {type(exc).__name__}: {redact(exc)[:300]}")
         sys.exit(3)

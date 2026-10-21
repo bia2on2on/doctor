@@ -181,6 +181,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
 
     public function testHospitalKeepsTheProvenOutpatientRules(): void
     {
+        try {
         $service = FacilitySetupPage::service();
         $org     = $this->freshOrg('FTA hospital');
         $plan    = $service->start($this->actor, $org, 'hospital', '', 'بیمارستان نمونه');
@@ -213,6 +214,10 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         ]);
         $review = $service->review($this->actor, $org);
         self::assertTrue($review['ready'], implode(' | ', $review['blocking']));
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '::error::FTA-DEBUG hospital-test ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            throw $e;
+        }
     }
 
     public function testMedicalBuildingKeepsIndependentClinicManagementWithoutClinicalPrerequisites(): void
@@ -262,6 +267,10 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
             self::fail('expected refusal: ' . $reason . ( '' !== $context ? ' — ' . $context : '' ));
         } catch (FacilitySetupException $e) {
             self::assertSame($reason, $e->reason(), $e->getMessage());
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '::error::FTA-DEBUG unexpected ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . "
+");
+            throw $e;
         }
     }
 

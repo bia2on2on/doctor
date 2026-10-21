@@ -1205,16 +1205,16 @@ final class FacilitySetupService {
         }
 
         return [
-            'clinic_id'       => $clinic_id,
-            'organization_id' => $organization_id,
-            'name'            => (string) $row['name'],
-            'status'          => (string) $row['status'],
-            'hospital'        => $hospital,
-            'flow'            => $flow,
+            'clinic_id'        => $clinic_id,
+            'organization_id'  => $organization_id,
+            'name'             => (string) $row['name'],
+            'status'           => (string) $row['status'],
+            'hospital'         => $hospital,
+            'flow'             => $flow,
             'requires_booking' => (bool) $rules['require_booking_policy'],
-            'summary'         => $summary,
-            'blocking'        => $blocking,
-            'ready'           => [] === $blocking,
+            'summary'          => $summary,
+            'blocking'         => $blocking,
+            'ready'            => [] === $blocking,
         ];
     }
 
