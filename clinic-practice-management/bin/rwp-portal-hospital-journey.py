@@ -242,10 +242,15 @@ def submit_form(page, action: str, tag: str, sshot: str, fill=None) -> str:
 
 
 def select_by_label_text(form, selector: str, text: str) -> bool:
+    # Use text_content for <option> (inner_text can be empty for hidden options).
     options = form.locator(f'{selector} option')
     for index in range(options.count()):
         option = options.nth(index)
-        if text in (option.inner_text() or ""):
+        try:
+            candidate = option.text_content() or option.inner_text() or ""
+        except Exception:
+            candidate = ""
+        if text.strip() and text.strip() in (candidate or ""):
             form.locator(selector).select_option(option.get_attribute("value"))
             return True
     return False
@@ -332,7 +337,8 @@ def main() -> int:
         for clinic, mgr_login, sshot in ((CLINIC_A_NAME, MGR_A_USER, "org-designate-a"),
                                          (CLINIC_B_NAME, MGR_B_USER, "org-designate-b")):
             def fill_desig(f, clinic=clinic, mgr_login=mgr_login):
-                select_by_label_text(f, 'select[name="clinic_key"]', clinic)
+                ok = select_by_label_text(f, 'select[name="clinic_key"]', clinic)
+                check(f"org.designate.{clinic}.select", ok, f"clinic_key label={clinic} selected={ok}")
                 f.locator('input[name="identifier"]').fill(mgr_login)
             submit_on_surface(org, "org_facility_designate", f"org.designate.{clinic}", sshot, org_surface, fill_desig)
 
@@ -406,7 +412,7 @@ def main() -> int:
                                  viewport={"width": 390, "height": 844})
 
         # ---------------- Organization Manager: review + atomic activation ----------------
-        org.goto(portal, wait_until="domcontentloaded")
+        org.goto(org_surface, wait_until="domcontentloaded")
         org.wait_for_timeout(500)
         body = org.content()
         check("org.review_ready", "همهٔ پیش‌شرط‌ها فراهم است" in body or "فعال‌سازی اتمیک" in body,

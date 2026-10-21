@@ -1560,10 +1560,14 @@ final class ManagementPortalService {
 		}
 
 		$target = 0;
+		// Robust resolution: try e-mail first when it looks like an e-mail, then
+		// always try login. This covers logins that resemble e-mails and avoids
+		// a false negative when is_email's strict validation rejects a valid login.
 		if ( is_email( $identifier ) ) {
 			$by_email = get_user_by( 'email', $identifier );
 			$target   = $by_email instanceof WP_User ? (int) $by_email->ID : 0;
-		} else {
+		}
+		if ( $target <= 0 ) {
 			$by_login = get_user_by( 'login', $identifier );
 			$target   = $by_login instanceof WP_User ? (int) $by_login->ID : 0;
 		}
