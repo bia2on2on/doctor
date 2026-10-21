@@ -265,6 +265,42 @@ final class FacilityTypeCatalog {
     }
 
     /**
+     * Readiness rules of the Organization facility-PLAN wizard per flow — the
+     * single source of truth for which plan steps are actually REQUIRED before
+     * a facility may be activated. Required steps depend on the facility type
+     * and its structure override (resolve_flow()), never on a fixed checklist:
+     *
+     *  - simple_practice (solo): compact — one held Clinic with its primary
+     *    Location, an explicit manager, at least ONE scheduled clinician and a
+     *    booking policy. The central site is seeded automatically at start, so
+     *    the site step is never a manual prerequisite.
+     *  - multi_doctor_clinic (general/specialized clinics): same operational
+     *    steps with at least TWO scheduled clinicians per Clinic.
+     *  - hospital_network: the PROVEN outpatient workflow — explicit outpatient
+     *    acknowledgment plus (unchanged) one scheduled clinician and a booking
+     *    policy per Clinic.
+     *  - medical_building: independent Clinic management only — manager +
+     *    Location per Clinic; clinicians/schedules/booking belong to each
+     *    Clinic's own manager and are never Organization-wide prerequisites.
+     *
+     * Manager designation and held-Clinic activation are universal: an explicit
+     * manager is required for every flow (never inferred), and every Clinic is
+     * activated only through the consolidated atomic activation.
+     *
+     * @return array{outpatient_ack:bool, min_scheduled_clinicians:int, require_booking_policy:bool, auto_site:bool}
+     */
+    public static function plan_rules( string $flow ): array {
+        return match ( $flow ) {
+            'simple_practice'     => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => true],
+            'multi_doctor_clinic' => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 2, 'require_booking_policy' => true,  'auto_site' => false],
+            'hospital_network'    => ['outpatient_ack' => true,  'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => false],
+            'medical_building'    => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false],
+            // Unknown flow: never claim a readiness fact that is not verified.
+            default               => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false],
+        };
+    }
+
+    /**
      * Required wizard step ids for a flow; everything else shown is optional.
      *
      * @return list<string>

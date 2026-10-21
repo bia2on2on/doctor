@@ -27,8 +27,11 @@ use RuntimeException;
 use Throwable;
 
 /**
- * Top-down, facility-adaptive Organization setup for multi-Clinic facilities
- * (hospital outpatient network, medical building).
+ * Top-down, facility-adaptive Organization setup for every approved facility
+ * type (solo practices, multi-doctor clinics, hospital outpatient network,
+ * medical building). Required steps depend on the selected type/structure
+ * (FacilityTypeCatalog::plan_rules) — a solo practice runs a compact flow and
+ * is never forced through hospital-only steps.
  *
  * Tenant model (unchanged): Organization → Clinic → Location. This service adds
  * no tenant layer and no table. The durable setup plan is wizard state stored in
@@ -58,8 +61,21 @@ final class FacilitySetupService {
 
     public const OPTION_PREFIX = 'cpms_facility_setup_plan_';
 
-    /** @var list<string> */
-    public const FLOWS = [ 'hospital_network', 'medical_building' ];
+    /**
+     * Flows this service can plan end-to-end. Type-adaptive (2026-10-21): every
+     * approved facility type resolves to one of these flows
+     * (FacilityTypeCatalog::resolve_flow), so all 12 types can run a REAL
+     * frontend wizard with flow-dependent required steps (FacilityTypeCatalog::
+     * plan_rules). The hospital outpatient network and the medical building
+     * keep their proven step sets; solo practices get the compact flow and
+     * multi-doctor clinics their operational flow.
+     *
+     * @var list<string>
+     */
+    public const FLOWS = [ 'simple_practice', 'multi_doctor_clinic', 'hospital_network', 'medical_building' ];
+
+    /** Label of the automatically seeded central site of the compact solo flow. */
+    public const DEFAULT_SITE_LABEL = 'ساختمان مرکز';
 
     /**
      * Built-in staff roles assignable by the staff step (reception, finance).
@@ -181,7 +197,10 @@ final class FacilitySetupService {
         }
         $flow = FacilityTypeCatalog::resolve_flow( $facility_type, $structure );
         if ( ! in_array( $flow, self::FLOWS, true ) ) {
-            throw new FacilitySetupException( 'not_multi_clinic', 'این نوع مرکز چنددرمانگاهی نیست؛ مطب و درمانگاه تک‌واحدی از «راه‌اندازی» همان مرکز پیکربندی می‌شود.' );
+            // Fail closed for any future catalogue flow this service cannot plan
+            // end-to-end. Every one of the 12 approved types resolves to a flow
+            // in self::FLOWS, so a real wizard is startable for all of them.
+            throw new FacilitySetupException( 'unsupported_flow', 'این نوع مرکز هنوز در جریان راه‌اندازی این سرویس پشتیبانی نمی‌شود؛ تغییری ثبت نشد.' );
         }
         $display_name = trim( $display_name );
         if ( '' === $display_name || mb_strlen( $display_name ) > 190 ) {
@@ -193,7 +212,7 @@ final class FacilitySetupService {
             $organization_id,
             static function ( ?array $plan ) use ( $actor_id, $organization_id, $facility_type, $flow, $display_name ): array {
                 if ( null === $plan ) {
-                    return [
+                    $plan = [
                         'version'           => 1,
                         'organization_id'   => $organization_id,
                         'facility_type'     => $facility_type,
@@ -207,17 +226,29 @@ final class FacilitySetupService {
                         'activated_by'      => 0,
                         'started_by'        => $actor_id,
                     ];
+                } else {
+                    if ( (string) $plan['flow'] !== $flow && [] !== $plan['clinics'] ) {
+                        throw new FacilitySetupException( 'flow_locked', 'پس از ایجاد نخستین درمانگاه، نوع جریان این سازمان تغییر نمی‌کند؛ تاریخچهٔ پیکربندی بازنویسی نمی‌شود.' );
+                    }
+                    if ( (string) $plan['flow'] !== $flow ) {
+                        $plan['outpatient_ack_by'] = 0;
+                        $plan['outpatient_ack_at'] = '';
+                    }
+                    $plan['facility_type'] = $facility_type;
+                    $plan['flow']          = $flow;
+                    $plan['display_name']  = $display_name;
                 }
-                if ( (string) $plan['flow'] !== $flow && [] !== $plan['clinics'] ) {
-                    throw new FacilitySetupException( 'flow_locked', 'پس از ایجاد نخستین درمانگاه، نوع جریان این سازمان تغییر نمی‌کند؛ تاریخچهٔ پیکربندی بازنویسی نمی‌شود.' );
+                // Compact solo flow: the central site is descriptive metadata and
+                // is seeded automatically, so a solo practice never has to run a
+                // separate site step before its one Clinic. Idempotent and never
+                // destructive (an existing site list is left untouched).
+                if ( FacilityTypeCatalog::plan_rules( $flow )['auto_site'] && [] === $plan['sites'] ) {
+                    $plan['sites'][] = [
+                        'key'     => 's' . substr( hash( 'sha256', mb_strtolower( self::DEFAULT_SITE_LABEL ) ), 0, 10 ),
+                        'label'   => self::DEFAULT_SITE_LABEL,
+                        'address' => '',
+                    ];
                 }
-                if ( (string) $plan['flow'] !== $flow ) {
-                    $plan['outpatient_ack_by'] = 0;
-                    $plan['outpatient_ack_at'] = '';
-                }
-                $plan['facility_type'] = $facility_type;
-                $plan['flow']          = $flow;
-                $plan['display_name']  = $display_name;
 
                 return $plan;
             }
@@ -1157,20 +1188,20 @@ final class FacilitySetupService {
         }
         $organization_id = (int) $row['organization_id'];
         $plan            = $this->read_plan( $organization_id );
-        $hospital        = is_array( $plan ) && 'hospital_network' === (string) ( $plan['flow'] ?? '' );
+        $flow            = is_array( $plan ) ? (string) ( $plan['flow'] ?? '' ) : '';
+        $rules           = FacilityTypeCatalog::plan_rules( $flow );
+        $hospital        = 'hospital_network' === $flow;
 
         $summary  = $this->clinic_summary( $clinic_id );
         $blocking = [];
         if ( $summary['active_locations'] < 1 ) {
             $blocking[] = 'هیچ مکان فعالی ندارد؛ دست‌کم یک مکان/اتاق ویزیت ثبت کنید.';
         }
-        if ( $hospital ) {
-            if ( $summary['scheduled_clinicians'] < 1 ) {
-                $blocking[] = 'دست‌کم یک پزشک با برنامهٔ هفتگی لازم است.';
-            }
-            if ( ! $summary['booking_policy'] ) {
-                $blocking[] = 'سیاست رزرو و ظرفیت ثبت نشده است.';
-            }
+        if ( $rules['min_scheduled_clinicians'] > 0 && $summary['scheduled_clinicians'] < $rules['min_scheduled_clinicians'] ) {
+            $blocking[] = 'دست‌کم ' . self::persian_number( $rules['min_scheduled_clinicians'] ) . ' پزشک با برنامهٔ هفتگی لازم است.';
+        }
+        if ( $rules['require_booking_policy'] && ! $summary['booking_policy'] ) {
+            $blocking[] = 'سیاست رزرو و ظرفیت ثبت نشده است.';
         }
 
         return [
@@ -1193,9 +1224,12 @@ final class FacilitySetupService {
     public function review( int $actor_id, int $organization_id ): array {
         $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
         $plan     = self::require_plan( $this->read_plan( $organization_id ) );
-        $hospital = 'hospital_network' === (string) $plan['flow'];
+        // Type-adaptive required steps (FacilityTypeCatalog::plan_rules): the
+        // hospital outpatient acknowledgment and the per-Clinic operational
+        // prerequisites are required exactly when the selected flow says so.
+        $rules    = FacilityTypeCatalog::plan_rules( (string) $plan['flow'] );
         $blocking = [];
-        if ( $hospital && (int) $plan['outpatient_ack_by'] <= 0 ) {
+        if ( $rules['outpatient_ack'] && (int) $plan['outpatient_ack_by'] <= 0 ) {
             $blocking[] = 'تأیید صریح محدودهٔ فقط سرپایی ثبت نشده است.';
         }
         if ( [] === $plan['sites'] ) {
@@ -1234,13 +1268,11 @@ final class FacilitySetupService {
             if ( $summary['active_locations'] < 1 ) {
                 $blocking[] = '«' . $label . '»: هیچ مکان فعالی ندارد.';
             }
-            if ( $hospital ) {
-                if ( $summary['scheduled_clinicians'] < 1 ) {
-                    $blocking[] = '«' . $label . '»: دست‌کم یک پزشک با برنامهٔ هفتگی لازم است.';
-                }
-                if ( ! $summary['booking_policy'] ) {
-                    $blocking[] = '«' . $label . '»: سیاست رزرو و ظرفیت ثبت نشده است.';
-                }
+            if ( $rules['min_scheduled_clinicians'] > 0 && $summary['scheduled_clinicians'] < $rules['min_scheduled_clinicians'] ) {
+                $blocking[] = '«' . $label . '»: دست‌کم ' . self::persian_number( $rules['min_scheduled_clinicians'] ) . ' پزشک با برنامهٔ هفتگی لازم است.';
+            }
+            if ( $rules['require_booking_policy'] && ! $summary['booking_policy'] ) {
+                $blocking[] = '«' . $label . '»: سیاست رزرو و ظرفیت ثبت نشده است.';
             }
         }
 
@@ -1360,6 +1392,14 @@ final class FacilitySetupService {
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+
+    /**
+     * Persian-digit rendering of a small positive integer for user-facing
+     * readiness text (bounded inputs only; never used for data).
+     */
+    private static function persian_number( int $value ): string {
+        return strtr( (string) $value, [ '0' => '۰', '1' => '۱', '2' => '۲', '3' => '۳', '4' => '۴', '5' => '۵', '6' => '۶', '7' => '۷', '8' => '۸', '9' => '۹' ] );
+    }
 
     /**
      * Live, non-PHI readiness facts of one Clinic.
