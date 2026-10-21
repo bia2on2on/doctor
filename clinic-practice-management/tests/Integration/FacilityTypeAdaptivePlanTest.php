@@ -147,15 +147,18 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $org     = $this->freshOrg('FTA multi');
         $plan    = $service->start($this->actor, $org, 'general_clinic', '', 'درمانگاه عمومی نمونه');
         self::assertSame('multi_doctor_clinic', $plan['flow']);
-        self::assertCount(1, $plan['sites']);
-        $site = (string) $plan['sites'][0]['key'];
+        // Multi-doctor clinics do not get an automatic central site (auto_site=0).
+        self::assertCount(0, $plan['sites']);
+        $service->add_site($this->actor, $org, 'ساختمان مرکزی', 'تهران');
+        $site = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
 
         $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه عمومی نمونه', $site, self::TZ);
         $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
+        $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
 
         $doctor1 = $this->makeUser('fta_md_doc1', 'subscriber');
-        $a1      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor1, 'دکتر یک', ['primary']);
-        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a1['clinician_id'], 'primary', [
+        $a1      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor1, 'دکتر یک', [$room['key']]);
+        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a1['clinician_id'], $room['key'], [
             'day_of_week' => 0, 'start_time' => '09:00', 'end_time' => '12:00',
         ]);
         $service->save_booking_policy($this->actor, $org, $clinic['key'], [
@@ -167,8 +170,8 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         self::assertNotEmpty($review['blocking']);
 
         $doctor2 = $this->makeUser('fta_md_doc2', 'subscriber');
-        $a2      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor2, 'دکتر دو', ['primary']);
-        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a2['clinician_id'], 'primary', [
+        $a2      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor2, 'دکتر دو', [$room['key']]);
+        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a2['clinician_id'], $room['key'], [
             'day_of_week' => 1, 'start_time' => '09:00', 'end_time' => '12:00',
         ]);
 
@@ -187,6 +190,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $site   = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
         $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه قلب', $site, self::TZ);
         $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
+        $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
 
         // The outpatient acknowledgment is a hospital-ONLY required step.
         $review = $service->review($this->actor, $org);
@@ -198,8 +202,8 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $service->acknowledge_outpatient($this->actor, $org, true);
 
         $doctor = $this->makeUser('fta_h_doc', 'subscriber');
-        $a      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor, 'دکتر قلب', ['primary']);
-        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a['clinician_id'], 'primary', [
+        $a      = $service->assign_clinician($this->actor, $org, $clinic['key'], $doctor, 'دکتر قلب', [$room['key']]);
+        $service->add_weekly_schedule($this->actor, $org, $clinic['key'], $a['clinician_id'], $room['key'], [
             'day_of_week' => 2, 'start_time' => '08:00', 'end_time' => '12:00',
         ]);
         $this->assertRefused('not_ready', fn () => $service->activate($this->actor, $org, true), 'hospital still requires the booking policy');
