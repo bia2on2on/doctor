@@ -151,16 +151,34 @@ jobs:
           sudo apache2ctl configtest && sudo service apache2 start
           curl -s -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/" | tee /tmp/mtx/apache.txt
 
-      - name: Build official release ZIP and install it
+      # Granular steps on purpose: the sandbox that authored this lane cannot
+      # read Actions logs, so each failure must be attributable from the step
+      # name alone.
+      - name: Build official release ZIP
         run: |
           set -euo pipefail
           bash clinic-practice-management/bin/build-release.sh
           ZIP=$(ls clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
           [ -f "$ZIP" ] || { echo 'ZIP NOT BUILT'; exit 1; }
           sha256sum "$ZIP" | tee /tmp/mtx/zip.sha256
-          wp plugin install "$PWD/$ZIP" --activate --path="$WP_DIR" --allow-root
+          echo "matrix ZIP: $ZIP"
+
+      - name: Install the release ZIP and activate
+        run: |
+          set -euo pipefail
+          ZIP=$(ls "$PWD"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
+          wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/mtx/plugin-install.log
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+
+      - name: Verify schema + no PHP fatal
+        run: |
+          set -euo pipefail
           wp eval 'echo "schema=" . \ClinicCore\Bootstrap\App::migrations()->currentVersion() . PHP_EOL;' --path="$WP_DIR" --allow-root | tee /tmp/mtx/schema.txt
+          if grep -qE 'PHP Fatal error|PHP Parse error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null; then
+            echo 'PHP fatal during install/activation'
+            tail -30 "$WP_DIR/wp-content/debug.log"
+            exit 1
+          fi
 
       - name: Isolated business identities
         run: |
