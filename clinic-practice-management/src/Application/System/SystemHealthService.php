@@ -374,6 +374,7 @@ final class SystemHealthService
     public static function upload_limits_check( ?string $post_max = null, ?string $upload_max = null ): array {
         $raw_post   = null !== $post_max ? $post_max : (string) ini_get( 'post_max_size' );
         $raw_upload = null !== $upload_max ? $upload_max : (string) ini_get( 'upload_max_filesize' );
+
         $post_bytes   = self::parse_bytes( $raw_post );
         $upload_bytes = self::parse_bytes( $raw_upload );
         $expected     = self::EXPECTED_ZIP_BYTES;
@@ -383,6 +384,7 @@ final class SystemHealthService
             . ' | upload_max_filesize=' . $label_up . ' (' . self::describe_bytes( $upload_bytes ) . ')'
             . ' | انتظار ZIP ≈ ' . self::format_bytes( $expected )
             . ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+
         // null = unreadable/unparseable → WARNING (unknown is never a false PASS).
         // 0 = explicitly unlimited (PHP treats "0" as no limit).
         $ok_post   = null !== $post_bytes && ( 0 === $post_bytes || $post_bytes >= $expected );
@@ -444,10 +446,10 @@ final class SystemHealthService
 
     private static function format_bytes( int $bytes ): string {
         if ( $bytes >= 1024 * 1024 * 1024 ) {
-            return round( $bytes / (1024 * 1024 * 1024), 1 ) . 'G';
+            return round( $bytes / ( 1024 * 1024 * 1024 ), 1 ) . 'G';
         }
         if ( $bytes >= 1024 * 1024 ) {
-            return round( $bytes / (1024 * 1024), 1 ) . 'M';
+            return round( $bytes / ( 1024 * 1024 ), 1 ) . 'M';
         }
         if ( $bytes >= 1024 ) {
             return round( $bytes / 1024, 1 ) . 'K';
