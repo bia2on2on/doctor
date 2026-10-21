@@ -137,6 +137,7 @@ jobs:
           python3 -m unittest discover -s .github/persian-coexistence -p 'test_*.py'
           php -l clinic-practice-management/bin/cpms
           python3 -m py_compile clinic-practice-management/bin/rwp-acceptance.py
+          python3 -m py_compile clinic-practice-management/bin/rwp-management-portal.py
           python3 -m py_compile clinic-practice-management/bin/rwp-shell-proof.py
           python3 -m py_compile clinic-practice-management/bin/acceptance-isolation-check.py
           bash -n clinic-practice-management/bin/build-release.sh
@@ -920,6 +921,24 @@ jobs:
           RC=$?
           cat /tmp/acc/shell-proof.log
           if [ "$RC" -ne 0 ]; then echo "SHELL PROOF FAILED (rc=$RC)"; exit "$RC"; fi
+
+      # ---------- 6b) Frontend Management Portal — D1 cascade + D2 duplicate IDs ----------
+      # Real Chromium on the real Apache/MySQL WordPress install. Creates its own
+      # Organization + a plain Subscriber Organization Manager + two Clinics (one
+      # HELD/suspended) through the production frontend dispatch, then asserts the
+      # live DOM: Tehran excludes Tabriz, province switch repopulates cities, the
+      # server rejects a forged cross-province pair over real HTTP, two Clinic
+      # forms have zero duplicate ids, every label resolves, and Persian RTL holds
+      # at 390px.
+      - name: Browser regression — Management Portal province/city cascade + duplicate IDs
+        if: ${{ !inputs.persian_coexistence || inputs.coexistence_stage_b }}
+        run: |
+          set -o pipefail
+          BASE="$WP_URL" WP_DIR="$WP_DIR" OUT=/tmp/acc \
+            python3 clinic-practice-management/bin/rwp-management-portal.py > /tmp/acc/management-portal.log 2>&1
+          RC=$?
+          cat /tmp/acc/management-portal.log
+          if [ "$RC" -ne 0 ]; then echo "MANAGEMENT PORTAL REGRESSION FAILED (rc=$RC)"; exit "$RC"; fi
 
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review

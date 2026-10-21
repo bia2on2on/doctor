@@ -136,6 +136,11 @@ final class SystemHealthService
         $mem = (int) ini_get('memory_limit');
         $add('php.memory', 'PHP memory_limit', $mem <= 0 || $mem >= 128 ? self::PASS : self::WARNING, ini_get('memory_limit') ?: '?');
 
+        // D3: guidance for release ZIP larger than default upload limits (no silent raise).
+        // WordPress shows a generic "link expired" when POST exceeds post_max_size.
+        $upload_check = self::upload_limits_check();
+        $add( $upload_check['key'], $upload_check['label'], $upload_check['status'], $upload_check['detail'] );
+
         // کفِ اعلام‌شدهٔ وردپرس (spec §40) — فقط گزارش، بدون PHI.
         $wp_check = self::wordpress_version_check( $this->running_wordpress_version() );
         $add(
@@ -342,6 +347,112 @@ final class SystemHealthService
             'status' => version_compare( $parsed, self::MIN_MYSQL_VERSION, '>=' ) ? self::PASS : self::FAIL,
             'detail' => $raw . ' — کفِ اعلام‌شده: MySQL ' . self::MIN_MYSQL_VERSION,
         ];
+    }
+
+    /**
+     * Expected release ZIP size for upload-limits guidance (D3).
+     * The ZIP includes offline catalog + vendor; many hosts default to
+     * post_max_size=8M / upload_max_filesize=2M which triggers WordPress's
+     * generic "link expired" on POST overflow. This is a host-level limit;
+     * CPMS never silently raises it.
+     */
+    public const EXPECTED_ZIP_BYTES = 16 * 1024 * 1024;
+
+    public const ZIP_SIZE_GUIDANCE_FA = 'بستهٔ انتشار CPMS (حاوی runtime vendor و کاتالوگ آفلاین ۳۱ استان) از سقف پیش‌فرض بسیاری از هاست‌ها بزرگ‌تر است. '
+        . 'اگر حجم POST از post_max_size بیشتر شود، وردپرس بدون توضیحِ علت خطای گمراه‌کنندهٔ «پیوند منقضی شده» را نشان می‌دهد؛ '
+        . 'این محدودیت در سطح میزبان/PHP است و افزونه آن را بی‌صدا تغییر نمی‌دهد. '
+        . 'برای نصب: یا post_max_size و upload_max_filesize را در php.ini/.user.ini یا پنل هاست به حداقل ۲۰M افزایش دهید، '
+        . 'یا ZIP را از طریق FTP/پنل فایل یا WP-CLI (wp plugin install --activate file.zip) بارگذاری کنید. '
+        . 'مقدار مجاز آپلود را می‌توانید در «رسانه ← افزودن» یا همین صفحهٔ سلامت ببینید.';
+
+    /**
+     * Check whether PHP upload limits can carry the release ZIP (D3).
+     * Pure and unit-testable: uses injected ini strings or live ini_get().
+     *
+     * @return array{key:string,label:string,status:string,detail:string}
+     */
+    public static function upload_limits_check( ?string $post_max = null, ?string $upload_max = null ): array {
+        $raw_post   = null !== $post_max ? $post_max : (string) ini_get( 'post_max_size' );
+        $raw_upload = null !== $upload_max ? $upload_max : (string) ini_get( 'upload_max_filesize' );
+        $post_bytes   = self::parse_bytes( $raw_post );
+        $upload_bytes = self::parse_bytes( $raw_upload );
+        $expected     = self::EXPECTED_ZIP_BYTES;
+        $label_post   = trim( $raw_post ) !== '' ? trim( $raw_post ) : 'نامشخص';
+        $label_up     = trim( $raw_upload ) !== '' ? trim( $raw_upload ) : 'نامشخص';
+        $detail       = 'post_max_size=' . $label_post . ' (' . self::describe_bytes( $post_bytes ) . ')'
+            . ' | upload_max_filesize=' . $label_up . ' (' . self::describe_bytes( $upload_bytes ) . ')'
+            . ' | انتظار ZIP ≈ ' . self::format_bytes( $expected )
+            . ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+        // null = unreadable/unparseable → WARNING (unknown is never a false PASS).
+        // 0 = explicitly unlimited (PHP treats "0" as no limit).
+        $ok_post   = null !== $post_bytes && ( 0 === $post_bytes || $post_bytes >= $expected );
+        $ok_upload = null !== $upload_bytes && ( 0 === $upload_bytes || $upload_bytes >= $expected );
+        $status    = ( $ok_post && $ok_upload ) ? self::PASS : self::WARNING;
+        if ( null === $post_bytes || null === $upload_bytes ) {
+            $detail .= ' | مقدار یکی از سقف‌ها قابل خواندن/تجزیه نبود؛ وضعیت نامشخص (fail-safe، نه PASS).';
+        }
+
+        return [ 'key' => 'php.upload_limits', 'label' => 'محدودیت آپلود ZIP (post_max_size / upload_max_filesize)', 'status' => $status, 'detail' => $detail ];
+    }
+
+    private static function describe_bytes( ?int $bytes ): string {
+        if ( null === $bytes ) {
+            return 'نامشخص';
+        }
+        if ( 0 === $bytes ) {
+            return 'بی‌سقف';
+        }
+
+        return self::format_bytes( $bytes );
+    }
+
+    /**
+     * Parse a PHP ini size string (e.g. "8M", "128M", "2G", "0") to bytes.
+     * Returns 0 for an explicit unlimited value ("0", "0M") and null when the
+     * value is empty or unparseable (unknown — never silently "unlimited").
+     */
+    private static function parse_bytes( string $value ): ?int {
+        $v = trim( $value );
+        if ( '' === $v ) {
+            return null;
+        }
+        if ( '0' === $v ) {
+            return 0;
+        }
+        $unit = strtolower( substr( $v, -1 ) );
+        $num  = $v;
+        $mult = 1;
+        if ( ctype_alpha( $unit ) ) {
+            $num  = trim( substr( $v, 0, -1 ) );
+            $mult = match ( $unit ) {
+                'g' => 1024 * 1024 * 1024,
+                'm' => 1024 * 1024,
+                'k' => 1024,
+                default => 1,
+            };
+            if ( ! is_numeric( $num ) ) {
+                return null;
+            }
+        }
+        if ( ! is_numeric( $num ) ) {
+            return null;
+        }
+        $bytes = (int) ( (float) $num * $mult );
+
+        return $bytes < 0 ? null : $bytes;
+    }
+
+    private static function format_bytes( int $bytes ): string {
+        if ( $bytes >= 1024 * 1024 * 1024 ) {
+            return round( $bytes / (1024 * 1024 * 1024), 1 ) . 'G';
+        }
+        if ( $bytes >= 1024 * 1024 ) {
+            return round( $bytes / (1024 * 1024), 1 ) . 'M';
+        }
+        if ( $bytes >= 1024 ) {
+            return round( $bytes / 1024, 1 ) . 'K';
+        }
+        return (string) $bytes . 'B';
     }
 
     /**
