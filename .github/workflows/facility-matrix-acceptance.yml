@@ -137,7 +137,10 @@ jobs:
           sudo a2enmod rewrite >/dev/null
           sudo mkdir -p "$WP_DIR/wp-content"
           sudo touch "$WP_DIR/wp-content/debug.log"
-          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          # Ownership stays with the runner user: this lane installs the ZIP with
+          # wp-cli (the first-practice lane installs through the browser as
+          # www-data instead). wp-content stays world-writable so Apache/PHP can
+          # write uploads and debug.log.
           sudo chmod 777 "$WP_DIR/wp-content"
           sudo chmod 666 "$WP_DIR/wp-content/debug.log"
           for INI in /etc/php/*/apache2/php.ini; do
@@ -169,6 +172,9 @@ jobs:
           ZIP=$(ls "$PWD"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
           wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/mtx/plugin-install.log
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          # Apache (www-data) must be able to read the installed tree and write logs.
+          sudo chmod -R a+rX "$WP_DIR/wp-content"
+          sudo chmod 666 "$WP_DIR/wp-content/debug.log"
 
       - name: Verify schema + no PHP fatal
         run: |
