@@ -1503,3 +1503,12 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - Phase 1 (decoupling of `RestBase`/`ClinicalService`/`ReportService`/`ExportService`/portal gates from WordPress-global capabilities) remains **attempted and reverted** on the earlier evidence (16 failures + 3 errors in pinned security contracts). It is not re-attempted in this slice; see `docs/security/business-access-decoupling-audit.md`.
 - MariaDB 11.8: diagnosis only (migration 0027 engine gate rejects `11.8.x`); no 11.8 execution was possible here — documented as NOT RUN with a reproducible test.
 - Infrastructure note: `Pilot/Staging Readiness Gate` release-artifact job failed at `composer audit` with `https://packagist.org/api/security-advisories/ … HTTP/2 502`; this is an upstream registry outage, not a code failure.
+
+## [2026-10-21 19:00–21:10 UTC] — 12-facility frontend onboarding matrix (Draft PR #259)
+
+- **Receipt:** base `048b1ba4aff8839ff7067de5d1cc7e4932e8d237`, verified equal to local `main`; branch clean; no open PRs.
+- **Gap found by inspection:** real-browser evidence existed only for doctor_practice, general_clinic, hospital and the medical-building structure; the other nine approved types had service-level Integration coverage only. "All 12 types onboard" was an inference.
+- **Delivered:** `bin/rwp-facility-matrix-journey.py` (all 12 types + medical-building structure, frontend portal only, Subscribers only), `facility-matrix-acceptance.yml` (MySQL 8 + MariaDB 11.4.13, official ZIP), one product fix (dead-end designation form with an empty Clinic select) + regression test, and `docs/facility-onboarding-matrix.md`.
+- **Evidence-integrity:** submission outcomes are classified from the notice element (`is-success` / `is-error`), never by Persian keyword matching — «ثبت نشد» contains «ثبت».
+- **Arena limitations (reported, not substituted):** no PHP, MySQL/MariaDB, Apache, Chromium or Composer in this sandbox; Actions log blobs were unreachable (`EOF`), so CI was diagnosed from job/step names. Local checks: php-parser syntax, `py_compile`, BrowserContext isolation guard, 27 MariaDB-report Python tests, 75 coexistence tests, YAML parse.
+- **Honest CI state at timebox end:** WPCS/PHPStan/Unit/Tenant-Tripwire green at `cd35e44`; WPCS/PHPStan green at `e4c4109`; matrix, first-practice and Integration queued. Three earlier matrix runs were red **because of this slice's own fixture gate** (migration `0001` seeds a default Clinic) — fixed, not concealed. No per-type browser PASS is claimed.

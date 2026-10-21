@@ -561,19 +561,29 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php endif; ?>
 
 						<h3>تعیین مدیر درمانگاه (صریح)</h3>
-						<?php $cpms_mp_form_open( 'org_facility_designate', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
-							<p class="cpms-mgmt-field">
-								<label for="cpms-mgmt-desig-clinic">درمانگاه</label>
-								<select id="cpms-mgmt-desig-clinic" name="clinic_key">
-									<?php foreach ( (array) $cpms_mp_facility['clinics'] as $cpms_mp_plan_clinic ) : ?>
-										<option value="<?php echo esc_attr( (string) $cpms_mp_plan_clinic['key'] ); ?>"><?php echo esc_html( (string) ( $cpms_mp_plan_clinic['name'] ?? $cpms_mp_plan_clinic['key'] ) ); ?></option>
-									<?php endforeach; ?>
-								</select>
-							</p>
-							<?php $cpms_mp_field( 'identifier', 'نام کاربری یا ایمیل مدیر (Subscriber موجود)', '', true ); ?>
-							<p class="cpms-mgmt-meta">کاربر با همین شناسه در سرور پیدا می‌شود؛ این گام هیچ حساب تازه‌ای نمی‌سازد و هیچ نقش وردپرسی را تغییر نمی‌دهد.</p>
-							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">تعیین مدیر</button>
-						</form>
+						<?php if ( array() === (array) $cpms_mp_facility['clinics'] ) : ?>
+							<?php
+							// A designation form with an empty Clinic select is a dead end: the
+							// browser would submit an empty clinic_key and the server would have
+							// to refuse it. Show the actual prerequisite instead of an
+							// unsubmittable form (labels/validation stay honest).
+							?>
+							<p class="cpms-mgmt-empty" data-cpms-designation-prerequisite="1">برای تعیین مدیر، ابتدا دست‌کم یک درمانگاه (معلق) در همین برنامه ایجاد کنید؛ فهرست انتخاب درمانگاه خالی است و هیچ مدیری بدون درمانگاه مشخص تعیین نمی‌شود.</p>
+						<?php else : ?>
+							<?php $cpms_mp_form_open( 'org_facility_designate', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
+								<p class="cpms-mgmt-field">
+									<label for="cpms-mgmt-desig-clinic">درمانگاه</label>
+									<select id="cpms-mgmt-desig-clinic" name="clinic_key">
+										<?php foreach ( (array) $cpms_mp_facility['clinics'] as $cpms_mp_plan_clinic ) : ?>
+											<option value="<?php echo esc_attr( (string) $cpms_mp_plan_clinic['key'] ); ?>"><?php echo esc_html( (string) ( $cpms_mp_plan_clinic['name'] ?? $cpms_mp_plan_clinic['key'] ) ); ?></option>
+										<?php endforeach; ?>
+									</select>
+								</p>
+								<?php $cpms_mp_field( 'identifier', 'نام کاربری یا ایمیل مدیر (Subscriber موجود)', '', true ); ?>
+								<p class="cpms-mgmt-meta">کاربر با همین شناسه در سرور پیدا می‌شود؛ این گام هیچ حساب تازه‌ای نمی‌سازد و هیچ نقش وردپرسی را تغییر نمی‌دهد.</p>
+								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">تعیین مدیر</button>
+							</form>
+						<?php endif; ?>
 
 						<?php $cpms_mp_facility_review = $cpms_mp_service->review_facility_setup( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
 						<h3>بازبینی و فعال‌سازی اتمیک</h3>

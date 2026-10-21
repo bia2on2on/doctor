@@ -152,6 +152,43 @@ final class DelegatedClinicCompletionTest extends WP_UnitTestCase
         self::assertSame('active', $this->clinicStatus($clinicId));
     }
 
+    public function testDesignationFormIsNotOfferedBeforeAPlanClinicExists(): void
+    {
+        $portal = App::management_portal_service();
+        $org    = $this->freshOrg('DCC designation prerequisite');
+
+        $portal->start_facility_setup($this->orgActor, $org, 'general_clinic', 'multi_doctor', 'درمانگاه آغاز');
+
+        // A designation form whose Clinic select has no options is a dead end:
+        // it can only be refused after submit. The portal must state the real
+        // prerequisite instead of rendering an unsubmittable form.
+        $html = $this->renderPortal($this->orgActor, ['cpms-org' => $org]);
+        self::assertStringNotContainsString(
+            'value="org_facility_designate"',
+            $html,
+            'no designation form may be rendered while the plan has no Clinic'
+        );
+        self::assertStringContainsString(
+            'data-cpms-designation-prerequisite="1"',
+            $html,
+            'the real prerequisite is disclosed in Persian'
+        );
+
+        // As soon as a plan Clinic exists, the explicit designation form returns.
+        $portal->add_facility_site($this->orgActor, $org, 'ساختمان اصلی', 'تهران');
+        $plan = $portal->facility_plan($this->orgActor, $org);
+        $site = (string) $plan['sites'][0]['key'];
+        $portal->add_facility_clinic($this->orgActor, $org, 'درمانگاه اصلی', $site, self::TZ);
+
+        $html = $this->renderPortal($this->orgActor, ['cpms-org' => $org]);
+        self::assertStringContainsString('value="org_facility_designate"', $html, 'designation form returns with a real Clinic');
+        self::assertStringContainsString(
+            'درمانگاه اصلی',
+            $this->formBlock($html, 'org_facility_designate'),
+            'the explicit Clinic selector lists the real plan Clinic'
+        );
+    }
+
     public function testCrossClinicSubmissionsAreUniformlyRefusedWithoutDisclosure(): void
     {
         $portal = App::management_portal_service();
