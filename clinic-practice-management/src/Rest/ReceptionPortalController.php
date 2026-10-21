@@ -394,20 +394,34 @@ final class ReceptionPortalController extends RestBase {
 		if ( $nonce instanceof WP_Error ) {
 			return $nonce;
 		}
-		foreach ( $caps as $cap ) {
-			$allowed = $this->requireCap( $cap );
-			if ( $allowed instanceof WP_Error ) {
-				return $allowed;
-			}
-		}
-
+		// WordPress-independent business access: the required capabilities are
+		// evaluated per Clinic by authorize_and_bind_reception_scope() below
+		// (DENY > GRANT > preset, explicit Clinic first). The WordPress business
+		// role and the WordPress-global capability are therefore not entry
+		// requirements any more; a Subscriber with a durable secretary membership
+		// uses this same boundary and nothing widens, because the scoped
+		// authorization and the trusted-scope establishment still run.
 		$user = wp_get_current_user();
 		if ( ! ( $user instanceof \WP_User ) || (int) $user->ID <= 0 ) {
 			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
 		}
-		$roles = (array) ( $user->roles ?? [] );
-		if ( ! in_array( RolesAndCapabilities::ROLE_SECRETARY, $roles, true ) ) {
-			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+
+		// Deny first, select later: when the request carries no explicit Clinic the
+		// trusted scope cannot exist yet, so the durable Reception authority of
+		// the actor decides the envelope. An actor with NO Reception authority in
+		// any Clinic receives the capability denial (403 — the established
+		// contract); only an actor who holds Reception authority somewhere is
+		// asked for the explicit Clinic (400 ambiguity). A tenant selector is
+		// never requested from someone who could not use it.
+		$clinic_selector = $r->get_header( 'X-CPMS-Clinic-Id' );
+		if ( null === $clinic_selector || '' === trim( (string) $clinic_selector ) ) {
+			$clinic_selector = $r->get_param( 'clinic_id' );
+		}
+		if ( null === $clinic_selector || '' === trim( (string) $clinic_selector ) || 0 === (int) $clinic_selector ) {
+			$pre_denial = $this->reception_role_holds( (int) $user->ID, true );
+			if ( $pre_denial instanceof WP_Error ) {
+				return $pre_denial;
+			}
 		}
 
 		$route      = (string) $r->get_route();
@@ -422,14 +436,76 @@ final class ReceptionPortalController extends RestBase {
 		// boundary still requires an explicit operational Location selector.
 		$clinic_only = false;
 
-		return RestClinicContext::authorize_and_bind_reception_scope(
+		$bound = RestClinicContext::authorize_and_bind_reception_scope(
 			$r,
 			(int) $user->ID,
 			$caps,
 			$is_context,
 			$clinic_only
 		);
+		if ( $bound instanceof WP_Error ) {
+			return $bound;
+		}
+
+		return $this->reception_role_holds( (int) $user->ID, $is_context );
 	}
+
+	/**
+	 * Reception stays a SECRETARY surface: separation of duties is product data,
+	 * not a WordPress artifact. The durable Clinic membership of the explicitly
+	 * established trusted Clinic must carry the secretary role — a WordPress
+	 * Subscriber with that membership is accepted (WordPress-independent business
+	 * access), while a doctor/manager membership still fails closed exactly as the
+	 * existing reception contracts require. Custom role keys were never accepted
+	 * on this surface before and are still not.
+	 *
+	 * The unscoped context route has no established Clinic yet, so it requires at
+	 * least one ACTIVE secretary membership of the actor.
+	 */
+	// phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+	private function reception_role_holds( int $user_id, bool $unscoped_context ): bool|WP_Error {
+		if ( $user_id <= 0 ) {
+			return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید' );
+		}
+		$scope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+		if ( $scope !== null && (int) $scope->clinicId > 0 ) {
+			$membership = $this->memberships->find_active( (int) $scope->clinicId, $user_id );
+			if ( $membership !== null && RolesAndCapabilities::ROLE_SECRETARY === (string) ( $membership['role_key'] ?? '' ) ) {
+				return true;
+			}
+
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		if ( ! $unscoped_context ) {
+			return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+		}
+		foreach ( $this->memberships->active_for_user( $user_id ) as $membership ) {
+			if ( RolesAndCapabilities::ROLE_SECRETARY !== (string) ( $membership['role_key'] ?? '' ) ) {
+				continue;
+			}
+			$clinic_id = (int) ( $membership['clinic_id'] ?? 0 );
+			if ( $clinic_id <= 0 || ! $this->reception_clinic_operational( $clinic_id ) ) {
+				continue;
+			}
+			// An explicit DENY on any required Reception capability means this
+			// actor has no Reception authority at all: denied — never asked for a
+			// Clinic selector.
+			$effective = true;
+			foreach ( [ RolesAndCapabilities::QUEUE_READ, RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE ] as $cap ) {
+				if ( ! App::authorization_service()->can( $user_id, $clinic_id, $cap ) ) {
+					$effective = false;
+					break;
+				}
+			}
+			if ( $effective ) {
+				return true;
+			}
+		}
+
+		return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+	}
+	// phpcs:enable
+
 
 	/**
 	 * Reception Clinic patient search (read-only): delegates to the ESTABLISHED
@@ -493,8 +569,25 @@ final class ReceptionPortalController extends RestBase {
 		$clinics     = [];
 		foreach ( $memberships as $m ) {
 			$clinic_id = (int) $m['clinic_id'];
+			// Same authoritative eligibility as every operational Reception
+			// request: a durable SECRETARY membership of the Clinic (separation of
+			// duties), an ACTIVE Organization and an active Clinic, and the three
+			// scoped Reception capabilities — each evaluated by the scoped engine,
+			// so an explicit DENY removes the Clinic from the selector.
+			if ( RolesAndCapabilities::ROLE_SECRETARY !== (string) ( $m['role_key'] ?? '' ) ) {
+				continue;
+			}
+			if ( ! $this->reception_clinic_operational( $clinic_id ) ) {
+				continue;
+			}
 			try {
-				$can_read_queue = App::authorization_service()->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_READ );
+				$can_read_queue = true;
+				foreach ( [ RolesAndCapabilities::QUEUE_READ, RolesAndCapabilities::QUEUE_CHECKIN, RolesAndCapabilities::QUEUE_ADVANCE ] as $cap ) {
+					if ( ! App::authorization_service()->can( $user_id, $clinic_id, $cap ) ) {
+						$can_read_queue = false;
+						break;
+					}
+				}
 			} catch ( \Throwable $e ) {
 				unset( $e );
 				$can_read_queue = false;
@@ -1855,6 +1948,31 @@ final class ReceptionPortalController extends RestBase {
 			'location_name' => (string) $by_id[ $explicit ]['name'],
 			'timezone'      => (string) ( $by_id[ $explicit ]['timezone'] ?? '' ),
 		];
+	}
+
+	/**
+	 * Lifecycle eligibility shared by the Clinic selector and the operational
+	 * requests: the Organization must be active and the Clinic must not be
+	 * suspended. Membership/capability are evaluated separately by the scoped
+	 * engine. An unreadable row fails closed.
+	 */
+	private function reception_clinic_operational( int $clinic_id ): bool {
+		if ( $clinic_id <= 0 ) {
+			return false;
+		}
+		$row = App::db()->fetchRow(
+			'SELECT c.status AS clinic_status, o.status AS organization_status'
+			. ' FROM ' . App::db()->table( 'cpms_clinics' ) . ' c'
+			. ' INNER JOIN ' . App::db()->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+			. ' WHERE c.id = %d LIMIT 1',
+			[ $clinic_id ]
+		);
+		if ( null === $row ) {
+			return false;
+		}
+
+		return 'active' === (string) ( $row['organization_status'] ?? '' )
+			&& 'active' === (string) ( $row['clinic_status'] ?? '' );
 	}
 
 	/**

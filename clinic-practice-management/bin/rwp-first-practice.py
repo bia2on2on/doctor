@@ -720,7 +720,7 @@ def run_hospital_facility_journey(page, tag, org, fac):
     check(f"{tag}.hospital.review_two_clinics", page.locator("[data-cpms-review-clinic]").count() == 2, "both Clinics reviewed")
     check(f"{tag}.hospital.review_admin_entry_reported",
           page.locator("[data-cpms-review-clinic] [data-cpms-facility-entry-missing]").count() == 2,
-          "each Clinic reports which members still lack the WordPress role that opens their CPMS screens")
+          "each Clinic reports which active members still lack CPMS frontend entry (membership + scoped capability)")
     page.check('input[name="confirm"]')
     check(f"{tag}.hospital.activate", facility_submit(page, tag, "activate", "facility-hospital-activated") == "ok",
           "explicit activation after review")
@@ -889,10 +889,14 @@ def run_building_facility_journey(page, tag, org, fac):
     check(f"{tag}.building.review_ready", page.locator('[data-cpms-facility-review="ready"]').count() == 1, "review ready")
     check(f"{tag}.building.no_clinic_access_notice", page.locator("[data-cpms-review-no-clinic-access]").count() == 2,
           "no silent Clinic access for the Organization Manager")
-    check(f"{tag}.building.admin_entry_gap_reported",
-          page.locator('[data-cpms-review-clinic] [data-cpms-facility-entry-missing="1"]').count() == 2
-          and page.locator('[data-cpms-facility-entry-guidance="2"]').count() == 1,
-          "each independent Clinic's manager is reported without CPMS admin entry; no WordPress role was changed")
+    # CPMS entry is CPMS data only (ACTIVE membership + scoped capability), so the
+    # designated managers of both independent Clinics are entry-ready even though no
+    # WordPress role was changed and no guidance gap is reported.
+    check(f"{tag}.building.cpms_entry_from_membership",
+          page.locator('[data-cpms-review-clinic] [data-cpms-facility-entry-missing="1"]').count() == 0
+          and page.locator('[data-cpms-review-clinic] [data-cpms-facility-entry-missing="0"]').count() == 2
+          and page.locator('[data-cpms-facility-entry-guidance]').count() == 0,
+          "each independent Clinic's designated manager is reported CPMS-entry ready from the Clinic membership alone; no WordPress role was changed")
     page.check('input[name="confirm"]')
     check(f"{tag}.building.activate", facility_submit(page, tag, "activate", "facility-building-activated") == "ok", "activation")
 
@@ -1747,10 +1751,14 @@ with sync_playwright() as p:
                   f"own_clinics={len(delegated_own.split(','))} other_clinics={len(delegated_other.split(','))} "
                   f"wordpress_roles_before={delegated.get('roles_before', '')} (the journey added no WordPress role)")
             goto_admin(fac_page, "facility-org-manager", facility_url(building_org, "review"), "facility-building-review-entry")
-            check("facility-org-manager.building.admin_entry_after_wordpress_role",
+            # The WordPress role added outside CPMS must not change the entry report:
+            # both Clinics keep reporting their membership-derived (ready) state, and
+            # the other Clinic still refuses this manager (checked below).
+            check("facility-org-manager.building.cpms_entry_unaffected_by_wordpress_role",
                   fac_page.locator(f'[data-cpms-review-clinic="{delegated_own}"] [data-cpms-facility-entry-missing="0"]').count() == 1
-                  and fac_page.locator(f'[data-cpms-review-clinic="{delegated_other}"] [data-cpms-facility-entry-missing="1"]').count() == 1,
-                  "only the Clinic whose manager received the WordPress role is ready for admin entry")
+                  and fac_page.locator(f'[data-cpms-review-clinic="{delegated_other}"] [data-cpms-facility-entry-missing="0"]').count() == 1
+                  and fac_page.locator('[data-cpms-facility-entry-guidance]').count() == 0,
+                  "a WordPress role adds no CPMS entry: each Clinic keeps its membership-derived entry state")
             goto_admin(fac_page, "facility-org-manager", f"{FACILITY_PAGE}&organization_id=2147483647", "facility-forged-org")
             check("facility.forged_organization_denied",
                   fac_page.locator('[data-cpms-facility-setup="org-denied"]').count() == 1

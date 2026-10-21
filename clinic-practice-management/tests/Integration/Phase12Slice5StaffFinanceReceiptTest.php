@@ -396,11 +396,11 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         $doctorRead = $this->dispatch('GET', sprintf(self::RECEIPT, $visit), [], $this->scopeHeaders($clinic, $location));
         self::assertSame(200, $doctorRead->get_status(), 'the doctor keeps the existing invoice-read boundary — ' . $this->errorCode($doctorRead));
 
-        // 4) An accountant has the existing invoice-read authority but is NOT a
-        //    Finance module reader (no cpms_queue_read): this route is exactly
-        //    the existing D12b/D17 read class, so parity holds and the module
-        //    UI boundary stays unchanged.
-        self::assertFalse(StaffPortalShell::finance_module_eligible($accountant), 'accountant stays outside the Finance module UI boundary');
+        // 4) An accountant has the existing invoice-read authority and, since
+        //    the owner delivery of 2026-10-20, IS a Finance module reader (the
+        //    board no longer requires queue read). This route is the existing
+        //    D12b/D17 read class, so parity holds.
+        self::assertTrue(StaffPortalShell::finance_module_eligible($accountant), 'the accountant preset is a Finance module reader');
         self::assertTrue(user_can($accountant, RolesAndCapabilities::INVOICE_READ), 'accountant holds the existing invoice-read capability');
         wp_set_current_user($accountant);
         $accountantRead = $this->dispatch('GET', sprintf(self::RECEIPT, $visit), [], $this->scopeHeaders($clinic, $location));

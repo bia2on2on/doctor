@@ -2,6 +2,36 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — Business access: frontend Management Portal, Clinic Manager and facility verticals (2026-10-20, Draft)
+
+### Added
+- **Clinic Manager verticals** in the dedicated frontend Management Portal: staff enrollment (link an existing account by e-mail/login or provision a plain Subscriber — the only WordPress role that path can assign), membership activation/suspension, explicit Location scope assignment (ACTIVE Locations of the same Clinic only), explicit capability GRANT/DENY/clear bounded by the actor's own authority, clinician registration (optional link to an ACTIVE member, 1:1 account link) and weekly schedule creation through the published `ScheduleService` contract.
+- **Facility-aware onboarding in the frontend**: the existing `FacilitySetupService` (same service the wp-admin wizard uses) is now reachable from the portal for Organization Managers — plan start over all 12 facility types, hospital outpatient-only acknowledgment (enforced before any Clinic is created), sites, held Clinics, rooms, explicit Clinic-manager designation, consolidated review and atomic activation. No wp-admin gate was lowered; Clinic-scoped facility steps still require an explicit Clinic membership + `cpms_config`.
+- `App::facility_setup_service()` accessor (single shared instance of the published service).
+- `docs/operations/2026-10-20-mariadb-11.8-activation-diagnosis.md` — evidence-based diagnosis of the MariaDB 11.8 activation abort (migration 0027 engine gate) with a reproducible isolated-installer test; **11.8 execution NOT RUN**.
+
+### Changed
+- Portal staff rows now expose membership id, Location scope, overrides and the delegation vocabulary they may grant.
+
+### Security
+- No new authority source. Enrollment/role/scope/capability writes are Clinic-scoped and re-authorized inside the domain services; DENY still outranks GRANT and presets; a suspended membership remains a durable deny; a foreign membership/Location identifier is only a selector and never grants access; a WordPress Administrator alone still gains nothing.
+
+## [Unreleased] — Business access: dedicated frontend Management Portal (2026-10-20, Draft)
+
+### Added
+- Dedicated **Management Portal** (`cpms-management-portal`): a plugin-owned published Page rendered by a plugin-owned standalone template with a frontend request boundary (`src/Frontend/ManagementPortalShell.php`, `src/Frontend/ManagementPortalController.php`, `src/Application/Management/ManagementPortalService.php`, `templates/management-portal-shell.php`). Forms post to the portal's own URL (nonce + Post/Redirect/Get) and sign-in uses WordPress core authentication (`wp_signon`); no `admin-post.php` action, no rewrite framework, no second credential store, and no link to the WordPress admin back office.
+- Organization Manager workflows: Organization overview (Clinics, lifecycle status, active Location count, Clinic-manager designations), Clinic creation, Clinic profile update, Clinic suspend/reactivate, explicit Clinic-manager designation, Organization-manager grant/revoke — each capability resolved separately with Organization membership DENY > GRANT > preset.
+- Clinic Manager workflows: Clinic profile/settings, Location list/create/activate, staff membership listing and role assignment (built-in CPMS membership roles plus delegable Clinic-local custom roles), clinician directory, and reports/finance links gated by their own capabilities. Role assignment changes only the durable membership `role_key`; WordPress roles are neither read nor assignable.
+- `MembershipRepository::list_for_clinic()` — durable, Clinic-scoped membership listing for the portal.
+- `tests/Integration/ManagementPortalTest.php` — Subscriber-based Organization and Clinic manager journeys, explicit DENY, suspended Organization membership, forged/cross-Clinic/cross-Organization identifiers, Administrator-alone denial, and source assertions that the portal never targets the admin back office.
+- `docs/decisions/2026-10-20-business-access-architecture-frontend-portals.md` and `docs/security/business-access-decoupling-audit.md`.
+
+### Changed (attempted, then reverted on evidence)
+- An initial Phase 1 decoupling batch changed `RestBase::requireCap()`, `ClinicalService`/`ReportService`/`ExportService` capability checks, `DoctorPortalShell::isDoctorUser()` and the Staff Portal doctor/reception/reports eligibility gates to prefer Clinic-scoped authority over WordPress-global capabilities/roles. Exact-head Integration then reported **16 failures + 3 errors** in existing security-contract suites (e.g. `ClinicalFilesScopedAuthorizationTest` expected `CLINIC_NOT_FOUND` and received `CLINIC_PERMISSION_DENIED`; `PatientAdminTest::testRestSearchRequiresPatientRead`, `ReportsAuthzTest`, `ReportsExportClinicAuthorizationTest`, `Phase14StaffPortalReports*`, `ExportClinicIsolationTest`, `RestTrustedClinicContextTest`, `Phase1BPrescriptionConcurrencyTest`, `Phase2JobScopeRedFoundationTest`). Those changes were **reverted to the base contracts** rather than weakening the tests; the decoupling remains an explicit, documented gap (audit §2.3) and is not claimed as delivered.
+
+### Security
+- The delivered portal adds no authority of its own: Organization authority stays Organization-scoped (never clinical/financial/PHI), Clinic authority stays `AuthorizationService`-scoped (ACTIVE membership + DENY > GRANT > preset + object ownership), browser identifiers are selectors only, and a WordPress Administrator alone gains nothing. Precedence, tenant hierarchy, explicit selection, hash-chained audit and licence/suspension policies are untouched. No schema/migration change.
+
 ## [Unreleased] — Adaptive facility-type onboarding slice (2026-10-18, Draft)
 
 ### Added

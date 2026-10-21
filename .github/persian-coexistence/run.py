@@ -93,7 +93,7 @@ GROUPS = {
     "persian-woocommerce-diagnosis": {
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce": "10.0.5",
+            "persian-woocommerce": "10.0.6",
         },
         "subject": "persian-woocommerce",
         "root": "coexistence-persian-woocommerce-diagnosis",
@@ -106,13 +106,14 @@ GROUPS = {
         },
     },
     "persian-woocommerce-sms": {
-        # Official WordPress.org Plugins API verified 2026-10-14: stable moved
-        # 7.3.0 -> 7.3.1 (last_updated 07:37 GMT). Exact-version enforcement and
-        # API/ZIP identity checks are unchanged; older run evidence stays bound
-        # to the pins actually measured.
+        # Official WordPress.org Plugins API verified 2026-10-20: stable moved
+        # 7.3.1 -> 7.3.2 (last_updated 2026-10-20, WordPressBugBounty mirror
+        # updated 2026-10-20; CI runner API also reports 7.3.2). Exact-version
+        # enforcement and API/ZIP identity checks are unchanged; older run
+        # evidence stays bound to the pins actually measured.
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.3.1",
+            "persian-woocommerce-sms": "7.3.2",
         },
         "subject": "persian-woocommerce-sms",
         "root": "coexistence-persian-woocommerce-sms",
@@ -126,18 +127,21 @@ GROUPS = {
     # third-party-baseline matrix. The group key, evidence root and artifact name
     # `combined-nineteen` remain the historical campaign identity so the Phase 18
     # all-19 evidence stays addressable and unrenamed under its original record.
-    # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.5 is
+    # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.6 is
     # temporarily excluded from this ACTIVE pin set only — 18 authoritative free
-    # pins remain. This quarantine is not a universal incompatibility declaration;
-    # the version keeps its independent persian-woocommerce-diagnosis lane (and its
-    # SMS pair), and the unchanged third-party-baseline subject matrix still pins
-    # and measures it individually. It may be re-evaluated in a separate action.
+    # pins remain (updated 2026-10-20: 10.0.5 -> 10.0.6, persian-woocommerce-sms
+    # 7.3.1 -> 7.3.2 per official WordPress.org Plugins API stable and
+    # WordPressBugBounty mirror 2026-10-20). This quarantine is not a universal
+    # incompatibility declaration; the version keeps its independent
+    # persian-woocommerce-diagnosis lane (and its SMS pair), and the unchanged
+    # third-party-baseline subject matrix still pins and measures it
+    # individually. It may be re-evaluated in a separate action.
     # WooCommerce precedes its Persian add-ons during activation; all packages
     # are still installed before any plugin is activated, and CF7 remains last.
     "combined-nineteen": {
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.3.1",
+            "persian-woocommerce-sms": "7.3.2",
             "litespeed-cache": "7.9.1",
             "wordpress-seo": "28.6",
             "seo-by-rank-math": "1.0.280",
@@ -160,7 +164,7 @@ GROUPS = {
         "artifact": "persian-coexistence-combined-nineteen",
         # Truthful active-set label; `nineteen` survives only as the historical
         # group/root/artifact identity of the campaign, not as a plugin count.
-        "title": "Persian combined compatibility scenario (18 active plugins; Persian WooCommerce 10.0.5 quarantined)",
+        "title": "Persian combined compatibility scenario (18 active plugins; Persian WooCommerce 10.0.6 quarantined)",
         "not_run": {
             "real SMS delivery": "NOT RUN — no live provider is configured and no successful provider delivery evidence exists; activation is not delivery evidence",
             "authored third-party configuration": "NOT RUN — plugin-specific forms, rules, custom fields, translations, roles, cron actions, security services and cache settings are not authored or weakened; default activation behaviour only",

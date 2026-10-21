@@ -188,36 +188,36 @@ final class Phase14StaffPortalReportsAvgWaitingRedTest extends WP_UnitTestCase
 
     public function testUserLackingReportReadIsNotAuthorizedForReportsSurface(): void
     {
-        $secretary = $this->makeMember(RolesAndCapabilities::ROLE_SECRETARY, 'cpms_secretary');
-        // Active Clinic membership whose preset WOULD grant report read, but the
-        // WordPress user holds no global cpms_report_read: membership alone is not access.
+        // Owner policy (WordPress-independent business access): the WordPress
+        // business role and the WP-global `cpms_report_read` capability are no
+        // longer entry requirements. A WordPress Subscriber whose durable Clinic
+        // membership grants the scoped capability IS authorized; an actor whose
+        // membership does not grant it (secretary), a suspended membership and a
+        // user without any membership all stay denied.
+        $secretary  = $this->makeMember(RolesAndCapabilities::ROLE_SECRETARY, 'cpms_secretary');
         $memberOnly = $this->makeMember('subscriber', 'cpms_manager');
 
-        // Delivered authorization truth (must be GREEN before the product assertions).
         self::assertFalse(get_userdata($secretary)->has_cap(RolesAndCapabilities::REPORT_READ), 'precondition: secretary lacks cpms_report_read');
         self::assertFalse(get_userdata($memberOnly)->has_cap(RolesAndCapabilities::REPORT_READ), 'precondition: member-only user lacks global cpms_report_read');
-        foreach ([$secretary, $memberOnly] as $actor) {
-            wp_set_current_user($actor);
-            $denied = $this->dispatch('GET', self::ROUTE, ['from' => self::DATE, 'to' => self::DATE]);
-            self::assertSame(403, $denied->get_status(), 'REST remains authoritative and denies the report to a user lacking cpms_report_read');
-        }
+
+        // Scoped denial: the membership does not grant the report capability.
+        wp_set_current_user($secretary);
+        $denied = $this->dispatch('GET', self::ROUTE, ['from' => self::DATE, 'to' => self::DATE]);
+        self::assertSame(403, $denied->get_status(), 'REST remains authoritative and denies the report where the membership lacks cpms_report_read');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($denied));
-
-        // Fail-closed contract. It must hold whether or not a reports module is
-        // registered (it must NOT depend on module registration/visibility for a
-        // user who lacks the capability), so nothing here asserts registration.
-        foreach ([$secretary, $memberOnly] as $actor) {
-            self::assertFalse(StaffPortalShell::module_eligible(self::MODULE, $actor), 'user lacking cpms_report_read is not eligible for the reports surface');
-            self::assertNotContains(self::MODULE, array_column(StaffPortalShell::eligible_modules($actor), 'id'), 'the reports surface is not offered');
-            self::assertNotSame(self::MODULE, StaffPortalShell::select_module($actor), 'a raw cpms-module selector never selects an ineligible module');
-        }
-
-        // The forced selector renders no reporting markup for an actor with no eligible module at all.
-        $html = $this->renderPortal($memberOnly, self::MODULE);
-        self::assertStringContainsString('data-role="portal-access-denied"', $html, 'ineligible user receives the staff access notice');
-        self::assertStringNotContainsString('data-cpms-staff-module="reports"', $html);
-        self::assertStringNotContainsString('data-role="reports-avg-waiting-form"', $html);
+        self::assertFalse(StaffPortalShell::module_eligible(self::MODULE, $secretary), 'a membership without cpms_report_read is not eligible for the reports surface');
+        self::assertNotContains(self::MODULE, array_column(StaffPortalShell::eligible_modules($secretary), 'id'), 'the reports surface is not offered');
+        self::assertNotSame(self::MODULE, StaffPortalShell::select_module($secretary), 'a raw cpms-module selector never selects an ineligible module');
+        $html = $this->renderPortal($secretary, self::MODULE);
+        self::assertStringNotContainsString('data-role="reports-avg-waiting-form"', $html, 'no report surface for a membership without cpms_report_read');
         self::assertStringNotContainsString('reports/avg_waiting', str_replace('\\/', '/', $html), 'no report route/nonce payload for an unauthorized visitor');
+
+        // Scoped allow: the very same WordPress Subscriber role, but the durable
+        // manager membership grants cpms_report_read in this Clinic.
+        wp_set_current_user($memberOnly);
+        $allowed = $this->dispatch('GET', self::ROUTE, ['from' => self::DATE, 'to' => self::DATE]);
+        self::assertSame(200, $allowed->get_status(), 'a Subscriber with a membership that grants cpms_report_read is authorized');
+        self::assertTrue(StaffPortalShell::module_eligible(self::MODULE, $memberOnly), 'the scoped capability makes the reports surface eligible');
     }
 
     // ============ fixtures / helpers ============

@@ -67,8 +67,19 @@ final class ReportsClinicIsolationTest extends WP_UnitTestCase
         $membership = App::membership_service();
         $membership->create_membership($this->clinicA, $this->doctorUserId, 'cpms_doctor');
         $membership->create_membership($this->clinicB, $this->doctorUserId, 'cpms_doctor');
-        $membership->create_membership($this->clinicA, $this->accountantUserId, 'cpms_accountant');
-        $membership->create_membership($this->clinicB, $this->accountantUserId, 'cpms_accountant');
+        // Scope-correct fixture: capabilities the accountant preset lacks are
+        // granted on each MEMBERSHIP (never on the WordPress user, which would be
+        // a cross-Clinic bypass under the hardened contract).
+        $memA = $membership->create_membership($this->clinicA, $this->accountantUserId, 'cpms_accountant');
+        $memB = $membership->create_membership($this->clinicB, $this->accountantUserId, 'cpms_accountant');
+        foreach ([$memA, $memB] as $memId) {
+            foreach ([
+                \ClinicCore\Auth\RolesAndCapabilities::PATIENT_READ,
+                \ClinicCore\Auth\RolesAndCapabilities::MEDICAL_READ,
+            ] as $cap) {
+                $membership->set_capability((int) $memId, $cap, 'grant');
+            }
+        }
 
         // یک پروفایل پزشک — home clinic ستون است نه مرز مجوز.
         $this->clinicianId = $this->insertClinician($this->clinicA, $this->doctorUserId, 'Dr Dual');

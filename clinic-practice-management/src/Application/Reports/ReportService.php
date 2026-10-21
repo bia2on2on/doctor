@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Reports;
 
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -783,8 +784,12 @@ final class ReportService
      * @param list<string> $caps
      * @return list<string>
      */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,PEAR.Functions.FunctionCallSignature.Indent -- legacy host API; security, SQL, i18n and escaping sniffs stay active
     private function missingCaps(int $actorUserId, array $caps): array
     {
+        $scope = ScopeContext::tryGet();
+        $clinic_id = ( $scope !== null && (int) $scope->clinicId > 0 ) ? (int) $scope->clinicId : 0;
+
         $user = get_userdata($actorUserId);
         if ($user === false) {
             return $caps; // بدون کاربر → همه مفقود (403)
@@ -792,6 +797,20 @@ final class ReportService
 
         $missing = [];
         foreach ($caps as $cap) {
+            // Report-specific capabilities are decided by the SAME scoped engine
+            // as the route gate: an ACTIVE membership is final (grant or deny),
+            // and only actors with no membership in this Clinic fall back to the
+            // legacy WordPress capability.
+            if ( $clinic_id > 0 ) {
+                $decision = App::authorization_service()->scoped_decision( $actorUserId, $clinic_id, $cap );
+                if ( true === $decision ) {
+                    continue;
+                }
+                if ( false === $decision ) {
+                    $missing[] = $cap;
+                    continue;
+                }
+            }
             if (!$user->has_cap($cap)) {
                 $missing[] = $cap;
             }
@@ -799,9 +818,38 @@ final class ReportService
 
         return $missing;
     }
+    // phpcs:enable
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $actorUserId, string $cap): void
     {
+        // WordPress-independent business access, scoped-first and FINAL.
+        //  - an ACTIVE membership that effectively grants `$cap` ⇒ allowed;
+        //  - an ACTIVE membership that does NOT grant it ⇒ denied, even when a
+        //    WordPress-global capability exists (explicit DENY outranks it and
+        //    a global `has_cap()` can never bypass the scoped engine);
+        //  - no ACTIVE membership at all ⇒ the legacy WordPress capability path,
+        //    kept only for actors the scoped engine does not govern.
+        // The single-Clinic system resolution is never used to infer a scope.
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && $scope->clinicId > 0 && $actorUserId > 0 ) {
+            $decision = App::authorization_service()->scoped_decision(
+                $actorUserId,
+                (int) $scope->clinicId,
+                $cap
+            );
+            if ( true === $decision ) {
+                return;
+            }
+            if ( false === $decision ) {
+                throw ReportException::of(
+                    'CLINIC_PERMISSION_DENIED',
+                    'دسترسی لازم برای گزارش‌ها را ندارید',
+                    403,
+                    ['capability' => $cap, 'reason' => 'scoped']
+                );
+            }
+        }
         $user = get_userdata($actorUserId);
         if ($user === false || !$user->has_cap($cap)) {
             throw ReportException::of(
@@ -812,6 +860,8 @@ final class ReportService
             );
         }
     }
+    // phpcs:enable
+
 
     // ================= Range / Helpers =================
 

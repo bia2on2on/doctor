@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Clinical;
 
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Auth\RolesAndCapabilities;
@@ -1362,9 +1363,28 @@ final class ClinicalService
             }
         }
 
-        // Role-Aware: نتایج بالینی فقط پزشک (ماتریس §4 — منشی فاقد Capهای خواندن بالینی)
-        $user = get_userdata($actorUserId);
-        $isDoctor = $user !== false && in_array(RolesAndCapabilities::ROLE_DOCTOR, (array) ($user->roles ?? []), true);
+        // Role-Aware: clinical results belong to the DOCTOR, and "doctor" is
+        // CPMS data (Round-4): the durable membership of the trusted Clinic with
+        // the doctor preset, or the clinician profile linked to this user. A
+        // WordPress role alone never classifies the actor, so a Subscriber doctor
+        // sees clinical results and a WP-role holder without a doctor membership
+        // does not.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- established camelCase host variables
+        $scope_for_role = ScopeContext::tryGet();
+        $role_clinic    = ( $scope_for_role !== null && (int) $scope_for_role->clinicId > 0 ) ? (int) $scope_for_role->clinicId : 0;
+        $isDoctor       = false;
+        if ( $role_clinic > 0 ) {
+            $doctor_membership = ( new MembershipRepository( $this->db ) )->find_active( $role_clinic, $actorUserId );
+            $isDoctor          = null !== $doctor_membership
+                && RolesAndCapabilities::ROLE_DOCTOR === (string) ( $doctor_membership['role_key'] ?? '' );
+            if ( ! $isDoctor ) {
+                $isDoctor = null !== $this->active_clinician_id_of_user( $actorUserId );
+            }
+        } else {
+            $user      = get_userdata( $actorUserId );
+            $isDoctor  = $user !== false && in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) ( $user->roles ?? [] ), true );
+        }
+        // phpcs:enable
 
         $results = ['patients' => [], 'notes' => [], 'prescriptions' => []];
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
@@ -1386,12 +1406,15 @@ final class ClinicalService
         // role: the WP role never supplies scoped clinical read (membership DENY
         // and Clinic-local presets win).
         if ($isDoctor && ($type === 'all' || $type === 'note') && $this->has_clinic_read($actorUserId, $trustedClinicId, RolesAndCapabilities::MEDICAL_READ)) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace.ArbitraryParenthesesSpacing,PEAR.Functions.FunctionCallSignature -- Existing legacy camelCase/spacing preserved in this branch.
-            $has_private_read = user_can( $actorUserId, RolesAndCapabilities::PRIVATE_NOTE_READ ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                && App::authorization_service()->can(
-                    $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                    $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-                    RolesAndCapabilities::PRIVATE_NOTE_READ
-                );
+            $has_private_read = App::authorization_service()->can( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            ) && App::authorization_service()->can(
+                $actorUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                $trustedClinicId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                RolesAndCapabilities::PRIVATE_NOTE_READ
+            );
 
             $own_clinician_id = $has_private_read ? $this->active_clinician_id_of_user( $actorUserId ) : null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
 
@@ -1505,16 +1528,17 @@ final class ClinicalService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Existing service naming convention.
     private function canReadPrivateFiles( int $actor_user_id, array $visit ): bool {
+        // Doctor identity is CPMS data, not a WordPress role: the durable
+        // clinician profile linked to this user owns the Visit. A Subscriber who
+        // is the Visit's clinician is the doctor; a privileged WP role without
+        // the clinician identity is not. The scoped capabilities below still
+        // decide (explicit DENY wins).
         $user = get_userdata( $actor_user_id );
-        if (
-            false === $user
-            || ! in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) $user->roles, true )
-        ) {
+        if ( false === $user ) {
             return false;
         }
 
         return $this->owns_visit( $actor_user_id, $visit )
-            && user_can( $actor_user_id, RolesAndCapabilities::FILE_READ )
             && $this->has_clinic_read(
                 $actor_user_id,
                 (int) $visit['clinic_id'],
@@ -1575,8 +1599,11 @@ final class ClinicalService
      * @param array<string, mixed> $visit Durable Visit row from the repository.
      */
     private function can_read_private_notes( int $actor_user_id, array $visit ): bool {
+        // Clinician identity (durable ownership) + scoped capability. The
+        // WordPress-global capability is no longer a precondition: a Subscriber
+        // doctor holds the same scoped authority, and an explicit scoped DENY
+        // still revokes it.
         return $this->owns_visit( $actor_user_id, $visit )
-            && user_can( $actor_user_id, RolesAndCapabilities::PRIVATE_NOTE_READ )
             && App::authorization_service()->can(
                 $actor_user_id,
                 (int) $visit['clinic_id'],
@@ -1715,24 +1742,79 @@ final class ClinicalService
         return (int) $patientId;
     }
 
+    /**
+     * Business-role/capability precondition (defence layer).
+     *
+     * Owner policy (WordPress-independent business access): a Clinic membership
+     * plus the effective scoped permission of the SAME explicitly established
+     * Clinic is sufficient authority. The WordPress-global capability/role stays
+     * a valid LEGACY path, but it is no longer required.
+     *
+     * The scoped path can never widen access:
+     *  - it is consulted only when the request already carries an EXPLICIT
+     *    trusted scope (ScopeContext::tryGet()); the single-Clinic system
+     *    resolution is never used to infer scope here;
+     *  - the membership must be ACTIVE in exactly that Clinic;
+     *  - the permission resolution remains DENY > GRANT > preset, and the
+     *    object-level scoped guards (authorizeScoped / ownership) still run.
+     */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+    private function scoped_membership( int $wp_user_id ): ?array
+    {
+        $scope = ScopeContext::tryGet();
+        if ($scope === null || $scope->clinicId <= 0 || $wp_user_id <= 0) {
+            return null;
+        }
+        $membership = (new MembershipRepository($this->db))->find_active($scope->clinicId, $wp_user_id);
+        if ($membership === null) {
+            return null;
+        }
+        return ['clinic_id' => (int) $scope->clinicId, 'membership' => $membership];
+    }
+    // phpcs:enable
+
+
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireCap(int $wpUserId, string $cap, string $scope): void
     {
-        if (!user_can($wpUserId, $cap)) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
+        // Scoped-first and FINAL: an ACTIVE membership of the trusted Clinic
+        // decides (grant or explicit DENY), so a WordPress-global capability can
+        // never override a scoped DENY. Only an actor with no membership in that
+        // Clinic keeps the legacy global path.
+        $scoped = $this->scoped_membership($wpUserId);
+        if ($scoped !== null) {
+            if (App::authorization_service()->can($wpUserId, (int) $scoped['clinic_id'], $cap)) {
+                return;
+            }
+            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope, 'reason' => 'scoped']);
         }
+        if (user_can($wpUserId, $cap)) {
+            return;
+        }
+        throw ClinicalException::of('CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['scope' => $scope]);
     }
+    // phpcs:enable
 
+
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireRole(int $wpUserId, string $role, string $action): void
     {
-        $user = get_userdata($wpUserId);
-        if ($user === false || $user->roles === []) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
-        }
         $expected = $role === 'doctor' ? RolesAndCapabilities::ROLE_DOCTOR : RolesAndCapabilities::ROLE_SECRETARY;
-        if (!in_array($expected, $user->roles, true)) {
-            throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
+        $user     = get_userdata($wpUserId);
+        if ($user !== false && $user->roles !== [] && in_array($expected, $user->roles, true)) {
+            return;
         }
+        // Scoped path: the durable membership of the explicitly established
+        // Clinic carries the required business role. A membership with another
+        // role keeps failing closed, exactly as before.
+        $scoped = $this->scoped_membership($wpUserId);
+        if ($scoped !== null && (string) ($scoped['membership']['role_key'] ?? '') === $expected) {
+            return;
+        }
+        throw ClinicalException::of('CLINIC_PERMISSION_DENIED', "فقط {$role} می‌تواند {$action} انجام دهد", 403);
     }
+    // phpcs:enable
+
 
     /**
      * @return array{wp_user_id: int, role: string}

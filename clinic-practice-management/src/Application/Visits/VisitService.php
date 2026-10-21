@@ -1382,23 +1382,63 @@ final class VisitService
     }
 
     /**
-     * نقش منطقی برای ماشین — از WP Role (نه فقط Capability).
+     * نقش منطقی برای ماشین.
+     *
+     * مسیر قدیمی: WP Role. مسیر سیاستِ «دسترسی کسب‌وکار مستقل از وردپرس»:
+     * یک Subscriber بدون نقش تجاری وردپرس، نقشِ منطقی را از **عضویت پایدارِ
+     * فعالِ همان Clinicِ صریحاً مستقرشده** می‌گیرد (`ScopeContext::tryGet()`).
+     * این مسیر عمداً فقط با Scope صریح کار می‌کند (نه «تنها Clinic» سیستمی) و
+     * نقشِ عضویت باید دقیقاً doctor/secretary باشد؛ در غیر این صورت null
+     * (fail closed) — همان رفتار قبلی برای کاربران بدون نقش.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function roleForUser(int $wpUserId): ?string
     {
-        $user = get_userdata($wpUserId);
-        if ( $user === false || $user->roles === [] ) {
+        // Scoped precedence (Round-4 hardening): when the request carries a
+        // trusted Clinic, the DURABLE MEMBERSHIP is the authority. A WordPress
+        // role may never outrank it — a WP "doctor" without a doctor membership
+        // is not a doctor here, and a WP "secretary" with a suspended membership
+        // is nobody. The WordPress role answers only when no scope exists.
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && (int) $scope->clinicId > 0 && $wpUserId > 0 ) {
+            $membership = $this->memberships->find_active( (int) $scope->clinicId, $wpUserId );
+            if ( $membership === null ) {
+                // No durable row (or a suspended one) is NOT staff authority. A
+                // WordPress "doctor" stays a DOCTOR identity so the queue scope
+                // resolves to that clinician's own empty set — never the
+                // clinic-wide staff view. Unknown actors fall through as null.
+                $legacy = get_userdata( $wpUserId );
+                if ( $legacy !== false && in_array( RolesAndCapabilities::ROLE_DOCTOR, (array) ( $legacy->roles ?? [] ), true ) ) {
+                    return 'doctor';
+                }
+
+                return null;
+            }
+            $role_key = (string) ( $membership['role_key'] ?? '' );
+            if ( RolesAndCapabilities::ROLE_DOCTOR === $role_key ) {
+                return 'doctor';
+            }
+            if ( RolesAndCapabilities::ROLE_SECRETARY === $role_key ) {
+                return 'secretary';
+            }
+
             return null;
         }
-        if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-            return 'doctor';
-        }
-        if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
-            return 'secretary';
+
+        $user = get_userdata($wpUserId);
+        if ( $user !== false && $user->roles !== [] ) {
+            if ( in_array(RolesAndCapabilities::ROLE_DOCTOR, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                return 'doctor';
+            }
+            if ( in_array(RolesAndCapabilities::ROLE_SECRETARY, $user->roles, true )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- WPCS
+                return 'secretary';
+            }
         }
 
         return null;
     }
+    // phpcs:enable
+
 
     private function requireSecretary(int $wpUserId, string $event): void
     {
@@ -1411,12 +1451,30 @@ final class VisitService
         }
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     private function requireQueueReader(int $wpUserId): void
     {
-        if ( !user_can($wpUserId, RolesAndCapabilities::QUEUE_READ )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
-            throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
+        // Scoped-first and FINAL when the request carries a trusted Clinic: an
+        // ACTIVE membership decides (grant or explicit DENY), so a
+        // WordPress-global queue capability can never override a scoped DENY.
+        // Without an established scope the legacy global path is unchanged.
+        $scope = ScopeContext::tryGet();
+        if ( $scope !== null && (int) $scope->clinicId > 0 && $wpUserId > 0 ) {
+            $decision = App::authorization_service()->scoped_decision( $wpUserId, (int) $scope->clinicId, RolesAndCapabilities::QUEUE_READ );
+            if ( true === $decision ) {
+                return;
+            }
+            if ( false === $decision ) {
+                throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
+            }
         }
+        if ( user_can($wpUserId, RolesAndCapabilities::QUEUE_READ) ) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- legacy PSR-style, established contract
+            return;
+        }
+        throw VisitException::of('CLINIC_PERMISSION_DENIED', 'دسترسی به صف ندارید', 403);
     }
+    // phpcs:enable
+
 
     /**
      * ADR-0030/Part1 + Phase 4 Slice 4 — Scope صف/Feed برای «پزشکِ متصل»:

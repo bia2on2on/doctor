@@ -218,9 +218,15 @@ final class ReportsAuthzTest extends WP_UnitTestCase
         $this->assertSame(403, $denied->get_status());
         $this->assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($denied));
 
-        // عملیاتیِ دارای نام بیمار: بدون patient_read → 403 (فقط داده اعطاشده صریح)
+        // عملیاتیِ دارای نام بیمار: یک DENY صریحِ cpms_patient_read روی همین
+        // عضویت، دسترسی PHI را می‌بندد (قدرتِ مجوز CPMS، نه نقش وردپرس).
+        App::membership_service()->set_capability(
+            (int) $this->membershipIds[$this->opsUserId],
+            \ClinicCore\Auth\RolesAndCapabilities::PATIENT_READ,
+            'deny'
+        );
         $visits = $this->dispatch('GET', self::NS . '/reports/visits', ['from' => $this->today, 'to' => $this->today]);
-        $this->assertSame(403, $visits->get_status());
+        $this->assertSame(403, $visits->get_status(), 'PHI report requires cpms_patient_read: ' . $this->errorCode($visits));
 
         // Aggregate عملیاتیِ بدون PHI (میانگین انتظار) → مجاز
         $wait = $this->dispatch('GET', self::NS . '/reports/avg_waiting', ['from' => $this->today, 'to' => $this->today]);

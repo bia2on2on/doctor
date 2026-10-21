@@ -77,7 +77,9 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Licensing\LicensePolicy;
 use ClinicCore\Domain\Licensing\SignedLicenseGate;
+use ClinicCore\Application\Management\ManagementPortalService;
 use ClinicCore\Frontend\DoctorPortalShell;
+use ClinicCore\Frontend\ManagementPortalShell;
 use ClinicCore\Frontend\PublicBookingShortcode;
 use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
@@ -214,6 +216,10 @@ final class App
         // Phase 10 — canonical shared operational Staff Portal container. The
         // legacy Doctor Portal entry above remains a compatibility entry (one-time redirect).
         StaffPortalShell::register();
+        // Dedicated (non-wp-admin) Management Portal for Organization Managers and
+        // Clinic Managers. Authority is durable Organization/Clinic membership +
+        // CPMS capabilities; no WordPress business role is read.
+        ManagementPortalShell::register();
 
         if (self::$booted) {
             return;
@@ -1267,6 +1273,52 @@ final class App
                 self::db(),
                 new MembershipRepository( self::db() ),
                 self::membership_service(),
+                self::audit()
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * Dedicated Management Portal orchestration (reads + authorized writes).
+     */
+    public static function management_portal_service(): ManagementPortalService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new ManagementPortalService(
+                self::organization_clinic_provisioning_service(),
+                self::authorization_service(),
+                new \ClinicCore\Application\Scope\TrustedClinicEstablisher( self::db(), new MembershipRepository( self::db() ) ),
+                new MembershipRepository( self::db() ),
+                new LocationRepository( self::db() ),
+                new ClinicianRepository( self::db() ),
+                new ClinicRepository( self::db() )
+            );
+        }
+
+        return $service;
+    }
+
+    /**
+     * Facility-aware onboarding (hospital network / medical building), same
+     * service the admin wizard uses. It authorizes by Organization authority and
+     * is transport-agnostic, so the frontend portal can drive it without wp-admin.
+     */
+    public static function facility_setup_service(): \ClinicCore\Application\Onboarding\FacilitySetupService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new \ClinicCore\Application\Onboarding\FacilitySetupService(
+                self::db(),
+                self::organization_clinic_provisioning_service(),
+                self::locationService(),
+                self::locationRepository(),
+                self::authorization_service(),
+                self::membership_service(),
+                new MembershipRepository( self::db() ),
+                self::clinicianRepository(),
+                self::scheduleService(),
+                self::settingsFactory(),
                 self::audit()
             );
         }

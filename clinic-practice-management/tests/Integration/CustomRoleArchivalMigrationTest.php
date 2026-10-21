@@ -111,6 +111,26 @@ final class CustomRoleArchivalMigrationTest extends WP_UnitTestCase
         }
     }
 
+    /**
+     * MariaDB 11.8 gate investigation (owner request) — EVIDENCE, not compatibility.
+     *
+     * The runtime allowlist accepts only the engines the integration lanes actually
+     * exercise: MySQL 8.x, MariaDB 10.11.x and MariaDB 11.4.13. MariaDB 11.8 is
+     * therefore OUTSIDE the verified set and this test pins the current behaviour:
+     * the migration refuses to run and performs NO DDL. Widening the pattern would
+     * be an inference about a runtime nobody has replayed; a compatibility change
+     * must be backed by a real MariaDB 11.8 migrate + rollback + replay run.
+     */
+    public function test_mariadb_118_is_outside_the_verified_gate_and_fails_closed_before_ddl(): void
+    {
+        $queries = [];
+        $server  = [ 'SERVER_VERSION' => '11.8.2-MariaDB-ubu2404', 'VERSION_COMMENT' => 'mariadb.org binary distribution' ];
+        $db      = $this->mockedMigrationDb( $this->validStatusMetadata( "'active'" ), $server, [], '1', $queries );
+
+        $this->assertMigrationUpRejects( $db );
+        self::assertSame( [], $queries, 'an unverified server must be refused before any DDL' );
+    }
+
     public function test_all_noncanonical_status_defaults_are_rejected_before_ddl(): void
     {
         foreach ( [ 'inactive', "'inactive'", 'archived', null, '', 'active ', "'active' ", '"active"', '(active)' ] as $default ) {

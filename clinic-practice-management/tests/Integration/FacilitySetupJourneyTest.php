@@ -286,8 +286,11 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         foreach ($review['clinics'] as $clinic) {
             self::assertSame(1, $clinic['managers']);
             self::assertFalse($clinic['can_configure'], 'the Organization Manager is not a member of independent Clinics');
-            self::assertSame(1, $clinic['entry_missing'], 'a subscriber manager is reported without CPMS admin entry');
-            self::assertSame(1, $clinic['managers_no_entry']);
+            // Entry eligibility is CPMS data (ACTIVE membership + scoped
+            // capability), not a WordPress role: the designated subscriber manager
+            // IS eligible for the frontend portal, and its WP role stays subscriber.
+            self::assertSame(0, $clinic['entry_missing'], 'a designated subscriber manager has CPMS frontend entry');
+            self::assertSame(0, $clinic['managers_no_entry']);
         }
         foreach ([$managerA, $managerB] as $manager) {
             self::assertSame(['subscriber'], array_values(get_userdata($manager)->roles), 'designation never changes a WordPress role');
@@ -297,8 +300,12 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         ob_start();
         FacilitySetupPage::render();
         $html = (string) ob_get_clean();
-        self::assertSame(2, substr_count($html, 'data-cpms-facility-entry-missing="1"'), 'each Clinic shows its admin-entry gap');
-        self::assertStringContainsString('data-cpms-facility-entry-guidance="2"', $html);
+        // CPMS entry now follows the durable membership + scoped capability, so a
+        // designated subscriber manager has no entry gap for the frontend portals.
+        self::assertSame(0, substr_count($html, 'data-cpms-facility-entry-missing="1"'), 'no CPMS entry gap is reported');
+        self::assertSame(2, substr_count($html, 'data-cpms-facility-entry-missing="0"'), 'each Clinic is reported as CPMS-entry ready');
+        // With no entry gap there is no guidance block at all.
+        self::assertStringNotContainsString('data-cpms-facility-entry-guidance=', $html);
 
         // Technical WordPress step outside CPMS: the matching WordPress role opens the
         // screens for manager A only, and grants no Clinic authority anywhere.
@@ -307,8 +314,10 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         foreach ($service->review($this->actor, $this->org)['clinics'] as $clinic) {
             $byClinic[(int) $clinic['clinic_id']] = $clinic;
         }
-        self::assertSame(0, $byClinic[(int) $a['clinic_id']]['entry_missing'], 'manager A can now open the CPMS screens');
-        self::assertSame(1, $byClinic[(int) $b['clinic_id']]['entry_missing'], 'the independent Clinic B is unaffected');
+        // CPMS entry is membership-based and per Clinic: adding a WordPress role
+        // changes neither Clinic's report, and grants no Clinic authority below.
+        self::assertSame(0, $byClinic[(int) $a['clinic_id']]['entry_missing'], 'manager A keeps CPMS entry from its membership');
+        self::assertSame(0, $byClinic[(int) $b['clinic_id']]['entry_missing'], 'the independent Clinic B report is unaffected by a WordPress role');
         self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::CONFIG), 'a WordPress role grants no Clinic authority');
         self::assertFalse($authz->can($managerA, (int) $b['clinic_id'], RolesAndCapabilities::PATIENT_READ));
         $service->activate($this->actor, $this->org, true);
@@ -720,7 +729,10 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
         self::assertSame('location', $roster[0]['scope_mode']);
         self::assertSame(1, $roster[0]['locations']);
         self::assertSame(1, $roster[0]['denied']);
-        self::assertFalse($roster[0]['entry'], 'a subscriber staff account is reported without CPMS admin entry; its WordPress role is untouched');
+        // Entry eligibility follows the durable membership + scoped capability
+        // (frontend portal), so an ACTIVE subscriber secretary is eligible while
+        // its WordPress role remains untouched.
+        self::assertTrue($roster[0]['entry'], 'CPMS frontend entry follows the membership, not the WordPress role');
         self::assertSame(['subscriber'], array_values(get_userdata($secretary)->roles));
 
         // The admin-post dispatcher path and the rendered step are explicit (no preselection).
@@ -1639,6 +1651,58 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     private function locationClinic(int $locationId): int
     {
         return (int) App::db()->fetchValue('SELECT clinic_id FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d', [$locationId]);
+    }
+
+    // ------------------------------------------------------------------
+    // Address step: offline Iranian province/city catalog (no network, no default)
+    // ------------------------------------------------------------------
+
+    public function testSiteAddressUsesTheOfflineProvinceCityCatalogAndRejectsAnOrphanCity(): void
+    {
+        $service = FacilitySetupPage::service();
+        $service->start($this->actor, $this->org, 'specialized_clinic', 'medical_building', 'ساختمان پزشکی آزمون');
+
+        wp_set_current_user($this->actor);
+        $_GET = ['page' => FacilitySetupPage::PAGE, 'organization_id' => (string) $this->org, 'step' => 'sites'];
+        ob_start();
+        FacilitySetupPage::render();
+        $html = (string) ob_get_clean();
+
+        self::assertStringContainsString('data-cpms-province-select="1"', $html, 'the offline province selector is rendered');
+        self::assertStringContainsString('data-cpms-city-select="1"', $html, 'the offline city selector is rendered');
+        self::assertStringContainsString('name="address_province"', $html);
+        self::assertStringContainsString('name="address_city"', $html);
+        self::assertStringNotContainsString('selected>تهران', $html, 'no province is preselected — the wizard never guesses Tehran');
+        self::assertStringNotContainsString('data-cpms-city-select="1" data-selected-city="تهران"', $html);
+
+        // A city without its province is a validation error, not a silent fix-up.
+        $cityOnly = static function (string $key): string {
+            return ['site_label' => 'ساختمان بدون استان', 'site_address' => 'خیابان آزمون', 'address_city' => 'تهران'][$key] ?? '';
+        };
+        $notice = FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $cityOnly, []);
+        self::assertStringStartsWith('خطا', $notice, 'a city without a province is refused');
+        self::assertSame([], $service->plan($this->actor, $this->org)['sites'], 'nothing was persisted for the refused address');
+
+        // A city that does not belong to the selected province is refused too.
+        $foreignCity = static function (string $key): string {
+            return ['site_label' => 'ساختمان شهر نامعتبر', 'site_address' => 'خیابان آزمون', 'address_province' => 'تهران', 'address_city' => 'شیراز'][$key] ?? '';
+        };
+        self::assertStringStartsWith('خطا', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $foreignCity, []));
+        self::assertSame([], $service->plan($this->actor, $this->org)['sites'], 'a foreign city leaves no site behind');
+
+        // A valid pair is composed into the stored address (province، city — detail).
+        $valid = static function (string $key): string {
+            return ['site_label' => 'ساختمان مرکزی', 'site_address' => 'خیابان ولیعصر، پلاک ۱', 'address_province' => 'تهران', 'address_city' => 'تهران'][$key] ?? '';
+        };
+        self::assertStringStartsWith('ساختمان/سایت ثبت شد', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $valid, []));
+        $sites = $service->plan($this->actor, $this->org)['sites'];
+        self::assertCount(1, $sites);
+        self::assertStringContainsString('تهران', (string) $sites[0]['address']);
+        self::assertStringContainsString('خیابان ولیعصر', (string) $sites[0]['address']);
+
+        // Re-submitting the same site stays idempotent (never a duplicate building).
+        self::assertStringStartsWith('ساختمان/سایت ثبت شد', FacilitySetupPage::dispatch($this->actor, $this->org, 'site', $valid, []));
+        self::assertCount(1, $service->plan($this->actor, $this->org)['sites'], 'the same site is never duplicated');
     }
 
     private function clinicCount(int $organizationId): int

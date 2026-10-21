@@ -9,6 +9,7 @@ use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -54,7 +55,7 @@ final class FacilitySetupPage {
     /**
      * Admin-entry guidance: the facility steps never change a WordPress role.
      */
-    private const ENTRY_GUIDANCE = 'عضویت درمانگاه تنها منبع اختیار است و این راه‌اندازی نقش وردپرسیِ هیچ کاربری را تغییر نمی‌دهد. حسابی که نقش وردپرسیِ متناظر با نقش درمانگاهی‌اش (مثلاً «مدیر کلینیک»، «پزشک» یا «منشی مطب») را ندارد وارد صفحات CPMS نمی‌شود؛ این نقش را مدیر همان درمانگاه از «کاربران و دسترسی‌ها» (ویرایش کاربر) و برای خودِ مدیر درمانگاه، مدیر فنی وردپرس از صفحهٔ کاربران وردپرس اختصاص می‌دهد.';
+    private const ENTRY_GUIDANCE = 'عضویت درمانگاه تنها منبع اختیار است و این راه‌اندازی نقش وردپرسیِ هیچ کاربری را تغییر نمی‌دهد. این گزارش فقط «آمادگی مجوز» را می‌سنجد: عضویت فعال درمانگاه + مجوز مؤثر همان نقش (DENY > GRANT > پیش‌فرض)؛ نه نقش وردپرسی. دسترسی عملیاتی کامل به هر پورتال علاوه بر آن به انتخاب صریح درمانگاه/محل و — برای ماژول پزشک — پروفایل فعال پزشک برای همان حساب نیاز دارد، پس این عدد به‌تنهایی تضمین‌کنندهٔ ورود به همهٔ صفحات نیست.';
 
     public static function menu(): void {
         add_submenu_page(
@@ -272,7 +273,21 @@ final class FacilitySetupPage {
                     $service->acknowledge_outpatient( $actor_id, $organization_id, '1' === $field( 'outpatient_ack' ) );
                     return 'محدودهٔ فقط سرپایی صریحاً تأیید شد.';
                 case 'site':
-                    $service->add_site( $actor_id, $organization_id, $field( 'site_label' ), $field( 'site_address' ) );
+                    // The address is a STRUCTURED Iranian address: the optional
+                    // offline province/city selects are validated against the
+                    // official catalog and composed into the stored value. A
+                    // city without its province, or a city outside the chosen
+                    // province, is a validation error — never a silent fix-up.
+                    try {
+                        $site_address = IranProvinceCityCatalog::resolve_submitted_address(
+                            $field( 'site_address' ),
+                            $field( 'address_province' ),
+                            $field( 'address_city' )
+                        );
+                    } catch ( \InvalidArgumentException $e ) {
+                        return 'خطا: ' . $e->getMessage();
+                    }
+                    $service->add_site( $actor_id, $organization_id, $field( 'site_label' ), (string) ( $site_address ?? '' ) );
                     return 'ساختمان/سایت ثبت شد.';
                 case 'clinic':
                     $entry = $service->add_clinic( $actor_id, $organization_id, $field( 'request_key' ), $field( 'clinic_name' ), $field( 'site_key' ), $field( 'timezone' ) );
@@ -423,7 +438,10 @@ final class FacilitySetupPage {
         self::render_site_list( $plan );
         self::open_form( $organization_id, 'site', 'sites' );
         self::text_input( 'site_label', 'نام ساختمان/سایت', 120, true );
-        self::text_input( 'site_address', 'نشانی', 255, false );
+        AddressSelectorField::render( null, 'cpms_facility_site', 'address_province', 'address_city', 'cpms_facility_site_address' );
+        echo '<p><label for="cpms_facility_site_address">نشانی (جزئیات؛ خیابان، پلاک، واحد)</label><br>';
+        echo '<input id="cpms_facility_site_address" name="site_address" maxlength="255" style="width:100%;max-width:420px;box-sizing:border-box;"></p>';
+        echo '<p class="description">استان و شهر از فهرست آفلاین رسمی انتخاب می‌شوند (بدون هیچ پیش‌فرض و بدون فراخوانی شبکه)؛ خالی گذاشتن هر دو مجاز است و فقط نشانی متنی ذخیره می‌شود.</p>';
         self::close_form( 'افزودن ساختمان/سایت' );
     }
 
@@ -546,7 +564,7 @@ final class FacilitySetupPage {
             $labels = [];
             foreach ( $rows as $row ) {
                 $scope    = 'location' === $row['scope_mode'] ? $row['locations'] . ' مکان' : 'کل درمانگاه';
-                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' ) . ( $row['entry'] ? '' : ' — بدون نقش وردپرسیِ ورود' );
+                $labels[] = $row['login'] . ' — ' . ( self::STAFF_ROLE_LABELS[ $row['role_key'] ] ?? $row['role_key'] ) . ' — ' . $scope . ' — منع صریح: ' . $row['denied'] . ( 'active' === $row['status'] ? '' : ' (تعلیق)' ) . ( $row['entry'] ? '' : ' — بدون دسترسی ورود CPMS (عضویت/مجوز مؤثر)' );
             }
             echo esc_html( implode( '، ', $labels ) );
             echo ' — <a href="' . esc_url( add_query_arg( [ 'clinic_id' => (int) $clinic['clinic_id'] ], admin_url( 'admin.php?page=' . StaffManagementPage::PAGE_SLUG ) ) ) . '">مدیریت کارکنان این درمانگاه</a></div>';
@@ -700,10 +718,10 @@ final class FacilitySetupPage {
 
     private static function entry_line( int $missing, int $managers ): string {
         if ( 0 === $missing ) {
-            return 'ورود به صفحات CPMS: همهٔ اعضای فعال این درمانگاه نقش وردپرسیِ لازم را دارند.';
+            return 'آمادگی مجوز CPMS: همهٔ اعضای فعال این درمانگاه مجوز مؤثر نقش خود را دارند (عضویت درمانگاه، نه نقش وردپرسی)؛ دسترسی عملیاتی همچنین به انتخاب صریح درمانگاه/محل و هویت لازم برای آن ماژول وابسته است.';
         }
 
-        return 'ورود به صفحات CPMS: ' . $missing . ' عضو فعال (از جمله ' . $managers . ' مدیر) نقش وردپرسیِ لازم را ندارند و تا اختصاص آن وارد صفحات نقش خود نمی‌شوند.';
+        return 'ورود به صفحات CPMS: ' . $missing . ' عضو فعال (از جمله ' . $managers . ' مدیر) عضویت/مجوز مؤثر لازم را ندارند و تا اصلاح آن وارد صفحات نقش خود نمی‌شوند.';
     }
 
     /**

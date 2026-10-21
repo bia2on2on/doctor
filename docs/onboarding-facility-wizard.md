@@ -373,14 +373,16 @@ Page: «سازمان‌ها ← راه‌اندازی مرکز چنددرمان�
   - Clinic memberships created here (manager, clinician, staff) are the only source of Clinic authority; no facility
     step adds, removes or replaces a WordPress role — the same rule as attaching an existing account in
     «کاربران و دسترسی‌ها»;
-  - the CPMS screens themselves still need the matching WordPress role (entry capability: `cpms_config` for
-    managers, `cpms_queue_read` for clinicians and reception, `cpms_finance_read` for finance), so an existing
-    subscriber who received a membership cannot open them yet;
+  - CPMS frontend entry is CPMS data only: an ACTIVE Clinic membership plus the effective scoped capability that
+    opens that role's surface (`cpms_config` for managers, `cpms_queue_read` for clinicians and reception,
+    `cpms_finance_read` for finance; DENY > GRANT > preset). No WordPress role or global WordPress capability is
+    consulted, so a subscriber who received an active membership is entry-ready without any WordPress change;
   - the review therefore reports, per Clinic and as counts only, how many active members (and managers) still lack
-    that WordPress role (`data-cpms-facility-entry-missing`), and the staff roster flags such accounts; this is
-    informational and never blocks activation;
-  - the Clinic's manager assigns the role from «کاربران و دسترسی‌ها» (edit user); for the delegated Clinic manager
-    themself it is a technical WordPress step (Users screen) — a WordPress role still grants no Clinic authority.
+    CPMS entry — an inactive membership, or one whose effective scoped capability was denied
+    (`data-cpms-facility-entry-missing`) — and the staff roster flags such accounts; this is informational and
+    never blocks activation; the guidance block appears only when the total gap is non-zero;
+  - WordPress roles remain a purely technical outside-CPMS step for reaching wp-admin screens; they grant no
+    Clinic authority and never change the entry report.
 - *Out of scope:* inpatient wards, beds, inpatient OR and HIS are excluded.
 
 **Dates.** The journey has no calendar-date fields: weekly schedules use weekdays and times, and the booking policy

@@ -147,6 +147,51 @@ final class AuthorizationService
     }
 
     /**
+     * Authoritative scoped decision for a capability in ONE Clinic.
+     *
+     * Contract (owner policy: WordPress-independent business access, hardened in
+     * the Round-4 review):
+     *  - `true`  — an ACTIVE membership effectively grants the capability
+     *              (explicit GRANT > role preset, custom role included);
+     *  - `false` — FINAL DENY. Produced when the actor HAS a Clinic membership
+     *              (active, suspended or otherwise) that does not effectively
+     *              grant the capability. A WordPress-global `has_cap()` may never
+     *              override it, which is how an explicit membership DENY - and a
+     *              plain "capability not granted by this membership" - stays
+     *              authoritative and how a global capability cannot bleed across
+     *              Clinics;
+     *  - `null`  — the actor has NO membership row at all in the Clinic, so the
+     *              legacy WordPress-capability path may still answer (pure
+     *              wp-admin/legacy installations keep their historic contract).
+     *
+     * Suspended memberships therefore fail closed as well: they never fall back
+     * to global WordPress capabilities.
+     */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase API of this class
+    public function scoped_decision( int $actorWpUserId, int $clinicId, string $permission, bool $for_update = false ): ?bool {
+        if ( $actorWpUserId <= 0 || $clinicId <= 0 ) {
+            return null;
+        }
+        if ( '' === trim( $permission ) ) {
+            return null;
+        }
+
+        $membership = $this->memberships->find_active( $clinicId, $actorWpUserId, $for_update );
+        if ( $membership === null ) {
+            // A membership row that exists but is not ACTIVE (suspended, archived)
+            // is a scoped fact: fail closed instead of consulting global caps.
+            $any = $this->memberships->find( $clinicId, $actorWpUserId );
+
+            return null === $any ? null : false;
+        }
+
+        // Membership exists: the scoped engine is the ONLY authority for this
+        // Clinic (explicit DENY > explicit GRANT > role preset > deny by default).
+        return $this->can( $actorWpUserId, $clinicId, $permission, $for_update );
+    }
+    // phpcs:enable
+
+    /**
      * Clinic-scoped permission check with durable object ownership validation.
      *
      * Contract for $objectClinicId (both canForObject and authorizeForObject):

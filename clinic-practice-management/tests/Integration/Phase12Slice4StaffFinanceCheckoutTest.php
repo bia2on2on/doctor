@@ -440,13 +440,14 @@ final class Phase12Slice4StaffFinanceCheckoutTest extends WP_UnitTestCase
         self::assertSame(403, $doctorCheckout->get_status(), 'checkout requires the existing cpms_queue_checkout capability');
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($doctorCheckout));
 
-        // 3) Accountant: outside the module read boundary (no cpms_queue_read)
-        //    and without checkout authority — unchanged by this slice.
-        self::assertFalse(StaffPortalShell::finance_module_eligible($accountant), 'accountant stays outside the Finance module read boundary');
+        // 3) Accountant: the finance board READ boundary is the accountant
+        //    surface (finance + invoice read in this Clinic, no queue read
+        //    required — owner delivery 2026-10-20). Checkout stays a queue-owner
+        //    operation and is still denied: no cpms_queue_checkout.
+        self::assertTrue(StaffPortalShell::finance_module_eligible($accountant), 'the accountant preset opens the Finance read boundary');
         wp_set_current_user($accountant);
         $accountantRead = $this->dispatch('GET', self::PAID, [], $this->scopeHeaders($clinic, $location));
-        self::assertSame(403, $accountantRead->get_status());
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($accountantRead));
+        self::assertSame(200, $accountantRead->get_status(), 'accountant finance read — ' . $this->errorCode($accountantRead));
         $accountantCheckout = $this->dispatch('POST', sprintf(self::CHECKOUT, $visit), [], $this->scopeHeaders($clinic, $location));
         self::assertSame(403, $accountantCheckout->get_status());
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($accountantCheckout));

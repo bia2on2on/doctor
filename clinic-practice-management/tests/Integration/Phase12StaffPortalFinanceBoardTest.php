@@ -158,18 +158,21 @@ final class Phase12StaffPortalFinanceBoardTest extends WP_UnitTestCase
         self::assertSame($readOnlyBefore, $this->readOnlySnapshot(), 'read routes do not mutate invoice/payment, visit history/state, audit, idempotency, job, or notification data');
     }
 
-    public function testMembershipAloneAndFinanceWithoutQueueReadDoNotExposeBoard(): void
+    public function testMembershipAloneDoesNotExposeBoardAndAccountantReadsIt(): void
     {
         $org = $this->insertOrg('Finance denied org');
         $clinic = $this->insertClinic($org);
         $this->insertLocation($clinic, 'UTC');
+        // Owner delivery 2026-10-20: the accountant preset (finance + invoice
+        // read in this Clinic) is the authority of the finance board. Queue read
+        // is no longer part of the read boundary, and membership alone still is
+        // not authority (the manager case below).
         $accountant = $this->makeUser('phase12_finance_accountant', RolesAndCapabilities::ROLE_ACCOUNTANT);
         cpms_test_seed_membership($accountant, $clinic, 'cpms_accountant');
-        self::assertFalse(StaffPortalShell::finance_module_eligible($accountant), 'accountant role lacks queue-read authority and is not widened by this board');
+        self::assertTrue(StaffPortalShell::finance_module_eligible($accountant), 'the accountant preset reads the finance board');
         wp_set_current_user($accountant);
         $response = $this->dispatch('GET', '/' . self::REST_NS . '/staff/portal/finance/awaiting-payment', [], $this->scopeHeaders($clinic));
-        self::assertSame(403, $response->get_status());
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errorCode($response));
+        self::assertSame(200, $response->get_status(), 'accountant board read — ' . $this->errorCode($response));
 
         $member = $this->makeUser('phase12_finance_member_only', RolesAndCapabilities::ROLE_MANAGER);
         cpms_test_seed_membership($member, $clinic, 'cpms_manager');

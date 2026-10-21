@@ -300,7 +300,11 @@ final class FinanceController extends RestBase
             return $nonce;
         }
         if ($cap !== null) {
-            $perm = $this->requireCap($cap);
+            // WordPress-independent business access: the Clinic-scoped authority of
+            // the trusted scope decides first (DENY > GRANT > preset); the legacy
+            // WordPress-global path stays as the backward-compatible fallback.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+            $perm = $this->perm_clinic_cap($r, $cap);
             if ($perm instanceof WP_Error) {
                 return $perm;
             }
@@ -385,8 +389,14 @@ final class FinanceController extends RestBase
             return $nonce;
         }
 
-        if ( $this->has_effective_clinic_capability( $capability ) ) {
+        $scoped = $this->clinic_capability_decision( $capability );
+        if ( true === $scoped ) {
             return true;
+        }
+        if ( false === $scoped ) {
+            // An ACTIVE membership is final: explicit DENY outranks a
+            // WordPress-global capability and `has_cap()` never bypasses it.
+            return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
         }
 
         $global_check = $this->requireCap( $capability );
@@ -400,21 +410,33 @@ final class FinanceController extends RestBase
      * آیا Capability در Clinicِ Scopeِ مورد اعتماد برای کاربر جاری مؤثر است؟
      */
     private function has_effective_clinic_capability( string $capability ): bool {
+        return true === $this->clinic_capability_decision( $capability );
+    }
+
+    /**
+     * Scoped decision for the explicitly established Clinic:
+     *  - true  => the ACTIVE membership grants the capability;
+     *  - false => the ACTIVE membership does not (explicit DENY included) and the
+     *             decision is FINAL: no WordPress-global fallback;
+     *  - null  => the actor holds no membership here, so the legacy capability
+     *             path may still answer.
+     */
+    private function clinic_capability_decision( string $capability ): ?bool {
         $user_id = (int) get_current_user_id();
         if ( $user_id <= 0 ) {
-            return false;
+            return null;
         }
 
         $scope_context = ScopeContext::tryGet();
         if ( $scope_context === null ) {
-            return false;
+            return null;
         }
 
         $clinic_id = (int) $scope_context->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the existing published scope API.
         if ( $clinic_id <= 0 ) {
-            return false;
+            return null;
         }
 
-        return App::authorization_service()->can( $user_id, $clinic_id, $capability );
+        return App::authorization_service()->scoped_decision( $user_id, $clinic_id, $capability );
     }
 }

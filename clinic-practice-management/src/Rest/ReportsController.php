@@ -8,6 +8,7 @@ use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportException;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -62,7 +63,8 @@ final class ReportsController extends RestBase
                     'reports' => $this->reports->catalog($this->userId($r)),
                 ]),
                 'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                    => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -82,7 +84,8 @@ final class ReportsController extends RestBase
                             $r['to'] ?? null
                         )
                     ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -103,7 +106,8 @@ final class ReportsController extends RestBase
                 [
                     'methods'             => WP_REST_Server::READABLE,
                     'callback'            => fn ( WP_REST_Request $r ) => $this->printView( $r ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -136,7 +140,8 @@ final class ReportsController extends RestBase
                         // EXPORT جداگانه لازم است (فقط REPORT_READ کافی نیست).
                         RolesAndCapabilities::EXPORT
                     ),
-                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permCap(
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                    'permission_callback' => fn ( WP_REST_Request $r ) => $this->permScopedOrGlobal(
                         $r,
                         RolesAndCapabilities::REPORT_READ
                     ),
@@ -162,7 +167,8 @@ final class ReportsController extends RestBase
                     RolesAndCapabilities::EXPORT
                 ),
                 'permission_callback' => fn (WP_REST_Request $r)
-                    => $this->permCap($r, RolesAndCapabilities::REPORT_READ),
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                    => $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ),
             ],
         ]);
 
@@ -170,7 +176,8 @@ final class ReportsController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->download($r),
-                'permission_callback' => fn (WP_REST_Request $r) => $this->permCap($r, RolesAndCapabilities::EXPORT),
+                // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+                'permission_callback' => fn (WP_REST_Request $r) => $this->permScopedOrGlobal($r, RolesAndCapabilities::EXPORT),
             ],
         ]);
     }
@@ -188,7 +195,8 @@ final class ReportsController extends RestBase
         if ($error instanceof WP_Error) {
             return $error;
         }
-        $perm = $this->requireCap(RolesAndCapabilities::REPORT_READ);
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+        $perm = $this->permScopedOrGlobal($r, RolesAndCapabilities::REPORT_READ);
         if ($perm instanceof WP_Error) {
             return $perm;
         }
@@ -337,7 +345,10 @@ final class ReportsController extends RestBase
         if ($nonce instanceof WP_Error) {
             return $nonce;
         }
-        $perm = $this->requireCap($cap);
+        // WordPress-independent business access: scoped authority first, legacy
+        // WordPress-global capability as the fallback (see permScopedOrGlobal).
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature,Squiz.Functions.FunctionDeclarationArgumentSpacing -- single-line call idiom in this file.
+        $perm = $this->permScopedOrGlobal($r, $cap);
         if ($perm instanceof WP_Error) {
             return $perm;
         }
@@ -388,6 +399,42 @@ final class ReportsController extends RestBase
      * شیءِ دیگری افشا نشود. بررسی‌های خشنِ قبلی (Nonce + Cap سراسری) دست‌نخورده
      * مانده‌اند (Defense in Depth) و پیش از این helper اجرا می‌شوند.
      */
+    /**
+     * WordPress-independent business access: the scoped authority of the
+     * explicitly established Clinic decides first; the legacy WordPress-global
+     * capability stays as the backward-compatible fallback. Never a widening —
+     * the scoped engine requires an ACTIVE membership and the same capability
+     * with DENY precedence, and the handlers re-check scope (`REPORT_READ`).
+     */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: the added logic reuses the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+    private function permScopedOrGlobal(WP_REST_Request $r, string $cap): bool|WP_Error
+    {
+        $nonce = $this->requireNonce($r);
+        if ($nonce instanceof WP_Error) {
+            return $nonce;
+        }
+        $user_id = (int) get_current_user_id();
+        if ($user_id <= 0) {
+            return $this->error('CLINIC_UNAUTHORIZED', 401, 'وارد نشده‌اید');
+        }
+        $scope = ScopeContext::tryGet();
+        if ($scope !== null && (int) $scope->clinicId > 0) {
+            $decision = App::authorization_service()->scoped_decision($user_id, (int) $scope->clinicId, $cap);
+            if (true === $decision) {
+                return true;
+            }
+            if (false === $decision) {
+                // An ACTIVE membership is final: explicit DENY outranks a
+                // WordPress-global capability and `has_cap()` never bypasses it.
+                return $this->error('CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید');
+            }
+        }
+
+        return $this->requireCap($cap);
+    }
+    // phpcs:enable
+
+
     private function requireScopedClinicPermission(string $cap): bool|WP_Error
     {
         $userId = (int) get_current_user_id();

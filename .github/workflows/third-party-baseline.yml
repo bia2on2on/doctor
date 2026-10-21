@@ -325,7 +325,7 @@ jobs:
           - id: persian-woocommerce
             name: Persian WooCommerce
             slug: persian-woocommerce
-            version: '10.0.5'  # requires WP 6.8, PHP 7.4
+            version: '10.0.6'  # requires WP 6.8, PHP 7.4 — verified 2026-10-20 stable 10.0.6 (API 10.0.6, BugBounty mirror 10.0.6; previous 10.0.5)
             source: wordpress_org
             kind: subject
             deps: 'woocommerce=11.2.0'
@@ -370,13 +370,14 @@ jobs:
           - id: persian-woocommerce-sms
             name: Persian WooCommerce SMS
             slug: persian-woocommerce-sms
-            # Official WordPress.org Plugins API verified 2026-10-14: the
-            # canonical slug advertises stable 7.3.1 (last_updated 2026-10-14
-            # 07:37 GMT); the frozen pin advances from 7.3.0. Exact-version
-            # verification is unchanged: the API must advertise this exact
-            # stable version before and after download, and the ZIP's own
-            # header identity is verified.
-            version: '7.3.1'  # requires WP 6.8, PHP 7.4
+            # Official WordPress.org Plugins API verified 2026-10-20: the
+            # canonical slug advertises stable 7.3.2 (last_updated 2026-10-20
+            # via CI runner API + WordPressBugBounty mirror 2026-10-20);
+            # previous pins 7.3.0 -> 7.3.1 -> 7.3.2. Exact-version verification
+            # is unchanged: the API must advertise this exact stable version
+            # before and after download, and the ZIP's own header identity is
+            # verified.
+            version: '7.3.2'  # requires WP 6.8, PHP 7.4
             source: wordpress_org
             kind: subject
             deps: 'woocommerce=11.2.0'
@@ -1083,9 +1084,10 @@ jobs:
         # rather than on the presence of a locale field so the condition cannot
         # depend on how GitHub evaluates an unset matrix key.
         #
-        # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.5)
-        # and persian-woocommerce-sms (now pinned 7.3.1; 7.2.3 -> 7.3.0 on
-        # 2026-10-11, then 7.3.0 -> 7.3.1 after the 2026-10-14 API update).
+        # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.6)
+        # and persian-woocommerce-sms (now pinned 7.3.2; 7.2.3 -> 7.3.0 on
+        # 2026-10-11, then 7.3.0 -> 7.3.1 on 2026-10-14, then 7.3.1 -> 7.3.2 on
+        # 2026-10-20 per official API + BugBounty mirror).
         # WordPress.org reports both at a
         # stable version but publishes no version tag for either, so the versioned
         # ZIP `<slug>.<version>.zip` is a confirmed HTTP 404 while the plugins API

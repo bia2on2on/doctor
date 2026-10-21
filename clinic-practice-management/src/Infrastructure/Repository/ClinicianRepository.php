@@ -72,6 +72,23 @@ final class ClinicianRepository
         return is_array( $rows ) ? $rows : [];
     }
 
+    /**
+     * Professional profile linked to one WordPress account (1:1 invariant).
+     *
+     * @return array<string,mixed>|null
+     */
+    public function find_by_wp_user( int $wp_user_id ): ?array {
+        if ( $wp_user_id <= 0 ) {
+            return null;
+        }
+        $row = $this->db->fetchRow(
+            'SELECT * FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE wp_user_id = %d LIMIT 1',
+            [ $wp_user_id ]
+        );
+
+        return is_array( $row ) ? $row : null;
+    }
+
     public function find(int $id): ?array
     {
         return $this->db->fetchRow(
