@@ -111,9 +111,10 @@ WORDPRESS_ORG_PACKAGE = "https://downloads.wordpress.org/plugin/{slug}.{version}
 
 # --- narrow official-stable retrieval fallback ------------------------------ #
 # Two subjects, listed by name, for one specific provider condition and nothing
-# else. WordPress.org reports Persian WooCommerce at stable 10.0.5 and Persian
-# WooCommerce SMS at stable 7.3.1 (the pin was 7.3.0 after 2026-10-11, with
-# 7.2.3 before that); the live SMS versions map still ends at 7.2.1. Neither
+# else. WordPress.org reports Persian WooCommerce at stable 10.0.6 and Persian
+# WooCommerce SMS at stable 7.3.2 (pins were 10.0.5 / 7.3.1 at 2026-10-14,
+# 7.3.0 after 2026-10-11, with 7.2.3 before that); the live SMS versions map
+# still ends at 7.2.1. Neither
 # currently publishes a version tag for its stable package, so the versioned ZIP URL
 # `<slug>.<version>.zip` returns HTTP 404 while the plugin's own API
 # `download_link` is the unversioned `.../plugin/<slug>.zip`. Verified on the live
