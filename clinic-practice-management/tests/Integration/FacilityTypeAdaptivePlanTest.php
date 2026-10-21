@@ -50,12 +50,17 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
 
     protected function setUp(): void
     {
-        parent::setUp();
-        $this->withRealTables(static fn (): array => App::migrations()->migrate());
-        Settings::flushCache();
-        App::resetScope();
-        \ClinicCore\Application\Scope\ScopeContext::clear();
-        $this->actor = $this->makeUser('fta_orgmgr', 'subscriber');
+        try {
+            parent::setUp();
+            $this->withRealTables(static fn (): array => App::migrations()->migrate());
+            Settings::flushCache();
+            App::resetScope();
+            \ClinicCore\Application\Scope\ScopeContext::clear();
+            $this->actor = $this->makeUser('fta_orgmgr', 'subscriber');
+        } catch (\Throwable $e) {
+            file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG setUp ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . PHP_EOL);
+            throw $e;
+        }
     }
 
     protected function tearDown(): void
@@ -72,7 +77,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
             $this->orgs = [];
             parent::tearDown();
         } catch (\Throwable $e) {
-            file_put_contents('php://stdout', '::error::FTA-DEBUG tearDown ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG tearDown ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . PHP_EOL);
             throw $e;
         }
     }
@@ -207,7 +212,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $this->assertRefused('not_hospital', fn () => $service->acknowledge_outpatient($this->actor, $otherOrg, true));
         $service->acknowledge_outpatient($this->actor, $org, true);
         } catch (\Throwable $e) {
-            file_put_contents('php://stdout', '::error::FTA-DEBUG ack-gate ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG ack-gate ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . PHP_EOL);
             throw $e;
         }
     }
@@ -240,7 +245,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $review = $service->review($this->actor, $org);
         self::assertTrue($review['ready'], implode(' | ', $review['blocking']));
         } catch (\Throwable $e) {
-            file_put_contents('php://stdout', '::error::FTA-DEBUG hospital-test ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG hospital-test ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . PHP_EOL);
             throw $e;
         }
     }
@@ -293,7 +298,7 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         } catch (FacilitySetupException $e) {
             self::assertSame($reason, $e->reason(), $e->getMessage());
         } catch (\Throwable $e) {
-            file_put_contents('php://stdout', '::error::FTA-DEBUG unexpected ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . "
+            file_put_contents('php://stdout', PHP_EOL . '::error::FTA-DEBUG unexpected ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . "
 ");
             throw $e;
         }
