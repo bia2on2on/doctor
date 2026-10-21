@@ -3,11 +3,16 @@
 **PR:** https://github.com/bia2on2on/doctor/pull/257 (Draft — not merged)
 **Branch:** `arena/ebafaac0-doctor`
 **Audit-expected head:** `f7f360ed18379058fea2416f9a4dea1d02dd717b`
-**Final code head:** `65b5f34215c211fb07a70d446287c63e0674db2b` (dispatched 2026-10-21 14:26:27 UTC)
+**Last code head (all 26 checks SUCCESS):** `87c8c93b4642c3ac749a81c3403a4cb76620a46d`
+**This cleanup head:** the commit that removes the temporary `FTA-DEBUG`
+diagnostics from `FacilityTypeAdaptivePlanTest.php` and updates this report
+(diff limited to these two files; no production, security, browser-workflow or
+assertion change).
 **Base:** `main` @ `6689228a84dd9ab26741d8132e177cbe05a6543e` (untouched; PR #255/#256 untouched)
 
-**UTC start (remediation authorization):** 2026-10-21 12:59:18
-**UTC end:** 2026-10-21 14:55 (≤ 120-minute limit; hard stop 14:59:18)
+**UTC start (remediation authorization):** 2026-10-21 12:59:18 ·
+**remediation end:** 14:55
+**UTC start (pre-merge cleanup):** 2026-10-21 15:57:39
 
 ---
 
@@ -58,12 +63,11 @@ completion (390px RTL no-overflow), forged cross-Clinic booking refused with
 the uniform denial, org surface without Clinic forms
 (`data-cpms-clinic-steps-delegated`), atomic activation; Section B
 `doctor_practice` compact completion + activation; DB facts (active Clinics
-with locations/schedules/booking). **Result: First-practice browser (mysql) =
-SUCCESS** on head `5403028` (the journey's only iteration defect — a forged-
-booking assertion that read `submit_form`'s keyword classifier, which matches
-«ثبت» inside «ثبت نشد» — was fixed by asserting the uniform-denial notice text
-directly). The mariadb lane of the same head was still finishing at the time
-box; the same journey code runs on both lanes.
+with locations/schedules/booking). **Result: `First-practice browser (mysql)`
+and `First-practice browser (mariadb)` both SUCCESS on head `87c8c93`** (the
+journey's only iteration defect — a forged-booking assertion that read
+`submit_form`'s keyword classifier, which matches «ثبت» inside «ثبت نشد» — was
+fixed by asserting the uniform-denial notice text directly).
 
 ## 3. B3 — MEDIUM: cross-form stale input collision — FIXED and VERIFIED
 
@@ -95,63 +99,73 @@ Regression test `testNoticeCategoriesDistinguishInvalidPrerequisiteAndDenied`
 - no documentation-only CI-trigger commits: this report ships with the code
   commits; live CI status is maintained in the PR body via `gh pr edit`.
 
-## 6. Browser matrix (this remediation)
+## 6. Browser matrix
 
 | Journey | MySQL 8.0 | MariaDB 11.4.13 |
 |---|---|---|
-| First-practice 577 + recovery 287 + 12-type matrix | PASS (head 5403028) | see exact-head CI |
-| Hospital two-Subscriber-manager (50 checks) | PASS (step green on 5403028) | see exact-head CI |
-| **Delegated non-hospital journey (NEW)** | **PASS** (head 5403028) | see exact-head CI |
-| Persian RTL 390px (responsive + journeys) | PASS | see exact-head CI |
+| First-practice 577 + recovery 287 + 12-type matrix | **PASS** | **PASS** |
+| Hospital two-Subscriber-manager (50 checks) | **PASS** | **PASS** |
+| **Delegated non-hospital journey (NEW)** | **PASS** | **PASS** |
+| Persian RTL 390px (responsive smoke + journeys) | **PASS** | **PASS** |
+
+Evidence: `First-practice browser (mysql)` and `First-practice browser (mariadb)`
+both `success` on head `87c8c93` (each lane runs the first-practice suite,
+recovery fixtures, the hospital two-manager journey and the delegated
+non-hospital journey); `Responsive smoke (Chromium ×4 viewport)` `success`.
 
 ## 7. Exact-head CI status and Integration counts
 
-Authoritative exact-head table (head `65b5f34215c211fb07a70d446287c63e0674db2b`,
-dispatched 14:26:27 UTC) is recorded in the PR body of #257 (updated via
-`gh pr edit`; per B5 no docs-only CI-trigger commits). Status at the time box
-from the penultimate head `5403028` (identical code except diagnostic
-breadcrumbs):
+**Head `87c8c93b4642c3ac749a81c3403a4cb76620a46d`: 26 check-runs, 26 SUCCESS,
+0 failure, 0 skipped** (retrieved from the GitHub check-runs API for that exact
+SHA). The 26 checks are:
 
-- WPCS (changed code) **PASS**; PHPStan **PASS**; Unit PHP 8.1–8.4 **PASS**;
-  Closure gates **PASS**; Tenant/Authz tripwire **PASS**; Composer audit
-  **PASS**; Architecture Guard **PASS**; REST Contract Lint **PASS**;
-  Migration gates (MySQL 8.0 / MariaDB 10.11) **PASS**; MariaDB 10.11 / 11.4
-  runtime parity **PASS**; WP 6.6/6.7/7.1 matrix **PASS**; Release packaging
-  **PASS**; Stage A clean-host **PASS**; Third-party baseline **PASS**; Real
-  WordPress Acceptance **PASS**; Persian coexistence **PASS**; Pilot/Staging
-  **PASS**; Closure **PASS**; First-practice browser (mysql) **PASS**.
-- **Integration (WP 7.1 + MySQL 8): FAIL — Tests: 2253, Assertions: 64,838,
-  Errors: 2.** The two errors are
-  `FacilityTypeAdaptivePlanTest::testHospitalAckGateIsHospitalOnlyAndExplicit`
-  and `FacilityTypeAdaptivePlanTest::testHospitalKeepsTheProvenOutpatientRules`
-  (the scenario was split at the ambiguous region for diagnosis). **B1 is
-  fixed** (the suite runs; only these 2 errors remain, vs the audited head's
-  fatal after 7 tests) and all five new `DelegatedClinicCompletionTest` tests
-  pass. The error is **not** in the test bodies (in-body `::error::`
-  breadcrumbs did not fire) nor in the class tearDown body — the remaining
-  zone is `parent::tearDown()` (WP test lifecycle) reacting to state left by
-  the hospital-scenario paths (start(hospital) / `acknowledge_outpatient` /
-  in-transaction refusals); a final breadcrumb round covering that zone was
-  dispatched at 14:26:27 UTC and its annotation will name the exact throwable
-  after the time box.
+Closure ×4 (`PHP 8.1`, `PHP 8.3`, `PHP 8.4`, `destructive restoreApply
+(isolated)`) · `WPCS (changed code)` · `Static Analysis (PHPStan)` · `Unit
+Tests` PHP 8.1/8.2/8.3/8.4 · `Integration (WP 7.1 + MySQL 8)` · `Tenant
+Tripwire (hardcode scan)` · `Release Artifact (build + policy)` · `Staging Gate
+(fresh install → restore drill)` · `Upgrade path (pinned pre-#191 source →
+candidate)` · `Real WP Acceptance` (`prefix clinic_`, `prefix wp_`) ·
+`Responsive smoke (Chromium ×4 viewport)` · `First-practice browser (mysql)` ·
+`First-practice browser (mariadb)` · `coexistence` ×6 (`Real WP Acceptance
+prefix wp_`, `combined-nineteen`, `combined-ten`, `persian-woocommerce-diagnosis`,
+`persian-woocommerce-sms`, `security-authentication`).
+
+**Integration (WP 7.1 + MySQL 8): PASS — 2253 tests, 0 errors, 0 failures.**
+Evidence levels, stated precisely:
+- the test INVENTORY is 2253 (printed by the immediately preceding run on
+  `6b18658`: `Tests: 2253, Assertions: 64,839, Errors: 2`; `87c8c93` changed
+  only statement ORDER inside two tests — it added and removed no test);
+- the run on `87c8c93` is `success` and carries **no failure annotation** (the
+  two previously failing tests, `FacilityTypeAdaptivePlanTest::testHospitalAckGateIsHospitalOnlyAndExplicit`
+  and `testHospitalKeepsTheProvenOutpatientRules`, are green);
+- the green run's exact assertion total is **not published** by the check-runs
+  API (empty output summary) and the `integration-phpunit-log` artifact cannot
+  be downloaded from this environment (Azure blob host is not reachable), so no
+  assertion number is claimed for it.
+
+**Root cause of the last two Integration errors (now fixed, `87c8c93`):** the
+tests were wrong, not the product — instrumented breadcrumbs proved
+`FacilitySetupException` «پیش از ایجاد درمانگاه، محدودهٔ فقط سرپایی بیمارستان را
+صریحاً تأیید کنید» at `FacilitySetupService.php:357`: `add_clinic` requires the
+hospital outpatient acknowledgment BEFORE the first Hospital Clinic is created
+(the same order the proven `hospitalReady()` helper and the real-browser
+journey use). The tests acknowledged afterwards; the acknowledgment was moved
+before `add_clinic`.
 
 ## 8. Remaining blockers
 
-1. **Integration is not yet zero-error (2 errors, named above).** Root cause is
-   narrowed to the WP test-lifecycle/teardown interaction with the
-   hospital-scenario state; the exact throwable is being surfaced by the
-   dispatched diagnostic round. The same scenario's production paths are
-   exercised green by the real-browser hospital journey (50/50) on MySQL 8.0
-   and the 577-check first-practice suite, so this is a test-harness
-   interaction, not a product regression — but per the acceptance bar ("Full
-   Integration PASS with zero failures/errors") this remains **OPEN**.
-2. Exact-head CI on `65b5f34` completes after the time box — record its table
-   in the PR body; the mariadb first-practice lane of `5403028` was still
-   running at the time box (same journey code as the green mysql lane).
+**None** for the scope of this PR. The temporary `FTA-DEBUG` diagnostics used to
+prove the last root cause are removed in this cleanup commit; production logic,
+security policy, browser workflows and test assertions are unchanged.
+
+(Standing product-scope note, unchanged by this PR: MariaDB 11.8 is diagnosed
+but **not** certified — the engine gate is untouched and real MariaDB 11.8
+migration execution remains NOT RUN; see §5 of the remediation record in the PR
+history.)
 
 ## 9. Verdict
 
-**BLOCKED** — B1/B3/B4/B5 are fixed and verified; B2 is fixed and verified
-both by integration tests and by a real-Chromium delegated non-hospital
-journey (green on the MySQL lane). The single remaining blocker is the two
-Integration errors named in §7/§8. The PR stays Draft and is not merged.
+**READY FOR REVIEW (Draft)** — all five independent-audit blockers are fixed
+and verified; 26/26 exact-head checks pass; Integration passes with 2253 tests
+and zero errors/failures; both MySQL and MariaDB browser lanes pass. Per the
+task instructions the PR stays **Draft** and is **not merged**.
