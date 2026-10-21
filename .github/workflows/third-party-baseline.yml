@@ -325,7 +325,7 @@ jobs:
           - id: persian-woocommerce
             name: Persian WooCommerce
             slug: persian-woocommerce
-            version: '10.0.6'  # requires WP 6.8, PHP 7.4 — verified 2026-10-20 stable 10.0.6 (API 10.0.6, BugBounty mirror 10.0.6; previous 10.0.5)
+            version: '10.0.7'  # requires WP 6.8, PHP 7.4 — verified 2026-10-21 stable 10.0.7 (official Plugins API 1.2: version 10.0.7, last_updated 2026-10-21 5:25pm GMT, download_link .../persian-woocommerce.10.0.7.zip; previous 10.0.6 verified 2026-10-20)
             source: wordpress_org
             kind: subject
             deps: 'woocommerce=11.2.0'
@@ -1084,15 +1084,18 @@ jobs:
         # rather than on the presence of a locale field so the condition cannot
         # depend on how GitHub evaluates an unset matrix key.
         #
-        # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.6)
+        # TWO LEGS TAKE A NARROW RETRIEVAL FALLBACK: persian-woocommerce (10.0.7)
         # and persian-woocommerce-sms (now pinned 7.3.2; 7.2.3 -> 7.3.0 on
         # 2026-10-11, then 7.3.0 -> 7.3.1 on 2026-10-14, then 7.3.1 -> 7.3.2 on
         # 2026-10-20 per official API + BugBounty mirror).
-        # WordPress.org reports both at a
-        # stable version but publishes no version tag for either, so the versioned
-        # ZIP `<slug>.<version>.zip` is a confirmed HTTP 404 while the plugins API
-        # serves the unversioned `.../plugin/<slug>.zip`. Every other leg's
-        # download_link is versioned and none of them can reach the fallback.
+        # Historically WordPress.org published no version tag for either, so the
+        # versioned ZIP `<slug>.<version>.zip` was a confirmed HTTP 404 while the
+        # plugins API served the unversioned `.../plugin/<slug>.zip`. The
+        # versioned URL is always tried first and used directly when it exists
+        # (the API returned a versioned persian-woocommerce 10.0.7 download_link
+        # at the 2026-10-21 verification); only a confirmed 404 may enter the
+        # fallback. Every other leg's download_link is versioned and none of
+        # them can reach the fallback.
         # probe.py names those two slugs in OFFICIAL_STABLE_FALLBACK_SLUGS and
         # nothing else may enter it. The fallback is 404-triggered only, and it
         # makes the official API prove the canonical slug and the exact pinned

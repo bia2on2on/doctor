@@ -111,15 +111,19 @@ WORDPRESS_ORG_PACKAGE = "https://downloads.wordpress.org/plugin/{slug}.{version}
 
 # --- narrow official-stable retrieval fallback ------------------------------ #
 # Two subjects, listed by name, for one specific provider condition and nothing
-# else. WordPress.org reports Persian WooCommerce at stable 10.0.6 and Persian
-# WooCommerce SMS at stable 7.3.2 (pins were 10.0.5 / 7.3.1 at 2026-10-14,
-# 7.3.0 after 2026-10-11, with 7.2.3 before that); the live SMS versions map
-# still ends at 7.2.1. Neither
-# currently publishes a version tag for its stable package, so the versioned ZIP URL
-# `<slug>.<version>.zip` returns HTTP 404 while the plugin's own API
-# `download_link` is the unversioned `.../plugin/<slug>.zip`. Verified on the live
-# plugins API: every other subject in this matrix has a versioned
-# `download_link`; only these two do not.
+# else. WordPress.org reports Persian WooCommerce at stable 10.0.7 and Persian
+# WooCommerce SMS at stable 7.3.2 (the persian-woocommerce pin was 10.0.6 at
+# 2026-10-20 and 10.0.5 before that; SMS was 7.3.1 at 2026-10-14, 7.3.0 after
+# 2026-10-11, with 7.2.3 before that); the live SMS versions map still ends at
+# 7.2.1. Historically neither published a version tag for its stable package,
+# so the versioned ZIP URL `<slug>.<version>.zip` returned HTTP 404 while the
+# plugin's own API `download_link` was the unversioned `.../plugin/<slug>.zip`.
+# The fallback below is therefore conditional, not assumed: the versioned URL
+# is always tried first and is used directly when it exists (the API returned
+# a versioned `.../persian-woocommerce.10.0.7.zip` download_link at the
+# 2026-10-21 verification); only a confirmed HTTP 404 on a listed slug may
+# enter the API-proven stable path. ZIP header identity, SHA-256 and installed
+# version checks apply identically on either path.
 #
 # This is deliberately NOT a download framework. A slug that is not listed here
 # keeps the exact previous behaviour: versioned URL, three bounded attempts, fail
@@ -1274,6 +1278,20 @@ def cmd_install(args: argparse.Namespace) -> int:
             hard_fail = True
             os.remove(zip_path)
             continue
+
+        # Surface the verified package identity and SHA-256 as a check-run
+        # annotation as well as in the artifact: artifacts and raw logs are
+        # served from blob storage that review tooling outside the runner
+        # cannot reach (see `annotate`), so the annotation is the only
+        # externally readable channel for this evidence. This is a notice
+        # only — it records no check, changes no count and cannot affect any
+        # verdict or gate disposition.
+        annotate("notice",
+                 f"package_sha256::{slug} version={version} "
+                 f"sha256={entry['sha256']} source_type={entry['source_type']} "
+                 f"source_url={entry['source_url']} "
+                 f"header_version={identity['header_version']} "
+                 f"plugin_file={identity['plugin_file']}")
 
         if entry["source_type"] == "wordpress_org_official_stable_fallback":
             # The API is asked a SECOND time, immediately before install: if the

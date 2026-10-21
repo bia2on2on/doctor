@@ -367,6 +367,15 @@ class DiagnosticExceptionTests(PropagationCase):
         completed, result = self.run_case(subject={**self.SUBJECT, "version_requested": "10.0.6"})
         self.assert_blocking(completed, result, "another version")
 
+    def test_current_pin_10_0_7_is_not_covered_by_the_historical_exception(self):
+        # The frozen pin moved 10.0.6 -> 10.0.7 on 2026-10-21. The historical
+        # exception was deliberately NOT extended with it: even the exact
+        # accepted 10.0.5 signature, replayed at the current pin, must block
+        # until fresh 10.0.7 evidence is measured and separately accepted.
+        completed, result = self.run_case(subject={**self.SUBJECT, "version_requested": "10.0.7"})
+        self.assert_blocking(completed, result,
+                             "the current 10.0.7 pin is not the approved 10.0.5 subject")
+
     def test_other_slug_same_version_and_signature_blocks(self):
         completed, result = self.run_case(subject={**self.SUBJECT, "slug": "wp-parsidate"})
         self.assert_blocking(completed, result, "another plugin")

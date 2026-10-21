@@ -452,9 +452,9 @@ class GroupSelectionTests(unittest.TestCase):
         module = load_group("combined-nineteen")
         expected = authoritative_subject_pins()
         # The authoritative matrix itself is unchanged and still holds 19 free
-        # subjects, Persian WooCommerce 10.0.6 included (updated 2026-10-20).
+        # subjects, Persian WooCommerce 10.0.7 included (updated 2026-10-21).
         self.assertEqual(len(expected), 19)
-        self.assertEqual(expected["persian-woocommerce"], "10.0.6")
+        self.assertEqual(expected["persian-woocommerce"], "10.0.7")
         # The Phase 19 owner decision quarantines exactly one subject from this
         # active scenario; every other plugin keeps its exact authoritative pin.
         self.assertEqual(len(module.PINS), 18)
@@ -475,11 +475,11 @@ class GroupSelectionTests(unittest.TestCase):
         # Exclusion narrows only this combined scenario: the independent Persian
         # WooCommerce lanes keep their exact pins and CPMS-free/Stage-B boundaries.
         diagnosis = load_group("persian-woocommerce-diagnosis")
-        self.assertEqual(diagnosis.PINS, {"woocommerce": "11.2.0", "persian-woocommerce": "10.0.6"})
+        self.assertEqual(diagnosis.PINS, {"woocommerce": "11.2.0", "persian-woocommerce": "10.0.7"})
         self.assertFalse(diagnosis.STAGE_B_ENABLED)
         self.assertEqual(module.GROUPS["combined-nineteen"]["title"],
                          "Persian combined compatibility scenario (18 active plugins; "
-                         "Persian WooCommerce 10.0.6 quarantined)")
+                         "Persian WooCommerce 10.0.7 quarantined)")
 
     def test_new_sms_and_diagnostic_groups_have_independent_pins_and_b_boundaries(self):
         sms = load_group("persian-woocommerce-sms")
@@ -494,7 +494,7 @@ class GroupSelectionTests(unittest.TestCase):
 
         diagnosis = load_group("persian-woocommerce-diagnosis")
         self.assertEqual(diagnosis.PINS, {"woocommerce": "11.2.0",
-                                          "persian-woocommerce": "10.0.6"})
+                                          "persian-woocommerce": "10.0.7"})
         self.assertFalse(diagnosis.STAGE_B_ENABLED)
         self.assertIn("CPMS coexistence", diagnosis.NOT_RUN)
         self.assertNotIn("permission experiment", diagnosis.NOT_RUN)
