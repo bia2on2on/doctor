@@ -1,0 +1,228 @@
+name: Facility Onboarding Matrix (12 types · MySQL 8 + MariaDB 11.4.13)
+
+# Real-browser, real-HTTP onboarding matrix for ALL twelve approved facility
+# types (plus the independent medical-building STRUCTURE).
+#
+# Why a dedicated lane: the first-practice lane already proves installation,
+# recovery and the four original flows. This lane exists to turn "all 12 types
+# are supported" from a catalogue/Integration claim into per-type browser
+# evidence on BOTH supported database engines. It is isolated so its runtime can
+# never starve the established acceptance lanes.
+#
+# Business users only: the Organization Manager and the designated Clinic
+# Managers are WordPress Subscribers driving the frontend Management Portal.
+# No wp-admin page is opened by the harness. Synthetic data only.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  WP_VERSION: '7.1.3'
+  PHP_VERSION: '8.2'
+  WP_DIR: /home/runner/mtx
+  WP_URL: http://localhost:8080
+  DB_NAME: cpms_mtx
+  ADMIN_USER: mtx_admin
+  ADMIN_PASS: Acceptance-2026!
+  ORG_MANAGER_USER: mtx_orgmgr
+  ORG_MANAGER_PASS: Acceptance-2026!
+  MATRIX_MANAGER_PASS: Acceptance-2026!
+
+jobs:
+  facility-matrix:
+    name: Facility matrix (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: mariadb
+            image: mariadb:11.4.13
+          - database: mysql
+            image: mysql:8
+
+    services:
+      database:
+        image: ${{ matrix.image }}
+        env:
+          MARIADB_ROOT_PASSWORD: root
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -proot || mariadb-admin ping -h 127.0.0.1 -proot"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
+          coverage: none
+
+      - name: Tooling (apache + wp-cli + playwright/chromium)
+        run: |
+          mkdir -p /tmp/mtx
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd > /tmp/mtx/apt.log 2>&1 || { tail -20 /tmp/mtx/apt.log; exit 1; }
+          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
+          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+          wp --allow-root --version
+          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
+          python3 -m playwright install --with-deps chromium > /tmp/mtx/pw.log 2>&1 || { tail -10 /tmp/mtx/pw.log; exit 1; }
+
+      - name: Lint the matrix harness
+        run: |
+          set -euo pipefail
+          python3 -m py_compile clinic-practice-management/bin/rwp-facility-matrix-journey.py
+          python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-facility-matrix-journey.py
+          bash -n clinic-practice-management/bin/build-release.sh
+
+      - name: Pin and record database server
+        run: |
+          set -euo pipefail
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
+          echo "${{ matrix.database }} server VERSION(): ${server_version}"
+          case "${{ matrix.database }}:$server_version" in
+            mariadb:11.4.13-MariaDB*|mysql:8.*) ;;
+            *) echo "Unexpected database server: ${server_version}" >&2; exit 1 ;;
+          esac
+          printf '%s\n' "$server_version" > /tmp/mtx/database-version.txt
+
+      - name: Clean WordPress (isolated DB)
+        run: |
+          set -euo pipefail
+          curl -sS "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
+          mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          wp config set FS_METHOD direct --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp core install --url="$WP_URL" --title="CPMS Facility Matrix" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --allow-root
+          wp core version --allow-root | tee /tmp/mtx/wp-version.txt
+
+      - name: Apache + mod_php
+        run: |
+          sudo tee /etc/apache2/sites-available/mtx.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog \${APACHE_LOG_DIR}/mtx-error.log
+            CustomLog \${APACHE_LOG_DIR}/mtx-access.log combined
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null && sudo a2ensite mtx >/dev/null
+          sudo a2enmod rewrite >/dev/null
+          sudo mkdir -p "$WP_DIR/wp-content"
+          sudo touch "$WP_DIR/wp-content/debug.log"
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          sudo chmod 777 "$WP_DIR/wp-content"
+          sudo chmod 666 "$WP_DIR/wp-content/debug.log"
+          for INI in /etc/php/*/apache2/php.ini; do
+            sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"
+            sudo sed -i 's/^upload_max_filesize = .*/upload_max_filesize = 64M/' "$INI"
+            sudo sed -i 's/^post_max_size = .*/post_max_size = 72M/' "$INI"
+            sudo sed -i "s#^error_log = .*#error_log = $WP_DIR/wp-content/debug.log#" "$INI"
+          done
+          sudo chmod a+rx /home/runner
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo apache2ctl configtest && sudo service apache2 start
+          curl -s -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/" | tee /tmp/mtx/apache.txt
+
+      - name: Build official release ZIP and install it
+        run: |
+          set -euo pipefail
+          bash clinic-practice-management/bin/build-release.sh
+          ZIP=$(ls clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
+          [ -f "$ZIP" ] || { echo 'ZIP NOT BUILT'; exit 1; }
+          sha256sum "$ZIP" | tee /tmp/mtx/zip.sha256
+          wp plugin install "$PWD/$ZIP" --activate --path="$WP_DIR" --allow-root
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          wp eval 'echo "schema=" . \ClinicCore\Bootstrap\App::migrations()->currentVersion() . PHP_EOL;' --path="$WP_DIR" --allow-root | tee /tmp/mtx/schema.txt
+
+      - name: Isolated business identities
+        run: |
+          set -euo pipefail
+          wp user create "$ORG_MANAGER_USER" 'orgmgr@acc.local' --user_pass="$ORG_MANAGER_PASS" --role=subscriber --path="$WP_DIR" --allow-root
+          MEMBERS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_clinic_memberships;")
+          echo "pre-browser membership rows: $MEMBERS"
+          [ "$MEMBERS" = "0" ] || { echo 'FAIL: memberships must be zero before the matrix (no pre-seeded Clinic authority)'; exit 1; }
+          CLINICS=$(mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM $DB_NAME.wp_cpms_clinics;")
+          echo "pre-browser clinic rows: $CLINICS"
+          [ "$CLINICS" = "0" ] || { echo 'FAIL: clinics must be zero before the matrix'; exit 1; }
+
+      - name: Browser matrix — all 12 types + medical-building structure
+        run: |
+          set -o pipefail
+          BASE="$WP_URL" \
+          ORG_MANAGER_USER="$ORG_MANAGER_USER" ORG_MANAGER_PASS="$ORG_MANAGER_PASS" \
+          MATRIX_MANAGER_PASS="$MATRIX_MANAGER_PASS" \
+          WP_DIR="$WP_DIR" OUT=/tmp/mtx \
+          python3 clinic-practice-management/bin/rwp-facility-matrix-journey.py | tee /tmp/mtx/facility-matrix.log
+
+      - name: Capture debug log + versions
+        if: always()
+        run: |
+          mkdir -p /tmp/mtx/logs
+          {
+            echo "head_sha=${GITHUB_SHA}"
+            echo "wordpress=$(cat /tmp/mtx/wp-version.txt 2>/dev/null || echo unknown)"
+            echo "php=$(php -r 'echo PHP_VERSION;' 2>/dev/null || echo unknown)"
+            echo "database=${{ matrix.database }} $(cat /tmp/mtx/database-version.txt 2>/dev/null || echo unknown)"
+            echo "zip_sha256=$(cut -d' ' -f1 /tmp/mtx/zip.sha256 2>/dev/null || echo unknown)"
+          } | tee /tmp/mtx/versions.txt
+          cp "$WP_DIR/wp-content/debug.log" /tmp/mtx/logs/debug.log 2>/dev/null || : > /tmp/mtx/logs/debug.log
+          if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log; then
+            echo 'LOG GATE: FAIL — fatal/uncaught/critical in debug.log'
+            grep -nE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log | tail -20
+            exit 1
+          fi
+          echo 'LOG GATE: clean'
+
+      - name: Upload matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: facility-matrix-${{ matrix.database }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            /tmp/mtx/
+            !/tmp/mtx/**/*.zip
+            !/tmp/mtx/**/*.sql
+          retention-days: 14
+
+      - name: Summary (per-type PASS/FAIL)
+        if: always()
+        run: |
+          {
+            echo "## Facility onboarding matrix — ${{ matrix.database }}"
+            echo
+            echo "- head SHA: \`${GITHUB_SHA}\`"
+            echo "- database: \`$(cat /tmp/mtx/database-version.txt 2>/dev/null || echo unknown)\`"
+            echo "- WordPress: \`$(cat /tmp/mtx/wp-version.txt 2>/dev/null || echo unknown)\`"
+            echo
+            echo '```'
+            tail -40 /tmp/mtx/facility-matrix.log 2>/dev/null || echo '(browser step did not run)'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
