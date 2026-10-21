@@ -115,12 +115,56 @@ final class ManagementPortalController {
 		$input  = self::collect_input( $action );
 		$result = self::dispatch( $actor, $action, $input );
 
-		self::redirect(
-			array_merge(
-				self::selection_from_input( $input ),
-				array( 'notice' => $result['ok'] ? 'done' : 'denied' )
-			)
+		// Correct PRG: the redirect carries only an allowlisted notice KIND; the
+		// safe user-facing message and the entered values travel in a
+		// short-lived, user-scoped transient (never in the URL), so a validation
+		// failure re-renders the form with the values the user typed.
+		$notice = is_string( $result['notice'] ?? null ) ? (string) $result['notice'] : ( $result['ok'] ? 'done' : 'denied' );
+		if ( ! in_array( $notice, [ 'done', 'denied', 'invalid', 'prerequisite', 'failed', 'auth_required', 'login_failed' ], true ) ) {
+			$notice = $result['ok'] ? 'done' : 'denied';
+		}
+		set_transient(
+			self::form_state_key( $actor ),
+			[
+				'notice' => $notice,
+				'message' => (string) ( $result['message'] ?? '' ),
+				'action'  => $action,
+				'fields'  => self::preserved_fields( $input ),
+			],
+			10 * MINUTE_IN_SECONDS
 		);
+
+		self::redirect( array_merge( self::selection_from_input( $input ), array( 'notice' => $notice ) ) );
+	}
+
+	/**
+	 * Transient key holding one user's last form outcome (message + entered
+	 * values). User-scoped and expiring: it never widens visibility.
+	 */
+	public static function form_state_key( int $actor_wp_user_id ): string {
+		return 'cpms_mp_form_state_' . $actor_wp_user_id;
+	}
+
+	/**
+	 * Non-sensitive scalar form values preserved across a failed submission
+	 * (name/address/labels, times, numbers, chosen keys). Never a credential.
+	 *
+	 * @param array<string,mixed> $input
+	 * @return array<string,string>
+	 */
+	private static function preserved_fields( array $input ): array {
+		$out = array();
+		foreach ( $input as $key => $value ) {
+			if ( 'action' === $key || is_array( $value ) || ! is_scalar( $value ) ) {
+				continue;
+			}
+			$text = trim( (string) $value );
+			if ( '' !== $text && mb_strlen( $text ) <= 255 ) {
+				$out[ (string) $key ] = $text;
+			}
+		}
+
+		return $out;
 	}
 
 	/**
@@ -128,7 +172,7 @@ final class ManagementPortalController {
 	 * tests with an explicit actor id and an input array.
 	 *
 	 * @param array<string,mixed> $input
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	public static function dispatch( int $actor_wp_user_id, string $action, array $input ): array {
 		// FIX 1 — WordPress reserves POST param `name` (query var → 404 on frontend POST).
@@ -304,9 +348,9 @@ final class ManagementPortalController {
 					if ( null !== $__resolved_site ) {
 						$__site_address = $__resolved_site;
 					}
-				} catch ( \InvalidArgumentException $e ) {
-					return self::denied();
-				}
+			} catch ( \InvalidArgumentException $e ) {
+				return self::invalid_input( 'استان/شهر انتخابی معتبر نیست؛ نشانی را از فهرست مجاز انتخاب کنید یا متن نشانی را کامل وارد کنید.' );
+			}
 				return $service->add_facility_site(
 					$actor_wp_user_id,
 					self::int_value( $input, 'organization_id' ),
@@ -625,12 +669,24 @@ final class ManagementPortalController {
 	}
 
 	/**
-	 * @return array{ok:bool, message:string}
+	 * @return array{ok:bool, message:string, notice?:string}
+	 */
+	private static function invalid_input( string $message ): array {
+		return array(
+			'ok'      => false,
+			'message' => $message,
+			'notice'  => 'invalid',
+		);
+	}
+
+	/**
+	 * @return array{ok:bool, message:string, notice?:string}
 	 */
 	private static function denied(): array {
 		return array(
 			'ok'      => false,
-			'message' => 'عملیات انجام نشد؛ دسترسی یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.',
+			'message' => 'عملیات انجام نشد؛ دسترسی لازم را ندارید یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.',
+			'notice'  => 'denied',
 		);
 	}
 

@@ -463,25 +463,19 @@ final class ManagementPortalTest extends WP_UnitTestCase {
     public function test_subscriber_clinic_manager_enrolls_staff_and_provisions_only_a_subscriber(): void {
         $email = 'cpms-staff-' . bin2hex( random_bytes( 4 ) ) . '@example.test';
 
-        // Delegation bound: a plain manager does NOT hold the secretary preset,
-        // so it may not hand that role out (review P0-2).
-        self::assertFalse( ManagementPortalController::dispatch(
-            $this->clinicManager,
-            'clinic_staff_enroll',
-            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => $email, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
-        )['ok'], 'a manager cannot delegate a role whose capabilities it does not hold' );
-        self::assertFalse( get_user_by( 'email', $email ), 'a refused enrollment must not provision an account' );
-
-        // Once the manager actually holds the secretary capability set (explicit
-        // membership grants), delegation is allowed and stays Clinic-scoped.
-        $this->grant_caps( $this->clinicA, $this->clinicManager, array_keys( RolesAndCapabilities::capsMap( RolesAndCapabilities::ROLE_SECRETARY ) ) );
+        // Corrected role-assignment policy (2026-10-21): a Clinic Manager with
+        // EXPLICIT staff-management authority (cpms_config, ACTIVE membership)
+        // may assign the approved operational roles in its own Clinic WITHOUT
+        // possessing the clinical/financial capabilities being delegated.
+        self::assertTrue( App::authorization_service()->can( $this->clinicManager, $this->clinicA, RolesAndCapabilities::CONFIG ) );
+        self::assertFalse( App::authorization_service()->can( $this->clinicManager, $this->clinicA, RolesAndCapabilities::MEDICAL_READ ) );
 
         $result = ManagementPortalController::dispatch(
             $this->clinicManager,
             'clinic_staff_enroll',
             array( 'clinic_id' => (string) $this->clinicA, 'identifier' => $email, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
         );
-        self::assertTrue( $result['ok'], 'an ACTIVE Clinic manager may enroll staff through the portal' );
+        self::assertTrue( $result['ok'], 'staff-management authority may enroll a secretary/receptionist without holding the secretary preset' );
 
         $created = get_user_by( 'email', $email );
         self::assertInstanceOf( \WP_User::class, $created );
@@ -502,6 +496,52 @@ final class ManagementPortalTest extends WP_UnitTestCase {
         self::assertTrue( App::authorization_service()->can( (int) $created->ID, $this->clinicA, RolesAndCapabilities::APPT_CREATE ) );
         self::assertFalse( App::authorization_service()->can( (int) $created->ID, $this->clinicA, RolesAndCapabilities::CONFIG ) );
         self::assertFalse( App::authorization_service()->can( (int) $created->ID, $this->clinicB, RolesAndCapabilities::APPT_CREATE ) );
+
+        // Doctors and accountants are equally enrollable on staff-management
+        // authority alone (the preset confers the delegated capabilities — the
+        // actor never needs to hold them).
+        foreach ( array(
+            'cpms-doctor-' . bin2hex( random_bytes( 3 ) ) . '@example.test' => RolesAndCapabilities::ROLE_DOCTOR,
+            'cpms-acct-' . bin2hex( random_bytes( 3 ) ) . '@example.test'   => RolesAndCapabilities::ROLE_ACCOUNTANT,
+        ) as $staff_email => $staff_role ) {
+            $enrolled = ManagementPortalController::dispatch(
+                $this->clinicManager,
+                'clinic_staff_enroll',
+                array( 'clinic_id' => (string) $this->clinicA, 'identifier' => $staff_email, 'role_key' => $staff_role )
+            );
+            self::assertTrue( $enrolled['ok'], 'an approved operational role must be enrollable: ' . $staff_role );
+            $staff_user = get_user_by( 'email', $staff_email );
+            self::assertInstanceOf( \WP_User::class, $staff_user );
+            $this->userIds[] = (int) $staff_user->ID;
+            $staff_membership = App::membership_service()->membership_for( $this->clinicA, (int) $staff_user->ID );
+            self::assertNotNull( $staff_membership );
+            self::assertSame( $staff_role, (string) $staff_membership['role_key'] );
+        }
+
+        // No manager delegation through the staff surface: designating a Clinic
+        // Manager is EXPLICIT Organization authority (cpms_org_clinic_manager_assign).
+        $manager_attempt = ManagementPortalController::dispatch(
+            $this->clinicManager,
+            'clinic_staff_enroll',
+            array( 'clinic_id' => (string) $this->clinicA, 'identifier' => 'cpms-mgr-' . bin2hex( random_bytes( 3 ) ) . '@example.test', 'role_key' => RolesAndCapabilities::ROLE_MANAGER )
+        );
+        self::assertFalse( $manager_attempt['ok'], 'a Clinic Manager can never mint another Clinic Manager through the staff surface' );
+        self::assertSame( 'invalid', (string) ( $manager_attempt['notice'] ?? '' ), 'manager role is an input-level refusal, not a silent partial write' );
+
+        // A WordPress Administrator is never a CPMS staff target.
+        $admin = get_user_by( 'login', 'admin' );
+        if ( ! $admin instanceof \WP_User ) {
+            $admins = get_users( array( 'role' => 'administrator', 'number' => 1 ) );
+            $admin  = $admins[0] ?? null;
+        }
+        if ( $admin instanceof \WP_User ) {
+            $admin_target = ManagementPortalController::dispatch(
+                $this->clinicManager,
+                'clinic_staff_enroll',
+                array( 'clinic_id' => (string) $this->clinicA, 'identifier' => (string) $admin->user_email, 'role_key' => RolesAndCapabilities::ROLE_SECRETARY )
+            );
+            self::assertFalse( $admin_target['ok'], 'a WordPress Administrator is never enrolled as CPMS staff' );
+        }
     }
 
     public function test_staff_enrollment_is_clinic_scoped_and_never_overwrites(): void {

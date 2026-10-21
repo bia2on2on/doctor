@@ -46,12 +46,47 @@ $cpms_mp_clinic_id  = isset( $_GET[ ManagementPortalShell::CLINIC_PARAM ] ) ? ab
 
 $cpms_mp_notices = array(
 	'done'          => array( 'class' => 'is-success', 'text' => 'عملیات با موفقیت ثبت شد.' ),
-	'denied'        => array( 'class' => 'is-error', 'text' => 'عملیات انجام نشد؛ دسترسی یا داده‌های ارسالی معتبر نیستند و هیچ تغییری ثبت نشد.' ),
-	'invalid'       => array( 'class' => 'is-error', 'text' => 'درخواست نامعتبر است. دوباره تلاش کنید.' ),
+	'denied'        => array( 'class' => 'is-error', 'text' => 'عملیات انجام نشد؛ شما مجوز انجام این عملیات را ندارید و هیچ تغییری ثبت نشد.' ),
+	'invalid'       => array( 'class' => 'is-error', 'text' => 'ورودی نامعتبر است؛ مقادیر فرم را بررسی و دوباره تلاش کنید.' ),
+	'prerequisite'  => array( 'class' => 'is-error', 'text' => 'پیش‌نیاز این عملیات هنوز برآورده نشده است؛ ابتدا گام‌های قبلی را تکمیل کنید.' ),
+	'failed'        => array( 'class' => 'is-error', 'text' => 'خطای داخلی رخ داد و هیچ تغییری ثبت نشد؛ لطفاً دوباره تلاش کنید.' ),
 	'auth_required' => array( 'class' => 'is-error', 'text' => 'برای انجام این عملیات ابتدا وارد شوید.' ),
 	'login_failed'  => array( 'class' => 'is-error', 'text' => 'ورود ناموفق بود یا دسترسی مدیریتی CPMS برای این حساب وجود ندارد.' ),
 );
-$cpms_mp_notice  = $cpms_mp_notices[ $cpms_mp_notice_key ] ?? null;
+// One-shot, user-scoped form outcome from the PRG redirect: the safe Persian
+// message and the values the user typed (so a validation failure never wipes
+// the form). Consumed on first render; never shared across users.
+$cpms_mp_form_state = null;
+if ( $cpms_mp_logged_in ) {
+	$cpms_mp_state_key  = \ClinicCore\Frontend\ManagementPortalController::form_state_key( $cpms_mp_actor );
+	$cpms_mp_form_state = get_transient( $cpms_mp_state_key );
+	if ( is_array( $cpms_mp_form_state ) ) {
+		delete_transient( $cpms_mp_state_key );
+	} else {
+		$cpms_mp_form_state = null;
+	}
+}
+$cpms_mp_stale = array();
+if ( is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['fields'] ) && is_array( $cpms_mp_form_state['fields'] ) ) {
+	$cpms_mp_stale = $cpms_mp_form_state['fields'];
+}
+$cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_notice_key ] ?? null;
+if ( is_array( $cpms_mp_form_state ) ) {
+	$cpms_mp_state_notice = isset( $cpms_mp_form_state['notice'] ) ? (string) $cpms_mp_form_state['notice'] : '';
+	if ( isset( $cpms_mp_notices[ $cpms_mp_state_notice ] ) && '' !== $cpms_mp_state_notice ) {
+		$cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_state_notice ];
+		$cpms_mp_notice['kind'] = $cpms_mp_state_notice;
+	}
+	$cpms_mp_state_message = isset( $cpms_mp_form_state['message'] ) ? trim( (string) $cpms_mp_form_state['message'] ) : '';
+	if ( '' !== $cpms_mp_state_message && is_array( $cpms_mp_notice ) ) {
+		// The server-side message is already safe Persian (validation hint,
+		// missing prerequisite, or a permission refusal) with no internal detail.
+		$cpms_mp_notice['text'] = $cpms_mp_state_message;
+	}
+}
+if ( is_array( $cpms_mp_notice ) && ! isset( $cpms_mp_notice['kind'] ) ) {
+	$cpms_mp_notice['kind'] = $cpms_mp_notice_key;
+}
 
 $cpms_mp_organizations = $cpms_mp_logged_in ? $cpms_mp_service->organizations( $cpms_mp_actor ) : array();
 $cpms_mp_clinics       = $cpms_mp_logged_in ? $cpms_mp_service->clinics( $cpms_mp_actor ) : array();
@@ -68,6 +103,8 @@ $cpms_mp_title_full = 'پورتال مدیریت' . ( '' !== $cpms_mp_site_name 
 
 /**
  * Render one portal form control (label + input) with escaped values.
+ * On a failed submission the value the user typed (user-scoped, one-shot
+ * transient) is restored instead of wiping the form.
  *
  * @param string $name  Field name.
  * @param string $label Visible label.
@@ -75,7 +112,10 @@ $cpms_mp_title_full = 'پورتال مدیریت' . ( '' !== $cpms_mp_site_name 
  * @param bool   $required Whether the field is required.
  * @param string $type  Input type.
  */
-$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ): void {
+$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ) use ( &$cpms_mp_stale ): void {
+	if ( isset( $cpms_mp_stale[ $name ] ) && is_string( $cpms_mp_stale[ $name ] ) ) {
+		$value = $cpms_mp_stale[ $name ];
+	}
 	echo '<p class="cpms-mgmt-field"><label for="cpms-mgmt-' . esc_attr( $name ) . '">' . esc_html( $label ) . '</label>';
 	echo '<input id="cpms-mgmt-' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" type="' . esc_attr( $type ) . '" value="' . esc_attr( $value ) . '"';
 	echo $required ? ' required' : '';
@@ -159,8 +199,10 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 		</div>
 	</header>
 
-	<?php if ( $cpms_mp_notice !== null ) : ?>
-		<div class="cpms-mgmt-notice <?php echo esc_attr( $cpms_mp_notice['class'] ); ?>" role="status"><?php echo esc_html( $cpms_mp_notice['text'] ); ?></div>
+	<?php if ( is_array( $cpms_mp_notice ) ) : ?>
+		<div class="cpms-mgmt-notice <?php echo esc_attr( (string) $cpms_mp_notice['class'] ); ?>"
+			<?php echo 'is-success' === (string) $cpms_mp_notice['class'] ? 'role="status"' : 'role="alert"'; ?>
+			data-cpms-notice-kind="<?php echo esc_attr( (string) ( $cpms_mp_notice['kind'] ?? '' ) ); ?>"><?php echo esc_html( (string) $cpms_mp_notice['text'] ); ?></div>
 	<?php endif; ?>
 
 	<?php if ( ! $cpms_mp_logged_in ) : ?>
@@ -297,37 +339,52 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 			<?php if ( $cpms_mp_org_can['create'] ) : ?>
 				<?php $cpms_mp_facility = $cpms_mp_service->facility_plan( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ); ?>
 				<section class="cpms-mgmt-card">
-					<h2>راه‌اندازی مرکز (بیمارستان / ساختمان پزشکان)</h2>
+					<h2>راه‌اندازی مرکز (همهٔ انواع مرکز درمانی)</h2>
 					<?php if ( null === $cpms_mp_facility ) : ?>
 						<?php $cpms_mp_form_open( 'org_facility_start', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 							<p class="cpms-mgmt-field">
 								<label for="cpms-mgmt-facility-type">نوع مرکز</label>
 								<select id="cpms-mgmt-facility-type" name="facility_type">
 									<?php foreach ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::all() as $cpms_mp_type ) : ?>
-										<option value="<?php echo esc_attr( (string) $cpms_mp_type['id'] ); ?>"><?php echo esc_html( (string) $cpms_mp_type['label'] ); ?></option>
+										<?php $cpms_mp_type_selected = isset( $cpms_mp_stale['facility_type'] ) ? (string) $cpms_mp_stale['facility_type'] : ''; ?>
+										<option value="<?php echo esc_attr( (string) $cpms_mp_type['id'] ); ?>" <?php selected( $cpms_mp_type_selected, (string) $cpms_mp_type['id'] ); ?>><?php echo esc_html( (string) $cpms_mp_type['label'] ); ?></option>
 									<?php endforeach; ?>
 								</select>
 							</p>
 							<p class="cpms-mgmt-field">
-								<label for="cpms-mgmt-facility-structure">ساختار</label>
+								<label for="cpms-mgmt-facility-structure">ساختار (گام‌های الزامی را تعیین می‌کند)</label>
 								<select id="cpms-mgmt-facility-structure" name="structure">
-									<option value="hospital_network">شبکهٔ بیمارستانی (چند درمانگاه، فقط سرپایی)</option>
-									<option value="medical_building">ساختمان پزشکان (درمانگاه‌های مستقل)</option>
-									<option value="multi_doctor">درمانگاه چندپزشکی</option>
-									<option value="single">مطب/واحد منفرد</option>
+									<?php $cpms_mp_structure_selected = isset( $cpms_mp_stale['structure'] ) ? (string) $cpms_mp_stale['structure'] : ''; ?>
+									<option value="">پیش‌فرض متناسب با نوع مرکز</option>
+									<option value="hospital_network" <?php selected( $cpms_mp_structure_selected, 'hospital_network' ); ?>>شبکهٔ بیمارستانی (چند درمانگاه، فقط سرپایی)</option>
+									<option value="medical_building" <?php selected( $cpms_mp_structure_selected, 'medical_building' ); ?>>ساختمان پزشکان (درمانگاه‌های مستقل)</option>
+									<option value="multi_doctor" <?php selected( $cpms_mp_structure_selected, 'multi_doctor' ); ?>>درمانگاه چندپزشکی</option>
+									<option value="single" <?php selected( $cpms_mp_structure_selected, 'single' ); ?>>مطب/واحد منفرد</option>
 								</select>
 							</p>
 							<?php $cpms_mp_field( 'display_name', 'نام نمایشی مرکز', '', true ); ?>
 							<button class="cpms-mgmt-btn" type="submit">آغاز راه‌اندازی</button>
 						</form>
 					<?php else : ?>
+						<?php
+						$cpms_mp_plan_flow  = (string) $cpms_mp_facility['flow'];
+						$cpms_mp_plan_rules = \ClinicCore\Application\Onboarding\FacilityTypeCatalog::plan_rules( $cpms_mp_plan_flow );
+						?>
 						<p class="cpms-mgmt-meta">
-							نوع: <strong><?php echo esc_html( (string) $cpms_mp_facility['facility_type'] ); ?></strong>
-							— جریان: <strong><?php echo esc_html( (string) $cpms_mp_facility['flow'] ); ?></strong>
+							نوع: <strong><?php echo esc_html( (string) ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::find( (string) $cpms_mp_facility['facility_type'] )['label'] ?? (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
+							— جریان: <strong><?php echo esc_html( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::wizard_heading( (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
 							— ساختمان‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['sites'] ) ); ?>
 							— درمانگاه‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['clinics'] ) ); ?>
 							<?php echo '' !== (string) $cpms_mp_facility['activated_at'] ? ' — <strong>فعال‌شده</strong>' : ''; ?>
 						</p>
+						<ul class="cpms-mgmt-meta" data-cpms-plan-steps="1">
+							<?php foreach ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::flow_steps( $cpms_mp_plan_flow ) as $cpms_mp_step_title ) : ?>
+								<li><?php echo esc_html( (string) $cpms_mp_step_title ); ?></li>
+							<?php endforeach; ?>
+						</ul>
+						<?php if ( ! $cpms_mp_plan_rules['outpatient_ack'] && 'hospital_network' !== $cpms_mp_plan_flow ) : ?>
+							<p class="cpms-mgmt-meta">گام‌های الزامی این نوع مرکز به نوع و ساختار آن بستگی دارد؛ گام‌های ویژهٔ بیمارستان (تأیید محدودهٔ فقط سرپایی) برای این جریان الزامی نیست.</p>
+						<?php endif; ?>
 
 						<?php if ( 'hospital_network' === (string) $cpms_mp_facility['flow'] && (int) $cpms_mp_facility['outpatient_ack_by'] <= 0 ) : ?>
 							<?php $cpms_mp_form_open( 'org_facility_ack', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
@@ -789,13 +846,14 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					?>
 					<select name="role_key" aria-label="نقش عضویت درمانگاه">
 						<?php foreach ( $cpms_mp_clinic_view['assignable_roles'] as $cpms_mp_role_key ) : ?>
-							<option value="<?php echo esc_attr( $cpms_mp_role_key ); ?>"><?php echo esc_html( $cpms_mp_role_key ); ?></option>
+							<?php $cpms_mp_role_selected = isset( $cpms_mp_stale['role_key'] ) ? (string) $cpms_mp_stale['role_key'] : ''; ?>
+							<option value="<?php echo esc_attr( $cpms_mp_role_key ); ?>" <?php selected( $cpms_mp_role_selected, $cpms_mp_role_key ); ?>><?php echo esc_html( $cpms_mp_role_key ); ?></option>
 						<?php endforeach; ?>
 					</select>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">افزودن به درمانگاه</button>
 				</form>
 				<p class="cpms-mgmt-meta">حساب تازه فقط با نقش سراسری Subscriber ساخته می‌شود؛ هیچ نقش مدیریتی وردپرس از این پورتال اعطا نمی‌شود و رمز عبور هرگز نمایش داده نمی‌شود.</p>
-				<p class="cpms-mgmt-meta">انتساب نقش، عضویت درمانگاه (role_key) را تغییر می‌دهد؛ نقش سراسری وردپرس و مجوزهای سراسری هرگز از این‌جا تغییر نمی‌کنند. نقش سفارشی فقط تا سقف مجوزهای مؤثر خودتان قابل واگذاری است.</p>
+				<p class="cpms-mgmt-meta">انتساب نقش، عضویت درمانگاه (role_key) را تغییر می‌دهد؛ نقش سراسری وردپرس و مجوزهای سراسری هرگز از این‌جا تغییر نمی‌کنند. مدیر درمانگاه با اختیار صریح مدیریت کارکنان می‌تواند نقش‌های مصوب عملیاتی (پزشک، منشی/پذیرش، حسابدار) را در همان درمانگاه واگذار کند؛ انتساب مدیر درمانگاه فقط با اختیار سازمانی انجام می‌شود. نقش سفارشی فقط تا سقف مجوزهای مؤثر خودتان قابل واگذاری است.</p>
 			</section>
 
 			<section class="cpms-mgmt-card">
