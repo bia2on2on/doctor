@@ -60,15 +60,20 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        \ClinicCore\Application\Scope\ScopeContext::clear();
-        App::resetScope();
-        Settings::flushCache();
-        App::settingsFactory()->reset();
-        wp_set_current_user(0);
-        foreach ($this->orgs as $org) {
-            $this->purgeOrganization($org);
+        try {
+            \ClinicCore\Application\Scope\ScopeContext::clear();
+            App::resetScope();
+            Settings::flushCache();
+            App::settingsFactory()->reset();
+            wp_set_current_user(0);
+            foreach ($this->orgs as $org) {
+                $this->purgeOrganization($org);
+            }
+            $this->orgs = [];
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '::error::FTA-DEBUG tearDown ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            throw $e;
         }
-        $this->orgs = [];
         parent::tearDown();
     }
 
@@ -179,11 +184,11 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         self::assertTrue($review['ready'], implode(' | ', $review['blocking']));
     }
 
-    public function testHospitalKeepsTheProvenOutpatientRules(): void
+    public function testHospitalAckGateIsHospitalOnlyAndExplicit(): void
     {
         try {
         $service = FacilitySetupPage::service();
-        $org     = $this->freshOrg('FTA hospital');
+        $org     = $this->freshOrg('FTA hospital ack');
         $plan    = $service->start($this->actor, $org, 'hospital', '', 'بیمارستان نمونه');
         self::assertSame('hospital_network', $plan['flow']);
 
@@ -200,6 +205,26 @@ final class FacilityTypeAdaptivePlanTest extends WP_UnitTestCase
         $otherPlan = $service->start($this->actor, $otherOrg, 'general_clinic', '', 'درمانگاه دیگر');
         self::assertSame('multi_doctor_clinic', $otherPlan['flow']);
         $this->assertRefused('not_hospital', fn () => $service->acknowledge_outpatient($this->actor, $otherOrg, true));
+        $service->acknowledge_outpatient($this->actor, $org, true);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '::error::FTA-DEBUG ack-gate ' . get_class($e) . ': ' . substr($e->getMessage(), 0, 250) . ' @' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+            throw $e;
+        }
+    }
+
+    public function testHospitalKeepsTheProvenOutpatientRules(): void
+    {
+        try {
+        $service = FacilitySetupPage::service();
+        $org     = $this->freshOrg('FTA hospital');
+        $plan    = $service->start($this->actor, $org, 'hospital', '', 'بیمارستان نمونه');
+        self::assertSame('hospital_network', $plan['flow']);
+
+        $service->add_site($this->actor, $org, 'ساختمان مرکزی', 'تهران');
+        $site   = (string) $service->plan($this->actor, $org)['sites'][0]['key'];
+        $clinic = $service->add_clinic($this->actor, $org, FacilitySetupService::new_request_key(), 'درمانگاه قلب', $site, self::TZ);
+        $service->designate_manager($this->actor, $org, $clinic['key'], $this->actor);
+        $room = $service->add_room($this->actor, $org, $clinic['key'], FacilitySetupService::new_request_key(), 'اتاق ویزیت', $site);
         $service->acknowledge_outpatient($this->actor, $org, true);
 
         $doctor = $this->makeUser('fta_h_doc', 'subscriber');

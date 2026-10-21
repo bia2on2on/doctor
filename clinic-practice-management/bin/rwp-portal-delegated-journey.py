@@ -476,9 +476,15 @@ def main() -> int:
                         " if (!el) return false; el.value = String(parseInt(el.value, 10) + 100000); return true; }"
                     )
 
-                outcome = submit_form(cross, "clinic_facility_booking", "cross.forged_booking", "cross-forged", fill_forged)
-                check("cross.forged_booking_refused", forged and outcome != "ok",
-                      f"forged={forged} outcome={outcome}; {inventory(cross)}")
+                submit_form(cross, "clinic_facility_booking", "cross.forged_booking", "cross-forged", fill_forged)
+                notice_loc = cross.locator(".cpms-mgmt-notice")
+                notice_text = notice_loc.first.inner_text() if notice_loc.count() else ""
+                # The server must refuse with the uniform denial; assert on the
+                # notice TEXT (the generic keyword classifier cannot distinguish
+                # 'ثبت شد' from 'ثبت نشد').
+                refused = forged and "دسترسی" in notice_text and "هیچ تغییری ثبت نشد" in notice_text
+                check("cross.forged_booking_refused", refused,
+                      f"forged={forged} notice={notice_text[:120]}; {inventory(cross)}")
             else:
                 check("cross.forged_booking_refused", False, "booking form missing on own Clinic")
         cross_ctx.close()
