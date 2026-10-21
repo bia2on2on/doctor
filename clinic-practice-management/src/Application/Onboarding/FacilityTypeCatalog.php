@@ -291,12 +291,12 @@ final class FacilityTypeCatalog {
      */
     public static function plan_rules( string $flow ): array {
         return match ( $flow ) {
-            'simple_practice'     => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => true],
-            'multi_doctor_clinic' => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 2, 'require_booking_policy' => true,  'auto_site' => false],
-            'hospital_network'    => ['outpatient_ack' => true,  'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => false],
-            'medical_building'    => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false],
+            'simple_practice'     => [ 'outpatient_ack' => false, 'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => true ],
+            'multi_doctor_clinic' => [ 'outpatient_ack' => false, 'min_scheduled_clinicians' => 2, 'require_booking_policy' => true,  'auto_site' => false ],
+            'hospital_network'    => [ 'outpatient_ack' => true,  'min_scheduled_clinicians' => 1, 'require_booking_policy' => true,  'auto_site' => false ],
+            'medical_building'    => [ 'outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false ],
             // Unknown flow: never claim a readiness fact that is not verified.
-            default               => ['outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false],
+            default               => [ 'outpatient_ack' => false, 'min_scheduled_clinicians' => 0, 'require_booking_policy' => false, 'auto_site' => false ],
         };
     }
 

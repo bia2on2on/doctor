@@ -770,7 +770,7 @@ final class ManagementPortalService {
 			return self::invalid( 'کاربر هدف باید صریحاً انتخاب شود.' );
 		}
 		if ( $target_wp_user_id === $actor_wp_user_id ) {
-			return self::invalid( 'تغییر نقش عضویت خودتان مجاز نیست.' ); // self-role changes are never allowed here
+			return self::invalid( 'تغییر نقش عضویت خودتان مجاز نیست.' ); // self-role changes are never allowed here.
 		}
 
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
