@@ -58,7 +58,7 @@ $cpms_mp_notices = array(
 // the form). Consumed on first render; never shared across users.
 $cpms_mp_form_state = null;
 if ( $cpms_mp_logged_in ) {
-	$cpms_mp_state_key  = \ClinicCore\Frontend\ManagementPortalController::form_state_key( $cpms_mp_actor );
+	$cpms_mp_state_key   = \ClinicCore\Frontend\ManagementPortalController::form_state_key( $cpms_mp_actor );
 	$cpms_mp_form_state = get_transient( $cpms_mp_state_key );
 	if ( is_array( $cpms_mp_form_state ) ) {
 		delete_transient( $cpms_mp_state_key );
@@ -66,23 +66,18 @@ if ( $cpms_mp_logged_in ) {
 		$cpms_mp_form_state = null;
 	}
 }
-$cpms_mp_stale = array();
-if ( is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['fields'] ) && is_array( $cpms_mp_form_state['fields'] ) ) {
-	$cpms_mp_stale = $cpms_mp_form_state['fields'];
-}
 $cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_notice_key ] ?? null;
-if ( is_array( $cpms_mp_form_state ) ) {
-	$cpms_mp_state_notice = isset( $cpms_mp_form_state['notice'] ) ? (string) $cpms_mp_form_state['notice'] : '';
-	if ( isset( $cpms_mp_notices[ $cpms_mp_state_notice ] ) && '' !== $cpms_mp_state_notice ) {
-		$cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_state_notice ];
-		$cpms_mp_notice['kind'] = $cpms_mp_state_notice;
-	}
-	$cpms_mp_state_message = isset( $cpms_mp_form_state['message'] ) ? trim( (string) $cpms_mp_form_state['message'] ) : '';
-	if ( '' !== $cpms_mp_state_message && is_array( $cpms_mp_notice ) ) {
-		// The server-side message is already safe Persian (validation hint,
-		// missing prerequisite, or a permission refusal) with no internal detail.
-		$cpms_mp_notice['text'] = $cpms_mp_state_message;
-	}
+$cpms_mp_kind   = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['notice'] ) ? (string) $cpms_mp_form_state['notice'] : '';
+$cpms_mp_msg    = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['message'] ) ? trim( (string) $cpms_mp_form_state['message'] ) : '';
+$cpms_mp_stale  = is_array( $cpms_mp_form_state ) && isset( $cpms_mp_form_state['fields'] ) && is_array( $cpms_mp_form_state['fields'] ) ? $cpms_mp_form_state['fields'] : array();
+if ( '' !== $cpms_mp_kind && isset( $cpms_mp_notices[ $cpms_mp_kind ] ) ) {
+	$cpms_mp_notice = $cpms_mp_notices[ $cpms_mp_kind ];
+	$cpms_mp_notice['kind'] = $cpms_mp_kind;
+}
+if ( '' !== $cpms_mp_msg && is_array( $cpms_mp_notice ) ) {
+	// The server-side message is already safe Persian (validation hint,
+	// missing prerequisite, or a permission refusal) with no internal detail.
+	$cpms_mp_notice['text'] = $cpms_mp_msg;
 }
 if ( is_array( $cpms_mp_notice ) && ! isset( $cpms_mp_notice['kind'] ) ) {
 	$cpms_mp_notice['kind'] = $cpms_mp_notice_key;

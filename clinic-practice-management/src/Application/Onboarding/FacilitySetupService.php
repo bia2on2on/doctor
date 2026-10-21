@@ -1223,7 +1223,7 @@ final class FacilitySetupService {
      */
     public function review( int $actor_id, int $organization_id ): array {
         $this->assert_organization( $actor_id, $organization_id, OrganizationClinicProvisioningService::CAPABILITY );
-        $plan     = self::require_plan( $this->read_plan( $organization_id ) );
+        $plan = self::require_plan( $this->read_plan( $organization_id ) );
         // Type-adaptive required steps (FacilityTypeCatalog::plan_rules): the
         // hospital outpatient acknowledgment and the per-Clinic operational
         // prerequisites are required exactly when the selected flow says so.

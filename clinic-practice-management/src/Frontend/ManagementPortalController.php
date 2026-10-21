@@ -126,7 +126,7 @@ final class ManagementPortalController {
 		set_transient(
 			self::form_state_key( $actor ),
 			[
-				'notice' => $notice,
+				'notice'  => $notice,
 				'message' => (string) ( $result['message'] ?? '' ),
 				'action'  => $action,
 				'fields'  => self::preserved_fields( $input ),
@@ -348,9 +348,9 @@ final class ManagementPortalController {
 					if ( null !== $__resolved_site ) {
 						$__site_address = $__resolved_site;
 					}
-			} catch ( \InvalidArgumentException $e ) {
-				return self::invalid_input( 'استان/شهر انتخابی معتبر نیست؛ نشانی را از فهرست مجاز انتخاب کنید یا متن نشانی را کامل وارد کنید.' );
-			}
+				} catch ( \InvalidArgumentException $e ) {
+					return self::invalid_input( 'استان/شهر انتخابی معتبر نیست؛ نشانی را از فهرست مجاز انتخاب کنید یا متن نشانی را کامل وارد کنید.' );
+				}
 				return $service->add_facility_site(
 					$actor_wp_user_id,
 					self::int_value( $input, 'organization_id' ),
