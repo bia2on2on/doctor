@@ -464,9 +464,11 @@ final class MedicalFileService
                     [ $actorUserId ]
                 );
                 if ( null === $clinician_id || (int) $clinician_id <= 0 ) {
-                    $this->auditAndThrow( $actorUserId, 'patient', $patientId, 'فایل خصوصی پزشک فقط توسط پزشک قابل ثبت است' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host parameter
+                    throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', 'فایل خصوصی پزشک فقط توسط پزشک قابل ثبت است', 403 );
                 }
-                $this->authorizeScoped( $actorUserId, $patientClinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE, 'patient', $patientId );
+                if ( ! App::authorization_service()->can( $actorUserId, $patientClinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE ) ) {
+                    throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403 );
+                }
             }
             // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         } else {
@@ -627,13 +629,9 @@ final class MedicalFileService
             'patient',
             $patientId
         );
-        $this->authorizeScoped(
-            $actorUserId,
-            $clinicId,
-            RolesAndCapabilities::PRIVATE_NOTE_CREATE,
-            'patient',
-            $patientId
-        );
+        if ( ! App::authorization_service()->can( $actorUserId, $clinicId, RolesAndCapabilities::PRIVATE_NOTE_CREATE ) ) {
+            throw ClinicalException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403 );
+        }
         $this->assertPrivateFileUploadVisitOwner(
             $actorUserId,
             $clinicId,

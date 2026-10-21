@@ -279,8 +279,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 						$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA (مثال: Asia/Tehran)' );
 						$cpms_mp_field( 'location_name', 'نام شعبهٔ اصلی' );
-						<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
-						<?php $cpms_mp_field( 'address', 'نشانی' );
+						AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+						$cpms_mp_field( 'address', 'نشانی' );
 						$cpms_mp_field( 'phone', 'تلفن' );
 						?>
 						<button class="cpms-mgmt-btn" type="submit">ایجاد درمانگاه و شعبهٔ اصلی</button>
@@ -334,8 +334,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php $cpms_mp_form_open( 'org_facility_site', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 							<?php
 							$cpms_mp_field( 'label', 'نام ساختمان', '', true );
-							<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
-						<?php $cpms_mp_field( 'address', 'نشانی' );
+							AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+							$cpms_mp_field( 'address', 'نشانی' );
 							?>
 							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت ساختمان</button>
 						</form>
@@ -544,8 +544,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 							<?php $cpms_mp_form_open( 'org_update_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'], 'clinic_id' => $cpms_mp_row['id'] ) ); ?>
 								<?php
 								$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_row['name'] );
-								<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
-						<?php $cpms_mp_field( 'address', 'نشانی' );
+								AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+								$cpms_mp_field( 'address', 'نشانی' );
 								$cpms_mp_field( 'phone', 'تلفن' );
 								?>
 								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
@@ -653,8 +653,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				<?php $cpms_mp_form_open( 'clinic_update_profile', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php
 					$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_c['name'] );
-					<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
-						<?php $cpms_mp_field( 'address', 'نشانی', $cpms_mp_c['address'] );
+					AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+					$cpms_mp_field( 'address', 'نشانی', $cpms_mp_c['address'] );
 					$cpms_mp_field( 'phone', 'تلفن', $cpms_mp_c['phone'] );
 					?>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
@@ -690,8 +690,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					$cpms_mp_field( 'cpms_entity_name', 'نام شعبه', '' );
 					$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 					$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', $cpms_mp_c['timezone'] );
-					<?php AddressSelectorField::render('', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address'); ?>
-						<?php $cpms_mp_field( 'address', 'نشانی' );
+					AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+					$cpms_mp_field( 'address', 'نشانی' );
 					$cpms_mp_field( 'phone', 'تلفن' );
 					?>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ایجاد شعبه</button>
