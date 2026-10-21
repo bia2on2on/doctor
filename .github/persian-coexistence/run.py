@@ -91,9 +91,16 @@ GROUPS = {
     # CPMS-free activation/permission diagnosis. This is an independent clean
     # WordPress runner and is deliberately never eligible for Stage B.
     "persian-woocommerce-diagnosis": {
+        # Official WordPress.org Plugins API verified 2026-10-21: stable moved
+        # 10.0.6 -> 10.0.7 (last_updated 2026-10-21 5:25pm GMT, official
+        # download_link .../persian-woocommerce.10.0.7.zip). Exact-version
+        # enforcement and API/ZIP identity checks are unchanged; older run
+        # evidence stays bound to the pins actually measured. The historical
+        # 10.0.5 diagnostic exception in probe.py is NOT extended to 10.0.7:
+        # this version is measured on its own CPMS-free Stage A evidence first.
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce": "10.0.6",
+            "persian-woocommerce": "10.0.7",
         },
         "subject": "persian-woocommerce",
         "root": "coexistence-persian-woocommerce-diagnosis",
@@ -127,11 +134,11 @@ GROUPS = {
     # third-party-baseline matrix. The group key, evidence root and artifact name
     # `combined-nineteen` remain the historical campaign identity so the Phase 18
     # all-19 evidence stays addressable and unrenamed under its original record.
-    # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.6 is
+    # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.7 is
     # temporarily excluded from this ACTIVE pin set only — 18 authoritative free
-    # pins remain (updated 2026-10-20: 10.0.5 -> 10.0.6, persian-woocommerce-sms
-    # 7.3.1 -> 7.3.2 per official WordPress.org Plugins API stable and
-    # WordPressBugBounty mirror 2026-10-20). This quarantine is not a universal
+    # pins remain (updated 2026-10-21: 10.0.6 -> 10.0.7 per official
+    # WordPress.org Plugins API stable; previous refresh 2026-10-20:
+    # 10.0.5 -> 10.0.6, persian-woocommerce-sms 7.3.1 -> 7.3.2). This quarantine is not a universal
     # incompatibility declaration; the version keeps its independent
     # persian-woocommerce-diagnosis lane (and its SMS pair), and the unchanged
     # third-party-baseline subject matrix still pins and measures it
@@ -164,7 +171,7 @@ GROUPS = {
         "artifact": "persian-coexistence-combined-nineteen",
         # Truthful active-set label; `nineteen` survives only as the historical
         # group/root/artifact identity of the campaign, not as a plugin count.
-        "title": "Persian combined compatibility scenario (18 active plugins; Persian WooCommerce 10.0.6 quarantined)",
+        "title": "Persian combined compatibility scenario (18 active plugins; Persian WooCommerce 10.0.7 quarantined)",
         "not_run": {
             "real SMS delivery": "NOT RUN — no live provider is configured and no successful provider delivery evidence exists; activation is not delivery evidence",
             "authored third-party configuration": "NOT RUN — plugin-specific forms, rules, custom fields, translations, roles, cron actions, security services and cache settings are not authored or weakened; default activation behaviour only",
