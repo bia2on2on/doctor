@@ -174,6 +174,11 @@ final class ManagementPortalAddressCascadeTest extends WP_UnitTestCase {
     /** Render the production portal template exactly as WordPress would. */
     private function render_portal( int $org_id ): string {
         $_GET = [ ManagementPortalShell::ORG_PARAM => (string) $org_id ];
+        // A real request is a fresh process; WP_Scripts::$done persists across
+        // renders inside one PHPUnit process, so reset it to prove the enqueue.
+        if ( function_exists( 'wp_scripts' ) && isset( wp_scripts()->done ) ) {
+            wp_scripts()->done = array();
+        }
         ob_start();
         include ManagementPortalShell::template_path();
         return (string) ob_get_clean();

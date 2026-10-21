@@ -739,8 +739,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 								<?php
 								$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_row['name'] );
 								$cpms_mp_render_address_selector( (string) ( $cpms_mp_row['address'] ?? '' ) );
-								$cpms_mp_field( 'address', 'نشانی' );
-								$cpms_mp_field( 'phone', 'تلفن' );
+								$cpms_mp_field( 'address', 'نشانی', (string) ( $cpms_mp_row['address'] ?? '' ) );
+								$cpms_mp_field( 'phone', 'تلفن', (string) ( $cpms_mp_row['phone'] ?? '' ) );
 								?>
 								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
 							</form>
