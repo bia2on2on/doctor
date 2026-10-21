@@ -2,7 +2,7 @@
 
 **PR:** https://github.com/bia2on2on/doctor/pull/257 (Draft — not merged)
 **Branch:** `arena/ebafaac0-doctor`
-**Head (final):** `97f8ffa` (`6e0e43b` = last code commit; docs-only commit on top)
+**Head (final):** `e71874b1a672295e7c40bc0d1f9fc5e079149139` (tests aligned to the shipped contracts; CI dispatched at 12:21 UTC, past the 12:19 target — its verdict lands after the time box and is visible on the PR)
 **Accepted main base:** `6689228a84dd9ab26741d8132e177cbe05a6543e` (verified identical to `origin/main` at start)
 **UTC start:** 2026-10-21 10:29:00 UTC (authorization receipt)
 **UTC end:** see "Runtime" below (hard stop 12:29:00 UTC)
@@ -217,9 +217,13 @@ constraint verification on real MariaDB 11.8 remain **BLOCKED** on a MariaDB 11.
    and the one-line candidate fix is documented, but per the repository's own policy test
    it must land together with a real MariaDB 11.8 migrate + rollback + replay run
    (note: PR #256 is an independent effort and was not consulted or modified).
-2. **CI verdict on final code head `6e0e43b` (docs commit `97f8ffa` on top)** — dispatched before the hard stop; the three
-   lanes that failed on `9db835d` each have a diagnosed cause fixed by the final commits;
-   confirm green on the PR's check list.
+2. **CI verdict on final head `e71874b`** — dispatched at 12:21 UTC. On the penultimate
+   head (`9db835d`): WPCS/Integration/first-practice failures all had diagnosed causes
+   (alignment ×2; the temporary 11.8 widening vs the pinned policy test; two portal
+   harness-contract mismatches) and were fixed; on `ee46643` WPCS/Unit/PHPStan and BOTH
+   first-practice lanes went green and Integration narrowed to 3 of 2247 tests (my two
+   new tests' setup + the superseded delegation-policy test) which `e71874b` aligns to
+   the shipped contracts. Confirm the final verdict on the PR's check list.
 3. Dedicated new Playwright assertions for the P3 notice taxonomy
    (`data-cpms-notice-kind`) were not written (time-boxed); the behavior is covered by
    the existing journeys' notice checks and integration tests.
