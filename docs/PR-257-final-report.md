@@ -2,7 +2,7 @@
 
 **PR:** https://github.com/bia2on2on/doctor/pull/257 (Draft — not merged)
 **Branch:** `arena/ebafaac0-doctor`
-**Head (final):** `6e0e43ba428d699bf8621150e120531c95a55996`
+**Head (final):** `97f8ffa` (`6e0e43b` = last code commit; docs-only commit on top)
 **Accepted main base:** `6689228a84dd9ab26741d8132e177cbe05a6543e` (verified identical to `origin/main` at start)
 **UTC start:** 2026-10-21 10:29:00 UTC (authorization receipt)
 **UTC end:** see "Runtime" below (hard stop 12:29:00 UTC)
@@ -192,7 +192,7 @@ evidence). Results on `9db835d`:
 | First-practice browser (MariaDB 11.4.13) | **FAIL** — browser journey itself **577/577 + recovery 287/287 PASS** (all 12-type matrix, hospital two-manager atomic activation, medical building, 390px RTL); the failing step was “Portal hospital journey”: 48/50 — 2 harness-contract mismatches (org-start success notice wording after my P3 message surfacing; `hospital_network` literal no longer present in rendered content). Both fixed in `f99891f` (notice wording + `data-cpms-flow`/`data-cpms-structure` attributes) |
 | First-practice browser (MySQL) | **FAIL** — same 2 harness-contract mismatches (same fixes) |
 
-CI on final head `6e0e43b` was dispatched before the 12:29:00 UTC hard stop; its results
+CI on final code head `6e0e43b` was dispatched before the 12:29:00 UTC hard stop; its results
 are visible on PR #257. The three failing lanes above each failed for a reason identified
 from the mirrored CI evidence and addressed by the final commits — no lane was silenced,
 no check was disabled, no test policy was weakened.
@@ -217,7 +217,7 @@ constraint verification on real MariaDB 11.8 remain **BLOCKED** on a MariaDB 11.
    and the one-line candidate fix is documented, but per the repository's own policy test
    it must land together with a real MariaDB 11.8 migrate + rollback + replay run
    (note: PR #256 is an independent effort and was not consulted or modified).
-2. **CI verdict on final head `6e0e43b`** — dispatched before the hard stop; the three
+2. **CI verdict on final code head `6e0e43b` (docs commit `97f8ffa` on top)** — dispatched before the hard stop; the three
    lanes that failed on `9db835d` each have a diagnosed cause fixed by the final commits;
    confirm green on the PR's check list.
 3. Dedicated new Playwright assertions for the P3 notice taxonomy
