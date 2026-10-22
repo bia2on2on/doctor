@@ -1559,12 +1559,12 @@ final class CpmsSetupWizard
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
         // Input normalization (same as service validation but early check for UX)
-        $name             = trim( (string) ( $post['clinic_name'] ?? '' ) );
-        $address          = trim( (string) ( $post['clinic_address'] ?? '' ) );
+        $name                = trim( (string) ( $post['clinic_name'] ?? '' ) );
+        $address             = trim( (string) ( $post['clinic_address'] ?? '' ) );
         $address_province    = trim( (string) ( $post['address_province'] ?? '' ) );
         $address_city        = trim( (string) ( $post['address_city'] ?? '' ) );
         $address_city_custom = trim( (string) ( $post['address_city_custom'] ?? '' ) );
-        $phone            = trim( (string) ( $post['clinic_phone'] ?? '' ) );
+        $phone               = trim( (string) ( $post['clinic_phone'] ?? '' ) );
 
         if ( $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
             try {

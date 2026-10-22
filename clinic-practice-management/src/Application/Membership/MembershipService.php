@@ -4,6 +4,7 @@ declare( strict_types=1 );
 
 namespace ClinicCore\Application\Membership;
 
+use ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService;
 use ClinicCore\Domain\Membership\MembershipException;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -42,6 +43,16 @@ final class MembershipService {
     /**
      * ساخت عضویت — تکراری بودن (clinic,user) با خطای صریح رد می‌شود (نه silent update).
      *
+     * این متد «تک‌مسیرِ نوشتنِ عضویت» برای ثبت کارکنان است (پورتال مدیریت، صفحهٔ
+     * کارکنان Classic و انتصاب پزشک/کارکنان در طرح تأسیسات)، بنابراین مرزِ
+     * «تقاضای تازه» در چرخهٔ عمر Clinic یک‌جا و برای همهٔ این سطح‌ها اعمال می‌شود.
+     * دو مسیر سازمانی/نصب عمداً اینجا نیستند: تعیین مدیر درمانگاه
+     * (OrganizationClinicProvisioningService::designate_clinic_manager با capability
+     * جداگانهٔ cpms_org_clinic_manager_assign) و bootstrap نخستین‌راه‌اندازی. هر دو
+     * در اختیار مقامی هستند که capability چرخهٔ عمر (فعال‌سازی مجدد) را هم دارد،
+     * پس gate شدنشان هیچ مرز امنیتی تازه‌ای نمی‌سازد؛ هر دو برای درمانگاهِ HELD
+     * (پیش از نخستین فعال‌سازی) ضروری‌اند و هر دو ممیزیِ صریح دارند.
+     *
      * @param int|null $invited_by_wp_user_id
      */
     public function create_membership(
@@ -54,12 +65,14 @@ final class MembershipService {
         if ( $wp_user_id <= 0 || get_userdata( $wp_user_id ) === false ) {
             throw MembershipException::not_found( __( 'کاربر وردپرس', 'cpms' ), $wp_user_id );
         }
-        if ( $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d',
+        $clinic_row = $this->db->fetchRow(
+            'SELECT id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d',
             [ $clinic_id ]
-        ) === null ) {
+        );
+        if ( $clinic_row === null ) {
             throw MembershipException::not_found( __( 'کلینیک', 'cpms' ), $clinic_id );
         }
+        $this->assert_clinic_accepts_new_membership( $clinic_id, (string) ( $clinic_row['status'] ?? 'active' ) );
         $this->assert_role_key( $role_key );
         if ( ! in_array( $scope_mode, [ self::SCOPE_CLINIC, self::SCOPE_LOCATION ], true ) ) {
             throw MembershipException::invalid_value( 'scope_mode', __( 'باید clinic یا location باشد.', 'cpms' ) );
@@ -97,6 +110,48 @@ final class MembershipService {
         }
 
         return (int) $this->db->wpdb_last_insert_id();
+    }
+
+    /**
+     * مرزِ مشارکتِ تازه — چرخهٔ عمر Clinic (همان سیاستِ new-demand در BookingService).
+     *
+     * `status='suspended'` دو معنای متفاوت دارد و این دو با دادهٔ موجود اشتباه می‌شوند:
+     * یک Clinic در انتظار نخستین فعال‌سازی HELD ساخته می‌شود
+     * (OrganizationClinicProvisioningService::provision_held ردیف را 'suspended' درج
+     * می‌کند) و راه‌اندازی اولیهٔ مجاز — از جمله تعیین مدیر و افزودن کارکنان — باید
+     * پیش از فعال‌سازی اتمی ممکن بماند. در مقابل، یک Clinic عملیاتی که قبلاً فعال بوده
+     * و اکنون معلق است نباید عضویت تازه بپذیرد.
+     *
+     * تمایز از دادهٔ بادوام و غیرکاربری خوانده می‌شود، نه از ورودی درخواست و نه از یک
+     * برچسب زودگذر: set_clinic_status() تنها نویسندهٔ cpms_clinics.status است و رویداد
+     * چرخهٔ عمر را در همان تراکنش ثبت می‌کند، و AuditLogger در صورت ذخیره‌نشدنِ رویداد
+     * Exception می‌دهد تا تراکنش fail-closed عقب برود. پس هیچ ردیف چرخهٔ عمر = هرگز فعال
+     * نشده (HELD)؛ حتی یک ردیف = قبلاً فعال بوده (تعلیقِ عملیاتی).
+     *
+     * سازگاری با دادهٔ قدیمی: ردیف‌های بدون ستون/مقدار status (پیش از مهاجرت 0029) هرگز
+     * ردِ سراسری نمی‌شوند — دقیقاً مانند BookingService::clinic_is_suspended(). خطای
+     * خواندن نیز fail-closed است: Exception به بیرون منتشر می‌شود و عضویتی ساخته نمی‌شود.
+     */
+    private function assert_clinic_accepts_new_membership( int $clinic_id, string $status ): void {
+        if ( $status !== 'suspended' ) {
+            return;
+        }
+
+        $lifecycle_evidence = $this->db->fetchValue(
+            'SELECT id FROM ' . $this->db->table( 'cpms_audit_logs' )
+                . ' WHERE resource_type = %s AND resource_id = %d AND action IN (%s, %s)'
+                . ' ORDER BY id ASC LIMIT 1',
+            [
+                'clinic',
+                $clinic_id,
+                OrganizationClinicProvisioningService::AUDIT_CLINIC_REACTIVATED,
+                OrganizationClinicProvisioningService::AUDIT_CLINIC_DEACTIVATED,
+            ]
+        );
+
+        if ( $lifecycle_evidence !== null ) {
+            throw MembershipException::clinic_suspended( $clinic_id );
+        }
     }
 
     /**

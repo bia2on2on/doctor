@@ -127,6 +127,26 @@ final class MembershipException extends DomainException {
         );
     }
 
+    /**
+     * کلینیکِ فعالِ قبلی که اکنون معلق است: عضویتِ تازه پذیرفته نمی‌شود.
+     *
+     * تمایز از کلینیکِ HELD (در انتظار نخستین فعال‌سازی) در MembershipService است:
+     * آنجا وضعیت تعلیق بدون هیچ رویداد چرخهٔ عمر ثبت‌شده = راه‌اندازی اولیهٔ مجاز
+     * همچنان باز است. عضویت‌ها، سوابق و مراقبت‌های جاری هرگز دست‌نخورده می‌مانند.
+     */
+    public static function clinic_suspended( int $clinic_id ): self {
+        return self::of(
+            'CLINIC_SUSPENDED_NEW_MEMBERSHIP',
+            sprintf(
+                /* translators: 1: clinic id */
+                __( 'این کلینیک (شناسهٔ %1$s) معلق است؛ افزودن عضویت تازه تا فعال‌سازی دوباره ممکن نیست. عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.', 'cpms' ),
+                $clinic_id
+            ),
+            409,
+            [ 'clinic_id' => $clinic_id ]
+        );
+    }
+
     /** مقدار ورودی نامعتبر (role key / scope mode / capability). */
     public static function invalid_value( string $field, string $reason ): self {
         return self::of(

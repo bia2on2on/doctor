@@ -106,7 +106,7 @@ final class OrganizationManagerPage {
         }
 
         try {
-            $raw_address      = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+            $raw_address         = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
             $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
             $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
             $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';

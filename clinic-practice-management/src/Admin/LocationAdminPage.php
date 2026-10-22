@@ -312,13 +312,13 @@ final class LocationAdminPage
 
         // Sanitize and validate caller-controlled profile values only after the
         // requested Clinic has passed its durable authorization check.
-        $mode_raw         = $in['mode'] ?? 'create';
-        $mode             = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
-        $name             = self::sanitize_text_input( $in['name'] ?? '' );
-        $slug             = self::sanitize_text_input( $in['slug'] ?? '' );
-        $timezone         = self::sanitize_text_input( $in['timezone'] ?? '' );
-        $location_raw_id  = $in['location_id'] ?? 0;
-        $location_id      = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
+        $mode_raw            = $in['mode'] ?? 'create';
+        $mode                = is_string( $mode_raw ) && sanitize_key( $mode_raw ) === 'update' ? 'update' : 'create';
+        $name                = self::sanitize_text_input( $in['name'] ?? '' );
+        $slug                = self::sanitize_text_input( $in['slug'] ?? '' );
+        $timezone            = self::sanitize_text_input( $in['timezone'] ?? '' );
+        $location_raw_id     = $in['location_id'] ?? 0;
+        $location_id         = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
         $address_province    = array_key_exists( 'address_province', $in ) ? (string) ( self::sanitize_text_input( $in['address_province'] ) ?? '' ) : '';
         $address_city        = array_key_exists( 'address_city', $in ) ? (string) ( self::sanitize_text_input( $in['address_city'] ) ?? '' ) : '';
         $address_city_custom = array_key_exists( 'address_city_custom', $in ) ? (string) ( self::sanitize_text_input( $in['address_city_custom'] ) ?? '' ) : '';

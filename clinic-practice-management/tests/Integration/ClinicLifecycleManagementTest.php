@@ -26,6 +26,9 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
     private int $orgB = 0;
     private int $clinicA = 0;
     private int $clinicB = 0;
+    private int $clinicHeld = 0;
+    /** @var list<int> */
+    private array $extraUsers = [];
     private int $managerA = 0;
     private int $managerB = 0;
     private int $clinicMember = 0;
@@ -78,7 +81,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
     protected function tearDown(): void {
         $db = App::db();
 
-        foreach ( [$this->clinicA, $this->clinicB] as $cid ) {
+        foreach ( [$this->clinicA, $this->clinicB, $this->clinicHeld] as $cid ) {
             if ( $cid > 0 ) {
                 // FK-safe cleanup order, deepest child first, matching the real InnoDB
                 // constraints (fk_audit_logs_clinic, fk_slots_clinician,
@@ -110,7 +113,7 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
                 $db->query( 'DELETE FROM ' . $db->table( 'cpms_organizations' ) . ' WHERE id = %d', [$oid] );
             }
         }
-        foreach ( [$this->managerA, $this->managerB, $this->clinicMember, $this->outsider, $this->admin] as $uid ) {
+        foreach ( array_merge( [$this->managerA, $this->managerB, $this->clinicMember, $this->outsider, $this->admin], $this->extraUsers ) as $uid ) {
             if ( $uid > 0 ) {
                 wp_delete_user( $uid );
             }
@@ -599,6 +602,29 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
     private function appointment_count( int $clinic_id ): int {
         return (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_appointments' ) . ' WHERE clinic_id = %d',
+            [ $clinic_id ]
+        );
+    }
+
+    private function extra_subscriber(): int {
+        $uid                 = self::factory()->user->create( ['role' => 'subscriber'] );
+        $this->extraUsers[]  = $uid;
+
+        return $uid;
+    }
+
+    private function membership_status( int $clinic_id, int $wp_user_id ): ?string {
+        $status = App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
+            [ $clinic_id, $wp_user_id ]
+        );
+
+        return $status === null ? null : (string) $status;
+    }
+
+    private function clinic_status( int $clinic_id ): string {
+        return (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
             [ $clinic_id ]
         );
     }
@@ -1258,5 +1284,145 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
         }
         self::assertFalse( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::flow_supports_inpatient( 'hospital_network' ), 'inpatient/HIS remains unsupported for hospital flow' );
         self::assertFalse( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::supports_multi_clinic_provisioning(), 'facility catalog never provisions clinics' );
+    }
+
+    /**
+     * NEW participation boundary for a Clinic that WAS operational and is now suspended.
+     *
+     * The gate lives in MembershipService::create_membership() - the single membership
+     * write path - so the frontend Management Portal, the Classic staff screen and the
+     * facility-plan staff assignment all inherit exactly the same rule. Existing
+     * memberships, seeded medical/financial history and continuity paths are untouched,
+     * and reactivation restores permitted new demand.
+     */
+    public function testSuspendedOperationalClinicRefusesNewStaffMembershipButKeepsExisting(): void {
+        $service = App::membership_service();
+
+        // Control: an ACTIVE Clinic accepts new staff, so the refusal below is the
+        // lifecycle boundary and not a blanket denial.
+        $early          = $this->extra_subscriber();
+        $this->membershipRows[] = $service->create_membership( $this->clinicA, $early, RolesAndCapabilities::ROLE_SECRETARY );
+        self::assertSame( 'active', $this->membership_status( $this->clinicA, $early ), 'control: an active Clinic enrolls staff' );
+
+        $this->suspend_clinic_a();
+        self::assertSame( 'suspended', $this->clinic_status( $this->clinicA ) );
+
+        // A Clinic that was active before suspension (set_clinic_status wrote the
+        // CLINIC_DEACTIVATED lifecycle row) accepts no NEW membership.
+        $late = $this->extra_subscriber();
+        try {
+            $service->create_membership( $this->clinicA, $late, RolesAndCapabilities::ROLE_SECRETARY );
+            self::fail( 'a previously active, now suspended Clinic must refuse NEW staff enrollment' );
+        } catch ( \ClinicCore\Domain\Membership\MembershipException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED_NEW_MEMBERSHIP', $e->error_code );
+            self::assertSame( 409, $e->http_status );
+        }
+        self::assertNull( $this->membership_status( $this->clinicA, $late ), 'no membership row is written' );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
+                [ $this->clinicA, $late ]
+            ),
+            'nothing is written for the refused enrollment'
+        );
+
+        // Continuity: every pre-existing legitimate membership stays exactly as it was.
+        self::assertSame( 'active', $this->membership_status( $this->clinicA, $this->clinicMember ), 'the pre-existing Clinic membership is untouched' );
+        self::assertSame( 'active', $this->membership_status( $this->clinicA, $early ), 'the membership created before suspension is untouched' );
+        self::assertSame(
+            2,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicA ]
+            ),
+            'exactly the two legitimate memberships remain - nothing added, nothing removed, nothing rewritten'
+        );
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patients' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicA ]
+            ),
+            'seeded historical records remain available and untouched while suspended'
+        );
+
+        // Reactivation restores permitted new demand.
+        $this->reactivate_clinic_a();
+        $this->membershipRows[] = $service->create_membership( $this->clinicA, $late, RolesAndCapabilities::ROLE_SECRETARY );
+        self::assertSame( 'active', $this->membership_status( $this->clinicA, $late ), 'reactivation restores new enrollment' );
+    }
+
+    /**
+     * The other meaning of status='suspended': HELD pending initial activation.
+     *
+     * provision_held() inserts the row 'suspended' and the documented lifecycle has the
+     * designated Clinic Manager complete authorized initial setup BEFORE the atomic
+     * activation, so a held Clinic must keep accepting new memberships. The same row then
+     * changes meaning - without any rewrite of its existing records - once it has been
+     * activated and suspended again, which is exactly the distinction the audit trail
+     * (CLINIC_REACTIVATED / CLINIC_DEACTIVATED, written in the same transaction as the
+     * status change) expresses durably.
+     */
+    public function testHeldClinicNeverActivatedCompletesInitialSetupAndBecomesProtectedAfterActivation(): void {
+        $service = App::organization_clinic_provisioning_service();
+        wp_set_current_user( $this->managerA );
+        $held                = $service->provision_held(
+            $this->managerA,
+            $this->orgA,
+            'Clinic Held Lifecycle',
+            'clinic-held-lifecycle-' . bin2hex( random_bytes( 3 ) ),
+            'Asia/Tehran',
+            'Main Held'
+        );
+        $this->clinicHeld    = (int) $held['clinic_id'];
+        self::assertGreaterThan( 0, $this->clinicHeld );
+        self::assertTrue( (bool) $held['held'] );
+        self::assertSame( 'suspended', $this->clinic_status( $this->clinicHeld ), 'created HELD: status is suspended before activation' );
+
+        // Authorized initial setup continues while held.
+        $setup_staff               = $this->extra_subscriber();
+        $this->membershipRows[]    = App::membership_service()->create_membership(
+            $this->clinicHeld,
+            $setup_staff,
+            RolesAndCapabilities::ROLE_DOCTOR
+        );
+        self::assertSame(
+            'active',
+            $this->membership_status( $this->clinicHeld, $setup_staff ),
+            'a held Clinic completes authorized initial setup - new participation is NOT blocked before first activation'
+        );
+
+        // Activation, then suspension: the SAME row is now an operational suspension.
+        $activated = $service->set_clinic_status( $this->managerA, $this->orgA, $this->clinicHeld, true );
+        self::assertSame( 'active', $activated['status'] );
+        $suspended = $service->set_clinic_status( $this->managerA, $this->orgA, $this->clinicHeld, false );
+        self::assertSame( 'suspended', $suspended['status'] );
+        wp_set_current_user( 0 );
+
+        $late = $this->extra_subscriber();
+        try {
+            App::membership_service()->create_membership( $this->clinicHeld, $late, RolesAndCapabilities::ROLE_DOCTOR );
+            self::fail( 'after activation, a suspended Clinic must refuse NEW staff enrollment' );
+        } catch ( \ClinicCore\Domain\Membership\MembershipException $e ) {
+            self::assertSame( 'CLINIC_SUSPENDED_NEW_MEMBERSHIP', $e->error_code );
+        }
+        self::assertNull( $this->membership_status( $this->clinicHeld, $late ) );
+
+        // The membership created during the held phase keeps its exact meaning and state:
+        // no record was silently re-interpreted by the lifecycle transition.
+        self::assertSame(
+            'active',
+            $this->membership_status( $this->clinicHeld, $setup_staff ),
+            'existing legitimate membership from the held phase remains usable and unchanged'
+        );
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicHeld ]
+            ),
+            'exactly the initial-setup membership exists - the refused one wrote nothing'
+        );
     }
 }

@@ -53,6 +53,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
+use ClinicCore\Domain\Membership\MembershipException;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
@@ -922,6 +923,10 @@ final class ManagementPortalService {
 			);
 		} catch ( AuthorizationException $e ) {
 			return self::failure();
+		} catch ( MembershipException $e ) {
+			// Lifecycle/prerequisite refusals carry an operator-facing Persian reason
+			// (e.g. a previously active, now suspended Clinic accepts no NEW enrollment).
+			return self::prerequisite( $e->getMessage() );
 		} catch ( \Throwable $e ) {
 			return self::operational_failure();
 		}

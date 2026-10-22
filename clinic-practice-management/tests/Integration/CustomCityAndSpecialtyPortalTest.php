@@ -422,6 +422,30 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) )
 		);
 
+		// This Clinic was operational before the suspension (set_clinic_status wrote the
+		// CLINIC_DEACTIVATED lifecycle row in the same transaction), so the NEW-demand
+		// boundary applies on the portal surface too - with an operator-facing reason,
+		// never a generic failure.
+		$refused = ManagementPortalController::dispatch(
+			$this->clinic_mgr_id,
+			'clinic_staff_enroll',
+			array(
+				'clinic_id'  => (string) $this->clinic_id,
+				'identifier' => 'day2-late-' . bin2hex( random_bytes( 3 ) ) . '@example.com',
+				'role_key'   => RolesAndCapabilities::ROLE_SECRETARY,
+			)
+		);
+		self::assertFalse( $refused['ok'], 'a previously active, now suspended Clinic refuses NEW staff enrollment' );
+		self::assertStringContainsString( 'معلق', (string) ( $refused['message'] ?? '' ), 'the refusal carries the lifecycle reason' );
+		self::assertSame(
+			2,
+			(int) $db->fetchValue(
+				'SELECT COUNT(*) FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+				array( $this->clinic_id )
+			),
+			'the refused enrollment wrote no membership row'
+		);
+
 		// Existing legitimate memberships survive suspension untouched: nothing is
 		// rewritten, revoked or added, and ongoing care stays manageable.
 		self::assertSame(

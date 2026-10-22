@@ -201,12 +201,12 @@ final class FirstPracticeSetupPage {
             self::redirect();
         }
 
-        $actor            = (int) get_current_user_id();
-        $clinic_id        = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
-        $confirmed        = isset( $_POST['confirm_recovery'] ) && (string) wp_unslash( $_POST['confirm_recovery'] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- exact literal comparison
-        $name             = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
-        $phone            = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
-        $address          = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+        $actor               = (int) get_current_user_id();
+        $clinic_id           = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
+        $confirmed           = isset( $_POST['confirm_recovery'] ) && (string) wp_unslash( $_POST['confirm_recovery'] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- exact literal comparison
+        $name                = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
+        $phone               = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
+        $address             = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
         $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
         $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
         $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';
@@ -255,12 +255,12 @@ final class FirstPracticeSetupPage {
             self::redirect();
         }
 
-        $actor            = (int) get_current_user_id();
-        $clinic_id        = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
-        $confirmed        = isset( $_POST['confirm_identity'] ) && (string) wp_unslash( $_POST['confirm_identity'] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- exact literal comparison below
-        $name             = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
-        $phone            = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
-        $address          = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+        $actor               = (int) get_current_user_id();
+        $clinic_id           = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
+        $confirmed           = isset( $_POST['confirm_identity'] ) && (string) wp_unslash( $_POST['confirm_identity'] ) === '1'; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- exact literal comparison below
+        $name                = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
+        $phone               = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
+        $address             = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
         $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
         $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
         $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';

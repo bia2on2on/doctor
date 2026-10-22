@@ -33,6 +33,20 @@ final class OrganizationClinicProvisioningService {
     public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
 
     /**
+     * Durable lifecycle evidence, written ONLY by set_clinic_status() — the single
+     * writer of cpms_clinics.status — inside the same transaction as the status change,
+     * with AuditLogger failing closed when a row is not persisted. A Clinic therefore
+     * cannot become 'active' without AUDIT_CLINIC_REACTIVATED, and cannot go
+     * 'active' -> 'suspended' without AUDIT_CLINIC_DEACTIVATED (an identical desired
+     * status is a no-op that writes nothing). The pair is the trustworthy,
+     * non-user-controlled distinction between the two meanings of status='suspended':
+     * neither row = held pending initial activation; either row = a previously active,
+     * now suspended operational Clinic.
+     */
+    public const AUDIT_CLINIC_REACTIVATED = 'CLINIC_REACTIVATED';
+    public const AUDIT_CLINIC_DEACTIVATED = 'CLINIC_DEACTIVATED';
+
+    /**
      * Organization-scoped capability: explicitly designate a Clinic manager (the
      * built-in cpms_manager Clinic membership) for a Clinic of this Organization.
      *
@@ -799,7 +813,7 @@ final class OrganizationClinicProvisioningService {
                 }
 
                 $audit_id = $this->audit->log(
-                    $active ? 'CLINIC_REACTIVATED' : 'CLINIC_DEACTIVATED',
+                    $active ? self::AUDIT_CLINIC_REACTIVATED : self::AUDIT_CLINIC_DEACTIVATED,
                     ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
                     'clinic',
                     $clinic_id,
