@@ -23,6 +23,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Frontend\ManagementPortalController;
@@ -189,7 +190,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			array(
 				'clinic_id'  => (string) $this->clinic_id,
 				'identifier' => $email,
-				'role_key'   => 'doctor',
+				'role_key'   => RolesAndCapabilities::ROLE_DOCTOR,
 			)
 		);
 		self::assertTrue( $result['ok'], 'fixture: Clinic Manager enrolls a Doctor — ' . ( $result['message'] ?? '' ) );
@@ -454,21 +455,40 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			),
 			'exactly the Clinic Manager and the Doctor participate — nothing added, nothing removed'
 		);
+		$membership_id = (int) $db->fetchValue(
+			'SELECT id FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
+			array( $this->clinic_id, $doctor_id )
+		);
+		self::assertGreaterThan( 0, $membership_id );
+		// A suspended Clinic is not a lockout: the Clinic Manager keeps lifecycle
+		// authority over the existing membership, so ongoing care stays manageable.
+		$pause = ManagementPortalController::dispatch(
+			$this->clinic_mgr_id,
+			'clinic_staff_status',
+			array(
+				'clinic_id'     => (string) $this->clinic_id,
+				'membership_id' => (string) $membership_id,
+				'active'        => '0',
+			)
+		);
+		self::assertTrue( $pause['ok'], 'the manager can still suspend a membership — ' . (string) ( $pause['message'] ?? '' ) );
 		$keep_care = ManagementPortalController::dispatch(
 			$this->clinic_mgr_id,
 			'clinic_staff_status',
 			array(
 				'clinic_id'     => (string) $this->clinic_id,
-				'membership_id' => (string) $db->fetchValue(
-					'SELECT id FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
-					array( $this->clinic_id, $doctor_id )
-				),
+				'membership_id' => (string) $membership_id,
 				'active'        => '1',
 			)
 		);
-		self::assertTrue(
-			$keep_care['ok'],
-			'a suspended Clinic is not a lockout: ongoing care stays manageable — ' . (string) ( $keep_care['message'] ?? '' )
+		self::assertTrue( $keep_care['ok'], 'and reactivate it — ' . (string) ( $keep_care['message'] ?? '' ) );
+		self::assertSame(
+			'active',
+			(string) $db->fetchValue(
+				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE id = %d',
+				array( $membership_id )
+			),
+			'the existing legitimate membership is usable again, unchanged in identity'
 		);
 
 		// Reactivation reopens new demand.
@@ -488,7 +508,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			array(
 				'clinic_id'  => (string) $this->clinic_id,
 				'identifier' => 'day2-after-' . bin2hex( random_bytes( 3 ) ) . '@example.com',
-				'role_key'   => 'accountant',
+				'role_key'   => RolesAndCapabilities::ROLE_ACCOUNTANT,
 			)
 		);
 		self::assertTrue( $after['ok'], 'an active Clinic enrolls an Accountant again — ' . (string) ( $after['message'] ?? '' ) );
@@ -523,7 +543,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			array(
 				'clinic_id'  => (string) $this->other_clinic_id,
 				'identifier' => 'day2-cross-' . bin2hex( random_bytes( 3 ) ) . '@example.com',
-				'role_key'   => 'secretary',
+				'role_key'   => RolesAndCapabilities::ROLE_SECRETARY,
 			)
 		);
 		self::assertFalse( $cross['ok'], 'cross-Clinic enrollment must be denied' );
