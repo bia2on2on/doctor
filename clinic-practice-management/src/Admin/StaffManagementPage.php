@@ -453,7 +453,9 @@ final class StaffManagementPage
                         [
                             'clinic_id' => $authorization['clinic_id'],
                             'login'     => (string) $user->user_login,
-                        ]
+                        ],
+                        [],
+                        $authorization['clinic_id']
                     );
                 }
             );
@@ -593,7 +595,9 @@ final class StaffManagementPage
                             $user_id,
                             null,
                             null,
-                            [ 'clinic_id' => $clinic_id, 'role' => $role, 'login' => $username ]
+                            [ 'clinic_id' => $clinic_id, 'role' => $role, 'login' => $username ],
+                            [],
+                            $clinic_id
                         );
 
                         return null;
@@ -659,7 +663,9 @@ final class StaffManagementPage
                                 'role'           => $effective_role,
                                 'role_scope'     => $preserve_membership_role ? 'clinic_local_membership' : 'builtin_cpms_role',
                                 'password_reset' => $password !== '',
-                            ]
+                            ],
+                            [],
+                            $clinic_id
                         );
 
                         return null;
@@ -742,7 +748,9 @@ final class StaffManagementPage
                             'clinic_id'     => $authorization['clinic_id'],
                             'role'          => $role,
                             'existing_user' => true,
-                        ]
+                        ],
+                        [],
+                        $authorization['clinic_id']
                     );
                 }
             );
@@ -837,7 +845,9 @@ final class StaffManagementPage
                                 'role'              => $park_wp_role ? 'subscriber' : $prev_role,
                                 'membership_status' => 'suspended',
                                 'wp_global_role'    => $park_wp_role ? 'subscriber' : 'unchanged',
-                            ]
+                            ],
+                            [],
+                            $authorization['clinic_id']
                         );
                     }
                 );
@@ -889,7 +899,9 @@ final class StaffManagementPage
                                 'clinic_id'         => $authorization['clinic_id'],
                                 'role'              => $prev_role,
                                 'membership_status' => 'active',
-                            ]
+                            ],
+                            [],
+                            $authorization['clinic_id']
                         );
                     }
                 );
