@@ -294,18 +294,40 @@ def main():
 
         stage("C1.script_scope")
         # C1 — the scoped offline cascade script is present on THIS surface only.
-        script_srcs = page.eval_on_selector_all("script[src]", "els => els.map(e => e.getAttribute('src'))")
+        # A caching/concatenating plugin (e.g. Autoptimize in the coexistence lanes)
+        # may rewrite the printed src into a bundle URL, so identify OUR script by a
+        # marker inside the delivered body instead of trusting the file name.
+        MARKER = "data-cpms-address-geography"
+
+        def script_bodies():
+            """Same-origin script responses, keyed by src (bounded to the page's tags)."""
+            out = {}
+            for src in page.eval_on_selector_all("script[src]", "els => els.map(e => e.getAttribute('src'))"):
+                if not src:
+                    continue
+                url = src if src.startswith("http") else BASE + "/" + src.lstrip("/")
+                if not url.startswith(BASE):
+                    continue
+                try:
+                    out[src] = page.request.get(url).text()
+                except Exception:  # a missing bundle is not evidence of the script
+                    out[src] = ""
+            return out
+
+        bodies = script_bodies()
+        own = [src for src, body in bodies.items() if MARKER in body]
         check(
             "C1.cascade_script_loaded",
-            any("cpms-management-portal.js" in (s or "") for s in script_srcs),
-            script_srcs,
+            bool(own),
+            {"srcs": list(bodies.keys())[:12], "loaded_by": own},
         )
         page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
         STATE["url"] = page.url
+        leaked = [src for src, body in script_bodies().items() if MARKER in body]
         check(
             "C1.cascade_script_absent_on_other_pages",
-            "cpms-management-portal.js" not in page.content(),
-            "script must not leak to non-portal pages",
+            leaked == [],
+            {"leaked_by": leaked, "inline_marker": MARKER in page.content()},
         )
         page.goto(portal_url, wait_until="domcontentloaded")
         page.wait_for_timeout(400)
