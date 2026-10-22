@@ -107,7 +107,9 @@ def write_fixture(slug_prefix):
     real Management Portal page; return the fixture as JSON."""
     login = "mp_mgr_" + secrets.token_hex(4)
     password = "Acceptance-2026!" + secrets.token_hex(2)
-    wp("user", "create", login, f"{login}@acc.local", f"--user_pass={password}", "--role=subscriber", "--skip-email")
+    # `wp user create` sends nothing unless --send-email is passed; this WP-CLI has no
+    # --skip-email flag (it aborted the whole fixture before any browser step).
+    wp("user", "create", login, f"{login}@acc.local", f"--user_pass={password}", "--role=subscriber")
 
     org_slug = f"{slug_prefix}-{secrets.token_hex(4)}"
     code = r'''
@@ -327,9 +329,30 @@ def main():
         check("C5.repeated_clinic_forms", form_count >= 2, form_count)
         check("C5.two_clinics_visible", "Portal Clinic A" in html and "Portal Clinic B" in html, "both Clinic names rendered")
 
+        # C0 — an EXISTING Clinic form must render its stored province/city preselected.
+        stage("C0.prepopulated_existing")
+        clinic_a_form = page.locator(
+            'form.cpms-mgmt-form:has(input[name="clinic_id"][value="' + str(fixture["clinic_a"]) + '"])'
+        ).first
+        prefill = {
+            "province": clinic_a_form.locator('select[data-cpms-province-select="1"]').first.input_value(),
+            "city": clinic_a_form.locator('select[data-cpms-city-select="1"]').first.input_value(),
+        }
+        check(
+            "C0.existing_clinic_address_prepopulated",
+            prefill["province"] == TEHRAN and prefill["city"] == TEHRAN,
+            prefill,
+        )
+
+        # Cascade interactions are bound to ONE address block (the create form); a page-wide
+        # selector would match every repeated Clinic form on this page.
+        box0 = page.locator('[data-cpms-address-geography="1"]').first
+        box0_province = box0.locator('select[data-cpms-province-select="1"]').first
+        box0_city = box0.locator('select[data-cpms-city-select="1"]').first
+
         stage("C2.tehran")
         # C2 — Tehran excludes Tabriz.
-        page.select_option('[data-cpms-address-geography="1"] select[data-cpms-province-select="1"]', label=TEHRAN)
+        box0_province.select_option(label=TEHRAN)
         page.wait_for_timeout(200)
         cities = enabled_cities(page)
         check("C2.tehran_excludes_tabriz", TABRIZ not in cities, cities)
@@ -337,22 +360,21 @@ def main():
 
         stage("C3.switch")
         # C3 — switching the province repopulates valid cities and resets the city.
-        page.select_option('[data-cpms-address-geography="1"] select[data-cpms-city-select="1"]', label=TEHRAN)
+        box0_city.select_option(label=TEHRAN)
         check("C3.city_selectable_before_switch", city_value(page) == TEHRAN, city_value(page))
-        page.select_option('[data-cpms-address-geography="1"] select[data-cpms-province-select="1"]', label=ISFAHAN)
+        box0_province.select_option(label=ISFAHAN)
         page.wait_for_timeout(200)
         cities2 = enabled_cities(page)
         check("C3.switch_repopulates_cities", KASHAN in cities2 and ISFAHAN in cities2 and TABRIZ not in cities2, cities2[:12])
         check("C3.switch_resets_city", city_value(page) == "", city_value(page))
-        page.select_option('[data-cpms-address-geography="1"] select[data-cpms-city-select="1"]', label=KASHAN)
+        box0_city.select_option(label=KASHAN)
         check("C3.valid_city_selectable_after_switch", city_value(page) == KASHAN, city_value(page))
 
         stage("C4.server_validation")
         # C4 — the server rejects a forged cross-province pair over real HTTP.
-        form_selector = "form.cpms-mgmt-form"
-        nonce = page.eval_on_selector(f'{form_selector} input[name="_cpms_nonce"]', "e => e.value")
         org_id = fixture["org_id"]
         clinic_a = fixture["clinic_a"]
+        nonce = clinic_a_form.locator('input[name="_cpms_nonce"]').first.input_value()
         post = page.request.post(
             fixture["portal_url"],
             form={
