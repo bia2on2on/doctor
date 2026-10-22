@@ -432,8 +432,8 @@ final class SmsService
                 && (string) $row['event'] === SmsEvents::OTP
                 && ! $this->has_live_otp_code( $live_vars )
             ) {
-                $code     = self::OTP_NO_RETRY_CODE;
-                $verdict  = RetryClassifier::PERMANENT;
+                $code    = self::OTP_NO_RETRY_CODE;
+                $verdict = RetryClassifier::PERMANENT;
             }
 
             if ( $verdict === RetryClassifier::RETRYABLE ) {
