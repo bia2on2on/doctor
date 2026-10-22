@@ -28,6 +28,32 @@ final class IranProvinceCityCatalog {
     private const MAX_ADDRESS_LENGTH = 255;
 
     /**
+     * Sentinel a client submits for the city `<select>` when the operator chose
+     * "Other / سایر" and typed the city manually. It is never a city name and is
+     * never persisted.
+     */
+    public const OTHER_CITY_SENTINEL = '__other__';
+
+    /**
+     * Explicit, reversible in-address marker that separates a USER-DEFINED city
+     * from a canonical catalogue city inside the composed address string.
+     *
+     * Data-model boundary (canonical vs user-defined):
+     *  - canonical city  -> stored as `<Province>، <City>، <Detail>`
+     *  - user-defined    -> stored as `<Province>، سایر: <City>، <Detail>`
+     *
+     * The marker exists because the composed address has no separate city column:
+     * without it, `parse_address()` could not tell a custom city apart from a
+     * street detail, and guessing would silently re-label historical free-text
+     * addresses (for example "تهران، خیابان ولیعصر" must NEVER become a city).
+     * Legacy rows carry no marker, so they keep parsing exactly as before.
+     */
+    public const CUSTOM_CITY_MARKER = 'سایر:';
+
+    /** Hard cap for a manually entered city name (column stays VARCHAR(255)). */
+    public const MAX_CUSTOM_CITY_LENGTH = 80;
+
+    /**
      * Canonical list of all 31 official Iranian provinces with provincial capital and cities.
      *
      * @var list<array{slug:string, name:string, capital:string, cities:list<string>}>
@@ -351,6 +377,118 @@ final class IranProvinceCityCatalog {
     }
 
     /**
+     * Sanitize a manually entered ("Other / سایر") city name.
+     *
+     * Deterministic and side-effect free: UTF-8/Persian normalization (shared with
+     * the canonical catalogue, so Arabic ي/ك and ZWNJ variants collapse), removal of
+     * a pasted-in marker, removal of every character that could corrupt the composed
+     * address (the «،» separator, punctuation, brackets, markup) and whitespace
+     * collapsing. It never throws; `validate_custom_city()` decides acceptance.
+     */
+    public static function sanitize_custom_city( string $value ): string {
+        $normalized = self::normalize_persian_text( $value );
+        if ( $normalized === '' ) {
+            return '';
+        }
+
+        // A value pasted back from a stored address must not nest markers.
+        while ( str_starts_with( $normalized, self::CUSTOM_CITY_MARKER ) ) {
+            $normalized = self::normalize_persian_text(
+                (string) mb_substr( $normalized, mb_strlen( self::CUSTOM_CITY_MARKER ) )
+            );
+            if ( $normalized === '' ) {
+                return '';
+            }
+        }
+
+        if ( strtolower( $normalized ) === self::OTHER_CITY_SENTINEL ) {
+            return '';
+        }
+
+        // Whitelist, not blacklist: only letters, digits, ZWNJ, dashes and
+        // whitespace survive, so the composition separator, punctuation,
+        // brackets, quotes and any markup are structurally impossible. The
+        // custom value therefore can never forge an extra address segment.
+        $cleaned = preg_replace( '/[^\p{L}\p{N}\x{200C}\x{2010}-\x{2015}\s\-]+/u', ' ', $normalized );
+        if ( ! is_string( $cleaned ) ) {
+            return '';
+        }
+
+        return self::normalize_persian_text( $cleaned );
+    }
+
+    /**
+     * Validate a manually entered city against the SELECTED province and return the
+     * value that must be persisted in the city slot of the composed address.
+     *
+     * Rules (server-side, never delegated to JavaScript):
+     *  - a province must be selected: a custom city is always tied to a province;
+     *  - the sanitized value must contain at least one letter and be 2..80 chars;
+     *  - digits-only, separator-only or empty input is rejected;
+     *  - if the typed name IS a canonical city of that province it collapses to the
+     *    canonical value (no marker), so the catalogue stays the single source of
+     *    truth and no shadow duplicate is created.
+     *
+     * @param array{slug:string, name:string, capital:string, cities:list<string>}|string $province_or_slug
+     *
+     * @throws InvalidArgumentException On a missing/unknown province or an unusable city name.
+     */
+    public static function validate_custom_city( $province_or_slug, string $raw_custom_city ): string {
+        $province = is_array( $province_or_slug )
+            ? ( self::find_province( (string) ( $province_or_slug['name'] ?? '' ) ) ?? null )
+            : self::find_province( $province_or_slug );
+        if ( $province === null ) {
+            throw new InvalidArgumentException( 'استان انتخاب‌شده در فهرست رسمی استان‌های ایران معتبر نیست.' );
+        }
+
+        $custom = self::sanitize_custom_city( $raw_custom_city );
+        if ( $custom === '' ) {
+            throw new InvalidArgumentException( 'نام شهر واردشده معتبر نیست؛ لطفاً نام شهر را بدون علامت نگارشی وارد کنید.' );
+        }
+
+        if ( mb_strlen( $custom ) > self::MAX_CUSTOM_CITY_LENGTH ) {
+            throw new InvalidArgumentException( 'نام شهر واردشده بیش از حد طولانی است.' );
+        }
+
+        if ( mb_strlen( $custom ) < 2 || preg_match( '/\p{L}/u', $custom ) !== 1 ) {
+            throw new InvalidArgumentException( 'نام شهر واردشده باید حداقل دو نویسه و شامل حروف باشد.' );
+        }
+
+        // Canonical catalogue wins over a typed duplicate of the same province.
+        $candidate = self::normalize_city_token( $custom );
+        if ( in_array( $candidate, $province['cities'], true ) ) {
+            return $candidate;
+        }
+
+        return $custom;
+    }
+
+    public static function is_valid_custom_city( string $province_or_slug, string $raw_custom_city ): bool {
+        try {
+            return self::validate_custom_city( $province_or_slug, $raw_custom_city ) !== '';
+        } catch ( InvalidArgumentException $e ) {
+            return false;
+        }
+    }
+
+    /**
+     * Whether a persisted city slot holds a USER-DEFINED city (marker present).
+     */
+    public static function city_slot_is_custom( string $city_slot ): bool {
+        return str_starts_with(
+            self::normalize_persian_text( $city_slot ),
+            self::CUSTOM_CITY_MARKER
+        );
+    }
+
+    /**
+     * Compose the persisted city slot for a validated custom city.
+     */
+    public static function compose_custom_city_slot( string $validated_custom_city ): string {
+        return self::CUSTOM_CITY_MARKER . ' ' . $validated_custom_city;
+    }
+
+    /**
      * Parse an existing stored address into optional recognized (province, city) prefix + detail.
      *
      * Backwards compatibility:
@@ -363,12 +501,18 @@ final class IranProvinceCityCatalog {
      *    catalog, `province` and `city` remain empty strings and the entire stored address is
      *    preserved in `detail` and `raw`.
      *
-     * @return array{province:string, city:string, detail:string, raw:string}
+     *  - A city written through the "Other / سایر" path carries the explicit
+     *    `CUSTOM_CITY_MARKER` and is returned in `city_custom` (with `city` empty),
+     *    so a user-defined city is always distinguishable from a canonical one and
+     *    from a street detail. An unmarked, unrecognized second segment is NEVER
+     *    promoted to `city_custom` (historical free text stays a detail).
+     *
+     * @return array{province:string, city:string, city_custom:string, detail:string, raw:string}
      */
     public static function parse_address( ?string $stored_address ): array {
         $raw = self::normalize_persian_text( (string) ( $stored_address ?? '' ) );
         if ( $raw === '' ) {
-            return [ 'province' => '', 'city' => '', 'detail' => '', 'raw' => '' ];
+            return [ 'province' => '', 'city' => '', 'city_custom' => '', 'detail' => '', 'raw' => '' ];
         }
 
         $first_split        = preg_split( '/\s*(?:،|,)\s*/u', $raw, 2 );
@@ -379,46 +523,64 @@ final class IranProvinceCityCatalog {
         if ( $candidate_province !== null ) {
             if ( $remainder === '' ) {
                 return [
-                    'province' => $candidate_province['name'],
-                    'city'     => '',
-                    'detail'   => '',
-                    'raw'      => $raw,
+                    'province'    => $candidate_province['name'],
+                    'city'        => '',
+                    'city_custom' => '',
+                    'detail'      => '',
+                    'raw'         => $raw,
                 ];
             }
 
             $second_split   = preg_split( '/\s*(?:،|,)\s*/u', $remainder, 2 );
             $second_token   = is_array( $second_split ) && isset( $second_split[0] ) ? $second_split[0] : $remainder;
             $candidate_city = self::normalize_city_token( $second_token );
+            $tail           = is_array( $second_split ) && isset( $second_split[1] )
+                ? self::normalize_persian_text( $second_split[1] )
+                : '';
+
+            // USER-DEFINED city: recognized ONLY by the explicit persisted marker,
+            // never by guessing. Historical rows have no marker and keep parsing
+            // exactly as before (unrecognized second segment stays a detail).
+            if ( self::city_slot_is_custom( $second_token ) ) {
+                $custom = self::sanitize_custom_city( $second_token );
+
+                return [
+                    'province'    => $candidate_province['name'],
+                    'city'        => '',
+                    'city_custom' => $custom,
+                    'detail'      => $tail,
+                    'raw'         => $raw,
+                ];
+            }
 
             if (
                 $candidate_city !== ''
                 && in_array( $candidate_city, $candidate_province['cities'], true )
             ) {
-                $detail = is_array( $second_split ) && isset( $second_split[1] )
-                    ? self::normalize_persian_text( $second_split[1] )
-                    : '';
-
                 return [
-                    'province' => $candidate_province['name'],
-                    'city'     => $candidate_city,
-                    'detail'   => $detail,
-                    'raw'      => $raw,
+                    'province'    => $candidate_province['name'],
+                    'city'        => $candidate_city,
+                    'city_custom' => '',
+                    'detail'      => $tail,
+                    'raw'         => $raw,
                 ];
             }
 
             return [
-                'province' => $candidate_province['name'],
-                'city'     => '',
-                'detail'   => $remainder,
-                'raw'      => $raw,
+                'province'    => $candidate_province['name'],
+                'city'        => '',
+                'city_custom' => '',
+                'detail'      => $remainder,
+                'raw'         => $raw,
             ];
         }
 
         return [
-            'province' => '',
-            'city'     => '',
-            'detail'   => $raw,
-            'raw'      => $raw,
+            'province'    => '',
+            'city'        => '',
+            'city_custom' => '',
+            'detail'      => $raw,
+            'raw'         => $raw,
         ];
     }
 
@@ -427,23 +589,36 @@ final class IranProvinceCityCatalog {
      *
      * - When both `$raw_province` and `$raw_city` are empty/null, the raw address is preserved
      *   backwards-compatibly (normalized UTF-8, or null when empty).
-     * - When `$raw_province` or `$raw_city` is supplied, validates against the offline 31-province
-     *   catalog (rejecting unknown provinces, cities without province, or cross-province cities
-     *   with `InvalidArgumentException`) and composes a canonical Persian address string within
-     *   the 255-character column limit.
+     * - When `$raw_province`, `$raw_city` or `$raw_city_custom` is supplied, validates against the
+     *   offline 31-province catalog (rejecting unknown provinces, cities without province, or
+     *   cross-province cities with `InvalidArgumentException`) and composes a canonical Persian
+     *   address string within the 255-character column limit.
+     * - `$raw_city` may carry `OTHER_CITY_SENTINEL` ("Other / سایر"); the manual name is then read
+     *   from `$raw_city_custom`, validated (2..80 chars, at least one letter, separator/markup
+     *   impossible) and persisted with `CUSTOM_CITY_MARKER` so it stays distinguishable from a
+     *   canonical catalogue city on every later read. A manual name that duplicates a canonical
+     *   city of the same province collapses to the canonical value.
      *
-     * @throws InvalidArgumentException On invalid/mismatched province or city or overlong address.
+     * @throws InvalidArgumentException On invalid/mismatched province or city, an unusable manual
+     *                                  city, an ambiguous city+custom payload, or an overlong address.
      */
     public static function resolve_submitted_address(
         ?string $raw_address,
         ?string $raw_province = null,
-        ?string $raw_city = null
+        ?string $raw_city = null,
+        ?string $raw_city_custom = null
     ): ?string {
         $address  = self::normalize_persian_text( (string) ( $raw_address ?? '' ) );
         $province = self::normalize_persian_text( (string) ( $raw_province ?? '' ) );
-        $city     = self::normalize_city_token( (string) ( $raw_city ?? '' ) );
 
-        if ( $province === '' && $city === '' ) {
+        // "Other / سایر" is a sentinel, never a city name, and is never persisted.
+        $other_selected = strtolower( trim( (string) ( $raw_city ?? '' ) ) ) === self::OTHER_CITY_SENTINEL;
+        $city           = $other_selected ? '' : self::normalize_city_token( (string) ( $raw_city ?? '' ) );
+        $custom         = self::sanitize_custom_city( (string) ( $raw_city_custom ?? '' ) );
+        $wants_custom   = $other_selected || $custom !== '';
+
+        // No selector submitted at all -> untouched backwards-compatible passthrough.
+        if ( $province === '' && $city === '' && ! $wants_custom ) {
             if ( $address === '' ) {
                 return null;
             }
@@ -454,7 +629,9 @@ final class IranProvinceCityCatalog {
             return $address;
         }
 
-        if ( $province === '' && $city !== '' ) {
+        // A user-defined city is ALWAYS tied to a selected province: it is stored
+        // inside that province's address slot and can never float free.
+        if ( $province === '' && ( $city !== '' || $custom !== '' ) ) {
             throw new InvalidArgumentException( 'انتخاب شهر بدون انتخاب استان معتبر نیست.' );
         }
 
@@ -464,12 +641,31 @@ final class IranProvinceCityCatalog {
         }
 
         $province_name = $matched_province['name'];
-        $city_name     = '';
+        $city_slot     = '';
+
         if ( $city !== '' ) {
             if ( ! in_array( $city, $matched_province['cities'], true ) ) {
                 throw new InvalidArgumentException( 'شهر انتخاب‌شده متعلق به استان انتخاب‌شده نیست.' );
             }
-            $city_name = $city;
+
+            // Fail closed on an ambiguous payload: a listed city and a different
+            // manual city cannot both win. An identical manual value is a no-op.
+            if ( $custom !== '' && self::normalize_city_token( $custom ) !== $city ) {
+                throw new InvalidArgumentException( 'هم‌زمان نمی‌توان یک شهر از فهرست و یک شهر دستی وارد کرد؛ یکی را انتخاب کنید.' );
+            }
+
+            $city_slot = $city;
+        } elseif ( $other_selected && trim( (string) ( $raw_city_custom ?? '' ) ) !== '' ) {
+            // "Other / سایر" was explicitly chosen and something was typed, but nothing
+            // usable survived sanitization: reject instead of silently dropping input.
+            self::validate_custom_city( $matched_province, (string) $raw_city_custom );
+        } elseif ( $custom !== '' ) {
+            $validated = self::validate_custom_city( $matched_province, $custom );
+            // A typed name that IS canonical for this province collapses to the
+            // catalogue value, so no shadow duplicate of a canonical city exists.
+            $city_slot = in_array( $validated, $matched_province['cities'], true )
+                ? $validated
+                : self::compose_custom_city_slot( $validated );
         }
 
         $parsed = self::parse_address( $address );
@@ -479,7 +675,7 @@ final class IranProvinceCityCatalog {
             $detail = $address;
         }
 
-        $prefix   = $city_name !== '' ? $province_name . '، ' . $city_name : $province_name;
+        $prefix   = $city_slot !== '' ? $province_name . '، ' . $city_slot : $province_name;
         $composed = $detail !== '' ? $prefix . '، ' . $detail : $prefix;
 
         if ( mb_strlen( $composed ) > self::MAX_ADDRESS_LENGTH ) {

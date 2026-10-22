@@ -51,6 +51,7 @@ use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
@@ -406,6 +407,9 @@ final class ManagementPortalService {
 			$clinicians[] = array(
 				'id'                  => $clinician_id,
 				'full_name'           => (string) ( $clinician['full_name'] ?? '' ),
+				// Persisted specialty label, re-displayed exactly as stored: a canonical
+				// catalogue label or a user-defined ("Other / سایر") one. Read-only here.
+				'specialty'           => (string) ( $clinician['specialty'] ?? '' ),
 				'is_active'           => (int) ( $clinician['is_active'] ?? 1 ),
 				'home_clinic'         => $home_clinic,
 				'home_clinic_matches' => $home_clinic === $clinic_id,
@@ -873,6 +877,8 @@ final class ManagementPortalService {
 	 *    existing account is linked, never re-roled, and a WordPress
 	 *    Administrator is never a CPMS staff target;
 	 *  - an existing membership is never silently overwritten (fail closed);
+	 *  - a SUSPENDED Clinic accepts no new enrollment (new-demand boundary), while
+	 *    existing memberships, ongoing care and historical records stay untouched;
 	 *  - the write is audited (hash-chained log).
 	 *
 	 * @return array{ok:bool, message:string, notice?:string}
@@ -889,6 +895,16 @@ final class ManagementPortalService {
 		$trusted = $this->clinic_manager_scope( $actor_wp_user_id, $clinic_id, true );
 		if ( $trusted === null ) {
 			return self::failure();
+		}
+
+		// Day-2 lifecycle boundary (same rule BookingService applies to new demand):
+		// a SUSPENDED Clinic accepts no NEW staff enrollment. This is deliberately
+		// narrow — it never touches existing memberships, ongoing care, clinical or
+		// financial history, reports or recovery, and Clinic status is still NOT a
+		// scope gate (see TrustedClinicEstablisher::verified_scope()). Reactivating
+		// or suspending a membership stays available so ongoing care is manageable.
+		if ( $this->clinic_is_suspended( $trusted ) ) {
+			return self::prerequisite( 'این مرکز موقتاً غیرفعال است؛ افزودن کارمند جدید تا فعال‌سازی دوبارهٔ مرکز ممکن نیست. عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.' );
 		}
 
 		$membership_id = 0;
@@ -1142,6 +1158,20 @@ final class ManagementPortalService {
 			return self::failure();
 		}
 
+		// Defence in depth: the specialty label is re-resolved HERE, so no caller
+		// (portal controller, REST, test, future surface) can persist an overlong or
+		// unparseable value into `cpms_clinicians.specialty VARCHAR(190)`. A canonical
+		// catalogue label collapses to the catalogue; a user-defined ("Other / سایر")
+		// label is validated and persisted verbatim; anything unusable is rejected.
+		try {
+			$specialty = (string) ( MedicalSpecialtyCatalog::resolve_submitted(
+				'' !== trim( $specialty ) ? trim( $specialty ) : null,
+				null
+			) ?? '' );
+		} catch ( \InvalidArgumentException $e ) {
+			return self::invalid( $e->getMessage() );
+		}
+
 		$clinician_id = 0;
 		try {
 			if ( $wp_user_id > 0 ) {
@@ -1319,6 +1349,31 @@ final class ManagementPortalService {
 	 * Organization Manager membership are NOT assignable here (explicit
 	 * Organization authority only), and no WordPress role is ever written.
 	 */
+	/**
+	 * Whether the trusted Clinic is currently suspended (new-demand closed).
+	 *
+	 * Read AFTER the trusted scope is established, so the id is never taken from
+	 * the request payload; a missing/unknown status is treated as NOT suspended
+	 * (lifecycle status is a Clinic column with an 'active' default).
+	 */
+	private function clinic_is_suspended( int $trusted_clinic_id ): bool {
+		if ( $trusted_clinic_id <= 0 ) {
+			return false;
+		}
+
+		try {
+			$status = $this->db()->fetchValue(
+				'SELECT status FROM ' . $this->db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
+				array( $trusted_clinic_id )
+			);
+		} catch ( \Throwable $e ) {
+			// Fail closed for NEW demand when the lifecycle state cannot be read.
+			return true;
+		}
+
+		return $status !== null && 'suspended' === (string) $status;
+	}
+
 	private function may_assign_role( string $role_key ): bool {
 		return in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true );
 	}
@@ -1901,21 +1956,27 @@ final class ManagementPortalService {
 	 * @param array<string,mixed> $input
 	 */
 	private static function resolve_portal_address( array $input ): ?string {
-		$raw_address  = $input['address'] ?? null;
-		$raw_province = $input['address_province'] ?? null;
-		$raw_city     = $input['address_city'] ?? null;
+		$raw_address     = $input['address'] ?? null;
+		$raw_province    = $input['address_province'] ?? null;
+		$raw_city        = $input['address_city'] ?? null;
+		$raw_city_custom = $input['address_city_custom'] ?? null;
 		if (
 			( null === $raw_address || '' === trim( (string) $raw_address ) )
 			&& ( null === $raw_province || '' === trim( (string) $raw_province ) )
 			&& ( null === $raw_city || '' === trim( (string) $raw_city ) )
+			&& ( null === $raw_city_custom || '' === trim( (string) $raw_city_custom ) )
 		) {
 			return null;
 		}
 
+		// The manual ("Other / سایر") city is validated inside the catalogue and is
+		// always bound to the selected province; it can never float free or forge an
+		// extra address segment.
 		return IranProvinceCityCatalog::resolve_submitted_address(
 			is_scalar( $raw_address ) ? (string) $raw_address : null,
 			is_scalar( $raw_province ) ? (string) $raw_province : null,
-			is_scalar( $raw_city ) ? (string) $raw_city : null
+			is_scalar( $raw_city ) ? (string) $raw_city : null,
+			is_scalar( $raw_city_custom ) ? (string) $raw_city_custom : null
 		);
 	}
 

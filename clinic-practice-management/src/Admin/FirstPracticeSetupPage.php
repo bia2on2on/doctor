@@ -207,8 +207,9 @@ final class FirstPracticeSetupPage {
         $name             = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
         $phone            = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
         $address          = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
-        $address_province = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
-        $address_city     = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
+        $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';
 
         if ( ! $confirmed ) {
             self::push_notice( 'error', __( 'برای کامل‌کردن راه‌اندازی، تأیید هویت مطب الزامی است.', 'cpms' ) );
@@ -216,8 +217,8 @@ final class FirstPracticeSetupPage {
         }
 
         try {
-            if ( $address_province !== '' || $address_city !== '' ) {
-                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            if ( $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city, $address_city_custom );
             }
             App::first_practice_setup_service()->recover(
                 $actor,
@@ -260,8 +261,9 @@ final class FirstPracticeSetupPage {
         $name             = isset( $_POST['practice_name'] ) ? sanitize_text_field( wp_unslash( $_POST['practice_name'] ) ) : '';
         $phone            = isset( $_POST['phone'] ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
         $address          = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
-        $address_province = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
-        $address_city     = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
+        $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';
 
         if ( ! $confirmed ) {
             self::push_notice( 'error', __( 'تأیید هویت مطب الزامی است.', 'cpms' ) );
@@ -269,8 +271,8 @@ final class FirstPracticeSetupPage {
         }
 
         try {
-            if ( $address_province !== '' || $address_city !== '' ) {
-                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            if ( $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city, $address_city_custom );
             }
             $result = App::first_practice_setup_service()->claim(
                 $actor,

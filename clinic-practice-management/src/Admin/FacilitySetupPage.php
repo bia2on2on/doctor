@@ -282,7 +282,8 @@ final class FacilitySetupPage {
                         $site_address = IranProvinceCityCatalog::resolve_submitted_address(
                             $field( 'site_address' ),
                             $field( 'address_province' ),
-                            $field( 'address_city' )
+                            $field( 'address_city' ),
+                            $field( 'address_city_custom' )
                         );
                     } catch ( \InvalidArgumentException $e ) {
                         return 'خطا: ' . $e->getMessage();

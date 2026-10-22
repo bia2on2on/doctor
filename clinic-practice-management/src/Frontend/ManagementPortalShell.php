@@ -47,6 +47,13 @@ final class ManagementPortalShell {
 	public const JS_HANDLE = 'cpms-management-portal';
 
 	/**
+	 * Asset handle for the shared offline catalogue-field enhancement
+	 * (searchable province/city/specialty + "Other / سایر" manual entry).
+	 * Progressive enhancement only — every submission is re-validated server-side.
+	 */
+	public const CATALOG_JS_HANDLE = 'cpms-catalog-fields';
+
+	/**
 	 * Register WordPress hooks.
 	 */
 	public static function register(): void {
@@ -69,9 +76,16 @@ final class ManagementPortalShell {
 		}
 		$ver = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : '1.0.0';
 		wp_register_script(
+			self::CATALOG_JS_HANDLE,
+			$base . '/assets/js/cpms-catalog-fields.js',
+			array(),
+			$ver,
+			true
+		);
+		wp_register_script(
 			self::JS_HANDLE,
 			$base . '/assets/js/cpms-management-portal.js',
-			array(),
+			array( self::CATALOG_JS_HANDLE ),
 			$ver,
 			true
 		);

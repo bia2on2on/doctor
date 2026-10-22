@@ -222,7 +222,7 @@ final class LocationAdminPage
         ];
         // Preserve existing optional profile values for older/partial clients
         // that omit the field. An explicitly submitted empty string clears it.
-        foreach ( [ 'address', 'address_province', 'address_city', 'phone' ] as $optional_field ) {
+        foreach ( [ 'address', 'address_province', 'address_city', 'address_city_custom', 'phone' ] as $optional_field ) {
             if ( array_key_exists( $optional_field, $_POST ) ) {
                 $in[ $optional_field ] = wp_unslash( $_POST[ $optional_field ] );
             }
@@ -319,8 +319,9 @@ final class LocationAdminPage
         $timezone         = self::sanitize_text_input( $in['timezone'] ?? '' );
         $location_raw_id  = $in['location_id'] ?? 0;
         $location_id      = is_scalar( $location_raw_id ) ? absint( (string) $location_raw_id ) : 0;
-        $address_province = array_key_exists( 'address_province', $in ) ? (string) ( self::sanitize_text_input( $in['address_province'] ) ?? '' ) : '';
-        $address_city     = array_key_exists( 'address_city', $in ) ? (string) ( self::sanitize_text_input( $in['address_city'] ) ?? '' ) : '';
+        $address_province    = array_key_exists( 'address_province', $in ) ? (string) ( self::sanitize_text_input( $in['address_province'] ) ?? '' ) : '';
+        $address_city        = array_key_exists( 'address_city', $in ) ? (string) ( self::sanitize_text_input( $in['address_city'] ) ?? '' ) : '';
+        $address_city_custom = array_key_exists( 'address_city_custom', $in ) ? (string) ( self::sanitize_text_input( $in['address_city_custom'] ) ?? '' ) : '';
 
         try {
             $resolved_address = null;
@@ -328,9 +329,9 @@ final class LocationAdminPage
             if ( $has_address ) {
                 $resolved_address = self::sanitize_text_input( $in['address'] );
             }
-            if ( $address_province !== '' || $address_city !== '' ) {
+            if ( $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
                 $raw_addr_str     = is_string( $resolved_address ) ? $resolved_address : '';
-                $resolved_address = IranProvinceCityCatalog::resolve_submitted_address( $raw_addr_str, $address_province, $address_city );
+                $resolved_address = IranProvinceCityCatalog::resolve_submitted_address( $raw_addr_str, $address_province, $address_city, $address_city_custom );
                 $has_address      = true;
             }
             if ( $mode === 'update' ) {

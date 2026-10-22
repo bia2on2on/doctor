@@ -28,6 +28,7 @@ namespace ClinicCore\Frontend;
 
 use ClinicCore\Application\Management\ManagementPortalService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use WP_Error;
 use WP_User;
@@ -314,11 +315,22 @@ final class ManagementPortalController {
 				);
 
 			case 'clinic_clinician_register':
+				// Specialty is resolved here (never in script): a catalogue label is
+				// persisted canonically, "Other / سایر" persists the validated manual
+				// label, and an unusable/ambiguous payload is rejected before any write.
+				try {
+					$__resolved_specialty = (string) ( MedicalSpecialtyCatalog::resolve_submitted(
+						self::string_value( $input, 'specialty' ) !== '' ? self::string_value( $input, 'specialty' ) : null,
+						self::string_value( $input, 'specialty_custom' ) !== '' ? self::string_value( $input, 'specialty_custom' ) : null
+					) ?? '' );
+				} catch ( \InvalidArgumentException $e ) {
+					return self::invalid_input( $e->getMessage() );
+				}
 				return $service->register_clinician(
 					$actor_wp_user_id,
 					self::int_value( $input, 'clinic_id' ),
 					self::string_value( $input, 'full_name' ),
-					self::string_value( $input, 'specialty' ),
+					$__resolved_specialty,
 					self::int_value( $input, 'target_user_id' )
 				);
 
@@ -343,7 +355,8 @@ final class ManagementPortalController {
 					$__resolved_site = IranProvinceCityCatalog::resolve_submitted_address(
 						$__site_address !== '' ? $__site_address : null,
 						self::string_value( $input, 'address_province' ) !== '' ? self::string_value( $input, 'address_province' ) : null,
-						self::string_value( $input, 'address_city' ) !== '' ? self::string_value( $input, 'address_city' ) : null
+						self::string_value( $input, 'address_city' ) !== '' ? self::string_value( $input, 'address_city' ) : null,
+						self::string_value( $input, 'address_city_custom' ) !== '' ? self::string_value( $input, 'address_city_custom' ) : null
 					);
 					if ( null !== $__resolved_site ) {
 						$__site_address = $__resolved_site;
@@ -521,7 +534,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'cpms_entity_name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel', 'address_province', 'address_city' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'cpms_entity_name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel', 'address_province', 'address_city', 'address_city_custom', 'specialty_custom' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.
