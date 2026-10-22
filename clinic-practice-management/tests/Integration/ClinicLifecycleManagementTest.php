@@ -1375,10 +1375,42 @@ final class ClinicLifecycleManagementTest extends WP_UnitTestCase {
             'Asia/Tehran',
             'Main Held'
         );
-        $this->clinicHeld    = (int) $held['clinic_id'];
+        $this->clinicHeld = (int) $held['clinic_id'];
         self::assertGreaterThan( 0, $this->clinicHeld );
-        self::assertTrue( (bool) $held['held'] );
+        // provision_held() returns {clinic_id, location_id, audit_id} - the held state is
+        // proven from the durable row and from the provisioning audit record, not from a
+        // return key that this API does not have.
+        self::assertGreaterThan( 0, (int) $held['location_id'], 'initial setup artifacts are provisioned with the held Clinic' );
         self::assertSame( 'suspended', $this->clinic_status( $this->clinicHeld ), 'created HELD: status is suspended before activation' );
+        // Same durable-evidence pattern FacilitySetupJourneyTest already proves green.
+        $provision_row = App::db()->fetchRow(
+            'SELECT after_json, meta_json FROM ' . App::db()->table( 'cpms_audit_logs' ) . ' WHERE action = %s AND resource_id = %d ORDER BY id DESC LIMIT 1',
+            [ \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService::AUDIT_ACTION, $this->clinicHeld ]
+        );
+        self::assertNotNull( $provision_row );
+        self::assertSame(
+            'suspended',
+            json_decode( (string) $provision_row['after_json'], true )['status'] ?? null,
+            'the provisioning audit row records the held status'
+        );
+        self::assertTrue(
+            json_decode( (string) $provision_row['meta_json'], true )['held'] ?? false,
+            'the provisioning audit row records held=true'
+        );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_audit_logs' )
+                    . ' WHERE resource_type = %s AND resource_id = %d AND action IN (%s, %s)',
+                [
+                    'clinic',
+                    $this->clinicHeld,
+                    \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService::AUDIT_CLINIC_REACTIVATED,
+                    \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService::AUDIT_CLINIC_DEACTIVATED,
+                ]
+            ),
+            'never activated, so no lifecycle transition row exists - this is the durable held distinction'
+        );
 
         // Authorized initial setup continues while held.
         $setup_staff               = $this->extra_subscriber();
