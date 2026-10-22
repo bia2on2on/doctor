@@ -101,7 +101,8 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         // still reflects the templates (neither cap granted).
         $stored = get_option(RolesAndCapabilities::OPTION_OVERRIDE, []);
         self::assertSame([], is_array($stored) ? $stored : [], 'no override may survive the rolled-back request');
-        $durable_roles = get_option(wp_roles()->role_prefix . 'user_roles', []);
+        global $wpdb;
+        $durable_roles = get_option( $wpdb->prefix . 'user_roles', [] );
         self::assertArrayNotHasKey(
             RolesAndCapabilities::EXPORT,
             $durable_roles[RolesAndCapabilities::ROLE_SECRETARY]['capabilities'] ?? [],
