@@ -59,6 +59,13 @@ final class SmsService
     /** رویداد داخلی برای پیامک آزمایشی (خارج از رویدادهای بیزنس). */
     public const EVENT_TEST = 'test';
 
+    /**
+     * Explicit delivery classification for an OTP that can no longer be
+     * delivered: the plaintext code is never persisted, so a re-drive after the
+     * originating request ended cannot reconstruct it (D5 — fail closed).
+     */
+    public const OTP_NO_RETRY_CODE = 'CLINIC_SMS_OTP_NO_RETRY';
+
     private const UPDATE_COLUMNS = ['status', 'attempts', 'failure_code', 'provider_msg_id', 'provider'];
 
     /**
@@ -304,6 +311,29 @@ final class SmsService
             return;
         }
 
+        // D5 (fail-closed retry): an OTP row never persists the plaintext code —
+        // the stored message is masked ("***") and vars_json is NULL. Only the
+        // immediate inline dispatch (sendEvent) still holds the live code in
+        // process memory. A re-drive after the request ended (queue/job/manual
+        // retry, possibly in another process) cannot reconstruct the code, so it
+        // must never send the masked text or an empty template variable as if
+        // the message were delivered. Classify explicitly and stop without
+        // touching any provider — no reversible plaintext storage is introduced.
+        $isOtpEvent = (string) $row['event'] === SmsEvents::OTP;
+        if ($isOtpEvent && !$this->hasLiveOtpCode($liveVars)) {
+            $this->updateMessage($messageId, [
+                'status' => SmsMessageStatus::FAILED,
+                'attempts' => $attempts,
+                'failure_code' => self::OTP_NO_RETRY_CODE,
+            ]);
+            $this->op->error('SMS_OTP_FAILED_CLOSED', [
+                'message_id' => $messageId,
+                'code' => self::OTP_NO_RETRY_CODE,
+            ]);
+
+            return;
+        }
+
         // Phase 2 (RT-3 / §5-D-1..D-3) — مهم‌ترین اصلاحِ امنیتیِ این slice:
         // Clinicِ مالکِ پیام از **خودِ ردیف** خوانده می‌شود (منبعِ durable و
         // authoritative؛ همان `clinic_id` که در `sendEvent()` نوشته شده) و همهٔ
@@ -339,7 +369,18 @@ final class SmsService
                     $opts
                 );
             } else {
-                $result = $provider->sendText($creds, (string) $row['recipient'], (string) $row['message'], $opts);
+                // D5 (plain-text OTP dispatch): the stored OTP message is
+                // deliberately masked ("***"), so it must never be sent as the
+                // provider text. For an OTP event re-render the real message
+                // transiently in memory from the event's default template and
+                // the live vars; the value exists only for this provider call
+                // and is never written back to cpms_sms_messages, vars_json,
+                // logs or audit. Non-OTP messages keep their stored text.
+                $outboundText = (string) $row['message'];
+                if ($isOtpEvent) {
+                    $outboundText = $this->renderLiveOtpText($variables);
+                }
+                $result = $provider->sendText($creds, (string) $row['recipient'], $outboundText, $opts);
             }
 
             $this->updateMessage($messageId, [
@@ -356,9 +397,12 @@ final class SmsService
             $verdict = RetryClassifier::classify($e);
             $code = method_exists($e, 'apiCode') ? (string) $e->apiCode() : 'CLINIC_SMS_PROVIDER_ERROR';
 
-            // OTP بدون متغیرهای ذخیره‌شده Retry نمی‌شود (کد خام ذخیره نیست — §8)
-            if ($verdict === RetryClassifier::RETRYABLE && (string) $row['event'] === SmsEvents::OTP && $liveVars === null) {
-                $code = 'CLINIC_SMS_OTP_NO_RETRY';
+            // OTP بدون متغیرهای ذخیره‌شده Retry نمی‌شود (کد خام ذخیره نیست — §8).
+            // Defence in depth: the fail-closed guard above normally stops such a
+            // re-drive before any provider call; this keeps the same explicit
+            // classification if the provider path is reached without live vars.
+            if ($verdict === RetryClassifier::RETRYABLE && (string) $row['event'] === SmsEvents::OTP && !$this->hasLiveOtpCode($liveVars)) {
+                $code = self::OTP_NO_RETRY_CODE;
                 $verdict = RetryClassifier::PERMANENT;
             }
 
@@ -1025,6 +1069,50 @@ final class SmsService
         }
 
         return array_map('strval', $decoded);
+    }
+
+    /**
+     * Whether this dispatch still holds the live OTP code in process memory.
+     *
+     * The code is never at rest (masked message, NULL vars_json), so only the
+     * immediate inline dispatch can satisfy this. A queued/re-driven OTP after
+     * the request ended fails the dispatch guard instead of being sent masked.
+     *
+     * @param array<string, string>|null $liveVars
+     */
+    private function hasLiveOtpCode(?array $liveVars): bool
+    {
+        return is_array($liveVars)
+            && isset($liveVars['otp_code'])
+            && is_string($liveVars['otp_code'])
+            && trim($liveVars['otp_code']) !== '';
+    }
+
+    /**
+     * Render the real OTP message text for an in-memory plain-text dispatch.
+     *
+     * The rendered string exists only for the provider call in this request;
+     * it is never written back to cpms_sms_messages/vars_json and never logged.
+     * The fail-closed dispatch guard guarantees the live code is present, so
+     * the renderer's required-variable check cannot trip on this path.
+     *
+     * @param array<string, string> $liveVars
+     */
+    private function renderLiveOtpText(array $liveVars): string
+    {
+        $info = SmsEvents::info(SmsEvents::OTP);
+        if ($info === null) {
+            // The OTP event is a compile-time registry constant; its absence is
+            // a configuration defect and must fail closed rather than send a mask.
+            throw new SmsSendException('OTP event is not registered', false, self::OTP_NO_RETRY_CODE);
+        }
+
+        return SmsTemplateRenderer::render(
+            $info['default_text'],
+            $liveVars,
+            $info['variables'],
+            $info['required']
+        );
     }
 
     /**

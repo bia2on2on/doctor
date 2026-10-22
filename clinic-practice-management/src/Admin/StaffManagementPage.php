@@ -430,23 +430,34 @@ final class StaffManagementPage
 
         // retrieve_password از مسیر امن وردپرس: صحت کاربر را می‌سنجد، توکن تولید و ایمیل
         // «بازیابی/تنظیم رمز» می‌فرستد. توکن فقط در ایمیل و DB موقت وردپرس است.
-        $res = retrieve_password((string) $user->user_login);
-        if (is_wp_error($res)) {
-            return ['error' => $res->get_error_message(), 'display_name' => ''];
-        }
+        //
+        // D6 audit atomicity: the reset-key write and the mandatory audit event
+        // share one boundary. If the audit cannot be persisted, the boundary
+        // rolls back the WordPress reset-key metadata (fail closed); the
+        // already-sent email link then cannot complete an un-audited reset.
+        try {
+            App::db()->transactional(function () use ($user, $user_id, $updated_by, $authorization) {
+                $res = retrieve_password((string) $user->user_login);
+                if (is_wp_error($res)) {
+                    throw new \RuntimeException($res->get_error_message());
+                }
 
-        App::audit()->log(
-            'STAFF_PASSWORD_RESET_INITIATED',
-            ['wp_user_id' => $updated_by],
-            'user',
-            $user_id,
-            null,
-            null,
-            [
-                'clinic_id' => $authorization['clinic_id'],
-                'login' => (string) $user->user_login,
-            ]
-        );
+                App::audit()->log(
+                    'STAFF_PASSWORD_RESET_INITIATED',
+                    ['wp_user_id' => $updated_by],
+                    'user',
+                    $user_id,
+                    null,
+                    null,
+                    [
+                        'clinic_id' => $authorization['clinic_id'],
+                        'login' => (string) $user->user_login,
+                    ]
+                );
+            });
+        } catch (\Throwable $e) {
+            return ['error' => $e->getMessage(), 'display_name' => ''];
+        }
 
         return ['error' => '', 'display_name' => (string) $user->display_name];
     }
@@ -534,74 +545,109 @@ final class StaffManagementPage
         $plain_password = $password !== '' ? $password : $generated;
 
         if ($mode === 'create') {
-            $user_id = wp_insert_user(
-                [
-                    'user_login'   => $username,
-                    'user_pass'    => $plain_password,
-                    'user_email'   => $email,
-                    'display_name' => $display_name,
-                    'role'         => $role,
-                ]
-            );
-            if ( is_wp_error( $user_id ) ) {
-                return ['error' => $user_id->get_error_message(), 'generated' => '', 'user_id' => 0];
-            }
-            $user_id = (int) $user_id;
+            // D6 audit atomicity: the WordPress user, its Clinic membership and
+            // the mandatory audit event share one transaction boundary. A failed
+            // membership write or audit INSERT rolls the freshly created
+            // WordPress user back too (the old manual wp_delete_user()
+            // compensation is replaced by the rollback itself).
+            $createResult = null;
             try {
-                App::membership_service()->create_membership(
-                    $clinic_id,
-                    $user_id,
-                    $role,
-                    'clinic',
-                    $updated_by
-                );
-            } catch (\Throwable $e) {
-                wp_delete_user( $user_id );
+                $createResult = App::db()->transactional(function () use (
+                    $username, $plain_password, $email, $display_name, $role,
+                    $clinic_id, $updated_by, &$user_id
+                ) {
+                    $inserted = wp_insert_user(
+                        [
+                            'user_login'   => $username,
+                            'user_pass'    => $plain_password,
+                            'user_email'   => $email,
+                            'display_name' => $display_name,
+                            'role'         => $role,
+                        ]
+                    );
+                    if ( is_wp_error( $inserted ) ) {
+                        // No row was written; pass the original WP error through.
+                        return ['error' => $inserted->get_error_message(), 'generated' => '', 'user_id' => 0];
+                    }
+                    $user_id = (int) $inserted;
+                    App::membership_service()->create_membership(
+                        $clinic_id,
+                        $user_id,
+                        $role,
+                        'clinic',
+                        $updated_by
+                    );
+                    App::audit()->log(
+                        'STAFF_USER_CREATED',
+                        ['wp_user_id' => $updated_by],
+                        'user',
+                        $user_id,
+                        null,
+                        null,
+                        ['clinic_id' => $clinic_id, 'role' => $role, 'login' => $username]
+                    );
 
+                    return null;
+                });
+            } catch (\Throwable $e) {
+                // The boundary already rolled the WordPress user and membership back.
                 return ['error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0];
             }
-            App::audit()->log(
-                'STAFF_USER_CREATED',
-                ['wp_user_id' => $updated_by],
-                'user',
-                $user_id,
-                null,
-                null,
-                ['clinic_id' => $clinic_id, 'role' => $role, 'login' => $username]
-            );
+            if ($createResult !== null) {
+                return $createResult;
+            }
         } else {
-            $args = ['ID' => $user_id, 'display_name' => $display_name, 'user_email' => $email];
-            if ( ! $preserve_membership_role ) {
-                $args['role'] = $role;
+            // D6 audit atomicity: the WordPress profile update, membership role
+            // write, meta cleanup and mandatory audit event commit or roll back
+            // together — no un-audited staff update and no false success.
+            $updateResult = null;
+            try {
+                $updateResult = App::db()->transactional(function () use (
+                    $user_id, $display_name, $email, $preserve_membership_role, $role,
+                    $password, $plain_password, $target_membership, $clinic_id, $updated_by
+                ) {
+                    $args = ['ID' => $user_id, 'display_name' => $display_name, 'user_email' => $email];
+                    if ( ! $preserve_membership_role ) {
+                        $args['role'] = $role;
+                    }
+                    if ($password !== '') {
+                        $args['user_pass'] = $plain_password;
+                    }
+                    $res = wp_update_user($args);
+                    if (is_wp_error($res)) {
+                        // Nothing was written; pass the original WP error through.
+                        return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $user_id];
+                    }
+                    if ( ! $preserve_membership_role && $target_membership !== null ) {
+                        App::membership_service()->set_role_key( (int) $target_membership['id'], $role );
+                    }
+                    // اگر کاربر قبلاً غیرفعال بود (subscriber + usermeta)، اکنون نقش واقعی گرفت → پاک کردن flag.
+                    if ( get_user_meta( $user_id, self::META_PREV_ROLE, true ) !== '' ) {
+                        delete_user_meta( $user_id, self::META_PREV_ROLE );
+                    }
+                    App::audit()->log(
+                        'STAFF_USER_UPDATED',
+                        ['wp_user_id' => $updated_by],
+                        'user',
+                        $user_id,
+                        null,
+                        null,
+                        [
+                            'clinic_id'      => $clinic_id,
+                            'role'           => $preserve_membership_role ? (string) ( $target_membership['role_key'] ?? '' ) : $role,
+                            'role_scope'     => $preserve_membership_role ? 'clinic_local_membership' : 'builtin_cpms_role',
+                            'password_reset' => $password !== '',
+                        ]
+                    );
+
+                    return null;
+                });
+            } catch (\Throwable $e) {
+                return ['error' => 'عملیات به‌روزرسانی کاربر کامل نشد؛ هیچ تغییری ثبت نشد.', 'generated' => '', 'user_id' => $user_id];
             }
-            if ($password !== '') {
-                $args['user_pass'] = $plain_password;
+            if ($updateResult !== null) {
+                return $updateResult;
             }
-            $res = wp_update_user($args);
-            if (is_wp_error($res)) {
-                return ['error' => $res->get_error_message(), 'generated' => '', 'user_id' => $user_id];
-            }
-            if ( ! $preserve_membership_role && $target_membership !== null ) {
-                App::membership_service()->set_role_key( (int) $target_membership['id'], $role );
-            }
-            // اگر کاربر قبلاً غیرفعال بود (subscriber + usermeta)، اکنون نقش واقعی گرفت → پاک کردن flag.
-            if ( get_user_meta( $user_id, self::META_PREV_ROLE, true ) !== '' ) {
-                delete_user_meta( $user_id, self::META_PREV_ROLE );
-            }
-            App::audit()->log(
-                'STAFF_USER_UPDATED',
-                ['wp_user_id' => $updated_by],
-                'user',
-                $user_id,
-                null,
-                null,
-                [
-                    'clinic_id'      => $clinic_id,
-                    'role'           => $preserve_membership_role ? (string) ( $target_membership['role_key'] ?? '' ) : $role,
-                    'role_scope'     => $preserve_membership_role ? 'clinic_local_membership' : 'builtin_cpms_role',
-                    'password_reset' => $password !== '',
-                ]
-            );
         }
 
         return ['error' => '', 'generated' => $generated, 'user_id' => $user_id];
@@ -644,13 +690,33 @@ final class StaffManagementPage
         }
 
         try {
-            App::membership_service()->create_membership(
-                $authorization['clinic_id'],
-                $existingUserId,
-                $role,
-                'clinic',
-                $updated_by
-            );
+            // D6 audit atomicity: membership creation and its mandatory audit
+            // event share one transaction boundary. A failed audit INSERT rolls
+            // the membership back, so no attach can survive without its audit
+            // row and no false success is ever returned.
+            App::db()->transactional(function () use ($authorization, $existingUserId, $role, $updated_by) {
+                App::membership_service()->create_membership(
+                    $authorization['clinic_id'],
+                    $existingUserId,
+                    $role,
+                    'clinic',
+                    $updated_by
+                );
+
+                App::audit()->log(
+                    'STAFF_USER_ATTACHED',
+                    ['wp_user_id' => $updated_by],
+                    'user',
+                    $existingUserId,
+                    null,
+                    null,
+                    [
+                        'clinic_id' => $authorization['clinic_id'],
+                        'role' => $role,
+                        'existing_user' => true,
+                    ]
+                );
+            });
         } catch (MembershipException $e) {
             // create_membership() is the single membership write path. In
             // particular, an existing active or suspended row is a deterministic
@@ -659,20 +725,6 @@ final class StaffManagementPage
         } catch (\Throwable $e) {
             return ['error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0];
         }
-
-        App::audit()->log(
-            'STAFF_USER_ATTACHED',
-            ['wp_user_id' => $updated_by],
-            'user',
-            $existingUserId,
-            null,
-            null,
-            [
-                'clinic_id' => $authorization['clinic_id'],
-                'role' => $role,
-                'existing_user' => true,
-            ]
-        );
 
         return ['error' => '', 'generated' => '', 'user_id' => $existingUserId];
     }
@@ -722,38 +774,41 @@ final class StaffManagementPage
             if ( (string) ( $target_membership['status'] ?? '' ) !== 'active' ) {
                 return ['error' => 'عضویت هدف از قبل غیرفعال است.'];
             }
-            App::membership_service()->suspend_membership( (int) $target_membership['id'] );
-            update_user_meta( $user_id, self::META_PREV_ROLE, $prev_role );
-            if ( $park_wp_role ) {
-                $updated = wp_update_user( ['ID' => $user_id, 'role' => 'subscriber'] );
-                if ( is_wp_error( $updated ) ) {
-                    try {
-                        App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
-                    } catch ( \Throwable $e ) {
-                        // Compensation must never become a fatal error. The central
-                        // lifecycle policy refuses to restore participation for a Clinic
-                        // that accepts no new demand, and staying suspended is the safer
-                        // of the two outcomes - so both faults are reported.
-                        return ['error' => $updated->get_error_message() . ' / ' . $e->getMessage()];
+            // D6 audit atomicity: suspension, role parking/meta and the
+            // mandatory audit event share one transaction boundary. The old
+            // manual reactivation compensation on a wp_update_user() failure is
+            // replaced by the rollback itself, which restores the membership,
+            // the meta and the WordPress role together. A failed audit likewise
+            // rolls everything back — no un-audited suspension, no false success.
+            try {
+                App::db()->transactional(function () use ( $target_membership, $user_id, $prev_role, $park_wp_role, $updated_by, $authorization ) {
+                    App::membership_service()->suspend_membership( (int) $target_membership['id'] );
+                    update_user_meta( $user_id, self::META_PREV_ROLE, $prev_role );
+                    if ( $park_wp_role ) {
+                        $updated = wp_update_user( ['ID' => $user_id, 'role' => 'subscriber'] );
+                        if ( is_wp_error( $updated ) ) {
+                            // Throwing inside the boundary rolls every write above back.
+                            throw new \RuntimeException( $updated->get_error_message() );
+                        }
                     }
-
-                    return ['error' => $updated->get_error_message()];
-                }
+                    App::audit()->log(
+                        'STAFF_USER_DEACTIVATED',
+                        ['wp_user_id' => $updated_by],
+                        'user',
+                        $user_id,
+                        null,
+                        ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active'],
+                        [
+                            'clinic_id'         => $authorization['clinic_id'],
+                            'role'              => $park_wp_role ? 'subscriber' : $prev_role,
+                            'membership_status' => 'suspended',
+                            'wp_global_role'    => $park_wp_role ? 'subscriber' : 'unchanged',
+                        ]
+                    );
+                });
+            } catch ( \Throwable $e ) {
+                return ['error' => $e->getMessage()];
             }
-            App::audit()->log(
-                'STAFF_USER_DEACTIVATED',
-                ['wp_user_id' => $updated_by],
-                'user',
-                $user_id,
-                null,
-                ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active'],
-                [
-                    'clinic_id'         => $authorization['clinic_id'],
-                    'role'              => $park_wp_role ? 'subscriber' : $prev_role,
-                    'membership_status' => 'suspended',
-                    'wp_global_role'    => $park_wp_role ? 'subscriber' : 'unchanged',
-                ]
-            );
         } else {
             $prev_role       = (string) get_user_meta( $user_id, self::META_PREV_ROLE, true );
             $restore_wp_role = in_array( $prev_role, self::MANAGEABLE_ROLES, true );
@@ -765,37 +820,46 @@ final class StaffManagementPage
             }
             // Suspension preserves role_key on the membership row itself, so
             // reactivation restores a custom assignment without any extra write.
+            //
+            // D6 audit atomicity: reactivation, meta cleanup, WordPress role
+            // restoration and the mandatory audit event share one boundary. The
+            // lifecycle MembershipException propagates after rollback (nothing
+            // was written); the old manual re-suspension compensation for a
+            // wp_update_user() failure is replaced by the rollback itself.
             try {
-                App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+                App::db()->transactional(function () use ( $target_membership, $user_id, $prev_role, $restore_wp_role, $updated_by, $authorization ) {
+                    App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+                    delete_user_meta( $user_id, self::META_PREV_ROLE );
+                    if ( $restore_wp_role ) {
+                        $updated = wp_update_user( ['ID' => $user_id, 'role' => $prev_role] );
+                        if ( is_wp_error( $updated ) ) {
+                            // Throwing inside the boundary rolls every write above back.
+                            throw new \RuntimeException( $updated->get_error_message() );
+                        }
+                    }
+                    App::audit()->log(
+                        'STAFF_USER_ACTIVATED',
+                        ['wp_user_id' => $updated_by],
+                        'user',
+                        $user_id,
+                        null,
+                        [
+                            'clinic_id'         => $authorization['clinic_id'],
+                            'role'              => $prev_role,
+                            'membership_status' => 'suspended',
+                            'wp_global_role'    => $restore_wp_role ? 'subscriber' : 'unchanged',
+                        ],
+                        ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active']
+                    );
+                });
             } catch ( \ClinicCore\Domain\Membership\MembershipException $e ) {
                 // Central lifecycle policy: reactivation is NEW participation, so a
                 // suspended operational Clinic (or unverified lifecycle evidence)
-                // refuses it. Nothing was written, so there is nothing to undo.
+                // refuses it. The boundary rolled back; nothing was written.
+                return ['error' => $e->getMessage()];
+            } catch ( \Throwable $e ) {
                 return ['error' => $e->getMessage()];
             }
-            delete_user_meta( $user_id, self::META_PREV_ROLE );
-            if ( $restore_wp_role ) {
-                $updated = wp_update_user( ['ID' => $user_id, 'role' => $prev_role] );
-                if ( is_wp_error( $updated ) ) {
-                    App::membership_service()->suspend_membership( (int) $target_membership['id'] );
-
-                    return ['error' => $updated->get_error_message()];
-                }
-            }
-            App::audit()->log(
-                'STAFF_USER_ACTIVATED',
-                ['wp_user_id' => $updated_by],
-                'user',
-                $user_id,
-                null,
-                [
-                    'clinic_id'         => $authorization['clinic_id'],
-                    'role'              => $prev_role,
-                    'membership_status' => 'suspended',
-                    'wp_global_role'    => $restore_wp_role ? 'subscriber' : 'unchanged',
-                ],
-                ['clinic_id' => $authorization['clinic_id'], 'role' => $prev_role, 'membership_status' => 'active']
-            );
         }
 
         return ['error' => ''];
