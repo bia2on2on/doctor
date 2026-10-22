@@ -549,8 +549,9 @@ final class BookingService
                 $has_patient_col,
                 $min_lead,
                 $settings,
-                $slot_time
-            ): void {
+                $slot_time,
+                $slot_date
+            ): int {
                 // New demand takes Organization -> Clinic -> Slot -> Location/capacity.
                 // Slot before Location is the established booking order: the
                 // independent staff-create race test requires the Slot lock to be
@@ -603,25 +604,30 @@ final class BookingService
                 // A capacity lock wait may have crossed signed T0; rollback the hold claim.
                 $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
                 $this->db->insert( 'cpms_slot_holds', $row );
+                $hold_id = $this->db->wpdb_last_insert_id();
+                // D6 audit atomicity: hold claim and mandatory audit in one boundary;
+                // a failed audit rolls the hold and the slot capacity change back.
+                $this->audit(
+                    'HOLD_CREATED',
+                    $wp_user_id,
+                    'patient',
+                    'slot_hold',
+                    $hold_id,
+                    null,
+                    null,
+                    [
+                        'mobile'    => MobileValidator::mask( $mobile ),
+                        'slot_id'   => (int) $slot['id'],
+                        'slot_date' => $slot_date,
+                        'slot_time' => $slot_time,
+                    ]
+                );
+
+                return $hold_id;
             }
         );
 
         $hold_id = $this->db->wpdb_last_insert_id();
-        $this->audit(
-            'HOLD_CREATED',
-            $wp_user_id,
-            'patient',
-            'slot_hold',
-            $hold_id,
-            null,
-            null,
-            [
-                'mobile'    => MobileValidator::mask( $mobile ),
-                'slot_id'   => (int) $slot['id'],
-                'slot_date' => $slot_date,
-                'slot_time' => $slot_time,
-            ]
-        );
         $this->op->info('booking.hold', [
             'wp_user_id' => $wpUserId,
             'slot_id' => (int) $slot['id'],

@@ -192,25 +192,34 @@ final class Settings
             'SELECT id FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
             [$this->clinicId, $key]
         );
-        if ($row === null) {
-            $this->db->insert('cpms_settings', [
-                'clinic_id' => $this->clinicId,
-                'key' => $key,
-                'value_json' => $afterJson,
-                'updated_by_wp_user_id' => $updatedBy,
-                'updated_at' => $this->db->nowUtcSql(),
-            ]);
-        } else {
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_settings') .
-                ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
-                 WHERE clinic_id = %d AND `key` = %s',
-                [$afterJson, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key]
-            );
-        }
-        unset(self::$cache[$this->clinicId]);
+        // D6 audit atomicity: the setting write and its mandatory SETTING_UPDATE
+        // audit share one boundary (nested SAVEPOINT when a caller already opened
+        // one). A failed audit rolls the setting change back; the in-memory cache is
+        // invalidated only after a durable commit, so a rolled-back read keeps the
+        // previous value instead of ever exposing an un-audited setting.
+        $this->db->transactional(
+            function () use ( $key, $value, $updatedBy, $before, $afterJson, $beforeJson, $row ) {
+                if ( $row === null ) {
+                    $this->db->insert( 'cpms_settings', [
+                        'clinic_id' => $this->clinicId,
+                        'key' => $key,
+                        'value_json' => $afterJson,
+                        'updated_by_wp_user_id' => $updatedBy,
+                        'updated_at' => $this->db->nowUtcSql(),
+                    ] );
+                } else {
+                    $this->db->query(
+                        'UPDATE ' . $this->db->table( 'cpms_settings' ) .
+                        ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
+                         WHERE clinic_id = %d AND `key` = %s',
+                        [ $afterJson, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key ]
+                    );
+                }
 
-        $this->auditChange($key, $before, $value, $beforeJson, $afterJson, $updatedBy);
+                $this->auditChange( $key, $before, $value, $beforeJson, $afterJson, $updatedBy );
+            }
+        );
+        unset( self::$cache[ $this->clinicId ] );
     }
 
     /**
@@ -247,13 +256,14 @@ final class Settings
         }
         $this->audit->log(
             'SETTING_UPDATE',
-            $updatedBy !== null ? ['wp_user_id' => $updatedBy, 'role' => $this->roleOf($updatedBy)] : null,
+            $updatedBy !== null ? [ 'wp_user_id' => $updatedBy, 'role' => $this->roleOf( $updatedBy ) ] : null,
             'setting',
             null,
             null,
-            ['setting' => $key, 'value' => $before],
-            ['setting' => $key, 'value' => $after],
-            ['op' => 'config_update', 'clinic_id' => $this->clinicId]
+            [ 'setting' => $key, 'value' => $before ],
+            [ 'setting' => $key, 'value' => $after ],
+            [ 'op' => 'config_update', 'clinic_id' => $this->clinicId ],
+            $this->clinicId
         );
     }
 

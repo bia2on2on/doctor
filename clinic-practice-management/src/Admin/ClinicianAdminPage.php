@@ -576,31 +576,77 @@ final class ClinicianAdminPage
                 if ($current === null) {
                     self::backWithError($id, 'خطا: پزشک در این Clinic یافت نشد.');
                 }
-                $affected = $repo->updateForClinic($id, $clinicId, $fields);
-                if ($affected < 1) {
-                    self::backWithError($id, 'خطا: به‌روزرسانی پزشک انجام نشد.');
+                // D6 audit atomicity: the profile UPDATE and its mandatory audit
+                // share one boundary; a failed audit INSERT rolls the update back
+                // (fail closed). A zero-row change keeps the legacy behavior: no
+                // audit event and the same operator-facing error.
+                $affected = App::db()->transactional(
+                    function () use ( $id, $clinicId, $fields, $repo ): int {
+                        $affected_rows = $repo->updateForClinic( $id, $clinicId, $fields );
+                        if ( $affected_rows < 1 ) {
+                            return 0;
+                        }
+                        App::audit()->log(
+                            'CLINICIAN_UPDATED',
+                            [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                            'clinician',
+                            $id,
+                            null,
+                            null,
+                            [ 'fields' => array_keys( $fields ) ],
+                            [],
+                            $clinicId
+                        );
+
+                        return $affected_rows;
+                    }
+                );
+                if ( $affected < 1 ) {
+                    self::backWithError( $id, 'خطا: به‌روزرسانی پزشک انجام نشد.' );
                 }
-                App::audit()->log('CLINICIAN_UPDATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $id, null, null, ['fields' => array_keys($fields)]);
-                self::back($id, 'پروفایل پزشک ذخیره شد.');
+                self::back( $id, 'پروفایل پزشک ذخیره شد.' );
             }
 
             if (trim((string) ($fields['full_name'] ?? '')) === '') {
                 self::backWithError(0, 'خطا: نام پزشک الزامی است.');
             }
 
-            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated, $clinicId);
-            if (($accountCreated['error'] ?? '') !== '') {
-                self::backWithError(0, 'خطا: ' . $accountCreated['error']);
-            }
-            if (!empty($accountCreated['wp_user_id'])) {
-                $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
-            }
+            // D6 audit atomicity: the (optional) WordPress account, its membership
+            // and the clinician row plus the mandatory audit all share one boundary.
+            // StaffManagementPage::upsertUser() runs on a nested SAVEPOINT inside it,
+            // so a failed CLINICIAN_CREATED audit rolls the freshly created account
+            // back too — no orphan account / clinician row can survive without audit.
+            $created = App::db()->transactional(
+                function () use ( $fields, $generated, $clinicId, $repo ) {
+                    $accountCreated = self::maybeCreateDoctorAccount($fields, $generated, $clinicId);
+                    if (($accountCreated['error'] ?? '') !== '') {
+                        self::backWithError(0, 'خطا: ' . $accountCreated['error']);
+                    }
+                    if (!empty($accountCreated['wp_user_id'])) {
+                        $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
+                    }
 
-            if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
-                self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
-            }
-            $newId = $repo->create($clinicId, $fields);
-            App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
+                    if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
+                        self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
+                    }
+                    $newId = $repo->create($clinicId, $fields);
+                    App::audit()->log(
+                        'CLINICIAN_CREATED',
+                        [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                        'clinician',
+                        $newId,
+                        null,
+                        null,
+                        [ 'full_name' => (string) $fields['full_name'] ],
+                        [],
+                        $clinicId
+                    );
+
+                    return [ 'new_id' => $newId, 'account' => $accountCreated ];
+                }
+            );
+            $newId = (int) $created['new_id'];
+            $accountCreated = $created['account'];
             $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
             if (($accountCreated['generated'] ?? '') !== '') {
                 $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
@@ -624,18 +670,25 @@ final class ClinicianAdminPage
             self::backWithError(0, 'خطا: پزشک در این Clinic یافت نشد.');
         }
         $newState = (int) $current['is_active'] === 1 ? 0 : 1;
-        $affected = $repo->updateForClinic($cid, $clinicId, ['is_active' => $newState]);
-        if ($affected < 1) {
-            self::backWithError($cid, 'خطا: تغییر وضعیت پزشک انجام نشد.');
-        }
-        App::audit()->log(
-            'CLINICIAN_STATUS_CHANGED',
-            ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId],
-            'clinician',
-            $cid,
-            null,
-            ['is_active' => (int) $current['is_active']],
-            ['is_active' => $newState]
+        // D6 audit atomicity: status write and mandatory audit commit/roll back together.
+        App::db()->transactional(
+            function () use ( $repo, $cid, $clinicId, $current, $newState ) {
+                $affected = $repo->updateForClinic($cid, $clinicId, [ 'is_active' => $newState ]);
+                if ($affected < 1) {
+                    self::backWithError($cid, 'خطا: تغییر وضعیت پزشک انجام نشد.');
+                }
+                App::audit()->log(
+                    'CLINICIAN_STATUS_CHANGED',
+                    [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                    'clinician',
+                    $cid,
+                    null,
+                    [ 'is_active' => (int) $current['is_active'] ],
+                    [ 'is_active' => $newState ],
+                    [],
+                    $clinicId
+                );
+            }
         );
         self::back($cid, $newState === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).');
     }

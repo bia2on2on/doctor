@@ -160,7 +160,7 @@ final class SmsOtpDispatchTest extends WP_UnitTestCase
         self::assertNull($row['vars_json']);
     }
 
-    public function testFailedImmediateOtpIsSafeAndSubsequentReDriveFailsClosed(): void
+    public function testFailedImmediateOtpFailsClosedWithoutRetryableClassification(): void
     {
         $code = '664820';
         $this->recording->failNextRetryable = true;
@@ -174,21 +174,45 @@ final class SmsOtpDispatchTest extends WP_UnitTestCase
             $this->uniqueContext(),
             inline: true
         );
-        // The immediate attempt still held the live code, so it follows the
-        // ordinary retryable policy rather than the no-retry classification.
-        self::assertSame(SmsMessageStatus::RETRYING, $result['status']);
+        // P2: an OTP is always inline and never enqueued, so even with the live
+        // code in memory a retryable transport failure must be classified FAILED
+        // (never RETRYING / retry_enqueued) — no recoverable retry job exists.
+        self::assertSame(SmsMessageStatus::FAILED, $result['status']);
 
         $messageId = (int) $result['message_id'];
         $row = $this->fetchRow($messageId);
+        self::assertSame(\ClinicCore\Application\Notifications\SmsService::OTP_NO_RETRY_CODE, (string) $row['failure_code']);
         self::assertStringNotContainsString($code, (string) json_encode($row, JSON_UNESCAPED_UNICODE), 'a failed send must not leave the OTP at rest');
         self::assertNull($row['vars_json']);
 
-        // The queued retry no longer has the live code: fail closed, no provider call.
+        // A later re-drive keeps the fail-closed state and never calls the provider.
         App::smsService()->dispatchMessage($messageId);
         $row = $this->fetchRow($messageId);
         self::assertSame(SmsMessageStatus::FAILED, (string) $row['status']);
         self::assertSame(\ClinicCore\Application\Notifications\SmsService::OTP_NO_RETRY_CODE, (string) $row['failure_code']);
-        self::assertCount(0, $this->recording->textSends, 'neither the retry nor any masked send must reach the provider');
+        self::assertCount(0, $this->recording->textSends, 'no masked or retried OTP send must reach the provider');
+    }
+
+    public function testRetryableNonOtpFailureStillClassifiesAsRetrying(): void
+    {
+        // P2 must not change the ordinary queued-message retry contract: only OTP
+        // events fail closed; a retryable non-OTP inline failure stays RETRYING.
+        $this->recording->failNextRetryable = true;
+
+        $result = App::smsService()->sendEvent(
+            self::CLINIC_ID,
+            SmsEvents::APPT_REMINDER,
+            self::MOBILE,
+            ['patient_name' => 'بیمار تست'],
+            'appointment',
+            $this->uniqueContext(),
+            inline: true
+        );
+
+        self::assertSame(SmsMessageStatus::RETRYING, $result['status']);
+        $row = $this->fetchRow((int) $result['message_id']);
+        self::assertSame('RETRYING', (string) $row['status']);
+        self::assertNotSame(\ClinicCore\Application\Notifications\SmsService::OTP_NO_RETRY_CODE, (string) $row['failure_code']);
     }
 
     public function testNonOtpMessagesKeepStoredTextAndVarsBehavior(): void

@@ -423,14 +423,18 @@ final class SmsService
             $verdict = RetryClassifier::classify($e);
             $code = method_exists($e, 'apiCode') ? (string) $e->apiCode() : 'CLINIC_SMS_PROVIDER_ERROR';
 
-            // OTP بدون متغیرهای ذخیره‌شده Retry نمی‌شود (کد خام ذخیره نیست — §8).
-            // Defence in depth: the fail-closed guard above normally stops such a
-            // re-drive before any provider call; this keeps the same explicit
-            // classification if the provider path is reached without live vars.
+            // P2 fail-closed OTP classification: an OTP is ALWAYS dispatched inline
+            // and is never enqueued (sendEvent() routes every OTP here directly), so
+            // the plaintext code exists only in this request's memory and no
+            // recoverable retry job can ever run — neither for the initial inline
+            // attempt (live vars present) nor for a re-drive after the request ended
+            // (live vars absent). A retryable provider error must therefore be
+            // classified FAILED/permanent with the explicit no-retry code, never
+            // RETRYING (which would promise a retry that cannot happen). Non-OTP
+            // queued messages keep their normal retryable RETRYING behaviour.
             if (
                 $verdict === RetryClassifier::RETRYABLE
                 && (string) $row['event'] === SmsEvents::OTP
-                && ! $this->has_live_otp_code( $live_vars )
             ) {
                 $code    = self::OTP_NO_RETRY_CODE;
                 $verdict = RetryClassifier::PERMANENT;

@@ -110,14 +110,15 @@ final class ScheduleService
         // Phase 6 Slice 7 (concurrency-safe multi-shift conflict enforcement):
         // اتمیسیتی بررسی همپوشانی و درج از طریق تراکنش DB و قفل پایدار ردیف پزشک
         // تضمین می‌شود تا دو درخواست موازی نتوانند وضعیت سلول را همزمان خوانده و هر دو بنویسند.
-        $created_id = $this->db->transactional(
+        $view = $this->db->transactional(
             function () use (
                 $clinician_id,
                 $day,
                 $clinic_id,
                 $location_id,
-                $data
-            ): int {
+                $data,
+                $actor_user_id
+            ): array {
                 $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
                 $this->lockClinicianForScheduleWrite( $clinician_id );
 
@@ -137,7 +138,7 @@ final class ScheduleService
 
                 $now_sql = $this->db->nowUtcSql();
 
-                return $this->schedules->create(
+                $created_id = $this->schedules->create(
                     $data + [
                         'clinic_id'    => $clinic_id,
                         'clinician_id' => $clinician_id,
@@ -147,15 +148,19 @@ final class ScheduleService
                         'updated_at'   => $now_sql,
                     ]
                 );
+                // D6 audit atomicity: audit inside the same boundary so a failed
+                // audit rolls the schedule row back (no un-audited schedule).
+                $created_view = $this->scheduleView( (array) $this->schedules->find( $created_id ) );
+                $this->audit( 'SCHEDULE_CREATED', $actor_user_id, 'schedule', $created_id, null, null, $created_view, $clinic_id );
+
+                return $created_view;
             }
         );
 
-        $view = $this->scheduleView( (array) $this->schedules->find( $created_id ) );
-        $this->audit( 'SCHEDULE_CREATED', $actor_user_id, 'schedule', $created_id, null, null, $view );
         $this->op->info(
             'config.schedule_created',
             [
-                'schedule_id'  => $created_id,
+                'schedule_id'  => (int) ( $view['id'] ?? 0 ),
                 'clinician_id' => $clinician_id,
                 'clinic_id'    => $clinic_id,
                 'location_id'  => $location_id,
@@ -177,7 +182,8 @@ final class ScheduleService
     {
         $actor_user_id = (int) func_get_arg( 0 );
         // Phase 6 Slice 7: ترتیبی‌سازی همزمان Create و Update تحت یک قرارداد قفل یکسان.
-        $result = $this->db->transactional(function () use ($id, $fields): array {
+        $result = $this->db->transactional(
+            function () use ( $id, $fields, $actor_user_id ): array {
             // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
             $current = $this->requireScheduleForTrustedClinic($id);
             $clinician_id = (int) $current['clinician_id'];
@@ -217,21 +223,33 @@ final class ScheduleService
                 $data['updated_at'] = $this->db->nowUtcSql();
                 $this->schedules->update($id, $data);
             }
+            // D6 audit atomicity: the update and its mandatory audit commit/roll
+            // back together inside this locked boundary.
+            $view = $this->scheduleView( (array) $this->schedules->find( $id ) );
+            $this->audit(
+                'SCHEDULE_UPDATED',
+                $actor_user_id,
+                'schedule',
+                $id,
+                null,
+                $this->scheduleView( $current ),
+                $view,
+                $clinic_id
+            );
 
             return [
                 'current'      => $current,
                 'clinic_id'    => $clinic_id,
                 'clinician_id' => $clinician_id,
             ];
-        });
+        }
+        );
 
         $current      = $result['current'];
         $clinic_id    = $result['clinic_id'];
         $clinician_id = $result['clinician_id'];
 
-        $updated = (array) $this->schedules->find($id);
-        $view = $this->scheduleView($updated);
-        $this->audit( 'SCHEDULE_UPDATED', $actor_user_id, 'schedule', $id, null, $this->scheduleView( $current ), $view );
+        $view = $this->scheduleView( (array) $this->schedules->find($id) );
         $this->op->info(
             'config.schedule_updated',
             [
@@ -337,7 +355,8 @@ final class ScheduleService
             function () use (
                 $id,
                 $clinic_id,
-                $clinician_id
+                $clinician_id,
+                $actor_user_id
             ): array {
                 $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
                 $this->lockClinicianForScheduleWrite( $clinician_id );
@@ -352,12 +371,23 @@ final class ScheduleService
                 if ( 1 !== $this->schedules->delete( $id ) ) {
                     throw BookingException::of( 'CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404 );
                 }
+                // D6 audit atomicity: delete + mandatory audit in one boundary;
+                // a failed audit resurrects nothing — the row rolls back.
+                $this->audit(
+                    'SCHEDULE_DELETED',
+                    $actor_user_id,
+                    'schedule',
+                    $id,
+                    null,
+                    $this->scheduleView( $fresh ),
+                    null,
+                    $clinic_id
+                );
 
                 return $fresh;
             }
         );
 
-        $this->audit( 'SCHEDULE_DELETED', $actor_user_id, 'schedule', $id, null, $this->scheduleView( $current ), null );
         $this->op->info(
             'config.schedule_deleted',
             [
@@ -508,7 +538,7 @@ final class ScheduleService
             ? mb_substr($fields['reason'], 0, 255)
             : null;
 
-        $id = $this->db->transactional(
+        $view = $this->db->transactional(
             function () use (
                 $clinic_id,
                 $location_id,
@@ -519,13 +549,13 @@ final class ScheduleService
                 $end_time,
                 $reason,
                 $actor_user_id
-            ): int {
+            ): array {
                 $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
                 if ( $location_id !== null ) {
                     $this->lock_active_location_for_schedule_write( $clinic_id, $location_id );
                 }
 
-                return $this->schedules->createException(
+                $id = $this->schedules->createException(
                     [
                         'clinic_id'             => $clinic_id,
                         'location_id'           => $location_id,
@@ -539,15 +569,18 @@ final class ScheduleService
                         'created_at'            => $this->db->nowUtcSql(),
                     ]
                 );
+                // D6 audit atomicity: exception row + mandatory audit in one boundary.
+                $view = $this->exceptionView( (array) $this->schedules->findException( $id ) );
+                $this->audit( 'SCHEDULE_EXCEPTION_CREATED', $actor_user_id, 'schedule_exception', $id, null, null, $view, $clinic_id );
+
+                return $view;
             }
         );
 
-        $view = $this->exceptionView( (array) $this->schedules->findException( $id ) );
-        $this->audit( 'SCHEDULE_EXCEPTION_CREATED', $actor_user_id, 'schedule_exception', $id, null, null, $view );
         $this->op->info(
             'config.schedule_exception_created',
             [
-                'exception_id' => $id,
+                'exception_id' => (int) ( $view['id'] ?? 0 ),
                 'clinician_id' => $clinician_id,
                 'clinic_id'    => $clinic_id,
                 'location_id'  => $location_id,
@@ -576,7 +609,8 @@ final class ScheduleService
             function () use (
                 $id,
                 $clinic_id,
-                $clinician_id
+                $clinician_id,
+                $actor_user_id
             ): array {
                 $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
                 $this->lockClinicianForScheduleWrite( $clinician_id );
@@ -594,12 +628,22 @@ final class ScheduleService
                 if ( 1 !== $this->schedules->deleteException( $id ) ) {
                     throw BookingException::of( 'CLINIC_NOT_FOUND', 'استثنای برنامه یافت نشد', 404 );
                 }
+                // D6 audit atomicity: delete + mandatory audit in one boundary.
+                $this->audit(
+                    'SCHEDULE_EXCEPTION_DELETED',
+                    $actor_user_id,
+                    'schedule_exception',
+                    $id,
+                    null,
+                    $this->exceptionView( $fresh ),
+                    null,
+                    $clinic_id
+                );
 
                 return $fresh;
             }
         );
 
-        $this->audit( 'SCHEDULE_EXCEPTION_DELETED', $actor_user_id, 'schedule_exception', $id, null, $this->exceptionView( $current ), null );
         $this->op->info(
             'config.schedule_exception_deleted',
             [
@@ -1064,16 +1108,19 @@ final class ScheduleService
         int $resourceId,
         ?int $patientId,
         ?array $before,
-        ?array $after
+        ?array $after,
+        int $clinicId
     ): void {
         $this->audit->log(
             $action,
-            ['wp_user_id' => $wpUserId, 'role' => 'staff'],
+            [ 'wp_user_id' => $wpUserId, 'role' => 'staff' ],
             $resourceType,
             $resourceId,
             $patientId,
             $before,
-            $after
+            $after,
+            [],
+            $clinicId
         );
     }
 }
