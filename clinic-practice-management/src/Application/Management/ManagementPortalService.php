@@ -636,23 +636,25 @@ final class ManagementPortalService {
 			// event share one transaction boundary (nested service/audit calls
 			// run on SAVEPOINTs). A failed audit INSERT rolls the Location
 			// creation back, so no mutation can survive without its audit row.
-			$this->db()->transactional( function () use ( $actor_wp_user_id, $trusted, $input ) {
-				App::locationService()->createLocation( $actor_wp_user_id, $trusted, $input );
+			$this->db()->transactional(
+				function () use ( $actor_wp_user_id, $trusted, $input ) {
+					App::locationService()->createLocation( $actor_wp_user_id, $trusted, $input );
 
-				$this->audit_change(
-					'LOCATION_CREATED',
-					$actor_wp_user_id,
-					'location',
-					null,
-					null,
-					array(
-						'clinic_id' => $trusted,
-						'name'      => self::string_value( $input, 'name' ),
-						'slug'      => self::string_value( $input, 'slug' ),
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'LOCATION_CREATED',
+						$actor_wp_user_id,
+						'location',
+						null,
+						null,
+						array(
+							'clinic_id' => $trusted,
+							'name'      => self::string_value( $input, 'name' ),
+							'slug'      => self::string_value( $input, 'slug' ),
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( LocationException $e ) {
 			return self::failure();
 		} catch ( \Throwable $e ) {
@@ -694,27 +696,29 @@ final class ManagementPortalService {
 			}
 			$location = $found;
 			// D6 audit atomicity: Location update + mandatory audit in one boundary.
-			$this->db()->transactional( function () use ( $actor_wp_user_id, $trusted, $location_id, $input, $location ) {
-				App::locationService()->updateLocation( $actor_wp_user_id, $trusted, $location_id, $input );
+			$this->db()->transactional(
+				function () use ( $actor_wp_user_id, $trusted, $location_id, $input, $location ) {
+					App::locationService()->updateLocation( $actor_wp_user_id, $trusted, $location_id, $input );
 
-				$this->audit_change(
-					'LOCATION_UPDATED',
-					$actor_wp_user_id,
-					'location',
-					$location_id,
-					array(
-						'name'    => (string) ( $location['name'] ?? '' ),
-						'address' => (string) ( $location['address'] ?? '' ),
-						'phone'   => (string) ( $location['phone'] ?? '' ),
-					),
-					array(
-						'name'    => self::string_value( $input, 'name' ),
-						'address' => self::string_value( $input, 'address' ),
-						'phone'   => self::string_value( $input, 'phone' ),
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'LOCATION_UPDATED',
+						$actor_wp_user_id,
+						'location',
+						$location_id,
+						array(
+							'name'    => (string) ( $location['name'] ?? '' ),
+							'address' => (string) ( $location['address'] ?? '' ),
+							'phone'   => (string) ( $location['phone'] ?? '' ),
+						),
+						array(
+							'name'    => self::string_value( $input, 'name' ),
+							'address' => self::string_value( $input, 'address' ),
+							'phone'   => self::string_value( $input, 'phone' ),
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
@@ -743,19 +747,21 @@ final class ManagementPortalService {
 			}
 			$location = $found;
 			// D6 audit atomicity: status write + mandatory audit in one boundary.
-			$this->db()->transactional( function () use ( $actor_wp_user_id, $trusted, $location_id, $active, $location ) {
-				App::locationService()->set_active( $actor_wp_user_id, $trusted, $location_id, $active );
+			$this->db()->transactional(
+				function () use ( $actor_wp_user_id, $trusted, $location_id, $active, $location ) {
+					App::locationService()->set_active( $actor_wp_user_id, $trusted, $location_id, $active );
 
-				$this->audit_change(
-					$active ? 'LOCATION_ACTIVATED' : 'LOCATION_DEACTIVATED',
-					$actor_wp_user_id,
-					'location',
-					$location_id,
-					array( 'is_active' => (int) ( $location['is_active'] ?? 0 ) ),
-					array( 'is_active' => $active ? 1 : 0 ),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						$active ? 'LOCATION_ACTIVATED' : 'LOCATION_DEACTIVATED',
+						$actor_wp_user_id,
+						'location',
+						$location_id,
+						array( 'is_active' => (int) ( $location['is_active'] ?? 0 ) ),
+						array( 'is_active' => $active ? 1 : 0 ),
+						$trusted
+					);
+				}
+			);
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
@@ -813,19 +819,21 @@ final class ManagementPortalService {
 				(int) ( $membership['clinic_id'] ?? 0 )
 			);
 			// D6 audit atomicity: role write + mandatory audit in one boundary.
-			$this->db()->transactional( function () use ( $membership, $role_key, $actor_wp_user_id, $target_wp_user_id, $trusted ) {
-				App::membership_service()->set_role_key( (int) $membership['id'], $role_key );
+			$this->db()->transactional(
+				function () use ( $membership, $role_key, $actor_wp_user_id, $target_wp_user_id, $trusted ) {
+					App::membership_service()->set_role_key( (int) $membership['id'], $role_key );
 
-				$this->audit_change(
-					'MEMBERSHIP_ROLE_CHANGED',
-					$actor_wp_user_id,
-					'membership',
-					(int) $membership['id'],
-					array( 'role_key' => (string) ( $membership['role_key'] ?? '' ) ),
-					array( 'role_key' => $role_key, 'target_wp_user_id' => $target_wp_user_id ),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'MEMBERSHIP_ROLE_CHANGED',
+						$actor_wp_user_id,
+						'membership',
+						(int) $membership['id'],
+						array( 'role_key' => (string) ( $membership['role_key'] ?? '' ) ),
+						array( 'role_key' => $role_key, 'target_wp_user_id' => $target_wp_user_id ),
+						$trusted
+					);
+				}
+			);
 		} catch ( AuthorizationException $e ) {
 			return self::failure();
 		} catch ( \Throwable $e ) {
@@ -857,23 +865,25 @@ final class ManagementPortalService {
 			// write + its own audit on a SAVEPOINT); this outer boundary also
 			// covers the portal-level audit event, so a failed portal audit
 			// rolls the role assignment and the inner audit back together.
-			$this->db()->transactional( function () use ( $actor_wp_user_id, $trusted, $target_wp_user_id, $role_key ) {
-				App::custom_role_assignment_service()->assign( $actor_wp_user_id, $trusted, $target_wp_user_id, $role_key );
+			$this->db()->transactional(
+				function () use ( $actor_wp_user_id, $trusted, $target_wp_user_id, $role_key ) {
+					App::custom_role_assignment_service()->assign( $actor_wp_user_id, $trusted, $target_wp_user_id, $role_key );
 
-				$this->audit_change(
-					'CUSTOM_ROLE_ASSIGNED',
-					$actor_wp_user_id,
-					'membership',
-					null,
-					null,
-					array(
-						'clinic_id'        => $trusted,
-						'target_wp_user_id' => $target_wp_user_id,
-						'role_key'         => $role_key,
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'CUSTOM_ROLE_ASSIGNED',
+						$actor_wp_user_id,
+						'membership',
+						null,
+						null,
+						array(
+							'clinic_id'        => $trusted,
+							'target_wp_user_id' => $target_wp_user_id,
+							'role_key'         => $role_key,
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
@@ -927,45 +937,49 @@ final class ManagementPortalService {
 			// return through the callback (nothing was written); an audit or
 			// persistence failure throws and rolls everything back, including a
 			// freshly provisioned WordPress subscriber.
-			$refusal = $this->db()->transactional( function () use ( $identifier, $actor_wp_user_id, $trusted, $role_key, &$membership_id, &$target ) {
-				$target = $this->resolve_or_provision_subscriber( $identifier );
-				if ( $target <= 0 ) {
-					return self::invalid( 'کاربری با این نام کاربری/ایمیل یافت نشد و ساخت حساب فقط با ایمیل معتبر انجام می‌شود.' );
-				}
-				if ( $target === $actor_wp_user_id ) {
-					return self::invalid( 'افزودن خودتان به کارکنان این درمانگاه مجاز نیست.' );
-				}
-				if ( ! $this->staff_target_is_eligible( $target ) ) {
-					return self::failure();
-				}
-				if ( $this->memberships->find( $trusted, $target ) !== null ) {
-					return self::prerequisite( 'این کاربر از قبل در همین درمانگاه عضویت دارد؛ برای تغییر نقش یا وضعیت از فهرست کارکنان همان درمانگاه اقدام کنید.' );
-				}
-				$membership_id = App::membership_service()->create_membership(
-					$trusted,
-					$target,
-					$role_key,
-					'clinic', // MembershipService::SCOPE_CLINIC (Clinic-wide membership).
-					$actor_wp_user_id
-				);
+			$refusal = $this->db()->transactional(
+				function () use ( $identifier, $actor_wp_user_id, $trusted, $role_key, &$membership_id, &$target ) {
+					$target = $this->resolve_or_provision_subscriber( $identifier );
+					if ( $target <= 0 ) {
+						return self::invalid( 'کاربری با این نام کاربری/ایمیل یافت نشد و ساخت حساب فقط با ایمیل معتبر انجام می‌شود.' );
+					}
+					if ( $target === $actor_wp_user_id ) {
+						return self::invalid( 'افزودن خودتان به کارکنان این درمانگاه مجاز نیست.' );
+					}
+					if ( ! $this->staff_target_is_eligible( $target ) ) {
+						return self::failure();
+					}
+					if ( $this->memberships->find( $trusted, $target ) !== null ) {
+						return self::prerequisite(
+							'این کاربر از قبل در همین درمانگاه عضویت دارد؛ برای تغییر نقش یا وضعیت از فهرست کارکنان همان درمانگاه اقدام کنید.'
+						);
+					}
+					$membership_id = App::membership_service()->create_membership(
+						$trusted,
+						$target,
+						$role_key,
+						'clinic', // MembershipService::SCOPE_CLINIC (Clinic-wide membership).
+						$actor_wp_user_id
+					);
 
-				$this->audit_change(
-					'STAFF_MEMBERSHIP_CREATED',
-					$actor_wp_user_id,
-					'membership',
-					$membership_id,
-					null,
-					array(
-						'clinic_id'        => $trusted,
-						'target_wp_user_id' => $target,
-						'role_key'         => $role_key,
-						'scope_mode'       => 'clinic',
-					),
-					$trusted
-				);
+					$this->audit_change(
+						'STAFF_MEMBERSHIP_CREATED',
+						$actor_wp_user_id,
+						'membership',
+						$membership_id,
+						null,
+						array(
+							'clinic_id'        => $trusted,
+							'target_wp_user_id' => $target,
+							'role_key'         => $role_key,
+							'scope_mode'       => 'clinic',
+						),
+						$trusted
+					);
 
-				return null;
-			} );
+					return null;
+				}
+			);
 			if ( $refusal !== null ) {
 				return $refusal;
 			}
@@ -1009,27 +1023,29 @@ final class ManagementPortalService {
 			// audit event commit or roll back together. A failed audit rolls
 			// the suspension/reactivation back — no un-audited membership
 			// change and no false success response.
-			$this->db()->transactional( function () use ( $active, $membership_id, $actor_wp_user_id, $membership, $trusted ) {
-				if ( $active ) {
-					App::membership_service()->reactivate_membership( $membership_id );
-				} else {
-					App::membership_service()->suspend_membership( $membership_id );
-				}
+			$this->db()->transactional(
+				function () use ( $active, $membership_id, $actor_wp_user_id, $membership, $trusted ) {
+					if ( $active ) {
+						App::membership_service()->reactivate_membership( $membership_id );
+					} else {
+						App::membership_service()->suspend_membership( $membership_id );
+					}
 
-				$this->audit_change(
-					$active ? 'MEMBERSHIP_REACTIVATED' : 'MEMBERSHIP_SUSPENDED',
-					$actor_wp_user_id,
-					'membership',
-					$membership_id,
-					array( 'status' => (string) ( $membership['status'] ?? '' ) ),
-					array(
-						'status'            => $active ? 'active' : 'suspended',
-						'clinic_id'         => $trusted,
-						'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						$active ? 'MEMBERSHIP_REACTIVATED' : 'MEMBERSHIP_SUSPENDED',
+						$actor_wp_user_id,
+						'membership',
+						$membership_id,
+						array( 'status' => (string) ( $membership['status'] ?? '' ) ),
+						array(
+							'status'            => $active ? 'active' : 'suspended',
+							'clinic_id'         => $trusted,
+							'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( MembershipException $e ) {
 			// Lifecycle refusals carry an operator-facing Persian reason: reactivating a
 			// membership is NEW participation, so a suspended operational Clinic - and a
@@ -1082,28 +1098,30 @@ final class ManagementPortalService {
 
 			// D6 audit atomicity: scope/location write + mandatory audit in
 			// one boundary (the membership service runs on a nested SAVEPOINT).
-			$this->db()->transactional( function () use ( $location_ids, $membership_id, $actor_wp_user_id, $before, $membership, $trusted ) {
-				if ( array() === $location_ids ) {
-					App::membership_service()->set_scope_mode( $membership_id, 'clinic' );
-				} else {
-					App::membership_service()->set_scope_mode( $membership_id, 'location', $location_ids );
-				}
+			$this->db()->transactional(
+				function () use ( $location_ids, $membership_id, $actor_wp_user_id, $before, $membership, $trusted ) {
+					if ( array() === $location_ids ) {
+						App::membership_service()->set_scope_mode( $membership_id, 'clinic' );
+					} else {
+						App::membership_service()->set_scope_mode( $membership_id, 'location', $location_ids );
+					}
 
-				$this->audit_change(
-					'MEMBERSHIP_SCOPE_CHANGED',
-					$actor_wp_user_id,
-					'membership',
-					$membership_id,
-					$before,
-					array(
-						'scope_mode'        => array() === $location_ids ? 'clinic' : 'location',
-						'location_ids'      => $location_ids,
-						'clinic_id'         => $trusted,
-						'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'MEMBERSHIP_SCOPE_CHANGED',
+						$actor_wp_user_id,
+						'membership',
+						$membership_id,
+						$before,
+						array(
+							'scope_mode'        => array() === $location_ids ? 'clinic' : 'location',
+							'location_ids'      => $location_ids,
+							'clinic_id'         => $trusted,
+							'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
@@ -1156,28 +1174,30 @@ final class ManagementPortalService {
 			// D6 audit atomicity: the GRANT/DENY/clear override and its
 			// mandatory audit event share one boundary (DENY > GRANT policy is
 			// resolved by the authorization checks above and stays unchanged).
-			$this->db()->transactional( function () use ( $effect, $membership_id, $capability, $actor_wp_user_id, $before, $membership, $trusted ) {
-				if ( 'clear' === $effect ) {
-					App::membership_service()->remove_capability( $membership_id, $capability );
-				} else {
-					App::membership_service()->set_capability( $membership_id, $capability, $effect );
-				}
+			$this->db()->transactional(
+				function () use ( $effect, $membership_id, $capability, $actor_wp_user_id, $before, $membership, $trusted ) {
+					if ( 'clear' === $effect ) {
+						App::membership_service()->remove_capability( $membership_id, $capability );
+					} else {
+						App::membership_service()->set_capability( $membership_id, $capability, $effect );
+					}
 
-				$this->audit_change(
-					'MEMBERSHIP_CAPABILITY_CHANGED',
-					$actor_wp_user_id,
-					'membership',
-					$membership_id,
-					$before,
-					array(
-						'capability'        => $capability,
-						'effect'            => 'clear' === $effect ? '' : $effect,
-						'clinic_id'         => $trusted,
-						'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
-					),
-					$trusted
-				);
-			} );
+					$this->audit_change(
+						'MEMBERSHIP_CAPABILITY_CHANGED',
+						$actor_wp_user_id,
+						'membership',
+						$membership_id,
+						$before,
+						array(
+							'capability'        => $capability,
+							'effect'            => 'clear' === $effect ? '' : $effect,
+							'clinic_id'         => $trusted,
+							'target_wp_user_id' => (int) ( $membership['wp_user_id'] ?? 0 ),
+						),
+						$trusted
+					);
+				}
+			);
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
@@ -1226,63 +1246,65 @@ final class ManagementPortalService {
 			// D6 audit atomicity: clinician creation and its mandatory audit
 			// event share one boundary. Read-only membership/profile checks and
 			// their refusals stay inside the callback but perform no writes.
-			$refusal = $this->db()->transactional( function () use ( $wp_user_id, $trusted, $full_name, $specialty, $actor_wp_user_id, &$clinician_id ) {
-				if ( $wp_user_id > 0 ) {
-					$membership = $this->memberships->find( $trusted, $wp_user_id );
-					if ( $membership === null || (string) ( $membership['status'] ?? '' ) !== 'active' ) {
-						return self::failure();
-					}
-					// Existing profile: adopt it only inside the same Organization so a
-					// clinician can serve several Clinics without a duplicate row.
-					$existing = $this->clinicians->find_by_wp_user( $wp_user_id );
-					if ( $existing !== null ) {
-						$home_clinic = (int) ( $existing['clinic_id'] ?? 0 );
-						$home        = $home_clinic > 0 ? $this->clinics->find( $home_clinic ) : null;
-						$target      = $this->clinics->find( $trusted );
-						if ( $home === null || $target === null
-							|| (int) ( $home['organization_id'] ?? 0 ) !== (int) ( $target['organization_id'] ?? 0 ) ) {
-							return self::failure(); // cross-Organization sharing is unsupported
+			$refusal = $this->db()->transactional(
+				function () use ( $wp_user_id, $trusted, $full_name, $specialty, $actor_wp_user_id, &$clinician_id ) {
+					if ( $wp_user_id > 0 ) {
+						$membership = $this->memberships->find( $trusted, $wp_user_id );
+						if ( $membership === null || (string) ( $membership['status'] ?? '' ) !== 'active' ) {
+							return self::failure();
 						}
-						return array( 'ok' => true, 'message' => 'پروفایل حرفه‌ای موجود به این درمانگاه متصل است.' );
+						// Existing profile: adopt it only inside the same Organization so a
+						// clinician can serve several Clinics without a duplicate row.
+						$existing = $this->clinicians->find_by_wp_user( $wp_user_id );
+						if ( $existing !== null ) {
+							$home_clinic = (int) ( $existing['clinic_id'] ?? 0 );
+							$home        = $home_clinic > 0 ? $this->clinics->find( $home_clinic ) : null;
+							$target      = $this->clinics->find( $trusted );
+							if ( $home === null || $target === null
+								|| (int) ( $home['organization_id'] ?? 0 ) !== (int) ( $target['organization_id'] ?? 0 ) ) {
+								return self::failure(); // cross-Organization sharing is unsupported
+							}
+							return array( 'ok' => true, 'message' => 'پروفایل حرفه‌ای موجود به این درمانگاه متصل است.' );
+						}
+						$clinician_id = $this->clinicians->create(
+							$trusted,
+							array(
+								'full_name'  => $full_name,
+								'specialty'  => '' !== trim( $specialty ) ? trim( $specialty ) : null,
+								'wp_user_id' => $wp_user_id,
+								'is_active'  => 1,
+							)
+						);
+					} else {
+						$clinician_id = $this->clinicians->create(
+							$trusted,
+							array(
+								'full_name'  => $full_name,
+								'specialty'  => '' !== trim( $specialty ) ? trim( $specialty ) : null,
+								'wp_user_id' => null,
+								'is_active'  => 1,
+							)
+						);
 					}
-					$clinician_id = $this->clinicians->create(
-						$trusted,
+
+					$this->audit_change(
+						'CLINICIAN_CREATED',
+						$actor_wp_user_id,
+						'clinician',
+						$clinician_id,
+						null,
 						array(
+							'clinic_id'  => $trusted,
 							'full_name'  => $full_name,
-							'specialty'  => '' !== trim( $specialty ) ? trim( $specialty ) : null,
+							'specialty'  => $specialty,
 							'wp_user_id' => $wp_user_id,
-							'is_active'  => 1,
-						)
+						),
+						$trusted
 					);
-				} else {
-					$clinician_id = $this->clinicians->create(
-						$trusted,
-						array(
-							'full_name'  => $full_name,
-							'specialty'  => '' !== trim( $specialty ) ? trim( $specialty ) : null,
-							'wp_user_id' => null,
-							'is_active'  => 1,
-						)
-					);
+
+					return null;
 				}
-
-				$this->audit_change(
-					'CLINICIAN_CREATED',
-					$actor_wp_user_id,
-					'clinician',
-					$clinician_id,
-					null,
-					array(
-						'clinic_id'  => $trusted,
-						'full_name'  => $full_name,
-						'specialty'  => $specialty,
-						'wp_user_id' => $wp_user_id,
-					),
-					$trusted
-				);
-
-				return null;
-			} );
+			);
 			if ( $refusal !== null ) {
 				return $refusal;
 			}
@@ -1327,37 +1349,39 @@ final class ManagementPortalService {
 				// D6 audit atomicity: the schedule write and its mandatory audit
 				// event share one boundary (the schedule service runs on a nested
 				// SAVEPOINT). A failed audit rolls the schedule row back.
-				$this->db()->transactional( function () use ( $actor_wp_user_id, $trusted, $clinician_id, $location_id, $day_of_week, $start_time, $end_time, &$created ) {
-					$view    = App::scheduleService()->create(
-						$actor_wp_user_id,
-						array(
-							'clinician_id' => $clinician_id,
-							'location_id'  => $location_id,
-							'day_of_week'  => $day_of_week,
-							'start_time'   => $start_time,
-							'end_time'     => $end_time,
-							'is_active'    => 1,
-						)
-					);
-					$created = (int) ( $view['id'] ?? 0 );
+				$this->db()->transactional(
+					function () use ( $actor_wp_user_id, $trusted, $clinician_id, $location_id, $day_of_week, $start_time, $end_time, &$created ) {
+						$view    = App::scheduleService()->create(
+							$actor_wp_user_id,
+							array(
+								'clinician_id' => $clinician_id,
+								'location_id'  => $location_id,
+								'day_of_week'  => $day_of_week,
+								'start_time'   => $start_time,
+								'end_time'     => $end_time,
+								'is_active'    => 1,
+							)
+						);
+						$created = (int) ( $view['id'] ?? 0 );
 
-					$this->audit_change(
-						'SCHEDULE_CREATED',
-						$actor_wp_user_id,
-						'schedule',
-						$created,
-						null,
-						array(
-							'clinic_id'    => $trusted,
-							'clinician_id' => $clinician_id,
-							'location_id'  => $location_id,
-							'day_of_week'  => $day_of_week,
-							'start_time'   => $start_time,
-							'end_time'     => $end_time,
-						),
-						$trusted
-					);
-				} );
+						$this->audit_change(
+							'SCHEDULE_CREATED',
+							$actor_wp_user_id,
+							'schedule',
+							$created,
+							null,
+							array(
+								'clinic_id'    => $trusted,
+								'clinician_id' => $clinician_id,
+								'location_id'  => $location_id,
+								'day_of_week'  => $day_of_week,
+								'start_time'   => $start_time,
+								'end_time'     => $end_time,
+							),
+							$trusted
+						);
+					}
+				);
 			} finally {
 				if ( $previous === null ) {
 					ScopeContext::clear();
