@@ -17,7 +17,12 @@ Covered:
   C6  every label's `for` resolves to exactly one control,
   C7  Persian RTL at 390px with no horizontal overflow,
   C8  the logged-in state and the portal shell remain the delivered Classic
-      frontend surface (no wp-admin chrome, no role escalation).
+      frontend surface (no wp-admin chrome, no role escalation),
+  C0  an existing Clinic form renders its stored province/city preselected.
+
+On an exception the script prints one bounded MP_DIAG line (stage + URL) and
+still writes results.json, so the failure is visible in the evidence comment
+even when raw job logs are unreachable.
 
 Existing hospital two-manager / 12-type facility flows are regression-covered by
 the PHPUnit integration suite (HospitalTwoManagerJourneyTest, FacilityType*)
@@ -245,6 +250,7 @@ def main():
 
     portal_url = f"{fixture['portal_url']}{'&' if '?' in fixture['portal_url'] else '?'}cpms-org={fixture['org_id']}"
 
+    STATE["portal_url"] = fixture["portal_url"]
     stage("browser.launch")
     with sync_playwright() as p:
         browser = p.chromium.launch()
@@ -255,6 +261,10 @@ def main():
 
         def on_console(msg):
             if msg.type != "error":
+                return
+            # Scope the assertion to the portal document we ship: the wp-login/wp-admin
+            # redirect target rendered during sign-in is not this plugin's surface.
+            if STATE.get("portal_url") and STATE["portal_url"] not in page.url:
                 return
             text = msg.text or ""
             if any(token in text for token in IGNORED_CONSOLE):
