@@ -44,16 +44,16 @@ final class AddressSelectorField {
         string $target_input_id = '',
         string $city_custom_name = 'address_city_custom'
     ): void {
-        $parsed            = IranProvinceCityCatalog::parse_address( $current_address );
-        $selected_province = $parsed['province'];
-        $selected_city     = $parsed['city'];
-        $selected_custom   = $parsed['city_custom'];
-        $provinces         = IranProvinceCityCatalog::provinces();
-        $province_id       = $id_prefix . '_province';
-        $city_id           = $id_prefix . '_city';
-        $city_custom_id    = $id_prefix . '_city_custom';
+        $parsed             = IranProvinceCityCatalog::parse_address( $current_address );
+        $selected_province  = $parsed['province'];
+        $selected_city      = $parsed['city'];
+        $selected_custom    = $parsed['city_custom'];
+        $provinces          = IranProvinceCityCatalog::provinces();
+        $province_id        = $id_prefix . '_province';
+        $city_id            = $id_prefix . '_city';
+        $city_custom_id     = $id_prefix . '_city_custom';
         $province_search_id = $id_prefix . '_province_search';
-        $city_search_id    = $id_prefix . '_city_search';
+        $city_search_id     = $id_prefix . '_city_search';
 
         echo '<div class="cpms-address-geography" dir="rtl" data-cpms-address-geography="1"'
             . ' data-target-input="' . esc_attr( $target_input_id ) . '"'

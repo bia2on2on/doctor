@@ -41,15 +41,15 @@ final class IranCustomCityEntryTest extends TestCase {
             'خیابان آزادی، پلاک ۱۲',
             'تهران',
             IranProvinceCityCatalog::OTHER_CITY_SENTINEL,
-            'پردیس'
+            'شهرک نوین'
         );
 
-        self::assertSame( 'تهران، سایر: پردیس، خیابان آزادی، پلاک ۱۲', $composed );
+        self::assertSame( 'تهران، سایر: شهرک نوین، خیابان آزادی، پلاک ۱۲', $composed );
 
         $parsed = IranProvinceCityCatalog::parse_address( $composed );
         self::assertSame( 'تهران', $parsed['province'] );
         self::assertSame( '', $parsed['city'], 'a user-defined city is never reported as a canonical city' );
-        self::assertSame( 'پردیس', $parsed['city_custom'] );
+        self::assertSame( 'شهرک نوین', $parsed['city_custom'] );
         self::assertSame( 'خیابان آزادی، پلاک ۱۲', $parsed['detail'] );
     }
 
@@ -92,7 +92,7 @@ final class IranCustomCityEntryTest extends TestCase {
             IranProvinceCityCatalog::OTHER_CITY_SENTINEL,
             "  كاشان\u{200C}جدید  "
         );
-        self::assertSame( 'اصفهان، سایر: کاشان جدید', $composed );
+        self::assertSame( 'اصفهان، سایر: کاشان‌جدید', $composed );
 
         // The address separator and any markup are structurally impossible, so a
         // manual city can never forge an extra segment or inject HTML.
@@ -113,6 +113,19 @@ final class IranCustomCityEntryTest extends TestCase {
         // exactly two remain (province، city) and nothing else.
         self::assertCount( 2, explode( '، ', (string) $injected ) );
         self::assertSame( 1, substr_count( (string) $injected, '،' ) );
+    }
+
+    public function testManualCityNamingARealCityOfThatProvinceCollapsesToTheCatalogue(): void {
+        // «پردیس» really is a city of Tehran province: typing it through "Other" must
+        // persist the canonical value, never a marked user-defined duplicate.
+        $composed = IranProvinceCityCatalog::resolve_submitted_address(
+            null,
+            'تهران',
+            IranProvinceCityCatalog::OTHER_CITY_SENTINEL,
+            'پرديس' // Arabic Yeh variant
+        );
+        self::assertSame( 'تهران، پردیس', $composed );
+        self::assertStringNotContainsString( 'سایر:', $composed );
     }
 
     public function testManualCityThatDuplicatesACanonicalCityCollapsesToTheCatalogue(): void {

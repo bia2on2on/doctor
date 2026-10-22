@@ -307,12 +307,9 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinic_id" value="<?php echo (int) self::$active_clinic_id; ?>">
         <table class="form-table" role="presentation">
             <tr><th>نام پزشک *</th><td><input type="text" name="full_name" required class="regular-text"></td></tr>
-            <tr><th>تخصص</th><td><?php
-                // Searchable offline specialty catalogue + validated "Other / سایر".
-                // Server-side resolution happens in saveClinician(); this control is
-                // never the authority.
-                SpecialtySelectorField::render( '', 'cpms-clinician-new-spec' );
-            ?></td></tr>
+            <!-- Searchable offline specialty catalogue + validated "Other / سایر"; the
+                 authority is saveClinician() on the server, never this control. -->
+            <tr><th>تخصص</th><td><?php SpecialtySelectorField::render( '', 'cpms-clinician-new-spec' ); ?></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
                 <label><input type="checkbox" name="create_account" value="1" id="cpms-create-account"> ایجاد حساب کاربری جدید (نقش: پزشک) — بدون نیاز به صفحهٔ جداگانهٔ «کاربران»</label>
@@ -403,12 +400,9 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
         <table class="form-table" role="presentation">
             <tr><th>نام پزشک *</th><td><input type="text" name="full_name" required value="<?php echo esc_attr((string) $clinician['full_name']); ?>" class="regular-text"></td></tr>
-            <tr><th>تخصص</th><td><?php
-                // Re-display exactly what is stored: a canonical catalogue label
-                // re-selects; a user-defined label re-opens "Other / سایر" and keeps
-                // its text, so historical free-text specialties are never coerced.
-                SpecialtySelectorField::render( (string) ( $clinician['specialty'] ?? '' ), 'cpms-clinician-edit-spec' );
-            ?></td></tr>
+            <!-- Re-displays exactly what is stored: a canonical label re-selects, a
+                 user-defined label re-opens "Other / سایر" with its text preserved. -->
+            <tr><th>تخصص</th><td><?php SpecialtySelectorField::render( (string) ( $clinician['specialty'] ?? '' ), 'cpms-clinician-edit-spec' ); ?></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" value="<?php echo esc_attr((string) ($clinician['room'] ?? '')); ?>" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
                 <select name="wp_user_id">

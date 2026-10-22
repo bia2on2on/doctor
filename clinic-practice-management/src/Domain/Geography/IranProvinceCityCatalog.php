@@ -655,10 +655,6 @@ final class IranProvinceCityCatalog {
             }
 
             $city_slot = $city;
-        } elseif ( $other_selected && trim( (string) ( $raw_city_custom ?? '' ) ) !== '' ) {
-            // "Other / سایر" was explicitly chosen and something was typed, but nothing
-            // usable survived sanitization: reject instead of silently dropping input.
-            self::validate_custom_city( $matched_province, (string) $raw_city_custom );
         } elseif ( $custom !== '' ) {
             $validated = self::validate_custom_city( $matched_province, $custom );
             // A typed name that IS canonical for this province collapses to the
@@ -666,6 +662,12 @@ final class IranProvinceCityCatalog {
             $city_slot = in_array( $validated, $matched_province['cities'], true )
                 ? $validated
                 : self::compose_custom_city_slot( $validated );
+        } elseif ( $other_selected && trim( (string) ( $raw_city_custom ?? '' ) ) !== '' ) {
+            // "Other / سایر" was explicitly chosen and something was typed, but nothing
+            // usable survived sanitization: reject instead of silently dropping input.
+            // Reachable only when sanitize_custom_city() returned '' — validate always
+            // throws here, so a bogus manual city can never degrade to "province only".
+            self::validate_custom_city( $matched_province, (string) $raw_city_custom );
         }
 
         $parsed = self::parse_address( $address );

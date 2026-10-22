@@ -211,18 +211,18 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'address'             => 'خیابان آزادی، پلاک ۱۲',
 				'address_province'    => 'تهران',
 				'address_city'        => IranProvinceCityCatalog::OTHER_CITY_SENTINEL,
-				'address_city_custom' => 'پردیس',
+				'address_city_custom' => 'شهرک نوین',
 			)
 		);
 		self::assertTrue( $result['ok'], (string) ( $result['message'] ?? '' ) );
 
 		$stored = $this->stored_clinic_address( $this->clinic_id );
-		self::assertSame( 'تهران، سایر: پردیس، خیابان آزادی، پلاک ۱۲', $stored );
+		self::assertSame( 'تهران، سایر: شهرک نوین، خیابان آزادی، پلاک ۱۲', $stored );
 
 		$parsed = IranProvinceCityCatalog::parse_address( $stored );
 		self::assertSame( 'تهران', $parsed['province'] );
 		self::assertSame( '', $parsed['city'], 'a user-defined city is never reported as canonical' );
-		self::assertSame( 'پردیس', $parsed['city_custom'] );
+		self::assertSame( 'شهرک نوین', $parsed['city_custom'] );
 		self::assertSame( 'خیابان آزادی، پلاک ۱۲', $parsed['detail'] );
 
 		// The real portal document redisplay: "Other" selected + the typed city in the
@@ -230,10 +230,10 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 		$html = $this->render_portal( $this->clinic_id );
 		self::assertStringContainsString( 'data-cpms-city-custom-input="1"', $html );
 		self::assertStringContainsString( 'name="address_city_custom"', $html );
-		self::assertStringContainsString( 'value="پردیس"', $html );
+		self::assertStringContainsString( 'value="شهرک نوین"', $html );
 		self::assertStringContainsString( 'data-cpms-city-other="1" selected', $html );
 		self::assertStringContainsString( '/assets/js/cpms-catalog-fields.js', $html );
-		self::assertStringNotContainsString( '>پردیس</option>', $html, 'a manual city must not be injected into the canonical catalogue list' );
+		self::assertStringNotContainsString( '>شهرک نوین</option>', $html, 'a manual city must not be injected into the canonical catalogue list' );
 	}
 
 	public function testManualCityIsRejectedServerSideWithoutAProvinceOrWithGarbage(): void {
@@ -250,7 +250,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'address'             => 'خیابان آزمون',
 				'address_province'    => '',
 				'address_city'        => IranProvinceCityCatalog::OTHER_CITY_SENTINEL,
-				'address_city_custom' => 'پردیس',
+				'address_city_custom' => 'شهرک نوین',
 			)
 		);
 		self::assertFalse( $no_province['ok'], 'server-side rejection is mandatory (client filtering is never trusted)' );
