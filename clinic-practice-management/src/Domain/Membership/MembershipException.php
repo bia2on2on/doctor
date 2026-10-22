@@ -127,6 +127,47 @@ final class MembershipException extends DomainException {
         );
     }
 
+    /**
+     * کلینیکِ عملیاتی که قبلاً فعال بوده و اکنون معلق است: عضویتِ تازه پذیرفته نمی‌شود.
+     *
+     * تمایز از کلینیکِ HELD (در انتظار نخستین فعال‌سازی) در ClinicLifecyclePolicy است و
+     * فقط از شهادتِ بادوام و مثبت خوانده می‌شود — هرگز از «نبودنِ» رویداد. عضویت‌ها،
+     * سوابق و مراقبت‌های جاری هرگز دست‌نخورده می‌مانند.
+     */
+    public static function clinic_suspended( int $clinic_id ): self {
+        return self::of(
+            'CLINIC_SUSPENDED_NEW_MEMBERSHIP',
+            sprintf(
+                /* translators: 1: clinic id */
+                __( 'این کلینیک (شناسهٔ %1$s) معلق است؛ افزودن عضویت تازه تا فعال‌سازی دوباره ممکن نیست. عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.', 'cpms' ),
+                $clinic_id
+            ),
+            409,
+            [ 'clinic_id' => $clinic_id ]
+        );
+    }
+
+    /**
+     * کلینیکِ معلق بدون شهادتِ بادوام و مثبتِ HELD — fail-closed.
+     *
+     * نبودنِ شهادت هرگز مجوز نیست: دادهٔ قدیمی/مبهم، JSON ناخوانا یا رویدادِ
+     * ناسازگار همه به همین رد می‌انجامند و فقط با فعال‌سازیِ صریح، مجاز و
+     * ممیزی‌شدهٔ کلینیک (توسط مقام دارای cpms_org_clinic_lifecycle) حل می‌شوند.
+     * عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.
+     */
+    public static function clinic_lifecycle_unverified( int $clinic_id ): self {
+        return self::of(
+            'CLINIC_LIFECYCLE_UNVERIFIED_NEW_MEMBERSHIP',
+            sprintf(
+                /* translators: 1: clinic id */
+                __( 'وضعیت چرخهٔ عمر این کلینیک (شناسهٔ %1$s) به‌طور بادوام تأیید نشده است؛ افزودن عضویت تازه یا فعال‌سازی مجدد عضویت تا فعال‌سازی صریح و مجاز کلینیک ممکن نیست. عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.', 'cpms' ),
+                $clinic_id
+            ),
+            409,
+            [ 'clinic_id' => $clinic_id ]
+        );
+    }
+
     /** مقدار ورودی نامعتبر (role key / scope mode / capability). */
     public static function invalid_value( string $field, string $reason ): self {
         return self::of(

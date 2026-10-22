@@ -219,14 +219,15 @@ final class ClinicManagementPage {
         }
         check_admin_referer( self::NONCE_UPDATE );
 
-        $actor_id         = (int) get_current_user_id();
-        $organization_id  = isset( $_POST['organization_id'] ) ? absint( $_POST['organization_id'] ) : 0;
-        $clinic_id        = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
-        $name             = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
-        $address          = array_key_exists( 'address', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
-        $address_province = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
-        $address_city     = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
-        $phone            = array_key_exists( 'phone', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
+        $actor_id            = (int) get_current_user_id();
+        $organization_id     = isset( $_POST['organization_id'] ) ? absint( $_POST['organization_id'] ) : 0;
+        $clinic_id           = isset( $_POST['clinic_id'] ) ? absint( $_POST['clinic_id'] ) : 0;
+        $name                = isset( $_POST['name'] ) ? sanitize_text_field( wp_unslash( $_POST['name'] ) ) : '';
+        $address             = array_key_exists( 'address', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+        $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
+        $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+        $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';
+        $phone               = array_key_exists( 'phone', $_POST ) ? sanitize_text_field( wp_unslash( $_POST['phone'] ) ) : null;
 
         // Normalize empty to null for phone/address handling inside service (it does too)
         if ( $address === '' ) {
@@ -237,8 +238,8 @@ final class ClinicManagementPage {
         }
 
         try {
-            if ( $address !== null || $address_province !== '' || $address_city !== '' ) {
-                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            if ( $address !== null || $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city, $address_city_custom );
             }
             $result = App::organization_clinic_provisioning_service()->update_clinic_profile(
                 $actor_id,
@@ -304,11 +305,12 @@ final class ClinicManagementPage {
         $org_id    = (int) ( $in['organization_id'] ?? 0 );
         $clinic_id = (int) ( $in['clinic_id'] ?? 0 );
         try {
-            $address          = array_key_exists( 'address', $in ) && $in['address'] !== null ? (string) $in['address'] : null;
-            $address_province = isset( $in['address_province'] ) ? (string) $in['address_province'] : '';
-            $address_city     = isset( $in['address_city'] ) ? (string) $in['address_city'] : '';
-            if ( $address_province !== '' || $address_city !== '' ) {
-                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city );
+            $address             = array_key_exists( 'address', $in ) && $in['address'] !== null ? (string) $in['address'] : null;
+            $address_province    = isset( $in['address_province'] ) ? (string) $in['address_province'] : '';
+            $address_city        = isset( $in['address_city'] ) ? (string) $in['address_city'] : '';
+            $address_city_custom = isset( $in['address_city_custom'] ) ? (string) $in['address_city_custom'] : '';
+            if ( $address_province !== '' || $address_city !== '' || $address_city_custom !== '' ) {
+                $address = IranProvinceCityCatalog::resolve_submitted_address( $address, $address_province, $address_city, $address_city_custom );
             }
             $res = App::organization_clinic_provisioning_service()->update_clinic_profile(
                 $actor_id,

@@ -106,10 +106,11 @@ final class OrganizationManagerPage {
         }
 
         try {
-            $raw_address      = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
-            $address_province = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
-            $address_city     = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
-            $resolved_address = IranProvinceCityCatalog::resolve_submitted_address( $raw_address, $address_province, $address_city );
+            $raw_address         = isset( $_POST['address'] ) ? sanitize_text_field( wp_unslash( $_POST['address'] ) ) : null;
+            $address_province    = isset( $_POST['address_province'] ) ? sanitize_text_field( wp_unslash( $_POST['address_province'] ) ) : '';
+            $address_city        = isset( $_POST['address_city'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city'] ) ) : '';
+            $address_city_custom = isset( $_POST['address_city_custom'] ) ? sanitize_text_field( wp_unslash( $_POST['address_city_custom'] ) ) : '';
+            $resolved_address    = IranProvinceCityCatalog::resolve_submitted_address( $raw_address, $address_province, $address_city, $address_city_custom );
             App::organization_clinic_provisioning_service()->provision(
                 (int) get_current_user_id(),
                 isset( $_POST['organization_id'] ) ? absint( $_POST['organization_id'] ) : 0,

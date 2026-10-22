@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Onboarding;
 
+use ClinicCore\Application\Clinic\ClinicLifecyclePolicy;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use InvalidArgumentException;
@@ -31,6 +32,24 @@ final class OrganizationClinicProvisioningService {
     public const CAPABILITY_LIFECYCLE  = 'cpms_org_clinic_lifecycle';
     public const MEMBERSHIP_CAPABILITY = 'cpms_org_membership_manage';
     public const AUDIT_ACTION          = 'ORGANIZATION_CLINIC_PROVISIONED';
+
+    /**
+     * Durable lifecycle evidence, written ONLY by set_clinic_status() — the single
+     * writer of cpms_clinics.status — inside the same transaction as the status change,
+     * with AuditLogger failing closed when a row is not persisted. A Clinic therefore
+     * cannot become 'active' without AUDIT_CLINIC_REACTIVATED, and cannot go
+     * 'active' -> 'suspended' without AUDIT_CLINIC_DEACTIVATED (an identical desired
+     * status is a no-op that writes nothing). Together with the provisioning record
+     * (AUDIT_ACTION, whose meta asserts held=true ONLY for provision_held) this is the
+     * trustworthy, non-user-controlled evidence behind the two meanings of
+     * status='suspended'. ClinicLifecycleState decides it from the Clinic's most recent
+     * lifecycle record and fails CLOSED: a suspended Clinic counts as held pending its
+     * first activation only when that record positively asserts the held state. The
+     * absence of records is never authorization - it is unverified evidence and refuses
+     * new participation until an explicit, authorized, audited transition resolves it.
+     */
+    public const AUDIT_CLINIC_REACTIVATED = 'CLINIC_REACTIVATED';
+    public const AUDIT_CLINIC_DEACTIVATED = 'CLINIC_DEACTIVATED';
 
     /**
      * Organization-scoped capability: explicitly designate a Clinic manager (the
@@ -799,7 +818,7 @@ final class OrganizationClinicProvisioningService {
                 }
 
                 $audit_id = $this->audit->log(
-                    $active ? 'CLINIC_REACTIVATED' : 'CLINIC_DEACTIVATED',
+                    $active ? self::AUDIT_CLINIC_REACTIVATED : self::AUDIT_CLINIC_DEACTIVATED,
                     ['wp_user_id' => $actor_id, 'role' => 'organization_manager'],
                     'clinic',
                     $clinic_id,
@@ -833,8 +852,13 @@ final class OrganizationClinicProvisioningService {
      * Explicit Clinic manager designation under Organization authority.
      *
      * Lock order matches the other management writes: Organization row, then the
-     * Clinic row. The Clinic must belong to the Organization (active or suspended:
-     * suspension is a new-demand control, administration continues). The target must
+     * Clinic row. The Clinic must belong to the Organization, and because this method
+     * WRITES a new membership it obeys the central lifecycle policy for new demand: an
+     * active Clinic and a positively verified held Clinic (completing its authorized
+     * initial setup) are accepted, a previously active and now suspended Clinic is
+     * refused, and unverified lifecycle evidence is refused (fail-closed). Reading the
+     * other Clinic surfaces (profile, history, finance) stays available while suspended.
+     * The target must
      * be an existing WordPress user; WordPress Administrator status is irrelevant in
      * both directions. An existing ACTIVE cpms_manager membership is an idempotent
      * no-op (no second audit row); any other existing membership (suspended or a
@@ -876,6 +900,17 @@ final class OrganizationClinicProvisioningService {
                 );
                 if ( null === $clinic || (int) $clinic['organization_id'] !== $organization_id ) {
                     throw new RuntimeException( 'clinic not found in organization' );
+                }
+
+                // Central lifecycle policy, decided from the Clinic's durable state and
+                // never from the caller's capabilities: holding
+                // cpms_org_clinic_manager_assign while cpms_org_clinic_lifecycle is DENY
+                // must not bypass a suspension, and such a caller also cannot reactivate
+                // the Clinic (DENY > GRANT). No WordPress capability is widened here.
+                if ( ! ClinicLifecyclePolicy::accepts_new_membership(
+                    ClinicLifecyclePolicy::state_of( $this->db, $clinic_id )
+                ) ) {
+                    throw new RuntimeException( 'clinic manager designation denied while the clinic refuses new participation' );
                 }
 
                 // Only an authorized caller reaches the target identity (read-only

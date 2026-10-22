@@ -3,6 +3,8 @@
 .DS_Store
 phpunit.phar
 .phpunit.cache/
+# PHPUnit result cache (هرگز commit نمی‌شود — artifact اجرای محلی تست)
+.phpunit.result.cache
 vendor/
 # Pilot Gate — خروجیهای موقت build (artifact در CI ساخته می‌شود)
 clinic-practice-management/dist/

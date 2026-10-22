@@ -4,6 +4,7 @@ declare( strict_types=1 );
 
 namespace ClinicCore\Application\Membership;
 
+use ClinicCore\Application\Clinic\ClinicLifecyclePolicy;
 use ClinicCore\Domain\Membership\MembershipException;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -42,6 +43,15 @@ final class MembershipService {
     /**
      * ساخت عضویت — تکراری بودن (clinic,user) با خطای صریح رد می‌شود (نه silent update).
      *
+     * این متد «تک‌مسیرِ نوشتنِ عضویت» برای ثبت کارکنان است (پورتال مدیریت، صفحهٔ
+     * کارکنان Classic و انتصاب پزشک/کارکنان در طرح تأسیسات)، بنابراین مرزِ
+     * «تقاضای تازه» در چرخهٔ عمر Clinic یک‌جا و برای همهٔ این سطح‌ها اعمال می‌شود.
+     * هیچ مسیر نوشتنِ عضویتی از این سیاست بیرون نیست: تعیین مدیر درمانگاه
+     * (OrganizationClinicProvisioningService::designate_clinic_manager)، bootstrap
+     * نخستین‌راه‌اندازی (FirstPracticeSetupService) و فعال‌سازیِ مجددِ یک عضویت
+     * (reactivate_membership) همگی همان ClinicLifecyclePolicy را می‌پرسند، پس داشتنِ
+     * capability انتصاب بدون capability چرخهٔ عمر هرگز تعلیق را دور نمی‌زند.
+     *
      * @param int|null $invited_by_wp_user_id
      */
     public function create_membership(
@@ -54,12 +64,12 @@ final class MembershipService {
         if ( $wp_user_id <= 0 || get_userdata( $wp_user_id ) === false ) {
             throw MembershipException::not_found( __( 'کاربر وردپرس', 'cpms' ), $wp_user_id );
         }
-        if ( $this->db->fetchValue(
-            'SELECT id FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d',
-            [ $clinic_id ]
-        ) === null ) {
-            throw MembershipException::not_found( __( 'کلینیک', 'cpms' ), $clinic_id );
-        }
+        // Central lifecycle policy — positive durable evidence, fail-closed. The Clinic
+        // must exist and must be ACTIVE, or a positively verified HELD Clinic completing
+        // its authorized initial setup. A previously active, now suspended Clinic — and
+        // any Clinic whose lifecycle evidence is missing, corrupt or inconsistent —
+        // refuses NEW participation here, for every caller of this single write path.
+        ClinicLifecyclePolicy::assert_accepts_new_membership( $this->db, $clinic_id );
         $this->assert_role_key( $role_key );
         if ( ! in_array( $scope_mode, [ self::SCOPE_CLINIC, self::SCOPE_LOCATION ], true ) ) {
             throw MembershipException::invalid_value( 'scope_mode', __( 'باید clinic یا location باشد.', 'cpms' ) );
@@ -98,6 +108,7 @@ final class MembershipService {
 
         return (int) $this->db->wpdb_last_insert_id();
     }
+
 
     /**
      * عضویت (هر وضعیت) — برای نمایش/ادمین.
@@ -354,6 +365,14 @@ final class MembershipService {
             true
         ) ) {
             throw MembershipException::invalid_transition( $from, $to );
+        }
+
+        if ( $to === self::STATUS_ACTIVE ) {
+            // Restoring a membership to 'active' re-opens staff participation, so it is
+            // NEW demand for the Clinic and obeys the same central lifecycle policy as
+            // create_membership(). Suspending is never gated: revoking access must
+            // always remain possible, including for a suspended Clinic.
+            ClinicLifecyclePolicy::assert_accepts_new_membership( $this->db, (int) $membership['clinic_id'] );
         }
 
         $this->memberships->update(

@@ -27,6 +27,8 @@ use ClinicCore\Frontend\ManagementPortalController;
 use ClinicCore\Frontend\ManagementPortalShell;
 use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Admin\AddressSelectorField;
+use ClinicCore\Admin\SpecialtySelectorField;
+use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 
 if ( ! function_exists( 'wp_get_current_user' ) ) {
 	return;
@@ -142,9 +144,28 @@ $cpms_mp_stale_matches_current = static function () use ( &$cpms_mp_stale, &$cpm
  */
 $cpms_mp_resolve_address_for_selector = static function ( string $stored_address ) use ( &$cpms_mp_stale, &$cpms_mp_stale_matches_current ): string {
 	if ( $cpms_mp_stale_matches_current() ) {
-		$stale_prov = isset( $cpms_mp_stale['address_province'] ) ? trim( (string) $cpms_mp_stale['address_province'] ) : '';
-		$stale_city = isset( $cpms_mp_stale['address_city'] ) ? trim( (string) $cpms_mp_stale['address_city'] ) : '';
-		$stale_addr = isset( $cpms_mp_stale['address'] ) ? trim( (string) $cpms_mp_stale['address'] ) : '';
+		$stale_prov   = isset( $cpms_mp_stale['address_province'] ) ? trim( (string) $cpms_mp_stale['address_province'] ) : '';
+		$stale_city   = isset( $cpms_mp_stale['address_city'] ) ? trim( (string) $cpms_mp_stale['address_city'] ) : '';
+		$stale_custom = isset( $cpms_mp_stale['address_city_custom'] ) ? trim( (string) $cpms_mp_stale['address_city_custom'] ) : '';
+		$stale_addr   = isset( $cpms_mp_stale['address'] ) ? trim( (string) $cpms_mp_stale['address'] ) : '';
+		// A manual ("Other / سایر") city is re-composed through the SAME catalogue
+		// path that persists it, so the marker round-trips and the retry shows the
+		// typed city in the manual field instead of losing it.
+		if ( '' !== $stale_custom ) {
+			try {
+				$composed_stale = IranProvinceCityCatalog::resolve_submitted_address(
+					'' !== $stale_addr ? $stale_addr : null,
+					$stale_prov,
+					$stale_city,
+					$stale_custom
+				);
+				if ( null !== $composed_stale && '' !== $composed_stale ) {
+					return $composed_stale;
+				}
+			} catch ( \Throwable $cpms_mp_e ) {
+				unset( $cpms_mp_e ); // fall through: the raw composition below keeps the form usable
+			}
+		}
 		if ( '' !== $stale_prov || '' !== $stale_city ) {
 			$parts = array();
 			if ( '' !== $stale_prov ) {
@@ -990,17 +1011,18 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 			<section class="cpms-mgmt-card">
 				<h2>پزشکان و برنامه‌ها</h2>
 				<table class="cpms-mgmt-table">
-					<thead><tr><th>پزشک</th><th>شناسهٔ بالینی</th><th>وضعیت</th></tr></thead>
+					<thead><tr><th>پزشک</th><th>تخصص</th><th>شناسهٔ بالینی</th><th>وضعیت</th></tr></thead>
 					<tbody>
 					<?php foreach ( $cpms_mp_clinic_view['clinicians'] as $cpms_mp_clinician ) : ?>
 						<tr>
 							<td><?php echo esc_html( $cpms_mp_clinician['full_name'] ); ?></td>
+							<td><?php echo '' !== (string) ( $cpms_mp_clinician['specialty'] ?? '' ) ? esc_html( (string) $cpms_mp_clinician['specialty'] ) : '<span class="cpms-mgmt-empty">—</span>'; ?></td>
 							<td><?php echo esc_html( (string) $cpms_mp_clinician['id'] ); ?></td>
 							<td><?php echo $cpms_mp_clinician['is_active'] ? 'فعال' : 'غیرفعال'; ?></td>
 						</tr>
 					<?php endforeach; ?>
 					<?php if ( array() === $cpms_mp_clinic_view['clinicians'] ) : ?>
-						<tr><td colspan="3" class="cpms-mgmt-empty">پزشکی ثبت نشده است.</td></tr>
+						<tr><td colspan="4" class="cpms-mgmt-empty">پزشکی ثبت نشده است.</td></tr>
 					<?php endif; ?>
 					</tbody>
 				</table>
@@ -1008,7 +1030,18 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				<?php $cpms_mp_form_open( 'clinic_clinician_register', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php
 					$cpms_mp_field( 'full_name', 'نام کامل پزشک', '', true );
-					$cpms_mp_field( 'specialty', 'تخصص' );
+					// Searchable offline specialty catalogue + validated "Other / سایر"
+					// manual entry. The persisted label is re-displayed exactly: a
+					// canonical label re-selects, a user-defined label re-opens the
+					// manual field (never coerced, never dropped).
+					$cpms_mp_specialty_current = '';
+					if ( $cpms_mp_stale_matches_current() && isset( $cpms_mp_stale['specialty'] ) ) {
+						$cpms_mp_specialty_current = trim( (string) $cpms_mp_stale['specialty'] );
+					}
+					SpecialtySelectorField::render(
+						$cpms_mp_specialty_current,
+						'cpms-mgmt-' . $cpms_mp_current_suffix . '-spec'
+					);
 					$cpms_mp_field( 'target_user_id', 'شناسهٔ کاربر وابسته (اختیاری)', '', false, 'number' );
 					?>
 					<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت پزشک</button>
