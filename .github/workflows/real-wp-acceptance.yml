@@ -949,6 +949,24 @@ jobs:
             exit "$RC"
           fi
 
+      # Bounded diagnostics for the portal step on lanes that do not publish the
+      # full evidence comment (persian_coexistence). Only runs when a step failed.
+      - name: Publish Management Portal browser diagnostics (bounded)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ ! -f /tmp/acc/management-portal.log ]; then exit 0; fi
+          {
+            echo "### Management Portal browser diagnostics — prefix \`${{ matrix.prefix }}\`"
+            echo
+            echo '```'
+            grep -E '^(STAGE|FAIL|ERROR:|MP_DIAG=|MP_RESULTS=|RESULT:)' /tmp/acc/management-portal.log | tail -40 \
+              || tail -40 /tmp/acc/management-portal.log
+            echo '```'
+          } > /tmp/acc/mp-diag.md
+          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/mp-diag.md --jq '.id' || true
+
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
         if: always()
