@@ -1037,8 +1037,6 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					$cpms_mp_specialty_current = '';
 					if ( $cpms_mp_stale_matches_current() && isset( $cpms_mp_stale['specialty'] ) ) {
 						$cpms_mp_specialty_current = trim( (string) $cpms_mp_stale['specialty'] );
-					} elseif ( $cpms_mp_stale_matches_current() && isset( $cpms_mp_stale['specialty_custom'] ) ) {
-						$cpms_mp_specialty_current = trim( (string) $cpms_mp_stale['specialty_custom'] );
 					}
 					SpecialtySelectorField::render(
 						$cpms_mp_specialty_current,

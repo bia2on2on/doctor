@@ -321,7 +321,7 @@ final class ManagementPortalController {
 				try {
 					$__resolved_specialty = (string) ( MedicalSpecialtyCatalog::resolve_submitted(
 						self::string_value( $input, 'specialty' ) !== '' ? self::string_value( $input, 'specialty' ) : null,
-						self::string_value( $input, 'specialty_custom' ) !== '' ? self::string_value( $input, 'specialty_custom' ) : null
+						null
 					) ?? '' );
 				} catch ( \InvalidArgumentException $e ) {
 					return self::invalid_input( $e->getMessage() );
@@ -534,7 +534,7 @@ final class ManagementPortalController {
 	 * @return array<string,mixed>
 	 */
 	private static function collect_input( string $action ): array {
-		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'cpms_entity_name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel', 'address_province', 'address_city', 'address_city_custom', 'specialty_custom' );
+		$fields = array( 'organization_id', 'clinic_id', 'location_id', 'target_user_id', 'active', 'role_key', 'name', 'cpms_entity_name', 'slug', 'timezone', 'location_name', 'address', 'phone', 'membership_id', 'identifier', 'capability', 'effect', 'location_ids', 'clinician_id', 'full_name', 'specialty', 'day_of_week', 'start_time', 'end_time', 'facility_type', 'structure', 'display_name', 'site_key', 'clinic_key', 'label', 'room_key', 'duration', 'capacity', 'lead', 'future', 'cancel', 'address_province', 'address_city', 'address_city_custom' );
 		$input  = array( 'action' => $action );
 		foreach ( $fields as $field ) {
 			// phpcs:ignore WordPress.Security.NonceVerification.Missing -- caller verified the nonce before dispatch.

@@ -564,7 +564,7 @@ final class ClinicianAdminPage
         try {
             $fields['specialty'] = MedicalSpecialtyCatalog::resolve_submitted(
                 isset($_POST['specialty']) ? sanitize_text_field(wp_unslash((string) $_POST['specialty'])) : null,
-                isset($_POST['specialty_custom']) ? sanitize_text_field(wp_unslash((string) $_POST['specialty_custom'])) : null
+                null
             );
         } catch (\InvalidArgumentException $e) {
             self::backWithError($id, 'خطا: ' . $e->getMessage());

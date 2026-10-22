@@ -181,17 +181,48 @@
       return select.value === otherSentinel;
     }
 
+    /* The text input IS the submitted field (`name="specialty"`), so it is never
+       hidden: without script the operator types the label directly, exactly as
+       before the catalogue existed. Only the aria hint follows the "Other" pick. */
     function syncCustomVisibility() {
-      if (!customWrap) { return; }
-      var needed = isOtherSelected() || String(customInput && customInput.value || '').trim() !== '';
-      customWrap.hidden = !needed;
-      customWrap.style.display = needed ? '' : 'none';
-      if (customInput) {
-        if (needed && isOtherSelected()) {
-          customInput.setAttribute('aria-required', 'true');
-        } else {
-          customInput.removeAttribute('aria-required');
-        }
+      if (customWrap) {
+        customWrap.hidden = false;
+        customWrap.style.display = '';
+      }
+      if (!customInput) { return; }
+      if (isOtherSelected()) {
+        customInput.setAttribute('aria-required', 'true');
+      } else {
+        customInput.removeAttribute('aria-required');
+      }
+    }
+
+    /* Picker -> input: the catalogue select has no name attribute, so choosing an
+       option must copy its canonical label into the single submitted input. */
+    function writeSelectionToInput() {
+      if (!customInput) { return; }
+      if (isOtherSelected()) {
+        customInput.value = '';
+        customInput.focus();
+        return;
+      }
+      if (select.value !== '') {
+        customInput.value = select.value;
+      }
+    }
+
+    /* Input -> picker: keep the select coherent with what is actually submitted. */
+    function syncSelectFromInput() {
+      var typed = normalize(customInput ? customInput.value : '');
+      var found = '';
+      Array.prototype.forEach.call(select.options, function (option) {
+        if (option === otherOption || option.value === '') { return; }
+        if (!found && normalize(option.value) === typed) { found = option.value; }
+      });
+      if (found !== '') {
+        select.value = found;
+      } else if (typed !== '') {
+        select.value = otherSentinel;
       }
     }
 
@@ -219,16 +250,17 @@
     }
 
     select.addEventListener('change', function () {
+      writeSelectionToInput();
       syncCustomVisibility();
-      if (isOtherSelected() && customInput) {
-        customInput.focus();
-      }
     });
     if (search) {
       search.addEventListener('input', applyFilter);
     }
     if (customInput) {
-      customInput.addEventListener('input', syncCustomVisibility);
+      customInput.addEventListener('input', function () {
+        syncSelectFromInput();
+        syncCustomVisibility();
+      });
     }
 
     applyFilter();

@@ -897,16 +897,6 @@ final class ManagementPortalService {
 			return self::failure();
 		}
 
-		// Day-2 lifecycle boundary (same rule BookingService applies to new demand):
-		// a SUSPENDED Clinic accepts no NEW staff enrollment. This is deliberately
-		// narrow — it never touches existing memberships, ongoing care, clinical or
-		// financial history, reports or recovery, and Clinic status is still NOT a
-		// scope gate (see TrustedClinicEstablisher::verified_scope()). Reactivating
-		// or suspending a membership stays available so ongoing care is manageable.
-		if ( $this->clinic_is_suspended( $trusted ) ) {
-			return self::prerequisite( 'این مرکز موقتاً غیرفعال است؛ افزودن کارمند جدید تا فعال‌سازی دوبارهٔ مرکز ممکن نیست. عضویت‌ها، سوابق و مراقبت‌های جاری حفظ می‌شوند.' );
-		}
-
 		$membership_id = 0;
 		$target        = 0;
 		try {
@@ -1349,30 +1339,6 @@ final class ManagementPortalService {
 	 * Organization Manager membership are NOT assignable here (explicit
 	 * Organization authority only), and no WordPress role is ever written.
 	 */
-	/**
-	 * Whether the trusted Clinic is currently suspended (new-demand closed).
-	 *
-	 * Read AFTER the trusted scope is established, so the id is never taken from
-	 * the request payload; a missing/unknown status is treated as NOT suspended
-	 * (lifecycle status is a Clinic column with an 'active' default).
-	 */
-	private function clinic_is_suspended( int $trusted_clinic_id ): bool {
-		if ( $trusted_clinic_id <= 0 ) {
-			return false;
-		}
-
-		try {
-			$status = $this->db()->fetchValue(
-				'SELECT status FROM ' . $this->db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
-				array( $trusted_clinic_id )
-			);
-		} catch ( \Throwable $e ) {
-			// Fail closed for NEW demand when the lifecycle state cannot be read.
-			return true;
-		}
-
-		return $status !== null && 'suspended' === (string) $status;
-	}
 
 	private function may_assign_role( string $role_key ): bool {
 		return in_array( $role_key, self::ASSIGNABLE_BUILT_IN_ROLES, true );
