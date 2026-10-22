@@ -549,8 +549,9 @@ final class ClinicianAdminPage
 
     public static function saveClinician(): void
     {
-        $scope = self::authorizeAdminWrite('cpms_clinician_save');
-        $clinicId = (int) $scope->clinicId;
+        $scope = self::authorizeAdminWrite( 'cpms_clinician_save' );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published scope API.
+        $clinic_id = (int) $scope->clinicId;
 
         $repo = App::clinicianRepository();
         $fields = self::clinicianFields();
@@ -571,19 +572,19 @@ final class ClinicianAdminPage
         }
 
         try {
-            if ($id > 0) {
-                $current = $repo->findForClinic($id, $clinicId);
-                if ($current === null) {
-                    self::backWithError($id, 'خطا: پزشک در این Clinic یافت نشد.');
+            if ( $id > 0 ) {
+                $current       = $repo->findForClinic( $id, $clinic_id );
+                if ( $current === null ) {
+                    self::backWithError( $id, 'خطا: پزشک در این Clinic یافت نشد.' );
                 }
                 // D6 audit atomicity: the profile UPDATE and its mandatory audit
                 // share one boundary; a failed audit INSERT rolls the update back
                 // (fail closed). A zero-row change keeps the legacy behavior: no
                 // audit event and the same operator-facing error.
-                $affected = App::db()->transactional(
-                    function () use ( $id, $clinicId, $fields, $repo ): int {
-                        $affected_rows = $repo->updateForClinic( $id, $clinicId, $fields );
-                        if ( $affected_rows < 1 ) {
+                $affected_rows = App::db()->transactional(
+                    function () use ( $id, $clinic_id, $fields, $repo ): int {
+                        $rows = $repo->updateForClinic( $id, $clinic_id, $fields );
+                        if ( $rows < 1 ) {
                             return 0;
                         }
                         App::audit()->log(
@@ -595,20 +596,20 @@ final class ClinicianAdminPage
                             null,
                             [ 'fields' => array_keys( $fields ) ],
                             [],
-                            $clinicId
+                            $clinic_id
                         );
 
-                        return $affected_rows;
+                        return $rows;
                     }
                 );
-                if ( $affected < 1 ) {
+                if ( $affected_rows < 1 ) {
                     self::backWithError( $id, 'خطا: به‌روزرسانی پزشک انجام نشد.' );
                 }
                 self::back( $id, 'پروفایل پزشک ذخیره شد.' );
             }
 
-            if (trim((string) ($fields['full_name'] ?? '')) === '') {
-                self::backWithError(0, 'خطا: نام پزشک الزامی است.');
+            if ( trim( (string) ( $fields['full_name'] ?? '' ) ) === '' ) {
+                self::backWithError( 0, 'خطا: نام پزشک الزامی است.' );
             }
 
             // D6 audit atomicity: the (optional) WordPress account, its membership
@@ -617,41 +618,45 @@ final class ClinicianAdminPage
             // so a failed CLINICIAN_CREATED audit rolls the freshly created account
             // back too — no orphan account / clinician row can survive without audit.
             $created = App::db()->transactional(
-                function () use ( $fields, $generated, $clinicId, $repo ) {
-                    $accountCreated = self::maybeCreateDoctorAccount($fields, $generated, $clinicId);
-                    if (($accountCreated['error'] ?? '') !== '') {
-                        self::backWithError(0, 'خطا: ' . $accountCreated['error']);
+                function () use ( $fields, $generated, $clinic_id, $repo ) {
+                    $account_created = self::maybeCreateDoctorAccount( $fields, $generated, $clinic_id );
+                    if ( ( $account_created['error'] ?? '' ) !== '' ) {
+                        self::backWithError( 0, 'خطا: ' . $account_created['error'] );
                     }
-                    if (!empty($accountCreated['wp_user_id'])) {
-                        $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
+                    if ( ! empty( $account_created['wp_user_id'] ) ) {
+                        $fields['wp_user_id'] = (int) $account_created['wp_user_id'];
                     }
 
-                    if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
-                        self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
+                    if ( $fields['wp_user_id'] !== null && $repo->isUserLinked( (int) $fields['wp_user_id'] ) ) {
+                        self::backWithError(
+                            0,
+                            'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).'
+                        );
                     }
-                    $newId = $repo->create($clinicId, $fields);
+                    $new_id = $repo->create( $clinic_id, $fields );
                     App::audit()->log(
                         'CLINICIAN_CREATED',
                         [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
                         'clinician',
-                        $newId,
+                        $new_id,
                         null,
                         null,
                         [ 'full_name' => (string) $fields['full_name'] ],
                         [],
-                        $clinicId
+                        $clinic_id
                     );
 
-                    return [ 'new_id' => $newId, 'account' => $accountCreated ];
+                    return [ 'new_id' => $new_id, 'account' => $account_created ];
                 }
             );
-            $newId = (int) $created['new_id'];
-            $accountCreated = $created['account'];
-            $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
-            if (($accountCreated['generated'] ?? '') !== '') {
-                $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
+            $new_id          = (int) $created['new_id'];
+            $account_created = $created['account'];
+            $message         = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
+            if ( ( $account_created['generated'] ?? '' ) !== '' ) {
+                $message .= ' رمز یک‌بارهٔ حساب: ' . $account_created['generated'];
+                $message .= ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
             }
-            self::back($newId, $message);
+            self::back( $new_id, $message );
         } catch (\RuntimeException $e) {
             self::backWithError($id, 'خطا: ' . $e->getMessage());
         }
@@ -661,21 +666,22 @@ final class ClinicianAdminPage
     {
         // Nonce الگو شامل clinician_id است (cpms_clinician_toggle_{id}).
         $cid = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0;
-        $scope = self::authorizeAdminWrite('cpms_clinician_toggle_' . $cid);
-        $clinicId = (int) $scope->clinicId;
+        $scope = self::authorizeAdminWrite( 'cpms_clinician_toggle_' . $cid );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published scope API.
+        $clinic_id = (int) $scope->clinicId;
 
         $repo = App::clinicianRepository();
-        $current = $repo->findForClinic($cid, $clinicId);
-        if ($current === null) {
-            self::backWithError(0, 'خطا: پزشک در این Clinic یافت نشد.');
+        $current = $repo->findForClinic( $cid, $clinic_id );
+        if ( $current === null ) {
+            self::backWithError( 0, 'خطا: پزشک در این Clinic یافت نشد.' );
         }
-        $newState = (int) $current['is_active'] === 1 ? 0 : 1;
+        $new_state = (int) $current['is_active'] === 1 ? 0 : 1;
         // D6 audit atomicity: status write and mandatory audit commit/roll back together.
         App::db()->transactional(
-            function () use ( $repo, $cid, $clinicId, $current, $newState ) {
-                $affected = $repo->updateForClinic($cid, $clinicId, [ 'is_active' => $newState ]);
-                if ($affected < 1) {
-                    self::backWithError($cid, 'خطا: تغییر وضعیت پزشک انجام نشد.');
+            function () use ( $repo, $cid, $clinic_id, $current, $new_state ) {
+                $affected_rows = $repo->updateForClinic( $cid, $clinic_id, [ 'is_active' => $new_state ] );
+                if ( $affected_rows < 1 ) {
+                    self::backWithError( $cid, 'خطا: تغییر وضعیت پزشک انجام نشد.' );
                 }
                 App::audit()->log(
                     'CLINICIAN_STATUS_CHANGED',
@@ -684,13 +690,13 @@ final class ClinicianAdminPage
                     $cid,
                     null,
                     [ 'is_active' => (int) $current['is_active'] ],
-                    [ 'is_active' => $newState ],
+                    [ 'is_active' => $new_state ],
                     [],
-                    $clinicId
+                    $clinic_id
                 );
             }
         );
-        self::back($cid, $newState === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).');
+        self::back( $cid, $new_state === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).' );
     }
 
     /**

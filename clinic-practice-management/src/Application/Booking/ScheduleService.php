@@ -184,72 +184,72 @@ final class ScheduleService
         // Phase 6 Slice 7: ترتیبی‌سازی همزمان Create و Update تحت یک قرارداد قفل یکسان.
         $result = $this->db->transactional(
             function () use ( $id, $fields, $actor_user_id ): array {
-            // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
-            $current = $this->requireScheduleForTrustedClinic($id);
-            $clinician_id = (int) $current['clinician_id'];
-            $clinic_id    = (int) $current['clinic_id'];
+                // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
+                $current       = $this->requireScheduleForTrustedClinic( $id );
+                $clinician_id  = (int) $current['clinician_id'];
+                $clinic_id     = (int) $current['clinic_id'];
 
-            $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
-            $this->lockClinicianForScheduleWrite( $clinician_id );
+                $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
+                $this->lockClinicianForScheduleWrite( $clinician_id );
 
-            // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
-            $fresh = $this->schedules->findForUpdate($id);
-            if ($fresh === null) {
-                throw BookingException::of('CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404);
-            }
+                // واکشی ردیف تازه و قفل‌شده برای جلوگیری از تداخل بازنویسی همزمان
+                $fresh = $this->schedules->findForUpdate( $id );
+                if ( $fresh === null ) {
+                    throw BookingException::of( 'CLINIC_NOT_FOUND', 'برنامه یافت نشد', 404 );
+                }
 
-            $data = $this->validatedScheduleFields($fields, (array) $fresh);
+                $data = $this->validatedScheduleFields( $fields, (array) $fresh );
 
-            $this->assertNoShiftConflict(
-                $clinician_id,
-                (int) $fresh['day_of_week'],
-                $clinic_id,
-                (int) $fresh['location_id'],
-                (string) $data['start_time'],
-                (string) $data['end_time'],
-                (int) $data['is_active'],
-                $id
-            );
-            if ( 1 === (int) $data['is_active'] ) {
-                // Activating a Schedule is new scheduling demand; it must not
-                // beat concurrent Location deactivation via an unlocked read.
-                $this->lock_active_location_for_schedule_write(
+                $this->assertNoShiftConflict(
+                    $clinician_id,
+                    (int) $fresh['day_of_week'],
                     $clinic_id,
-                    (int) $fresh['location_id']
+                    (int) $fresh['location_id'],
+                    (string) $data['start_time'],
+                    (string) $data['end_time'],
+                    (int) $data['is_active'],
+                    $id
                 );
-            }
+                if ( 1 === (int) $data['is_active'] ) {
+                    // Activating a Schedule is new scheduling demand; it must not
+                    // beat concurrent Location deactivation via an unlocked read.
+                    $this->lock_active_location_for_schedule_write(
+                        $clinic_id,
+                        (int) $fresh['location_id']
+                    );
+                }
 
-            if ($data !== []) {
-                $data['updated_at'] = $this->db->nowUtcSql();
-                $this->schedules->update($id, $data);
-            }
-            // D6 audit atomicity: the update and its mandatory audit commit/roll
-            // back together inside this locked boundary.
-            $view = $this->scheduleView( (array) $this->schedules->find( $id ) );
-            $this->audit(
-                'SCHEDULE_UPDATED',
-                $actor_user_id,
-                'schedule',
-                $id,
-                null,
-                $this->scheduleView( $current ),
-                $view,
-                $clinic_id
-            );
+                if ( $data !== [] ) {
+                    $data['updated_at'] = $this->db->nowUtcSql();
+                    $this->schedules->update( $id, $data );
+                }
+                // D6 audit atomicity: the update and its mandatory audit commit/roll
+                // back together inside this locked boundary.
+                $view = $this->scheduleView( (array) $this->schedules->find( $id ) );
+                $this->audit(
+                    'SCHEDULE_UPDATED',
+                    $actor_user_id,
+                    'schedule',
+                    $id,
+                    null,
+                    $this->scheduleView( $current ),
+                    $view,
+                    $clinic_id
+                );
 
-            return [
-                'current'      => $current,
-                'clinic_id'    => $clinic_id,
-                'clinician_id' => $clinician_id,
-            ];
-        }
+                return [
+                    'current'      => $current,
+                    'clinic_id'    => $clinic_id,
+                    'clinician_id' => $clinician_id,
+                ];
+            }
         );
 
         $current      = $result['current'];
         $clinic_id    = $result['clinic_id'];
         $clinician_id = $result['clinician_id'];
 
-        $view = $this->scheduleView( (array) $this->schedules->find($id) );
+        $view = $this->scheduleView( (array) $this->schedules->find( $id ) );
         $this->op->info(
             'config.schedule_updated',
             [
@@ -1103,24 +1103,24 @@ final class ScheduleService
 
     private function audit(
         string $action,
-        int $wpUserId,
-        string $resourceType,
-        int $resourceId,
-        ?int $patientId,
+        int $wp_user_id,
+        string $resource_type,
+        int $resource_id,
+        ?int $patient_id,
         ?array $before,
         ?array $after,
-        int $clinicId
+        int $clinic_id
     ): void {
         $this->audit->log(
             $action,
-            [ 'wp_user_id' => $wpUserId, 'role' => 'staff' ],
-            $resourceType,
-            $resourceId,
-            $patientId,
+            [ 'wp_user_id' => $wp_user_id, 'role' => 'staff' ],
+            $resource_type,
+            $resource_id,
+            $patient_id,
             $before,
             $after,
             [],
-            $clinicId
+            $clinic_id
         );
     }
 }

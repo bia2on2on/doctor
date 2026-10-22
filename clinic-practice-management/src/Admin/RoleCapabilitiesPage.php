@@ -369,7 +369,7 @@ final class RoleCapabilitiesPage
         // Pure, testable boundary (no exit/redirect): the admin handler only owns
         // CSRF/authorization and the redirect; rollback/cache semantics live here.
         try {
-            $report = self::applyCapabilityMatrix( $input, (int) $user->ID );
+            $report = self::apply_capability_matrix( $input, (int) $user->ID );
         } catch ( \Throwable $e ) {
             // The boundary already rolled the option rows back; now revert the
             // in-memory option/role caches so effective permissions cannot outlive
@@ -395,8 +395,7 @@ final class RoleCapabilitiesPage
      * live object cache or the WP_Roles/WP_User capability snapshots, so both must
      * be rebuilt explicitly after an audit-driven rollback.
      */
-    private static function restore_effective_caps_after_rollback(): void
-    {
+    private static function restore_effective_caps_after_rollback(): void {
         wp_cache_flush();
         wp_roles()->for_site();
         $current = wp_get_current_user();
@@ -414,7 +413,7 @@ final class RoleCapabilitiesPage
      * @param array<string, mixed> $input role_caps payload
      * @return list<string> human-readable per-role change report
      */
-    public static function applyCapabilityMatrix( array $input, int $actor_wp_user_id ): array {
+    public static function apply_capability_matrix( array $input, int $actor_wp_user_id ): array {
         $report = [];
         // D6 audit atomicity: capability overrides (wp_options) and the WP role
         // registry (wp_user_roles option) are MySQL rows like any other, so the
@@ -426,12 +425,12 @@ final class RoleCapabilitiesPage
                 function () use ( $input, $actor_wp_user_id, &$report ) {
                     foreach ( self::ROLE_PRESETS as $role ) {
                         $requested = isset( $input[ $role ] ) && is_array( $input[ $role ] ) ? $input[ $role ] : [];
-                        $before = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                        $before  = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
                         if ( ! RolesAndCapabilities::setRoleCaps( $role, $requested ) ) {
                             continue;
                         }
-                        $after = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
-                        $added = array_values( array_diff( $after, $before ) );
+                        $after   = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                        $added   = array_values( array_diff( $after, $before ) );
                         $removed = array_values( array_diff( $before, $after ) );
                         if ( $added !== [] || $removed !== [] ) {
                             App::audit()->log(
@@ -465,7 +464,7 @@ final class RoleCapabilitiesPage
      * Pure single-role template-reset boundary (no redirect/exit). Throws on audit
      * failure after the option/role changes have rolled back.
      */
-    public static function resetRoleToTemplate( string $role ): void {
+    public static function reset_role_to_template( string $role ): void {
         if ( ! in_array( $role, self::ROLE_PRESETS, true ) ) {
             return;
         }
@@ -516,7 +515,7 @@ final class RoleCapabilitiesPage
             // one boundary; on audit failure both the option row and the effective
             // in-memory role capabilities are restored to the pre-reset state.
             try {
-                self::resetRoleToTemplate( $role );
+                self::reset_role_to_template( $role );
             } catch ( \Throwable $e ) {
                 self::restore_effective_caps_after_rollback();
                 set_transient( self::NOTICE_KEY, 'خطا: بازنشانی نقش ثبت نشد — وضعیت پیشین حفظ شد.', 60 );

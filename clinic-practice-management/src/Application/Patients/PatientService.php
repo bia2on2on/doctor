@@ -420,7 +420,7 @@ final class PatientService
         // organization identity on this path (fail-closed).
         $clinic_id = $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $id        = $this->db->transactional(
-            function () use ( $data, $clinic_id, $mobile, $verified_user, $expected_identity, $reception ): int {
+            function () use ( $data, $clinic_id, $mobile, $verified_user, $expected_identity, $reception, $actor_user_id ): int {
                 $id = $this->patients->create( $data );
                 if ( $this->db->wpdb()->last_error !== '' || $id <= 0 ) {
                     // Map the known same-Clinic national-ID uniqueness collision to a
@@ -483,33 +483,33 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    public function update(int $patientId, array $fields, int $actorUserId): array
+    public function update( int $patient_id, array $fields, int $actor_user_id ): array
     {
         $this->assert_license( LicenseGate::OP_PATIENT_UPDATE );
 
-        $current = (array) $this->patients->find($patientId);
-        if ($current === [] || (int) $current['clinic_id'] !== App::scope()->clinicId) {
+        $current = (array) $this->patients->find( $patient_id );
+        if ( $current === [] || (int) $current['clinic_id'] !== App::scope()->clinicId ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope is the published scope API.
             // C6: بیمار کلینیک دیگر = مثل نبودن (anti-enum)
-            throw new BookingException('CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404);
+            throw new BookingException( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
         }
 
-        $data = $this->validateForUpdate($fields, self::STAFF_EDITABLE, $patientId);
-        if ($data === []) {
-            throw new BookingException('CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است');
+        $data = $this->validateForUpdate( $fields, self::STAFF_EDITABLE, $patient_id );
+        if ( $data === [] ) {
+            throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
         }
 
         // D6 audit atomicity: staff profile write + mandatory audit in one boundary.
         $this->db->transactional(
-            function () use ( $patientId, $data, $current, $actorUserId ) {
-                $this->patients->update( $patientId, $data + [ 'updated_at' => $this->db->nowUtcSql() ] );
-                $updated = (array) $this->patients->find( $patientId );
+            function () use ( $patient_id, $data, $current, $actor_user_id ) {
+                $this->patients->update( $patient_id, $data + [ 'updated_at' => $this->db->nowUtcSql() ] );
+                $updated = (array) $this->patients->find( $patient_id );
 
                 $this->audit->log(
                     'PATIENT_UPDATED',
-                    [ 'wp_user_id' => $actorUserId, 'role' => 'staff' ],
+                    [ 'wp_user_id' => $actor_user_id, 'role' => 'staff' ],
                     'patient',
-                    $patientId,
-                    $patientId,
+                    $patient_id,
+                    $patient_id,
                     $this->diffView( $current, $data ),
                     $this->diffView( $updated, $data ),
                     [],
@@ -517,10 +517,17 @@ final class PatientService
                 );
             }
         );
-        $updated = (array) $this->patients->find($patientId);
-        $this->op->info('patient.updated', ['patient_id' => $patientId, 'actor' => $actorUserId, 'fields' => array_keys($data)]);
+        $updated = (array) $this->patients->find( $patient_id );
+        $this->op->info(
+            'patient.updated',
+            [
+                'patient_id' => $patient_id,
+                'actor'      => $actor_user_id,
+                'fields'     => array_keys( $data ),
+            ]
+        );
 
-        return $this->staffView($updated);
+        return $this->staffView( $updated );
     }
 
     // ================= Internal =================

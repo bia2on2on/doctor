@@ -89,7 +89,7 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $threw = false;
         try {
-            RoleCapabilitiesPage::applyCapabilityMatrix($input, $this->adminId);
+            RoleCapabilitiesPage::apply_capability_matrix($input, $this->adminId);
         } catch (\Throwable $e) {
             $threw = true;
         }
@@ -120,7 +120,7 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(0, $this->auditCount('ROLE_PERMISSION_CHANGED'));
 
         // Authorized retry after the fault is removed succeeds and is audited.
-        $report = RoleCapabilitiesPage::applyCapabilityMatrix($input, $this->adminId);
+        $report = RoleCapabilitiesPage::apply_capability_matrix($input, $this->adminId);
         self::assertNotEmpty($report);
         self::assertTrue(get_role(RolesAndCapabilities::ROLE_SECRETARY)->has_cap(RolesAndCapabilities::EXPORT));
         self::assertTrue(user_can($secretaryUser, RolesAndCapabilities::EXPORT));
@@ -139,7 +139,7 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $threw = false;
         try {
-            RoleCapabilitiesPage::resetRoleToTemplate(RolesAndCapabilities::ROLE_SECRETARY);
+            RoleCapabilitiesPage::reset_role_to_template(RolesAndCapabilities::ROLE_SECRETARY);
         } catch (\Throwable $e) {
             $threw = true;
         }
