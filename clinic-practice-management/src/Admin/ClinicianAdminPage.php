@@ -573,7 +573,7 @@ final class ClinicianAdminPage
 
         try {
             if ( $id > 0 ) {
-                $current       = $repo->findForClinic( $id, $clinic_id );
+                $current = $repo->findForClinic( $id, $clinic_id );
                 if ( $current === null ) {
                     self::backWithError( $id, 'خطا: پزشک در این Clinic یافت نشد.' );
                 }
@@ -617,7 +617,7 @@ final class ClinicianAdminPage
             // StaffManagementPage::upsertUser() runs on a nested SAVEPOINT inside it,
             // so a failed CLINICIAN_CREATED audit rolls the freshly created account
             // back too — no orphan account / clinician row can survive without audit.
-            $created = App::db()->transactional(
+            $created        = App::db()->transactional(
                 function () use ( $fields, $generated, $clinic_id, $repo ) {
                     $account_created = self::maybeCreateDoctorAccount( $fields, $generated, $clinic_id );
                     if ( ( $account_created['error'] ?? '' ) !== '' ) {

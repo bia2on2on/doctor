@@ -185,10 +185,10 @@ final class Settings
     {
         // F1-4 — before (مقدار مؤثر: ردیف یا Default) برای Audit تغییر مؤثر
         $before      = $this->get( $key );
-        $before_json = json_encode( $before, JSON_UNESCAPED_UNICODE );
-        $after_json  = json_encode( $value, JSON_UNESCAPED_UNICODE );
+        $before_json = wp_json_encode( $before, JSON_UNESCAPED_UNICODE );
+        $after_json  = wp_json_encode( $value, JSON_UNESCAPED_UNICODE );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published API property.
-        $clinic_id   = $this->clinicId;
+        $clinic_id = $this->clinicId;
 
         $row = $this->db->fetchRow(
             'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
@@ -205,11 +205,11 @@ final class Settings
                     $this->db->insert(
                         'cpms_settings',
                         [
-                            'clinic_id'              => $clinic_id,
-                            'key'                    => $key,
-                            'value_json'             => $after_json,
-                            'updated_by_wp_user_id'  => $updated_by,
-                            'updated_at'             => $this->db->nowUtcSql(),
+                            'clinic_id'             => $clinic_id,
+                            'key'                   => $key,
+                            'value_json'            => $after_json,
+                            'updated_by_wp_user_id' => $updated_by,
+                            'updated_at'            => $this->db->nowUtcSql(),
                         ]
                     );
                 } else {

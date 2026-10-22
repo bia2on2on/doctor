@@ -487,6 +487,12 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
             'Precondition: the service pre-check sees no duplicate before the write boundary.'
         );
         $injected = false;
+        // D6: the profile write now runs inside an atomic boundary, so a
+        // rollback of the rejected update also reverts this fixture's competing
+        // row. Evidence of the genuine DB-level collision is therefore captured
+        // inside the open transaction (the competing UPDATE's own result and an
+        // immediate in-transaction read), not from post-rollback durable state.
+        $injected_national_id = null;
 
         global $wpdb;
         $patientTable = App::db()->table('cpms_patients');
@@ -494,6 +500,7 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
         $injector = static function (string $sql) use (
             &$injector,
             &$injected,
+            &$injected_national_id,
             $wpdb,
             $patientTable,
             $competingPatient,
@@ -515,6 +522,15 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
                     if ($result !== 1) {
                         throw new \RuntimeException('Fixture competing national-ID write failed: ' . $wpdb->last_error);
                     }
+                    // In-transaction proof that the UNIQUE collision was real at
+                    // the write boundary (visible on this connection before the
+                    // service's atomic rollback reverts it).
+                    $injected_national_id = (string) $wpdb->get_var(
+                        $wpdb->prepare(
+                            'SELECT national_id FROM `' . $patientTable . '` WHERE id = %d',
+                            $competingPatient
+                        )
+                    );
                 } finally {
                     add_filter('query', $injector);
                 }
@@ -551,10 +567,19 @@ final class Phase9Slice4PatientProfileRecordSelectorRedTest extends WP_UnitTestC
             $this->auditCountForPatient($selectedPatient),
             'Rejected write must not create a successful profile-update audit.'
         );
+        // The collision was genuinely raised at the DB boundary (not the
+        // pre-check): the competing row held the target ID inside the service's
+        // own transaction, and the atomic rollback then restored it — D6 means
+        // fixture-side writes inside the boundary cannot survive either.
         self::assertSame(
             $targetNationalId,
-            (string) $this->patientRow($competingPatient)['national_id'],
+            $injected_national_id,
             'Fixture must prove the real same-Clinic UNIQUE collision occurred after the pre-check.'
+        );
+        self::assertSame(
+            '',
+            (string) $this->patientRow($competingPatient)['national_id'],
+            'The atomic boundary must roll the fixture competing write back together with the rejected update.'
         );
     }
 

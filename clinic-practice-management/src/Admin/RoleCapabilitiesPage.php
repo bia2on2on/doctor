@@ -398,6 +398,11 @@ final class RoleCapabilitiesPage
     private static function restore_effective_caps_after_rollback(): void {
         wp_cache_flush();
         wp_roles()->for_site();
+        // Explicit self-healing (idempotent by design, TP-10): reconcile the
+        // rebuilt in-memory role registry against the rolled-back durable
+        // override option, removing any capability whose add_cap survived in
+        // memory — effective permissions must equal durable state exactly.
+        RolesAndCapabilities::register();
         $current = wp_get_current_user();
         if ( $current instanceof \WP_User ) {
             $current->get_role_caps();
@@ -425,7 +430,7 @@ final class RoleCapabilitiesPage
                 function () use ( $input, $actor_wp_user_id, &$report ) {
                     foreach ( self::ROLE_PRESETS as $role ) {
                         $requested = isset( $input[ $role ] ) && is_array( $input[ $role ] ) ? $input[ $role ] : [];
-                        $before  = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                        $before    = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
                         if ( ! RolesAndCapabilities::setRoleCaps( $role, $requested ) ) {
                             continue;
                         }

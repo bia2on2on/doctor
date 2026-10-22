@@ -185,9 +185,9 @@ final class ScheduleService
         $result = $this->db->transactional(
             function () use ( $id, $fields, $actor_user_id ): array {
                 // C7-S2: بررسی اولیه مالکیت و وجود ردیف در دامنه معتبر
-                $current       = $this->requireScheduleForTrustedClinic( $id );
-                $clinician_id  = (int) $current['clinician_id'];
-                $clinic_id     = (int) $current['clinic_id'];
+                $current      = $this->requireScheduleForTrustedClinic( $id );
+                $clinician_id = (int) $current['clinician_id'];
+                $clinic_id    = (int) $current['clinic_id'];
 
                 $this->lock_organization_and_clinic_for_schedule_write( $clinic_id );
                 $this->lockClinicianForScheduleWrite( $clinician_id );

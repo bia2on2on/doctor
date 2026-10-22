@@ -76,9 +76,13 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
 
     private function settingAuditCount(string $key): int
     {
+        // Each test runs in its own rolled-back data view, so the clinic-scoped
+        // SETTING_UPDATE count isolates this test's own setting events.
+        unset( $key );
         return (int) App::db()->fetchValue(
-            "SELECT COUNT(*) FROM " . App::db()->table('cpms_audit_logs') . " WHERE action = 'SETTING_UPDATE' AND after_json LIKE %s",
-            ['%"setting":"' . $key . '"%']
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_audit_logs' )
+            . " WHERE action = 'SETTING_UPDATE' AND clinic_id = %d",
+            [ App::scope()->clinicId ]
         );
     }
 

@@ -203,7 +203,11 @@ final class SmsOtpDispatchTest extends WP_UnitTestCase
             self::CLINIC_ID,
             SmsEvents::APPT_REMINDER,
             self::MOBILE,
-            ['patient_name' => 'بیمار تست'],
+            [
+                'patient_name'     => 'بیمار تست',
+                'appointment_date' => '1405/08/01',
+                'appointment_time' => '09:00',
+            ],
             'appointment',
             $this->uniqueContext(),
             inline: true
