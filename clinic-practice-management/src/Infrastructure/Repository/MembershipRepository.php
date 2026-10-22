@@ -4,6 +4,7 @@ declare( strict_types=1 );
 
 namespace ClinicCore\Infrastructure\Repository;
 
+use ClinicCore\Application\Clinic\ClinicLifecyclePolicy;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Auth\CustomRolePolicy;
 
@@ -159,6 +160,12 @@ final class MembershipRepository {
      * @param array<string, mixed> $fields
      */
     public function insert( array $fields ): bool {
+        // Persistence backstop for the central Clinic lifecycle policy: a NEW membership
+        // is new demand, so no caller — including the first-practice bootstrap, which
+        // writes through this repository directly — can create one for a suspended
+        // operational Clinic or for a Clinic whose lifecycle evidence is unverified.
+        ClinicLifecyclePolicy::assert_accepts_new_membership( $this->db, (int) ( $fields['clinic_id'] ?? 0 ) );
+
         $role_key = (string) ( $fields['role_key'] ?? '' );
         if ( ! CustomRolePolicy::is_definable_role_key( $role_key ) ) {
             return $this->db->insert( 'cpms_clinic_memberships', $fields );
@@ -178,6 +185,12 @@ final class MembershipRepository {
      * @param array<string, mixed> $where
      */
     public function update( array $data, array $where ): int {
+        if ( array_key_exists( 'status', $data ) && (string) $data['status'] === 'active' ) {
+            // Persistence backstop: restoring a membership to 'active' is new demand for
+            // the Clinic, so it obeys the same central lifecycle policy as an insert.
+            // Suspending is never gated — revoking access must always remain possible.
+            ClinicLifecyclePolicy::assert_accepts_new_membership( $this->db, $this->clinic_id_for_write( $where ) );
+        }
         if ( ! array_key_exists( 'role_key', $data ) ) {
             return $this->db->update( 'cpms_clinic_memberships', $data, $where );
         }
@@ -206,6 +219,32 @@ final class MembershipRepository {
                 return $this->db->update( 'cpms_clinic_memberships', $data, $where );
             }
         );
+    }
+
+    /**
+     * Resolve the Clinic of a membership write for the lifecycle backstop.
+     *
+     * An explicit clinic_id or an exact membership id is required; anything else resolves
+     * to 0 and therefore fails closed inside ClinicLifecyclePolicy (no bulk selector can
+     * ever be read as a Clinic).
+     *
+     * @param array<string, mixed> $where
+     */
+    private function clinic_id_for_write( array $where ): int {
+        $clinic_id = (int) ( $where['clinic_id'] ?? 0 );
+        if ( $clinic_id > 0 ) {
+            return $clinic_id;
+        }
+
+        $membership_id = (int) ( $where['id'] ?? 0 );
+        if ( $membership_id > 0 ) {
+            $membership = $this->find_by_id( $membership_id );
+            if ( $membership !== null ) {
+                return (int) $membership['clinic_id'];
+            }
+        }
+
+        return 0;
     }
 
     /**

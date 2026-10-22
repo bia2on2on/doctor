@@ -727,7 +727,15 @@ final class StaffManagementPage
             if ( $park_wp_role ) {
                 $updated = wp_update_user( ['ID' => $user_id, 'role' => 'subscriber'] );
                 if ( is_wp_error( $updated ) ) {
-                    App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+                    try {
+                        App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+                    } catch ( \Throwable $e ) {
+                        // Compensation must never become a fatal error. The central
+                        // lifecycle policy refuses to restore participation for a Clinic
+                        // that accepts no new demand, and staying suspended is the safer
+                        // of the two outcomes - so both faults are reported.
+                        return ['error' => $updated->get_error_message() . ' / ' . $e->getMessage()];
+                    }
 
                     return ['error' => $updated->get_error_message()];
                 }
@@ -757,7 +765,14 @@ final class StaffManagementPage
             }
             // Suspension preserves role_key on the membership row itself, so
             // reactivation restores a custom assignment without any extra write.
-            App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+            try {
+                App::membership_service()->reactivate_membership( (int) $target_membership['id'] );
+            } catch ( \ClinicCore\Domain\Membership\MembershipException $e ) {
+                // Central lifecycle policy: reactivation is NEW participation, so a
+                // suspended operational Clinic (or unverified lifecycle evidence)
+                // refuses it. Nothing was written, so there is nothing to undo.
+                return ['error' => $e->getMessage()];
+            }
             delete_user_meta( $user_id, self::META_PREV_ROLE );
             if ( $restore_wp_role ) {
                 $updated = wp_update_user( ['ID' => $user_id, 'role' => $prev_role] );

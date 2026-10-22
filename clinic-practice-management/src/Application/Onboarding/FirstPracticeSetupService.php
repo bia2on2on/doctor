@@ -7,6 +7,7 @@ namespace ClinicCore\Application\Onboarding;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
+use ClinicCore\Application\Clinic\ClinicLifecyclePolicy;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -237,6 +238,13 @@ final class FirstPracticeSetupService {
 				// membership (the existing membership layer is the only membership
 				// engine). No additional management role, no WP role mutation, and
 				// no doctor professional identity is created here.
+				// Central lifecycle policy (new demand): the bootstrap membership is a NEW
+				// participation write, so a Clinic that refuses new demand cannot be claimed.
+				// Reported in this service's own non-enumerating vocabulary; the seeded first
+				// Clinic of an installation is active, so the normal flow is unaffected.
+				if ( ! ClinicLifecyclePolicy::accepts_new_membership( ClinicLifecyclePolicy::state_of( $this->db, $clinic_id ) ) ) {
+					throw FirstPracticeSetupException::not_available();
+				}
 				$membership_ok = $this->memberships->insert(
                     [
 						'clinic_id'             => $clinic_id,
@@ -465,6 +473,11 @@ final class FirstPracticeSetupService {
                     throw FirstPracticeSetupException::recovery_not_eligible();
                 }
 
+                // Central lifecycle policy (new demand): recovery writes the same NEW
+                // membership, so it obeys the same fail-closed gate as claim().
+                if ( ! ClinicLifecyclePolicy::accepts_new_membership( ClinicLifecyclePolicy::state_of( $this->db, $clinic_id ) ) ) {
+                    throw FirstPracticeSetupException::recovery_not_eligible();
+                }
                 $membership_ok = $this->memberships->insert(
                     [
                         'clinic_id'             => $clinic_id,

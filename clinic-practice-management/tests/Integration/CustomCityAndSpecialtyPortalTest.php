@@ -490,14 +490,15 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'active'        => '1',
 			)
 		);
-		self::assertTrue( $keep_care['ok'], 'and reactivate it — ' . (string) ( $keep_care['message'] ?? '' ) );
+		self::assertFalse( $keep_care['ok'], 'reactivating a membership is NEW participation, so a suspended operational Clinic refuses it' );
+		self::assertStringContainsString( 'معلق', (string) ( $keep_care['message'] ?? '' ), 'the refusal carries the lifecycle reason' );
 		self::assertSame(
-			'active',
+			'suspended',
 			(string) $db->fetchValue(
 				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE id = %d',
 				array( $membership_id )
 			),
-			'the existing legitimate membership is usable again, unchanged in identity'
+			'the refused reactivation wrote nothing - the row keeps its exact identity'
 		);
 
 		// Reactivation reopens new demand.
@@ -511,6 +512,28 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			)
 		);
 		self::assertTrue( $reactivate['ok'] );
+
+		// Reactivating the CLINIC restores the participation that the suspension refused:
+		// the same manager, the same membership row, no rewrite of its identity.
+		$restore = ManagementPortalController::dispatch(
+			$this->clinic_mgr_id,
+			'clinic_staff_status',
+			array(
+				'clinic_id'     => (string) $this->clinic_id,
+				'membership_id' => (string) $membership_id,
+				'active'        => '1',
+			)
+		);
+		self::assertTrue( $restore['ok'], 'clinic reactivation restores membership reactivation - ' . (string) ( $restore['message'] ?? '' ) );
+		self::assertSame(
+			'active',
+			(string) $db->fetchValue(
+				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE id = %d',
+				array( $membership_id )
+			),
+			'the existing legitimate membership is usable again, unchanged in identity'
+		);
+
 		$after = ManagementPortalController::dispatch(
 			$this->clinic_mgr_id,
 			'clinic_staff_enroll',

@@ -977,6 +977,12 @@ final class ManagementPortalService {
 			} else {
 				App::membership_service()->suspend_membership( $membership_id );
 			}
+		} catch ( MembershipException $e ) {
+			// Lifecycle refusals carry an operator-facing Persian reason: reactivating a
+			// membership is NEW participation, so a suspended operational Clinic - and a
+			// Clinic whose lifecycle evidence is unverified - refuses it. Suspending is
+			// never gated, so revoking access always stays possible.
+			return self::prerequisite( $e->getMessage() );
 		} catch ( \Throwable $e ) {
 			return self::failure();
 		}
