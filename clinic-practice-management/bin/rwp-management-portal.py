@@ -255,6 +255,10 @@ def main():
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="fa-IR")
+        # Sign-in happens on its own page: the portal page below must never host a
+        # wp-login/wp-admin document, otherwise late async console events from those
+        # WordPress-owned screens get mis-attributed to this plugin's surface.
+        auth_page = context.new_page()
         page = context.new_page()
 
         IGNORED_CONSOLE = ("favicon", "wp-admin", "wp-includes", "wp-login.php")
@@ -275,7 +279,8 @@ def main():
         page.on("pageerror", lambda e: console_errors.append(str(e)))
 
         stage("login")
-        check("login.settled", login(page, fixture["login"], fixture["password"]), page.url)
+        check("login.settled", login(auth_page, fixture["login"], fixture["password"]), auth_page.url)
+        auth_page.close()
 
         stage("portal.load")
         resp = page.goto(portal_url, wait_until="domcontentloaded")
