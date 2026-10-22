@@ -49,11 +49,39 @@ KASHAN = "کاشان"
 
 results = []
 console_errors = []
+# Bounded diagnostic state: which step was running and which URL the browser was on.
+# It is printed only when an exception escapes, so a failing run still names the exact
+# assertion/stage without leaking page content or credentials.
+STATE = {"stage": "start", "url": ""}
+
+
+def stage(name):
+    STATE["stage"] = name
+    print("STAGE " + name, flush=True)
 
 
 def check(name, ok, detail=""):
     results.append({"check": name, "ok": bool(ok), "detail": str(detail)[:1200]})
     print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:1200] if detail else ""), flush=True)
+
+
+def dump_results(fixture=None):
+    """Persist whatever was proven so far — also on an exception path."""
+    try:
+        payload = {
+            "fixture": {k: fixture[k] for k in ("org_id", "clinic_a", "clinic_b", "address_a")} if fixture else None,
+            "checks": results,
+            "console_errors": console_errors,
+            "stage": STATE["stage"],
+        }
+        os.makedirs(f"{OUT}/logs", exist_ok=True)
+        with open(f"{OUT}/logs/management-portal-results.json", "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        print("MP_RESULTS=" + json.dumps({"stage": STATE["stage"], "checks": len(results),
+                                          "failed": [r["check"] for r in results if not r["ok"]]},
+                                         ensure_ascii=False), flush=True)
+    except OSError as exc:  # evidence is best-effort; never mask the real failure
+        print(f"MP_RESULTS_WRITE_FAILED: {exc}", flush=True)
 
 
 def wp(*args, tolerate_failure=False, stdin_text=None):
@@ -204,11 +232,13 @@ def main():
     os.makedirs(f"{OUT}/screenshots", exist_ok=True)
     os.makedirs(f"{OUT}/logs", exist_ok=True)
 
+    stage("fixture.create")
     fixture = write_fixture("mp-portal")
     check("fixture.created", fixture["org_id"] > 0 and fixture["clinic_a"] > 0 and fixture["clinic_b"] > 0, json.dumps(fixture, ensure_ascii=False))
 
     portal_url = f"{fixture['portal_url']}{'&' if '?' in fixture['portal_url'] else '?'}cpms-org={fixture['org_id']}"
 
+    stage("browser.launch")
     with sync_playwright() as p:
         browser = p.chromium.launch()
         context = browser.new_context(viewport={"width": 1440, "height": 900}, locale="fa-IR")
@@ -227,16 +257,20 @@ def main():
         page.on("console", on_console)
         page.on("pageerror", lambda e: console_errors.append(str(e)))
 
+        stage("login")
         check("login.settled", login(page, fixture["login"], fixture["password"]), page.url)
 
+        stage("portal.load")
         resp = page.goto(portal_url, wait_until="domcontentloaded")
         page.wait_for_timeout(600)
+        STATE["url"] = page.url
         check("portal.http200", bool(resp) and resp.status == 200, resp.status if resp else "no response")
         html = page.content()
         check("portal.is_frontend_shell", 'data-cpms-management-portal="v1"' in html, page.url)
         check("portal.no_admin_chrome", 'id="wpadminbar"' not in html and "wp-admin-bar-" not in html, "no wp-admin chrome")
         page.screenshot(path=f"{OUT}/screenshots/portal-desktop.png", full_page=True)
 
+        stage("C1.script_scope")
         # C1 — the scoped offline cascade script is present on THIS surface only.
         script_srcs = page.eval_on_selector_all("script[src]", "els => els.map(e => e.getAttribute('src'))")
         check(
@@ -245,6 +279,7 @@ def main():
             script_srcs,
         )
         page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
+        STATE["url"] = page.url
         check(
             "C1.cascade_script_absent_on_other_pages",
             "cpms-management-portal.js" not in page.content(),
@@ -253,6 +288,7 @@ def main():
         page.goto(portal_url, wait_until="domcontentloaded")
         page.wait_for_timeout(400)
 
+        stage("C5C6.ids_labels")
         # C5/C6 — duplicate ids and label targeting on the real rendered page.
         dupes = page.evaluate(
             """() => {
@@ -286,6 +322,7 @@ def main():
         check("C5.repeated_clinic_forms", form_count >= 2, form_count)
         check("C5.two_clinics_visible", "Portal Clinic A" in html and "Portal Clinic B" in html, "both Clinic names rendered")
 
+        stage("C2.tehran")
         # C2 — Tehran excludes Tabriz.
         page.select_option('[data-cpms-address-geography="1"] select[data-cpms-province-select="1"]', label=TEHRAN)
         page.wait_for_timeout(200)
@@ -293,6 +330,7 @@ def main():
         check("C2.tehran_excludes_tabriz", TABRIZ not in cities, cities)
         check("C2.tehran_offers_tehran_city", TEHRAN in cities, cities[:12])
 
+        stage("C3.switch")
         # C3 — switching the province repopulates valid cities and resets the city.
         page.select_option('[data-cpms-address-geography="1"] select[data-cpms-city-select="1"]', label=TEHRAN)
         check("C3.city_selectable_before_switch", city_value(page) == TEHRAN, city_value(page))
@@ -304,6 +342,7 @@ def main():
         page.select_option('[data-cpms-address-geography="1"] select[data-cpms-city-select="1"]', label=KASHAN)
         check("C3.valid_city_selectable_after_switch", city_value(page) == KASHAN, city_value(page))
 
+        stage("C4.server_validation")
         # C4 — the server rejects a forged cross-province pair over real HTTP.
         form_selector = "form.cpms-mgmt-form"
         nonce = page.eval_on_selector(f'{form_selector} input[name="_cpms_nonce"]', "e => e.value")
@@ -334,10 +373,12 @@ def main():
         check("C4.stored_address_unchanged", stored == fixture["address_a"], {"stored": stored, "expected": fixture["address_a"]})
         check("C4.no_partial_write", TABRIZ not in stored, stored)
 
+        stage("C7.rtl_390")
         # C7 — Persian RTL at 390px, no horizontal overflow.
         page.set_viewport_size({"width": 390, "height": 844})
         page.goto(portal_url, wait_until="domcontentloaded")
         page.wait_for_timeout(600)
+        STATE["url"] = page.url
         rtl = page.evaluate("() => document.documentElement.getAttribute('dir')")
         lang = page.evaluate("() => document.documentElement.getAttribute('lang')")
         overflow = page.evaluate("() => ({sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth})")
@@ -353,6 +394,7 @@ def main():
         check("C7.address_controls_within_viewport", boxes_ok, "all address blocks inside 390px viewport")
         page.screenshot(path=f"{OUT}/screenshots/portal-390px.png", full_page=True)
 
+        stage("C8.frontend_only")
         # C8 — still the delivered Classic frontend surface (no role/admin broadening).
         page.set_viewport_size({"width": 1440, "height": 900})
         check(
@@ -366,17 +408,7 @@ def main():
 
     check("console.no_errors_on_portal", console_errors == [], console_errors[:6])
 
-    with open(f"{OUT}/logs/management-portal-results.json", "w", encoding="utf-8") as fh:
-        json.dump(
-            {
-                "fixture": {k: fixture[k] for k in ("org_id", "clinic_a", "clinic_b", "address_a")},
-                "checks": results,
-                "console_errors": console_errors,
-            },
-            fh,
-            ensure_ascii=False,
-            indent=2,
-        )
+    dump_results(fixture)
 
     failed = [r for r in results if not r["ok"]]
     print(f"\nRESULT: {len(results) - len(failed)}/{len(results)} checks passed", flush=True)
@@ -390,5 +422,16 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except Exception as exc:  # never mask the real failure
-        print(f"ERROR: {type(exc).__name__}: {exc}", flush=True)
+        message = " ".join(str(exc).split())[:600]
+        print(f"ERROR: {type(exc).__name__}: {message}", flush=True)
+        last = [f"{r['check']}={'PASS' if r['ok'] else 'FAIL'}" for r in results[-6:]]
+        print(
+            "MP_DIAG="
+            + json.dumps(
+                {"stage": STATE["stage"], "url": STATE["url"], "error": type(exc).__name__, "last": last},
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        dump_results()
         sys.exit(2)

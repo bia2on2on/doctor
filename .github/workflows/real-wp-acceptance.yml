@@ -938,7 +938,16 @@ jobs:
             python3 clinic-practice-management/bin/rwp-management-portal.py > /tmp/acc/management-portal.log 2>&1
           RC=$?
           cat /tmp/acc/management-portal.log
-          if [ "$RC" -ne 0 ]; then echo "MANAGEMENT PORTAL REGRESSION FAILED (rc=$RC)"; exit "$RC"; fi
+          if [ "$RC" -ne 0 ]; then
+            echo "MANAGEMENT PORTAL REGRESSION FAILED (rc=$RC)"
+            # Raw job logs are not always retrievable; repeat the failing assertion,
+            # the escaping exception and the bounded stage diagnostic as check
+            # annotations so the cause is visible without log/artifact access.
+            ANNOT="$(grep -E '^(FAIL |ERROR:|MP_DIAG=)' /tmp/acc/management-portal.log | head -n 8 || true)"
+            if [ -z "$ANNOT" ]; then ANNOT="$(tail -n 10 /tmp/acc/management-portal.log || true)"; fi
+            printf '%s\n' "$ANNOT" | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+            exit "$RC"
+          fi
 
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
