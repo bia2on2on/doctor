@@ -980,7 +980,7 @@ final class OrganizationClinicProvisioningService {
             return [];
         }
         $rows = $this->db->fetchAll(
-            'SELECT id, organization_id, name, slug, timezone, COALESCE(status, %s) AS status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE organization_id = %d ORDER BY status, name, id',
+            'SELECT id, organization_id, name, slug, timezone, address, phone, COALESCE(status, %s) AS status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE organization_id = %d ORDER BY status, name, id',
             ['active', $organization_id]
         );
 
@@ -992,6 +992,11 @@ final class OrganizationClinicProvisioningService {
                 'name'            => (string) $row['name'],
                 'slug'            => (string) $row['slug'],
                 'timezone'        => (string) $row['timezone'],
+                // Address/phone are configuration fields of a Clinic the actor may
+                // already read; they pre-populate the portal edit form so the
+                // province/city selectors can preserve the stored selection.
+                'address'         => (string) ( $row['address'] ?? '' ),
+                'phone'           => (string) ( $row['phone'] ?? '' ),
                 'status'          => (string) ( $row['status'] ?? 'active' ),
             ];
         }

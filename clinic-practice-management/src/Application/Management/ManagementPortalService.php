@@ -237,6 +237,8 @@ final class ManagementPortalService {
 				'name'             => (string) ( $clinic['name'] ?? '' ),
 				'slug'             => (string) ( $clinic['slug'] ?? '' ),
 				'status'           => (string) ( $clinic['status'] ?? 'active' ),
+				'address'          => (string) ( $clinic['address'] ?? '' ),
+				'phone'            => (string) ( $clinic['phone'] ?? '' ),
 				'location_count'   => $this->locations->active_count_for_clinic( $clinic_id ),
 				'manager_user_ids' => $this->clinic_manager_user_ids( $clinic_id ),
 			);

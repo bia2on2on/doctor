@@ -102,9 +102,78 @@ $cpms_mp_site_name  = (string) get_bloginfo( 'name' );
 $cpms_mp_title_full = 'پورتال مدیریت' . ( '' !== $cpms_mp_site_name ? ' — ' . $cpms_mp_site_name : '' );
 
 /**
+ * Portal form state: deterministic unique IDs per form instance (D2).
+ * Each form_open increments a counter and builds a suffix from its action
+ * plus explicit selector ids (organization_id, clinic_id, etc.). That suffix
+ * guarantees every label `for` matches exactly one control, even when the
+ * Organization overview repeats the same Clinic form for multiple Clinics.
+ */
+$cpms_mp_form_counter   = 0;
+$cpms_mp_current_suffix = '';
+$cpms_mp_current_ids    = array();
+$cpms_mp_current_action = '';
+
+/**
+ * Whether stale (failed-submission) values belong to the form currently being
+ * rendered. Checks both action and every explicit selector id, so a stale
+ * org_update_clinic for Clinic A never leaks into Clinic B's form.
+ */
+$cpms_mp_stale_matches_current = static function () use ( &$cpms_mp_stale, &$cpms_mp_stale_action, &$cpms_mp_current_action, &$cpms_mp_current_ids ): bool {
+	if ( '' === $cpms_mp_stale_action || $cpms_mp_stale_action !== $cpms_mp_current_action ) {
+		return false;
+	}
+	// The action must match and NO selector may conflict. Real submissions
+	// always carry their selectors (collect_input/preserved_fields), so a stale
+	// clinic A result never leaks into clinic B's form; a legacy/synthetic
+	// transient that omits selectors keeps the established same-action behavior.
+	foreach ( $cpms_mp_current_ids as $k => $v ) {
+		if ( isset( $cpms_mp_stale[ $k ] ) && (int) $cpms_mp_stale[ $k ] !== (int) $v ) {
+			return false;
+		}
+	}
+	return true;
+};
+
+/**
+ * Resolve the address string to feed AddressSelectorField so it pre-selects
+ * the correct province/city. Prefers stale province/city/detail when the
+ * stale matches this exact form instance; otherwise uses the persisted
+ * stored address (for edits). Keeps the offline catalog as source of truth.
+ */
+$cpms_mp_resolve_address_for_selector = static function ( string $stored_address ) use ( &$cpms_mp_stale, &$cpms_mp_stale_matches_current ): string {
+	if ( $cpms_mp_stale_matches_current() ) {
+		$stale_prov = isset( $cpms_mp_stale['address_province'] ) ? trim( (string) $cpms_mp_stale['address_province'] ) : '';
+		$stale_city = isset( $cpms_mp_stale['address_city'] ) ? trim( (string) $cpms_mp_stale['address_city'] ) : '';
+		$stale_addr = isset( $cpms_mp_stale['address'] ) ? trim( (string) $cpms_mp_stale['address'] ) : '';
+		if ( '' !== $stale_prov || '' !== $stale_city ) {
+			$parts = array();
+			if ( '' !== $stale_prov ) {
+				$parts[] = $stale_prov;
+			}
+			if ( '' !== $stale_city ) {
+				$parts[] = $stale_city;
+			}
+			if ( '' !== $stale_addr ) {
+				$parts[] = $stale_addr;
+			} elseif ( '' !== $stale_prov && '' === $stale_city ) {
+				return $stale_prov;
+			}
+			if ( array() !== $parts ) {
+				return implode( '، ', $parts );
+			}
+		}
+		if ( '' !== $stale_addr ) {
+			return $stale_addr;
+		}
+	}
+	return $stored_address;
+};
+
+/**
  * Render one portal form control (label + input) with escaped values.
  * On a failed submission the value the user typed (user-scoped, one-shot
- * transient) is restored instead of wiping the form.
+ * transient) is restored instead of wiping the form, but only when the
+ * stale's selectors match this exact form instance.
  *
  * @param string $name  Field name.
  * @param string $label Visible label.
@@ -112,30 +181,61 @@ $cpms_mp_title_full = 'پورتال مدیریت' . ( '' !== $cpms_mp_site_name 
  * @param bool   $required Whether the field is required.
  * @param string $type  Input type.
  */
-$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ) use ( &$cpms_mp_stale, &$cpms_mp_stale_action, &$cpms_mp_current_action ): void {
-	if ( '' !== $cpms_mp_stale_action && $cpms_mp_stale_action === $cpms_mp_current_action && isset( $cpms_mp_stale[ $name ] ) && is_string( $cpms_mp_stale[ $name ] ) ) {
+$cpms_mp_field = static function ( string $name, string $label, string $value = '', bool $required = false, string $type = 'text' ) use ( &$cpms_mp_stale, &$cpms_mp_stale_action, &$cpms_mp_current_action, &$cpms_mp_current_suffix, &$cpms_mp_current_ids, &$cpms_mp_stale_matches_current ): void {
+	if ( $cpms_mp_stale_matches_current() && isset( $cpms_mp_stale[ $name ] ) && is_string( $cpms_mp_stale[ $name ] ) ) {
 		$value = $cpms_mp_stale[ $name ];
 	}
-	echo '<p class="cpms-mgmt-field"><label for="cpms-mgmt-' . esc_attr( $name ) . '">' . esc_html( $label ) . '</label>';
-	echo '<input id="cpms-mgmt-' . esc_attr( $name ) . '" name="' . esc_attr( $name ) . '" type="' . esc_attr( $type ) . '" value="' . esc_attr( $value ) . '"';
+	$id = 'cpms-mgmt-' . $cpms_mp_current_suffix . '-' . $name;
+	echo '<p class="cpms-mgmt-field"><label for="' . esc_attr( $id ) . '">' . esc_html( $label ) . '</label>';
+	echo '<input id="' . esc_attr( $id ) . '" name="' . esc_attr( $name ) . '" type="' . esc_attr( $type ) . '" value="' . esc_attr( $value ) . '"';
 	echo $required ? ' required' : '';
 	echo '></p>';
 };
 
 /**
  * Open a portal form with its action, nonce and explicit selectors.
+ * Generates deterministic unique IDs for labels/controls and nonce so no
+ * two forms share an HTML ID, even with multiple held Clinics on one page.
  *
  * @param string $action Portal action key.
  * @param array<string,int> $ids  Explicit selector ids (never trusted as authority).
  */
-$cpms_mp_form_open = static function ( string $action, array $ids = array() ) use ( &$cpms_mp_current_action ): void {
+$cpms_mp_form_open = static function ( string $action, array $ids = array() ) use ( &$cpms_mp_current_action, &$cpms_mp_current_suffix, &$cpms_mp_current_ids, &$cpms_mp_form_counter ): void {
 	$cpms_mp_current_action = $action;
+	$cpms_mp_current_ids    = $ids;
+	++$cpms_mp_form_counter;
+	$parts = array( $action );
+	foreach ( array( 'organization_id', 'clinic_id', 'location_id', 'membership_id', 'target_user_id' ) as $k ) {
+		if ( isset( $ids[ $k ] ) ) {
+			$parts[] = $k . '-' . (int) $ids[ $k ];
+		}
+	}
+	$parts[]                = 'f' . (int) $cpms_mp_form_counter;
+	$cpms_mp_current_suffix = implode( '-', $parts );
 	echo '<form class="cpms-mgmt-form" method="post" action="' . esc_url( ManagementPortalShell::portal_url() ) . '">';
 	echo '<input type="hidden" name="cpms_action" value="' . esc_attr( $action ) . '">';
-	wp_nonce_field( ManagementPortalController::NONCE_ACTION, '_cpms_nonce', true, true );
+	// D2: one nonce per form, unique deterministic ID. Name stays `_cpms_nonce`
+	// so ManagementPortalController::nonce_is_valid() is unchanged.
+	$nonce    = wp_create_nonce( ManagementPortalController::NONCE_ACTION );
+	$nonce_id = 'cpms-mgmt-nonce-' . $cpms_mp_current_suffix;
+	echo '<input type="hidden" id="' . esc_attr( $nonce_id ) . '" name="_cpms_nonce" value="' . esc_attr( $nonce ) . '">';
+	wp_referer_field();
 	foreach ( $ids as $name => $value ) {
 		echo '<input type="hidden" name="' . esc_attr( (string) $name ) . '" value="' . esc_attr( (string) (int) $value ) . '">';
 	}
+};
+
+/**
+ * Render province/city selectors for the current form with a deterministic
+ * unique prefix (D2) and with stale preservation (D1). Must be called only
+ * immediately after a cpms_mp_form_open so the suffix matches that form.
+ *
+ * @param string $stored_address Persisted address for this entity (or '' for create).
+ */
+$cpms_mp_render_address_selector = static function ( string $stored_address ) use ( &$cpms_mp_current_suffix, &$cpms_mp_resolve_address_for_selector ): void {
+	$addr_for_selector = $cpms_mp_resolve_address_for_selector( $stored_address );
+	$prefix            = 'cpms-mgmt-' . $cpms_mp_current_suffix . '-addr';
+	AddressSelectorField::render( $addr_for_selector, $prefix, 'address_province', 'address_city', $prefix );
 };
 
 ?><!DOCTYPE html>
@@ -145,6 +245,22 @@ $cpms_mp_form_open = static function ( string $action, array $ids = array() ) us
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title><?php echo esc_html( $cpms_mp_title_full ); ?></title>
+<?php
+// D1 — the offline province→city cascade is a registered, scoped handle (same
+// pattern as the delivered Staff/Patient portal shells). This document owns
+// <head> and never calls wp_head(), so the queued handle is printed here.
+ManagementPortalShell::register_handles();
+// Rendering THIS template already proves the surface: enqueue directly instead
+// of re-deriving is_page() inside the document (keeps the asset strictly scoped
+// and testable), and never print it twice.
+if ( ! wp_script_is( ManagementPortalShell::JS_HANDLE, 'enqueued' ) ) {
+	wp_enqueue_script( ManagementPortalShell::JS_HANDLE );
+}
+ob_start();
+wp_print_scripts( array( ManagementPortalShell::JS_HANDLE ) );
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- script tags from wp_print_scripts (registered local handle only).
+echo (string) ob_get_clean();
+?>
 <style>
 :root { --cpms-primary: #0f5c56; --cpms-bg: #f3f6f8; --cpms-text: #1b2830; --cpms-muted: #5c6b76; --cpms-border: #e1e8ee; --cpms-danger: #a3282f; --cpms-ok: #1d6f42; }
 * { box-sizing: border-box; }
@@ -212,8 +328,15 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 			<p class="cpms-mgmt-meta">با حساب وردپرس خود وارد شوید. دسترسی هر بخش فقط از عضویت سازمانی/درمانگاهی فعال و مجوزهای CPMS همان سازمان/درمانگاه می‌آید.</p>
 			<form class="cpms-mgmt-form" method="post" action="<?php echo esc_url( $cpms_mp_url ); ?>">
 				<input type="hidden" name="cpms_action" value="login">
-				<?php wp_nonce_field( ManagementPortalController::LOGIN_NONCE_ACTION, '_cpms_nonce', true, true ); ?>
 				<?php
+				// D2: the sign-in form gets its own deterministic suffix so its control
+				// ids and nonce id can never collide with an in-page portal form.
+				$cpms_mp_current_action = 'login';
+				$cpms_mp_current_ids    = array();
+				$cpms_mp_current_suffix = 'login';
+				$cpms_login_nonce       = wp_create_nonce( ManagementPortalController::LOGIN_NONCE_ACTION );
+				echo '<input type="hidden" id="cpms-mgmt-nonce-login" name="_cpms_nonce" value="' . esc_attr( $cpms_login_nonce ) . '">';
+				wp_referer_field();
 				$cpms_mp_field( 'log', 'نام کاربری یا ایمیل' );
 				$cpms_mp_field( 'pwd', 'گذرواژه', '', true, 'password' );
 				?>
@@ -328,7 +451,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 						$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA (مثال: Asia/Tehran)' );
 						$cpms_mp_field( 'location_name', 'نام شعبهٔ اصلی' );
-						AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+						$cpms_mp_render_address_selector( '' );
 						$cpms_mp_field( 'address', 'نشانی' );
 						$cpms_mp_field( 'phone', 'تلفن' );
 						?>
@@ -398,7 +521,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<?php $cpms_mp_form_open( 'org_facility_site', array( 'organization_id' => $cpms_mp_org_view['organization']['id'] ) ); ?>
 							<?php
 							$cpms_mp_field( 'label', 'نام ساختمان', '', true );
-							AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+							$cpms_mp_render_address_selector( '' );
 							$cpms_mp_field( 'address', 'نشانی' );
 							?>
 							<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ثبت ساختمان</button>
@@ -615,9 +738,9 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 							<?php $cpms_mp_form_open( 'org_update_clinic', array( 'organization_id' => $cpms_mp_org_view['organization']['id'], 'clinic_id' => $cpms_mp_row['id'] ) ); ?>
 								<?php
 								$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_row['name'] );
-								AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
-								$cpms_mp_field( 'address', 'نشانی' );
-								$cpms_mp_field( 'phone', 'تلفن' );
+								$cpms_mp_render_address_selector( (string) ( $cpms_mp_row['address'] ?? '' ) );
+								$cpms_mp_field( 'address', 'نشانی', (string) ( $cpms_mp_row['address'] ?? '' ) );
+								$cpms_mp_field( 'phone', 'تلفن', (string) ( $cpms_mp_row['phone'] ?? '' ) );
 								?>
 								<button class="cpms-mgmt-btn cpms-mgmt-btn--small" type="submit">ذخیرهٔ پروفایل</button>
 							</form>
@@ -724,7 +847,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 				<?php $cpms_mp_form_open( 'clinic_update_profile', array( 'clinic_id' => $cpms_mp_c['id'] ) ); ?>
 					<?php
 					$cpms_mp_field( 'cpms_entity_name', 'نام درمانگاه', $cpms_mp_c['name'] );
-					AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+					$cpms_mp_render_address_selector( (string) ( $cpms_mp_c['address'] ?? '' ) );
 					$cpms_mp_field( 'address', 'نشانی', $cpms_mp_c['address'] );
 					$cpms_mp_field( 'phone', 'تلفن', $cpms_mp_c['phone'] );
 					?>
@@ -761,7 +884,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					$cpms_mp_field( 'cpms_entity_name', 'نام شعبه', '' );
 					$cpms_mp_field( 'slug', 'شناسهٔ یکتا (لاتین)', '' );
 					$cpms_mp_field( 'timezone', 'منطقهٔ زمانی IANA', $cpms_mp_c['timezone'] );
-					AddressSelectorField::render( '', 'cpms-mgmt-address', 'address_province', 'address_city', 'cpms-mgmt-address' );
+					$cpms_mp_render_address_selector( '' );
 					$cpms_mp_field( 'address', 'نشانی' );
 					$cpms_mp_field( 'phone', 'تلفن' );
 					?>

@@ -43,6 +43,9 @@ final class ManagementPortalShell {
 	/** Read-only selector of the Clinic surface. */
 	public const CLINIC_PARAM = 'cpms-clinic';
 
+	/** Asset handle for the management portal JS (province→city cascading). */
+	public const JS_HANDLE = 'cpms-management-portal';
+
 	/**
 	 * Register WordPress hooks.
 	 */
@@ -52,6 +55,37 @@ final class ManagementPortalShell {
 		add_filter( 'template_include', array( self::class, 'filter_template_include' ), 99 );
 		add_filter( 'show_admin_bar', array( self::class, 'hide_admin_bar_on_portal' ), 20 );
 		add_action( 'template_redirect', array( self::class, 'send_private_cache_headers' ), 0 );
+		add_action( 'wp_enqueue_scripts', array( self::class, 'register_handles' ), 5 );
+		add_action( 'wp_enqueue_scripts', array( self::class, 'enqueue_for_portal' ), 20 );
+	}
+
+	/**
+	 * Register management portal assets (offline catalog JS). No external calls.
+	 */
+	public static function register_handles(): void {
+		$base = defined( 'CPMS_PLUGIN_URL' ) ? rtrim( (string) CPMS_PLUGIN_URL, '/' ) : '';
+		if ( '' === $base ) {
+			return;
+		}
+		$ver = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : '1.0.0';
+		wp_register_script(
+			self::JS_HANDLE,
+			$base . '/assets/js/cpms-management-portal.js',
+			array(),
+			$ver,
+			true
+		);
+	}
+
+	/**
+	 * Enqueue management portal assets only on the portal request.
+	 */
+	public static function enqueue_for_portal(): void {
+		if ( ! self::is_portal_request() ) {
+			return;
+		}
+		self::register_handles();
+		wp_enqueue_script( self::JS_HANDLE );
 	}
 
 	/**
