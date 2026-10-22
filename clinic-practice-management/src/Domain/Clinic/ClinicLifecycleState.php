@@ -50,9 +50,9 @@ final class ClinicLifecycleState {
     public const UNVERIFIED = 'unverified';
 
     /** The lifecycle record vocabulary, in the writers' own constants. */
-    public const ACTION_PROVISIONED  = 'ORGANIZATION_CLINIC_PROVISIONED';
-    public const ACTION_REACTIVATED  = 'CLINIC_REACTIVATED';
-    public const ACTION_DEACTIVATED  = 'CLINIC_DEACTIVATED';
+    public const ACTION_PROVISIONED = 'ORGANIZATION_CLINIC_PROVISIONED';
+    public const ACTION_REACTIVATED = 'CLINIC_REACTIVATED';
+    public const ACTION_DEACTIVATED = 'CLINIC_DEACTIVATED';
 
     private const STATUS_ACTIVE    = 'active';
     private const STATUS_SUSPENDED = 'suspended';

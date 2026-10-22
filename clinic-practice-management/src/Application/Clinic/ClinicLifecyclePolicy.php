@@ -33,10 +33,10 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
  */
 final class ClinicLifecyclePolicy {
 
-    public const STATE_ACTIVE                 = ClinicLifecycleState::ACTIVE;
-    public const STATE_HELD                   = ClinicLifecycleState::HELD;
-    public const STATE_SUSPENDED_OPERATIONAL  = ClinicLifecycleState::SUSPENDED_OPERATIONAL;
-    public const STATE_UNVERIFIED             = ClinicLifecycleState::UNVERIFIED;
+    public const STATE_ACTIVE                = ClinicLifecycleState::ACTIVE;
+    public const STATE_HELD                  = ClinicLifecycleState::HELD;
+    public const STATE_SUSPENDED_OPERATIONAL = ClinicLifecycleState::SUSPENDED_OPERATIONAL;
+    public const STATE_UNVERIFIED            = ClinicLifecycleState::UNVERIFIED;
 
     private const STATUS_SUSPENDED = 'suspended';
     private const RESOURCE_CLINIC  = 'clinic';
