@@ -373,28 +373,28 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 	// Day-2 authorization + lifecycle
 	// ------------------------------------------------------------------
 	/**
-	 * Lifecycle pin: a Clinic is provisioned HELD (status 'suspended') and is staffed by
-	 * its designated Clinic Manager BEFORE the Organization Manager activates it, so
-	 * 'suspended' cannot be read as "penalty suspension" while cpms_clinics has no
-	 * separate held column. Evidence: OrganizationClinicProvisioningService.php ("Created
-	 * held: the row never exists with status 'active'"), docs/agent-log.md (provision_held
-	 * inserts the row 'suspended'), bin/rwp-facility-matrix-journey.py ("every plan Clinic
-	 * is created HELD (suspended) before activation").
+	 * Lifecycle pin for Clinic suspension.
 	 *
-	 * Asserted here: a held Clinic is staffable; explicit suspension never revokes,
-	 * rewrites or hides an existing legitimate membership and is not a lockout for ongoing
-	 * care; reactivation restores new demand. Whether a *penalty* suspension should block
-	 * NEW enrollment is an open product decision — it needs a state that distinguishes
-	 * "held pending activation" from "suspended after activation" — and is deliberately not
-	 * encoded as a blanket status check.
+	 * `org_create_clinic` provisions an ACTIVE Clinic: OrganizationClinicProvisioningService
+	 * sets `status='suspended'` only under `if ( $held )`, i.e. on the facility-plan path
+	 * (`provision_held`). That held-before-activation lifecycle — where the designated Clinic
+	 * Manager staffs the Clinic and the Organization Manager then activates it atomically — is
+	 * pinned by the facility-matrix lane (bin/rwp-facility-matrix-journey.py:595-596, "every
+	 * plan Clinic is created HELD (suspended) before activation"), not by this fixture.
+	 *
+	 * Asserted here: suspension never revokes, rewrites or hides an existing legitimate
+	 * membership, is not a lockout for ongoing care, and reactivation restores new demand.
+	 * Whether a *penalty* suspension should also block NEW enrollment is an open product
+	 * decision — cpms_clinics has no held column, so "held pending activation" and "suspended
+	 * after activation" are indistinguishable — and is deliberately not encoded either way.
 	 */
-	public function testHeldClinicIsStaffedBeforeActivationAndSuspensionPreservesExistingMembership(): void {
+	public function testSuspensionNeverRevokesAnExistingMembershipAndReactivationRestoresNewDemand(): void {
 		$db = App::db();
 
 		self::assertSame(
-			'suspended',
+			'active',
 			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) ),
-			'a freshly provisioned Clinic is HELD (suspended) before activation'
+			'fixture: org_create_clinic provisions an ACTIVE Clinic (only provision_held inserts suspended)'
 		);
 
 		$doctor_id = $this->enroll_doctor( 'day2-keep-' . bin2hex( random_bytes( 3 ) ) . '@example.com' );
@@ -404,22 +404,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
 				array( $this->clinic_id, $doctor_id )
 			),
-			'the documented lifecycle staffs a held Clinic before activation'
-		);
-
-		$activate = ManagementPortalController::dispatch(
-			$this->org_mgr_id,
-			'org_clinic_status',
-			array(
-				'organization_id' => (string) $this->org_id,
-				'clinic_id'       => (string) $this->clinic_id,
-				'active'          => '1',
-			)
-		);
-		self::assertTrue( $activate['ok'], 'the Organization Manager activates the held Clinic' );
-		self::assertSame(
-			'active',
-			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) )
+			'the designated Clinic Manager enrolls a Doctor with the real cpms_doctor role key'
 		);
 
 		$suspend = ManagementPortalController::dispatch(
@@ -431,7 +416,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'active'          => '0',
 			)
 		);
-		self::assertTrue( $suspend['ok'], 'fixture: the Clinic is suspended after activation' );
+		self::assertTrue( $suspend['ok'], 'fixture: the Organization Manager suspends the Clinic' );
 		self::assertSame(
 			'suspended',
 			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) )
