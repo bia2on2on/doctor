@@ -234,7 +234,12 @@ def main():
 
     stage("fixture.create")
     fixture = write_fixture("mp-portal")
-    check("fixture.created", fixture["org_id"] > 0 and fixture["clinic_a"] > 0 and fixture["clinic_b"] > 0, json.dumps(fixture, ensure_ascii=False))
+    check(
+        "fixture.created",
+        fixture["org_id"] > 0 and fixture["clinic_a"] > 0 and fixture["clinic_b"] > 0,
+        # ids/url only — the one-shot acceptance password must never reach evidence.
+        json.dumps({k: fixture[k] for k in ("org_id", "login", "clinic_a", "clinic_b", "portal_url")}, ensure_ascii=False),
+    )
 
     portal_url = f"{fixture['portal_url']}{'&' if '?' in fixture['portal_url'] else '?'}cpms-org={fixture['org_id']}"
 

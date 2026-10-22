@@ -1238,6 +1238,10 @@ jobs:
             echo '```'
             cat /tmp/acc/woocommerce-10.3.8-admin-access-source.txt 2>/dev/null || echo '(source inspection not reached)'
             echo '```'
+            echo '- Management Portal browser regression (real Chromium; last 60 lines, empty if the step never ran):'
+            echo '```'
+            tail -60 /tmp/acc/management-portal.log 2>/dev/null || echo '(management-portal.log missing)'
+            echo '```'
             echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
           } > /tmp/acc/evidence-comment.md
           gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'
