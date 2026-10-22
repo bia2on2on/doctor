@@ -67,7 +67,8 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
     public function testAuditFailureRollsBackMultiRoleDurableAndEffectiveCapabilities(): void
     {
         // Full matrix mirroring the admin form: untouched roles keep their
-        // templates; secretary gains EXPORT and manager gains REPORT_READ.
+        // templates; secretary gains EXPORT and manager gains PAYMENT_CREATE
+        // (both absent from the role templates, so each is a real change).
         $input = [
             RolesAndCapabilities::ROLE_SECRETARY => array_merge(
                 RolesAndCapabilities::SECRETARY_CAPS,
@@ -77,7 +78,7 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
             RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::ACCOUNTANT_CAPS,
             RolesAndCapabilities::ROLE_MANAGER => array_merge(
                 RolesAndCapabilities::MANAGER_CAPS,
-                [RolesAndCapabilities::REPORT_READ]
+                [RolesAndCapabilities::PAYMENT_CREATE]
             ),
         ];
 
@@ -109,19 +110,19 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
             'the durable wp_user_roles registry must not retain the rolled-back grant'
         );
         self::assertArrayNotHasKey(
-            RolesAndCapabilities::REPORT_READ,
+            RolesAndCapabilities::PAYMENT_CREATE,
             $durable_roles[RolesAndCapabilities::ROLE_MANAGER]['capabilities'] ?? [],
             'the durable wp_user_roles registry must not retain the rolled-back grant'
         );
         self::assertFalse(get_role(RolesAndCapabilities::ROLE_SECRETARY)->has_cap(RolesAndCapabilities::EXPORT));
-        self::assertFalse(get_role(RolesAndCapabilities::ROLE_MANAGER)->has_cap(RolesAndCapabilities::REPORT_READ));
+        self::assertFalse(get_role(RolesAndCapabilities::ROLE_MANAGER)->has_cap(RolesAndCapabilities::PAYMENT_CREATE));
 
         // Effective permissions: fresh user capability resolution must match the
         // rolled-back durable state (cache cannot retain the granted cap).
         wp_cache_flush();
         wp_roles()->for_site();
         self::assertFalse(user_can($secretaryUser, RolesAndCapabilities::EXPORT), 'effective secretary permission must roll back');
-        self::assertFalse(user_can($managerUser, RolesAndCapabilities::REPORT_READ), 'effective manager permission must roll back');
+        self::assertFalse(user_can($managerUser, RolesAndCapabilities::PAYMENT_CREATE), 'effective manager permission must roll back');
         // An untouched role processed earlier in the same all-or-nothing request
         // must also be byte-identical to its template (no partial multi-role write).
         foreach ($doctorCapsBefore as $cap) {
@@ -136,7 +137,7 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         self::assertNotEmpty($report);
         self::assertTrue(get_role(RolesAndCapabilities::ROLE_SECRETARY)->has_cap(RolesAndCapabilities::EXPORT));
         self::assertTrue(user_can($secretaryUser, RolesAndCapabilities::EXPORT));
-        self::assertTrue(get_role(RolesAndCapabilities::ROLE_MANAGER)->has_cap(RolesAndCapabilities::REPORT_READ));
+        self::assertTrue(get_role(RolesAndCapabilities::ROLE_MANAGER)->has_cap(RolesAndCapabilities::PAYMENT_CREATE));
         self::assertSame(2, $this->auditCount('ROLE_PERMISSION_CHANGED'));
     }
 
