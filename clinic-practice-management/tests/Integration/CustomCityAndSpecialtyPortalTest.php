@@ -321,8 +321,9 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			array(
 				'clinic_id'        => (string) $this->clinic_id,
 				'full_name'        => 'دکتر سایری',
-				'specialty'        => '__other__',
-				'specialty_custom' => 'فلوشیپ ناباروری',
+				// One submitted field, exactly like the rendered form: the catalogue
+				// <select> is a nameless picker, so a manual label is posted as-is.
+				'specialty' => 'فلوشیپ ناباروری',
 			)
 		);
 		self::assertTrue( $custom['ok'], (string) ( $custom['message'] ?? '' ) );
@@ -339,7 +340,10 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 		$html = $this->render_portal( $this->clinic_id );
 		self::assertStringContainsString( 'فلوشیپ ناباروری', $html );
 		self::assertStringContainsString( 'data-cpms-specialty-field="1"', $html );
-		self::assertStringContainsString( 'name="specialty_custom"', $html );
+		// The wire contract every acceptance harness depends on (facility matrix,
+		// delegated journey and hospital journey all fill input[name="specialty"]).
+		self::assertStringContainsString( 'name="specialty"', $html );
+		self::assertStringNotContainsString( 'name="specialty_custom"', $html );
 		self::assertStringContainsString( '/assets/js/cpms-catalog-fields.js', $html );
 	}
 
@@ -350,8 +354,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 			array(
 				'clinic_id'        => (string) $this->clinic_id,
 				'full_name'        => 'دکتر نامعتبر',
-				'specialty'        => '__other__',
-				'specialty_custom' => str_repeat( 'ت', 160 ),
+				'specialty' => str_repeat( 'ت', 160 ),
 			)
 		);
 		self::assertFalse( $result['ok'] );
@@ -368,15 +371,54 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 	// ------------------------------------------------------------------
 	// Day-2 authorization + lifecycle
 	// ------------------------------------------------------------------
-	public function testSuspendedClinicRejectsNewEnrollmentButPreservesExistingMembership(): void {
+	/**
+	 * Lifecycle pin: a Clinic is provisioned HELD (status 'suspended') and is staffed by
+	 * its designated Clinic Manager BEFORE the Organization Manager activates it, so
+	 * 'suspended' cannot be read as "penalty suspension" while cpms_clinics has no
+	 * separate held column. Evidence: OrganizationClinicProvisioningService.php ("Created
+	 * held: the row never exists with status 'active'"), docs/agent-log.md (provision_held
+	 * inserts the row 'suspended'), bin/rwp-facility-matrix-journey.py ("every plan Clinic
+	 * is created HELD (suspended) before activation").
+	 *
+	 * Asserted here: a held Clinic is staffable; explicit suspension never revokes,
+	 * rewrites or hides an existing legitimate membership and is not a lockout for ongoing
+	 * care; reactivation restores new demand. Whether a *penalty* suspension should block
+	 * NEW enrollment is an open product decision — it needs a state that distinguishes
+	 * "held pending activation" from "suspended after activation" — and is deliberately not
+	 * encoded as a blanket status check.
+	 */
+	public function testHeldClinicIsStaffedBeforeActivationAndSuspensionPreservesExistingMembership(): void {
+		$db = App::db();
+
+		self::assertSame(
+			'suspended',
+			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) ),
+			'a freshly provisioned Clinic is HELD (suspended) before activation'
+		);
+
 		$doctor_id = $this->enroll_doctor( 'day2-keep-' . bin2hex( random_bytes( 3 ) ) . '@example.com' );
-		$db        = App::db();
 		self::assertSame(
 			'active',
 			(string) $db->fetchValue(
 				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
 				array( $this->clinic_id, $doctor_id )
+			),
+			'the documented lifecycle staffs a held Clinic before activation'
+		);
+
+		$activate = ManagementPortalController::dispatch(
+			$this->org_mgr_id,
+			'org_clinic_status',
+			array(
+				'organization_id' => (string) $this->org_id,
+				'clinic_id'       => (string) $this->clinic_id,
+				'active'          => '1',
 			)
+		);
+		self::assertTrue( $activate['ok'], 'the Organization Manager activates the held Clinic' );
+		self::assertSame(
+			'active',
+			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) )
 		);
 
 		$suspend = ManagementPortalController::dispatch(
@@ -388,44 +430,45 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'active'          => '0',
 			)
 		);
-		self::assertTrue( $suspend['ok'], 'fixture: Clinic is suspended' );
+		self::assertTrue( $suspend['ok'], 'fixture: the Clinic is suspended after activation' );
 		self::assertSame(
 			'suspended',
 			(string) $db->fetchValue( 'SELECT status FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = %d', array( $this->clinic_id ) )
 		);
 
-		// NEW enrollment is refused while suspended.
-		$refused = ManagementPortalController::dispatch(
-			$this->clinic_mgr_id,
-			'clinic_staff_enroll',
-			array(
-				'clinic_id'  => (string) $this->clinic_id,
-				'identifier' => 'day2-late-refused@example.com',
-				'role_key'   => 'secretary',
-			)
-		);
-		self::assertFalse( $refused['ok'], 'a suspended Clinic accepts no new staff enrollment' );
-		self::assertSame(
-			1,
-			(int) $db->fetchValue(
-				'SELECT COUNT(*) FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id <> %d',
-				array( $this->clinic_id, $this->clinic_mgr_id )
-			),
-			'exactly the pre-existing Doctor membership remains — no new staff row'
-		);
-		self::assertFalse(
-			(bool) get_user_by( 'email', 'day2-late-refused@example.com' ),
-			'a refused enrollment never provisions an account'
-		);
-
-		// Ongoing care is preserved: the existing membership stays ACTIVE and readable,
-		// and the Clinic Manager keeps its own authority (suspension is not a lockout).
+		// Existing legitimate memberships survive suspension untouched: nothing is
+		// rewritten, revoked or added, and ongoing care stays manageable.
 		self::assertSame(
 			'active',
 			(string) $db->fetchValue(
 				'SELECT status FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
 				array( $this->clinic_id, $doctor_id )
+			),
+			'suspension never rewrites an existing membership'
+		);
+		self::assertSame(
+			2,
+			(int) $db->fetchValue(
+				'SELECT COUNT(*) FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d',
+				array( $this->clinic_id )
+			),
+			'exactly the Clinic Manager and the Doctor participate — nothing added, nothing removed'
+		);
+		$keep_care = ManagementPortalController::dispatch(
+			$this->clinic_mgr_id,
+			'clinic_staff_status',
+			array(
+				'clinic_id'     => (string) $this->clinic_id,
+				'membership_id' => (string) $db->fetchValue(
+					'SELECT id FROM ' . $db->table( 'cpms_clinic_memberships' ) . ' WHERE clinic_id = %d AND wp_user_id = %d',
+					array( $this->clinic_id, $doctor_id )
+				),
+				'active'        => '1',
 			)
+		);
+		self::assertTrue(
+			$keep_care['ok'],
+			'a suspended Clinic is not a lockout: ongoing care stays manageable — ' . (string) ( $keep_care['message'] ?? '' )
 		);
 
 		// Reactivation reopens new demand.
@@ -448,7 +491,7 @@ final class CustomCityAndSpecialtyPortalTest extends WP_UnitTestCase {
 				'role_key'   => 'accountant',
 			)
 		);
-		self::assertTrue( $after['ok'], 'an active Clinic enrolls an Accountant again — ' . ( $after['message'] ?? '' ) );
+		self::assertTrue( $after['ok'], 'an active Clinic enrolls an Accountant again — ' . (string) ( $after['message'] ?? '' ) );
 	}
 
 	public function testActorWithoutAuthorityInAnotherClinicIsDeniedAndWritesNothing(): void {

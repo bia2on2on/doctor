@@ -78,7 +78,7 @@ final class CpmsAssets
         // Offline catalogue fields (searchable province/city/specialty + "Other / سایر"):
         // progressive enhancement only, local file, no network. Every submission is
         // re-validated server-side by IranProvinceCityCatalog / MedicalSpecialtyCatalog.
-        wp_enqueue_script('cpms-catalog-fields', $base . '/assets/js/cpms-catalog-fields.js', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', true);
+        wp_enqueue_script( 'cpms-catalog-fields', $base . '/assets/js/cpms-catalog-fields.js', [], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', true );
 
         // Phase 4 — Persian (Jalali) date UX: a local, network-free, read-only
         // Jalali-equivalent companion next to every real calendar-date input

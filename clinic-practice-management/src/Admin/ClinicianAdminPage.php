@@ -307,8 +307,8 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinic_id" value="<?php echo (int) self::$active_clinic_id; ?>">
         <table class="form-table" role="presentation">
             <tr><th>نام پزشک *</th><td><input type="text" name="full_name" required class="regular-text"></td></tr>
-            <!-- Searchable offline specialty catalogue + validated "Other / سایر"; the
-                 authority is saveClinician() on the server, never this control. -->
+            <!-- Searchable offline specialty catalogue + validated "Other / سایر";
+                the authority is saveClinician() on the server, never this control. -->
             <tr><th>تخصص</th><td><?php SpecialtySelectorField::render( '', 'cpms-clinician-new-spec' ); ?></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
@@ -400,8 +400,8 @@ final class ClinicianAdminPage
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
         <table class="form-table" role="presentation">
             <tr><th>نام پزشک *</th><td><input type="text" name="full_name" required value="<?php echo esc_attr((string) $clinician['full_name']); ?>" class="regular-text"></td></tr>
-            <!-- Re-displays exactly what is stored: a canonical label re-selects, a
-                 user-defined label re-opens "Other / سایر" with its text preserved. -->
+            <!-- Re-displays exactly what is stored: a canonical label re-selects,
+                a user-defined label re-opens "Other / سایر" with its text preserved. -->
             <tr><th>تخصص</th><td><?php SpecialtySelectorField::render( (string) ( $clinician['specialty'] ?? '' ), 'cpms-clinician-edit-spec' ); ?></td></tr>
             <tr><th>اتاق</th><td><input type="text" name="room" value="<?php echo esc_attr((string) ($clinician['room'] ?? '')); ?>" class="regular-text"></td></tr>
             <tr><th>کاربر وردپرس</th><td>
@@ -563,11 +563,11 @@ final class ClinicianAdminPage
         // JavaScript filtering is never trusted (VARCHAR(190) column stays safe).
         try {
             $fields['specialty'] = MedicalSpecialtyCatalog::resolve_submitted(
-                isset($_POST['specialty']) ? sanitize_text_field(wp_unslash((string) $_POST['specialty'])) : null,
+                isset( $_POST['specialty'] ) ? sanitize_text_field( wp_unslash( (string) $_POST['specialty'] ) ) : null, // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified in authorizeAdminWrite()
                 null
             );
-        } catch (\InvalidArgumentException $e) {
-            self::backWithError($id, 'خطا: ' . $e->getMessage());
+        } catch ( \InvalidArgumentException $e ) {
+            self::backWithError( $id, 'خطا: ' . $e->getMessage() );
         }
 
         try {
