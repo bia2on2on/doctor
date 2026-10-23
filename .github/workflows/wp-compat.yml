@@ -13,8 +13,16 @@ name: WordPress Compatibility (previous supported majors)
 #
 # چرا زمان‌بندی‌شده و نه per-PR:
 #   افزودنِ این دو نسخه به هر PR تعداد چک‌ها را سه‌برابر می‌کند (هزینه/زمان/نویز)
-#   بدون آن‌که چیزی به شواهدِ دقیقِ همان SHA اضافه شود؛ پس روی `schedule` و
-#   `workflow_dispatch` می‌ماند و **هیچ** چکِ per-PR اضافه نمی‌کند.
+#   بدون آن‌که چیزی به شواهدِ دقیقِ همان SHA اضافه شود؛ ماتریس کامل (۷.۰/۶.۹/۷.۱)
+#   روی `schedule` و `workflow_dispatch` می‌ماند.
+#
+# D7 (ممیزی مستقل): لِینِ زمان‌اجرای WP 7.1 روی PHP 8.5 نباید فقط schedule-only
+# بماند، پس یک تریگر `pull_request` اضافه شده که در آن **فقط همان یک لِین** اجرا
+# می‌شود (ماتریس پایین به‌صورت شرطی تک‌عضوی می‌شود). این کوچک‌ترین تغییر پایدار
+# است: دقیقاً +۱ چک per-PR (نام: `WP 7.1 on PHP 8.5`)، بدون انفجار ماتریس و
+# بدون حذف لِین‌های ۸.۱–۸.۴ در ci.yml. شواهد تست‌لیبِ PHPUnit روی 8.5 همچنان از
+# Unit matrix در ci.yml می‌آید؛ این لِین boot/install/migration/probe واقعی روی
+# WP رسمی را پوشش می‌دهد (محدودیت PHPUnit 9.6 در بالای همین فایل مستند است).
 #
 # آنچه سنجیده می‌شود (کفِ اعلام‌شده = ۶.۹):
 #   ۱. آخرین وصلهٔ همان نسخهٔ اصلی از منبعِ رسمی WordPress.org حل می‌شود
@@ -34,6 +42,15 @@ on:
     # هفتگی: دوشنبه ۰۳:۱۷ UTC (کم‌ازدحام)
     - cron: '17 3 * * 1'
   workflow_dispatch:
+  # D7: لِینِ زمان‌اجرا (WP 7.1 + PHP 8.5) باید روی همان SHA هر PR واقعاً اجرا
+  # شود، نه فقط به‌صورت هفتگی. فیلتر path تمرکز را روی کد افزونه و خود workflow
+  # نگه می‌دارد؛ تغییرات صرفاً مستندسازی این لِین را بیدار نمی‌کند.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/wp-compat.yml'
+      - 'clinic-practice-management/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -54,18 +71,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # دو نسخهٔ اصلیِ پیشینِ بازهٔ پشتیبانی‌شده (نسخهٔ اصلی روی لِین‌های اصلی سنجیده می‌شود).
-          - wp_major: '7.0'
-            php: '8.2'
-          - wp_major: '6.9'
-            php: '8.2'
-          # لِینِ جدید بدون انفجار ماتریس: آخرین وصلهٔ پایدار WP 7.1 (از منبع
-          # رسمی wordpress.org resolve می‌شود) روی جدیدترین شاخهٔ پایدار PHP 8.5.
-          # WP 6.9+ رسماً PHP 8.5 را «کاملاً پشتیبانی» می‌کند (make.wordpress.org،
-          # حذف برچسب beta در مه ۲۰۲۶)؛ WP 7.1 با 8.5 کاملاً سازگار است.
-          - wp_major: '7.1'
-            php: '8.5'
+        # schedule/dispatch → هر سه لِین (7.0/8.2، 6.9/8.2، 7.1/8.5).
+        # pull_request → فقط لِین زمان‌اجرای WP 7.1 روی PHP 8.5 (+۱ چک per-PR).
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"wp_major":"7.1","php":"8.5"}]') || fromJSON('[{"wp_major":"7.0","php":"8.2"},{"wp_major":"6.9","php":"8.2"},{"wp_major":"7.1","php":"8.5"}]') }}
     services:
       mysql:
         image: mysql:8

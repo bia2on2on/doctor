@@ -252,6 +252,70 @@ final class SmsOtpDispatchTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
 
     /**
+     * D7 — OtpService must never report retry_enqueued=true when dispatch
+     * fails: OTP delivery is inline-only, the plaintext code lives in this
+     * request's memory and no recoverable queue retry can ever run. A
+     * structural failure (here a real MySQL 1054 on the sms message INSERT,
+     * which SmsService cannot catch internally) must surface as an honest
+     * sms_sent=false / retry_enqueued=false while the challenge token stays
+     * durable for a fresh user-initiated request.
+     */
+    public function testOtpServiceNeverReportsFalseRetryEnqueuedOnStructuralDispatchFailure(): void
+    {
+        $mobile = '0912' . random_int(4000000, 4999999);
+
+        $fault = static function ($query) {
+            $sql = (string) $query;
+            if (preg_match('/\A\s*INSERT\s+INTO\s+(\S+)/i', $sql, $m) === 1
+                && str_contains($m[1], 'cpms_sms_messages')) {
+                return 'INSERT INTO ' . $m[1] . ' (`cpms_fault_injection_no_such_column`) VALUES (1)';
+            }
+
+            return $query;
+        };
+        global $wpdb;
+        $suppressed = (bool) $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 5);
+
+        try {
+            $result = App::otpService()->request($mobile, 'login', null, null, self::CLINIC_ID);
+        } finally {
+            remove_filter('query', $fault, 5);
+            $wpdb->suppress_errors($suppressed);
+        }
+
+        self::assertFalse($result['sms_sent'], 'the failed dispatch must not be reported as sent');
+        self::assertFalse($result['retry_enqueued'], 'no retry can ever be enqueued for an inline OTP — the flag must stay honest');
+        self::assertSame(
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE mobile = %s',
+                [$mobile]
+            ),
+            'the durable challenge token survives the dispatch failure for an authorized fresh request'
+        );
+        self::assertSame(
+            0,
+            (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_sms_messages')),
+            'the faulted message row must not exist — and therefore no plaintext OTP can be at rest'
+        );
+        self::assertGreaterThan(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s',
+                ['OTP_SENT_FAIL']
+            ),
+            'the structural failure must be audited as OTP_SENT_FAIL'
+        );
+
+        // Authorized fresh request (fault removed): normal honest success flags.
+        $mobileOk = '0912' . random_int(5000000, 5999999);
+        $ok = App::otpService()->request($mobileOk, 'login', null, null, self::CLINIC_ID);
+        self::assertTrue($ok['sms_sent']);
+        self::assertFalse($ok['retry_enqueued'], 'a successful inline OTP send never enqueues a retry either');
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function fetchRow(int $messageId): array

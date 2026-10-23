@@ -12,6 +12,7 @@ use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Membership\MembershipException;
+use ClinicCore\Infrastructure\Cache\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
@@ -428,20 +429,22 @@ final class StaffManagementPage
             return ['error' => 'کاربر یافت نشد یا قابل مدیریت نیست.', 'display_name' => ''];
         }
 
-        // retrieve_password از مسیر امن وردپرس: صحت کاربر را می‌سنجد، توکن تولید و ایمیل
-        // «بازیابی/تنظیم رمز» می‌فرستد. توکن فقط در ایمیل و DB موقت وردپرس است.
-        //
-        // D6 audit atomicity: the reset-key write and the mandatory audit event
-        // share one boundary. If the audit cannot be persisted, the boundary
-        // rolls back the WordPress reset-key metadata (fail closed); the
-        // already-sent email link then cannot complete an un-audited reset.
+        // D6/D7 ordering: the reset-key metadata (a user-meta write) and the
+        // mandatory audit event share one boundary. The notification email is a
+        // non-transactional side effect, so it is dispatched ONLY after the
+        // durable commit succeeds — a rolled-back key never reaches an inbox and
+        // a failed audit cannot leave a working un-audited reset link behind.
+        $reset_key = '';
         try {
             App::db()->transactional(
-                function () use ( $user, $user_id, $updated_by, $authorization ) {
-                    $res = retrieve_password( (string) $user->user_login );
-                    if ( is_wp_error( $res ) ) {
-                        throw new \RuntimeException( $res->get_error_message() );
+                function () use ( $user, $user_id, $updated_by, $authorization, &$reset_key ) {
+                    // Core key writer WITHOUT the email side effect that
+                    // retrieve_password() bundles in.
+                    $key = get_password_reset_key( $user );
+                    if ( is_wp_error( $key ) ) {
+                        throw new \RuntimeException( $key->get_error_message() );
                     }
+                    $reset_key = (string) $key;
 
                     App::audit()->log(
                         'STAFF_PASSWORD_RESET_INITIATED',
@@ -460,10 +463,42 @@ final class StaffManagementPage
                 }
             );
         } catch ( \Throwable $e ) {
+            // The boundary rolled the reset-key metadata back; no email was sent.
+            UserCacheRollback::invalidate( [ [ 'id' => $user_id ] ] );
             return ['error' => $e->getMessage(), 'display_name' => ''];
         }
 
+        // Post-commit side effect: the exact core notification, built from the
+        // same pluggable helper WordPress itself uses (filters preserved).
+        if ( ! self::sendPasswordResetEmail( $user, $reset_key ) ) {
+            // Key and audit are already durable; report the delivery failure
+            // honestly instead of a false success. The single-use key expires on
+            // WordPress' normal reset-window schedule.
+            return [
+                'error'        => 'ایمیل بازنشانی رمز ارسال نشد؛ لطفاً دوباره تلاش کنید.',
+                'display_name' => '',
+            ];
+        }
+
         return ['error' => '', 'display_name' => (string) $user->display_name];
+    }
+
+    /**
+     * Build and dispatch the core WordPress password-reset notification for an
+     * already-persisted reset key. Runs strictly outside any transaction.
+     */
+    private static function sendPasswordResetEmail( \WP_User $user, string $reset_key ): bool { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- mirrors WordPress core naming.
+        $switched_locale = switch_to_user_locale( $user->ID );
+        try {
+            $email = retrieve_password_notification_email( $reset_key, (string) $user->user_login, $user );
+            $sent  = wp_mail( $email['to'], $email['subject'], $email['message'], $email['headers'] );
+        } finally {
+            if ( $switched_locale ) {
+                restore_previous_locale();
+            }
+        }
+
+        return (bool) $sent;
     }
 
     /**
@@ -604,7 +639,23 @@ final class StaffManagementPage
                     }
                 );
             } catch ( \Throwable $e ) {
-                // The boundary already rolled the WordPress user and membership back.
+                // The boundary already rolled the WordPress user and membership
+                // back (to the SAVEPOINT when nested). WordPress' object cache —
+                // including persistent Redis/Memcached backends that survive the
+                // request — may still hold the ghost identity. Evict exactly the
+                // WP-owned keys for this descriptor after the rollback, never a
+                // global wp_cache_flush(); tolerate a vanished id.
+                if ( $user_id > 0 ) {
+                    UserCacheRollback::invalidate(
+                        [
+                            [
+                                'id'    => $user_id,
+                                'login' => $username,
+                                'email' => $email,
+                            ],
+                        ]
+                    );
+                }
                 return [ 'error' => 'عضویت کاربر در Clinic ایجاد نشد.', 'generated' => '', 'user_id' => 0 ];
             }
             if ( $create_result !== null ) {
@@ -672,6 +723,17 @@ final class StaffManagementPage
                     }
                 );
             } catch ( \Throwable $e ) {
+                // Rollback restored the pre-update row; the cache may still hold
+                // the new email key and rewritten users/user_meta entries, so
+                // evict the WP-owned keys (login is unchanged on this path).
+                UserCacheRollback::invalidate(
+                    [
+                        [
+                            'id'    => $user_id,
+                            'email' => $email,
+                        ],
+                    ]
+                );
                 return [
                     'error'     => 'عملیات به‌روزرسانی کاربر کامل نشد؛ هیچ تغییری ثبت نشد.',
                     'generated' => '',
@@ -852,6 +914,10 @@ final class StaffManagementPage
                     }
                 );
             } catch ( \Throwable $e ) {
+                // Rollback restored membership/meta/role; evict the WP caches
+                // that wp_update_user() and update_user_meta() rewrote so no
+                // stale subscriber privilege can survive in a persistent cache.
+                UserCacheRollback::invalidate( [ [ 'id' => $user_id ] ] );
                 return ['error' => $e->getMessage()];
             }
         } else {
@@ -909,8 +975,12 @@ final class StaffManagementPage
                 // Central lifecycle policy: reactivation is NEW participation, so a
                 // suspended operational Clinic (or unverified lifecycle evidence)
                 // refuses it. The boundary rolled back; nothing was written.
+                UserCacheRollback::invalidate( [ [ 'id' => $user_id ] ] );
                 return ['error' => $e->getMessage()];
             } catch ( \Throwable $e ) {
+                // Rollback restored the suspended state; evict the rewritten
+                // users/user_meta cache keys so no stale restored role survives.
+                UserCacheRollback::invalidate( [ [ 'id' => $user_id ] ] );
                 return ['error' => $e->getMessage()];
             }
         }

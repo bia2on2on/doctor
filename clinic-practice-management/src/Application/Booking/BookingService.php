@@ -620,7 +620,8 @@ final class BookingService
                         'slot_id'   => (int) $slot['id'],
                         'slot_date' => $slot_date,
                         'slot_time' => $slot_time,
-                    ]
+                    ],
+                    (int) $slot['clinic_id']
                 );
 
                 return $hold_id;
@@ -768,7 +769,7 @@ final class BookingService
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
-            ]);
+            ], (int) $hold['clinic_id']);
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
         }
 
@@ -973,7 +974,8 @@ final class BookingService
                             [
                                 'auto'   => 'booking_confirm',
                                 'mobile' => MobileValidator::mask( $mobile ),
-                            ]
+                            ],
+                            $hold_clinic_id
                         );
                     }
                     $this->audit(
@@ -987,7 +989,8 @@ final class BookingService
                         $confirmed_view,
                         [
                             'mobile' => MobileValidator::mask( $mobile ),
-                        ]
+                        ],
+                        $hold_clinic_id
                     );
 
                     return [
@@ -1233,7 +1236,8 @@ final class BookingService
                             null,
                             [
 								'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
-							]
+							],
+                            (int) $appt['clinic_id']
                         );
                         throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
                     }
@@ -1392,7 +1396,8 @@ final class BookingService
                             'from_appointment_id' => $appointment_id,
                             'from_date'           => (string) $appt['slot_date'],
                             'from_time'           => (string) $appt['slot_time'],
-                        ]
+                        ],
+                        (int) $appt['clinic_id']
                     );
 
                     return [$appt, $new_appt_id, $new_slot];
@@ -1587,7 +1592,8 @@ final class BookingService
                         $appt_id,
                         $patient_id,
                         null,
-                        $staff_view
+                        $staff_view,
+                        (int) $slot['clinic_id']
                     );
 
                     return [
@@ -1678,7 +1684,8 @@ final class BookingService
                 (int) $appt['patient_id'],
                 [ 'status' => (string) $appt['status'] ],
                 [ 'status' => $to_state ],
-                [ 'reason' => $trimmed ]
+                [ 'reason' => $trimmed ],
+                (int) $appt['clinic_id']
             );
 
             return [$appt, $toState];
@@ -1738,7 +1745,7 @@ final class BookingService
             if ($actor === 'patient' && !$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-                ]);
+                ], (int) $appt['clinic_id']);
                 throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
             }
 
@@ -1789,7 +1796,8 @@ final class BookingService
                 $appointment_id,
                 (int) $appt['patient_id'],
                 [ 'status' => (string) $appt['status'] ],
-                [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ]
+                [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ],
+                (int) $appt['clinic_id']
             );
 
             return [$appt, $toState, $slotId];
@@ -2807,8 +2815,12 @@ final class BookingService
         ?int $patientId,
         ?array $before,
         ?array $after,
-        array $meta = []
+        array $meta = [],
+        ?int $clinicId = null
     ): void {
+        // Explicit trusted Clinic attribution: booking flows include public
+        // patient paths, so the Clinic comes from the durable slot/hold/appt
+        // row — never ambient request scope. NULL stays NULL (no invented id).
         $this->audit->log(
             $action,
             ['wp_user_id' => $wpUserId, 'role' => $role],
@@ -2817,7 +2829,9 @@ final class BookingService
             $patientId,
             $before,
             $after,
-            $meta
+            $meta,
+            $clinicId,
+            true
         );
     }
 

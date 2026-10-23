@@ -19,12 +19,13 @@ use WP_UnitTestCase;
  * Clinic (clinic_id = 1). Cross-patient authorization stays enforced before
  * any protected read.
  *
- * Note (documented boundary in MedicalFileService::store): the physical object
- * is written to LocalFileStorage BEFORE the database boundary, so a rolled-back
- * metadata row can leave an unreferenced storage object — the same orphan class
- * as any disk-write-then-DB-failure path. The security invariant guarded here is
- * that no metadata row can exist without its audit; physical garbage collection
- * is a separate operational concern.
+ * D7 update: the physical object is still written to LocalFileStorage BEFORE
+ * the database boundary, but a rolled-back metadata row no longer leaks an
+ * unreferenced orphan — MedicalFileService catches the boundary failure and
+ * deletes exactly the one object produced by its own store() call (root-guarded
+ * LocalFileStorage::delete), never any unrelated file. testUploadAuditFailureDeletesOnlyTheOrphanPhysicalFile
+ * pins that contract; the metadata/audit atomicity invariants below are
+ * unchanged.
  */
 final class MedicalFileAuditAtomicityTest extends WP_UnitTestCase
 {
@@ -223,9 +224,73 @@ final class MedicalFileAuditAtomicityTest extends WP_UnitTestCase
         self::assertIsArray($denial, 'the cross-patient denial must leave an audit trail');
     }
 
+    /**
+     * D7 — a failed boundary must not leak the physical object that
+     * LocalFileStorage wrote before the transaction opened.
+     */
+    public function testUploadAuditFailureDeletesOnlyTheOrphanPhysicalFile(): void
+    {
+        // Unrelated pre-existing object inside the same storage root: it must
+        // survive — the cleanup may delete only the failed upload's own object.
+        $sentinelRelative = 'sentinel/sentinel-keep.bin';
+        $sentinelAbsolute = $this->storagePath . '/' . $sentinelRelative;
+        mkdir(dirname($sentinelAbsolute), 0750, true);
+        file_put_contents($sentinelAbsolute, 'unrelated-tenant-content');
+
+        $before = $this->storageFiles();
+        self::assertContains($sentinelRelative, $before);
+
+        $depthBefore = $this->savepointDepth();
+        $this->failAuditInserts();
+        $threw = false;
+        try {
+            App::medicalFileService()->upload(
+                $this->secretaryUserId,
+                $this->makeUploadedFile('orphan.pdf', $this->pdfContent()),
+                $this->patientAId,
+                null,
+                'document',
+                'patient_visible'
+            );
+        } catch (\Throwable $e) {
+            $threw = true;
+        }
+        $this->restoreAuditInserts();
+
+        self::assertTrue($threw, 'the audit failure must propagate');
+        self::assertSame(0, $this->tableCount('cpms_medical_attachments'), 'no metadata row may survive');
+        self::assertSame(0, $this->auditCount('FILE_UPLOADED'));
+        self::assertSame($depthBefore, $this->savepointDepth(), 'SAVEPOINT depth must be restored');
+        self::assertSame($before, $this->storageFiles(), 'the orphan object is removed and nothing else changes');
+        self::assertFileExists($sentinelAbsolute, 'unrelated storage objects must never be deleted');
+    }
+
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /**
+     * @return list<string> sorted storage-relative file paths under the root
+     */
+    private function storageFiles(): array
+    {
+        $out = [];
+        $root = realpath($this->storagePath);
+        if ($root === false) {
+            return [];
+        }
+        $it = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($this->storagePath, \FilesystemIterator::SKIP_DOTS)
+        );
+        foreach ($it as $f) {
+            if ($f->isFile()) {
+                $out[] = ltrim(str_replace('\\', '/', substr($f->getPathname(), strlen($root))), '/');
+            }
+        }
+        sort($out);
+
+        return $out;
+    }
 
     /**
      * @return array{name: string, tmp_name: string, size: int, error: int, type: string}

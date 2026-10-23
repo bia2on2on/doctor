@@ -121,7 +121,9 @@ final class HandwritingService
                 (int) $doc['id'],
                 (int) $doc['patient_id'],
                 null,
-                [ 'visit_id' => $visit_id, 'page_count' => count( $pages ), 'title' => $doc['title'] ]
+                [ 'visit_id' => $visit_id, 'page_count' => count( $pages ), 'title' => $doc['title'] ],
+                [],
+                (int) $doc['clinic_id']
             );
 
             return $doc;
@@ -204,7 +206,9 @@ final class HandwritingService
                 (int) $row['id'],
                 (int) $doc['patient_id'],
                 null,
-                [ 'document_id' => $document_id, 'page_index' => $index ]
+                [ 'document_id' => $document_id, 'page_index' => $index ],
+                [],
+                (int) $doc['clinic_id']
             );
 
             return $row;
@@ -362,7 +366,8 @@ final class HandwritingService
                     'client_revision' => $clientRevision,
                     'server_revision' => $serverRevision,
                     'reason' => 'revision_mismatch',
-                ]
+                ],
+                (int) $doc['clinic_id']
             );
 
             throw HandwritingException::of(
@@ -422,7 +427,8 @@ final class HandwritingService
                     'saved_by'        => $source,
                     'stroke_count'    => count( $strokes ),
                     'conflict_reason' => isset( $body['conflict_reason'] ) ? mb_substr( (string) $body['conflict_reason'], 0, 190 ) : null,
-                ]
+                ],
+                (int) $doc['clinic_id']
             );
         };
 
@@ -722,7 +728,8 @@ final class HandwritingService
                 null,
                 null,
                 null,
-                ['reason' => 'invalid_clinic_identifiers', 'scope' => $scope]
+                ['reason' => 'invalid_clinic_identifiers', 'scope' => $scope],
+                $trustedClinicId > 0 ? $trustedClinicId : null
             );
 
             throw HandwritingException::of('CLINIC_NOT_FOUND', 'سند/صفحه یافت نشد', 404);
@@ -736,7 +743,8 @@ final class HandwritingService
                 null,
                 null,
                 null,
-                ['reason' => 'cross_clinic_access', 'scope' => $scope, 'trusted_clinic_id' => $trustedClinicId, 'object_clinic_id' => $objectClinicId]
+                ['reason' => 'cross_clinic_access', 'scope' => $scope, 'trusted_clinic_id' => $trustedClinicId, 'object_clinic_id' => $objectClinicId],
+                $trustedClinicId
             );
 
             throw HandwritingException::of('CLINIC_NOT_FOUND', 'سند/صفحه یافت نشد', 404);
@@ -760,7 +768,8 @@ final class HandwritingService
                 null,
                 null,
                 null,
-                ['reason' => 'scoped_authorization_failed', 'scope' => $scope, 'auth_code' => $code, 'permission' => $permission]
+                ['reason' => 'scoped_authorization_failed', 'scope' => $scope, 'auth_code' => $code, 'permission' => $permission],
+                $trustedClinicId
             );
 
             throw HandwritingException::of('CLINIC_PERMISSION_DENIED', $msg, $http);
@@ -794,7 +803,8 @@ final class HandwritingService
                 (int) $visit['patient_id'],
                 null,
                 null,
-                ['reason' => 'not_own_visit', 'scope' => $scope]
+                ['reason' => 'not_own_visit', 'scope' => $scope],
+                (int) $visit['clinic_id']
             );
 
             throw HandwritingException::of('CLINIC_NOT_FOUND', 'این ویزیت به حساب شما متصل نیست', 404);

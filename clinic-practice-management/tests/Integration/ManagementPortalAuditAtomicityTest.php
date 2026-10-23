@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Tests\Support\ObjectCacheDeleteRecorder;
 use WP_UnitTestCase;
 
 /**
@@ -46,12 +47,17 @@ final class ManagementPortalAuditAtomicityTest extends WP_UnitTestCase
 
     private bool $previousSuppression = false;
 
+    private ObjectCacheDeleteRecorder $cache;
+
     protected function setUp(): void
     {
         parent::setUp();
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
+
+        // D7: record production cache eviction directly; no test-side flushes.
+        $this->cache = ObjectCacheDeleteRecorder::install();
 
         global $wpdb;
         $orgId = (int) $wpdb->get_var('SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics LIMIT 1'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
@@ -77,6 +83,7 @@ final class ManagementPortalAuditAtomicityTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->restoreAuditInserts();
+        $this->cache->restore();
         App::resetScope();
         parent::tearDown();
     }
@@ -203,12 +210,19 @@ final class ManagementPortalAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $response = $this->portal()->enroll_staff($this->managerUserId, $this->clinicId, $email, RolesAndCapabilities::ROLE_ACCOUNTANT);
         $this->restoreAuditInserts();
-        // The DB rollback removed the subscriber; flush WordPress' in-memory
-        // user cache so the following reads reflect durable state (as a new
-        // process after the failed request would observe it).
-        wp_cache_flush();
+        // D7: production cache rollback for the provisioned subscriber —
+        // narrow WP-owned key eviction, never a global wp_cache_flush().
+        self::assertSame(0, $this->cache->flushCount(), 'rollback must never global-flush the object cache');
+        self::assertContains($email, $this->cache->deletedKeysForGroup('useremail'), 'provisioned email cache key evicted after rollback');
+        self::assertNotEmpty($this->cache->deletedKeysForGroup('userlogins'), 'provisioned login cache key evicted after rollback');
+        self::assertNotEmpty($this->cache->deletedKeysForGroup('users'), 'users group entry evicted after rollback');
+        foreach ($this->cache->deletedKeysForGroup('users') as $evictedId) {
+            self::assertTrue($this->cache->deleted($evictedId, 'user_meta'), 'matching user_meta key evicted after rollback');
+        }
 
         self::assertFalse($response['ok'], 'enrollment must fail closed when its audit cannot be persisted');
+        // Resolves false WITHOUT any test-side flush: production invalidation
+        // plus the durable rollback agree the ghost subscriber does not exist.
         self::assertFalse(get_user_by('email', $email), 'the provisioned WordPress subscriber must be rolled back too');
         self::assertSame(2, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',

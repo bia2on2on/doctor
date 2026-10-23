@@ -9,6 +9,7 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
+use ClinicCore\Tests\Support\ObjectCacheDeleteRecorder;
 use WP_UnitTestCase;
 
 /**
@@ -37,6 +38,8 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
 
     private bool $previousSuppression = false;
 
+    private ?ObjectCacheDeleteRecorder $recorder = null;
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -49,6 +52,7 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->restoreAuditInserts();
+        $this->recorder?->restore();
         App::replaceExplicitScope($this->previousScope);
         parent::tearDown();
     }
@@ -88,6 +92,11 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
 
         $depth_before = $this->savepointDepth();
 
+        // Record production cache eviction during the rollback (delegates to
+        // the real cache; nothing about production behavior is altered).
+        $recorder = ObjectCacheDeleteRecorder::install();
+        $this->recorder = $recorder;
+
         $this->failAuditInserts();
         $threw = false;
         try {
@@ -96,14 +105,26 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
             $threw = true;
         }
         $this->restoreAuditInserts();
-        // The rolled-back wp_insert_user undoes the InnoDB row via SAVEPOINT,
-        // but WordPress' in-memory user cache still holds the provisioned
-        // identity (login + email). Without a flush the authorized retry trips
-        // wp_insert_user's cache-backed existing_user_login/existing_user_email
-        // checks. Same harness-hygiene pattern as
-        // StaffManagementAuditAtomicityTest; production rollback paths end the
-        // request instead of retrying in-process.
-        wp_cache_flush();
+
+        // D7 — production cache rollback evidence (no test-side flush, which
+        // the independent auditor rejected as it masks stale ghost identities):
+        // UserCacheRollback must evict exactly the WP-owned user cache keys
+        // after the confirmed ROLLBACK and must never global-flush the cache.
+        $loginKeys = $recorder->deletedKeysForGroup('userlogins');
+        $emailKeys = $recorder->deletedKeysForGroup('useremail');
+        self::assertSame(0, $recorder->flushCount(), 'production rollback must never call wp_cache_flush()');
+        self::assertNotEmpty($loginKeys, 'the provisioned login slug key must be evicted after rollback');
+        self::assertContains($email, $emailKeys, 'the provisioned email key must be evicted after rollback');
+        $userCacheIds = $recorder->deletedKeysForGroup('users');
+        self::assertNotEmpty($userCacheIds, 'the users group entry for the ghost identity must be evicted');
+        foreach ($userCacheIds as $evictedId) {
+            self::assertTrue($recorder->deleted($evictedId, 'user_meta'), 'the matching user_meta key must be evicted too');
+        }
+        // End-to-end evidence WITHOUT any flush: the ghost is unresolvable
+        // through WordPress' normal cache-backed lookup paths.
+        self::assertFalse(get_user_by('email', $email), 'ghost identity must not resolve by email after rollback');
+        self::assertFalse(get_user_by('login', $loginKeys[0]), 'ghost identity must not resolve by login after rollback');
+        $recorder->restore();
 
         self::assertTrue($threw, 'a failed mandatory OTP_VERIFY_OK audit must propagate, never report false success');
         self::assertNull($this->tokenConsumedAt(), 'the single-use consume must roll back — the code stays valid');

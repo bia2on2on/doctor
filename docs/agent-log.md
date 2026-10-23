@@ -1829,3 +1829,21 @@ partial-matrix fixture; (3) WPCS spacing/alignment findings across five
 sources; (4) stale WP in-memory user cache after SAVEPOINT rollback breaking
 the OTP authorized-retry assertion (harness-only fix, production request model
 unaffected). PR remains Draft/OPEN; not merged, no main push, no release.
+
+### [2026-10-23 UTC] — D7 second-auditor BLOCK remediation, wave 1 (PR #262, branch arena/3c1a79e3-doctor)
+
+- **مبنای شروع:** remote PR head `0f75e48d042be6f1052216a68f918876059e2034` (29/29 green در run قبلی)؛ sandbox دوباره روی base `18b17be` کلون شده بود و کل پچ‌ست D6 + کار D7 به‌صورت uncommitted در working tree بود. آشتی‌دهی با plumbing: `git fetch` (سر ریموت عیناً همان SHA)، مقایسهٔ بایت‌به‌بایت همهٔ فایل‌های dirty/untracked با FETCH_HEAD — فایل‌های دست‌نخوردهٔ D6 بایت‌به‌بایت identical، تست‌های D7 برابر ریموت + ویرایش‌های عمدی، و هیچ خط ریموت‌تنهایی جز بلوک‌های جایگزین‌شده وجود نداشت.
+- **دامنه و تغییرات (production):**
+  - `Infrastructure/Cache/UserCacheRollback.php` (جدید): ابزار تولیدیِ حذف هدفمند کش کاربر وردپرس پس از rollback واقعی — فقط گروه‌های users/user_meta/userlogins/useremail، تحمل ID محوشده، no-op بدون runtime وردپرس، بدون `wp_cache_flush()` سراسری.
+  - `OtpService`: try/catch حول مرز verify با invalidate پس از rollback؛ descriptor provisioning با مرجع؛ `retry_enqueued` کاذب اصلاح شد (همیشه false در catch؛ OTP صف retry ندارد).
+  - `StaffManagementPage`: cache rollback در catchهای create/update/deactivate/activate و مسیر reset؛ ایمیل reset حالا فقط پس از commit (`get_password_reset_key` داخل مرز، `wp_mail` با `retrieve_password_notification_email` بعد از commit).
+  - `ManagementPortalService`: rollback کش در enroll_staff (descriptor با مرجع از resolve_or_provision_subscriber)؛ حذف سه audit تکراری اثبات‌شده (LOCATION_CREATED/LOCATION_UPDATED/SCHEDULE_CREATED بیرونی که سرویس‌های درونی همان‌ها را با clinic_id صریح می‌نوشتند).
+  - `ClinicianAdminPage`: حذف exit/redirect داخل closure از طریق `ClinicianRedirectException` ساخت‌یافته؛ redirect پایان‌دهنده فقط بعد از rollback؛ try/cach تازه برای toggle؛ cache rollback برای حساب provision‌شده.
+  - `VisitService`: audit اجباری دیگر بلعیده نمی‌شود (انتشار + rollback)؛ `auditBestEffort` فقط برای denial؛ processNoShows هر آیتم مرز مستقل با continue در catch (کرون نمی‌میرد).
+  - `ClinicProfileService`: audit CLINIC_PROFILE_UPDATED داخل مرز (دیگر best-effort بعد از تراکنش نیست).
+  - `MedicalFileService`: حذف فیزیکیِ فقط همان فایل یتیم در catch پس از rollback (ریشه‌محافظ LocalFileStorage)؛ فایل بی‌ارتباط دست‌نخورده.
+  - attribution صریح clinic_id (با suppress_scope_fallback در OTP) در Booking/Clinical/Handwriting/MedicalFile/Otp/Visit/Profile — حدود ۳۵ نقطه.
+- **تست‌ها:** ۴ سوئیت جدید (UserCacheRollback، Visit/ClinicProfile atomicity، MultiClinic attribution، ClinicianAdmin atomicity، StaffPasswordResetOrdering) + بازطراحی ۳ سوئیت قبلی با `ObjectCacheDeleteRecorder` (ضبط تولیدیِ حذف کلیدها به‌جای flush تست‌محور) + تست false-retry در SmsOtpDispatchTest و تست یتیم MedicalFile. Redis/Memcached واقعی در CI نیست → NOT RUN با افشا.
+- **CI:** wp-compat.yml تریگر `pull_request` گرفت با ماتریس شرطی تک‌لِین (WP 7.1/PHP 8.5؛ +۱ چک per-PR)؛ schedule هر سه لِین را نگه می‌دارد. لِین هنوز روی SHA جدید اجرا نشده → NOT RUN.
+- **اعتبارسنجی:** runtime محلی PHP/MySQL موجود نیست؛ توازن ساختاری ۳۴ فایل PHP با چکر brace/کوتیشن سفارشی (Node/Python) پاک؛ یک باگ کوتیشن اضافه در VisitService حین همین بررسی کشف و رفع شد. WPCS/PHPStan/PHPUnit فقط روی CI و پس از push قابل راستی‌آزمایی‌اند.
+- **تحویل و موارد باز:** commit از طریق plumbing (read-tree/write-tree/commit-tree/update-ref با parent=0f75e48، بدون reset/clean/rebase/force) و سپس push فست‌فوروارد؛ PR Draft می‌ماند. verdict نهایی منوط به چک‌های سبز SHA دقیق جدید.

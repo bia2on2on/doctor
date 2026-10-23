@@ -54,6 +54,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Domain\Membership\MembershipException;
+use ClinicCore\Infrastructure\Cache\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;
@@ -636,23 +637,16 @@ final class ManagementPortalService {
 			// event share one transaction boundary (nested service/audit calls
 			// run on SAVEPOINTs). A failed audit INSERT rolls the Location
 			// creation back, so no mutation can survive without its audit row.
+			//
+			// D7: the LOCATION_CREATED event is written exactly once, by
+			// LocationService::createLocation() inside its own boundary (with
+			// the full after-state and the explicit trusted clinic_id). The
+			// portal's former second LOCATION_CREATED row was a proven duplicate
+			// of the same mutation and has been removed; this outer boundary is
+			// retained for callers that rely on the portal-level SAVEPOINT.
 			$this->db()->transactional(
 				function () use ( $actor_wp_user_id, $trusted, $input ) {
 					App::locationService()->createLocation( $actor_wp_user_id, $trusted, $input );
-
-					$this->audit_change(
-						'LOCATION_CREATED',
-						$actor_wp_user_id,
-						'location',
-						null,
-						null,
-						array(
-							'clinic_id' => $trusted,
-							'name'      => self::string_value( $input, 'name' ),
-							'slug'      => self::string_value( $input, 'slug' ),
-						),
-						$trusted
-					);
 				}
 			);
 		} catch ( LocationException $e ) {
@@ -696,27 +690,16 @@ final class ManagementPortalService {
 			}
 			$location = $found;
 			// D6 audit atomicity: Location update + mandatory audit in one boundary.
+			//
+			// D7: the LOCATION_UPDATED event is written exactly once, by
+			// LocationService::updateLocation() inside its own boundary (with
+			// before/after state and the explicit trusted clinic_id). The
+			// portal's former second LOCATION_UPDATED row was a proven duplicate
+			// of the same mutation and has been removed; the portal-level
+			// boundary is retained for the nested SAVEPOINT contract.
 			$this->db()->transactional(
 				function () use ( $actor_wp_user_id, $trusted, $location_id, $input, $location ) {
 					App::locationService()->updateLocation( $actor_wp_user_id, $trusted, $location_id, $input );
-
-					$this->audit_change(
-						'LOCATION_UPDATED',
-						$actor_wp_user_id,
-						'location',
-						$location_id,
-						array(
-							'name'    => (string) ( $location['name'] ?? '' ),
-							'address' => (string) ( $location['address'] ?? '' ),
-							'phone'   => (string) ( $location['phone'] ?? '' ),
-						),
-						array(
-							'name'    => self::string_value( $input, 'name' ),
-							'address' => self::string_value( $input, 'address' ),
-							'phone'   => self::string_value( $input, 'phone' ),
-						),
-						$trusted
-					);
 				}
 			);
 		} catch ( \Throwable $e ) {
@@ -931,6 +914,9 @@ final class ManagementPortalService {
 
 		$membership_id = 0;
 		$target        = 0;
+		// Descriptor of a subscriber provisioned inside the boundary; populated
+		// by reference so the post-rollback catches can evict its WP cache keys.
+		$provisioned   = null;
 		try {
 			// D6 audit atomicity: subscriber provisioning, membership creation
 			// and the mandatory audit event share ONE boundary. Refusal branches
@@ -938,8 +924,8 @@ final class ManagementPortalService {
 			// persistence failure throws and rolls everything back, including a
 			// freshly provisioned WordPress subscriber.
 			$refusal = $this->db()->transactional(
-				function () use ( $identifier, $actor_wp_user_id, $trusted, $role_key, &$membership_id, &$target ) {
-					$target = $this->resolve_or_provision_subscriber( $identifier );
+				function () use ( $identifier, $actor_wp_user_id, $trusted, $role_key, &$membership_id, &$target, &$provisioned ) {
+					$target = $this->resolve_or_provision_subscriber( $identifier, $provisioned );
 					if ( $target <= 0 ) {
 						return self::invalid( 'کاربری با این نام کاربری/ایمیل یافت نشد و ساخت حساب فقط با ایمیل معتبر انجام می‌شود.' );
 					}
@@ -984,12 +970,17 @@ final class ManagementPortalService {
 				return $refusal;
 			}
 		} catch ( AuthorizationException $e ) {
+			// The boundary rolled back; evict any ghost subscriber's WP cache
+			// keys (persistent Redis/Memcached backends survive the request).
+			UserCacheRollback::invalidate( $provisioned !== null ? array( $provisioned ) : array() );
 			return self::failure();
 		} catch ( MembershipException $e ) {
 			// Lifecycle/prerequisite refusals carry an operator-facing Persian reason
 			// (e.g. a previously active, now suspended Clinic accepts no NEW enrollment).
+			UserCacheRollback::invalidate( $provisioned !== null ? array( $provisioned ) : array() );
 			return self::prerequisite( $e->getMessage() );
 		} catch ( \Throwable $e ) {
+			UserCacheRollback::invalidate( $provisioned !== null ? array( $provisioned ) : array() );
 			return self::operational_failure();
 		}
 
@@ -1349,6 +1340,13 @@ final class ManagementPortalService {
 				// D6 audit atomicity: the schedule write and its mandatory audit
 				// event share one boundary (the schedule service runs on a nested
 				// SAVEPOINT). A failed audit rolls the schedule row back.
+				//
+				// D7: the SCHEDULE_CREATED event is written exactly once, by
+				// ScheduleService::create() inside its own boundary (explicit
+				// trusted clinic_id included). The portal's former second
+				// SCHEDULE_CREATED row was a proven duplicate of the same
+				// mutation and has been removed; the portal boundary is retained
+				// for the nested SAVEPOINT contract.
 				$this->db()->transactional(
 					function () use ( $actor_wp_user_id, $trusted, $clinician_id, $location_id, $day_of_week, $start_time, $end_time, &$created ) {
 						$view    = App::scheduleService()->create(
@@ -1363,23 +1361,6 @@ final class ManagementPortalService {
 							)
 						);
 						$created = (int) ( $view['id'] ?? 0 );
-
-						$this->audit_change(
-							'SCHEDULE_CREATED',
-							$actor_wp_user_id,
-							'schedule',
-							$created,
-							null,
-							array(
-								'clinic_id'    => $trusted,
-								'clinician_id' => $clinician_id,
-								'location_id'  => $location_id,
-								'day_of_week'  => $day_of_week,
-								'start_time'   => $start_time,
-								'end_time'     => $end_time,
-							),
-							$trusted
-						);
 					}
 				);
 			} finally {
@@ -1537,7 +1518,7 @@ final class ManagementPortalService {
 	 * Subscriber account for a new e-mail address. Nothing else can be created
 	 * here: no role other than `subscriber`, no password disclosure, no e-mail.
 	 */
-	private function resolve_or_provision_subscriber( string $identifier ): int {
+	private function resolve_or_provision_subscriber( string $identifier, ?array &$provisioned = null ): int {
 		if ( ! is_email( $identifier ) ) {
 			$by_login = get_user_by( 'login', $identifier );
 			if ( $by_login instanceof WP_User ) {
@@ -1578,7 +1559,18 @@ final class ManagementPortalService {
 			)
 		);
 
-		return is_int( $created ) ? $created : 0;
+		if ( is_int( $created ) ) {
+			// Descriptor for post-rollback WP cache invalidation in enroll_staff().
+			$provisioned = array(
+				'id'    => $created,
+				'login' => $login,
+				'email' => $identifier,
+			);
+
+			return $created;
+		}
+
+		return 0;
 	}
 
 	// ==================================================================

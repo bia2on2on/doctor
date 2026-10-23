@@ -137,7 +137,8 @@ final class ClinicalService
             (int) $visit['patient_id'],
             null,
             null,
-            ['via' => 'record_endpoint']
+            ['via' => 'record_endpoint'],
+            (int) $visit['clinic_id']
         );
 
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
@@ -287,7 +288,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     null,
                     [ 'version' => 1, 'category' => $category, 'visibility' => $visibility, 'content_length' => mb_strlen( $content ) ],
-                    [ 'visit_id' => $visit_id ]
+                    [ 'visit_id' => $visit_id ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $note_id;
@@ -405,7 +407,8 @@ final class ClinicalService
                 (int) $note['patient_id'],
                 [ 'version' => (int) $note['version'], 'content_length' => mb_strlen( (string) $note['content_text'] ) ],
                 [ 'version' => (int) $updated['version'], 'content_length' => mb_strlen( $content ) ],
-                [ 'visit_id' => (int) $note['visit_id'], 'change_reason' => mb_substr( $reason, 0, 255 ) ]
+                [ 'visit_id' => (int) $note['visit_id'], 'change_reason' => mb_substr( $reason, 0, 255 ) ],
+                (int) $note['clinic_id']
             );
 
             return $updated;
@@ -491,7 +494,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     null,
                     [ 'prescription_number' => $number, 'status' => 'draft', 'item_count' => count( $items ) ],
-                    [ 'visit_id' => $visit_id, 'correction_of' => $correction_of ]
+                    [ 'visit_id' => $visit_id, 'correction_of' => $correction_of ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $rx_id;
@@ -576,7 +580,8 @@ final class ClinicalService
                 (int) $rx['patient_id'],
                 [ 'status' => 'draft' ],
                 [ 'status' => 'finalized' ],
-                [ 'prescription_number' => (string) $rx['prescription_number'], 'visit_id' => (int) $rx['visit_id'] ]
+                [ 'prescription_number' => (string) $rx['prescription_number'], 'visit_id' => (int) $rx['visit_id'] ],
+                $clinicId
             );
 
             return $rx;
@@ -647,7 +652,8 @@ final class ClinicalService
                 (int) $rx['patient_id'],
                 [ 'status' => (string) $rx['status'] ],
                 [ 'status' => 'voided' ],
-                [ 'prescription_number' => (string) $rx['prescription_number'], 'reason' => mb_substr( $reason, 0, 255 ) ]
+                [ 'prescription_number' => (string) $rx['prescription_number'], 'reason' => mb_substr( $reason, 0, 255 ) ],
+                $clinicId
             );
 
             return $rx;
@@ -731,7 +737,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     null,
                     [ 'count' => count( $created ) ],
-                    [ 'types' => array_map( static fn ( array $i ): string => (string) ( $i['type'] ?? 'other' ), $items ) ]
+                    [ 'types' => array_map( static fn ( array $i ): string => (string) ( $i['type'] ?? 'other' ), $items ) ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $created;
@@ -815,7 +822,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     null,
                     [ 'is_needed' => $is_needed, 'suggested_date' => $is_needed ? $suggested_date : null ],
-                    [ 'visit_id' => $visit_id ]
+                    [ 'visit_id' => $visit_id ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $id;
@@ -883,7 +891,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     null,
                     [ 'status' => 'consultation_completed' ],
-                    [ 'validation' => 'chief_complaint_ok' ]
+                    [ 'validation' => 'chief_complaint_ok' ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $result;
@@ -933,7 +942,8 @@ final class ClinicalService
                     (int) $visit['patient_id'],
                     [ 'status' => 'consultation_completed' ],
                     [ 'status' => 'in_consultation' ],
-                    [ 'reason' => mb_substr( $reason, 0, 255 ) ]
+                    [ 'reason' => mb_substr( $reason, 0, 255 ) ],
+                    (int) $visit['clinic_id']
                 );
 
                 return $result;
@@ -1322,7 +1332,8 @@ final class ClinicalService
             (int) $visit['patient_id'],
             null,
             null,
-            ['visit_id' => $visitId]
+            ['visit_id' => $visitId],
+            (int) $visit['clinic_id']
         );
 
         return $view;
@@ -1557,7 +1568,8 @@ final class ClinicalService
                 'from' => $from,
                 'to' => $to,
                 'counts' => array_map('count', $results),
-            ]
+            ],
+            $trustedClinicId
         );
 
         return ['query' => $q, 'type' => $type, 'results' => $results];

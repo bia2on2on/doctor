@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Admin\StaffManagementPage;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Tests\Support\ObjectCacheDeleteRecorder;
 use WP_UnitTestCase;
 
 /**
@@ -43,12 +44,19 @@ final class StaffManagementAuditAtomicityTest extends WP_UnitTestCase
 
     private bool $previousSuppression = false;
 
+    private ObjectCacheDeleteRecorder $cache;
+
     protected function setUp(): void
     {
         parent::setUp();
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
         App::resetScope();
+
+        // D7: observe production cache eviction directly. A test-side
+        // wp_cache_flush() would mask stale ghost identities; the recorder
+        // delegates to the real cache and pins the exact evicted keys/groups.
+        $this->cache = ObjectCacheDeleteRecorder::install();
 
         $this->clinicId = $this->createClinic();
         $this->adminId = self::factory()->user->create(['role' => 'administrator']);
@@ -59,6 +67,7 @@ final class StaffManagementAuditAtomicityTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->restoreAuditInserts();
+        $this->cache->restore();
         wp_set_current_user(0);
         parent::tearDown();
     }
@@ -84,9 +93,16 @@ final class StaffManagementAuditAtomicityTest extends WP_UnitTestCase
             'password' => 'StrongPass123',
         ], $this->adminId);
         $this->restoreAuditInserts();
-        // The rollback removed the WordPress user; flush its in-memory cache so
-        // the assertions read durable post-rollback state, not stale objects.
-        wp_cache_flush();
+        // D7: production cache rollback — exact WP-owned keys, never a global
+        // flush. The ghost must be unresolvable through normal lookup paths
+        // without any test-side cache clearing.
+        self::assertSame(0, $this->cache->flushCount(), 'rollback must never global-flush the object cache');
+        self::assertContains($login, $this->cache->deletedKeysForGroup('userlogins'), 'login slug key evicted after rollback');
+        self::assertContains($email, $this->cache->deletedKeysForGroup('useremail'), 'email key evicted after rollback');
+        self::assertNotEmpty($this->cache->deletedKeysForGroup('users'), 'users group entry evicted after rollback');
+        foreach ($this->cache->deletedKeysForGroup('users') as $evictedId) {
+            self::assertTrue($this->cache->deleted($evictedId, 'user_meta'), 'matching user_meta key evicted after rollback');
+        }
 
         self::assertNotSame('', $result['error'], 'no false success when the audit cannot be persisted');
         self::assertFalse(get_user_by('login', $login), 'the WordPress user must have been rolled back');
@@ -158,9 +174,11 @@ final class StaffManagementAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $result = StaffManagementPage::toggleUser($userId, 'deactivate', $this->adminId, $this->clinicId);
         $this->restoreAuditInserts();
-        // Rolled-back WP role/meta changes survive in WordPress' in-memory
-        // cache until flushed; read durable state as a fresh process would.
-        wp_cache_flush();
+        // D7: the rolled-back role/meta cache entries must be evicted by
+        // production code (id-scoped), not by a test-side global flush.
+        self::assertSame(0, $this->cache->flushCount(), 'rollback must never global-flush the object cache');
+        self::assertTrue($this->cache->deleted($userId, 'users'), 'users entry evicted after suspension rollback');
+        self::assertTrue($this->cache->deleted($userId, 'user_meta'), 'user_meta entry evicted after suspension rollback');
 
         self::assertNotSame('', $result['error']);
         self::assertSame('active', (string) $this->membershipFor($userId)['status'], 'the suspension must have been rolled back');
@@ -193,7 +211,11 @@ final class StaffManagementAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $result = StaffManagementPage::toggleUser($userId, 'activate', $this->adminId, $this->clinicId);
         $this->restoreAuditInserts();
-        wp_cache_flush();
+        // D7: production evicts the rewritten users/user_meta entries after
+        // the reactivation rollback; no global flush is permitted or needed.
+        self::assertSame(0, $this->cache->flushCount(), 'rollback must never global-flush the object cache');
+        self::assertTrue($this->cache->deleted($userId, 'users'), 'users entry evicted after reactivation rollback');
+        self::assertTrue($this->cache->deleted($userId, 'user_meta'), 'user_meta entry evicted after reactivation rollback');
 
         self::assertNotSame('', $result['error']);
         self::assertSame('suspended', (string) $this->membershipFor($userId)['status'], 'the reactivation must have been rolled back');
