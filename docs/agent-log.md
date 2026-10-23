@@ -1792,3 +1792,40 @@ in production a failed boundary ends the request rather than retrying
 in-process, so the stale-cache window is not reachable outside the harness.
 The narrow-invalidation contract of RoleCapabilitiesPage remains separately
 proven by its own canary test.
+
+## 2026-10-23 (seventh session) — full green at 5f71921 and environment re-clone recovery
+
+Exact-head CI (run 39922154789 and sibling runs), head 5f719212dced4e41ce9076a1d7aa3a8f99c7d11b:
+ALL 29 PER-PR CHECKS PASS, zero failures, zero skipped checks:
+- WPCS (changed code): PASS, 0 findings on added lines; Static Analysis
+  (PHPStan level 3): PASS; Tenant Tripwire: PASS; Release Artifact: PASS.
+- Unit Tests PHP 8.1/8.2/8.3/8.4/8.5: all PASS (8.5 lane new this PR).
+- Integration (WP 7.1 + MySQL 8), authoritative completion-guard evidence:
+  OK (2316 tests, 65615 assertions), errors=0 failures=0 skipped=0. The six
+  required real-MySQL 1054 fault groups all run inside this total (Booking 6,
+  Clinical 5, Handwriting 4, MedicalFile 3, OTP 3, Roles 3 test methods); the
+  SQL failure ledger records the genuine errno 1054
+  "Unknown column 'cpms_fault_injection_no_such_column'" on cpms_audit_logs
+  INSERT, proving a real fault path rather than source-pattern assertions.
+- Focused jobs green: heartbeat MySQL+MariaDB (34 tests), first-practice
+  onboarding (22), Slice 4B independent MySQL races (4 tests, 366 assertions),
+  concurrency (20), archival (26), plus Closure/Staging/Upgrade/Responsive/
+  Real WP Acceptance (both table prefixes)/six coexistence/Facility matrix
+  (MariaDB 11.4 + MySQL 8). wp-compat remains schedule/workflow_dispatch only,
+  so per-PR check count stays exactly 29 (verified, not assumed).
+
+Environment note: between turns the sandbox was re-cloned at the branch base
+18b17be with the session files restored as uncommitted working-tree changes.
+Recovery used plumbing only — fetch origin branch, byte-level verification
+that every working-tree file (19 modified + 11 untracked) was identical to the
+pushed 5f71921 blobs, then git update-ref + git read-tree (no reset/clean/
+checkout/rebase, no force, no file modification). Result: local HEAD =
+origin/arena/3c1a79e3-doctor = 5f71921, clean tree, full history present.
+Nothing was pushed in this recovery; the branch on GitHub was never affected.
+
+Final defect chain closed this session: (1) three closures missing use()
+imports -> 21 PHP errors + PHPStan failures; (2) one wrong test import and one
+partial-matrix fixture; (3) WPCS spacing/alignment findings across five
+sources; (4) stale WP in-memory user cache after SAVEPOINT rollback breaking
+the OTP authorized-retry assertion (harness-only fix, production request model
+unaffected). PR remains Draft/OPEN; not merged, no main push, no release.
