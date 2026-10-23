@@ -96,6 +96,14 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
             $threw = true;
         }
         $this->restoreAuditInserts();
+        // The rolled-back wp_insert_user undoes the InnoDB row via SAVEPOINT,
+        // but WordPress' in-memory user cache still holds the provisioned
+        // identity (login + email). Without a flush the authorized retry trips
+        // wp_insert_user's cache-backed existing_user_login/existing_user_email
+        // checks. Same harness-hygiene pattern as
+        // StaffManagementAuditAtomicityTest; production rollback paths end the
+        // request instead of retrying in-process.
+        wp_cache_flush();
 
         self::assertTrue($threw, 'a failed mandatory OTP_VERIFY_OK audit must propagate, never report false success');
         self::assertNull($this->tokenConsumedAt(), 'the single-use consume must roll back — the code stays valid');

@@ -1763,3 +1763,32 @@ added in this pass):
 Next exact-SHA run is the authority; expected outcome: WPCS 0 findings,
 PHPStan PASS, Integration PASS with all 2316 tests green (the only run-2
 integration failure was the intentionally injected OTP_DIAG, now removed).
+
+## 2026-10-23 (sixth session) — OTP retry failure root-caused: stale WP user cache after SAVEPOINT rollback
+
+Run 39920526302 (head cc49015): WPCS PASS (0 findings), PHPStan PASS, Unit
+8.1–8.5 PASS; Integration reduced to ONE error in
+OtpAuditAtomicityTest::testVerifyAuditFailureRollsBackConsumeAndProvisioning,
+thrown at the authorized RETRY (test line 109), not the fault-injected attempt.
+
+Root cause (deterministic, not flaky): the first verify attempt provisions the
+WP user via wp_insert_user inside the transactional boundary; the injected
+audit 1054 then triggers ROLLBACK TO SAVEPOINT, which undoes the InnoDB
+wp_rows but NOT WordPress' process-local user object cache populated during
+wp_insert_user. On the in-process authorized retry, createWpUser() reuses the
+same deterministic email ({mobile}@otp.cpms.local) and (within the same
+time() second) the same pt_<hash> login; wp_insert_user's duplicate checks run
+through get_user_by(), which hits the stale cache and returns
+existing_user_login/existing_user_email as WP_Error → generic OtpException.
+The earlier "passing" run 39916313749 never reached the retry: the temporary
+OTP_DIAG self::fail() intentionally aborted the test first, which had masked
+this second defect.
+
+Fix (test-only, matching the established
+StaffManagementAuditAtomicityTest harness pattern): wp_cache_flush() after
+restoreAuditInserts() so every post-rollback read — including the retry's
+cache-backed duplicate checks — observes durable state. No production change:
+in production a failed boundary ends the request rather than retrying
+in-process, so the stale-cache window is not reachable outside the harness.
+The narrow-invalidation contract of RoleCapabilitiesPage remains separately
+proven by its own canary test.
