@@ -394,9 +394,24 @@ final class RoleCapabilitiesPage
      * database state. A MySQL rollback reverts the wp_options rows but not the
      * live object cache or the WP_Roles/WP_User capability snapshots, so both must
      * be rebuilt explicitly after an audit-driven rollback.
+     *
+     * Narrow invalidation (persistent-object-cache safe): only the two option
+     * rows the transaction mutates — the capability-override option and the
+     * WP_Roles registry option — plus their alloptions/notoptions snapshots are
+     * evicted. A global wp_cache_flush() would discard every unrelated cached
+     * row on Redis/Memcached backends, so it is deliberately avoided.
      */
     private static function restore_effective_caps_after_rollback(): void {
-        wp_cache_flush();
+        $role_key = wp_roles()->role_key;
+        foreach ( [ RolesAndCapabilities::OPTION_OVERRIDE, $role_key ] as $option ) {
+            wp_cache_delete( $option, 'options' );
+            $not_options = wp_cache_get( 'notoptions', 'options' );
+            if ( is_array( $not_options ) && isset( $not_options[ $option ] ) ) {
+                unset( $not_options[ $option ] );
+                wp_cache_set( 'notoptions', $not_options, 'options' );
+            }
+        }
+        wp_cache_delete( 'alloptions', 'options' );
         wp_roles()->for_site();
         // Explicit self-healing (idempotent by design, TP-10): reconcile the
         // rebuilt in-memory role registry against the rolled-back durable

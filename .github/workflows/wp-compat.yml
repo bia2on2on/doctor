@@ -4,7 +4,12 @@ name: WordPress Compatibility (previous supported majors)
 #
 # لِینِ اصلی روی آخرین نسخهٔ پایدار (۷.۱.x) اجرا می‌شود: CI (Integration)،
 # Real WP Acceptance (مرورگر)، First-Practice Acceptance، Pilot/Upgrade و
-# Closure. این workflow فقط دو نسخهٔ اصلیِ *پیشین* (۷.۰ و ۶.۹) را می‌سنجد.
+# Closure. این workflow دو نسخهٔ اصلیِ *پیشین* (۷.۰ و ۶.۹ روی PHP 8.2) را
+# می‌سنجد و یک لِینِ زمان‌اجرا روی آخرین نسخهٔ پایدار WP (۷.۱.x) با جدیدترین
+# شاخهٔ پایدار PHP (8.5؛ انتشار ۸.۵.۰ در ۲۰۲۵-۱۱-۲۰ طبق php.net) اضافه می‌کند.
+# لِینِ 8.5 شواهد سازگاریِ زمان‌اجرای واقعی (boot/migration/probe روی WP رسمی)
+# می‌دهد؛ تست‌لیبِ PHPUnit روی 8.5 به‌دلیل محدودیت PHPUnit 9.6 در اینجا اجرا
+# نمی‌شود و پوشش تستیِ 8.5 از Unit matrix در ci.yml می‌آید.
 #
 # چرا زمان‌بندی‌شده و نه per-PR:
 #   افزودنِ این دو نسخه به هر PR تعداد چک‌ها را سه‌برابر می‌کند (هزینه/زمان/نویز)
@@ -43,14 +48,24 @@ defaults:
 
 jobs:
   compat:
-    name: WP ${{ matrix.wp_major }} runtime compatibility
+    name: WP ${{ matrix.wp_major }} on PHP ${{ matrix.php }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # دو نسخهٔ اصلیِ پیشینِ بازهٔ پشتیبانی‌شده (نسخهٔ اصلی روی لِین‌های اصلی سنجیده می‌شود).
-        wp_major: ['7.0', '6.9']
+        include:
+          # دو نسخهٔ اصلیِ پیشینِ بازهٔ پشتیبانی‌شده (نسخهٔ اصلی روی لِین‌های اصلی سنجیده می‌شود).
+          - wp_major: '7.0'
+            php: '8.2'
+          - wp_major: '6.9'
+            php: '8.2'
+          # لِینِ جدید بدون انفجار ماتریس: آخرین وصلهٔ پایدار WP 7.1 (از منبع
+          # رسمی wordpress.org resolve می‌شود) روی جدیدترین شاخهٔ پایدار PHP 8.5.
+          # WP 6.9+ رسماً PHP 8.5 را «کاملاً پشتیبانی» می‌کند (make.wordpress.org،
+          # حذف برچسب beta در مه ۲۰۲۶)؛ WP 7.1 با 8.5 کاملاً سازگار است.
+          - wp_major: '7.1'
+            php: '8.5'
     services:
       mysql:
         image: mysql:8
@@ -68,7 +83,7 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: ${{ matrix.php }}
           extensions: mysqli, mbstring, xml, curl, zip
           coverage: none
 
@@ -192,6 +207,6 @@ jobs:
             echo "### WordPress Compatibility — ${{ matrix.wp_major }}.x (resolved ${WP_VER:-unknown})"
             echo ''
             echo "- artifact: release ZIP from \`bin/build-release.sh\`"
-            echo "- PHP: 8.2 · DB: MySQL 8"
+            echo "- PHP: ${{ matrix.php }} · DB: MySQL 8"
             echo "- probe outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"

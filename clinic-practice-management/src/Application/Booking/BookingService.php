@@ -957,6 +957,39 @@ final class BookingService
                         [ $hold_id ]
                     );
 
+                    // D6 audit atomicity: appointment (and any auto-created
+                    // patient), slot claim, hold conversion and the mandatory
+                    // audits commit/roll back together inside this boundary.
+                    $confirmed_view = $this->appointmentView( (array) $this->appointments->find( $appt_id ) );
+                    if ( $patient_was_created ) {
+                        $this->audit(
+                            'PATIENT_CREATED',
+                            $wp_user_id,
+                            'patient',
+                            'patient',
+                            $patient_id,
+                            $patient_id,
+                            null,
+                            [
+                                'auto'   => 'booking_confirm',
+                                'mobile' => MobileValidator::mask( $mobile ),
+                            ]
+                        );
+                    }
+                    $this->audit(
+                        'APPOINTMENT_CREATED',
+                        $wp_user_id,
+                        'patient',
+                        'appointment',
+                        $appt_id,
+                        $patient_id,
+                        null,
+                        $confirmed_view,
+                        [
+                            'mobile' => MobileValidator::mask( $mobile ),
+                        ]
+                    );
+
                     return [
                         'appointment'         => $this->appointments->find( $appt_id ),
                         'appointment_id'      => $appt_id,
@@ -1002,34 +1035,8 @@ final class BookingService
         $view                = $this->appointmentView( $appt );
         $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
-        if ( $patient_was_created ) {
-            $this->audit(
-                'PATIENT_CREATED',
-                (int) $hold['holder_wp_user_id'],
-                'patient',
-                'patient',
-                $patient_id,
-                $patient_id,
-                null,
-                [
-                    'auto'   => 'booking_confirm',
-                    'mobile' => MobileValidator::mask( $mobile ),
-                ]
-            );
-        }
-        $this->audit(
-            'APPOINTMENT_CREATED',
-            (int) $hold['holder_wp_user_id'],
-            'patient',
-            'appointment',
-            $appt_id,
-            $patient_id,
-            null,
-            $view,
-            [
-                'mobile' => MobileValidator::mask( $mobile ),
-            ]
-        );
+        // Mandatory PATIENT_CREATED/APPOINTMENT_CREATED audits now commit inside
+        // the confirmation transaction above (D6 atomicity).
         $this->op->info(
             'booking.confirmed',
             [
@@ -1369,6 +1376,25 @@ final class BookingService
 						]
                     );
 
+                    // D6 audit atomicity: old/new appointment writes, slot
+                    // capacity moves and the mandatory audit share one boundary.
+                    $rescheduled_view = $this->appointmentView( (array) $this->appointments->find( $new_appt_id ) );
+                    $this->audit(
+                        'APPOINTMENT_RESCHEDULED',
+                        $actor_user_id,
+                        $actor === 'patient' ? 'patient' : 'staff',
+                        'appointment',
+                        $new_appt_id,
+                        (int) $appt['patient_id'],
+                        null,
+                        $rescheduled_view,
+                        [
+                            'from_appointment_id' => $appointment_id,
+                            'from_date'           => (string) $appt['slot_date'],
+                            'from_time'           => (string) $appt['slot_time'],
+                        ]
+                    );
+
                     return [$appt, $new_appt_id, $new_slot];
                 }
             );
@@ -1382,21 +1408,8 @@ final class BookingService
         $response = array_merge( $view, [ 'previous_appointment_id' => $appointment_id ] );
         $this->idem->complete( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, 200, $response, $idem_clinic_id );
 
-        $this->audit(
-            'APPOINTMENT_RESCHEDULED',
-            $actor_user_id,
-            $actor === 'patient' ? 'patient' : 'staff',
-            'appointment',
-            $new_appt_id,
-            (int) $old_appt['patient_id'],
-            null,
-            $view,
-            [
-                'from_appointment_id' => $appointment_id,
-                'from_date'           => (string) $old_appt['slot_date'],
-                'from_time'           => (string) $old_appt['slot_time'],
-            ]
-        );
+        // Mandatory APPOINTMENT_RESCHEDULED audit now commits inside the
+        // reschedule transaction above (D6 atomicity).
         $this->op->info( 'booking.rescheduled', ['old' => $appointment_id, 'new' => $new_appt_id, 'wp_user_id' => $actor_user_id, 'actor' => $actor] );
 
         // F8 §5 — نوبت قدیمی جایگزین شده → یادآوری‌های queued آن Cancel می‌شوند
@@ -1488,7 +1501,8 @@ final class BookingService
                     $reason_value,
                     $resolved_slot,
                     $trusted_clinic_id,
-                    $settings
+                    $settings,
+                    $actor_user_id
                 ): array {
                     // New demand takes Organization -> Clinic -> Slot ->
                     // Location/capacity. This same tenant prefix is used by
@@ -1562,6 +1576,20 @@ final class BookingService
                     $this->machineCheck( 'new', 'create', 'secretary' );
                     $this->machineCheck( 'pending', 'confirm', 'secretary' );
 
+                    // D6 audit atomicity: slot claim, appointment row and the
+                    // mandatory audit commit/roll back together.
+                    $staff_view = $this->appointmentView( (array) $this->appointments->find( $appt_id ) );
+                    $this->audit(
+                        'APPOINTMENT_CREATED',
+                        $actor_user_id,
+                        'staff',
+                        'appointment',
+                        $appt_id,
+                        $patient_id,
+                        null,
+                        $staff_view
+                    );
+
                     return [
                         'appointment'    => $this->appointments->find( $appt_id ),
                         'appointment_id' => $appt_id,
@@ -1576,16 +1604,8 @@ final class BookingService
         $appt    = $staff_appointment['appointment'];
         $appt_id = (int) $staff_appointment['appointment_id'];
         $view    = $this->appointmentView( $appt );
-        $this->audit(
-            'APPOINTMENT_CREATED',
-            $actor_user_id,
-            'staff',
-            'appointment',
-            $appt_id,
-            $patient_id,
-            null,
-            $view
-        );
+        // Mandatory APPOINTMENT_CREATED audit now commits inside the staff
+        // booking transaction above (D6 atomicity).
         $this->op->info(
             'booking.staff_created',
             [
@@ -1622,7 +1642,10 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'دلیل عدم حضور الزامی است', 422);
         }
 
-        [$appt, $toState] = $this->db->transactional(function () use ($appointmentId): array {
+        // Bound to a variable first so the legacy multi-line closure keeps its
+        // original body bytes (PEAR.Functions.FunctionCallSignature requires the
+        // open parenthesis to be the last content on a multi-line call line).
+        $no_show = function () use ($appointmentId, $trimmed, $actorUserId): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
             $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
@@ -1640,21 +1663,32 @@ final class BookingService
                 'updated_at' => $nowSql,
             ]);
 
-            return [$appt, $toState];
-        });
+            // D6 audit atomicity: the no-show status mutation and its mandatory
+            // audit commit/roll back together; reason evidence stays audit-only.
+            $actor_user_id  = (int) $actorUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $appointment_id = (int) $appointmentId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $to_state       = (string) $toState; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
 
-        $this->audit(
-            'APPOINTMENT_NO_SHOW',
-            $actorUserId,
-            'staff',
-            'appointment',
-            $appointmentId,
-            (int) $appt['patient_id'],
-            ['status' => (string) $appt['status']],
-            ['status' => $toState],
-            ['reason' => $trimmed]
-        );
-        $this->op->info('booking.no_show', ['appointment_id' => $appointmentId, 'actor' => $actorUserId]);
+            $this->audit(
+                'APPOINTMENT_NO_SHOW',
+                $actor_user_id,
+                'staff',
+                'appointment',
+                $appointment_id,
+                (int) $appt['patient_id'],
+                [ 'status' => (string) $appt['status'] ],
+                [ 'status' => $to_state ],
+                [ 'reason' => $trimmed ]
+            );
+
+            return [$appt, $toState];
+        };
+
+        [ $appt, $toState ] = $this->db->transactional( $no_show ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy tuple key preserved for unchanged call sites below.
+
+        // Mandatory APPOINTMENT_NO_SHOW audit now commits inside the no-show
+        // transaction above (D6 atomicity).
+        $this->op->info('booking.no_show', ['appointment_id' => $appointmentId, 'actor' => $actorUserId]); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
 
         return ['appointment_id' => $appointmentId, 'status' => $toState];
     }
@@ -1741,20 +1775,29 @@ final class BookingService
             ]);
             $this->slots->releaseBooking($slotId);
 
+            // D6 audit atomicity: the cancellation, slot release and mandatory
+            // audit commit/roll back together (staff and patient paths share it).
+            $wp_user_id     = (int) $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $appointment_id = (int) $appointmentId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $to_state       = (string) $toState; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+
+            $this->audit(
+                'APPOINTMENT_CANCELLED',
+                $wp_user_id,
+                $actor === 'patient' ? 'patient' : 'staff',
+                'appointment',
+                $appointment_id,
+                (int) $appt['patient_id'],
+                [ 'status' => (string) $appt['status'] ],
+                [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ]
+            );
+
             return [$appt, $toState, $slotId];
         });
 
-        $this->audit(
-            'APPOINTMENT_CANCELLED',
-            $wpUserId,
-            $actor === 'patient' ? 'patient' : 'staff',
-            'appointment',
-            $appointmentId,
-            (int) $appt['patient_id'],
-            ['status' => (string) $appt['status']],
-            ['status' => $toState, 'reason' => is_string($reason) ? mb_substr($reason, 0, 255) : null]
-        );
-        $this->op->info('booking.cancelled', ['appointment_id' => $appointmentId, 'by' => $wpUserId, 'actor' => $actor]);
+        // Mandatory APPOINTMENT_CANCELLED audit now commits inside the
+        // cancellation transaction above (D6 atomicity).
+        $this->op->info('booking.cancelled', ['appointment_id' => $appointmentId, 'by' => $wpUserId, 'actor' => $actor]); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
 
         // F8 §5 — انصراف خودکار: لغو نوبت → Cancel اعلان‌های queued مرتبط
         // (یادآوری‌های queued همان نوبت — apt:{id}).

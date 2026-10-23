@@ -170,6 +170,61 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(0, $this->auditCount('ROLE_PERMISSION_RESET'));
     }
 
+    /**
+     * Persistent-object-cache contract for the narrow rollback invalidation:
+     * the restore helper must evict ONLY the two option rows it mutates (the
+     * capability override + the WP_Roles registry) and rebuild effective caps —
+     * never a global wp_cache_flush(), which would discard every unrelated
+     * cached row on Redis/Memcached backends.
+     */
+    public function testRollbackUsesNarrowCacheInvalidationNotGlobalFlush(): void
+    {
+        $input = [
+            RolesAndCapabilities::ROLE_SECRETARY => array_merge(
+                RolesAndCapabilities::SECRETARY_CAPS,
+                [RolesAndCapabilities::EXPORT]
+            ),
+        ];
+
+        // Warm the option/role caches the way a real request would.
+        get_option(RolesAndCapabilities::OPTION_OVERRIDE);
+        get_role(RolesAndCapabilities::ROLE_SECRETARY);
+        // A canary in an unrelated cache group: a global flush would kill it.
+        wp_cache_set('cpms_rollback_canary', 'survives', 'cpms_atomic_test_group');
+
+        $this->failAuditInserts();
+        $threw = false;
+        try {
+            RoleCapabilitiesPage::apply_capability_matrix($input, $this->adminId);
+        } catch (\Throwable $e) {
+            $threw = true;
+        }
+        $this->restoreAuditInserts();
+
+        self::assertTrue($threw);
+
+        // The canary proves no global object-cache flush happened.
+        self::assertSame(
+            'survives',
+            wp_cache_get('cpms_rollback_canary', 'cpms_atomic_test_group'),
+            'rollback restore must invalidate only the mutated option rows, never flush the whole cache'
+        );
+
+        // WITHOUT any test-side cache flush, durable and effective state must
+        // already match the rolled-back database (the helper alone did the work).
+        $stored = get_option(RolesAndCapabilities::OPTION_OVERRIDE, []);
+        self::assertSame([], is_array($stored) ? $stored : []);
+        self::assertFalse(get_role(RolesAndCapabilities::ROLE_SECRETARY)->has_cap(RolesAndCapabilities::EXPORT));
+
+        // Authorized retry after the fault is removed still succeeds and audits.
+        $report = RoleCapabilitiesPage::apply_capability_matrix($input, $this->adminId);
+        self::assertNotEmpty($report);
+        self::assertTrue(get_role(RolesAndCapabilities::ROLE_SECRETARY)->has_cap(RolesAndCapabilities::EXPORT));
+        self::assertSame(1, $this->auditCount('ROLE_PERMISSION_CHANGED'));
+
+        wp_cache_delete('cpms_rollback_canary', 'cpms_atomic_test_group');
+    }
+
     private function auditCount(string $action): int
     {
         return (int) App::db()->fetchValue(

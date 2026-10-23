@@ -187,10 +187,25 @@ final class OtpService
         if ($clinicId !== null && $clinicId > 0) {
             $tokenRow['clinic_id'] = $clinicId;
         }
-        $this->db->insert('cpms_otp_tokens', $tokenRow);
-        $tokenId = $this->db->wpdb_last_insert_id();
+        // D6 audit atomicity: the challenge row and its mandatory OTP_REQUEST
+        // audit share one boundary — a failed audit rolls the token back, so no
+        // un-audited OTP challenge can exist. SMS dispatch is an external side
+        // effect and stays after the commit; its delivery-result audit
+        // (OTP_SENT_OK/FAIL) cannot be paired with the SMS itself and remains
+        // post-commit by design (the challenge itself is already audited here).
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy local naming preserved.
+        $token_row = $tokenRow;
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+        $user_id  = $userId;
+        $token_id = $this->db->transactional(
+            function () use ( $token_row, $user_id, $mobile, $ip ): int {
+                $this->db->insert( 'cpms_otp_tokens', $token_row );
+                $inserted_id = (int) $this->db->wpdb_last_insert_id();
+                $this->audit( 'OTP_REQUEST', $user_id, $mobile, $ip );
 
-        $this->audit('OTP_REQUEST', $userId, $mobile, $ip);
+                return $inserted_id;
+            }
+        );
 
         // ارسال از طریق SmsService (ADR-0025): Template/Text + Record + Fast-path + Queue Fallback.
         // OTP Service مستقل از Provider است — کد فقط به‌عنوان متغیر قالب می‌رود (§25).
@@ -205,7 +220,7 @@ final class OtpService
                 $mobile,
                 ['otp_code' => $code],
                 'otp_token',
-                (int) $tokenId,
+                (int) $token_id,
                 inline: true,
                 priority: 8
             );
@@ -213,7 +228,7 @@ final class OtpService
             $retryEnqueued = in_array($res['status'], [SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING], true);
         } catch (\Throwable $e) {
             // خطای ساختاری (مثلاً Table Migration نشده) — Token معتبر می‌ماند؛ ارسال از Queue ادامه دارد
-            $this->op->error('OTP_SMS_FAILED', ['token_id' => $tokenId, 'error' => $e->getMessage()]);
+            $this->op->error('OTP_SMS_FAILED', ['token_id' => $token_id, 'error' => $e->getMessage()]);
             $retryEnqueued = true;
         }
         $this->audit($sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip);
@@ -318,47 +333,69 @@ final class OtpService
             );
         }
 
-        // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
-        $consumed = $this->db->query(
-            'UPDATE ' . $this->db->table('cpms_otp_tokens') .
-            ' SET consumed_at = %s WHERE id = %d AND consumed_at IS NULL',
-            [$this->db->nowUtcSql(), (int) $row['id']]
+        // D6 audit atomicity: the single-use consumption, identity resolution
+        // (wp_users/patient-link writes) and the mandatory OTP_VERIFY_OK /
+        // LOGIN_SUCCESS audits share ONE boundary — a failed audit rolls the
+        // consume and every provisioning write back, so a consumed token or a
+        // provisioned patient account can never outlive its missing audit.
+        // The WP auth cookie is a non-transactional side effect and is issued
+        // only after the durable commit.
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy local naming preserved.
+        $clinic_id = $clinicId;
+        $verify_outcome = $this->db->transactional(
+            function () use ( $row, $mobile, $purpose, $ip, $clinic_id ): array {
+                // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
+                $consumed = $this->db->query(
+                    'UPDATE ' . $this->db->table( 'cpms_otp_tokens' ) .
+                    ' SET consumed_at = %s WHERE id = %d AND consumed_at IS NULL',
+                    [ $this->db->nowUtcSql(), (int) $row['id'] ]
+                );
+                if ( ! $consumed ) {
+                    throw new OtpException( 'CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است' );
+                }
+
+                // ---- Resolution کاربر/بیمار ----
+                //
+                // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
+                // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
+                // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
+                // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
+                $is_new_user   = false;
+                $may_provision = in_array( $purpose, self::PROVISIONING_PURPOSES, true );
+                $user_id       = $may_provision
+                    ? $this->resolveUser( $mobile, $purpose, $is_new_user, $clinic_id )
+                    : $this->findExistingUser( $mobile, $clinic_id );
+
+                // Session — فقط برای Purposeهای ورود (Context Binding).
+                // یک کد `verify_mobile` نباید به Login تبدیل شود.
+                $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
+                $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
+
+                $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ] );
+                if ( $session_issued ) {
+                    $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip );
+                }
+
+                return [
+                    'user_id'        => $user_id,
+                    'patient_links'  => $patient_links,
+                    'is_new_user'    => $is_new_user,
+                    'session_issued' => $session_issued,
+                ];
+            }
         );
-        if (!$consumed) {
-            throw new OtpException('CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است');
-        }
 
-        // ---- Resolution کاربر/بیمار ----
-        //
-        // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
-        // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
-        // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
-        // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
-        $isNewUser = false;
-        $mayProvision = in_array($purpose, self::PROVISIONING_PURPOSES, true);
-        $userId = $mayProvision
-            ? $this->resolveUser($mobile, $purpose, $isNewUser, $clinicId)
-            : $this->findExistingUser($mobile, $clinicId);
-
-        // Session — فقط برای Purposeهای ورود (Context Binding).
-        // یک کد `verify_mobile` نباید به Login تبدیل شود.
-        $sessionIssued = in_array($purpose, self::SESSION_PURPOSES, true) && $userId > 0;
-        if ($sessionIssued && function_exists('wp_set_auth_cookie')) {
-            wp_set_auth_cookie($userId, true);
-        }
-
-        $patientLinks = $userId > 0 ? $this->patientLinks($userId) : [];
-
-        $this->audit('OTP_VERIFY_OK', $userId, $mobile, $ip, ['purpose' => $purpose]);
-        if ($sessionIssued) {
-            $this->audit('LOGIN_SUCCESS', $userId, $mobile, $ip);
+        // کوکی احراز هویت وردپرس پس از Commitِ پایدار صادر می‌شود (اثر جانبی
+        // غیرتراکنشی) — هر شکست در مرز بالا پیش از این نقطه کامل roll back شده.
+        if ( $verify_outcome['session_issued'] && function_exists( 'wp_set_auth_cookie' ) ) {
+            wp_set_auth_cookie( (int) $verify_outcome['user_id'], true );
         }
 
         return [
-            'user_id' => $userId,
-            'patient_links' => $patientLinks,
-            'is_new_user' => $isNewUser,
-            'session_issued' => $sessionIssued,
+            'user_id' => (int) $verify_outcome['user_id'],
+            'patient_links' => $verify_outcome['patient_links'],
+            'is_new_user' => (bool) $verify_outcome['is_new_user'],
+            'session_issued' => (bool) $verify_outcome['session_issued'],
         ];
     }
 
