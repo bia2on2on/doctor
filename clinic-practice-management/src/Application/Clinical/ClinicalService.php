@@ -465,8 +465,8 @@ final class ClinicalService
                 $correction_of = isset( $input['correction_of_prescription_id'] )
                     ? (int) $input['correction_of_prescription_id']
                     : null;
-                $number         = $this->prescriptions->nextPrescriptionNumber();
-                $rx_id          = $this->prescriptions->insert(
+                $number        = $this->prescriptions->nextPrescriptionNumber();
+                $rx_id         = $this->prescriptions->insert(
                     (int) $visit['clinic_id'],
                     [
                         'prescription_number'           => $number,
@@ -652,7 +652,7 @@ final class ClinicalService
 
             return $rx;
         };
-        $rx = $this->db->transactional( $void_rx );
+        $rx      = $this->db->transactional( $void_rx );
 
         // D6: PRESCRIPTION_VOIDED now commits inside the locked transaction above.
 

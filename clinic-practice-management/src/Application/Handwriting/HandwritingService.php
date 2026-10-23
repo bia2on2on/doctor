@@ -126,7 +126,7 @@ final class HandwritingService
 
             return $doc;
         };
-        $doc = $this->db->transactional( $create_document );
+        $doc             = $this->db->transactional( $create_document );
 
         // D6: HW_DOC_CREATE now commits inside the document transaction above.
 
@@ -209,7 +209,7 @@ final class HandwritingService
 
             return $row;
         };
-        $row = $this->db->transactional( $add_page );
+        $row      = $this->db->transactional( $add_page );
 
         // D6: HW_PAGE_ADD now commits inside the page transaction above.
 

@@ -1746,3 +1746,20 @@ Verification: brace/paren balance lint OK on all touched files; free-variable
 audit rerun (only the two known parser false positives at non-closure lines).
 PHPUnit/WPCS/PHPStan remain CI-only evidence; the next exact-SHA run is the
 authority for the all-green claim.
+
+## 2026-10-23 (fifth session) — run 39920134198 (head aed63d5): final WPCS alignment pass
+
+At head aed63d5: PHPStan PASS (53s), Unit PHP 8.5 PASS, all WPCS ERRORs gone;
+five Generic.Formatting.MultipleStatementAlignment WARNINGs remained, four of
+them on the new variable-bound closure call lines and two off-by-one padding
+errors from the previous pass. Exact sniff-expected spacing applied (no ignores
+added in this pass):
+- ClinicalService L468/L469: 8/9 spaces before '=' (was 9/10).
+- ClinicalService L655 `$rx = transactional($void_rx)`: 6 spaces, matching the
+  method's $clinicId anchor column.
+- HandwritingService L129 `$doc = transactional($create_document)`: 13 spaces,
+  matching the $trustedClinicId anchor; L212 `$row = transactional($add_page)`:
+  6 spaces, matching the $existing anchor.
+Next exact-SHA run is the authority; expected outcome: WPCS 0 findings,
+PHPStan PASS, Integration PASS with all 2316 tests green (the only run-2
+integration failure was the intentionally injected OTP_DIAG, now removed).
