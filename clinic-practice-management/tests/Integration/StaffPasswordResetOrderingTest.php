@@ -137,6 +137,21 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
     private function activationKey(): string
     {
         global $wpdb;
+
+        // WP 6.8+ persists the reset key in the wp_users.user_activation_key
+        // COLUMN via wp_update_user() (hashed "epoch:wp_fast_hash(key)"), not
+        // in user meta. Read the canonical column first; the legacy meta key
+        // fallback covers older cores that stored per-blog keys there.
+        $columnValue = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT user_activation_key FROM ' . $wpdb->users . ' WHERE ID = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- constant WP core table name + prepared placeholder.
+                $this->targetId
+            )
+        );
+        if ($columnValue !== '') {
+            return $columnValue;
+        }
+
         $metaKey = $wpdb->get_blog_prefix() . 'user_activation_key';
 
         return (string) get_user_meta($this->targetId, $metaKey, true);
