@@ -58,6 +58,10 @@ concurrency:
 
 permissions:
   contents: read
+  # D7: the runtime probe mirrors its full output into a PR comment so a
+  # failure is diagnosable from the PR alone (job logs may be unreachable in
+  # restricted networks). Only this workflow's own evidence is posted.
+  pull-requests: write
 
 defaults:
   run:
@@ -205,8 +209,28 @@ jobs:
 
           echo "COMPAT PROBE OK\n";
           PHPEOF
-          php -l /tmp/compat-probe.php > /dev/null
-          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/compat-probe.php
+          php -l /tmp/compat-probe.php | tee /tmp/compat-probe-lint.log
+          # D7: keep full probe output outside the job log path as well, so the
+          # always-on evidence step below can post it even when this step fails.
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/compat-probe.php 2>&1 | tee /tmp/compat-probe.log
+
+      - name: Mirror runtime probe evidence onto the PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          {
+            echo "### WP compat runtime probe — WP ${{ matrix.wp_major }}.x on PHP ${{ matrix.php }} (run ${{ github.run_id }}, head ${GITHUB_SHA::8})"
+            echo '```'
+            echo "resolved: ${WP_VER:-unknown} · outcome: ${{ job.status }}"
+            echo '--- php -l ---'
+            cat /tmp/compat-probe-lint.log 2>/dev/null || echo '(lint log missing)'
+            echo '--- probe ---'
+            cat /tmp/compat-probe.log 2>/dev/null || echo '(probe log missing)'
+            echo '```'
+          } > /tmp/wp-compat-pr.md
+          gh pr comment "$PR_NUM" --body-file /tmp/wp-compat-pr.md || echo '::notice::probe evidence comment failed'
 
       - name: Summary
         if: always()

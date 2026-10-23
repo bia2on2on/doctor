@@ -621,6 +621,7 @@ final class BookingService
                         'slot_date' => $slot_date,
                         'slot_time' => $slot_time,
                     ],
+                    [],
                     (int) $slot['clinic_id']
                 );
 
@@ -767,6 +768,7 @@ final class BookingService
         $now = $this->now();
         $nowSql = $this->db->nowUtcSql();
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact call, established file style.
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
             ], (int) $hold['clinic_id']);
@@ -975,6 +977,7 @@ final class BookingService
                                 'auto'   => 'booking_confirm',
                                 'mobile' => MobileValidator::mask( $mobile ),
                             ],
+                            [],
                             $hold_clinic_id
                         );
                     }
@@ -1593,6 +1596,7 @@ final class BookingService
                         $patient_id,
                         null,
                         $staff_view,
+                        [],
                         (int) $slot['clinic_id']
                     );
 
@@ -1743,6 +1747,7 @@ final class BookingService
                 $this->assertAppointmentWithinExplicitScope($appt);
             }
             if ($actor === 'patient' && !$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
+                // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact call, established file style.
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
                 ], (int) $appt['clinic_id']);
@@ -1797,6 +1802,7 @@ final class BookingService
                 (int) $appt['patient_id'],
                 [ 'status' => (string) $appt['status'] ],
                 [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ],
+                [],
                 (int) $appt['clinic_id']
             );
 
@@ -2816,6 +2822,7 @@ final class BookingService
         ?array $before,
         ?array $after,
         array $meta = [],
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase parameter, established file style.
         ?int $clinicId = null
     ): void {
         // Explicit trusted Clinic attribution: booking flows include public
@@ -2830,6 +2837,7 @@ final class BookingService
             $before,
             $after,
             $meta,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
             $clinicId,
             true
         );

@@ -729,6 +729,7 @@ final class HandwritingService
                 null,
                 null,
                 ['reason' => 'invalid_clinic_identifiers', 'scope' => $scope],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase locals, established file style.
                 $trustedClinicId > 0 ? $trustedClinicId : null
             );
 
@@ -743,7 +744,9 @@ final class HandwritingService
                 null,
                 null,
                 null,
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase locals, established file style.
                 ['reason' => 'cross_clinic_access', 'scope' => $scope, 'trusted_clinic_id' => $trustedClinicId, 'object_clinic_id' => $objectClinicId],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
                 $trustedClinicId
             );
 
@@ -769,6 +772,7 @@ final class HandwritingService
                 null,
                 null,
                 ['reason' => 'scoped_authorization_failed', 'scope' => $scope, 'auth_code' => $code, 'permission' => $permission],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
                 $trustedClinicId
             );
 

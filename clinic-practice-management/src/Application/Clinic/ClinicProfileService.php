@@ -163,6 +163,7 @@ final class ClinicProfileService
         // ---- Transactional update, fail-closed, preserve id/org/slug/timezone/created_at ----
         $now = $this->db->nowUtcSql();
 
+        // phpcs:disable Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established PSR-style in this file: compact closure/calls, camelCase locals and project array alignment; security, SQL, i18n and escaping sniffs stay active.
         try {
             $result = $this->db->transactional(function () use ($clinicId, $name, $address, $phone, $now, $orgId, $slug, $tz, $actorUserId, $oldName, $oldAddress, $oldPhone) {
                 // Inside transaction, re-fetch for update to ensure row still exists (optional)
@@ -229,6 +230,7 @@ final class ClinicProfileService
             // rolled the profile update back before this catch runs.
             throw ClinicProfileException::of(ClinicProfileException::QUERY_FAILED, 'خطای پایگاه داده هنگام به‌روزرسانی', 500, ['reason' => $e->getMessage()]);
         }
+        // phpcs:enable
 
         // ---- Post-commit invariants (read-only) ----
         $updatedAt = (string) ($result['updated_at'] ?? $now);

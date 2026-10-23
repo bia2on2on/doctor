@@ -143,7 +143,8 @@ final class OtpService
 
         $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
         if (!$byDay['allowed']) {
-            $this->audit('OTP_DENIED_DAILY', $userId, $mobile, $ip, [], $clinicId);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+            $this->audit( 'OTP_DENIED_DAILY', $userId, $mobile, $ip, [], $clinicId );
             throw new OtpException('CLINIC_OTP_DAILY_LIMIT', 'محدودیت ارسال کد در روز به پایان رسیده است', $byDay);
         }
         $byHour = $this->rate->hit('otp-hour:' . $mobile, $hourlyMax, 3600);
@@ -166,7 +167,8 @@ final class OtpService
                 OtpPolicy::REASON_DAILY_LIMIT => 'CLINIC_OTP_DAILY_LIMIT',
                 default => 'CLINIC_OTP_COOLDOWN',
             };
-            $this->audit('OTP_DENIED_' . strtoupper($send['reason']), $userId, $mobile, $ip, [], $clinicId);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+            $this->audit( 'OTP_DENIED_' . strtoupper( $send['reason'] ), $userId, $mobile, $ip, [], $clinicId );
             throw new OtpException($code, 'هنوز زود است — بعداً تلاش کنید');
         }
 
@@ -185,6 +187,7 @@ final class OtpService
             'attempts' => 0,
             'created_at' => $this->db->nowUtcSql(),
         ];
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
         if ($clinicId !== null && $clinicId > 0) {
             $tokenRow['clinic_id'] = $clinicId;
         }
@@ -199,6 +202,7 @@ final class OtpService
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
         $user_id  = $userId;
         $token_id = $this->db->transactional(
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local imported into the audit boundary.
             function () use ( $token_row, $user_id, $mobile, $ip, $clinicId ): int {
                 $this->db->insert( 'cpms_otp_tokens', $token_row );
                 $inserted_id = (int) $this->db->wpdb_last_insert_id();
@@ -211,6 +215,7 @@ final class OtpService
         // ارسال از طریق SmsService (ADR-0025): Template/Text + Record + Fast-path + Queue Fallback.
         // OTP Service مستقل از Provider است — کد فقط به‌عنوان متغیر قالب می‌رود (§25).
         $sent = false;
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
         $retryEnqueued = false;
         try {
             // Phase 8 Slice 2: Clinicِ ارسال = Clinicِ Challenge (از انتخابِ
@@ -239,7 +244,8 @@ final class OtpService
             $this->op->error( 'OTP_SMS_FAILED', [ 'token_id' => $token_id, 'error' => $e->getMessage() ] );
             $retryEnqueued = false;
         }
-        $this->audit($sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId);
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+        $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
         return ['expires_in' => $ttl, 'sms_sent' => $sent, 'retry_enqueued' => $retryEnqueued];
     }
@@ -316,7 +322,8 @@ final class OtpService
             (int) $row['attempts']
         );
         if ($state->isLocked($now)) {
-            $this->audit('CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinicId);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
+            $this->audit( 'CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinicId );
             throw new OtpException('CLINIC_OTP_LOCKED', 'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید');
         }
 
@@ -333,7 +340,8 @@ final class OtpService
                 ],
                 ['id' => (int) $row['id']]
             );
-            $this->audit('OTP_VERIFY_FAIL', null, $mobile, $ip, ['remaining' => $policy->remainingAttempts($failed)], $clinicId);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
+            $this->audit( 'OTP_VERIFY_FAIL', null, $mobile, $ip, [ 'remaining' => $policy->remainingAttempts( $failed ) ], $clinicId );
             throw new OtpException(
                 $failed->lockedUntil !== null ? 'CLINIC_OTP_LOCKED' : 'CLINIC_OTP_INVALID',
                 $failed->lockedUntil !== null ? 'تلاش‌های نادرست زیاد بود' : 'کد اشتباه است',
@@ -358,44 +366,44 @@ final class OtpService
         try {
             $verify_outcome = $this->db->transactional(
                 function () use ( $row, $mobile, $purpose, $ip, $clinic_id, &$provisioned ): array {
-                // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
-                $consumed = $this->db->query(
-                    'UPDATE ' . $this->db->table( 'cpms_otp_tokens' ) .
-                    ' SET consumed_at = %s WHERE id = %d AND consumed_at IS NULL',
-                    [ $this->db->nowUtcSql(), (int) $row['id'] ]
-                );
-                if ( ! $consumed ) {
-                    throw new OtpException( 'CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است' );
-                }
+                    // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
+                    $consumed = $this->db->query(
+                        'UPDATE ' . $this->db->table( 'cpms_otp_tokens' ) .
+                        ' SET consumed_at = %s WHERE id = %d AND consumed_at IS NULL',
+                        [ $this->db->nowUtcSql(), (int) $row['id'] ]
+                    );
+                    if ( ! $consumed ) {
+                        throw new OtpException( 'CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است' );
+                    }
 
-                // ---- Resolution کاربر/بیمار ----
-                //
-                // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
-                // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
-                // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
-                // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
-                $is_new_user   = false;
-                $may_provision = in_array( $purpose, self::PROVISIONING_PURPOSES, true );
-                $user_id       = $may_provision
-                    ? $this->resolveUser( $mobile, $purpose, $is_new_user, $clinic_id, $provisioned )
-                    : $this->findExistingUser( $mobile, $clinic_id );
+                    // ---- Resolution کاربر/بیمار ----
+                    //
+                    // OD-8 (تصمیم مالک — گزینهٔ الف): تأیید شماره نباید به‌عنوان اثر
+                    // جانبی حساب کاربری بسازد. `verify_mobile` صرفاً «تأییدشدگی» را
+                    // اثبات می‌کند؛ ساخت حساب باید Workflow صریح و جدای خودش را داشته
+                    // باشد. فقط Purposeهای ورود اجازهٔ Provisioning دارند.
+                    $is_new_user   = false;
+                    $may_provision = in_array( $purpose, self::PROVISIONING_PURPOSES, true );
+                    $user_id       = $may_provision
+                        ? $this->resolveUser( $mobile, $purpose, $is_new_user, $clinic_id, $provisioned )
+                        : $this->findExistingUser( $mobile, $clinic_id );
 
-                // Session — فقط برای Purposeهای ورود (Context Binding).
-                // یک کد `verify_mobile` نباید به Login تبدیل شود.
-                $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
-                $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
+                    // Session — فقط برای Purposeهای ورود (Context Binding).
+                    // یک کد `verify_mobile` نباید به Login تبدیل شود.
+                    $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
+                    $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
 
-                $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
-                if ( $session_issued ) {
-                    $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip, [], $clinic_id );
-                }
+                    $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
+                    if ( $session_issued ) {
+                        $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip, [], $clinic_id );
+                    }
 
-                return [
-                    'user_id'        => $user_id,
-                    'patient_links'  => $patient_links,
-                    'is_new_user'    => $is_new_user,
-                    'session_issued' => $session_issued,
-                ];
+                    return [
+                        'user_id'        => $user_id,
+                        'patient_links'  => $patient_links,
+                        'is_new_user'    => $is_new_user,
+                        'session_issued' => $session_issued,
+                    ];
                 }
             );
         } catch ( \Throwable $e ) {
@@ -490,6 +498,7 @@ final class OtpService
      *    wp_users؛ لینکِ Patient فقط اگر Patient در Clinicِ همین verify
      *    وجود داشته باشد (Patientِ Clinicِ دیگر هرگز لینک نمی‌شود).
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- established PSR-style in this file: camelCase signatures/locals and compact call style; security, SQL, i18n and escaping sniffs stay active.
     private function resolveUser(string $mobile, string $purpose, bool &$isNewUser, int $clinicId, ?array &$provisioned = null): int
     {
         $patientId = $this->findActivePatientIdByMobile($mobile, $clinicId);
@@ -552,6 +561,7 @@ final class OtpService
 
         return $userId;
     }
+    // phpcs:enable
 
     /**
      * جست‌وجوی هویت قطعیِ OTP برای یک موبایل نرمال‌شده.
@@ -633,6 +643,7 @@ final class OtpService
     /**
      * @return array{id: int, login: string, email: string}
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established PSR-style in this file: camelCase signatures/locals; security, SQL, i18n and escaping sniffs stay active.
     private function createWpUser(string $mobile): array
     {
         $base = 'pt_' . substr(hash('sha256', $mobile . (string) time()), 0, 10);
@@ -654,6 +665,7 @@ final class OtpService
 
         return [ 'id' => (int) $userId, 'login' => $username, 'email' => $email ];
     }
+    // phpcs:enable
 
     /**
      * @return list<array<string, mixed>>
@@ -689,6 +701,7 @@ final class OtpService
         );
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- established PSR-style in this file: camelCase signature and compact call style; security, SQL, i18n and escaping sniffs stay active.
     private function audit(string $action, ?int $userId, string $mobile, ?string $ip, array $meta = [], ?int $clinicId = null): void
     {
         // Explicit trusted Clinic attribution: OTP runs on public/patient paths
@@ -708,6 +721,7 @@ final class OtpService
             true
         );
     }
+    // phpcs:enable
 
     private function now(): \DateTimeImmutable
     {

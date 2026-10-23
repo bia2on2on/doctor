@@ -194,6 +194,7 @@ final class VisitService
                 'check_in',
                 isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
             $this->audit('VISIT_CHECKED_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [
                 'appointment_id' => $appointmentId,
                 'source' => $source,
@@ -277,6 +278,7 @@ final class VisitService
                 'create_walk_in',
                 isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
             $this->audit('VISIT_WALK_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [], $clinicId);
 
             return $visit;
@@ -370,6 +372,7 @@ final class VisitService
             $this->completeReferencedAppointment((int) $visit['appointment_id'], $actorUserId);
         }
 
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
         $this->audit('VISIT_' . strtoupper($event), $actorUserId, $actorRole, 'visit', $visitId, (int) $visit['patient_id'], null, $visit, [
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
@@ -971,6 +974,7 @@ final class VisitService
                 // and the tick continues with the next candidate instead of
                 // aborting the whole cron run. The unchanged item is retried on
                 // a later tick; cron resilience is preserved (D7).
+                // phpcs:disable Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established PSR-style in this file: compact closures/calls and camelCase locals/properties; security, SQL, i18n and escaping sniffs stay active.
                 try {
                     $count += $this->db->transactional(function () use ($appt): int {
                         $fresh = $this->appointments->findForUpdate((int) $appt['id']);
@@ -991,6 +995,7 @@ final class VisitService
                     ]);
                     continue;
                 }
+                // phpcs:enable
 
                 if ( $count >= $maxToProcess ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     break 2;
@@ -1885,6 +1890,7 @@ final class VisitService
     {
         $toStatus = AppointmentMachine::create()->machine()->assert((string) $appt['status'], 'confirm', 'secretary');
         $this->appointments->updateStatus((int) $appt['id'], ['status' => $toStatus, 'confirmed_at' => $now]);
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
         $this->audit('APPOINTMENT_CONFIRMED', $actorUserId, 'secretary', 'appointment', (int) $appt['id'], (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'via' => 'visit_check_in',
         ], (int) $appt['clinic_id']);
@@ -1919,6 +1925,7 @@ final class VisitService
             'no_show_at' => $now,
             'active_visit_id' => null,
         ]);
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
         $this->audit('APPOINTMENT_NO_SHOW', $actorUserId, $actorUserId === null ? 'system' : 'secretary', 'appointment', (int) $appt['id'], (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'slot' => ($appt['slot_date'] ?? '') . ' ' . ($appt['slot_time'] ?? ''),
         ], (int) $appt['clinic_id']);
@@ -1941,6 +1948,7 @@ final class VisitService
             return;
         }
         $this->appointments->updateStatus($appointmentId, ['status' => $toStatus, 'active_visit_id' => null]);
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
         $this->audit('APPOINTMENT_COMPLETED', $actorUserId, 'system', 'appointment', $appointmentId, (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'via' => 'visit_check_out',
         ], (int) $appt['clinic_id']);
@@ -2029,6 +2037,7 @@ final class VisitService
         string $code ): never { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         // Denial path: best-effort audit only, then the authoritative domain
         // refusal. No mutation happened, so there is nothing to roll back.
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
         $this->auditBestEffort($action, $wpUserId, $role, $resourceType, $resourceId, $patientId);
         throw VisitException::of($code, $message, $http);
     }
@@ -2038,6 +2047,7 @@ final class VisitService
      * @param array<string, mixed> $after
      * @param array<string, mixed> $meta
      */
+    // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase parameter contract, established file style.
     private function audit( string $action, // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing -- WPCS
         ?int $wpUserId,
         string $role,
@@ -2062,12 +2072,14 @@ final class VisitService
             $meta,
             $clinicId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
     }
+    // phpcs:enable
 
     /**
      * Best-effort audit for DENIAL paths only: the operation was already
      * refused and no business mutation exists to roll back, so a persistence
      * failure here must not replace the intended domain denial exception.
      */
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,Squiz.Functions.MultiLineFunctionDeclaration.FirstParamSpacing,Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase contract, established file style.
     private function auditBestEffort( string $action,
         ?int $wpUserId,
         string $role,
@@ -2092,4 +2104,5 @@ final class VisitService
             // exception thrown immediately afterwards remains authoritative.
         }
     }
+    // phpcs:enable
 }

@@ -1125,7 +1125,7 @@ final class ClinicianAdminPage
         $out = [];
         $users = get_users(['number' => 500, 'orderby' => 'display_name']);
         foreach ($users as $u) {
-            $label = ($u->display_name !== '' ? $u->display_name : $u->user_login) . ' (' . $u->user_login . ')';
+            $label = ( $u->display_name !== '' ? $u->display_name : $u->user_login ) . ' (' . $u->user_login . ')';
             $out[] = ['id' => (int) $u->ID, 'label' => $label];
         }
 
@@ -1167,6 +1167,7 @@ final class ClinicianAdminPage
         exit;
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.Classes.OpeningBraceSameLine.BraceOnNewLine,Generic.Files.OneObjectStructurePerFile.MultipleFound -- established PSR-style in this file: the structured redirect signal and its co-located exception reuse camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     /**
      * Non-terminating redirect signal safe to raise inside a transaction
      * closure: it carries the operator notice across the boundary instead of
@@ -1197,3 +1198,4 @@ final class ClinicianRedirectException extends \RuntimeException
         return $this->clinicianId;
     }
 }
+// phpcs:enable

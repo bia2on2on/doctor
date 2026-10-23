@@ -581,6 +581,7 @@ final class ClinicalService
                 [ 'status' => 'draft' ],
                 [ 'status' => 'finalized' ],
                 [ 'prescription_number' => (string) $rx['prescription_number'], 'visit_id' => (int) $rx['visit_id'] ],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
                 $clinicId
             );
 
@@ -653,6 +654,7 @@ final class ClinicalService
                 [ 'status' => (string) $rx['status'] ],
                 [ 'status' => 'voided' ],
                 [ 'prescription_number' => (string) $rx['prescription_number'], 'reason' => mb_substr( $reason, 0, 255 ) ],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
                 $clinicId
             );
 
@@ -1332,6 +1334,7 @@ final class ClinicalService
             (int) $visit['patient_id'],
             null,
             null,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
             ['visit_id' => $visitId],
             (int) $visit['clinic_id']
         );
@@ -1569,6 +1572,7 @@ final class ClinicalService
                 'to' => $to,
                 'counts' => array_map('count', $results),
             ],
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
             $trustedClinicId
         );
 

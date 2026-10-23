@@ -688,7 +688,6 @@ final class ManagementPortalService {
 			if ( $found === null || (int) ( $found['clinic_id'] ?? 0 ) !== $trusted ) {
 				return self::failure(); // durable ownership mismatch / forged id
 			}
-			$location = $found;
 			// D6 audit atomicity: Location update + mandatory audit in one boundary.
 			//
 			// D7: the LOCATION_UPDATED event is written exactly once, by
@@ -698,7 +697,7 @@ final class ManagementPortalService {
 			// of the same mutation and has been removed; the portal-level
 			// boundary is retained for the nested SAVEPOINT contract.
 			$this->db()->transactional(
-				function () use ( $actor_wp_user_id, $trusted, $location_id, $input, $location ) {
+				function () use ( $actor_wp_user_id, $trusted, $location_id, $input ) {
 					App::locationService()->updateLocation( $actor_wp_user_id, $trusted, $location_id, $input );
 				}
 			);
@@ -1348,7 +1347,7 @@ final class ManagementPortalService {
 				// mutation and has been removed; the portal boundary is retained
 				// for the nested SAVEPOINT contract.
 				$this->db()->transactional(
-					function () use ( $actor_wp_user_id, $trusted, $clinician_id, $location_id, $day_of_week, $start_time, $end_time, &$created ) {
+					function () use ( $actor_wp_user_id, $clinician_id, $location_id, $day_of_week, $start_time, $end_time, &$created ) {
 						$view    = App::scheduleService()->create(
 							$actor_wp_user_id,
 							array(

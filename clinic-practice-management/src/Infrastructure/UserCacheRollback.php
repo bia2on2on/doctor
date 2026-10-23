@@ -31,8 +31,7 @@ namespace ClinicCore\Infrastructure;
  * enclosing CpmsDb::transactional() boundary has rolled back — never inside an
  * active outer transaction whose durable outcome is still undecided.
  */
-final class UserCacheRollback
-{
+final class UserCacheRollback {
     /**
      * @param list<array{id:int, login?:?string, email?:?string, old_login?:?string, old_email?:?string}> $descriptors
      */

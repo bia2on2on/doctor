@@ -330,6 +330,7 @@ final class MedicalFileService
         $file_id       = (int) func_get_arg( 1 );
 
         App::db()->transactional(
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local imported into the boundary.
             function () use ( $file_id, $actor_user_id, $row, $durableClinicId ): void {
                 $this->files->softDelete( $file_id );
                 $this->audit->log(
@@ -341,6 +342,7 @@ final class MedicalFileService
                     [ 'deleted_at' => null ],
                     [ 'deleted_at' => 'now' ],
                     [ 'original_filename' => (string) $row['original_filename'] ],
+                    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
                     $durableClinicId
                 );
             }

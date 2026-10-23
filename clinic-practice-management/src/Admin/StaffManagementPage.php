@@ -490,8 +490,24 @@ final class StaffManagementPage
     private static function sendPasswordResetEmail( \WP_User $user, string $reset_key ): bool { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- mirrors WordPress core naming.
         $switched_locale = switch_to_user_locale( $user->ID );
         try {
-            $email = retrieve_password_notification_email( $reset_key, (string) $user->user_login, $user );
-            $sent  = wp_mail( $email['to'], $email['subject'], $email['message'], $email['headers'] );
+            // Inline equivalent of core's retrieve_password_notification_email()
+            // (WP 6.0+, wp-includes/user.php): same default subject/message and
+            // the same two pluggable filters, kept local because the pinned
+            // php-stubs release shipped to PHPStan does not declare that helper.
+            $blog_name = wp_specialchars_decode( (string) get_option( 'blogname' ), ENT_QUOTES );
+            $subject   = sprintf( '[%s] Password Reset', $blog_name );
+            $subject   = (string) apply_filters( 'retrieve_password_title', $subject, $user->user_login, $user );
+            $message   = 'Someone has requested a password reset for the following account:' . "\r\n\r\n";
+            $message  .= sprintf( 'Site Name: %s', $blog_name ) . "\r\n\r\n";
+            $message  .= sprintf( 'Username: %s', (string) $user->user_login ) . "\r\n\r\n";
+            $message  .= 'If this was a mistake, ignore this email and nothing will happen.' . "\r\n\r\n";
+            $message  .= 'To reset your password, visit the following address:' . "\r\n\r\n";
+            $message  .= network_site_url( 'wp-login.php?action=rp&key=' . $reset_key . '&login=' . rawurlencode( (string) $user->user_login ), 'login' ) . "\r\n";
+            $message   = (string) apply_filters( 'retrieve_password_message', $message, $reset_key, $user->user_login, $user );
+            if ( '' === $message ) {
+                return false;
+            }
+            $sent = wp_mail( $user->user_email, wp_specialchars_decode( $subject ), $message, '' );
         } finally {
             if ( $switched_locale ) {
                 restore_previous_locale();
