@@ -92,10 +92,10 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-btn--ghost { background: #fff; color: var(--cpms-primary); }
 .cpms-staff-reception .cpms-sr-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpms-staff-reception .cpms-sr-cancel { display: grid; gap: 8px; padding: 8px 2px; }
-.cpms-staff-reception .cpms-sr-cancel[hidden], .cpms-staff-reception tr[data-role="sr-row-cancel"][hidden] { display: none; }
+.cpms-staff-reception .cpms-sr-cancel[hidden], .cpms-staff-reception tr[data-role="sr-row-cancel"][hidden], .cpms-staff-reception tr[data-role="sr-row-noshow"][hidden] { display: none; }
 .cpms-staff-reception .cpms-sr-cancel-hint { margin: 0; color: var(--cpms-muted); font-size: 0.88rem; }
 .cpms-staff-reception .cpms-sr-cancel-field { display: grid; gap: 4px; font-size: 0.88rem; }
-.cpms-staff-reception .cpms-sr-cancel-field input { min-height: 40px; padding: 6px 10px; border: 1px solid #c9ccd6; border-radius: 8px; }
+.cpms-staff-reception .cpms-sr-cancel-field input { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid #c9ccd6; border-radius: 8px; }
 .cpms-staff-reception .cpms-sr-cancel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpms-staff-reception .cpms-sr-status { font-size: 0.92rem; overflow-wrap: anywhere; }
 .cpms-staff-reception .cpms-sr-status--error { color: #a12828; }
@@ -188,32 +188,33 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-reschedule-state--error { color: #a12828; }
 .cpms-staff-reception .cpms-sr-reschedule-state--ok { color: var(--cpms-primary); font-weight: bold; }
 .cpms-staff-reception .cpms-sr-reschedule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.cpms-staff-reception .cpms-sr-schedule-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--cpms-border); }
+.cpms-staff-reception .cpms-sr-schedule-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--cpms-border); box-sizing: border-box; }
 .cpms-staff-reception .cpms-sr-schedule-summary { margin: 0; font-size: 0.92rem; font-weight: 700; color: var(--cpms-text); }
-.cpms-staff-reception .cpms-sr-schedule-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 0.88rem; }
-.cpms-staff-reception .cpms-sr-schedule-filter select { min-height: 44px; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; max-width: 100%; }
+.cpms-staff-reception .cpms-sr-schedule-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 0.88rem; box-sizing: border-box; }
+.cpms-staff-reception .cpms-sr-schedule-filter select { min-height: 44px; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; max-width: 100%; box-sizing: border-box; }
 .cpms-staff-reception .cpms-sr-btn--noshow { border-color: #a12828; color: #a12828; background: #fff; }
 .cpms-staff-reception .cpms-sr-btn--noshow:hover { background: #fdf2f2; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cpms-staff-reception .cpms-sr-table thead { display: none; }
-    .cpms-staff-reception .cpms-sr-table, .cpms-staff-reception .cpms-sr-table tbody, .cpms-staff-reception .cpms-sr-table tr, .cpms-staff-reception .cpms-sr-table td { display: block; width: 100%; }
+    .cpms-staff-reception .cpms-sr-table, .cpms-staff-reception .cpms-sr-table tbody, .cpms-staff-reception .cpms-sr-table tr, .cpms-staff-reception .cpms-sr-table td { display: block; width: 100%; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-table tr[hidden] { display: none; }
     .cpms-staff-reception .cpms-sr-table tr { border-bottom: 1px solid var(--cpms-border); padding: 8px 0; }
     .cpms-staff-reception .cpms-sr-table td { border-bottom: 0; padding: 3px 4px; }
     .cpms-staff-reception .cpms-sr-create-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 390px) {
-    .cpms-staff-reception { padding: 8px; }
-    .cpms-staff-reception .cpms-sr-panel { padding: 10px; }
+    .cpms-staff-reception { padding: 8px; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-panel { padding: 10px; box-sizing: border-box; }
     .cpms-staff-reception .cpms-sr-schedule-bar,
-    .cpms-staff-reception .cpms-sr-schedule-filter { flex-direction: column; align-items: stretch; width: 100%; }
+    .cpms-staff-reception .cpms-sr-schedule-filter { flex-direction: column; align-items: stretch; width: 100%; box-sizing: border-box; }
     .cpms-staff-reception .cpms-sr-schedule-filter select,
     .cpms-staff-reception .cpms-sr-actions .cpms-sr-btn,
     .cpms-staff-reception .cpms-sr-cancel-actions .cpms-sr-btn,
-    .cpms-staff-reception .cpms-sr-reschedule-actions .cpms-sr-btn { width: 100%; justify-content: center; text-align: center; }
-    .cpms-staff-reception .cpms-sr-chip { width: 100%; justify-content: space-between; }
-    .cpms-staff-reception .cpms-sr-select { width: 100%; min-width: 0; }
+    .cpms-staff-reception .cpms-sr-reschedule-actions .cpms-sr-btn { width: 100%; box-sizing: border-box; justify-content: center; text-align: center; }
+    .cpms-staff-reception .cpms-sr-chip { width: 100%; box-sizing: border-box; justify-content: space-between; }
+    .cpms-staff-reception .cpms-sr-select { width: 100%; min-width: 0; box-sizing: border-box; }
 }
 @media (max-width: 340px) {
     .cpms-staff-reception { padding: 6px 4px; }

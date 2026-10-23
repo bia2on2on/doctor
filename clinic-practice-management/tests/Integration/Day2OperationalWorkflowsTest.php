@@ -236,7 +236,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
             'clinician_id'          => $c1,
             'category'              => 'diagnosis',
             'visibility'            => 'doctor_private',
-            'content'               => 'یادداشت خصوصی دکتر اول',
+            'content_text'          => 'یادداشت خصوصی دکتر اول',
             'created_by_wp_user_id' => $doc1User,
         ]);
         $notesRepo->insert($clinicA, [
@@ -245,16 +245,16 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
             'clinician_id'          => $c2,
             'category'              => 'diagnosis',
             'visibility'            => 'patient_visible',
-            'content'               => 'تشخیص قابل مشاهده دکتر دوم',
+            'content_text'          => 'تشخیص قابل مشاهده دکتر دوم',
             'created_by_wp_user_id' => $doc2User,
         ]);
         $notesRepo->insert($clinicA, [
             'visit_id'              => $priorVisitC2,
             'patient_id'            => $patient,
             'clinician_id'          => $c2,
-            'category'              => 'general_note',
+            'category'              => 'clinical_note',
             'visibility'            => 'doctor_private',
-            'content'               => 'یادداشت محرمانه دکتر دوم — نباید افشا شود',
+            'content_text'          => 'یادداشت محرمانه دکتر دوم — نباید افشا شود',
             'created_by_wp_user_id' => $doc2User,
         ]);
 

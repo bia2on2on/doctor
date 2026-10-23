@@ -1077,8 +1077,11 @@ function noteCategoryLabel(cat){
         history: 'شرح حال',
         examination: 'معاینه',
         diagnosis: 'تشخیص',
+        clinical_note: 'یادداشت بالینی',
+        recommendation_text: 'توصیه',
         plan: 'طرح درمان',
         private_note: 'یادداشت خصوصی',
+        other: 'سایر',
         general: 'یادداشت عمومی'
     }[cat] || cat || 'یادداشت';
 }
@@ -2677,9 +2680,20 @@ document.addEventListener('visibilitychange', function(){
     }
 });
 
+function stopQueuePolling(){
+    state.pollPaused = true;
+    if ( state.timer ) {
+        clearInterval(state.timer);
+        state.timer = null;
+    }
+}
+window.addEventListener('beforeunload', stopQueuePolling);
+window.addEventListener('pagehide', stopQueuePolling);
+
 function start(){
     if ( !CFG.is_doctor ) return;
     loadContext().then(function(){
+        if ( state.pollPaused && document.visibilityState === 'hidden' ) return;
         state.timer = setInterval(pollQueue, 5000);
     });
 }
