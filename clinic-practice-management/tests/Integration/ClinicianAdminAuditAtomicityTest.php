@@ -79,6 +79,11 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
         $login = 'caaa_doc_' . bin2hex(random_bytes(3));
         $email = 'caaa-doc-' . bin2hex(random_bytes(4)) . '@example.test';
 
+        // The production handler owns CSRF + request parsing: stage the same
+        // authenticated form state the real admin screen posts, so the audit
+        // fault (not a missing nonce) is what drives the rollback path.
+        $this->stageCreateRequest($login, $email);
+
         $depthBefore = $this->savepointDepth();
         $this->installRedirectEscape();
         $this->failAuditInserts();
@@ -129,6 +134,11 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
         cpms_test_seed_membership($doctorUser, $this->clinicId, RolesAndCapabilities::ROLE_DOCTOR);
         $clinicianId = $this->insertClinician($doctorUser, 'Dr Toggle Atomicity');
 
+        // Same authenticated query state the real toggle link carries
+        // (including the per-entity nonce); the audit fault must be the only
+        // injected failure.
+        $this->stageToggleRequest($clinicianId);
+
         $depthBefore = $this->savepointDepth();
         $this->installRedirectEscape();
         $this->failAuditInserts();
@@ -163,7 +173,7 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
     // Helpers
     // ------------------------------------------------------------------
 
-    private function dispatchCreate(string $login, string $email): void
+    private function stageCreateRequest(string $login, string $email): void
     {
         $_POST = [
             'clinic_id' => (string) $this->clinicId,
@@ -175,6 +185,11 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
         ];
         $_REQUEST['_wpnonce'] = wp_create_nonce('cpms_clinician_save');
         delete_transient(self::NOTICE_KEY);
+    }
+
+    private function dispatchCreate(string $login, string $email): void
+    {
+        $this->stageCreateRequest($login, $email);
 
         $threw = false;
         try {
@@ -188,7 +203,7 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
         unset($_REQUEST['_wpnonce']);
     }
 
-    private function dispatchToggle(int $clinicianId): void
+    private function stageToggleRequest(int $clinicianId): void
     {
         $_GET = [
             'clinician_id' => (string) $clinicianId,
@@ -196,6 +211,11 @@ final class ClinicianAdminAuditAtomicityTest extends WP_UnitTestCase
         ];
         $_REQUEST['_wpnonce'] = wp_create_nonce('cpms_clinician_toggle_' . $clinicianId);
         delete_transient(self::NOTICE_KEY);
+    }
+
+    private function dispatchToggle(int $clinicianId): void
+    {
+        $this->stageToggleRequest($clinicianId);
 
         $threw = false;
         try {

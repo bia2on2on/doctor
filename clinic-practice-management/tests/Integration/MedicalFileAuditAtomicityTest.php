@@ -261,13 +261,38 @@ final class MedicalFileAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(0, $this->tableCount('cpms_medical_attachments'), 'no metadata row may survive');
         self::assertSame(0, $this->auditCount('FILE_UPLOADED'));
         self::assertSame($depthBefore, $this->savepointDepth(), 'SAVEPOINT depth must be restored');
-        self::assertSame($before, $this->storageFiles(), 'the orphan object is removed and nothing else changes');
+
+        // The first production store() also materializes the root security
+        // guards (.htaccess / index.php / web.config / README-SECURITY.txt).
+        // Those are idempotent server hardening artifacts, not tenant objects:
+        // they legitimately survive an orphan cleanup, so the tree comparison
+        // allows exactly that documented guard set and nothing else. The
+        // failed upload's own object must be gone and every pre-existing
+        // object (including the unrelated sentinel) must survive untouched.
+        $after = $this->storageFiles();
+        $removed = array_values(array_diff($before, $after));
+        $added = array_values(array_diff($after, $before));
+        self::assertSame([], $removed, 'no pre-existing storage object may be deleted by the orphan cleanup');
+        self::assertSame($this->securityGuardFiles(), $added, 'only the idempotent root security guards may appear; the orphan object must be removed');
         self::assertFileExists($sentinelAbsolute, 'unrelated storage objects must never be deleted');
     }
 
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    /**
+     * The exact guard set LocalFileStorage::ensureGuards() writes once, on the
+     * first store() against a fresh storage root. Kept in sync with the
+     * production constants intentionally: a change to server hardening must be
+     * a deliberate, reviewed change to this contract as well.
+     *
+     * @return list<string> sorted storage-relative guard file paths
+     */
+    private function securityGuardFiles(): array
+    {
+        return ['.htaccess', 'README-SECURITY.txt', 'index.php', 'web.config'];
+    }
 
     /**
      * @return list<string> sorted storage-relative file paths under the root

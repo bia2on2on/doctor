@@ -915,7 +915,7 @@ final class ManagementPortalService {
 		$target        = 0;
 		// Descriptor of a subscriber provisioned inside the boundary; populated
 		// by reference so the post-rollback catches can evict its WP cache keys.
-		$provisioned   = null;
+		$provisioned = null;
 		try {
 			// D6 audit atomicity: subscriber provisioning, membership creation
 			// and the mandatory audit event share ONE boundary. Refusal branches

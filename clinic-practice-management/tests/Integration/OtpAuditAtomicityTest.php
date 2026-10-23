@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Auth\OtpException;
+use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
@@ -64,7 +65,11 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
         $this->failAuditInserts();
         $threw = false;
         try {
-            App::otpService()->request(self::MOBILE);
+            // The trusted Clinic is passed through the explicit parameter — the
+            // same channel a persisted clinic selection uses. OtpService never
+            // trusts an ambient request scope on the public OTP path, so an
+            // implicit/null clinic would (correctly) be persisted as NULL.
+            App::otpService()->request(self::MOBILE, OtpService::PURPOSE_LOGIN, null, null, 1);
         } catch (\Throwable $e) {
             $threw = true;
         }
@@ -77,7 +82,7 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame($depth_before, $this->savepointDepth(), 'SAVEPOINT depth must be restored after rollback');
 
         // Authorized retry after the fault is removed: token + audit commit together.
-        $result = App::otpService()->request(self::MOBILE);
+        $result = App::otpService()->request(self::MOBILE, OtpService::PURPOSE_LOGIN, null, null, 1);
         self::assertIsArray($result);
         self::assertSame(1, $this->tableCount('cpms_otp_tokens'));
         self::assertSame(1, $this->auditCount('OTP_REQUEST'));

@@ -497,15 +497,15 @@ final class StaffManagementPage
             $blog_name = wp_specialchars_decode( (string) get_option( 'blogname' ), ENT_QUOTES );
             $subject   = sprintf( '[%s] Password Reset', $blog_name );
             // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- canonical WordPress core filter name; renaming would break the core password-reset extension contract.
-            $subject   = (string) apply_filters( 'retrieve_password_title', $subject, $user->user_login, $user );
-            $message   = 'Someone has requested a password reset for the following account:' . "\r\n\r\n";
-            $message  .= sprintf( 'Site Name: %s', $blog_name ) . "\r\n\r\n";
-            $message  .= sprintf( 'Username: %s', (string) $user->user_login ) . "\r\n\r\n";
-            $message  .= 'If this was a mistake, ignore this email and nothing will happen.' . "\r\n\r\n";
-            $message  .= 'To reset your password, visit the following address:' . "\r\n\r\n";
-            $message  .= network_site_url( 'wp-login.php?action=rp&key=' . $reset_key . '&login=' . rawurlencode( (string) $user->user_login ), 'login' ) . "\r\n";
+            $subject  = (string) apply_filters( 'retrieve_password_title', $subject, $user->user_login, $user );
+            $message  = 'Someone has requested a password reset for the following account:' . "\r\n\r\n";
+            $message .= sprintf( 'Site Name: %s', $blog_name ) . "\r\n\r\n";
+            $message .= sprintf( 'Username: %s', (string) $user->user_login ) . "\r\n\r\n";
+            $message .= 'If this was a mistake, ignore this email and nothing will happen.' . "\r\n\r\n";
+            $message .= 'To reset your password, visit the following address:' . "\r\n\r\n";
+            $message .= network_site_url( 'wp-login.php?action=rp&key=' . $reset_key . '&login=' . rawurlencode( (string) $user->user_login ), 'login' ) . "\r\n";
             // phpcs:ignore WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedHooknameFound -- canonical WordPress core filter name; renaming would break the core password-reset extension contract.
-            $message   = (string) apply_filters( 'retrieve_password_message', $message, $reset_key, $user->user_login, $user );
+            $message = (string) apply_filters( 'retrieve_password_message', $message, $reset_key, $user->user_login, $user );
             if ( '' === $message ) {
                 return false;
             }

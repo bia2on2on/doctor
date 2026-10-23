@@ -37,7 +37,15 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
     /** @var callable|null */
     private $mailInterceptor;
 
+    /** @var callable|null */
+    private $preMailInterceptor;
+
+    /** @var callable|null */
+    private $resetKeyCapture;
+
     private bool $mailResult = true;
+
+    private string $capturedRawKey = '';
 
     /** @var callable|null */
     private $auditFault = null;
@@ -60,12 +68,14 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
 
         wp_set_current_user($this->managerId);
         $this->installMailInterceptor();
+        $this->installResetKeyCapture();
     }
 
     protected function tearDown(): void
     {
         $this->restoreAuditInserts();
         $this->removeMailInterceptor();
+        $this->removeResetKeyCapture();
         wp_set_current_user(0);
         parent::tearDown();
     }
@@ -96,9 +106,16 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
 
         $persistedKey = $this->activationKey();
         self::assertNotSame('', $persistedKey, 'the reset key must be durably persisted');
-        // WordPress stores "epoch:key"; the email reset URL carries the same key.
-        $rawKey = substr($persistedKey, (int) strpos($persistedKey, ':') + 1);
-        self::assertStringContainsString($rawKey, $this->sentMail[0]['message'], 'the email must reference the committed key, never a rolled-back one');
+        // Since WP 6.8 core stores "epoch:wp_fast_hash(key)" — the HASH, not
+        // the raw key — so the stored value can never be what the email URL
+        // carries. The raw key is observable through core's canonical
+        // retrieve_password_key action, which fires inside get_password_reset_key().
+        self::assertNotSame('', $this->capturedRawKey, 'the raw reset key must be observable through the canonical retrieve_password_key action');
+        self::assertStringContainsString($this->capturedRawKey, $this->sentMail[0]['message'], 'the email must reference the committed key, never a rolled-back one');
+        self::assertStringNotContainsString($this->capturedRawKey, $persistedKey, 'the raw reset key must never be persisted verbatim — core stores only its hash');
+        // End-to-end proof the emailed credential is the one WordPress accepts.
+        $verified = check_password_reset_key($this->capturedRawKey, (string) get_userdata($this->targetId)->user_login);
+        self::assertInstanceOf('WP_User', $verified, 'the emailed key must be a working reset credential against the persisted metadata');
         self::assertStringContainsString((string) get_userdata($this->targetId)->user_login, $this->sentMail[0]['message']);
     }
 
@@ -135,10 +152,20 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
                 'message' => (string) $atts['message'],
             ];
 
+            // Legacy contract (WP < 5.7): returning false short-circuits wp_mail().
             return $this->mailResult ? $atts : false;
         };
         add_filter('wp_mail', $interceptor, 1);
         $this->mailInterceptor = $interceptor;
+
+        // Modern contract: pre_wp_mail (WP 5.7+) is the documented preemption
+        // point. Since WP 7.x a false wp_mail filter value no longer stops the
+        // send, so the transport failure must be simulated through this hook.
+        $preInterceptor = function ($pre) {
+            return $this->mailResult ? $pre : false;
+        };
+        add_filter('pre_wp_mail', $preInterceptor, 1, 1);
+        $this->preMailInterceptor = $preInterceptor;
     }
 
     private function removeMailInterceptor(): void
@@ -147,7 +174,30 @@ final class StaffPasswordResetOrderingTest extends WP_UnitTestCase
             remove_filter('wp_mail', $this->mailInterceptor, 1);
             $this->mailInterceptor = null;
         }
+        if ($this->preMailInterceptor !== null) {
+            remove_filter('pre_wp_mail', $this->preMailInterceptor, 1);
+            $this->preMailInterceptor = null;
+        }
         $this->mailResult = true;
+    }
+
+    private function installResetKeyCapture(): void
+    {
+        $this->capturedRawKey = '';
+        $capture = function ($user_login, $key): void {
+            $this->capturedRawKey = (string) $key;
+        };
+        add_action('retrieve_password_key', $capture, 10, 2);
+        $this->resetKeyCapture = $capture;
+    }
+
+    private function removeResetKeyCapture(): void
+    {
+        if ($this->resetKeyCapture !== null) {
+            remove_action('retrieve_password_key', $this->resetKeyCapture, 10);
+            $this->resetKeyCapture = null;
+        }
+        $this->capturedRawKey = '';
     }
 
     private function createClinic(): int
