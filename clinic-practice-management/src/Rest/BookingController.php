@@ -326,16 +326,24 @@ final class BookingController extends RestBase
             [ $user_id, $clinic_id, $patient_id ]
         );
         if ( $linked === null ) {
-            App::audit()->log(
-                'FORBIDDEN_ACCESS_ATTEMPT',
-                [ 'wp_user_id' => $user_id, 'role' => 'patient' ],
-                'appointment',
-                $appointment_id,
-                $patient_id,
-                null,
-                null,
-                [ 'via' => 'reschedule_options' ]
-            );
+            try {
+                App::audit()->log(
+                    'FORBIDDEN_ACCESS_ATTEMPT',
+                    [
+                        'wp_user_id' => $user_id,
+                        'role'       => 'patient',
+                    ],
+                    'appointment',
+                    $appointment_id,
+                    $patient_id,
+                    null,
+                    null,
+                    [ 'via' => 'reschedule_options' ],
+                    $clinic_id
+                );
+            } catch ( \Throwable ) { // phpcs:ignore Generic.CodeAnalysis.EmptyStatement.DetectedCatch -- best-effort denial audit must not mask 403 refusal.
+                unset( $linked );
+            }
 
             return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'به این نوبت دسترسی ندارید' );
         }

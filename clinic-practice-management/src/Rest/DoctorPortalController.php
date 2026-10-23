@@ -899,7 +899,8 @@ final class DoctorPortalController extends RestBase {
 			[
 				'via'       => 'doctor_portal_medical_history',
 				'clinic_id' => $clinic_id,
-			]
+			],
+			$clinic_id
 		);
 
 		return $this->success(
