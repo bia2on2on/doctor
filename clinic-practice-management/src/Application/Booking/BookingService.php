@@ -768,10 +768,11 @@ final class BookingService
         $now = $this->now();
         $nowSql = $this->db->nowUtcSql();
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
-            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact call, established file style.
+            // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
             ], (int) $hold['clinic_id']);
+            // phpcs:enable
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
         }
 
@@ -1747,10 +1748,11 @@ final class BookingService
                 $this->assertAppointmentWithinExplicitScope($appt);
             }
             if ($actor === 'patient' && !$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
-                // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact call, established file style.
+                // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
                 ], (int) $appt['clinic_id']);
+                // phpcs:enable
                 throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
             }
 

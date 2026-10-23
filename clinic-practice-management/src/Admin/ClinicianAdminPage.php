@@ -1110,7 +1110,7 @@ final class ClinicianAdminPage
         // Include the exact login/email so a post-rollback cache invalidation
         // can evict the userlogins/useremail keys, not just the id groups.
         return [
-            'wp_user_id' => (int) ($result['user_id'] ?? 0),
+            'wp_user_id' => (int) ( $result['user_id'] ?? 0 ),
             'generated'  => $generated,
             'login'      => (string) $in['username'],
             'email'      => (string) $in['email'],

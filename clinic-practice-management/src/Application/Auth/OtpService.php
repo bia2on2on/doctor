@@ -206,6 +206,7 @@ final class OtpService
             function () use ( $token_row, $user_id, $mobile, $ip, $clinicId ): int {
                 $this->db->insert( 'cpms_otp_tokens', $token_row );
                 $inserted_id = (int) $this->db->wpdb_last_insert_id();
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local imported into the audit boundary.
                 $this->audit( 'OTP_REQUEST', $user_id, $mobile, $ip, [], $clinicId );
 
                 return $inserted_id;
@@ -242,6 +243,7 @@ final class OtpService
             // durable challenge token stays valid for a fresh user-initiated
             // request, which mints a new code through the normal path.
             $this->op->error( 'OTP_SMS_FAILED', [ 'token_id' => $token_id, 'error' => $e->getMessage() ] );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
             $retryEnqueued = false;
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.

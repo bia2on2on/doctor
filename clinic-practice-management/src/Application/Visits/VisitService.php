@@ -194,11 +194,12 @@ final class VisitService
                 'check_in',
                 isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
-            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+            // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
             $this->audit('VISIT_CHECKED_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [
                 'appointment_id' => $appointmentId,
                 'source' => $source,
             ], $clinicId);
+            // phpcs:enable
 
             return $visit;
         });
@@ -278,7 +279,7 @@ final class VisitService
                 'create_walk_in',
                 isset($meta['note']) ? (string) $meta['note'] : null ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
-            // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
             $this->audit('VISIT_WALK_IN', $actorUserId, $actorRole, 'visit', (int) $visit['id'], $patientId, null, $visit, [], $clinicId);
 
             return $visit;
@@ -372,11 +373,12 @@ final class VisitService
             $this->completeReferencedAppointment((int) $visit['appointment_id'], $actorUserId);
         }
 
-        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
         $this->audit('VISIT_' . strtoupper($event), $actorUserId, $actorRole, 'visit', $visitId, (int) $visit['patient_id'], null, $visit, [
             'from_status' => $fromStatus,
             'to_status' => $toStatus,
         ], (int) $visit['clinic_id']);
+        // phpcs:enable
 
         // N-1 (F8): رویداد اعلان صف — INSERT داخل همان Transaction (N-2)؛
         // شکست اعلان هرگز گردش‌کار صف را نمی‌شکند (قاعده کارفرما).
@@ -1890,10 +1892,11 @@ final class VisitService
     {
         $toStatus = AppointmentMachine::create()->machine()->assert((string) $appt['status'], 'confirm', 'secretary');
         $this->appointments->updateStatus((int) $appt['id'], ['status' => $toStatus, 'confirmed_at' => $now]);
-        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
         $this->audit('APPOINTMENT_CONFIRMED', $actorUserId, 'secretary', 'appointment', (int) $appt['id'], (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'via' => 'visit_check_in',
         ], (int) $appt['clinic_id']);
+        // phpcs:enable
     }
 
     /**
@@ -1925,10 +1928,11 @@ final class VisitService
             'no_show_at' => $now,
             'active_visit_id' => null,
         ]);
-        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
         $this->audit('APPOINTMENT_NO_SHOW', $actorUserId, $actorUserId === null ? 'system' : 'secretary', 'appointment', (int) $appt['id'], (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'slot' => ($appt['slot_date'] ?? '') . ' ' . ($appt['slot_time'] ?? ''),
         ], (int) $appt['clinic_id']);
+        // phpcs:enable
     }
 
     private function completeReferencedAppointment(int $appointmentId, int $actorUserId): void
@@ -1948,10 +1952,11 @@ final class VisitService
             return;
         }
         $this->appointments->updateStatus($appointmentId, ['status' => $toStatus, 'active_visit_id' => null]);
-        // phpcs:ignore PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact call, established file style.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
         $this->audit('APPOINTMENT_COMPLETED', $actorUserId, 'system', 'appointment', $appointmentId, (int) $appt['patient_id'], ['status' => $appt['status']], ['status' => $toStatus], [
             'via' => 'visit_check_out',
         ], (int) $appt['clinic_id']);
+        // phpcs:enable
     }
 
     /**
