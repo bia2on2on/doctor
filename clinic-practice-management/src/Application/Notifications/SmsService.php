@@ -59,6 +59,13 @@ final class SmsService
     /** رویداد داخلی برای پیامک آزمایشی (خارج از رویدادهای بیزنس). */
     public const EVENT_TEST = 'test';
 
+    /**
+     * Explicit delivery classification for an OTP that can no longer be
+     * delivered: the plaintext code is never persisted, so a re-drive after the
+     * originating request ended cannot reconstruct it (D5 — fail closed).
+     */
+    public const OTP_NO_RETRY_CODE = 'CLINIC_SMS_OTP_NO_RETRY';
+
     private const UPDATE_COLUMNS = ['status', 'attempts', 'failure_code', 'provider_msg_id', 'provider'];
 
     /**
@@ -281,11 +288,12 @@ final class SmsService
      * تلاش برای ارسال یک Message (idempotent — برای Job + Fast-path).
      * شکست Retryable با Attempts باقی‌مانده → RETRYING (Job Queue تکرار می‌کند).
      *
-     * @param array<string, string>|null $liveVars متغیرهای زنده (OTP — کد هرگز ذخیره نمی‌شود)
+     * @param array<string, string>|null $live_vars متغیرهای زنده (OTP — کد هرگز ذخیره نمی‌شود)
      */
-    public function dispatchMessage(int $messageId, ?array $liveVars = null): void
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- legacy method name; cross-file API rename.
+    public function dispatchMessage( int $message_id, ?array $live_vars = null ): void
     {
-        $row = $this->fetchMessage($messageId);
+        $row = $this->fetchMessage( $message_id );
         if ($row === [] || SmsMessageStatus::isTerminal((string) $row['status'])) {
             return; // Idempotency — اجرای تکراری Job بی‌اثر است
         }
@@ -299,7 +307,43 @@ final class SmsService
         $maxAttempts = (int) ($row['max_attempts'] ?? 3);
         $attempts = (int) $row['attempts'] + 1;
         if ($attempts > $maxAttempts) {
-            $this->updateMessage($messageId, ['status' => SmsMessageStatus::FAILED, 'attempts' => $attempts, 'failure_code' => 'CLINIC_SMS_MAX_ATTEMPTS']);
+            $this->updateMessage(
+                $message_id,
+                [
+                    'status'       => SmsMessageStatus::FAILED,
+                    'attempts'     => $attempts,
+                    'failure_code' => 'CLINIC_SMS_MAX_ATTEMPTS',
+                ]
+            );
+
+            return;
+        }
+
+        // D5 (fail-closed retry): an OTP row never persists the plaintext code —
+        // the stored message is masked ("***") and vars_json is NULL. Only the
+        // immediate inline dispatch (sendEvent) still holds the live code in
+        // process memory. A re-drive after the request ended (queue/job/manual
+        // retry, possibly in another process) cannot reconstruct the code, so it
+        // must never send the masked text or an empty template variable as if
+        // the message were delivered. Classify explicitly and stop without
+        // touching any provider — no reversible plaintext storage is introduced.
+        $is_otp_event = (string) $row['event'] === SmsEvents::OTP;
+        if ( $is_otp_event && ! $this->has_live_otp_code( $live_vars ) ) {
+            $this->updateMessage(
+                $message_id,
+                [
+                    'status'       => SmsMessageStatus::FAILED,
+                    'attempts'     => $attempts,
+                    'failure_code' => self::OTP_NO_RETRY_CODE,
+                ]
+            );
+            $this->op->error(
+                'SMS_OTP_FAILED_CLOSED',
+                [
+                    'message_id' => $message_id,
+                    'code'       => self::OTP_NO_RETRY_CODE,
+                ]
+            );
 
             return;
         }
@@ -322,14 +366,20 @@ final class SmsService
             'timeout_sec' => (int) (($settings->get('sms.advanced', [])['timeout_sec'] ?? 5)),
         ];
 
-        $this->updateMessage($messageId, ['status' => SmsMessageStatus::SENDING, 'attempts' => $attempts]);
+        $this->updateMessage(
+            $message_id,
+            [
+                'status'   => SmsMessageStatus::SENDING,
+                'attempts' => $attempts,
+            ]
+        );
 
         try {
             if ($provider === null) {
                 throw new SmsSendException('Provider پیامک تنظیم نشده است', false, 'CLINIC_SMS_NOT_CONFIGURED');
             }
 
-            $variables = $liveVars ?? $this->templateVariables($row['vars_json']);
+            $variables = $live_vars ?? $this->templateVariables( $row['vars_json'] );
             if ($row['template_id'] !== null && !empty($provider->capabilities()['template'])) {
                 $result = $provider->sendTemplate(
                     $creds,
@@ -339,35 +389,89 @@ final class SmsService
                     $opts
                 );
             } else {
-                $result = $provider->sendText($creds, (string) $row['recipient'], (string) $row['message'], $opts);
+                // D5 (plain-text OTP dispatch): the stored OTP message is
+                // deliberately masked ("***"), so it must never be sent as the
+                // provider text. For an OTP event re-render the real message
+                // transiently in memory from the event's default template and
+                // the live vars; the value exists only for this provider call
+                // and is never written back to cpms_sms_messages, vars_json,
+                // logs or audit. Non-OTP messages keep their stored text.
+                $outbound_text = (string) $row['message'];
+                if ( $is_otp_event ) {
+                    $outbound_text = $this->render_live_otp_text( $variables );
+                }
+                $result = $provider->sendText( $creds, (string) $row['recipient'], $outbound_text, $opts );
             }
 
-            $this->updateMessage($messageId, [
-                'status' => SmsMessageStatus::SENT,
-                'provider_msg_id' => $result['provider_ref'] ?? null,
-                'failure_code' => null,
-            ]);
-            $this->op->info('SMS_SENT', [
-                'message_id' => $messageId,
-                'event' => $row['event'],
-                'ref' => $result['provider_ref'] ?? null,
-            ]);
+            $this->updateMessage(
+                $message_id,
+                [
+                    'status'          => SmsMessageStatus::SENT,
+                    'provider_msg_id' => $result['provider_ref'] ?? null,
+                    'failure_code'    => null,
+                ]
+            );
+            $this->op->info(
+                'SMS_SENT',
+                [
+                    'message_id' => $message_id,
+                    'event'      => $row['event'],
+                    'ref'        => $result['provider_ref'] ?? null,
+                ]
+            );
         } catch (\Throwable $e) {
             $verdict = RetryClassifier::classify($e);
             $code = method_exists($e, 'apiCode') ? (string) $e->apiCode() : 'CLINIC_SMS_PROVIDER_ERROR';
 
-            // OTP بدون متغیرهای ذخیره‌شده Retry نمی‌شود (کد خام ذخیره نیست — §8)
-            if ($verdict === RetryClassifier::RETRYABLE && (string) $row['event'] === SmsEvents::OTP && $liveVars === null) {
-                $code = 'CLINIC_SMS_OTP_NO_RETRY';
+            // P2 fail-closed OTP classification: an OTP is ALWAYS dispatched inline
+            // and is never enqueued (sendEvent() routes every OTP here directly), so
+            // the plaintext code exists only in this request's memory and no
+            // recoverable retry job can ever run — neither for the initial inline
+            // attempt (live vars present) nor for a re-drive after the request ended
+            // (live vars absent). A retryable provider error must therefore be
+            // classified FAILED/permanent with the explicit no-retry code, never
+            // RETRYING (which would promise a retry that cannot happen). Non-OTP
+            // queued messages keep their normal retryable RETRYING behaviour.
+            if (
+                $verdict === RetryClassifier::RETRYABLE
+                && (string) $row['event'] === SmsEvents::OTP
+            ) {
+                $code    = self::OTP_NO_RETRY_CODE;
                 $verdict = RetryClassifier::PERMANENT;
             }
 
-            if ($verdict === RetryClassifier::RETRYABLE) {
-                $this->updateMessage($messageId, ['status' => SmsMessageStatus::RETRYING, 'failure_code' => $code]);
-                $this->op->warning('SMS_RETRYING', ['message_id' => $messageId, 'code' => $code, 'error' => $e->getMessage()]);
+            if ( $verdict === RetryClassifier::RETRYABLE ) {
+                $this->updateMessage(
+                    $message_id,
+                    [
+                        'status'       => SmsMessageStatus::RETRYING,
+                        'failure_code' => $code,
+                    ]
+                );
+                $this->op->warning(
+                    'SMS_RETRYING',
+                    [
+                        'message_id' => $message_id,
+                        'code'       => $code,
+                        'error'      => $e->getMessage(),
+                    ]
+                );
             } else {
-                $this->updateMessage($messageId, ['status' => SmsMessageStatus::FAILED, 'failure_code' => $code]);
-                $this->op->error('SMS_FAILED', ['message_id' => $messageId, 'code' => $code, 'error' => $e->getMessage()]);
+                $this->updateMessage(
+                    $message_id,
+                    [
+                        'status'       => SmsMessageStatus::FAILED,
+                        'failure_code' => $code,
+                    ]
+                );
+                $this->op->error(
+                    'SMS_FAILED',
+                    [
+                        'message_id' => $message_id,
+                        'code'       => $code,
+                        'error'      => $e->getMessage(),
+                    ]
+                );
             }
         } finally {
             // هیچ scope‌ای نباید از این عملیات به عملیاتِ بعدیِ همان فرآیند نشت
@@ -1025,6 +1129,48 @@ final class SmsService
         }
 
         return array_map('strval', $decoded);
+    }
+
+    /**
+     * Whether this dispatch still holds the live OTP code in process memory.
+     *
+     * The code is never at rest (masked message, NULL vars_json), so only the
+     * immediate inline dispatch can satisfy this. A queued/re-driven OTP after
+     * the request ended fails the dispatch guard instead of being sent masked.
+     *
+     * @param array<string, string>|null $live_vars
+     */
+    private function has_live_otp_code( ?array $live_vars ): bool {
+        return is_array( $live_vars )
+            && isset( $live_vars['otp_code'] )
+            && is_string( $live_vars['otp_code'] )
+            && trim( $live_vars['otp_code'] ) !== '';
+    }
+
+    /**
+     * Render the real OTP message text for an in-memory plain-text dispatch.
+     *
+     * The rendered string exists only for the provider call in this request;
+     * it is never written back to cpms_sms_messages/vars_json and never logged.
+     * The fail-closed dispatch guard guarantees the live code is present, so
+     * the renderer's required-variable check cannot trip on this path.
+     *
+     * @param array<string, string> $live_vars
+     */
+    private function render_live_otp_text( array $live_vars ): string {
+        $info = SmsEvents::info( SmsEvents::OTP );
+        if ( $info === null ) {
+            // The OTP event is a compile-time registry constant; its absence is
+            // a configuration defect and must fail closed rather than send a mask.
+            throw new SmsSendException( 'OTP event is not registered', false, self::OTP_NO_RETRY_CODE );
+        }
+
+        return SmsTemplateRenderer::render(
+            $info['default_text'],
+            $live_vars,
+            $info['variables'],
+            $info['required']
+        );
     }
 
     /**

@@ -366,39 +366,157 @@ final class RoleCapabilitiesPage
         $user = wp_get_current_user();
         $input = isset($_POST['role_caps']) && is_array($_POST['role_caps']) ? wp_unslash($_POST['role_caps']) : []; // phpcs:ignore WordPress.Security.ValidatedSanitizedInput -- sanitize در sanitizeCapList (whitelist سخت)
 
-        $report = [];
-        foreach (self::ROLE_PRESETS as $role) {
-            $requested = isset($input[$role]) && is_array($input[$role]) ? $input[$role] : [];
-            $before = array_keys(array_filter(RolesAndCapabilities::capsMap($role)));
-            if (!RolesAndCapabilities::setRoleCaps($role, $requested)) {
-                continue;
-            }
-            $after = array_keys(array_filter(RolesAndCapabilities::capsMap($role)));
-            $added = array_values(array_diff($after, $before));
-            $removed = array_values(array_diff($before, $after));
-            if ($added !== [] || $removed !== []) {
-                App::audit()->log(
-                    'ROLE_PERMISSION_CHANGED',
-                    ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'administrator'],
-                    'role',
-                    null,
-                    null,
-                    ['role' => $role, 'caps' => $before],
-                    ['role' => $role, 'caps' => $after],
-                    ['added' => $added, 'removed' => $removed]
-                );
-                $report[] = $role . ': +' . count($added) . '/-' . count($removed);
-            }
+        // Pure, testable boundary (no exit/redirect): the admin handler only owns
+        // CSRF/authorization and the redirect; rollback/cache semantics live here.
+        try {
+            $report = self::apply_capability_matrix( $input, (int) $user->ID );
+        } catch ( \Throwable $e ) {
+            // The boundary already rolled the option rows back; now revert the
+            // in-memory option/role caches so effective permissions cannot outlive
+            // the rolled-back durable state (no false success, no privilege residue).
+            self::restore_effective_caps_after_rollback();
+            set_transient( self::NOTICE_KEY, 'خطا: تغییرات دسترسی ثبت نشد — همهٔ نقش‌ها به وضعیت پیشین بازگشتند.', 60 );
+            wp_safe_redirect( admin_url( 'admin.php?page=cpms-roles' ) );
+            exit;
         }
 
-        set_transient(
-            self::NOTICE_KEY,
-            $report === [] ? 'بدون تغییر — دسترسی‌ها از قبل همین بود.' : 'ذخیره شد (' . implode('، ', $report) . ') — در Audit ثبت شد.',
-            60
-        );
+        $notice = $report === []
+            ? 'بدون تغییر — دسترسی‌ها از قبل همین بود.'
+            : 'ذخیره شد (' . implode( '، ', $report ) . ') — در Audit ثبت شد.';
+        set_transient( self::NOTICE_KEY, $notice, 60 );
 
-        wp_safe_redirect(admin_url('admin.php?page=cpms-roles'));
+        wp_safe_redirect( admin_url( 'admin.php?page=cpms-roles' ) );
         exit;
+    }
+
+    /**
+     * Re-sync effective in-memory permission state with the durable (rolled-back)
+     * database state. A MySQL rollback reverts the wp_options rows but not the
+     * live object cache or the WP_Roles/WP_User capability snapshots, so both must
+     * be rebuilt explicitly after an audit-driven rollback.
+     *
+     * Narrow invalidation (persistent-object-cache safe): only the two option
+     * rows the transaction mutates — the capability-override option and the
+     * WP_Roles registry option — plus their alloptions/notoptions snapshots are
+     * evicted. A global wp_cache_flush() would discard every unrelated cached
+     * row on Redis/Memcached backends, so it is deliberately avoided.
+     */
+    private static function restore_effective_caps_after_rollback(): void {
+        $role_key = wp_roles()->role_key;
+        foreach ( [ RolesAndCapabilities::OPTION_OVERRIDE, $role_key ] as $option ) {
+            wp_cache_delete( $option, 'options' );
+            $not_options = wp_cache_get( 'notoptions', 'options' );
+            if ( is_array( $not_options ) && isset( $not_options[ $option ] ) ) {
+                unset( $not_options[ $option ] );
+                wp_cache_set( 'notoptions', $not_options, 'options' );
+            }
+        }
+        wp_cache_delete( 'alloptions', 'options' );
+        wp_roles()->for_site();
+        // Explicit self-healing (idempotent by design, TP-10): reconcile the
+        // rebuilt in-memory role registry against the rolled-back durable
+        // override option, removing any capability whose add_cap survived in
+        // memory — effective permissions must equal durable state exactly.
+        RolesAndCapabilities::register();
+        $current = wp_get_current_user();
+        if ( $current instanceof \WP_User ) {
+            $current->get_role_caps();
+        }
+    }
+
+    /**
+     * Pure capability-matrix boundary (no redirect/exit) so integration tests can
+     * prove audit-failure rollback of BOTH durable option rows and effective
+     * in-memory permissions. All role changes and their mandatory audit events
+     * share one transaction; an audit failure throws after full rollback.
+     *
+     * @param array<string, mixed> $input role_caps payload
+     * @return list<string> human-readable per-role change report
+     */
+    public static function apply_capability_matrix( array $input, int $actor_wp_user_id ): array {
+        $report = [];
+        // D6 audit atomicity: capability overrides (wp_options) and the WP role
+        // registry (wp_user_roles option) are MySQL rows like any other, so the
+        // multi-role changes and every mandatory audit event share ONE boundary.
+        // A failed audit rolls ALL role changes back; the cache restore in the
+        // admin handler then reverts effective permissions to durable state.
+        try {
+            App::db()->transactional(
+                function () use ( $input, $actor_wp_user_id, &$report ) {
+                    foreach ( self::ROLE_PRESETS as $role ) {
+                        $requested = isset( $input[ $role ] ) && is_array( $input[ $role ] ) ? $input[ $role ] : [];
+                        $before    = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                        if ( ! RolesAndCapabilities::setRoleCaps( $role, $requested ) ) {
+                            continue;
+                        }
+                        $after   = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                        $added   = array_values( array_diff( $after, $before ) );
+                        $removed = array_values( array_diff( $before, $after ) );
+                        if ( $added !== [] || $removed !== [] ) {
+                            App::audit()->log(
+                                'ROLE_PERMISSION_CHANGED',
+                                [ 'wp_user_id' => $actor_wp_user_id, 'role' => 'administrator' ],
+                                'role',
+                                null,
+                                null,
+                                [ 'role' => $role, 'caps' => $before ],
+                                [ 'role' => $role, 'caps' => $after ],
+                                [ 'added' => $added, 'removed' => $removed ]
+                            );
+                            $report[] = $role . ': +' . count( $added ) . '/-' . count( $removed );
+                        }
+                    }
+                }
+            );
+        } catch ( \Throwable $e ) {
+            // Roll back the in-memory option/role caches to the durable (rolled-back)
+            // database state before propagating, so effective permissions can never
+            // outlive a failed mandatory audit — including on multi-role requests where
+            // earlier roles in the same boundary were already changed in memory.
+            self::restore_effective_caps_after_rollback();
+            throw $e;
+        }
+
+        return $report;
+    }
+
+    /**
+     * Pure single-role template-reset boundary (no redirect/exit). Throws on audit
+     * failure after the option/role changes have rolled back.
+     */
+    public static function reset_role_to_template( string $role ): void {
+        if ( ! in_array( $role, self::ROLE_PRESETS, true ) ) {
+            return;
+        }
+        try {
+            App::db()->transactional(
+                function () use ( $role ) {
+                    $before = array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) );
+                    RolesAndCapabilities::setRoleCaps(
+                        $role,
+                        match ( $role ) {
+                            RolesAndCapabilities::ROLE_DOCTOR => RolesAndCapabilities::DOCTOR_CAPS,
+                            RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::ACCOUNTANT_CAPS,
+                            RolesAndCapabilities::ROLE_MANAGER => RolesAndCapabilities::MANAGER_CAPS,
+                            default => RolesAndCapabilities::SECRETARY_CAPS,
+                        }
+                    );
+                    App::audit()->log(
+                        'ROLE_PERMISSION_RESET',
+                        [ 'wp_user_id' => (int) get_current_user_id(), 'role' => 'administrator' ],
+                        'role',
+                        null,
+                        null,
+                        [ 'role' => $role, 'caps' => $before ],
+                        [ 'role' => $role, 'caps' => array_keys( array_filter( RolesAndCapabilities::capsMap( $role ) ) ) ],
+                        []
+                    );
+                }
+            );
+        } catch ( \Throwable $e ) {
+            self::restore_effective_caps_after_rollback();
+            throw $e;
+        }
     }
 
     /**
@@ -411,30 +529,23 @@ final class RoleCapabilitiesPage
         }
         check_admin_referer('cpms_reset_role_caps_' . (string) ($_GET['role'] ?? ''));
 
-        $role = (string) ($_GET['role'] ?? '');
-        if (in_array($role, self::ROLE_PRESETS, true)) {
-            $before = array_keys(array_filter(RolesAndCapabilities::capsMap($role)));
-            RolesAndCapabilities::setRoleCaps($role, match ($role) {
-                RolesAndCapabilities::ROLE_DOCTOR => RolesAndCapabilities::DOCTOR_CAPS,
-                RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::ACCOUNTANT_CAPS,
-                RolesAndCapabilities::ROLE_MANAGER => RolesAndCapabilities::MANAGER_CAPS,
-                default => RolesAndCapabilities::SECRETARY_CAPS,
-            });
-            $user = wp_get_current_user();
-            App::audit()->log(
-                'ROLE_PERMISSION_RESET',
-                ['wp_user_id' => (int) $user->ID, 'role' => $user->roles[0] ?? 'administrator'],
-                'role',
-                null,
-                null,
-                ['role' => $role, 'caps' => $before],
-                ['role' => $role, 'caps' => array_keys(array_filter(RolesAndCapabilities::capsMap($role)))],
-                []
-            );
+        $role = (string) ( $_GET['role'] ?? '' );
+        if ( in_array( $role, self::ROLE_PRESETS, true ) ) {
+            // D6 audit atomicity: the template reset and its mandatory audit share
+            // one boundary; on audit failure both the option row and the effective
+            // in-memory role capabilities are restored to the pre-reset state.
+            try {
+                self::reset_role_to_template( $role );
+            } catch ( \Throwable $e ) {
+                self::restore_effective_caps_after_rollback();
+                set_transient( self::NOTICE_KEY, 'خطا: بازنشانی نقش ثبت نشد — وضعیت پیشین حفظ شد.', 60 );
+                wp_safe_redirect( admin_url( 'admin.php?page=cpms-roles' ) );
+                exit;
+            }
         }
 
-        set_transient(self::NOTICE_KEY, 'نقش به Template پیش‌فرض بازگشت — در Audit ثبت شد.', 60);
-        wp_safe_redirect(admin_url('admin.php?page=cpms-roles'));
+        set_transient( self::NOTICE_KEY, 'نقش به Template پیش‌فرض بازگشت — در Audit ثبت شد.', 60 );
+        wp_safe_redirect( admin_url( 'admin.php?page=cpms-roles' ) );
         exit;
     }
 

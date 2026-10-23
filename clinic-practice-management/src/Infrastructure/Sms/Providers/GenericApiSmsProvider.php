@@ -328,9 +328,25 @@ final class GenericApiSmsProvider implements SmsProviderInterface
         }
 
         $httpCode = 0;
-        if (isset($http_response_header[0]) && preg_match('/\s(\d{3})\s/', (string) $http_response_header[0], $m)) {
+        // PHP 8.4+ exposes the last HTTP-wrapper headers via an explicit
+        // function; the magic $http_response_header local is deprecated as of
+        // PHP 8.5 (removed in 9.0) and merely naming it triggers a compile-time
+        // deprecation even inside an unexecuted branch. The legacy fallback
+        // therefore never writes the variable name: it reads the same local
+        // through get_defined_vars() on PHP 8.1-8.3 only. A failed fetch already
+        // returned 'unreachable' above, so stale headers from an earlier request
+        // can never be parsed here.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- PSR compact style in this file; security, SQL, i18n and escaping sniffs stay active.
+        if (function_exists('http_get_last_response_headers')) {
+            $responseHeaders = http_get_last_response_headers();
+        } else {
+            $legacyLocals    = get_defined_vars();
+            $responseHeaders = $legacyLocals['http_response_header'] ?? null;
+        }
+        if (is_array($responseHeaders) && isset($responseHeaders[0]) && preg_match('/\s(\d{3})\s/', (string) $responseHeaders[0], $m)) {
             $httpCode = (int) $m[1];
         }
+        // phpcs:enable
 
         return ['http_code' => $httpCode, 'body' => (string) $responseBody];
     }

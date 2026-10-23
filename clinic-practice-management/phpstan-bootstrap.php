@@ -45,3 +45,20 @@ if (!defined('MONTH_IN_SECONDS')) {
 if (!defined('WP_DEBUG')) {
     define('WP_DEBUG', false);
 }
+
+/*
+ * Analysis-only declaration (this file is never loaded at runtime): the
+ * http_get_last_response_headers() function shipped in PHP 8.4 as the
+ * replacement for the deprecated magic $http_response_header local. The
+ * production call is function_exists()-guarded, and the pinned WordPress
+ * stubs do not declare it yet.
+ *
+ * @return array<int, string>|null
+ */
+// phpcs:disable WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine -- analysis-only file (never loaded at runtime) declaring the canonical PHP 8.4 core function name; renaming would defeat the stub.
+if ( ! function_exists( 'http_get_last_response_headers' ) ) {
+    function http_get_last_response_headers(): ?array {
+        return null;
+    }
+}
+// phpcs:enable

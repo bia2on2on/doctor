@@ -4,12 +4,25 @@ name: WordPress Compatibility (previous supported majors)
 #
 # لِینِ اصلی روی آخرین نسخهٔ پایدار (۷.۱.x) اجرا می‌شود: CI (Integration)،
 # Real WP Acceptance (مرورگر)، First-Practice Acceptance، Pilot/Upgrade و
-# Closure. این workflow فقط دو نسخهٔ اصلیِ *پیشین* (۷.۰ و ۶.۹) را می‌سنجد.
+# Closure. این workflow دو نسخهٔ اصلیِ *پیشین* (۷.۰ و ۶.۹ روی PHP 8.2) را
+# می‌سنجد و یک لِینِ زمان‌اجرا روی آخرین نسخهٔ پایدار WP (۷.۱.x) با جدیدترین
+# شاخهٔ پایدار PHP (8.5؛ انتشار ۸.۵.۰ در ۲۰۲۵-۱۱-۲۰ طبق php.net) اضافه می‌کند.
+# لِینِ 8.5 شواهد سازگاریِ زمان‌اجرای واقعی (boot/migration/probe روی WP رسمی)
+# می‌دهد؛ تست‌لیبِ PHPUnit روی 8.5 به‌دلیل محدودیت PHPUnit 9.6 در اینجا اجرا
+# نمی‌شود و پوشش تستیِ 8.5 از Unit matrix در ci.yml می‌آید.
 #
 # چرا زمان‌بندی‌شده و نه per-PR:
 #   افزودنِ این دو نسخه به هر PR تعداد چک‌ها را سه‌برابر می‌کند (هزینه/زمان/نویز)
-#   بدون آن‌که چیزی به شواهدِ دقیقِ همان SHA اضافه شود؛ پس روی `schedule` و
-#   `workflow_dispatch` می‌ماند و **هیچ** چکِ per-PR اضافه نمی‌کند.
+#   بدون آن‌که چیزی به شواهدِ دقیقِ همان SHA اضافه شود؛ ماتریس کامل (۷.۰/۶.۹/۷.۱)
+#   روی `schedule` و `workflow_dispatch` می‌ماند.
+#
+# D7 (ممیزی مستقل): لِینِ زمان‌اجرای WP 7.1 روی PHP 8.5 نباید فقط schedule-only
+# بماند، پس یک تریگر `pull_request` اضافه شده که در آن **فقط همان یک لِین** اجرا
+# می‌شود (ماتریس پایین به‌صورت شرطی تک‌عضوی می‌شود). این کوچک‌ترین تغییر پایدار
+# است: دقیقاً +۱ چک per-PR (نام: `WP 7.1 on PHP 8.5`)، بدون انفجار ماتریس و
+# بدون حذف لِین‌های ۸.۱–۸.۴ در ci.yml. شواهد تست‌لیبِ PHPUnit روی 8.5 همچنان از
+# Unit matrix در ci.yml می‌آید؛ این لِین boot/install/migration/probe واقعی روی
+# WP رسمی را پوشش می‌دهد (محدودیت PHPUnit 9.6 در بالای همین فایل مستند است).
 #
 # آنچه سنجیده می‌شود (کفِ اعلام‌شده = ۶.۹):
 #   ۱. آخرین وصلهٔ همان نسخهٔ اصلی از منبعِ رسمی WordPress.org حل می‌شود
@@ -29,6 +42,15 @@ on:
     # هفتگی: دوشنبه ۰۳:۱۷ UTC (کم‌ازدحام)
     - cron: '17 3 * * 1'
   workflow_dispatch:
+  # D7: لِینِ زمان‌اجرا (WP 7.1 + PHP 8.5) باید روی همان SHA هر PR واقعاً اجرا
+  # شود، نه فقط به‌صورت هفتگی. فیلتر path تمرکز را روی کد افزونه و خود workflow
+  # نگه می‌دارد؛ تغییرات صرفاً مستندسازی این لِین را بیدار نمی‌کند.
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/wp-compat.yml'
+      - 'clinic-practice-management/**'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,6 +58,10 @@ concurrency:
 
 permissions:
   contents: read
+  # D7: the runtime probe mirrors its full output into a PR comment so a
+  # failure is diagnosable from the PR alone (job logs may be unreachable in
+  # restricted networks). Only this workflow's own evidence is posted.
+  pull-requests: write
 
 defaults:
   run:
@@ -43,14 +69,15 @@ defaults:
 
 jobs:
   compat:
-    name: WP ${{ matrix.wp_major }} runtime compatibility
+    name: WP ${{ matrix.wp_major }} on PHP ${{ matrix.php }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        # دو نسخهٔ اصلیِ پیشینِ بازهٔ پشتیبانی‌شده (نسخهٔ اصلی روی لِین‌های اصلی سنجیده می‌شود).
-        wp_major: ['7.0', '6.9']
+        # schedule/dispatch → هر سه لِین (7.0/8.2، 6.9/8.2، 7.1/8.5).
+        # pull_request → فقط لِین زمان‌اجرای WP 7.1 روی PHP 8.5 (+۱ چک per-PR).
+        include: ${{ github.event_name == 'pull_request' && fromJSON('[{"wp_major":"7.1","php":"8.5"}]') || fromJSON('[{"wp_major":"7.0","php":"8.2"},{"wp_major":"6.9","php":"8.2"},{"wp_major":"7.1","php":"8.5"}]') }}
     services:
       mysql:
         image: mysql:8
@@ -68,7 +95,7 @@ jobs:
 
       - uses: shivammathur/setup-php@v2
         with:
-          php-version: '8.2'
+          php-version: ${{ matrix.php }}
           extensions: mysqli, mbstring, xml, curl, zip
           coverage: none
 
@@ -182,8 +209,28 @@ jobs:
 
           echo "COMPAT PROBE OK\n";
           PHPEOF
-          php -l /tmp/compat-probe.php > /dev/null
-          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/compat-probe.php
+          php -l /tmp/compat-probe.php | tee /tmp/compat-probe-lint.log
+          # D7: keep full probe output outside the job log path as well, so the
+          # always-on evidence step below can post it even when this step fails.
+          WP_HOME="$WP_DIR" STORAGE_OUT="$STORAGE_OUT" php /tmp/compat-probe.php 2>&1 | tee /tmp/compat-probe.log
+
+      - name: Mirror runtime probe evidence onto the PR
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          PR_NUM="${{ github.event.pull_request.number }}"
+          {
+            echo "### WP compat runtime probe — WP ${{ matrix.wp_major }}.x on PHP ${{ matrix.php }} (run ${{ github.run_id }}, head ${GITHUB_SHA::8})"
+            echo '```'
+            echo "resolved: ${WP_VER:-unknown} · outcome: ${{ job.status }}"
+            echo '--- php -l ---'
+            cat /tmp/compat-probe-lint.log 2>/dev/null || echo '(lint log missing)'
+            echo '--- probe ---'
+            cat /tmp/compat-probe.log 2>/dev/null || echo '(probe log missing)'
+            echo '```'
+          } > /tmp/wp-compat-pr.md
+          gh pr comment "$PR_NUM" --body-file /tmp/wp-compat-pr.md || echo '::notice::probe evidence comment failed'
 
       - name: Summary
         if: always()
@@ -192,6 +239,6 @@ jobs:
             echo "### WordPress Compatibility — ${{ matrix.wp_major }}.x (resolved ${WP_VER:-unknown})"
             echo ''
             echo "- artifact: release ZIP from \`bin/build-release.sh\`"
-            echo "- PHP: 8.2 · DB: MySQL 8"
+            echo "- PHP: ${{ matrix.php }} · DB: MySQL 8"
             echo "- probe outcome: ${{ job.status }}"
           } >> "$GITHUB_STEP_SUMMARY"
