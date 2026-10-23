@@ -179,11 +179,17 @@ final class RoleCapabilityAuditAtomicityTest extends WP_UnitTestCase
      */
     public function testRollbackUsesNarrowCacheInvalidationNotGlobalFlush(): void
     {
+        // Full matrix mirroring the admin form: every untouched role submits
+        // its own template, so the only effective change is secretary +EXPORT
+        // (a partial matrix would be interpreted as "empty every other role").
         $input = [
             RolesAndCapabilities::ROLE_SECRETARY => array_merge(
                 RolesAndCapabilities::SECRETARY_CAPS,
                 [RolesAndCapabilities::EXPORT]
             ),
+            RolesAndCapabilities::ROLE_DOCTOR => RolesAndCapabilities::DOCTOR_CAPS,
+            RolesAndCapabilities::ROLE_ACCOUNTANT => RolesAndCapabilities::ACCOUNTANT_CAPS,
+            RolesAndCapabilities::ROLE_MANAGER => RolesAndCapabilities::MANAGER_CAPS,
         ];
 
         // Warm the option/role caches the way a real request would.

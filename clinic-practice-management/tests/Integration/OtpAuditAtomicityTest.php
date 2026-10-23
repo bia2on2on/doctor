@@ -90,14 +90,21 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
 
         $this->failAuditInserts();
         $threw = false;
+        $captured = null;
         try {
             App::otpService()->verify(self::MOBILE, '424242');
         } catch (\Throwable $e) {
             $threw = true;
+            $captured = $e;
         }
         $this->restoreAuditInserts();
 
-        self::assertTrue($threw, 'a failed mandatory OTP_VERIFY_OK audit must propagate, never report false success');
+        // TEMP DEBUG (remove after diagnosis): surface the exact provisioning failure.
+        global $wpdb;
+        self::fail(
+            'OTP_DIAG ' . ($captured !== null ? get_class($captured) . ':' . $captured->getMessage() : 'no-throw')
+            . ' :: last_error=' . (string) $wpdb->last_error
+        );
         self::assertNull($this->tokenConsumedAt(), 'the single-use consume must roll back — the code stays valid');
         self::assertSame(0, $this->usersWithEmail($email), 'provisioned wp_users row must roll back with its audit');
         self::assertSame(0, $this->tableCount('cpms_patient_user_links'), 'no patient link may survive the rolled-back verify');

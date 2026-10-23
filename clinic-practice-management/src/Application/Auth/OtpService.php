@@ -228,7 +228,7 @@ final class OtpService
             $retryEnqueued = in_array($res['status'], [SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING], true);
         } catch (\Throwable $e) {
             // خطای ساختاری (مثلاً Table Migration نشده) — Token معتبر می‌ماند؛ ارسال از Queue ادامه دارد
-            $this->op->error('OTP_SMS_FAILED', ['token_id' => $token_id, 'error' => $e->getMessage()]);
+            $this->op->error( 'OTP_SMS_FAILED', [ 'token_id' => $token_id, 'error' => $e->getMessage() ] );
             $retryEnqueued = true;
         }
         $this->audit($sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip);
@@ -342,6 +342,7 @@ final class OtpService
         // only after the durable commit.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy local naming preserved.
         $clinic_id = $clinicId;
+
         $verify_outcome = $this->db->transactional(
             function () use ( $row, $mobile, $purpose, $ip, $clinic_id ): array {
                 // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
@@ -392,9 +393,9 @@ final class OtpService
         }
 
         return [
-            'user_id' => (int) $verify_outcome['user_id'],
-            'patient_links' => $verify_outcome['patient_links'],
-            'is_new_user' => (bool) $verify_outcome['is_new_user'],
+            'user_id'        => (int) $verify_outcome['user_id'],
+            'patient_links'  => $verify_outcome['patient_links'],
+            'is_new_user'    => (bool) $verify_outcome['is_new_user'],
             'session_issued' => (bool) $verify_outcome['session_issued'],
         ];
     }

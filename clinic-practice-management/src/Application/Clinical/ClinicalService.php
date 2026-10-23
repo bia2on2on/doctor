@@ -466,7 +466,7 @@ final class ClinicalService
                     ? (int) $input['correction_of_prescription_id']
                     : null;
                 $number = $this->prescriptions->nextPrescriptionNumber();
-                $rx_id  = $this->prescriptions->insert(
+                $rx_id = $this->prescriptions->insert(
                     (int) $visit['clinic_id'],
                     [
                         'prescription_number'           => $number,
@@ -618,7 +618,7 @@ final class ClinicalService
             'prescription',
             $prescriptionId
         );
-        $rx = $this->db->transactional(function () use ($prescriptionId, $reason, $clinicId): array {
+        $rx = $this->db->transactional(function () use ($actorUserId, $prescriptionId, $reason, $clinicId): array {
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
@@ -689,7 +689,7 @@ final class ClinicalService
         // D6 audit atomicity: every recommendation row and the mandatory audit
         // commit/roll back together — a partial set can never survive.
         $actor_user_id = (int) func_get_arg( 0 );
-        $visit_id      = (int) func_get_arg( 1 );
+        $visit_id = (int) func_get_arg( 1 );
 
         $created = $this->db->transactional(
             function () use ( $visit, $visit_id, $actor_user_id, $items ): array {
@@ -788,6 +788,7 @@ final class ClinicalService
                 $suggested_date = isset( $input['suggested_date'] ) ? (string) $input['suggested_date'] : null;
                 $interval_days  = isset( $input['interval_days'] ) ? (int) $input['interval_days'] : null;
 
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected repository property retains its published name.
                 $id = $this->followUps->insert(
                     (int) $visit['clinic_id'],
                     [
@@ -866,6 +867,7 @@ final class ClinicalService
 
         return $this->db->transactional(
             function () use ( $actor_user_id, $visit_id, $visit ) {
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected VisitService property retains its published name.
                 $result = $this->visitService->transition( $actor_user_id, $visit_id, 'complete' );
 
                 $this->audit->log(
@@ -915,6 +917,7 @@ final class ClinicalService
 
         return $this->db->transactional(
             function () use ( $actor_user_id, $visit_id, $visit, $reason ) {
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected VisitService property retains its published name.
                 $result = $this->visitService->transition( $actor_user_id, $visit_id, 'reopen', [ 'reason' => $reason ] );
 
                 $this->audit->log(

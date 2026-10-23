@@ -1644,3 +1644,61 @@ CI matrix (official sources verified at execution time):
 - MariaDB 11.4.13 + MySQL 8 lanes unchanged; MariaDB 11.8 remains unsupported; no RLS.
 
 Local verification honesty: no PHP/MySQL/PHPUnit/WPCS/PHPStan runtime in this sandbox. Verification performed: custom string/comment-aware brace/paren balance checker (all 12 touched PHP files OK); full diff review; signature/vocabulary/table-name equivalence checks against origin 9f397b5 (all identical for the four rebuilds); YAML parsed with js-yaml; camelCase local-variable scan (only WPCS-safe property declarations remain, matching green-suite precedent). PHPUnit/WPCS/PHPStan/real-MySQL results are NOT RUN locally and must be evidenced only by exact-commit owner CI.
+
+## 2026-10-23 (third session) — exact-SHA CI remediation of run 39913056317 (head 5c03395)
+
+Entry state: head 5c03395 pushed; exact-head CI finished with 3 failing checks —
+WPCS (changed code), Static Analysis (PHPStan level 3), Integration (WP 7.1 + MySQL 8):
+Tests 2316, Errors 21, Failures 4. All other 26 checks PASS, including the new
+Unit Tests (PHP 8.5) lane and Unit 8.1–8.4. Artifact/action-log egress is blocked
+by the sandbox host allowlist (results-receiver/blob hosts unreachable); evidence
+gathered from PR bot comments + api.github.com only.
+
+Root-cause analysis and fixes (working tree, not yet pushed at log time):
+
+1. HandwritingService — two rebuilt closures referenced `$actorUserId` (and addPage
+   also `$doc`) without importing them in `use`: createDocument L88 and addPage L182.
+   Runtime effect: "Undefined variable" under the strict test error handler → 18
+   integration errors across HandwritingFlowTest, HandwritingAuditAtomicityTest,
+   Phase3Slice6AuthorizationRedTest, plus 3 Phase10 staff-portal 500-vs-201 failures.
+   Fix: completed both `use` lists. A string/comment-aware free-variable audit of
+   every closure in the five changed source files was then run; the only remaining
+   genuine missing import was ClinicalService voidPrescription (next item).
+2. ClinicalService — voidPrescription closure (L621) used `$actorUserId` without
+   importing it (PrescriptionPrintTest failure). Fix: added to `use` list.
+3. BookingAuditAtomicityTest (new suite) — imported the non-existent
+   `ClinicCore\Application\Booking\BookingException`; the thrown (and only existing)
+   class is `ClinicCore\Domain\Booking\BookingException`, matching every other test
+   suite's import. Fix: corrected the import; service code untouched.
+4. RoleCapabilityAuditAtomicityTest::testRollbackUsesNarrowCacheInvalidationNotGlobalFlush
+   — submitted a partial matrix (secretary only). Product semantics (identical to
+   green head 9f397b5, method byte-identical) interpret missing roles as
+   requested=[] and empty them, so the authorized retry wrote 4 ROLE_PERMISSION_CHANGED
+   audits instead of 1. Fix: full-matrix fixture (all four preset roles with their
+   templates, secretary +EXPORT), mirroring the suite's own first test method.
+5. WPCS changed-lines findings (17 lines, 23 sniff reports incl. one double report):
+   PEAR/Squiz bracket spacing (OtpService L231, Booking L1691/L1800, MedicalFile L512),
+   closure `use (` spacing (Booking L1648, Handwriting L381), Generic
+   MultipleStatementAlignment (OtpService L344 group broken with a blank line;
+   Clinical L469 normalized to one space; L707 anchor removed by single-spacing the
+   func_get_arg alias pair at L691-692), WordPress.Arrays double-arrow alignment
+   (OtpService outer return block), and three UsedPropertyNotSnakeCase ERRORs
+   (Clinical followUps/visitService call sites) handled with standalone
+   `// phpcs:ignore` lines following the established ClinicianAdminPage precedent.
+   No ruleset or gate changes; no property renames (published injected APIs).
+6. OtpAuditAtomicityTest::testVerifyAuditFailureRollsBackConsumeAndProvisioning —
+   still root-causing: under the audit-1054 fault, `wp_insert_user` returns WP_Error
+   ("خطا در ایجاد حساب") BEFORE any audit INSERT is attempted, so the fault cannot be
+   what fails it. createWpUser is byte-identical to green head; the same filter +
+   suppress_errors + transactional pattern passes in StaffManagementAuditAtomicityTest
+   (wp_insert_user under active fault) and ManagementPortalAuditAtomicityTest; no
+   user_register/wp_pre_insert_user_data listeners exist; no pluggable override;
+   mobile/email unique to this suite; no global seed collision found statically.
+   A clearly-marked TEMP DEBUG self::fail() capturing exception class/message and
+   `$wpdb->last_error` was added for ONE CI cycle to obtain the exact WP_Error code;
+   it must be removed in the following commit once the cause is known.
+
+Verification performed locally: brace/paren balance lint on all 8 touched PHP files
+(OK); closure free-variable audit (custom parser, strings/comments stripped);
+git-diff review; green-head method comparisons. Not runnable locally: PHPUnit,
+WPCS, PHPStan, MySQL — all evidence must come from the next exact-SHA CI run.

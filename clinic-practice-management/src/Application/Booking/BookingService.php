@@ -1645,7 +1645,7 @@ final class BookingService
         // Bound to a variable first so the legacy multi-line closure keeps its
         // original body bytes (PEAR.Functions.FunctionCallSignature requires the
         // open parenthesis to be the last content on a multi-line call line).
-        $no_show = function () use ($appointmentId, $trimmed, $actorUserId): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
+        $no_show = function () use ( $appointmentId, $trimmed, $actorUserId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
             $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
@@ -1688,7 +1688,7 @@ final class BookingService
 
         // Mandatory APPOINTMENT_NO_SHOW audit now commits inside the no-show
         // transaction above (D6 atomicity).
-        $this->op->info('booking.no_show', ['appointment_id' => $appointmentId, 'actor' => $actorUserId]); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
+        $this->op->info( 'booking.no_show', [ 'appointment_id' => $appointmentId, 'actor' => $actorUserId ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
 
         return ['appointment_id' => $appointmentId, 'status' => $toState];
     }
@@ -1797,7 +1797,7 @@ final class BookingService
 
         // Mandatory APPOINTMENT_CANCELLED audit now commits inside the
         // cancellation transaction above (D6 atomicity).
-        $this->op->info('booking.cancelled', ['appointment_id' => $appointmentId, 'by' => $wpUserId, 'actor' => $actor]); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
+        $this->op->info( 'booking.cancelled', [ 'appointment_id' => $appointmentId, 'by' => $wpUserId, 'actor' => $actor ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameters preserved on unchanged call sites.
 
         // F8 §5 — انصراف خودکار: لغو نوبت → Cancel اعلان‌های queued مرتبط
         // (یادآوری‌های queued همان نوبت — apt:{id}).

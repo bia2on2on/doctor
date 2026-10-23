@@ -509,7 +509,7 @@ final class MedicalFileService
             );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        $storagePath = $this->storageFor( $patientClinicId )->store( $content, $patientClinicId, $extension ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
 
         // D6 audit atomicity: the attachment metadata row and its mandatory
         // audit commit/roll back together. The physical object was already

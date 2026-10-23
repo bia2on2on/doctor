@@ -85,7 +85,7 @@ final class HandwritingService
             $pages = [['width' => 1240, 'height' => 1754]];
         }
 
-        $doc = $this->db->transactional(function () use ($trustedClinicId, $visitId, $visit, $title, $pages): array {
+        $doc = $this->db->transactional(function () use ($actorUserId, $trustedClinicId, $visitId, $visit, $title, $pages): array {
             $documentId = $this->handwriting->insertDocument($trustedClinicId, [
                 'visit_id' => $visitId,
                 'patient_id' => (int) $visit['patient_id'],
@@ -179,7 +179,7 @@ final class HandwritingService
         $existing = $this->handwriting->pagesForDocument($documentId);
         $index = count($existing);
 
-        $row = $this->db->transactional(function () use ($documentId, $page, $index): array {
+        $row = $this->db->transactional(function () use ($actorUserId, $documentId, $page, $index, $doc): array {
             $rowId = $this->handwriting->insertPage($this->pageRow($page, $documentId, $index));
             $this->handwriting->updateDocument($documentId, ['page_count' => $index + 1]);
 
@@ -378,7 +378,7 @@ final class HandwritingService
         // Bound to a variable first so the legacy multi-line closure keeps its
         // original body bytes (PEAR.Functions.FunctionCallSignature requires the
         // open parenthesis to be the last content on a multi-line call line).
-        $save_page = function () use ($pageId, $encoded, $strokes, $update, $source, $newVersion, $clientRevision, $actorUserId, $doc, $page, $body): void { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
+        $save_page = function () use ( $pageId, $encoded, $strokes, $update, $source, $newVersion, $clientRevision, $actorUserId, $doc, $page, $body ): void { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
             $update['stroke_data'] = $encoded;
             $update['stroke_count'] = count($strokes);
             $update['client_revision'] = $clientRevision;
