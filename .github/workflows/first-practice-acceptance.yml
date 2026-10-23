@@ -76,16 +76,20 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
           coverage: none
 
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification); browsers are a pinned, cache-backed step.
       - name: Tooling (apache + wp-cli + playwright/chromium)
-        run: |
-          mkdir -p /tmp/fp
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd > /tmp/fp/apt.log 2>&1 || { tail -20 /tmp/fp/apt.log; exit 1; }
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-          wp --allow-root --version
-          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
-          python3 -m playwright install --with-deps chromium > /tmp/fp/pw.log 2>&1 || { tail -10 /tmp/fp/pw.log; exit 1; }
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: >-
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl php-zip php-gd
+          apt-log-dir: /tmp/fp
+
+      - name: Playwright chromium (pinned + cached)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
 
       - name: Lint first-practice harness
         run: |

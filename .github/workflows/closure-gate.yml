@@ -75,11 +75,17 @@ jobs:
           extensions: mysqli, mbstring, xml, curl, zip
           coverage: none
 
+      # Apt package list unchanged (`mysql-client` only) + pinned, verified WP-CLI.
       - name: Tooling (mysql-client + wp-cli)
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mysql-client
+          apt-log-dir: /tmp
+
+      # Same evidence the old combined step printed, kept in its own step so the
+      # PHP runtime record survives the move.
+      - name: PHP runtime evidence (after tooling)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
-          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
           php -v | head -1
           php -m | grep -E 'sodium|mysqli|openssl' || true
 
@@ -340,11 +346,12 @@ jobs:
           extensions: mysqli, mbstring, xml, curl, zip
           coverage: none
 
+      # Apt package list unchanged (`mysql-client` only) + pinned, verified WP-CLI.
       - name: Tooling (mysql-client + wp-cli)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client > /tmp/apt.log 2>&1
-          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mysql-client
+          apt-log-dir: /tmp
 
       - name: Build release ZIP + WP 7.1.3 install (از آرتیفکت)
         run: |
