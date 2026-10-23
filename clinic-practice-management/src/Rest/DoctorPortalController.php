@@ -744,7 +744,7 @@ final class DoctorPortalController extends RestBase {
 		$patient_id   = (int) $visit['patient_id'];
 
 		$patient = $db->fetchRow(
-			'SELECT id, clinic_id, mrn, blood_group, allergies, chronic_conditions, current_medications FROM ' . $db->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
+			'SELECT id, clinic_id, mrn, blood_group, medication_allergies, other_allergies, chronic_conditions, medical_history, surgery_history, current_medications FROM ' . $db->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
 			[ $patient_id ]
 		);
 		if ( null === $patient || (int) $patient['clinic_id'] !== $clinic_id ) {
@@ -903,15 +903,26 @@ final class DoctorPortalController extends RestBase {
 			$clinic_id
 		);
 
+		$allergy_items = array_values(
+			array_unique(
+				array_merge(
+					$decode_json_list( $patient['medication_allergies'] ?? null ),
+					$decode_json_list( $patient['other_allergies'] ?? null )
+				)
+			)
+		);
+
 		return $this->success(
 			[
 				'visit_id'        => $visit_id,
 				'patient_summary' => [
 					'mrn'                 => (string) ( $patient['mrn'] ?? '' ),
 					'blood_group'         => isset( $patient['blood_group'] ) ? (string) $patient['blood_group'] : '',
-					'allergies'           => $decode_json_list( $patient['allergies'] ?? null ),
+					'allergies'           => $allergy_items,
 					'chronic_conditions'  => $decode_json_list( $patient['chronic_conditions'] ?? null ),
 					'current_medications' => $decode_json_list( $patient['current_medications'] ?? null ),
+					'medical_history'     => isset( $patient['medical_history'] ) ? (string) $patient['medical_history'] : '',
+					'surgery_history'     => isset( $patient['surgery_history'] ) ? (string) $patient['surgery_history'] : '',
 				],
 				'prior_visits'    => $prior_visits,
 			]

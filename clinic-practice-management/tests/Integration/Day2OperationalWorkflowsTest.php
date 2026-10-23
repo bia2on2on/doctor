@@ -225,8 +225,8 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $pastDate2  = $this->localDate(self::TZ, '-5 days');
         $today      = $this->localDate(self::TZ);
 
-        $priorVisitC1 = $this->insertVisitWithStatus($clinicA, $locA, $patient, $c1, $pastDate1, 'completed', 0);
-        $priorVisitC2 = $this->insertVisitWithStatus($clinicA, $locA, $patient, $c2, $pastDate2, 'completed', 0);
+        $priorVisitC1 = $this->insertVisitWithStatus($clinicA, $locA, $patient, $c1, $pastDate1, 'consultation_completed', 0);
+        $priorVisitC2 = $this->insertVisitWithStatus($clinicA, $locA, $patient, $c2, $pastDate2, 'consultation_completed', 0);
         $currentVisit = $this->insertVisitWithStatus($clinicA, $locA, $patient, $c1, $today, 'in_consultation', 1);
 
         $notesRepo = new ClinicalNoteRepository(App::db());
@@ -315,8 +315,8 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $today     = $this->localDate(self::TZ);
         $nowUtc    = App::db()->nowUtcSql();
 
-        $visitA = $this->insertVisitWithStatus($clinicA, $locA, $patient, $clinician, $today, 'completed', 0);
-        $visitB = $this->insertVisitWithStatus($clinicA, $locB, $patient, $clinician, $today, 'completed', 0);
+        $visitA = $this->insertVisitWithStatus($clinicA, $locA, $patient, $clinician, $today, 'consultation_completed', 0);
+        $visitB = $this->insertVisitWithStatus($clinicA, $locB, $patient, $clinician, $today, 'consultation_completed', 0);
 
         $invA = $this->insertInvoice($clinicA, $locA, $patient, $visitA, $docUser, 'INV-D2A-1', '500000.00', '350000.00', '150000.00', 'partial');
         $invB = $this->insertInvoice($clinicA, $locB, $patient, $visitB, $docUser, 'INV-D2B-1', '900000.00', '900000.00', '0.00', 'paid');

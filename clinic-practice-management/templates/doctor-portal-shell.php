@@ -1043,6 +1043,13 @@ function formatClinicalList(value){
         var clean = value.map(function(v){ return String(v || '').trim(); }).filter(Boolean);
         return clean.length ? clean.join('، ') : 'ثبت نشده';
     }
+    if ( value && typeof value === 'object' ) {
+        var combined = [].concat(
+            Array.isArray(value.medication) ? value.medication : [],
+            Array.isArray(value.other) ? value.other : []
+        ).map(function(v){ return String(v || '').trim(); }).filter(Boolean);
+        return combined.length ? combined.join('، ') : 'ثبت نشده';
+    }
     if ( typeof value === 'string' && value.trim() !== '' ) return value.trim();
     return 'ثبت نشده';
 }
