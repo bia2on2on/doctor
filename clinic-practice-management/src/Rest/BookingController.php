@@ -124,16 +124,23 @@ final class BookingController extends RestBase
             ],
         ]);
 
-        register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule-options', [
+        register_rest_route(
+            self::NS,
+            '/appointments/(?P<id>\d+)/reschedule-options',
             [
-                'methods'             => WP_REST_Server::READABLE,
-                'callback'            => fn ( WP_REST_Request $request ) => $this->reschedule_options( $request ),
-                'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
-                'args'                => [
-                    'id' => [ 'required' => true, 'type' => 'integer' ],
+                [
+                    'methods'             => WP_REST_Server::READABLE,
+                    'callback'            => fn ( WP_REST_Request $request ) => $this->reschedule_options( $request ),
+                    'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
+                    'args'                => [
+                        'id' => [
+                            'required' => true,
+                            'type'     => 'integer',
+                        ],
+                    ],
                 ],
-            ],
-        ]);
+            ]
+        );
 
         register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule', [
             [
@@ -360,20 +367,43 @@ final class BookingController extends RestBase
             return $this->error( 'HAS_ACTIVE_VISIT', 409, 'نوبت دارای ویزیت فعال قابل جابه‌جایی نیست' );
         }
 
-        $previous_scope = ScopeContext::tryGet();
-        try {
-            ScopeContext::set( ClinicScope::forClinic( $clinic_id, $location_id ) );
-            App::resetScope();
-            $availability = $this->booking->availability( $clinician_id, null, null );
-        } catch ( BookingException $e ) {
-            return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract.
-        } finally {
-            if ( $previous_scope instanceof ClinicScope ) {
-                ScopeContext::set( $previous_scope );
-            } else {
-                ScopeContext::clear();
+        $loc_row = $db->fetchRow(
+            'SELECT timezone FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+            [ $location_id, $clinic_id ]
+        );
+        $loc_tz  = is_array( $loc_row ) ? trim( (string) ( $loc_row['timezone'] ?? '' ) ) : '';
+        if ( '' === $loc_tz ) {
+            $availability = [ 'days' => [] ];
+        } else {
+            try {
+                $tz_obj    = new \DateTimeZone( $loc_tz );
+                $now_local = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'UTC' ) ) )->setTimezone( $tz_obj );
+                $from_date = $now_local->format( 'Y-m-d' );
+                $to_date   = $now_local->modify( '+29 days' )->format( 'Y-m-d' );
+            } catch ( \Throwable ) {
+                $from_date = '';
+                $to_date   = '';
             }
-            App::resetScope();
+
+            if ( '' === $from_date || '' === $to_date ) {
+                $availability = [ 'days' => [] ];
+            } else {
+                $previous_scope = ScopeContext::tryGet();
+                try {
+                    ScopeContext::set( ClinicScope::forClinic( $clinic_id, $location_id ) );
+                    App::resetScope();
+                    $availability = $this->booking->availability( $clinician_id, $from_date, $to_date );
+                } catch ( BookingException $e ) {
+                    return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract.
+                } finally {
+                    if ( $previous_scope instanceof ClinicScope ) {
+                        ScopeContext::set( $previous_scope );
+                    } else {
+                        ScopeContext::clear();
+                    }
+                    App::resetScope();
+                }
+            }
         }
 
         $filtered_days = [];

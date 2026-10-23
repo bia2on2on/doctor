@@ -283,7 +283,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $ok = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $currentVisit . '/medical-history', [], $headers);
         self::assertSame(200, $ok->get_status());
         $payload = $this->payload($ok);
-        $rawJson = (string) wp_json_encode($payload);
+        $rawJson = (string) wp_json_encode($payload, JSON_UNESCAPED_UNICODE);
 
         self::assertStringContainsString('یادداشت خصوصی دکتر اول', $rawJson);
         self::assertStringContainsString('تشخیص قابل مشاهده دکتر دوم', $rawJson);
@@ -296,7 +296,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         App::membership_service()->set_capability($mem1, RolesAndCapabilities::RX_READ, 'deny');
         $noRx = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $currentVisit . '/medical-history', [], $headers);
         self::assertSame(200, $noRx->get_status());
-        self::assertStringNotContainsString('Losartan', (string) wp_json_encode($this->payload($noRx)));
+        self::assertStringNotContainsString('Losartan', (string) wp_json_encode($this->payload($noRx), JSON_UNESCAPED_UNICODE));
     }
 
     public function testFinanceReconciliationEnforcesSubscriberAccountantLocationScopeAndZeroPhi(): void

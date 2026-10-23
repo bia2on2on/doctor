@@ -54,12 +54,6 @@ final class PatientPortalPage
     /** نشانگرِ کنترلِ جابه‌جایی نوبت (B5) — فقط روی ردیف‌های `confirmed`. */
     private const RESCHEDULE_ACTION_ROLE = 'reschedule-appointment';
 
-    /** مسیرِ دریافت اسلات‌های آزاد برای جابه‌جایی نوبتِ خودِ بیمار. */
-    private const RESCHEDULE_OPTIONS_PATH = '/appointments/{id}/reschedule-options';
-
-    /** الگوی مسیرِ B5 نسبت به ریشهٔ namespace؛ `{id}` سمت کلاینت جایگزین می‌شود. */
-    private const RESCHEDULE_PATH = '/appointments/{id}/reschedule';
-
     /** کلاسِ `<script type="application/json">` حاملِ پیکربندیِ امن. */
     private const CONFIG_CLASS = 'cpms-patient-portal__config';
 
@@ -660,8 +654,6 @@ final class PatientPortalPage
             [
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
                 'cancel_path'             => self::CANCEL_PATH,
-                'reschedule_options_path' => self::RESCHEDULE_OPTIONS_PATH,
-                'reschedule_path'         => self::RESCHEDULE_PATH,
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
                 'profile_my_records_path' => '/patient/my-records',
                 'profile_me_path'         => '/patient/me',

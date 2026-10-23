@@ -813,7 +813,7 @@ final class DoctorPortalController extends RestBase {
 					);
 					$items_by_rx     = [];
 					foreach ( is_array( $item_rows ) ? $item_rows : [] as $item ) {
-						$rx_id                  = (int) $item['prescription_id'];
+						$rx_id                   = (int) $item['prescription_id'];
 						$items_by_rx[ $rx_id ][] = [
 							'generic_name'  => (string) $item['generic_name'],
 							'dose'          => (string) $item['dose'],

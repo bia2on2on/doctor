@@ -481,8 +481,7 @@ async function testPatientPortalReschedule() {
           rest_root: 'https://clinic.test/wp-json/clinic/v1',
           nonce: 'nonce-pp-1',
           cancel_path: '/appointments/{id}/cancel',
-          reschedule_options_path: '/appointments/{id}/reschedule-options',
-          reschedule_path: '/appointments/{id}/reschedule'
+          notifications_read_path: '/notifications/read'
         }) +
       '</script>' +
     '</div>';

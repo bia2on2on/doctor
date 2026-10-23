@@ -1382,9 +1382,12 @@
 	}
 
 	function bindReschedule(config) {
-		if (!isNonEmptyString(config.reschedule_options_path) || !isNonEmptyString(config.reschedule_path)) {
-			return;
-		}
+		var rescheduleOptionsPath = isNonEmptyString(config.reschedule_options_path)
+			? config.reschedule_options_path
+			: '/appointments/{id}/reschedule-options';
+		var reschedulePath = isNonEmptyString(config.reschedule_path)
+			? config.reschedule_path
+			: '/appointments/{id}/reschedule';
 		var panel = document.querySelector('[data-role="reschedule-panel"]');
 		var buttons = document.querySelectorAll('button[data-role="reschedule-appointment"]');
 		if (!panel || !buttons.length) {
@@ -1582,7 +1585,7 @@
 			panel.hidden = false;
 			if (loadingNode) { loadingNode.hidden = false; }
 
-			var path = cancelPath(config.reschedule_options_path, appointmentId);
+			var path = cancelPath(rescheduleOptionsPath, appointmentId);
 			requestJson(apiUrl(config.rest_root, path), {
 				method: 'GET',
 				credentials: 'same-origin',
@@ -1649,7 +1652,7 @@
 				state.busy = true;
 				resetMessages();
 				setBusy(confirmBtn, true, 'تأیید تغییر نوبت', 'در حال ثبت جابه‌جایی…');
-				var path = cancelPath(config.reschedule_path, state.appointmentId);
+				var path = cancelPath(reschedulePath, state.appointmentId);
 				requestJson(apiUrl(config.rest_root, path), {
 					method: 'POST',
 					credentials: 'same-origin',
