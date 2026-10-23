@@ -336,7 +336,7 @@ final class GenericApiSmsProvider implements SmsProviderInterface
         // through get_defined_vars() on PHP 8.1-8.3 only. A failed fetch already
         // returned 'unreachable' above, so stale headers from an earlier request
         // can never be parsed here.
-        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase locals, established file style; security, SQL, i18n and escaping sniffs stay active.
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- PSR compact style in this file; security, SQL, i18n and escaping sniffs stay active.
         if (function_exists('http_get_last_response_headers')) {
             $responseHeaders = http_get_last_response_headers();
         } else {

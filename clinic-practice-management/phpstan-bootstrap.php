@@ -55,9 +55,10 @@ if (!defined('WP_DEBUG')) {
  *
  * @return array<int, string>|null
  */
-if (!function_exists('http_get_last_response_headers')) {
-    function http_get_last_response_headers(): ?array
-    {
+// phpcs:disable WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.PrefixAllGlobals.NonPrefixedFunctionFound,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine -- analysis-only file (never loaded at runtime) declaring the canonical PHP 8.4 core function name; renaming would defeat the stub.
+if ( ! function_exists( 'http_get_last_response_headers' ) ) {
+    function http_get_last_response_headers(): ?array {
         return null;
     }
 }
+// phpcs:enable
