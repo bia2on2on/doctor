@@ -1131,6 +1131,153 @@ final class BookingService
     // ================= B5 — Reschedule (Patient) =================
 
     /**
+     * گزینه‌های اسلات آزاد برای جابه‌جایی نوبتِ خودِ بیمار در همان Location و
+     * بر اساس سیاست `booking.max_future_days` و `booking.min_lead_hours` کلینیکِ
+     * پایدارِ همان نوبت (بدون افشای clinic_id/location_id/patient_id).
+     *
+     * @return array<string, mixed>
+     */
+    public function reschedule_options( int $actor_user_id, int $appointment_id, ?\DateTimeImmutable $now_utc = null ): array {
+        if ( $appointment_id <= 0 ) {
+            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'شناسهٔ نوبت نامعتبر است', 422 );
+        }
+
+        try {
+            $appt = $this->appointments->find( $appointment_id );
+            if ( null === $appt ) {
+                throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+            }
+
+            $clinic_id    = (int) $appt['clinic_id'];
+            $location_id  = (int) $appt['location_id'];
+            $clinician_id = (int) $appt['clinician_id'];
+            $patient_id   = (int) $appt['patient_id'];
+            $current_slot = (int) $appt['slot_id'];
+
+            $linked = $this->db->fetchRow(
+                'SELECT 1 AS ok FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+                . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+                . " WHERE l.wp_user_id = %d AND l.clinic_id = %d AND l.patient_id = %d AND p.status = 'active' LIMIT 1",
+                [ $actor_user_id, $clinic_id, $patient_id ]
+            );
+            if ( null === $linked ) {
+                $this->audit(
+                    'FORBIDDEN_ACCESS_ATTEMPT',
+                    $actor_user_id,
+                    'patient',
+                    'appointment',
+                    $appointment_id,
+                    $patient_id,
+                    null,
+                    null,
+                    [ 'via' => 'reschedule_options' ],
+                    $clinic_id
+                );
+                throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+            }
+
+            if ( 'confirmed' !== (string) $appt['status'] ) {
+                throw BookingException::of( 'CLINIC_INVALID_TRANSITION', 'فقط نوبت‌های تأییدشده قابل جابه‌جایی هستند', 409 );
+            }
+
+            $this->assertNoActiveVisit( $appointment_id );
+
+            $filtered_days = [];
+            if ( ! $this->clinic_is_suspended( $clinic_id ) && $this->clinic_organization_is_active( $clinic_id ) ) {
+                $loc_row = $this->db->fetchRow(
+                    'SELECT timezone FROM ' . $this->db->table( 'cpms_locations' )
+                    . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
+                    [ $location_id, $clinic_id ]
+                );
+                $tz_name = is_array( $loc_row ) ? trim( (string) ( $loc_row['timezone'] ?? '' ) ) : '';
+
+                $location_tz = null;
+                if ( '' !== $tz_name && in_array( $tz_name, timezone_identifiers_list(), true ) ) {
+                    try {
+                        $location_tz = new \DateTimeZone( $tz_name );
+                    } catch ( \Throwable ) {
+                        $location_tz = null;
+                    }
+                }
+
+                $settings        = $this->settingsFor( $clinic_id );
+                $max_future_days = (int) $settings->get( 'booking.max_future_days', 60 );
+                $min_lead_hours  = max( 0, (int) $settings->get( 'booking.min_lead_hours', 2 ) );
+
+                if ( $location_tz instanceof \DateTimeZone && $max_future_days > 0 ) {
+                    $clock_utc        = $now_utc ?? $this->now();
+                    $from_date        = $clock_utc->setTimezone( $location_tz )->format( 'Y-m-d' );
+                    $max_utc          = $clock_utc->add( new \DateInterval( 'P' . $max_future_days . 'D' ) );
+                    $to_date          = $max_utc->setTimezone( $location_tz )->format( 'Y-m-d' );
+                    $location_details = $this->location_details_map( [ $location_id ], $clinic_id );
+                    $location_info    = $location_details[ $location_id ] ?? null;
+
+                    if ( null !== $location_info ) {
+                        $candidates = $this->slots->availabilityCandidates( $clinic_id, $clinician_id, $from_date, $to_date );
+                        $grouped    = [];
+                        foreach ( $candidates as $row ) {
+                            if ( (int) ( $row['location_id'] ?? 0 ) !== $location_id ) {
+                                continue;
+                            }
+                            $candidate_id = (int) ( $row['id'] ?? 0 );
+                            if ( $candidate_id <= 0 || $candidate_id === $current_slot ) {
+                                continue;
+                            }
+                            $slot_date = (string) ( $row['slot_date'] ?? '' );
+                            $slot_time = (string) ( $row['slot_time'] ?? '' );
+                            if (
+                                null !== BookingWindow::checkRequestWithTimezone(
+                                    $slot_date,
+                                    $slot_time,
+                                    $location_tz,
+                                    $clock_utc,
+                                    $min_lead_hours,
+                                    $max_future_days
+                                )
+                            ) {
+                                continue;
+                            }
+                            $grouped[ $slot_date ][] = [
+                                'slot_id'          => $candidate_id,
+                                'time'             => substr( $slot_time, 0, 5 ),
+                                'duration_min'     => (int) ( $row['duration_min'] ?? 0 ),
+                                'capacity_left'    => (int) ( $row['capacity_left'] ?? 0 ),
+                                'location_name'    => $location_info['name'],
+                                'location_address' => $location_info['address'],
+                            ];
+                        }
+
+                        foreach ( $grouped as $date => $slots ) {
+                            $filtered_days[] = [
+                                'date'   => $date,
+                                'jalali' => Jalali::formatYmd( $date ),
+                                'slots'  => $slots,
+                            ];
+                        }
+                    }
+                }
+            }
+
+            $clinician_row  = $this->db->fetchRow(
+                'SELECT full_name FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d LIMIT 1',
+                [ $clinician_id ]
+            );
+            $clinician_name = is_array( $clinician_row ) ? (string) ( $clinician_row['full_name'] ?? '' ) : '';
+
+            return [
+                'appointment_id' => $appointment_id,
+                'reference_code' => (string) $appt['reference_code'],
+                'current_jalali' => Jalali::formatYmd( (string) $appt['slot_date'] ),
+                'current_time'   => substr( (string) $appt['slot_time'], 0, 5 ),
+                'clinician_name' => $clinician_name,
+                'days'           => $filtered_days,
+            ];
+        } catch ( Throwable $e ) {
+            throw $this->toBookingException( $e );
+        }
+    }
+
+    /**
      * @return array{appointment_id: int, reference_code: string, slot: array<string, mixed>, status: string, previous_appointment_id: int}
      */
     public function reschedule(int $wpUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey, ?int $newSlotId = null): array

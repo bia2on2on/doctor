@@ -1569,7 +1569,7 @@
 			}
 		}
 
-		function loadOptionsForAppointment(appointmentId, triggerBtn) {
+		function loadOptionsForAppointment(appointmentId, triggerBtn, preserveError) {
 			var seq = state.requestSeq + 1;
 			state.requestSeq = seq;
 			state.appointmentId = appointmentId;
@@ -1577,7 +1577,17 @@
 			state.days = [];
 			state.selectedDayIndex = -1;
 			state.selectedSlot = null;
-			resetMessages();
+			if (preserveError) {
+				if (successNode) {
+					successNode.textContent = '';
+					successNode.hidden = true;
+				}
+				if (emptyNode) {
+					emptyNode.hidden = true;
+				}
+			} else {
+				resetMessages();
+			}
 			if (pickerNode) { pickerNode.hidden = true; }
 			if (summaryNode) { summaryNode.textContent = ''; }
 			if (selectedNode) { selectedNode.textContent = ''; }
@@ -1676,7 +1686,7 @@
 							code
 						);
 						if (code === 'CLINIC_SLOT_TAKEN') {
-							loadOptionsForAppointment(state.appointmentId, state.triggerBtn);
+							loadOptionsForAppointment(state.appointmentId, state.triggerBtn, true);
 						} else {
 							confirmBtn.focus();
 						}

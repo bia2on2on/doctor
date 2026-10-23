@@ -8,8 +8,10 @@ use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
+use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
+use ClinicCore\Settings\Settings;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_UnitTestCase;
@@ -211,8 +213,8 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $clinicA = $this->insertClinic('D2C Clinic A', $org);
         $locA    = $this->insertLocation($clinicA, 'D2C Loc A', 1);
 
-        $doc1User = $this->makeUser('d2c_doc1', RolesAndCapabilities::ROLE_DOCTOR);
-        $doc2User = $this->makeUser('d2c_doc2', RolesAndCapabilities::ROLE_DOCTOR);
+        $doc1User = $this->makeUser('d2c_doc1', 'subscriber');
+        $doc2User = $this->makeUser('d2c_doc2', 'subscriber');
         $c1       = $this->insertClinician('دکتر اول', $clinicA, 1, $doc1User);
         $c2       = $this->insertClinician('دکتر دوم', $clinicA, 1, $doc2User);
         $mem1     = cpms_test_seed_membership($doc1User, $clinicA, 'cpms_doctor');
@@ -405,6 +407,428 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         App::membership_service()->set_capability($memId, RolesAndCapabilities::FINANCE_READ, 'deny');
         $denied = $this->dispatch('GET', '/clinic/v1/staff/portal/finance/reconciliation', ['from' => $today, 'to' => $today], $headersLocA);
         self::assertSame(403, $denied->get_status());
+    }
+
+    public function testSubscriberDoctorMedicalHistoryEnforcesScopedGrantsDenyOverridesSecondClinicianAndCrossClinic(): void
+    {
+        $org     = $this->insertOrg('P1 SubDoc Org');
+        $clinicA = $this->insertClinic('P1 Clinic A', $org);
+        $clinicB = $this->insertClinic('P1 Clinic B', $org);
+        $locA    = $this->insertLocation($clinicA, 'P1 Loc A', 1);
+        $locB    = $this->insertLocation($clinicB, 'P1 Loc B', 1);
+
+        // Real WordPress Subscribers — ZERO global clinical capabilities.
+        $subDoc1      = $this->makeUser('p1_sub_doc1', 'subscriber');
+        $subDoc2      = $this->makeUser('p1_sub_doc2', 'subscriber');
+        $visitingDoc  = $this->makeUser('p1_sub_visiting', 'subscriber');
+        $foreignDoc   = $this->makeUser('p1_sub_foreign', 'subscriber');
+        $wpAdminUser  = $this->makeUser('p1_wp_admin', 'administrator');
+
+        foreach ([$subDoc1, $subDoc2, $visitingDoc, $foreignDoc] as $uid) {
+            $u = get_userdata($uid);
+            self::assertNotFalse($u);
+            self::assertSame(['subscriber'], array_values($u->roles));
+            self::assertFalse(user_can($uid, RolesAndCapabilities::MEDICAL_READ));
+            self::assertFalse(user_can($uid, RolesAndCapabilities::PRIVATE_NOTE_READ));
+            self::assertFalse(user_can($uid, RolesAndCapabilities::RX_READ));
+        }
+
+        $c1       = $this->insertClinician('دکتر مشترک یک', $clinicA, 1, $subDoc1);
+        $c2       = $this->insertClinician('دکتر مشترک دو', $clinicA, 1, $subDoc2);
+        $cVisit   = $this->insertClinician('دکتر مهمان', $clinicA, 1, $visitingDoc);
+        $cForeign = $this->insertClinician('دکتر کلینیک ب', $clinicB, 1, $foreignDoc);
+
+        $mem1       = cpms_test_seed_membership($subDoc1, $clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($subDoc2, $clinicA, 'cpms_doctor');
+        cpms_test_seed_membership($foreignDoc, $clinicB, 'cpms_doctor');
+
+        // Custom role in Clinic A with ONLY MEDICAL_READ (no PRIVATE_NOTE_READ or RX_READ preset)
+        // so explicit scoped capability GRANT and DENY > GRANT are proven independently of presets.
+        (new CustomRoleRepository(App::db()))->define(
+            $clinicA,
+            'visiting_physician',
+            [RolesAndCapabilities::MEDICAL_READ],
+            'پزشک مهمان'
+        );
+        $visitingMem = cpms_test_seed_membership($visitingDoc, $clinicA, 'visiting_physician');
+
+        App::membership_service()->assign_clinician_locations($c1, [$locA], $locA);
+        App::membership_service()->assign_clinician_locations($c2, [$locA], $locA);
+        App::membership_service()->assign_clinician_locations($cVisit, [$locA], $locA);
+        App::membership_service()->assign_clinician_locations($cForeign, [$locB], $locB);
+
+        $patientA = $this->insertPatient($clinicA, 'P1A');
+        $patientB = $this->insertPatient($clinicB, 'P1B');
+
+        $past1        = $this->localDate(self::TZ, '-12 days');
+        $past2        = $this->localDate(self::TZ, '-7 days');
+        $past3        = $this->localDate(self::TZ, '-3 days');
+        $today        = $this->localDate(self::TZ);
+        $priorVisitC1 = $this->insertVisitWithStatus($clinicA, $locA, $patientA, $c1, $past1, 'consultation_completed', 0);
+        $priorVisitC2 = $this->insertVisitWithStatus($clinicA, $locA, $patientA, $c2, $past2, 'consultation_completed', 0);
+        $priorVisitCV = $this->insertVisitWithStatus($clinicA, $locA, $patientA, $cVisit, $past3, 'consultation_completed', 0);
+        $activeVisit1 = $this->insertVisitWithStatus($clinicA, $locA, $patientA, $c1, $today, 'in_consultation', 1);
+        $activeVisitV = $this->insertVisitWithStatus($clinicA, $locA, $patientA, $cVisit, $today, 'in_consultation', 1);
+        $foreignVisit = $this->insertVisitWithStatus($clinicB, $locB, $patientB, $cForeign, $past1, 'consultation_completed', 0);
+
+        $notesRepo = new ClinicalNoteRepository(App::db());
+        $notesRepo->insert($clinicA, [
+            'visit_id'              => $priorVisitC1,
+            'patient_id'            => $patientA,
+            'clinician_id'          => $c1,
+            'category'              => 'diagnosis',
+            'visibility'            => 'doctor_private',
+            'content_text'          => 'یادداشت خصوصی پزشک مشترک ۱',
+            'created_by_wp_user_id' => $subDoc1,
+        ]);
+        $notesRepo->insert($clinicA, [
+            'visit_id'              => $priorVisitC2,
+            'patient_id'            => $patientA,
+            'clinician_id'          => $c2,
+            'category'              => 'diagnosis',
+            'visibility'            => 'patient_visible',
+            'content_text'          => 'یادداشت عمومی پزشک مشترک ۲',
+            'created_by_wp_user_id' => $subDoc2,
+        ]);
+        $notesRepo->insert($clinicA, [
+            'visit_id'              => $priorVisitC2,
+            'patient_id'            => $patientA,
+            'clinician_id'          => $c2,
+            'category'              => 'clinical_note',
+            'visibility'            => 'doctor_private',
+            'content_text'          => 'یادداشت محرمانه پزشک مشترک ۲',
+            'created_by_wp_user_id' => $subDoc2,
+        ]);
+        $notesRepo->insert($clinicA, [
+            'visit_id'              => $priorVisitCV,
+            'patient_id'            => $patientA,
+            'clinician_id'          => $cVisit,
+            'category'              => 'diagnosis',
+            'visibility'            => 'doctor_private',
+            'content_text'          => 'یادداشت خصوصی پزشک مهمان',
+            'created_by_wp_user_id' => $visitingDoc,
+        ]);
+        $notesRepo->insert($clinicB, [
+            'visit_id'              => $foreignVisit,
+            'patient_id'            => $patientB,
+            'clinician_id'          => $cForeign,
+            'category'              => 'diagnosis',
+            'visibility'            => 'patient_visible',
+            'content_text'          => 'یادداشت کلینیک بیگانه ب',
+            'created_by_wp_user_id' => $foreignDoc,
+        ]);
+
+        $this->insertFinalizedPrescription($clinicA, $priorVisitC2, $patientA, $c2, 'Atorvastatin');
+        $this->insertFinalizedPrescription($clinicB, $foreignVisit, $patientB, $cForeign, 'Warfarin');
+
+        $headersA = ['X-CPMS-Clinic-Id' => (string) $clinicA, 'X-CPMS-Location-Id' => (string) $locA];
+        $headersB = ['X-CPMS-Clinic-Id' => (string) $clinicB, 'X-CPMS-Location-Id' => (string) $locB];
+
+        // 1. WP Subscriber doctor with active cpms_doctor membership reads own doctor_private note +
+        //    colleague's patient_visible note + prescription, while colleague's doctor_private note
+        //    and foreign-Clinic records stay completely invisible.
+        wp_set_current_user($subDoc1);
+        $res1 = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersA);
+        self::assertSame(200, $res1->get_status());
+        $json1 = (string) wp_json_encode($this->payload($res1), JSON_UNESCAPED_UNICODE);
+        self::assertStringContainsString('یادداشت خصوصی پزشک مشترک ۱', $json1);
+        self::assertStringContainsString('یادداشت عمومی پزشک مشترک ۲', $json1);
+        self::assertStringContainsString('Atorvastatin', $json1);
+        self::assertStringNotContainsString('یادداشت محرمانه پزشک مشترک ۲', $json1);
+        self::assertStringNotContainsString('یادداشت خصوصی پزشک مهمان', $json1);
+        self::assertStringNotContainsString('یادداشت کلینیک بیگانه ب', $json1);
+        self::assertStringNotContainsString('Warfarin', $json1);
+
+        // 2. Explicit DENY on PRIVATE_NOTE_READ hides own doctor_private note on cpms_doctor preset.
+        App::membership_service()->set_capability($mem1, RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
+        $resNoPriv = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersA);
+        self::assertSame(200, $resNoPriv->get_status());
+        $jsonNoPriv = (string) wp_json_encode($this->payload($resNoPriv), JSON_UNESCAPED_UNICODE);
+        self::assertStringNotContainsString('یادداشت خصوصی پزشک مشترک ۱', $jsonNoPriv);
+        self::assertStringContainsString('یادداشت عمومی پزشک مشترک ۲', $jsonNoPriv);
+        self::assertStringContainsString('Atorvastatin', $jsonNoPriv);
+
+        // 3. Explicit scoped GRANTs on custom role (`visiting_physician`) enable own doctor_private + RX_READ,
+        //    and subsequent explicit DENY overrides GRANT (`DENY > GRANT`).
+        wp_set_current_user($visitingDoc);
+        $baseVisitRes = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisitV . '/medical-history', [], $headersA);
+        self::assertSame(200, $baseVisitRes->get_status());
+        $baseJson = (string) wp_json_encode($this->payload($baseVisitRes), JSON_UNESCAPED_UNICODE);
+        self::assertStringContainsString('یادداشت عمومی پزشک مشترک ۲', $baseJson);
+        self::assertStringNotContainsString('یادداشت خصوصی پزشک مهمان', $baseJson);
+        self::assertStringNotContainsString('Atorvastatin', $baseJson);
+
+        App::membership_service()->set_capability($visitingMem, RolesAndCapabilities::PRIVATE_NOTE_READ, 'grant');
+        App::membership_service()->set_capability($visitingMem, RolesAndCapabilities::RX_READ, 'grant');
+        $grantedRes = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisitV . '/medical-history', [], $headersA);
+        self::assertSame(200, $grantedRes->get_status());
+        $grantedJson = (string) wp_json_encode($this->payload($grantedRes), JSON_UNESCAPED_UNICODE);
+        self::assertStringContainsString('یادداشت خصوصی پزشک مهمان', $grantedJson);
+        self::assertStringContainsString('Atorvastatin', $grantedJson);
+        self::assertStringNotContainsString('یادداشت خصوصی پزشک مشترک ۱', $grantedJson);
+
+        App::membership_service()->set_capability($visitingMem, RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
+        App::membership_service()->set_capability($visitingMem, RolesAndCapabilities::RX_READ, 'deny');
+        $deniedOverrideRes = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisitV . '/medical-history', [], $headersA);
+        self::assertSame(200, $deniedOverrideRes->get_status());
+        $deniedOverrideJson = (string) wp_json_encode($this->payload($deniedOverrideRes), JSON_UNESCAPED_UNICODE);
+        self::assertStringNotContainsString('یادداشت خصوصی پزشک مهمان', $deniedOverrideJson);
+        self::assertStringNotContainsString('Atorvastatin', $deniedOverrideJson);
+
+        App::membership_service()->set_capability($visitingMem, RolesAndCapabilities::MEDICAL_READ, 'deny');
+        $deniedMedical = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisitV . '/medical-history', [], $headersA);
+        self::assertSame(403, $deniedMedical->get_status());
+
+        // 4. Second clinician in same Clinic, doctor from Clinic B, and WP Administrator without clinical ownership are denied.
+        wp_set_current_user($subDoc2);
+        $otherClinicianRes = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersA);
+        self::assertSame(404, $otherClinicianRes->get_status());
+
+        wp_set_current_user($foreignDoc);
+        $crossClinicWithA = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersA);
+        self::assertSame(403, $crossClinicWithA->get_status());
+        $crossClinicWithB = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersB);
+        self::assertSame(404, $crossClinicWithB->get_status());
+
+        wp_set_current_user($wpAdminUser);
+        $adminRes = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $activeVisit1 . '/medical-history', [], $headersA);
+        self::assertSame(403, $adminRes->get_status());
+    }
+
+    public function testDoctorMedicalHistoryAbortsWithInternalErrorAndLeaksNothingWhenAuditWriteFails(): void
+    {
+        $org     = $this->insertOrg('P2B Org');
+        $clinicA = $this->insertClinic('P2B Clinic A', $org);
+        $locA    = $this->insertLocation($clinicA, 'P2B Loc A', 1);
+
+        $subDoc    = $this->makeUser('p2b_sub_doc', 'subscriber');
+        $clinician = $this->insertClinician('دکتر ممیزی', $clinicA, 1, $subDoc);
+        cpms_test_seed_membership($subDoc, $clinicA, 'cpms_doctor');
+        App::membership_service()->assign_clinician_locations($clinician, [$locA], $locA);
+
+        $patient      = $this->insertPatient($clinicA, 'P2B');
+        $pastDate     = $this->localDate(self::TZ, '-4 days');
+        $today        = $this->localDate(self::TZ);
+        $priorVisit   = $this->insertVisitWithStatus($clinicA, $locA, $patient, $clinician, $pastDate, 'consultation_completed', 0);
+        $currentVisit = $this->insertVisitWithStatus($clinicA, $locA, $patient, $clinician, $today, 'in_consultation', 1);
+
+        (new ClinicalNoteRepository(App::db()))->insert($clinicA, [
+            'visit_id'              => $priorVisit,
+            'patient_id'            => $patient,
+            'clinician_id'          => $clinician,
+            'category'              => 'diagnosis',
+            'visibility'            => 'doctor_private',
+            'content_text'          => 'SECRET_AUDIT_FAILURE_NOTE_DO_NOT_RETURN',
+            'created_by_wp_user_id' => $subDoc,
+        ]);
+        $this->insertFinalizedPrescription($clinicA, $priorVisit, $patient, $clinician, 'MetoprololSecret');
+
+        $auditTable = App::db()->table('cpms_audit_logs');
+        $fault      = static function (string $sql) use ($auditTable): string {
+            if (preg_match('/^\s*INSERT\s+INTO\s+\S*cpms_audit_logs\b/i', $sql) === 1 && str_contains($sql, 'MEDICAL_RECORD_VIEWED')) {
+                return 'INSERT INTO ' . $auditTable . ' (cpms_fault_injection_no_such_column) VALUES (1)';
+            }
+
+            return $sql;
+        };
+
+        wp_set_current_user($subDoc);
+        $headers = ['X-CPMS-Clinic-Id' => (string) $clinicA, 'X-CPMS-Location-Id' => (string) $locA];
+
+        global $wpdb;
+        $prevSuppress = $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 10, 1);
+        try {
+            $res = $this->dispatch('GET', '/clinic/v1/doctor/portal/visits/' . $currentVisit . '/medical-history', [], $headers);
+        } finally {
+            remove_filter('query', $fault, 10);
+            $wpdb->suppress_errors($prevSuppress);
+        }
+
+        self::assertSame(500, $res->get_status(), 'Mandatory MEDICAL_RECORD_VIEWED audit failure must abort medical-history response with 500.');
+        self::assertSame('CLINIC_INTERNAL_ERROR', $this->errCode($res));
+        self::assertSame(0, $this->auditCount('MEDICAL_RECORD_VIEWED', $currentVisit));
+
+        $raw = (string) wp_json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        foreach ([
+            'SECRET_AUDIT_FAILURE_NOTE_DO_NOT_RETURN',
+            'MetoprololSecret',
+            'prior_visits',
+            'patient_summary',
+            'cpms_fault_injection_no_such_column',
+            'Unknown column',
+            'cpms_audit_logs',
+            'RuntimeException',
+        ] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $raw);
+        }
+    }
+
+    public function testPatientRescheduleOptionsRefusesSilentlySwallowingForbiddenAuditFailure(): void
+    {
+        $org     = $this->insertOrg('P2A Org');
+        $clinicA = $this->insertClinic('P2A Clinic A', $org);
+        $locA    = $this->insertLocation($clinicA, 'P2A Loc A', 1);
+
+        $subDoc    = $this->makeUser('p2a_sub_doc', 'subscriber');
+        $clinician = $this->insertClinician('دکتر نوبت', $clinicA, 1, $subDoc);
+        cpms_test_seed_membership($subDoc, $clinicA, 'cpms_doctor');
+        App::membership_service()->assign_clinician_locations($clinician, [$locA], $locA);
+
+        $ownerUser   = $this->makeUser('p2a_owner', RolesAndCapabilities::ROLE_PATIENT);
+        $foreignUser = $this->makeUser('p2a_foreign', RolesAndCapabilities::ROLE_PATIENT);
+        $ownerPt     = $this->insertPatient($clinicA, 'P2AO');
+        $foreignPt   = $this->insertPatient($clinicA, 'P2AF');
+        $this->linkPatient($clinicA, $ownerPt, $ownerUser, '09123334455');
+        $this->linkPatient($clinicA, $foreignPt, $foreignUser, '09126667788');
+
+        $tomorrow = $this->localDate(self::TZ, '+1 day');
+        $slotId   = $this->insertSlot($clinicA, $locA, $clinician, $tomorrow, '09:30:00', 1, ['booked' => 1]);
+        $apptId   = $this->insertAppointment($clinicA, $locA, $ownerPt, $clinician, $slotId, $tomorrow, '09:30:00', 'confirmed');
+
+        $opBefore = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE event = 'booking.unexpected_error'"
+        );
+
+        $auditTable = App::db()->table('cpms_audit_logs');
+        $fault      = static function (string $sql) use ($auditTable): string {
+            if (preg_match('/^\s*INSERT\s+INTO\s+\S*cpms_audit_logs\b/i', $sql) === 1 && str_contains($sql, 'FORBIDDEN_ACCESS_ATTEMPT')) {
+                return 'INSERT INTO ' . $auditTable . ' (cpms_fault_injection_no_such_column) VALUES (1)';
+            }
+
+            return $sql;
+        };
+
+        wp_set_current_user($foreignUser);
+        global $wpdb;
+        $prevSuppress = $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 10, 1);
+        try {
+            $res = $this->dispatch('GET', '/clinic/v1/appointments/' . $apptId . '/reschedule-options');
+        } finally {
+            remove_filter('query', $fault, 10);
+            $wpdb->suppress_errors($prevSuppress);
+        }
+
+        self::assertSame(500, $res->get_status(), 'FORBIDDEN_ACCESS_ATTEMPT security audit failure must not be silently swallowed.');
+        self::assertSame('CLINIC_INTERNAL_ERROR', $this->errCode($res));
+        self::assertSame(0, $this->auditCount('FORBIDDEN_ACCESS_ATTEMPT', $apptId));
+
+        $opAfter = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE event = 'booking.unexpected_error'"
+        );
+        self::assertGreaterThan($opBefore, $opAfter, 'Audit write failure must record booking.unexpected_error in operational logs.');
+
+        $raw = (string) wp_json_encode($res->get_data(), JSON_UNESCAPED_UNICODE);
+        foreach (['days', 'reference_code', 'cpms_fault_injection_no_such_column', 'Unknown column', 'cpms_audit_logs', 'RuntimeException'] as $forbidden) {
+            self::assertStringNotContainsString($forbidden, $raw);
+        }
+    }
+
+    public function testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries(): void
+    {
+        $org           = $this->insertOrg('P3 Window Org');
+        $ambientClinic = $this->insertClinic('P3 Ambient Clinic', $org);
+        $clinicA       = $this->insertClinic('P3 Target Clinic', $org);
+        $locA          = $this->insertLocation($clinicA, 'P3 Tehran Loc', 1);
+
+        // Ambient Clinic has max_future_days = 60 while Target Clinic varies 1 / 7 / 30.
+        $ambientSettings = App::settingsFactory()->forClinic($ambientClinic);
+        $ambientSettings->set('booking.max_future_days', 60);
+        $ambientSettings->set('booking.min_lead_hours', 0);
+
+        $targetSettings = App::settingsFactory()->forClinic($clinicA);
+        $targetSettings->set('booking.min_lead_hours', 2);
+
+        $subDoc    = $this->makeUser('p3_sub_doc', 'subscriber');
+        $clinician = $this->insertClinician('دکتر پنجره زمانی', $clinicA, 1, $subDoc);
+        cpms_test_seed_membership($subDoc, $clinicA, 'cpms_doctor');
+        App::membership_service()->assign_clinician_locations($clinician, [$locA], $locA);
+
+        $patientUser = $this->makeUser('p3_patient', RolesAndCapabilities::ROLE_PATIENT);
+        $patientId   = $this->insertPatient($clinicA, 'P3PT');
+        $this->linkPatient($clinicA, $patientId, $patientUser, '09127778899');
+
+        // Reference clock 1: 2026-11-10 06:30:00 UTC === 2026-11-10 10:00:00 Asia/Tehran (+03:30).
+        $nowDaytimeUtc = new \DateTimeImmutable('2026-11-10 06:30:00', new \DateTimeZone('UTC'));
+
+        $curSlot      = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-12', '09:00:00', 1, ['booked' => 1]);
+        $slotTooSoon  = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-10', '11:00:00', 2); // +1h (< min_lead_hours=2)
+        $slotSameDay  = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-10', '13:00:00', 2); // +3h
+        $slotWithin1d = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-11', '09:30:00', 2); // +23.5h (next day, inside 1d)
+        $slotPast1d   = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-11', '10:30:00', 2); // +24.5h (outside 1d, inside 7d)
+        $slotWithin7d = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-17', '09:30:00', 2); // +6d 23.5h (inside 7d)
+        $slotPast7d   = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-17', '11:00:00', 2); // +7d 1h (outside 7d, inside 30d)
+        $slotWithin30 = $this->insertSlot($clinicA, $locA, $clinician, '2026-12-10', '09:30:00', 2); // +29d 23.5h (inside 30d)
+        $slotPast30   = $this->insertSlot($clinicA, $locA, $clinician, '2026-12-10', '11:00:00', 2); // +30d 1h (outside 30d)
+
+        $apptId = $this->insertAppointment($clinicA, $locA, $patientId, $clinician, $curSlot, '2026-11-12', '09:00:00', 'confirmed');
+
+        $extractIds = static function (array $result): array {
+            $ids = [];
+            foreach ((array) ($result['days'] ?? []) as $day) {
+                foreach ((array) ($day['slots'] ?? []) as $slot) {
+                    $ids[] = (int) $slot['slot_id'];
+                }
+            }
+            return $ids;
+        };
+
+        // Case A: max_future_days = 1
+        $targetSettings->set('booking.max_future_days', 1);
+        Settings::flushCache();
+        $ids1 = $extractIds(App::bookingService()->reschedule_options($patientUser, $apptId, $nowDaytimeUtc));
+        self::assertSame([$slotSameDay, $slotWithin1d], $ids1, 'max_future_days=1 must include +3h and +23.5h (next day) while excluding +1h and +24.5h.');
+        self::assertNotContains($slotTooSoon, $ids1);
+        self::assertNotContains($slotPast1d, $ids1);
+
+        // Case B: max_future_days = 7
+        $targetSettings->set('booking.max_future_days', 7);
+        Settings::flushCache();
+        $ids7 = $extractIds(App::bookingService()->reschedule_options($patientUser, $apptId, $nowDaytimeUtc));
+        self::assertSame([$slotSameDay, $slotWithin1d, $slotPast1d, $slotWithin7d], $ids7, 'max_future_days=7 must cap strictly at +7d in Location timezone.');
+        self::assertNotContains($slotPast7d, $ids7);
+
+        // Case C: max_future_days = 30
+        $targetSettings->set('booking.max_future_days', 30);
+        Settings::flushCache();
+        $ids30 = $extractIds(App::bookingService()->reschedule_options($patientUser, $apptId, $nowDaytimeUtc));
+        self::assertSame(
+            [$slotSameDay, $slotWithin1d, $slotPast1d, $slotWithin7d, $slotPast7d, $slotWithin30],
+            $ids30,
+            'max_future_days=30 must include up to +29d 23.5h and exclude +30d 1h.'
+        );
+        self::assertNotContains($slotPast30, $ids30);
+
+        // Case D: Cross-midnight UTC vs Location timezone (Asia/Tehran +03:30) boundary.
+        // At 2026-11-10 21:30:00 UTC, UTC date is still 2026-11-10, while Tehran local time is 2026-11-11 01:00:00!
+        $nowCrossMidnightUtc = new \DateTimeImmutable('2026-11-10 21:30:00', new \DateTimeZone('UTC'));
+        $slotTehranWithin1d  = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-12', '00:30:00', 2); // +23.5h from 01:00 Nov 11 Tehran
+        $slotTehranPast1d    = $this->insertSlot($clinicA, $locA, $clinician, '2026-11-12', '01:30:00', 2); // +24.5h from 01:00 Nov 11 Tehran
+
+        $targetSettings->set('booking.max_future_days', 1);
+        Settings::flushCache();
+        $idsCrossMidnight = $extractIds(App::bookingService()->reschedule_options($patientUser, $apptId, $nowCrossMidnightUtc));
+        self::assertContains($slotTehranWithin1d, $idsCrossMidnight, 'Cross-midnight Tehran local date (Nov 12 00:30, +23.5h) must be included when UTC is still Nov 10.');
+        self::assertNotContains($slotTehranPast1d, $idsCrossMidnight, 'Slot at +24.5h in Tehran local time must be excluded under max_future_days=1.');
+
+        // Case E: Real REST endpoint under small Clinic window (max_future_days = 7, previously broken by hardcoded +29 days).
+        $liveCurDate  = $this->localDate(self::TZ, '+2 days');
+        $liveNearDate = $this->localDate(self::TZ, '+3 days');
+        $liveFarDate  = $this->localDate(self::TZ, '+10 days');
+        $liveCurSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveCurDate, '09:00:00', 1, ['booked' => 1]);
+        $liveNearSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveNearDate, '10:00:00', 2);
+        $liveFarSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveFarDate, '10:00:00', 2);
+        $liveAppt     = $this->insertAppointment($clinicA, $locA, $patientId, $clinician, $liveCurSlot, $liveCurDate, '09:00:00', 'confirmed');
+
+        $targetSettings->set('booking.max_future_days', 7);
+        Settings::flushCache();
+        wp_set_current_user($patientUser);
+        $restRes = $this->dispatch('GET', '/clinic/v1/appointments/' . $liveAppt . '/reschedule-options');
+        self::assertSame(200, $restRes->get_status(), 'REST reschedule-options must succeed when booking.max_future_days=7 (< 28 days).');
+        $restIds = $extractIds($this->payload($restRes));
+        self::assertContains($liveNearSlot, $restIds);
+        self::assertNotContains($liveFarSlot, $restIds);
     }
 
     // ================= helpers =================
