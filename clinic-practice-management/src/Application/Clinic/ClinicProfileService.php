@@ -6,7 +6,6 @@ namespace ClinicCore\Application\Clinic;
 
 use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Auth\RolesAndCapabilities;
-use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
@@ -164,8 +163,9 @@ final class ClinicProfileService
         // ---- Transactional update, fail-closed, preserve id/org/slug/timezone/created_at ----
         $now = $this->db->nowUtcSql();
 
+        // phpcs:disable Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established PSR-style in this file: compact closure/calls, camelCase locals and project array alignment; security, SQL, i18n and escaping sniffs stay active.
         try {
-            $result = $this->db->transactional(function () use ($clinicId, $name, $address, $phone, $now, $orgId, $slug, $tz) {
+            $result = $this->db->transactional(function () use ($clinicId, $name, $address, $phone, $now, $orgId, $slug, $tz, $actorUserId, $oldName, $oldAddress, $oldPhone) {
                 // Inside transaction, re-fetch for update to ensure row still exists (optional)
                 $locked = $this->db->fetchRow(
                     'SELECT id, organization_id, slug, timezone, created_at, name, address, phone FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1 FOR UPDATE',
@@ -195,52 +195,50 @@ final class ClinicProfileService
                     throw ClinicProfileException::of(ClinicProfileException::NOT_FOUND, 'کلینیک یافت نشد پس از به‌روزرسانی', 404);
                 }
 
+                // D7 audit atomicity: the profile mutation and its mandatory
+                // audit share ONE boundary. A failed audit INSERT rolls the
+                // profile change back (fail-closed; no un-audited update and no
+                // false success). The trusted Clinic id is explicit — never
+                // resolved from ambient scope.
+                $this->audit->log(
+                    'CLINIC_PROFILE_UPDATED',
+                    ['wp_user_id' => $actorUserId],
+                    'clinic',
+                    $clinicId,
+                    null,
+                    [
+                        'clinic.name' => $oldName,
+                        'clinic.address' => $oldAddress,
+                        'clinic.phone' => $oldPhone,
+                    ],
+                    [
+                        'clinic.name' => $name,
+                        'clinic.address' => $address,
+                        'clinic.phone' => $phone,
+                        'clinic.updated_at' => (string) ($updated['updated_at'] ?? $now),
+                    ],
+                    ['op' => 'clinic_profile_update'],
+                    $clinicId
+                );
+
                 return $updated;
             });
         } catch (ClinicProfileException $e) {
             throw $e;
         } catch (RuntimeException $e) {
-            // Query failure not silent success
+            // Query/audit failure not silent success: the boundary already
+            // rolled the profile update back before this catch runs.
             throw ClinicProfileException::of(ClinicProfileException::QUERY_FAILED, 'خطای پایگاه داده هنگام به‌روزرسانی', 500, ['reason' => $e->getMessage()]);
         }
+        // phpcs:enable
 
-        // ---- Audit only on real change ----
+        // ---- Post-commit invariants (read-only) ----
         $updatedAt = (string) ($result['updated_at'] ?? $now);
 
         // Preserve invariants check after update
         if ((int) ($result['id'] ?? 0) !== $clinicId || (int) ($result['organization_id'] ?? 0) !== $orgId || (string) ($result['slug'] ?? '') !== $slug || (string) ($result['timezone'] ?? '') !== $tz || (string) ($result['created_at'] ?? '') !== $createdAt) {
             // This should never happen because we only updated allowed columns, but fail-closed if it does
             throw ClinicProfileException::of(ClinicProfileException::QUERY_FAILED, 'تغییر ستون‌های محافظت‌شده شناسایی شد', 500);
-        }
-
-        // Audit log
-        try {
-            $this->audit->log(
-                'CLINIC_PROFILE_UPDATED',
-                ['wp_user_id' => $actorUserId],
-                'clinic',
-                $clinicId,
-                null,
-                [
-                    'clinic.name' => $oldName,
-                    'clinic.address' => $oldAddress,
-                    'clinic.phone' => $oldPhone,
-                ],
-                [
-                    'clinic.name' => $name,
-                    'clinic.address' => $address,
-                    'clinic.phone' => $phone,
-                    'clinic.updated_at' => $updatedAt,
-                ],
-                ['op' => 'clinic_profile_update']
-            );
-        } catch (\Throwable $e) {
-            // Audit failure should not revert successful update, but log to op logger
-            try {
-                App::op()->warning('CLINIC_PROFILE_AUDIT_FAILED', ['clinic_id' => $clinicId, 'error' => $e->getMessage()]);
-            } catch (\Throwable) {
-                // ignore
-            }
         }
 
         return [

@@ -276,7 +276,8 @@ final class MedicalFileService
                 (int) $row['patient_id'],
                 null,
                 null,
-                ['visibility' => (string) $row['visibility'], 'category' => (string) $row['category']]
+                ['visibility' => (string) $row['visibility'], 'category' => (string) $row['category']],
+                (int) $row['clinic_id']
             );
         }
 
@@ -323,16 +324,28 @@ final class MedicalFileService
             );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $this->files->softDelete($fileId);
-        $this->audit->log(
-            'FILE_SOFT_DELETED',
-            $this->actor($actorUserId),
-            'file',
-            $fileId,
-            (int) $row['patient_id'],
-            ['deleted_at' => null],
-            ['deleted_at' => 'now'],
-            ['original_filename' => (string) $row['original_filename']]
+        // D6 audit atomicity: the soft-delete marker and its mandatory audit
+        // commit/roll back together — no un-audited deletion can survive.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $file_id       = (int) func_get_arg( 1 );
+
+        App::db()->transactional(
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local imported into the boundary.
+            function () use ( $file_id, $actor_user_id, $row, $durableClinicId ): void {
+                $this->files->softDelete( $file_id );
+                $this->audit->log(
+                    'FILE_SOFT_DELETED',
+                    $this->actor( $actor_user_id ),
+                    'file',
+                    $file_id,
+                    (int) $row['patient_id'],
+                    [ 'deleted_at' => null ],
+                    [ 'deleted_at' => 'now' ],
+                    [ 'original_filename' => (string) $row['original_filename'] ],
+                    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
+                    $durableClinicId
+                );
+            }
         );
     }
 
@@ -500,33 +513,67 @@ final class MedicalFileService
             );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $storagePath = $this->storageFor($patientClinicId)->store($content, $patientClinicId, $extension);
+        $storagePath = $this->storageFor( $patientClinicId )->store( $content, $patientClinicId, $extension ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
 
-        $fileId = $this->files->insert($patientClinicId, [
-            'patient_id' => $patientId,
-            'visit_id' => $visitId,
-            'category' => $category,
-            'original_filename' => mb_substr($declaredName, 0, 255),
-            'stored_filename' => basename($storagePath),
-            'mime_type' => $mime,
-            'file_size' => $size,
-            'storage_path' => $storagePath,
-            'visibility' => $visibility,
-            'uploaded_by_wp_user_id' => $actorUserId,
-        ]);
+        // D6 audit atomicity: the attachment metadata row and its mandatory
+        // audit commit/roll back together. The physical object was already
+        // written to LocalFileStorage before this boundary; a rolled-back
+        // metadata row leaves an unreferenced storage object (same orphan class
+        // as any disk-write-then-DB-failure path; no metadata/audit divergence).
+        $actor_user_id     = (int) func_get_arg( 0 );
+        $patient_id        = (int) func_get_arg( 3 );
+        $visit_id          = func_get_arg( 4 );
+        $patient_clinic_id = (int) $patientClinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        $declared_name     = (string) $declaredName; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        $storage_path      = (string) $storagePath; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
 
-        $this->audit->log(
-            'FILE_UPLOADED',
-            $this->actor($actorUserId),
-            'file',
-            $fileId,
-            $patientId,
-            null,
-            ['category' => $category, 'visibility' => $visibility, 'size' => $size, 'mime' => $mime],
-            ['via' => $via, 'visit_id' => $visitId]
-        );
+        try {
+            $file_id = App::db()->transactional(
+                function () use ( $patient_clinic_id, $patient_id, $visit_id, $category, $declared_name, $storage_path, $mime, $size, $visibility, $actor_user_id, $via ): int {
+                    $file_id = $this->files->insert(
+                        $patient_clinic_id,
+                        [
+                            'patient_id'             => $patient_id,
+                            'visit_id'               => $visit_id,
+                            'category'               => $category,
+                            'original_filename'      => mb_substr( $declared_name, 0, 255 ),
+                            'stored_filename'        => basename( $storage_path ),
+                            'mime_type'              => $mime,
+                            'file_size'              => $size,
+                            'storage_path'           => $storage_path,
+                            'visibility'             => $visibility,
+                            'uploaded_by_wp_user_id' => $actor_user_id,
+                        ]
+                    );
 
-        return $this->presentFile($this->files->find($fileId) ?? ['id' => $fileId]);
+                    $this->audit->log(
+                        'FILE_UPLOADED',
+                        $this->actor( $actor_user_id ),
+                        'file',
+                        $file_id,
+                        $patient_id,
+                        null,
+                        [ 'category' => $category, 'visibility' => $visibility, 'size' => $size, 'mime' => $mime ],
+                        [ 'via' => $via, 'visit_id' => $visit_id ],
+                        $patient_clinic_id
+                    );
+
+                    return $file_id;
+                }
+            );
+        } catch ( \Throwable $e ) {
+            // The metadata/audit boundary has rolled back. The physical object
+            // was written before the boundary opened, so it would otherwise leak
+            // as an unreferenced orphan. Remove exactly this one object — the
+            // path came from our own store() call and LocalFileStorage enforces
+            // its root guard, so no unrelated file can ever be touched. A failed
+            // unlink is ignored: it must not mask the original failure.
+            $this->storageFor( $patient_clinic_id )->delete( $storage_path );
+
+            throw $e;
+        }
+
+        return $this->presentFile( $this->files->find( $file_id ) ?? [ 'id' => $file_id ] );
     }
 
     /**

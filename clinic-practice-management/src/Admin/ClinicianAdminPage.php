@@ -13,6 +13,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
@@ -549,13 +550,17 @@ final class ClinicianAdminPage
 
     public static function saveClinician(): void
     {
-        $scope = self::authorizeAdminWrite('cpms_clinician_save');
-        $clinicId = (int) $scope->clinicId;
+        $scope = self::authorizeAdminWrite( 'cpms_clinician_save' );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published scope API.
+        $clinic_id = (int) $scope->clinicId;
 
         $repo = App::clinicianRepository();
         $fields = self::clinicianFields();
         $id = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $generated = '';
+        // Descriptor of any WordPress account provisioned inside the boundary;
+        // read by the post-rollback catch for targeted cache invalidation.
+        $provisioned = null;
 
         // Specialty is resolved server-side from the offline catalogue: a canonical
         // label collapses to the catalogue value, "Other / سایر" persists the validated
@@ -571,42 +576,117 @@ final class ClinicianAdminPage
         }
 
         try {
-            if ($id > 0) {
-                $current = $repo->findForClinic($id, $clinicId);
-                if ($current === null) {
-                    self::backWithError($id, 'خطا: پزشک در این Clinic یافت نشد.');
+            if ( $id > 0 ) {
+                $current = $repo->findForClinic( $id, $clinic_id );
+                if ( $current === null ) {
+                    self::backWithError( $id, 'خطا: پزشک در این Clinic یافت نشد.' );
                 }
-                $affected = $repo->updateForClinic($id, $clinicId, $fields);
-                if ($affected < 1) {
-                    self::backWithError($id, 'خطا: به‌روزرسانی پزشک انجام نشد.');
+                // D6 audit atomicity: the profile UPDATE and its mandatory audit
+                // share one boundary; a failed audit INSERT rolls the update back
+                // (fail closed). A zero-row change keeps the legacy behavior: no
+                // audit event and the same operator-facing error.
+                $affected_rows = App::db()->transactional(
+                    function () use ( $id, $clinic_id, $fields, $repo ): int {
+                        $rows = $repo->updateForClinic( $id, $clinic_id, $fields );
+                        if ( $rows < 1 ) {
+                            return 0;
+                        }
+                        App::audit()->log(
+                            'CLINICIAN_UPDATED',
+                            [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                            'clinician',
+                            $id,
+                            null,
+                            null,
+                            [ 'fields' => array_keys( $fields ) ],
+                            [],
+                            $clinic_id
+                        );
+
+                        return $rows;
+                    }
+                );
+                if ( $affected_rows < 1 ) {
+                    // Structured signal: the terminating redirect happens in the
+                    // outer catch, after the boundary rolls back.
+                    self::redirectSignal( $id, 'خطا: به‌روزرسانی پزشک انجام نشد.' );
                 }
-                App::audit()->log('CLINICIAN_UPDATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $id, null, null, ['fields' => array_keys($fields)]);
-                self::back($id, 'پروفایل پزشک ذخیره شد.');
+                self::back( $id, 'پروفایل پزشک ذخیره شد.' );
             }
 
-            if (trim((string) ($fields['full_name'] ?? '')) === '') {
-                self::backWithError(0, 'خطا: نام پزشک الزامی است.');
+            if ( trim( (string) ( $fields['full_name'] ?? '' ) ) === '' ) {
+                self::backWithError( 0, 'خطا: نام پزشک الزامی است.' );
             }
 
-            $accountCreated = self::maybeCreateDoctorAccount($fields, $generated, $clinicId);
-            if (($accountCreated['error'] ?? '') !== '') {
-                self::backWithError(0, 'خطا: ' . $accountCreated['error']);
-            }
-            if (!empty($accountCreated['wp_user_id'])) {
-                $fields['wp_user_id'] = (int) $accountCreated['wp_user_id'];
-            }
+            // D6 audit atomicity: the (optional) WordPress account, its membership
+            // and the clinician row plus the mandatory audit all share one boundary.
+            // StaffManagementPage::upsertUser() runs on a nested SAVEPOINT inside it,
+            // so a failed CLINICIAN_CREATED audit rolls the freshly created account
+            // back too — no orphan account / clinician row can survive without audit.
+            $created         = App::db()->transactional(
+                function () use ( $fields, $generated, $clinic_id, $repo, &$provisioned ) {
+                    $account_created = self::maybeCreateDoctorAccount( $fields, $generated, $clinic_id );
+                    if ( ( $account_created['error'] ?? '' ) !== '' ) {
+                        // upsertUser() already rolled its own boundary back;
+                        // signal without terminating inside this open closure.
+                        self::redirectSignal( 0, 'خطا: ' . $account_created['error'] );
+                    }
+                    if ( ! empty( $account_created['wp_user_id'] ) ) {
+                        $fields['wp_user_id'] = (int) $account_created['wp_user_id'];
+                        // Track the provisioned identity so the outer catch can
+                        // evict its WP cache keys if THIS boundary rolls back
+                        // after the nested SAVEPOINT was released.
+                        $provisioned = [
+                            'id'    => (int) $account_created['wp_user_id'],
+                            'login' => (string) ( $account_created['login'] ?? '' ),
+                            'email' => (string) ( $account_created['email'] ?? '' ),
+                        ];
+                    }
 
-            if ($fields['wp_user_id'] !== null && $repo->isUserLinked((int) $fields['wp_user_id'])) {
-                self::backWithError(0, 'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).');
+                    if ( $fields['wp_user_id'] !== null && $repo->isUserLinked( (int) $fields['wp_user_id'] ) ) {
+                        self::redirectSignal(
+                            0,
+                            'خطا: این کاربر وردپرس قبلاً به پزشک دیگری متصل است (پیوند باید ۱:۱ باشد).'
+                        );
+                    }
+                    $new_id = $repo->create( $clinic_id, $fields );
+                    App::audit()->log(
+                        'CLINICIAN_CREATED',
+                        [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                        'clinician',
+                        $new_id,
+                        null,
+                        null,
+                        [ 'full_name' => (string) $fields['full_name'] ],
+                        [],
+                        $clinic_id
+                    );
+
+                    return [ 'new_id' => $new_id, 'account' => $account_created ];
+                }
+            );
+            $new_id          = (int) $created['new_id'];
+            $account_created = $created['account'];
+            $message         = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
+            if ( ( $account_created['generated'] ?? '' ) !== '' ) {
+                $message .= ' رمز یک‌بارهٔ حساب: ' . $account_created['generated'];
+                $message .= ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
             }
-            $newId = $repo->create($clinicId, $fields);
-            App::audit()->log('CLINICIAN_CREATED', ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId], 'clinician', $newId, null, null, ['full_name' => (string) $fields['full_name']]);
-            $message = 'پزشک ثبت شد — حالا برنامه هفتگی او را تنظیم کنید.';
-            if (($accountCreated['generated'] ?? '') !== '') {
-                $message .= ' رمز یک‌بارهٔ حساب: ' . $accountCreated['generated'] . ' (فقط همین حالا نمایش داده می‌شود — آن را به پزشک بدهید.)';
+            self::back( $new_id, $message );
+        } catch ( ClinicianRedirectException $e ) {
+            // A closure refused after the boundary rolled back. If a WordPress
+            // account had been provisioned on the released SAVEPOINT, evict its
+            // stale cache keys before the terminating redirect (outside the tx).
+            if ( $provisioned !== null ) {
+                UserCacheRollback::invalidate( [ $provisioned ] );
             }
-            self::back($newId, $message);
-        } catch (\RuntimeException $e) {
+            self::backWithError( $e->clinicianId(), $e->getMessage() );
+        } catch ( \RuntimeException $e ) {
+            // Any other failure: the boundary already rolled back; same cache
+            // hygiene for a provisioned account, then the operator notice.
+            if ( $provisioned !== null ) {
+                UserCacheRollback::invalidate( [ $provisioned ] );
+            }
             self::backWithError($id, 'خطا: ' . $e->getMessage());
         }
     }
@@ -615,29 +695,46 @@ final class ClinicianAdminPage
     {
         // Nonce الگو شامل clinician_id است (cpms_clinician_toggle_{id}).
         $cid = isset($_GET['clinician_id']) ? absint($_GET['clinician_id']) : 0;
-        $scope = self::authorizeAdminWrite('cpms_clinician_toggle_' . $cid);
-        $clinicId = (int) $scope->clinicId;
+        $scope = self::authorizeAdminWrite( 'cpms_clinician_toggle_' . $cid );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published scope API.
+        $clinic_id = (int) $scope->clinicId;
 
         $repo = App::clinicianRepository();
-        $current = $repo->findForClinic($cid, $clinicId);
-        if ($current === null) {
-            self::backWithError(0, 'خطا: پزشک در این Clinic یافت نشد.');
+        $current = $repo->findForClinic( $cid, $clinic_id );
+        if ( $current === null ) {
+            self::backWithError( 0, 'خطا: پزشک در این Clinic یافت نشد.' );
         }
-        $newState = (int) $current['is_active'] === 1 ? 0 : 1;
-        $affected = $repo->updateForClinic($cid, $clinicId, ['is_active' => $newState]);
-        if ($affected < 1) {
-            self::backWithError($cid, 'خطا: تغییر وضعیت پزشک انجام نشد.');
+        $new_state = (int) $current['is_active'] === 1 ? 0 : 1;
+        // D6 audit atomicity: status write and mandatory audit commit/roll back together.
+        // D7: nothing terminating may run inside the closure — a zero-row write
+        // raises a structured signal and the redirect happens after rollback.
+        try {
+            App::db()->transactional(
+                function () use ( $repo, $cid, $clinic_id, $current, $new_state ) {
+                    $affected_rows = $repo->updateForClinic( $cid, $clinic_id, [ 'is_active' => $new_state ] );
+                    if ( $affected_rows < 1 ) {
+                        self::redirectSignal( $cid, 'خطا: تغییر وضعیت پزشک انجام نشد.' );
+                    }
+                    App::audit()->log(
+                        'CLINICIAN_STATUS_CHANGED',
+                        [ 'wp_user_id' => get_current_user_id(), 'role' => 'clinic_admin' ],
+                        'clinician',
+                        $cid,
+                        null,
+                        [ 'is_active' => (int) $current['is_active'] ],
+                        [ 'is_active' => $new_state ],
+                        [],
+                        $clinic_id
+                    );
+                }
+            );
+        } catch ( ClinicianRedirectException $e ) {
+            // Boundary rolled back; terminate only now, outside the transaction.
+            self::backWithError( $e->clinicianId(), $e->getMessage() );
+        } catch ( \Throwable $e ) {
+            self::backWithError( $cid, 'خطا: ' . $e->getMessage() );
         }
-        App::audit()->log(
-            'CLINICIAN_STATUS_CHANGED',
-            ['wp_user_id' => get_current_user_id(), 'clinic_id' => $clinicId],
-            'clinician',
-            $cid,
-            null,
-            ['is_active' => (int) $current['is_active']],
-            ['is_active' => $newState]
-        );
-        self::back($cid, $newState === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).');
+        self::back( $cid, $new_state === 1 ? 'پزشک فعال شد.' : 'پزشک غیرفعال شد (داده‌ها حفظ شد — حذف فیزیکی ممنوع).' );
     }
 
     /**
@@ -1010,7 +1107,14 @@ final class ClinicianAdminPage
         }
         $generated = (string) ($result['generated'] ?? '');
 
-        return ['wp_user_id' => (int) ($result['user_id'] ?? 0), 'generated' => $generated];
+        // Include the exact login/email so a post-rollback cache invalidation
+        // can evict the userlogins/useremail keys, not just the id groups.
+        return [
+            'wp_user_id' => (int) ( $result['user_id'] ?? 0 ),
+            'generated'  => $generated,
+            'login'      => (string) $in['username'],
+            'email'      => (string) $in['email'],
+        ];
     }
 
     /**
@@ -1021,7 +1125,7 @@ final class ClinicianAdminPage
         $out = [];
         $users = get_users(['number' => 500, 'orderby' => 'display_name']);
         foreach ($users as $u) {
-            $label = ($u->display_name !== '' ? $u->display_name : $u->user_login) . ' (' . $u->user_login . ')';
+            $label = ( $u->display_name !== '' ? $u->display_name : $u->user_login ) . ' (' . $u->user_login . ')';
             $out[] = ['id' => (int) $u->ID, 'label' => $label];
         }
 
@@ -1062,4 +1166,36 @@ final class ClinicianAdminPage
         wp_safe_redirect($url);
         exit;
     }
+
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.Classes.OpeningBraceSameLine.BraceOnNewLine,Generic.Files.OneObjectStructurePerFile.MultipleFound -- established PSR-style in this file: the structured redirect signal and its co-located exception reuse camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+    /**
+     * Non-terminating redirect signal safe to raise inside a transaction
+     * closure: it carries the operator notice across the boundary instead of
+     * executing wp_safe_redirect()/exit while the transaction is open.
+     */
+    private static function redirectSignal( int $clinicianId, string $message ): never
+    {
+        throw new ClinicianRedirectException( $clinicianId, $message );
+    }
 }
+
+/**
+ * Structured operator redirect produced inside a transaction closure. The
+ * handler catches it only AFTER CpmsDb has completed the rollback, then
+ * performs the terminating wp_safe_redirect()/exit outside the boundary.
+ */
+final class ClinicianRedirectException extends \RuntimeException
+{
+    public function __construct(
+        private readonly int $clinicianId,
+        string $message
+    ) {
+        parent::__construct( $message );
+    }
+
+    public function clinicianId(): int
+    {
+        return $this->clinicianId;
+    }
+}
+// phpcs:enable

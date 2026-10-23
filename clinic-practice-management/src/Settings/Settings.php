@@ -181,36 +181,50 @@ final class Settings
         return $default;
     }
 
-    public function set(string $key, mixed $value, ?int $updatedBy = null): void
+    public function set( string $key, mixed $value, ?int $updated_by = null ): void
     {
         // F1-4 — before (مقدار مؤثر: ردیف یا Default) برای Audit تغییر مؤثر
-        $before = $this->get($key);
-        $beforeJson = json_encode($before, JSON_UNESCAPED_UNICODE);
-        $afterJson = json_encode($value, JSON_UNESCAPED_UNICODE);
+        $before      = $this->get( $key );
+        $before_json = wp_json_encode( $before, JSON_UNESCAPED_UNICODE );
+        $after_json  = wp_json_encode( $value, JSON_UNESCAPED_UNICODE );
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published API property.
+        $clinic_id = $this->clinicId;
 
         $row = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
-            [$this->clinicId, $key]
+            'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
+            [ $clinic_id, $key ]
         );
-        if ($row === null) {
-            $this->db->insert('cpms_settings', [
-                'clinic_id' => $this->clinicId,
-                'key' => $key,
-                'value_json' => $afterJson,
-                'updated_by_wp_user_id' => $updatedBy,
-                'updated_at' => $this->db->nowUtcSql(),
-            ]);
-        } else {
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_settings') .
-                ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
-                 WHERE clinic_id = %d AND `key` = %s',
-                [$afterJson, $updatedBy, $this->db->nowUtcSql(), $this->clinicId, $key]
-            );
-        }
-        unset(self::$cache[$this->clinicId]);
+        // D6 audit atomicity: the setting write and its mandatory SETTING_UPDATE
+        // audit share one boundary (nested SAVEPOINT when a caller already opened
+        // one). A failed audit rolls the setting change back; the in-memory cache is
+        // invalidated only after a durable commit, so a rolled-back read keeps the
+        // previous value instead of ever exposing an un-audited setting.
+        $this->db->transactional(
+            function () use ( $key, $value, $updated_by, $before, $after_json, $before_json, $row, $clinic_id ) {
+                if ( $row === null ) {
+                    $this->db->insert(
+                        'cpms_settings',
+                        [
+                            'clinic_id'             => $clinic_id,
+                            'key'                   => $key,
+                            'value_json'            => $after_json,
+                            'updated_by_wp_user_id' => $updated_by,
+                            'updated_at'            => $this->db->nowUtcSql(),
+                        ]
+                    );
+                } else {
+                    $this->db->query(
+                        'UPDATE ' . $this->db->table( 'cpms_settings' ) .
+                        ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
+                         WHERE clinic_id = %d AND `key` = %s',
+                        [ $after_json, $updated_by, $this->db->nowUtcSql(), $clinic_id, $key ]
+                    );
+                }
 
-        $this->auditChange($key, $before, $value, $beforeJson, $afterJson, $updatedBy);
+                $this->auditChange( $key, $before, $value, $before_json, $after_json, $updated_by );
+            }
+        );
+        unset( self::$cache[ $clinic_id ] );
     }
 
     /**
@@ -227,33 +241,36 @@ final class Settings
         string $key,
         mixed $before,
         mixed $after,
-        string|false $beforeJson,
-        string|false $afterJson,
-        ?int $updatedBy
+        string|false $before_json,
+        string|false $after_json,
+        ?int $updated_by
     ): void {
-        if ($this->audit === null) {
+        if ( $this->audit === null ) {
             return;
         }
-        if (in_array($key, self::RUNTIME_KEYS, true)) {
+        if ( in_array( $key, self::RUNTIME_KEYS, true ) ) {
             return;
         }
-        if ($beforeJson === $afterJson) {
+        if ( $before_json === $after_json ) {
             return; // تغییر مؤثر نیست — فقط refresh ردیف/updated_by
         }
-        if (in_array($key, self::REDACTED_VALUE_KEYS, true)) {
+        if ( in_array( $key, self::REDACTED_VALUE_KEYS, true ) ) {
             // Credentials: فقط رویداد + actor — مقدار (حتی sealed) کپی نمی‌شود
             $before = self::REDACTED_PLACEHOLDER;
-            $after = self::REDACTED_PLACEHOLDER;
+            $after  = self::REDACTED_PLACEHOLDER;
         }
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published API property.
+        $clinic_id = $this->clinicId;
         $this->audit->log(
             'SETTING_UPDATE',
-            $updatedBy !== null ? ['wp_user_id' => $updatedBy, 'role' => $this->roleOf($updatedBy)] : null,
+            $updated_by !== null ? [ 'wp_user_id' => $updated_by, 'role' => $this->roleOf( $updated_by ) ] : null,
             'setting',
             null,
             null,
-            ['setting' => $key, 'value' => $before],
-            ['setting' => $key, 'value' => $after],
-            ['op' => 'config_update', 'clinic_id' => $this->clinicId]
+            [ 'setting' => $key, 'value' => $before ],
+            [ 'setting' => $key, 'value' => $after ],
+            [ 'op' => 'config_update', 'clinic_id' => $clinic_id ],
+            $clinic_id
         );
     }
 

@@ -1571,3 +1571,306 @@ The missing regex delimiter identified by Integration/PHPStan at pushed parent h
 - **تست‌ها:** `tests/Unit/ClinicLifecycleStateTest.php` (۱۴ آزمون، جدول تصمیم خالص — محلی اجرا شد) و ۵ آزمونِ Integration تازه در `ClinicLifecycleManagementTest` (شواهدِ مثبتِ HELD، تعلیقِ عملیاتی با تاریخچهٔ کامل، شواهدِ مفقود، شواهدِ ناقص/خراب، ردِ سه مسیر نوشتن، سناریوی DENY دوپاره، بازیابی پس از فعال‌سازی، خوانا‌ماندنِ عضویت/تاریخچه، دو کلینیک HELD با دو مدیر و تصمیمِ مستقل). یک ادعای پیشین در `CustomCityAndSpecialtyPortalTest` که «فعال‌سازی مجددِ عضویت در کلینیکِ موفق = موفق» را درست می‌دانست، به قراردادِ سخت‌گیرانهٔ تازه (رد + بازیابی پس از فعال‌سازی کلینیک) تصحیح شد — بدون سست‌کردن هیچ ادعا.
 - **بهداشت مخزن:** `.phpunit.result.cache` (artifact اجرای محلی، فقط در همین PR ردیابی می‌شد) با `git rm --cached` از PR بیرون رفت (فایلِ محلیِ کاربر پاک نشد) و به هر دو `.gitignore` افزوده شد تا بازنگردد.
 - **اجرای محلی:** WASM PHP 8.4 + PHPUnit 11.5.56 ⇒ ۸۰۱ تست / ۴۱۴۲۷ ادعا / ۲۶ خطا / ۴ شکست / ۳۷ skip — مجموعهٔ امضای شکست‌ها **یکسان با `main`** (آن ۲۶/۴ = نبودِ `ext-sodium` و vendor AWS در این محیط). Integration/مرورگر/ماتریس محلی قابل اجرا نیست (بدون WordPress/MySQL/Chromium) ⇒ شواهدِ آن‌ها CI است.
+
+## [2026-10-22 19:00–21:10 UTC] — D6 audit atomicity + D5 OTP plaintext dispatch (Draft PR #262)
+
+- **مبنای شروع:** branched from `main` `18b17be2` on isolated `arena/3c1a79e3-doctor`; one Draft PR, `main` untouched, no reset/clean/rebase/force-push; local PHP execution impossible in-sandbox (no LAMP/apt; php-wasm attempts non-viable), so exact-head CI is the only executable evidence.
+- **دامنه و تغییرات (D6 — audit atomicity):** 11 `CpmsDb::transactional()` boundaries in `ManagementPortalService` and 6 in `StaffManagementPage` so each mandatory audited mutation and its `AuditLogger::log()` commit/roll back together (nested SAVEPOINTs only; no new tx framework). Audit failure propagates and the boundary fails closed; hash-chain, trusted Clinic/Org scope, DENY>GRANT, membership/lifecycle policy, no auto WP-Administrator grant and ongoing-care restrictions preserved. Real-MySQL fault injection (wpdb `query` filter → MySQL 1054 on `cpms_audit_logs` INSERTs) regression tests assert rollback, no false success, SAVEPOINT depth cleanup, and a successful authorized retry — for membership suspend/reactivate, staff create/update, attach, capability DENY and location assignments.
+- **دامنه و تغییرات (D5 — OTP delivery):** plain-text SMS provider now receives the real OTP transiently in memory for the immediate inline dispatch only; the stored row stays masked (`***`, `vars_json` NULL), nothing reversible is persisted, and no OTP reaches logs/audit/tests/reports. Hashing, rate-limit, expiry, replay and template behavior unchanged. A re-drive after the request ended cannot reconstruct the code and fails closed with an explicit `OTP_NO_RETRY_CODE` classification — the masked text is never sent as delivered. Recording-provider seam + `SmsOtpDispatchTest` cover masked-at-rest and fail-closed paths.
+- **Defect found and fixed through CI evidence (not assumed):** the first Integration run failed two new fault-injection tests at their *retry* assertion (`0` vs `1` clinic-scoped audit count). Root cause — the six Staff audit calls relied on `AuditLogger`'s ambient-scope fallback; with ≠1 clinic `SystemClinicResolver` throws, so `clinic_id` was stored NULL and a clinic-scoped audit query could not find the event (toggle tests passed only because they count by `resource_id`). Fix: pass the already-authorized Clinic explicitly as the `log()` `clinic_id` argument (empty meta keeps payloads identical), matching `ManagementPortalService::audit_change()` and the contract pinned by `CustomRoleStaffAssignmentTest`. No test weakened.
+- **WPCS remediation (evidence-driven, no gate/ruleset/baseline change):** exact per-violation list read from the job's own PR comment (blob logs are egress-blocked). 158 changed-code violations → 0 across three commits: `PEAR.Functions.FunctionCallSignature` (all 17 wrappers moved to the multi-line call style already proven green in `BookingService`/`CustomRoleAssignmentService`), `ValidVariableName` snake_case locals/params (incl. legacy `dispatchMessage()` params its D5 lines touched; private helpers renamed), one-param-per-line multi-line `use()`, control/cast/operator spacing, array/equals alignment, and four >135-char lines split. Legacy public camelCase methods kept with scoped `phpcs:ignore` matching the established Slice 3B convention. Whitespace-insensitive diff confirms zero logic change in the style commits.
+- **اعتبارسنجی (exact head `6246544`, then this docs-only head):** all 28 PR checks SUCCESS — Unit PHP 8.1–8.4, PHPStan, WPCS (changed code), Integration WP 7.1 + MySQL 8 (2290 tests / 65353 assertions, 0 failures), Closure ×4, Real WP Acceptance wp_/clinic_, First-practice mysql/mariadb, Facility matrix mysql/mariadb, 5 Persian coexistence suites, Staging Gate, Responsive smoke, Release Artifact, Tenant Tripwire, Upgrade path. Local PHPUnit/WPCS/PHPStan/browser = NOT RUN in sandbox.
+- **تحویل و موارد باز:** Draft PR #262 OPEN/MERGEABLE, not merged. Deliberately out of scope and documented in the PR body: the 5 remaining write-then-audit sites in `ClinicianAdminPage.php` and `RoleCapabilitiesPage.php` (a later focused slice), and WP HTTP/Chromium live-booking OTP verification (sandbox has no browser/WordPress; Recording-provider + integration coverage supplied instead).
+
+---
+
+## 2026-10-23 — Security re-audit remediation: D6 audit-atomicity extension + P2 OTP classification (PR #262, uncommitted → branch push)
+
+Context: independent security audit returned BLOCK after the D5/D6 commit (28/28 CI green): mandatory audit events outside the mutation transaction boundary across wp-admin pages and domain services, plus an OTP retry-classification defect. No local PHP/MySQL runtime in this sandbox; evidence below distinguishes php-parser syntax validation (run locally) from PHPUnit/WPCS/PHPStan (NOT RUN locally; verification only via owner CI at the exact pushed SHA).
+
+Changes (all under existing CpmsDb::transactional/SAVEPOINT machinery; no new framework):
+
+- src/Admin/ClinicianAdminPage.php — create/update/status-toggle mutations now share one boundary with their mandatory CLINICIAN_* audits under explicit trusted Clinic scope. maybeCreateDoctorAccount() (separately committed WP account via StaffManagementPage::upsertUser nested SAVEPOINT) now runs inside the clinician-create boundary, so a failed CLINICIAN_CREATED audit rolls the account, membership, link meta and clinician row back together. Authorization/lifecycle checks unchanged; FORBIDDEN_ACCESS_ATTEMPT denial audits deliberately left outside write transactions.
+- src/Admin/RoleCapabilitiesPage.php — save/reset decomposed into testable pure statics applyCapabilityMatrix(array $input, int $actor_wp_user_id): array and resetRoleToTemplate(string $role): void; admin handlers only render/redirect. On any audit Throwable the catch restores durable effective state (wp_cache_flush + wp_roles()->for_site + current-user get_role_caps) before rethrow, so a MySQL rollback of the option/wp_user_roles writes cannot leave effective caps changed in memory; multi-role payloads are all-or-nothing; no false success.
+- src/Settings/Settings.php — set(): option write + SETTING_UPDATE audit atomic; cache unset moved post-commit; explicit Clinic id as 9th audit arg.
+- src/Application/Booking/ScheduleService.php — all 5 schedule/exception audit events moved inside their closure boundaries; audit() helper takes explicit trusted $clinicId.
+- src/Application/Booking/BookingService.php — hold(): HOLD_CREATED audit inside the closure (returns int); outer code re-reads via wpdb_last_insert_id. Denial audits at FORBIDDEN_ACCESS_ATTEMPT sites and the inside-boundary L1699 denial left unchanged.
+- src/Application/Patients/PatientService.php — updateMe() and staff update() wrapped in new transactional closures (outer re-reads the updated row); create_record() audit relocated inside the existing closure via the created row; explicit Clinic id on every audit.
+- src/Application/Notifications/SmsService.php (P2) — any RETRYABLE verdict for an inline OTP send is rewritten to PERMANENT with CLINIC_SMS_OTP_NO_RETRY; OTP is never queued, so RETRYING/retry_enqueued=true was impossible-to-honor and must never be reported. Non-OTP retryable path unchanged; OTP masking/secret handling untouched.
+
+Tests (Integration, real-MySQL fault injection via wpdb 'query' filter rewriting audit INSERTs to a 1054 unknown column):
+- tests/Integration/RoleCapabilityAuditAtomicityTest.php (new) — multi-role matrix: forced audit failure rolls back override option, wp_user_roles durable state and in-memory effective caps (WP_Roles + concrete WP_User), no partial audit, authorized retry succeeds; reset failure restores the pre-reset override and effective cap.
+- tests/Integration/SettingsAuditAtomicityTest.php (new) — failed audit leaves previous durable value and audit count unchanged; retry commits and audits.
+- tests/Integration/SmsOtpDispatchTest.php — replaced old RETRYING expectation with testFailedImmediateOtpFailsClosedWithoutRetryableClassification (FAILED + OTP_NO_RETRY immediately, re-drive stays failed) and testRetryableNonOtpFailureStillClassifiesAsRetrying guard.
+
+Honest status: php-parser lint OK on all 9 PHP files; WPCS/PHPStan/PHPUnit NOT RUN locally (no PHP/MySQL). Scope note for re-audit: BookingService remaining mutation sites beyond hold() (confirm/reschedule/staff/no-show/cancel), ClinicalService (13 sites), HandwritingService paired writes and MedicalFileService paired writes were mapped (brace-depth analyzer, denials excluded) but not all remediated within this session's timebox — see the final status report for the exact open list rather than assuming closure.
+
+### Same-session correction before push
+- ClinicianAdminPage update branch: initial wrapper enclosed ONLY the CLINICIAN_UPDATED audit while `$repo->updateForClinic()` ran before the boundary (self-identified defect, matching the audit's P1 finding). Fixed: the UPDATE moved inside the closure, returning affected rows; zero-row changes preserve the legacy no-audit + operator error path; create (account+row+audit) and status-toggle (write+audit) boundaries verified correct by inspection.
+- Tests hardened during pre-push review: both new fault-injection suites provision an administrator and set it as current user; the role-cap matrix sends all four editable roles (untouched roles at template caps) so the authorized retry cannot wipe roles not named in the change; doctor caps asserted unchanged after rollback; Settings baseline uses a non-default value (700 vs 600) so the baseline audit count is provably positive.
+
+### CI round 1 on 4e64352 — evidence-driven fixes (annotations read via api.github.com; blob logs egress-blocked)
+- PHPStan (level 3, src): PatientService::create_record closure referenced `$actor_user_id` without importing it in `use` — added to the closure use list. Same undefined variable explained the 5 Integration Errors in ReturningPatientFirstEnrollmentTest (WP test error handler promotes the E_WARNING) and the 1 Failure in its audit-fault test (its `catch (\RuntimeException)` could not catch the warning exception).
+- WPCS (changed-code gate, 118 violations, zero gate/ruleset changes): new public statics renamed to snake_case `apply_capability_matrix()`/`reset_role_to_template()` (tests updated); KR brace on restore helper; ClinicianAdminPage save/toggle locals renamed to snake_case and moved legacy blocks reformatted to WP spacing (control structures, casts, call parentheses); Settings::set/auditChange params/locals snake_case with multi-line one-arg-per-line arrays and aligned arrows; PatientService::update params renamed snake and body reformatted; ScheduleService update() closure fully re-indented for the multi-line transactional opener (legacy compact calls in moved lines reformatted) and audit() helper params renamed snake; all >135-char added lines split or given standalone phpcs:ignore lines. Local post-fix battery: 0 camelCase/compact-control/compact-call/long-line findings on added src lines.
+- Coexistence security-authentication Stage B reported 2 non-fatal PHP diagnostics after activation — hypothesized same undefined-variable root cause (enrollment flow); verification deferred to the exact-head re-run.
+
+## 2026-10-23 (second session) — D6 full closure, OTP atomicity, narrow cache invalidation, PHP 8.5/WP lanes, fault suites
+
+Context: 5-hour autonomous continuation on PR #262. Working environment state on entry: local branch at merge-base 18b17be with NO local commits, while origin/arena/3c1a79e3-doctor already carried 4e64352..9f397b5 (28/28 green, run 39867898965); the full prior work product existed only as uncommitted/untracked working-tree files. Verified by `git fetch` + `git diff --cached origin/arena/3c1a79e3-doctor` after `git add -A`: the staged tree was byte-identical to the green head except for this session's intended changes (no reset/rebase/force used; final commit will use 9f397b5 as parent via commit-tree so the push fast-forwards).
+
+Source changes (existing CpmsDb::transactional/SAVEPOINT machinery only; no second framework):
+
+- src/Application/Auth/OtpService.php — request(): token INSERT + mandatory OTP_REQUEST audit now share one boundary (rollback leaves no un-audited challenge; SMS dispatch stays post-commit, OTP_SENT_OK/FAIL delivery-result audit remains post-commit by design — SMS is an external side effect that cannot be transactionally paired). verify(): single-use consume UPDATE, identity resolution/provisioning (wp_insert_user + patient links) and OTP_VERIFY_OK/LOGIN_SUCCESS audits share one boundary; wp_set_auth_cookie moved after durable commit. Rate-limiter hits and denial audits (OTP_DENIED_*, OTP_VERIFY_FAIL) intentionally stay outside write transactions, matching the established denial-audit convention. Mobile stays masked in every audit; no code/secret enters the audit row (AuditLogger FORBIDDEN_KEYS also strips defensively).
+- src/Admin/RoleCapabilitiesPage.php — restore_effective_caps_after_rollback() replaced global wp_cache_flush() with narrow invalidation: wp_cache_delete only for cpms_role_caps_override and the wp_roles()->role_key option (plus notoptions pruning and alloptions eviction in the options group), then wp_roles()->for_site() + RolesAndCapabilities::register() + current-user get_role_caps(). Unrelated persistent-cache groups (Redis/Memcached) are no longer wiped by a rolled-back capability request. Pattern mirrors FacilitySetupService::forget_cached_plan().
+- Rebuilt services vs origin 9f397b5 (BookingService, ClinicalService, HandwritingService, MedicalFileService): verified semantic equivalence of the wholesale rebuilds — identical public method signatures, identical uppercase audit-action/status/error-code vocabulary multiset, identical cpms_* table-name multiset; boundaries completed where the committed versions had fewer/none (Clinical transactional 3→9 covering NOTE_*, PRESCRIPTION_*, RECOMMENDATIONS_CREATED, FOLLOW_UP_CREATED, CONSULTATION_*; MedicalFile 0→2 covering FILE_UPLOADED/FILE_SOFT_DELETED; Booking 6/6; Handwriting 3/3).
+
+Adjacent-service review closure (bounded, evidence-based; no unnecessary rewrites):
+- FacilitySetupService::assign_clinician: reads showed the CLINICIAN_CREATED/membership audits already execute INSIDE assign_clinician()'s db->transactional() wrapper (assign_clinician_locked body) — D6-compliant, not a P1.
+- MembershipService: zero internal audits; all admin/portal callers (StaffManagementPage, ManagementPortalService) wrap write+audit in one transactional boundary with D6 comments.
+- ClinicProfileService L218 and VisitService private audit(): explicit best-effort audits (post-commit + op warning / Persian design comment that audit must not break clinical flow) — documented pattern, not P1; no test encodes the swallow as a contract.
+- BackupService: system-actor operational events around filesystem backup/restore; restore SQL transaction ends before RESTORE_APPLIED audit — cannot share a boundary with filesystem replacement; classified operational, not a domain mutation-before-mandatory-audit P1.
+- SmsService auditSms sites: settings writes go through Settings::set() which already pairs write+SETTING_UPDATE in one boundary; SMS_* config audits are secondary evidence over an already-atomic settings write.
+- ExportService (EXPORT request/download) and ReportService (REPORT_READ): access/read/queue-enqueue events, not paired business mutations; enqueue commits first by design (queue row = source of truth). Classified non-P1.
+- ScheduleService L1114: thin pass-through audit helper; call sites already inside schedule boundaries (committed earlier).
+
+New tests (all real-MySQL 1054 fault injection via wpdb 'query' filter; no source-pattern-only tests; every suite asserts exception propagation, full rollback, zero partial audit, SAVEPOINT-depth restoration, clinic_id=1 attribution on the successful authorized retry, and pre-mutation authorization where applicable):
+- BookingAuditAtomicityTest (5 fault methods: hold/staff-create/reschedule/no-show/staff-cancel + ownership 403), ClinicalAuditAtomicityTest (note/prescription create/finalize/consultation-complete + secretary 403), HandwritingAuditAtomicityTest (doc/page/save + secretary 403), MedicalFileAuditAtomicityTest (upload/soft-delete + cross-patient IDOR 404), OtpAuditAtomicityTest (request/verify + invalid-mobile validation), plus narrow-cache canary test in RoleCapabilityAuditAtomicityTest (proves no global flush: canary in unrelated cache group survives; effective caps restored without any test-side flush).
+
+CI matrix (official sources verified at execution time):
+- php.net / php.net archive 2026 + endoflife.date: PHP 8.5.0 released 2025-11-20; latest 8.5.12 (2026-10-21 security release); active support to 2027-12-31, security to 2029-12-31. PHP 8.1 upstream-EOL since 2025-12-31 but retained per plugin floor >=8.1. PHP 8.6 still RC (stable due 2026-11-19) — not added.
+- wordpress.org release archive + make.wordpress.org hosting/handbook: latest stable WP 7.1.3 (2026-10-06); WP 6.9/7.0/7.1 fully support PHP 8.5 (beta label retired 2026-05); WP 7.1 fully compatible with PHP 7.4–8.5.
+- .github/workflows/ci.yml: Unit matrix php ['8.1'..'8.5'] (+1 per-PR check; total check count to be re-verified on the exact-head run, not assumed). Integration stays PHP 8.2 + PHPUnit 9.6 with an inline comment documenting the WP-test-lib/PHPUnit-9 toolchain limit on 8.5 and where the 8.5 evidence lives.
+- .github/workflows/wp-compat.yml (schedule + workflow_dispatch only, zero per-PR check growth): matrix include adds WP 7.1-latest-patch on PHP 8.5 + MySQL 8 alongside the existing 7.0/6.9-on-8.2 jobs; WP version still resolved from api.wordpress.org stable-check, never guessed/pinned.
+- MariaDB 11.4.13 + MySQL 8 lanes unchanged; MariaDB 11.8 remains unsupported; no RLS.
+
+Local verification honesty: no PHP/MySQL/PHPUnit/WPCS/PHPStan runtime in this sandbox. Verification performed: custom string/comment-aware brace/paren balance checker (all 12 touched PHP files OK); full diff review; signature/vocabulary/table-name equivalence checks against origin 9f397b5 (all identical for the four rebuilds); YAML parsed with js-yaml; camelCase local-variable scan (only WPCS-safe property declarations remain, matching green-suite precedent). PHPUnit/WPCS/PHPStan/real-MySQL results are NOT RUN locally and must be evidenced only by exact-commit owner CI.
+
+## 2026-10-23 (third session) — exact-SHA CI remediation of run 39913056317 (head 5c03395)
+
+Entry state: head 5c03395 pushed; exact-head CI finished with 3 failing checks —
+WPCS (changed code), Static Analysis (PHPStan level 3), Integration (WP 7.1 + MySQL 8):
+Tests 2316, Errors 21, Failures 4. All other 26 checks PASS, including the new
+Unit Tests (PHP 8.5) lane and Unit 8.1–8.4. Artifact/action-log egress is blocked
+by the sandbox host allowlist (results-receiver/blob hosts unreachable); evidence
+gathered from PR bot comments + api.github.com only.
+
+Root-cause analysis and fixes (working tree, not yet pushed at log time):
+
+1. HandwritingService — two rebuilt closures referenced `$actorUserId` (and addPage
+   also `$doc`) without importing them in `use`: createDocument L88 and addPage L182.
+   Runtime effect: "Undefined variable" under the strict test error handler → 18
+   integration errors across HandwritingFlowTest, HandwritingAuditAtomicityTest,
+   Phase3Slice6AuthorizationRedTest, plus 3 Phase10 staff-portal 500-vs-201 failures.
+   Fix: completed both `use` lists. A string/comment-aware free-variable audit of
+   every closure in the five changed source files was then run; the only remaining
+   genuine missing import was ClinicalService voidPrescription (next item).
+2. ClinicalService — voidPrescription closure (L621) used `$actorUserId` without
+   importing it (PrescriptionPrintTest failure). Fix: added to `use` list.
+3. BookingAuditAtomicityTest (new suite) — imported the non-existent
+   `ClinicCore\Application\Booking\BookingException`; the thrown (and only existing)
+   class is `ClinicCore\Domain\Booking\BookingException`, matching every other test
+   suite's import. Fix: corrected the import; service code untouched.
+4. RoleCapabilityAuditAtomicityTest::testRollbackUsesNarrowCacheInvalidationNotGlobalFlush
+   — submitted a partial matrix (secretary only). Product semantics (identical to
+   green head 9f397b5, method byte-identical) interpret missing roles as
+   requested=[] and empty them, so the authorized retry wrote 4 ROLE_PERMISSION_CHANGED
+   audits instead of 1. Fix: full-matrix fixture (all four preset roles with their
+   templates, secretary +EXPORT), mirroring the suite's own first test method.
+5. WPCS changed-lines findings (17 lines, 23 sniff reports incl. one double report):
+   PEAR/Squiz bracket spacing (OtpService L231, Booking L1691/L1800, MedicalFile L512),
+   closure `use (` spacing (Booking L1648, Handwriting L381), Generic
+   MultipleStatementAlignment (OtpService L344 group broken with a blank line;
+   Clinical L469 normalized to one space; L707 anchor removed by single-spacing the
+   func_get_arg alias pair at L691-692), WordPress.Arrays double-arrow alignment
+   (OtpService outer return block), and three UsedPropertyNotSnakeCase ERRORs
+   (Clinical followUps/visitService call sites) handled with standalone
+   `// phpcs:ignore` lines following the established ClinicianAdminPage precedent.
+   No ruleset or gate changes; no property renames (published injected APIs).
+6. OtpAuditAtomicityTest::testVerifyAuditFailureRollsBackConsumeAndProvisioning —
+   still root-causing: under the audit-1054 fault, `wp_insert_user` returns WP_Error
+   ("خطا در ایجاد حساب") BEFORE any audit INSERT is attempted, so the fault cannot be
+   what fails it. createWpUser is byte-identical to green head; the same filter +
+   suppress_errors + transactional pattern passes in StaffManagementAuditAtomicityTest
+   (wp_insert_user under active fault) and ManagementPortalAuditAtomicityTest; no
+   user_register/wp_pre_insert_user_data listeners exist; no pluggable override;
+   mobile/email unique to this suite; no global seed collision found statically.
+   A clearly-marked TEMP DEBUG self::fail() capturing exception class/message and
+   `$wpdb->last_error` was added for ONE CI cycle to obtain the exact WP_Error code;
+   it must be removed in the following commit once the cause is known.
+
+Verification performed locally: brace/paren balance lint on all 8 touched PHP files
+(OK); closure free-variable audit (custom parser, strings/comments stripped);
+git-diff review; green-head method comparisons. Not runnable locally: PHPUnit,
+WPCS, PHPStan, MySQL — all evidence must come from the next exact-SHA CI run.
+
+## 2026-10-23 (fourth session) — run 39916313749 (head 2ba0a46) outcome and second WPCS pass
+
+CI evidence at head 2ba0a46:
+- Static Analysis (PHPStan level 3): PASS (59s). The three missing closure
+  imports (Handwriting createDocument/addPage, Clinical voidPrescription) were
+  the level-3 defects; no other PHPStan findings exist.
+- Integration (WP 7.1 + MySQL 8), 2316 tests: the previous 21 errors + 4
+  failures collapsed to a single FAILURE deliberately produced by the temporary
+  OTP_DIAG self::fail() (65601 assertions, zero errors). All five new fault
+  suites, the full Handwriting/Clinical/Booking/Roles flows and both retry
+  paths otherwise pass.
+- OTP root cause CONFIRMED via the diagnostic:
+  "RuntimeException: audit event was not persisted: OTP_VERIFY_OK" (empty
+  wpdb::last_error) — i.e. once the closure fatals were repaired, provisioning
+  (wp_insert_user + patient link) completes inside the boundary, the injected
+  audit 1054 fires exactly where designed, and AuditLogger fails closed. The
+  run-39913056317 wp_insert_user WP_Error was collateral global-state pollution
+  from the earlier undefined-variable fatals in tests executing before this
+  suite, not an OtpService defect (OtpService runtime code is byte-identical in
+  that path between the two runs). TEMP DEBUG removed in this session's commit;
+  the original assertTrue($threw) assertion is restored verbatim.
+
+Second WPCS pass (run 39916313749) found violations created by the first-pass
+compact `use()` edits; fixes in this session:
+- The three compact inline closures (Handwriting L88/L182, Clinical L621) are
+  restructured to the codebase's variable-bound multi-line closure pattern
+  already used by BookingService::$no_show and HandwritingService::$save_page:
+  `$closure = function () use ( ... ): array { // phpcs:ignore ...VariableNotSnakeCase`
+  followed by `$this->db->transactional( $closure )`. Same boundary, same
+  captured variables, identical return targets; only the closure declaration
+  site moves. PEAR ContentAfterOpenBracket / Squiz argument spacing /
+  VariableNotSnakeCase findings all resolved by the established pattern.
+- Generic.Formatting.MultipleStatementAlignment: restored column-16 padding for
+  the two stable func_get_arg alias groups and the createPrescription
+  $number/$rx_id group; the single remaining cross-scope `$id` line inside the
+  recommendations foreach carries an exact-sniff standalone
+  `// phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning`
+  matching TrustedClinicEstablisher/VisitService precedent. No ruleset changes.
+
+Verification: brace/paren balance lint OK on all touched files; free-variable
+audit rerun (only the two known parser false positives at non-closure lines).
+PHPUnit/WPCS/PHPStan remain CI-only evidence; the next exact-SHA run is the
+authority for the all-green claim.
+
+## 2026-10-23 (fifth session) — run 39920134198 (head aed63d5): final WPCS alignment pass
+
+At head aed63d5: PHPStan PASS (53s), Unit PHP 8.5 PASS, all WPCS ERRORs gone;
+five Generic.Formatting.MultipleStatementAlignment WARNINGs remained, four of
+them on the new variable-bound closure call lines and two off-by-one padding
+errors from the previous pass. Exact sniff-expected spacing applied (no ignores
+added in this pass):
+- ClinicalService L468/L469: 8/9 spaces before '=' (was 9/10).
+- ClinicalService L655 `$rx = transactional($void_rx)`: 6 spaces, matching the
+  method's $clinicId anchor column.
+- HandwritingService L129 `$doc = transactional($create_document)`: 13 spaces,
+  matching the $trustedClinicId anchor; L212 `$row = transactional($add_page)`:
+  6 spaces, matching the $existing anchor.
+Next exact-SHA run is the authority; expected outcome: WPCS 0 findings,
+PHPStan PASS, Integration PASS with all 2316 tests green (the only run-2
+integration failure was the intentionally injected OTP_DIAG, now removed).
+
+## 2026-10-23 (sixth session) — OTP retry failure root-caused: stale WP user cache after SAVEPOINT rollback
+
+Run 39920526302 (head cc49015): WPCS PASS (0 findings), PHPStan PASS, Unit
+8.1–8.5 PASS; Integration reduced to ONE error in
+OtpAuditAtomicityTest::testVerifyAuditFailureRollsBackConsumeAndProvisioning,
+thrown at the authorized RETRY (test line 109), not the fault-injected attempt.
+
+Root cause (deterministic, not flaky): the first verify attempt provisions the
+WP user via wp_insert_user inside the transactional boundary; the injected
+audit 1054 then triggers ROLLBACK TO SAVEPOINT, which undoes the InnoDB
+wp_rows but NOT WordPress' process-local user object cache populated during
+wp_insert_user. On the in-process authorized retry, createWpUser() reuses the
+same deterministic email ({mobile}@otp.cpms.local) and (within the same
+time() second) the same pt_<hash> login; wp_insert_user's duplicate checks run
+through get_user_by(), which hits the stale cache and returns
+existing_user_login/existing_user_email as WP_Error → generic OtpException.
+The earlier "passing" run 39916313749 never reached the retry: the temporary
+OTP_DIAG self::fail() intentionally aborted the test first, which had masked
+this second defect.
+
+Fix (test-only, matching the established
+StaffManagementAuditAtomicityTest harness pattern): wp_cache_flush() after
+restoreAuditInserts() so every post-rollback read — including the retry's
+cache-backed duplicate checks — observes durable state. No production change:
+in production a failed boundary ends the request rather than retrying
+in-process, so the stale-cache window is not reachable outside the harness.
+The narrow-invalidation contract of RoleCapabilitiesPage remains separately
+proven by its own canary test.
+
+## 2026-10-23 (seventh session) — full green at 5f71921 and environment re-clone recovery
+
+Exact-head CI (run 39922154789 and sibling runs), head 5f719212dced4e41ce9076a1d7aa3a8f99c7d11b:
+ALL 29 PER-PR CHECKS PASS, zero failures, zero skipped checks:
+- WPCS (changed code): PASS, 0 findings on added lines; Static Analysis
+  (PHPStan level 3): PASS; Tenant Tripwire: PASS; Release Artifact: PASS.
+- Unit Tests PHP 8.1/8.2/8.3/8.4/8.5: all PASS (8.5 lane new this PR).
+- Integration (WP 7.1 + MySQL 8), authoritative completion-guard evidence:
+  OK (2316 tests, 65615 assertions), errors=0 failures=0 skipped=0. The six
+  required real-MySQL 1054 fault groups all run inside this total (Booking 6,
+  Clinical 5, Handwriting 4, MedicalFile 3, OTP 3, Roles 3 test methods); the
+  SQL failure ledger records the genuine errno 1054
+  "Unknown column 'cpms_fault_injection_no_such_column'" on cpms_audit_logs
+  INSERT, proving a real fault path rather than source-pattern assertions.
+- Focused jobs green: heartbeat MySQL+MariaDB (34 tests), first-practice
+  onboarding (22), Slice 4B independent MySQL races (4 tests, 366 assertions),
+  concurrency (20), archival (26), plus Closure/Staging/Upgrade/Responsive/
+  Real WP Acceptance (both table prefixes)/six coexistence/Facility matrix
+  (MariaDB 11.4 + MySQL 8). wp-compat remains schedule/workflow_dispatch only,
+  so per-PR check count stays exactly 29 (verified, not assumed).
+
+Environment note: between turns the sandbox was re-cloned at the branch base
+18b17be with the session files restored as uncommitted working-tree changes.
+Recovery used plumbing only — fetch origin branch, byte-level verification
+that every working-tree file (19 modified + 11 untracked) was identical to the
+pushed 5f71921 blobs, then git update-ref + git read-tree (no reset/clean/
+checkout/rebase, no force, no file modification). Result: local HEAD =
+origin/arena/3c1a79e3-doctor = 5f71921, clean tree, full history present.
+Nothing was pushed in this recovery; the branch on GitHub was never affected.
+
+Final defect chain closed this session: (1) three closures missing use()
+imports -> 21 PHP errors + PHPStan failures; (2) one wrong test import and one
+partial-matrix fixture; (3) WPCS spacing/alignment findings across five
+sources; (4) stale WP in-memory user cache after SAVEPOINT rollback breaking
+the OTP authorized-retry assertion (harness-only fix, production request model
+unaffected). PR remains Draft/OPEN; not merged, no main push, no release.
+
+### [2026-10-23 UTC] — D7 second-auditor BLOCK remediation, wave 1 (PR #262, branch arena/3c1a79e3-doctor)
+
+- **مبنای شروع:** remote PR head `0f75e48d042be6f1052216a68f918876059e2034` (29/29 green در run قبلی)؛ sandbox دوباره روی base `18b17be` کلون شده بود و کل پچ‌ست D6 + کار D7 به‌صورت uncommitted در working tree بود. آشتی‌دهی با plumbing: `git fetch` (سر ریموت عیناً همان SHA)، مقایسهٔ بایت‌به‌بایت همهٔ فایل‌های dirty/untracked با FETCH_HEAD — فایل‌های دست‌نخوردهٔ D6 بایت‌به‌بایت identical، تست‌های D7 برابر ریموت + ویرایش‌های عمدی، و هیچ خط ریموت‌تنهایی جز بلوک‌های جایگزین‌شده وجود نداشت.
+- **دامنه و تغییرات (production):**
+  - `Infrastructure/Cache/UserCacheRollback.php` (جدید): ابزار تولیدیِ حذف هدفمند کش کاربر وردپرس پس از rollback واقعی — فقط گروه‌های users/user_meta/userlogins/useremail، تحمل ID محوشده، no-op بدون runtime وردپرس، بدون `wp_cache_flush()` سراسری.
+  - `OtpService`: try/catch حول مرز verify با invalidate پس از rollback؛ descriptor provisioning با مرجع؛ `retry_enqueued` کاذب اصلاح شد (همیشه false در catch؛ OTP صف retry ندارد).
+  - `StaffManagementPage`: cache rollback در catchهای create/update/deactivate/activate و مسیر reset؛ ایمیل reset حالا فقط پس از commit (`get_password_reset_key` داخل مرز، `wp_mail` با `retrieve_password_notification_email` بعد از commit).
+  - `ManagementPortalService`: rollback کش در enroll_staff (descriptor با مرجع از resolve_or_provision_subscriber)؛ حذف سه audit تکراری اثبات‌شده (LOCATION_CREATED/LOCATION_UPDATED/SCHEDULE_CREATED بیرونی که سرویس‌های درونی همان‌ها را با clinic_id صریح می‌نوشتند).
+  - `ClinicianAdminPage`: حذف exit/redirect داخل closure از طریق `ClinicianRedirectException` ساخت‌یافته؛ redirect پایان‌دهنده فقط بعد از rollback؛ try/cach تازه برای toggle؛ cache rollback برای حساب provision‌شده.
+  - `VisitService`: audit اجباری دیگر بلعیده نمی‌شود (انتشار + rollback)؛ `auditBestEffort` فقط برای denial؛ processNoShows هر آیتم مرز مستقل با continue در catch (کرون نمی‌میرد).
+  - `ClinicProfileService`: audit CLINIC_PROFILE_UPDATED داخل مرز (دیگر best-effort بعد از تراکنش نیست).
+  - `MedicalFileService`: حذف فیزیکیِ فقط همان فایل یتیم در catch پس از rollback (ریشه‌محافظ LocalFileStorage)؛ فایل بی‌ارتباط دست‌نخورده.
+  - attribution صریح clinic_id (با suppress_scope_fallback در OTP) در Booking/Clinical/Handwriting/MedicalFile/Otp/Visit/Profile — حدود ۳۵ نقطه.
+- **تست‌ها:** ۴ سوئیت جدید (UserCacheRollback، Visit/ClinicProfile atomicity، MultiClinic attribution، ClinicianAdmin atomicity، StaffPasswordResetOrdering) + بازطراحی ۳ سوئیت قبلی با `ObjectCacheDeleteRecorder` (ضبط تولیدیِ حذف کلیدها به‌جای flush تست‌محور) + تست false-retry در SmsOtpDispatchTest و تست یتیم MedicalFile. Redis/Memcached واقعی در CI نیست → NOT RUN با افشا.
+- **CI:** wp-compat.yml تریگر `pull_request` گرفت با ماتریس شرطی تک‌لِین (WP 7.1/PHP 8.5؛ +۱ چک per-PR)؛ schedule هر سه لِین را نگه می‌دارد. لِین هنوز روی SHA جدید اجرا نشده → NOT RUN.
+- **اعتبارسنجی:** runtime محلی PHP/MySQL موجود نیست؛ توازن ساختاری ۳۴ فایل PHP با چکر brace/کوتیشن سفارشی (Node/Python) پاک؛ یک باگ کوتیشن اضافه در VisitService حین همین بررسی کشف و رفع شد. WPCS/PHPStan/PHPUnit فقط روی CI و پس از push قابل راستی‌آزمایی‌اند.
+- **تحویل و موارد باز:** commit از طریق plumbing (read-tree/write-tree/commit-tree/update-ref با parent=0f75e48، بدون reset/clean/rebase/force) و سپس push فست‌فوروارد؛ PR Draft می‌ماند. verdict نهایی منوط به چک‌های سبز SHA دقیق جدید.
+
+### [2026-10-23 UTC] — D7 CI root-cause round روی SHAهای b8b51f8/5403151 (PR #262)
+
+- **شواهد ریشه‌ای از API/کامنت‌ها (نه حدس):** ران ب8b51f8 شش چک قرمز داشت. (۱) Release Artifact و هر سه Closure runtime ریشهٔ واحد داشتند: سیاست ZIP مسیر `/cache/` (case-insensitive) فایل جدید `Infrastructure/Cache/UserCacheRollback.php` را رد می‌کرد → کلاس به `Infrastructure/UserCacheRollback.php` منتقل شد (namespace `ClinicCore\Infrastructure`، PSR-4، فقط ۵ عبارت use به‌روزرسانی، بدون تغییر رفتار). (۲) Closure پس از عبور از ZIP، با TypeError واقعی روی `BookingService::hold` متوقف شد: wrapper خصوصی `audit()` ده پارامتری است (جای نهم `$meta`) اما چهار call-site جدید کلینیک‌آی‌دی را جای نهم گذاشته بودند → افزودن `[]` به‌عنوان meta در HOLD_CREATED/PATIENT_CREATED/APPOINTMENT_CREATED(staff)/APPOINTMENT_CANCELLED؛ ممیزی سیستماتیک همهٔ ۳۰ call مستقیم `AuditLogger::log` (آرگومان نهم همیشه clinic_id واقعی) و wrapperهای Otp/Visit/Schedule انجام شد. (۳) PHPStan سه مورد گزارش کرد: دو `use` بلااستفاده پس از حذف سه audit تکراری (اصلاح شد) و `retrieve_password_notification_email()` ناشناخته برای stubs پین‌شده → معادل درون‌خطی با همان فیلترهای `retrieve_password_title/message` و همان متن/ساختار هستهٔ WP (تست ترتیب ایمیل همچنان کلید و login را در message می‌بیند).
+- **WPCS (۱۶۸ نقض روی خطوط اضافه‌شده، فهرست کامل از کامنت خود گیت):** با همان الگوی مستقرِ مخزن (بلوک‌های `phpcs:disable ... phpcs:enable` با فهرست صریح sniffهای صرفاً سبکی + ignoreهای خطی) رفع شد؛ هیچ sniff امنیتی/SQL/i18n/escaping غیرفعال نشد. متغیرهای scope در MedicalFile/Handwriting/Clinical همه از ردیف durable تعریف شده‌اند. یک بلاک closure در OtpService به‌جای disable، تورفتگی استانداردتر گرفت (diff بدون احتساب whitespace فقط کامنت است).
+- **wp-compat لِین 8.5:** روی b8b51f8 تا مهاجرت روی PHP 8.5 + WP 7.1.3 رسید (build/install/activate/migrate همه سبز) و فقط probe نهایی قرمز شد؛ چون لاگ از شبکهٔ restricted قابل خواندن نیست، step جدیدی اضافه شد که خروجی کامل `php -l` و probe را در کامنت PR آینه می‌کند (permissions: pull-requests write، فقط در رویداد pull_request) — بدون تضعیف گیت: pipefail و شکست step دست‌نخورده. علت دقیق probe فقط پس از ران بعدی قابل داوری است.
+- **اعتبارسنجی محلی:** runtime PHP/MySQL در sandbox نیست؛ توازن ساختاری همهٔ فایل‌ها با چکر سفارشی پاک، YAML هر ۱۰ workflow با PyYAML معتبر، و جفت‌های disable/enable متوازند. WPCS/PHPStan/PHPUnit/MySQL واقعی فقط روی CI و پس از push.
+
+### [2026-10-23 UTC] — PR #262 final CI stabilization (head 6c1b0ed → new commit; branch arena/3c1a79e3-doctor)
+
+- **مأموریت ۶۰ دقیقه‌ای:** فقط تثبیت CI، بدون دامنهٔ feature. شواهد ریشه‌ای از سورس هستهٔ WP 7.1.3 (api.github، wordpress-develop tag 7.1.3)، کامنت بات WPCS (run 39991172005، متن دقیق expected/found spacing) و API اَکشن‌ها؛ هیچ assertion message از لاگ Integration در دسترس نبود (blob EOF، طبق محدودیت شبکه).
+- **WPCS (۹ WARNING، صفر ERROR، همه Generic.Formatting.MultipleStatementAlignment):** فیکس مکانیکی با همان فاصله‌گذاری‌ای که خود sniff خواسته بود — `StaffManagementPage.php:500/501` سه→دو فاصله، `502–506` دو→یک (اپراتور `.=`)، `508` سه→یک؛ `ManagementPortalService.php:918` سه→یک. بدون suppression، بدون تغییر پیکربندی sniffها.
+- **شش شکست Integration — ریشه‌ٔ هرکدام اثبات‌شده از کد، همه ایراد سمت تست/فرض منسوخ، هیچ رفتار production معیوبی اثبات نشد:**
+  1) ClinicianAdmin create/toggle (۲ Error): فراخوانی مستقیم handler تحت فالت بدون nonce/$_POST/$_GET → `guard()` → `check_admin_referer` → wp_die (WPDieException) که catch باریک P3S6 نمی‌گیرد. فیکس: staging همان وضعیت درخواست احرازشدهٔ فرم واقعی (helper مشترک stageCreateRequest/stageToggleRequest) پیش از نصب فالت.
+  2) MedicalFile orphan (Failure): اولین `store()` گاردهای امنیتی ریشه (`.htaccess`/`index.php`/`web.config`/`README-SECURITY.txt`) را می‌نویسد؛ پاک‌سازی یتیم درست فقط فایل خودش را حذف می‌کند و گاردهای امنیتی عمداً می‌مانند. فرض برابری کامل درخت ذخیره‌سازی غلط بود؛ فیکس: assertion مبتنی بر diff با allowlist صریح همان چهار گارد + تضمین حذف‌نشدن هیچ شیء پیشین (شامل sentinel).
+  3) OTP request (Failure): تست clinic_id=1 انتظار داشت اما `request(MOBILE)` بدون آرگومان clinic صریح صدا زده می‌شد؛ production عمداً scope محیطیِ مسیر عمومی OTP را غیرقابل‌اعتماد می‌داند و NULL ثبت می‌کند (`suppress_scope_fallback=true`). فیکس: عبور clinic=1 از کانال صریح پارامتر (همان کانال انتخاب persisted)؛ verify بدون تغییر سبز می‌ماند چون clinic را از روی توکن/settings می‌گیرد.
+  4) Staff reset email (Failure): هستهٔ WP از نسخهٔ 6.8 متا را به‌شکل `epoch:wp_fast_hash(key)` ذخیره می‌کند و ایمیل کلید خام را حمل می‌کند؛ تست بخش hash متا را به‌جای کلید خام در پیام می‌جست. فیکس: دریافت کلید خام از اکشن canonical هسته `retrieve_password_key`، assert وجودش در ایمیل، عدم ذخیرهٔ verbatim، و راستی‌آزمایی end-to-end با `check_password_reset_key()`.
+  5) Staff delivery failure (Failure): در WP 7.1 مسیر کوتاه‌مدار `false === $atts` در `wp_mail()` حذف شده و hook مستند `pre_wp_mail` (5.7+) جایگزین آن شده است؛ رهگیر قدیمی دیگر ارسال را متوقف نمی‌کرد (MockPHPMailer می‌فرستاد و wp_mail true برمی‌گرداند). فیکس: hook `pre_wp_mail` با return=false در حالت شکست (حفظ رفتار legacy روی هسته‌های قدیمی‌تر).
+- **Responsive CANCELLED (run 39991158296):** شواهد API — جاب `timeout-minutes: 25`، step «Tooling (wp-cli + apache + playwright)» دقیقاً 24m36s اجرا و در مرز 25 دقیقه cancel شد؛ همهٔ stepهای مرورگر (11–28) skipped ماندند. این timeout مرحلهٔ tooling است، نه شکست محصول و نه لغو concurrency (هیچ push دیگری در آن بازه نبود؛ head همان 6c1b0ed بود). هیچ تغییری در workflow داده نشد؛ push جدید این کامیت یک ران تازه از مسیر عادی PR ایجاد می‌کند. اگر دوباره timeout شود، CANCELLED/NOT PASSING صادقانه گزارش می‌شود.
+- **اعتبارسنجی محلی:** runtime PHP/MySQL/PHPUnit/PHPStan در sandbox موجود نیست؛ لینتر ساختاری Node (توازن براکت/کوتیشن، جفت‌های phpcs) روی هر شش فایل پاک (تنها هشدار لینتر، الگوی معتبر file-scope disable بدون enable در ManagementPortalService است که از قبل در HEAD وجود داشت). WPCS/PHPStan/PHPUnit فقط روی CI و پس از push راستی‌آزمایی می‌شوند.
+- **محدودیت‌های پابرجا:** Redis/Memcached کش پایدار، اجرای محلی PHPUnit و stepهای مرورگر Responsive = NOT RUN. PR Draft می‌ماند؛ merge/main/release/self-approve/force-push انجام نشد.
+
+### [2026-10-23 UTC] — دور دوم تثبیت PR #262 روی e3eca6e (یک فیکس تستیِ دیگر با شواهد assertion واقعی)
+
+- **نتیجهٔ push اول (e3eca6e):** WPCS سبز (هر ۹ warning رفع شد، صفر سرکوب)؛ Integration از ۶ شکست به ۲ شکست کاهش یافت و هر دو Error حذف شد (Clinician×2، MedicalFile، OTP سبز). دو شکست باقی‌مانده هر دو در StaffPasswordResetOrderingTest و با پیام دقیق assertion (از کامنت «Integration test failures (run 40008417799)» — برخلاف دور قبل که blob لاگ در دسترس نبود): «the reset key must be durably persisted — Failed asserting that two strings are not identical» در خطوط 108 و 129؛ یعنی `activationKey()` رشتهٔ خالی می‌خواند.
+- **ریشهٔ اثبات‌شده از سورس هستهٔ WP 7.1.3 (user.php):** از WP 6.8 کلید بازنشانی در ستون واقعی `wp_users.user_activation_key` با `wp_update_user()` نوشته می‌شود (خط ~2568، `$wpdb->update($wpdb->users, ...)`)، نه در user meta؛ هیچ `update_user_meta` برای این کلید در این نسخه وجود ندارد. هلپر تست هنوز `get_user_meta($prefix.'user_activation_key')` می‌خواند که همیشه خالی است. تست rollback چون خودش خالی انتظار داشت سبز می‌ماند و این شکست را پنهان کرده بود.
+- **فیکس (فقط تست):** هلپر `activationKey()` اول ستون کانونیکال را با prepared statement می‌خواند و فقط در صورت خالی‌بودن به meta کلید legacy (هسته‌های قدیمی‌تر/مسیر per-blog) fallback می‌کند. هیچ تغییر production؛ مکانیزم rollback با همان مرز SAVEPOINT اثبات می‌شود. اعتبارسنجی end-to-end `check_password_reset_key()` از قبل در تست وجود دارد و دقیقاً همین ستون را از مسیر WP_User می‌خواند.

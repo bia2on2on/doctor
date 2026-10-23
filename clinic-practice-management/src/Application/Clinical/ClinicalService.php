@@ -137,7 +137,8 @@ final class ClinicalService
             (int) $visit['patient_id'],
             null,
             null,
-            ['via' => 'record_endpoint']
+            ['via' => 'record_endpoint'],
+            (int) $visit['clinic_id']
         );
 
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
@@ -257,30 +258,45 @@ final class ClinicalService
             );
         }
 
-        $noteId = $this->notes->insert((int) $visit['clinic_id'], [
-            'visit_id' => $visitId,
-            'patient_id' => (int) $visit['patient_id'],
-            'clinician_id' => (int) $visit['clinician_id'],
-            'category' => $category,
-            'visibility' => $visibility,
-            'content_text' => $content,
-            'version' => 1,
-            'created_by_wp_user_id' => $actorUserId,
-            'updated_by_wp_user_id' => $actorUserId,
-        ]);
+        // D6 audit atomicity: note row and its mandatory NOTE_CREATED audit
+        // share one boundary; a failed audit rolls the insert back.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-        $this->audit->log(
-            'NOTE_CREATED',
-            $this->actor($actorUserId, 'doctor'),
-            'note',
-            $noteId,
-            (int) $visit['patient_id'],
-            null,
-            ['version' => 1, 'category' => $category, 'visibility' => $visibility, 'content_length' => mb_strlen($content)],
-            ['visit_id' => $visitId]
+        $note_id = $this->db->transactional(
+            function () use ( $visit, $visit_id, $actor_user_id, $category, $visibility, $content ): int {
+                $note_id = $this->notes->insert(
+                    (int) $visit['clinic_id'],
+                    [
+                        'visit_id'              => $visit_id,
+                        'patient_id'            => (int) $visit['patient_id'],
+                        'clinician_id'          => (int) $visit['clinician_id'],
+                        'category'              => $category,
+                        'visibility'            => $visibility,
+                        'content_text'          => $content,
+                        'version'               => 1,
+                        'created_by_wp_user_id' => $actor_user_id,
+                        'updated_by_wp_user_id' => $actor_user_id,
+                    ]
+                );
+
+                $this->audit->log(
+                    'NOTE_CREATED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'note',
+                    $note_id,
+                    (int) $visit['patient_id'],
+                    null,
+                    [ 'version' => 1, 'category' => $category, 'visibility' => $visibility, 'content_length' => mb_strlen( $content ) ],
+                    [ 'visit_id' => $visit_id ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $note_id;
+            }
         );
 
-        return $this->presentNote($this->notes->find($noteId) ?? ['id' => $noteId]);
+        return $this->presentNote( $this->notes->find( $note_id ) ?? [ 'id' => $note_id ] );
     }
 
     /**
@@ -377,20 +393,29 @@ final class ClinicalService
                 'updated_by_wp_user_id' => $actorUserId,
             ]);
 
-            return $note;
+            // D6 audit atomicity: version snapshot, correction and mandatory
+            // audit commit/roll back together inside this locked boundary.
+            $actor_user_id = (int) $actorUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $note_id       = (int) $noteId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+
+            $updated = $this->notes->find( $note_id ) ?? $note;
+            $this->audit->log(
+                'NOTE_UPDATED',
+                $this->actor( $actor_user_id, 'doctor' ),
+                'note',
+                $note_id,
+                (int) $note['patient_id'],
+                [ 'version' => (int) $note['version'], 'content_length' => mb_strlen( (string) $note['content_text'] ) ],
+                [ 'version' => (int) $updated['version'], 'content_length' => mb_strlen( $content ) ],
+                [ 'visit_id' => (int) $note['visit_id'], 'change_reason' => mb_substr( $reason, 0, 255 ) ],
+                (int) $note['clinic_id']
+            );
+
+            return $updated;
         });
 
-        $updated = $this->notes->find($noteId) ?? $note;
-        $this->audit->log(
-            'NOTE_UPDATED',
-            $this->actor($actorUserId, 'doctor'),
-            'note',
-            $noteId,
-            (int) $note['patient_id'],
-            ['version' => (int) $note['version'], 'content_length' => mb_strlen((string) $note['content_text'])],
-            ['version' => (int) $updated['version'], 'content_length' => mb_strlen($content)],
-            ['visit_id' => (int) $note['visit_id'], 'change_reason' => mb_substr($reason, 0, 255)]
-        );
+        // D6: NOTE_UPDATED now commits inside the locked transaction above.
+        $updated = $note;
 
         return $this->presentNote($updated) + ['versions' => count($this->notes->versionsFor($noteId))];
     }
@@ -432,35 +457,54 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه اصلاح‌شده (correction_of) یافت نشد', 404);
         }
 
-        $number = $this->prescriptions->nextPrescriptionNumber();
-        $rxId = $this->prescriptions->insert((int) $visit['clinic_id'], [
-            'prescription_number' => $number,
-            'visit_id' => $visitId,
-            'patient_id' => (int) $visit['patient_id'],
-            'clinician_id' => (int) $visit['clinician_id'],
-            'is_patient_visible' => !empty($input['is_patient_visible']) ? 1 : 0,
-            'correction_of_prescription_id' => $correctionOf,
-        ]);
+        // D6 audit atomicity: prescription number/header, every item and the
+        // mandatory audit commit/roll back together (partial prescriptions
+        // cannot survive an audit failure).
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-        $sort = 0;
-        foreach ($items as $item) {
-            $this->prescriptions->insertItem($rxId, $this->validateRxItem($item) + ['sort_order' => $sort++]);
-        }
+        $rx_id = $this->db->transactional(
+            function () use ( $visit, $visit_id, $actor_user_id, $items, $input ): int {
+                $correction_of = isset( $input['correction_of_prescription_id'] )
+                    ? (int) $input['correction_of_prescription_id']
+                    : null;
+                $number        = $this->prescriptions->nextPrescriptionNumber();
+                $rx_id         = $this->prescriptions->insert(
+                    (int) $visit['clinic_id'],
+                    [
+                        'prescription_number'           => $number,
+                        'visit_id'                      => $visit_id,
+                        'patient_id'                    => (int) $visit['patient_id'],
+                        'clinician_id'                  => (int) $visit['clinician_id'],
+                        'is_patient_visible'            => ! empty( $input['is_patient_visible'] ) ? 1 : 0,
+                        'correction_of_prescription_id' => $correction_of,
+                    ]
+                );
 
-        $this->audit->log(
-            'PRESCRIPTION_CREATED',
-            $this->actor($actorUserId, 'doctor'),
-            'prescription',
-            $rxId,
-            (int) $visit['patient_id'],
-            null,
-            ['prescription_number' => $number, 'status' => 'draft', 'item_count' => count($items)],
-            ['visit_id' => $visitId, 'correction_of' => $correctionOf]
+                $sort = 0;
+                foreach ( $items as $item ) {
+                    $this->prescriptions->insertItem( $rx_id, $this->validateRxItem( $item ) + [ 'sort_order' => $sort++ ] );
+                }
+
+                $this->audit->log(
+                    'PRESCRIPTION_CREATED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'prescription',
+                    $rx_id,
+                    (int) $visit['patient_id'],
+                    null,
+                    [ 'prescription_number' => $number, 'status' => 'draft', 'item_count' => count( $items ) ],
+                    [ 'visit_id' => $visit_id, 'correction_of' => $correction_of ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $rx_id;
+            }
         );
 
         return $this->presentPrescription(
-            $this->prescriptions->find($rxId) ?? ['id' => $rxId],
-            $this->prescriptions->itemsFor($rxId)
+            $this->prescriptions->find( $rx_id ) ?? [ 'id' => $rx_id ],
+            $this->prescriptions->itemsFor( $rx_id )
         );
     }
 
@@ -524,21 +568,29 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
 
+            // D6 audit atomicity: the Draft → Finalized mutation and its
+            // mandatory audit share this locked boundary.
+            $actor_user_id   = (int) $actorUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $prescription_id = (int) $prescriptionId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $this->audit->log(
+                'PRESCRIPTION_FINALIZED',
+                $this->actor( $actor_user_id, 'doctor' ),
+                'prescription',
+                $prescription_id,
+                (int) $rx['patient_id'],
+                [ 'status' => 'draft' ],
+                [ 'status' => 'finalized' ],
+                [ 'prescription_number' => (string) $rx['prescription_number'], 'visit_id' => (int) $rx['visit_id'] ],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
+                $clinicId
+            );
+
             return $rx;
         };
 
         $rx = $this->db->transactional( $finalize_rx );
 
-        $this->audit->log(
-            'PRESCRIPTION_FINALIZED',
-            $this->actor($actorUserId, 'doctor'),
-            'prescription',
-            $prescriptionId,
-            (int) $rx['patient_id'],
-            ['status' => 'draft'],
-            ['status' => 'finalized'],
-            ['prescription_number' => (string) $rx['prescription_number'], 'visit_id' => (int) $rx['visit_id']]
-        );
+        // D6: PRESCRIPTION_FINALIZED now commits inside the locked boundary above.
 
         return $this->presentPrescription(
             $this->prescriptions->find($prescriptionId) ?? $rx,
@@ -572,7 +624,10 @@ final class ClinicalService
             'prescription',
             $prescriptionId
         );
-        $rx = $this->db->transactional(function () use ($prescriptionId, $reason, $clinicId): array {
+        // Bound to a variable first so the multi-line closure keeps the
+        // PEAR.Functions.FunctionCallSignature contract (open parenthesis last
+        // on its line) and the legacy camelCase imports stay explicitly scoped.
+        $void_rx = function () use ( $actorUserId, $prescriptionId, $reason, $clinicId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy parameter naming preserved inside the transactional boundary.
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
@@ -586,19 +641,28 @@ final class ClinicalService
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
             }
 
-            return $rx;
-        });
+            // D6 audit atomicity: the void mutation and its mandatory audit
+            // commit/roll back together inside this locked boundary.
+            $actor_user_id   = (int) $actorUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $prescription_id = (int) $prescriptionId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+            $this->audit->log(
+                'PRESCRIPTION_VOIDED',
+                $this->actor( $actor_user_id, 'doctor' ),
+                'prescription',
+                $prescription_id,
+                (int) $rx['patient_id'],
+                [ 'status' => (string) $rx['status'] ],
+                [ 'status' => 'voided' ],
+                [ 'prescription_number' => (string) $rx['prescription_number'], 'reason' => mb_substr( $reason, 0, 255 ) ],
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
+                $clinicId
+            );
 
-        $this->audit->log(
-            'PRESCRIPTION_VOIDED',
-            $this->actor($actorUserId, 'doctor'),
-            'prescription',
-            $prescriptionId,
-            (int) $rx['patient_id'],
-            ['status' => (string) $rx['status']],
-            ['status' => 'voided'],
-            ['prescription_number' => (string) $rx['prescription_number'], 'reason' => mb_substr($reason, 0, 255)]
-        );
+            return $rx;
+        };
+        $rx      = $this->db->transactional( $void_rx );
+
+        // D6: PRESCRIPTION_VOIDED now commits inside the locked transaction above.
 
         return $this->presentPrescription(
             $this->prescriptions->find($prescriptionId) ?? $rx,
@@ -634,37 +698,53 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'حداقل یک توصیه ارسال شود', 422);
         }
 
-        $created = [];
-        foreach ($items as $item) {
-            $type = (string) ($item['type'] ?? 'other');
-            $text = trim((string) ($item['text'] ?? ''));
-            if (!in_array($type, self::REC_TYPES, true)) {
-                throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'نوع توصیه نامعتبر است', 422, ['type' => $type]);
-            }
-            if ($text === '' || mb_strlen($text) > 1000) {
-                throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'متن توصیه الزامی است (حداکثر ۱۰۰۰ نویسه)', 422);
-            }
+        // D6 audit atomicity: every recommendation row and the mandatory audit
+        // commit/roll back together — a partial set can never survive.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-            $id = $this->recommendations->insert((int) $visit['clinic_id'], [
-                'visit_id' => $visitId,
-                'patient_id' => (int) $visit['patient_id'],
-                'clinician_id' => (int) $visit['clinician_id'],
-                'type' => $type,
-                'text' => $text,
-                'is_patient_visible' => !empty($item['is_patient_visible']) ? 1 : 0,
-            ]);
-            $created[] = $id;
-        }
+        $created = $this->db->transactional(
+            function () use ( $visit, $visit_id, $actor_user_id, $items ): array {
+                $created = [];
+                foreach ( $items as $item ) {
+                    $type = (string) ( $item['type'] ?? 'other' );
+                    $text = trim( (string) ( $item['text'] ?? '' ) );
+                    if ( ! in_array( $type, self::REC_TYPES, true ) ) {
+                        throw ClinicalException::of( 'CLINIC_VALIDATION_FAILED', 'نوع توصیه نامعتبر است', 422, [ 'type' => $type ] );
+                    }
+                    if ( $text === '' || mb_strlen( $text ) > 1000 ) {
+                        throw ClinicalException::of( 'CLINIC_VALIDATION_FAILED', 'متن توصیه الزامی است (حداکثر ۱۰۰۰ نویسه)', 422 );
+                    }
 
-        $this->audit->log(
-            'RECOMMENDATIONS_CREATED',
-            $this->actor($actorUserId, 'doctor'),
-            'visit',
-            $visitId,
-            (int) $visit['patient_id'],
-            null,
-            ['count' => count($created)],
-            ['types' => array_map(static fn (array $i): string => (string) ($i['type'] ?? 'other'), $items)]
+                    // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- D6 closure keeps the foreach's single-space assignment style; cross-scope alignment anchor is outside this block.
+                    $id = $this->recommendations->insert(
+                        (int) $visit['clinic_id'],
+                        [
+                            'visit_id'           => $visit_id,
+                            'patient_id'         => (int) $visit['patient_id'],
+                            'clinician_id'       => (int) $visit['clinician_id'],
+                            'type'               => $type,
+                            'text'               => $text,
+                            'is_patient_visible' => ! empty( $item['is_patient_visible'] ) ? 1 : 0,
+                        ]
+                    );
+                    $created[] = $id;
+                }
+
+                $this->audit->log(
+                    'RECOMMENDATIONS_CREATED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'visit',
+                    $visit_id,
+                    (int) $visit['patient_id'],
+                    null,
+                    [ 'count' => count( $created ) ],
+                    [ 'types' => array_map( static fn ( array $i ): string => (string) ( $i['type'] ?? 'other' ), $items ) ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $created;
+            }
         );
 
         return ['created' => count($created), 'recommendations' => array_map(
@@ -711,25 +791,45 @@ final class ClinicalService
             throw ClinicalException::of('CLINIC_VALIDATION_FAILED', 'بازه پیگیری باید بین ۱ تا ۳۶۵۰ روز باشد', 422);
         }
 
-        $id = $this->followUps->insert((int) $visit['clinic_id'], [
-            'visit_id' => $visitId,
-            'patient_id' => (int) $visit['patient_id'],
-            'clinician_id' => (int) $visit['clinician_id'],
-            'is_needed' => $isNeeded ? 1 : 0,
-            'suggested_date' => $isNeeded ? $suggestedDate : null,
-            'interval_days' => $isNeeded ? $intervalDays : null,
-            'reason' => $reason !== null ? mb_substr($reason, 0, 255) : null,
-        ]);
+        // D6 audit atomicity: the follow-up row and its mandatory audit share
+        // one boundary; a failed audit rolls the insert back.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-        $this->audit->log(
-            'FOLLOW_UP_CREATED',
-            $this->actor($actorUserId, 'doctor'),
-            'follow_up',
-            $id,
-            (int) $visit['patient_id'],
-            null,
-            ['is_needed' => $isNeeded, 'suggested_date' => $isNeeded ? $suggestedDate : null],
-            ['visit_id' => $visitId]
+        $id = $this->db->transactional(
+            function () use ( $visit, $visit_id, $actor_user_id, $input, $reason ): int {
+                $is_needed      = ! empty( $input['is_needed'] );
+                $suggested_date = isset( $input['suggested_date'] ) ? (string) $input['suggested_date'] : null;
+                $interval_days  = isset( $input['interval_days'] ) ? (int) $input['interval_days'] : null;
+
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected repository property retains its published name.
+                $id = $this->followUps->insert(
+                    (int) $visit['clinic_id'],
+                    [
+                        'visit_id'       => $visit_id,
+                        'patient_id'     => (int) $visit['patient_id'],
+                        'clinician_id'   => (int) $visit['clinician_id'],
+                        'is_needed'      => $is_needed ? 1 : 0,
+                        'suggested_date' => $is_needed ? $suggested_date : null,
+                        'interval_days'  => $is_needed ? $interval_days : null,
+                        'reason'         => $reason !== null ? mb_substr( $reason, 0, 255 ) : null,
+                    ]
+                );
+
+                $this->audit->log(
+                    'FOLLOW_UP_CREATED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'follow_up',
+                    $id,
+                    (int) $visit['patient_id'],
+                    null,
+                    [ 'is_needed' => $is_needed, 'suggested_date' => $is_needed ? $suggested_date : null ],
+                    [ 'visit_id' => $visit_id ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $id;
+            }
         );
 
         return $this->presentFollowUp($this->followUps->find($id) ?? ['id' => $id]);
@@ -774,20 +874,32 @@ final class ClinicalService
             );
         }
 
-        $result = $this->visitService->transition($actorUserId, $visitId, 'complete');
+        // D6 audit atomicity: VisitService::transition() nests as a SAVEPOINT
+        // inside this boundary, so the visit transition/history and the clinical
+        // CONSULTATION_COMPLETED audit commit/roll back together.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-        $this->audit->log(
-            'CONSULTATION_COMPLETED',
-            $this->actor($actorUserId, 'doctor'),
-            'visit',
-            $visitId,
-            (int) $visit['patient_id'],
-            null,
-            ['status' => 'consultation_completed'],
-            ['validation' => 'chief_complaint_ok']
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $visit_id, $visit ) {
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected VisitService property retains its published name.
+                $result = $this->visitService->transition( $actor_user_id, $visit_id, 'complete' );
+
+                $this->audit->log(
+                    'CONSULTATION_COMPLETED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'visit',
+                    $visit_id,
+                    (int) $visit['patient_id'],
+                    null,
+                    [ 'status' => 'consultation_completed' ],
+                    [ 'validation' => 'chief_complaint_ok' ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $result;
+            }
         );
-
-        return $result;
     }
 
     /**
@@ -814,20 +926,31 @@ final class ClinicalService
             (int) $visit['patient_id']
         );
 
-        $result = $this->visitService->transition($actorUserId, $visitId, 'reopen', ['reason' => $reason]);
+        // D6 audit atomicity: the reopen transition (nested SAVEPOINT) and the
+        // CONSULTATION_REOPENED audit share one outer boundary.
+        $actor_user_id = (int) func_get_arg( 0 );
+        $visit_id      = (int) func_get_arg( 1 );
 
-        $this->audit->log(
-            'CONSULTATION_REOPENED',
-            $this->actor($actorUserId, 'doctor'),
-            'visit',
-            $visitId,
-            (int) $visit['patient_id'],
-            ['status' => 'consultation_completed'],
-            ['status' => 'in_consultation'],
-            ['reason' => mb_substr($reason, 0, 255)]
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $visit_id, $visit, $reason ) {
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- injected VisitService property retains its published name.
+                $result = $this->visitService->transition( $actor_user_id, $visit_id, 'reopen', [ 'reason' => $reason ] );
+
+                $this->audit->log(
+                    'CONSULTATION_REOPENED',
+                    $this->actor( $actor_user_id, 'doctor' ),
+                    'visit',
+                    $visit_id,
+                    (int) $visit['patient_id'],
+                    [ 'status' => 'consultation_completed' ],
+                    [ 'status' => 'in_consultation' ],
+                    [ 'reason' => mb_substr( $reason, 0, 255 ) ],
+                    (int) $visit['clinic_id']
+                );
+
+                return $result;
+            }
         );
-
-        return $result;
     }
 
     // ================= C5/C6/C7 — نمای بیمار (Ownership — P-5/P-8) =================
@@ -1211,7 +1334,9 @@ final class ClinicalService
             (int) $visit['patient_id'],
             null,
             null,
-            ['visit_id' => $visitId]
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
+            ['visit_id' => $visitId],
+            (int) $visit['clinic_id']
         );
 
         return $view;
@@ -1446,7 +1571,9 @@ final class ClinicalService
                 'from' => $from,
                 'to' => $to,
                 'counts' => array_map('count', $results),
-            ]
+            ],
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR camelCase local, established file style.
+            $trustedClinicId
         );
 
         return ['query' => $q, 'type' => $type, 'results' => $results];

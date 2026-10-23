@@ -60,7 +60,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php: ['8.1', '8.2', '8.3', '8.4']
+        # PHP 8.5.0 released 2025-11-20 (php.net); 8.5 is the current stable
+        # branch (8.5.x security support until 2029-12-31). Retained 8.1–8.4
+        # lanes per the declared plugin floor (composer.json "php": ">=8.1"),
+        # even though PHP 8.1 is upstream-EOL since 2025-12-31.
+        php: ['8.1', '8.2', '8.3', '8.4', '8.5']
     steps:
       - uses: actions/checkout@v4
 
@@ -231,6 +235,13 @@ jobs:
       # که در PHPUnit 10/11 حذف شده (polyfills این بخش را پوشش نمی‌دهد) → برای
       # Integration نسخه رسمی پشتیبانی‌شده WP یعنی PHPUnit 9.6 نصب می‌شود؛
       # Unit job ها روی PHPUnit 11/10.5 باقی می‌مانند.
+      #
+      # PHP 8.5 و این Integration job: PHPUnit 9.6 یک خطِ EOL است و روی PHP 8.5
+      # پشتیبانی نمی‌شود، پس این لِین عمداً روی PHP 8.2 می‌ماند (محدودیت زنجیرهٔ
+      # ابزار تست، نه محدودیت افزونه). شواهد سازگاریِ واقعیِ PHP 8.5:
+      #  - لِین PHP 8.5 همان Unit matrix بالا (composer + unit suite روی 8.5 واقعی)؛
+      #  - job «WP 7.1 on PHP 8.5» در wp-compat.yml (WP رسمیِ آخرین وصلهٔ 7.1 +
+      #    MySQL 8 + نصب/فعال‌سازی/migration/probe زمان‌اجرا، بدون تست‌لیبِ PHPUnit).
       - name: Install dependencies (PHPUnit 9.6 for WP test lib)
         run: |
           composer install --prefer-dist --no-progress --no-interaction
