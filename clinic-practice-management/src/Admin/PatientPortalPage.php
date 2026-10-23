@@ -51,6 +51,15 @@ final class PatientPortalPage
     /** نشانگرِ کنترلِ لغو (قرارداد UI/Test) — فقط روی ردیف‌های `confirmed`. */
     private const CANCEL_ACTION_ROLE = 'cancel-appointment';
 
+    /** نشانگرِ کنترلِ جابه‌جایی نوبت (B5) — فقط روی ردیف‌های `confirmed`. */
+    private const RESCHEDULE_ACTION_ROLE = 'reschedule-appointment';
+
+    /** مسیرِ دریافت اسلات‌های آزاد برای جابه‌جایی نوبتِ خودِ بیمار. */
+    private const RESCHEDULE_OPTIONS_PATH = '/appointments/{id}/reschedule-options';
+
+    /** الگوی مسیرِ B5 نسبت به ریشهٔ namespace؛ `{id}` سمت کلاینت جایگزین می‌شود. */
+    private const RESCHEDULE_PATH = '/appointments/{id}/reschedule';
+
     /** کلاسِ `<script type="application/json">` حاملِ پیکربندیِ امن. */
     private const CONFIG_CLASS = 'cpms-patient-portal__config';
 
@@ -331,9 +340,10 @@ final class PatientPortalPage
         $html .= '<h1 id="cpms-pp-appointments-heading">نوبت‌های من</h1>';
         $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
         $html .= '<h2>نوبت‌های پیش‌رو</h2>';
-        $html .= '<p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا لغو کنید.</p>';
+        $html .= '<p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا جابه‌جا یا لغو کنید.</p>';
         $html .= self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true );
         $html .= '<div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>';
+        $html .= self::reschedule_panel();
         $html .= self::notifications_section( $inbox, $clinic_tz );
         $html .= '<h2>تاریخچه</h2>';
         $html .= self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false );
@@ -650,6 +660,8 @@ final class PatientPortalPage
             [
                 'rest_root'               => untrailingslashit( rest_url( self::REST_NAMESPACE ) ),
                 'cancel_path'             => self::CANCEL_PATH,
+                'reschedule_options_path' => self::RESCHEDULE_OPTIONS_PATH,
+                'reschedule_path'         => self::RESCHEDULE_PATH,
                 'notifications_read_path' => self::NOTIFICATIONS_READ_PATH,
                 'profile_my_records_path' => '/patient/my-records',
                 'profile_me_path'         => '/patient/me',
@@ -1131,13 +1143,60 @@ final class PatientPortalPage
                 . '<td data-label="کد رهگیری"><span dir="ltr">' . esc_html( (string) $r['reference_code'] ) . '</span></td>';
             if ( $with_actions ) {
                 $html .= '<td class="cpms-actions-cell" data-label="عملیات">'
-                    . ( $status === 'confirmed' ? self::cancel_button( (int) $r['id'], $jalali, $time ) : '<span aria-hidden="true">—</span>' )
+                    . ( $status === 'confirmed'
+                        ? self::reschedule_button( (int) $r['id'], $jalali, $time ) . ' ' . self::cancel_button( (int) $r['id'], $jalali, $time )
+                        : '<span aria-hidden="true">—</span>' )
                     . '</td>';
             }
             $html .= '</tr>';
         }
 
         return $html . '</tbody></table>';
+    }
+
+    /**
+     * پنل تغییر نوبت (B5) — بدون هیچ فیلد اقتدار (clinic_id / patient_id)؛
+     * مرجع مالکیت، مهلت جابه‌جایی و اتمیک‌بودن تعویض اسلات، سرور است.
+     */
+    private static function reschedule_panel(): string {
+        return '<div class="cpms-pp-reschedule" data-role="reschedule-panel" aria-labelledby="cpms-pp-reschedule-title" hidden>'
+            . '<div class="cpms-pp-reschedule__head">'
+            . '<h3 id="cpms-pp-reschedule-title">تغییر زمان نوبت</h3>'
+            . '<button type="button" class="cpms-pp-btn cpms-pp-btn--ghost" data-role="reschedule-abort">انصراف</button>'
+            . '</div>'
+            . '<p class="cpms-pp-reschedule__summary" data-role="reschedule-summary"></p>'
+            . '<p class="cpms-pp-reschedule__status" role="status" aria-live="polite" data-role="reschedule-loading" hidden>در حال دریافت نوبت‌های آزاد…</p>'
+            . '<div class="notice inline cpms-pp-reschedule__notice cpms-pp-reschedule__notice--error" role="alert" data-role="reschedule-error" hidden></div>'
+            . '<div class="notice inline cpms-pp-reschedule__notice cpms-pp-reschedule__notice--success" role="status" aria-live="polite" data-role="reschedule-success" hidden></div>'
+            . '<p class="cpms-pp-reschedule__empty" data-role="reschedule-empty" hidden>نوبت آزادی برای جابه‌جایی یافت نشد.</p>'
+            . '<div class="cpms-pp-reschedule__picker" data-role="reschedule-picker" hidden>'
+            . '<div class="cpms-pp-reschedule__group">'
+            . '<span class="cpms-pp-reschedule__label">۱. انتخاب روز (تقویم شمسی):</span>'
+            . '<div class="cpms-pp-reschedule__days" data-role="reschedule-days" role="group" aria-label="روزهای دارای نوبت آزاد"></div>'
+            . '</div>'
+            . '<div class="cpms-pp-reschedule__group">'
+            . '<span class="cpms-pp-reschedule__label">۲. انتخاب ساعت آزاد:</span>'
+            . '<div class="cpms-pp-reschedule__slots" data-role="reschedule-slots" role="group" aria-label="ساعت‌های آزاد"></div>'
+            . '</div>'
+            . '<p class="cpms-pp-reschedule__selected" data-role="reschedule-selected" aria-live="polite"></p>'
+            . '<div class="cpms-pp-reschedule__actions">'
+            . '<button type="button" class="cpms-pp-btn cpms-pp-btn--primary" data-role="reschedule-confirm" disabled>تأیید تغییر نوبت</button>'
+            . '</div>'
+            . '</div>'
+            . '</div>';
+    }
+
+    /**
+     * دکمهٔ بازکردن پنل تغییر نوبت (B5) — فقط شناسهٔ نوبت را حمل می‌کند.
+     */
+    private static function reschedule_button( int $appointment_id, string $jalali, string $time ): string {
+        $label = 'تغییر نوبت ' . $jalali . ' ساعت ' . $time;
+
+        return '<button type="button" class="button button-small cpms-patient-portal__reschedule"'
+            . ' data-role="' . esc_attr( self::RESCHEDULE_ACTION_ROLE ) . '"'
+            . ' data-appointment-id="' . $appointment_id . '"'
+            . ' aria-label="' . esc_attr( $label ) . '"'
+            . '>تغییر نوبت</button>';
     }
 
     /**

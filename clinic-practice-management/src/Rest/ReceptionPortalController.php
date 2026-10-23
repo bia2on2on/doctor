@@ -357,6 +357,27 @@ final class ReceptionPortalController extends RestBase {
 
 		register_rest_route(
 			self::NS,
+			'/staff/portal/reception/appointments/(?P<id>\d+)/no-show',
+			[
+				[
+					'methods'             => WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->reception_appointment_no_show( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_reception( $r, [ RolesAndCapabilities::APPT_NO_SHOW ] ),
+					'args'                => [
+						'id'     => [
+							'type' => 'integer',
+						],
+						'reason' => [
+							'required' => false,
+							'type'     => 'string',
+						],
+					],
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
 			'/staff/portal/reception/arrivals',
 			[
 				[
@@ -1524,6 +1545,80 @@ final class ReceptionPortalController extends RestBase {
 		// Bounded reception response: the cancelled appointment identity/status
 		// plus the trusted scope it was cancelled in. No PHI, no clinical data,
 		// no unrelated scheduling internals.
+		return $this->success(
+			[
+				'appointment' => [
+					'appointment_id' => (int) ( $view['appointment_id'] ?? $appointment_id ),
+					'status'         => (string) ( $view['status'] ?? '' ),
+				],
+				'reception'   => [
+					'clinic_id'   => $clinic_id,
+					'location_id' => $location_id,
+				],
+			]
+		);
+	}
+
+	/**
+	 * Reception no-show transition of ONE confirmed booked appointment inside
+	 * the CURRENT trusted operational Location.
+	 *
+	 * Delegates to the established `BookingService::markNoShowByStaff()` so the
+	 * active-Visit guard, `confirmed -> no_show` state machine, required reason,
+	 * slot `booked_count` preservation, `APPOINTMENT_NO_SHOW` audit, and
+	 * `appointments.reason` preservation remain authoritative.
+	 *
+	 * As with cancel/reschedule, the persisted appointment row is re-read and
+	 * verified against BOTH the trusted Clinic AND the trusted operational
+	 * Location before delegation; any mismatch shares the canonical
+	 * non-enumerating 404 fingerprint.
+	 */
+	private function reception_appointment_no_show( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$user_id        = (int) get_current_user_id();
+		$appointment_id = (int) ( $r['id'] ?? 0 );
+		if ( $appointment_id <= 0 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ نوبت نامعتبر است' );
+		}
+		$raw_reason = $r['reason'] ?? '';
+		$reason     = is_string( $raw_reason ) ? trim( $raw_reason ) : '';
+		if ( '' === $reason ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'ثبت دلیل عدم حضور الزامی است' );
+		}
+		$reason = mb_substr( $reason, 0, 255 );
+
+		$resolved = $this->resolve_reception_location( $user_id );
+		if ( $resolved instanceof WP_Error ) {
+			return $resolved;
+		}
+		if ( null === $resolved['location_id'] ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'امکان تعیین محدودهٔ کلینیک معتبر نیست.', [ 'reason' => 'location' ] );
+		}
+		$clinic_id   = (int) $resolved['clinic_id'];
+		$location_id = (int) $resolved['location_id'];
+
+		$db  = App::db();
+		$row = $db->fetchRow(
+			'SELECT id, clinic_id, location_id FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d LIMIT 1',
+			[ $appointment_id ]
+		);
+		if (
+			null === $row
+			|| (int) $row['clinic_id'] !== $clinic_id
+			|| (int) $row['location_id'] !== $location_id
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'نوبت یافت نشد' );
+		}
+
+		try {
+			$view = App::bookingService()->markNoShowByStaff( $user_id, $appointment_id, $reason );
+		} catch ( BookingException $e ) {
+			return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract
+		} catch ( \Throwable $e ) {
+			error_log( '[CPMS][ReceptionPortalController] appointment no-show: ' . $e->getMessage() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention
+
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'ثبت عدم حضور انجام نشد' );
+		}
+
 		return $this->success(
 			[
 				'appointment' => [

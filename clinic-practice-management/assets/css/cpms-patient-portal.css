@@ -997,3 +997,159 @@
 	.cpms-pp-enrollment__fieldset { padding: 12px; }
 	.cpms-pp-enrollment__actions .cpms-pp-btn { width: 100%; }
 }
+
+/* ---------------------------------------------------------------------------
+   Self-service appointment rescheduling (B5) + 390px/320px RTL mobile polish.
+   --------------------------------------------------------------------------- */
+.cpms-patient-portal .cpms-actions-cell {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	align-items: center;
+}
+.cpms-patient-portal .cpms-patient-portal__reschedule,
+.cpms-patient-portal .cpms-patient-portal__cancel {
+	min-height: 38px;
+	padding-inline: 10px;
+	cursor: pointer;
+}
+.cpms-pp-reschedule [hidden] {
+	display: none !important;
+}
+.cpms-pp-reschedule {
+	max-width: 840px;
+	margin-block: 14px 18px;
+	padding: 16px;
+	border: 1px solid var(--cpms-pp-border, #d5dde6);
+	border-radius: var(--cpms-pp-radius, 12px);
+	background: var(--cpms-pp-surface, #ffffff);
+	box-shadow: var(--cpms-pp-shadow, none);
+}
+.cpms-pp-reschedule__head {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	margin-block-end: 8px;
+}
+.cpms-pp-reschedule__head h3 {
+	margin: 0;
+	font-size: 1.05rem;
+}
+.cpms-pp-reschedule__summary {
+	color: var(--cpms-pp-muted, #5b6b7c);
+	font-size: 0.92rem;
+	margin-block-end: 12px;
+}
+.cpms-pp-reschedule__group {
+	margin-block-end: 12px;
+}
+.cpms-pp-reschedule__label {
+	display: block;
+	font-weight: 600;
+	margin-block-end: 6px;
+}
+.cpms-pp-reschedule__days,
+.cpms-pp-reschedule__slots {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.cpms-pp-reschedule__day,
+.cpms-pp-reschedule__slot {
+	min-height: var(--cpms-pp-touch, 44px);
+	padding: 8px 12px;
+	border: 1px solid var(--cpms-pp-border, #d5dde6);
+	border-radius: var(--cpms-pp-radius-sm, 8px);
+	background: var(--cpms-pp-surface-alt, #f6f8fb);
+	color: var(--cpms-pp-text, #1c2530);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+.cpms-pp-reschedule__day.is-selected,
+.cpms-pp-reschedule__slot.is-selected,
+.cpms-pp-reschedule__day[aria-pressed="true"],
+.cpms-pp-reschedule__slot[aria-pressed="true"] {
+	border-color: var(--cpms-pp-primary, #0f6d6a);
+	background: var(--cpms-pp-primary-soft, #e2f2f1);
+	color: var(--cpms-pp-primary, #0f6d6a);
+}
+.cpms-pp-reschedule__day:focus-visible,
+.cpms-pp-reschedule__slot:focus-visible {
+	outline: 3px solid var(--cpms-pp-primary, #0f6d6a);
+	outline-offset: 2px;
+}
+.cpms-pp-reschedule__selected {
+	font-weight: 600;
+	margin-block: 8px 12px;
+}
+.cpms-pp-reschedule__notice--error {
+	padding: 10px 12px;
+	border: 1px solid var(--cpms-pp-danger-border, #fecdca);
+	border-radius: var(--cpms-pp-radius-sm, 8px);
+	background: var(--cpms-pp-danger-bg, #fef3f2);
+	color: var(--cpms-pp-danger, #b42318);
+	margin-block: 8px;
+}
+.cpms-pp-reschedule__notice--success {
+	padding: 10px 12px;
+	border: 1px solid var(--cpms-pp-ok, #027a48);
+	border-radius: var(--cpms-pp-radius-sm, 8px);
+	background: #f0f8f1;
+	color: var(--cpms-pp-ok, #027a48);
+	margin-block: 8px;
+}
+.cpms-pp-reschedule__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+
+@media (max-width: 390px) {
+	.cpms-patient-portal-shell__header,
+	.cpms-patient-portal-shell__nav,
+	.cpms-patient-portal-shell__main {
+		padding-inline: 12px;
+	}
+	.cpms-patient-portal .cpms-actions-cell {
+		width: 100%;
+	}
+	.cpms-patient-portal .cpms-patient-portal__reschedule,
+	.cpms-patient-portal .cpms-patient-portal__cancel,
+	.cpms-pp-reschedule__actions .cpms-pp-btn {
+		flex: 1 1 100%;
+		width: 100%;
+		min-height: var(--cpms-pp-touch, 44px);
+		justify-content: center;
+	}
+	.cpms-pp-reschedule {
+		padding: 12px;
+	}
+}
+
+@media (max-width: 340px) {
+	.cpms-patient-portal-shell__header,
+	.cpms-patient-portal-shell__nav,
+	.cpms-patient-portal-shell__main {
+		padding-inline: 8px;
+	}
+	.cpms-patient-portal-shell__nav a {
+		padding: 6px 10px;
+		font-size: 13px;
+	}
+	.cpms-pp-reschedule__days,
+	.cpms-pp-reschedule__slots {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 6px;
+	}
+	.cpms-pp-reschedule__day,
+	.cpms-pp-reschedule__slot {
+		width: 100%;
+		padding: 8px 6px;
+		font-size: 0.9rem;
+		text-align: center;
+	}
+}

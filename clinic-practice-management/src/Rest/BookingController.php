@@ -4,10 +4,13 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
-use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Application\Booking\BookingService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
+use ClinicCore\Domain\Time\Jalali;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -117,6 +120,17 @@ final class BookingController extends RestBase
                 'args' => [
                     'from' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d')],
                     'to' => ['required' => false, 'type' => 'string', 'default' => gmdate('Y-m-d', time() + 365 * 86400)],
+                ],
+            ],
+        ]);
+
+        register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule-options', [
+            [
+                'methods'             => WP_REST_Server::READABLE,
+                'callback'            => fn ( WP_REST_Request $request ) => $this->reschedule_options( $request ),
+                'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
+                'args'                => [
+                    'id' => [ 'required' => true, 'type' => 'integer' ],
                 ],
             ],
         ]);
@@ -276,6 +290,137 @@ final class BookingController extends RestBase
             (string) $request->get_param('from'),
             (string) $request->get_param('to')
         ));
+    }
+
+    /**
+     * گزینه‌های اسلات آزاد برای جابه‌جایی نوبتِ خودِ بیمار (بدون افشای clinic_id/patient_id).
+     */
+    private function reschedule_options( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $user           = wp_get_current_user();
+        $user_id        = (int) $user->ID;
+        $appointment_id = (int) $request->get_param( 'id' );
+        if ( $appointment_id <= 0 ) {
+            return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ نوبت نامعتبر است' );
+        }
+
+        $db   = App::db();
+        $appt = $db->fetchRow(
+            'SELECT id, clinic_id, location_id, clinician_id, patient_id, slot_id, slot_date, slot_time, reference_code, status'
+            . ' FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d LIMIT 1',
+            [ $appointment_id ]
+        );
+        if ( $appt === null ) {
+            return $this->error( 'CLINIC_NOT_FOUND', 404, 'نوبت یافت نشد' );
+        }
+
+        $clinic_id    = (int) $appt['clinic_id'];
+        $location_id  = (int) $appt['location_id'];
+        $clinician_id = (int) $appt['clinician_id'];
+        $patient_id   = (int) $appt['patient_id'];
+        $current_slot = (int) $appt['slot_id'];
+
+        $linked = $db->fetchRow(
+            'SELECT 1 AS ok FROM ' . $db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $db->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . " WHERE l.wp_user_id = %d AND l.clinic_id = %d AND l.patient_id = %d AND p.status = 'active' LIMIT 1",
+            [ $user_id, $clinic_id, $patient_id ]
+        );
+        if ( $linked === null ) {
+            App::audit()->log(
+                'FORBIDDEN_ACCESS_ATTEMPT',
+                [ 'wp_user_id' => $user_id, 'role' => 'patient' ],
+                'appointment',
+                $appointment_id,
+                $patient_id,
+                null,
+                null,
+                [ 'via' => 'reschedule_options' ]
+            );
+
+            return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'به این نوبت دسترسی ندارید' );
+        }
+
+        if ( (string) $appt['status'] !== 'confirmed' ) {
+            return $this->error( 'CLINIC_INVALID_TRANSITION', 409, 'فقط نوبت‌های تأییدشده قابل جابه‌جایی هستند' );
+        }
+
+        $active_visit = $db->fetchRow(
+            'SELECT 1 AS ok FROM ' . $db->table( 'cpms_visits' ) . ' WHERE appointment_id = %d AND active = 1 LIMIT 1',
+            [ $appointment_id ]
+        );
+        if ( $active_visit !== null ) {
+            return $this->error( 'HAS_ACTIVE_VISIT', 409, 'نوبت دارای ویزیت فعال قابل جابه‌جایی نیست' );
+        }
+
+        $previous_scope = ScopeContext::tryGet();
+        try {
+            ScopeContext::set( ClinicScope::forClinic( $clinic_id, $location_id ) );
+            App::resetScope();
+            $availability = $this->booking->availability( $clinician_id, null, null );
+        } catch ( BookingException $e ) {
+            return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established BookingException contract.
+        } finally {
+            if ( $previous_scope instanceof ClinicScope ) {
+                ScopeContext::set( $previous_scope );
+            } else {
+                ScopeContext::clear();
+            }
+            App::resetScope();
+        }
+
+        $filtered_days = [];
+        $raw_days      = is_array( $availability['days'] ?? null ) ? $availability['days'] : [];
+        foreach ( $raw_days as $day ) {
+            if ( ! is_array( $day ) ) {
+                continue;
+            }
+            $day_slots = [];
+            foreach ( (array) ( $day['slots'] ?? [] ) as $slot ) {
+                if ( ! is_array( $slot ) ) {
+                    continue;
+                }
+                if ( (int) ( $slot['location_id'] ?? 0 ) !== $location_id ) {
+                    continue;
+                }
+                $candidate_id = (int) ( $slot['slot_id'] ?? 0 );
+                if ( $candidate_id <= 0 || $candidate_id === $current_slot ) {
+                    continue;
+                }
+                $day_slots[] = [
+                    'slot_id'          => $candidate_id,
+                    'time'             => (string) ( $slot['time'] ?? '' ),
+                    'duration_min'     => (int) ( $slot['duration_min'] ?? 0 ),
+                    'capacity_left'    => (int) ( $slot['capacity_left'] ?? 0 ),
+                    'location_name'    => (string) ( $slot['location_name'] ?? '' ),
+                    'location_address' => (string) ( $slot['location_address'] ?? '' ),
+                ];
+            }
+            if ( $day_slots !== [] ) {
+                $filtered_days[] = [
+                    'date'   => (string) ( $day['date'] ?? '' ),
+                    'jalali' => (string) ( $day['jalali'] ?? '' ),
+                    'slots'  => $day_slots,
+                ];
+            }
+        }
+
+        $clinician_row  = $db->fetchRow(
+            'SELECT full_name FROM ' . $db->table( 'cpms_clinicians' ) . ' WHERE id = %d LIMIT 1',
+            [ $clinician_id ]
+        );
+        $clinician_name = is_array( $clinician_row ) ? (string) ( $clinician_row['full_name'] ?? '' ) : '';
+
+        return $this->success(
+            [
+                'appointment_id' => $appointment_id,
+                'reference_code' => (string) $appt['reference_code'],
+                'current_jalali' => Jalali::formatYmd( (string) $appt['slot_date'] ),
+                'current_time'   => substr( (string) $appt['slot_time'], 0, 5 ),
+                'clinician_name' => $clinician_name,
+                'days'           => $filtered_days,
+            ],
+            200
+        );
     }
 
     private function reschedule(WP_REST_Request $request): WP_REST_Response|WP_Error

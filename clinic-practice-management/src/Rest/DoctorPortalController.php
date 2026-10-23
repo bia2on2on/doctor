@@ -9,6 +9,7 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Machine\VisitMachine;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use WP_Error;
 use WP_REST_Request;
@@ -108,6 +109,19 @@ final class DoctorPortalController extends RestBase {
 					'methods'             => WP_REST_Server::READABLE,
 					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_record( $r ),
 					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+				],
+			]
+		);
+
+		register_rest_route(
+			self::NS,
+			'/doctor/portal/visits/(?P<id>\d+)/medical-history',
+			[
+				[
+					'methods'             => WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $r ) => $this->workspace_medical_history( $r ),
+					'permission_callback' => fn( WP_REST_Request $r ) => $this->perm_workspace( $r, RolesAndCapabilities::MEDICAL_READ ),
+					'args'                => $this->workspace_inert_client_args(),
 				],
 			]
 		);
@@ -687,6 +701,219 @@ final class DoctorPortalController extends RestBase {
 		}
 		return $this->workspace_wrap(
 			fn() => App::clinicalService()->record( (int) wp_get_current_user()->ID, $visit_id )
+		);
+	}
+
+	/**
+	 * Relevant medical history for the authorized Visit inside the SAME trusted
+	 * Clinic.
+	 *
+	 * Security invariants:
+	 *  - Guarded by `perm_workspace( MEDICAL_READ )` AND `workspace_authorize_visit`,
+	 *    so cross-Clinic, cross-Location, or other-doctor active Visit selectors
+	 *    collapse to the canonical non-enumerating 404.
+	 *  - Prior visits are strictly scoped to `v.clinic_id = $clinic_id AND v.patient_id = $patient_id AND v.id <> $visit_id`
+	 *    (no cross-Clinic leakage).
+	 *  - Query-level privacy filter on clinical notes: returns `patient_visible`
+	 *    notes plus this clinician's OWN `doctor_private` notes ONLY when this
+	 *    user holds `PRIVATE_NOTE_READ` globally and in `$clinic_id`. Another
+	 *    doctor's `doctor_private` notes are NEVER selected or returned.
+	 *  - Finalized prescriptions are returned only when the user holds `RX_READ`
+	 *    globally and in `$clinic_id`.
+	 *  - Audits `MEDICAL_RECORD_VIEWED`.
+	 */
+	private function workspace_medical_history( WP_REST_Request $r ): WP_REST_Response|WP_Error {
+		$visit_id = (int) $r['id'];
+		$guard    = $this->workspace_authorize_visit( $visit_id );
+		if ( $guard instanceof WP_Error ) {
+			return $guard;
+		}
+
+		$user_id = (int) ( wp_get_current_user()->ID ?? 0 );
+		$db      = App::db();
+		$visit   = $db->fetchRow(
+			'SELECT id, clinic_id, location_id, clinician_id, patient_id FROM ' . $db->table( 'cpms_visits' ) . ' WHERE id = %d LIMIT 1',
+			[ $visit_id ]
+		);
+		if ( null === $visit ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'مراجعه یافت نشد' );
+		}
+
+		$clinic_id    = (int) $visit['clinic_id'];
+		$clinician_id = (int) $visit['clinician_id'];
+		$patient_id   = (int) $visit['patient_id'];
+
+		$patient = $db->fetchRow(
+			'SELECT id, clinic_id, mrn, blood_group, allergies, chronic_conditions, current_medications FROM ' . $db->table( 'cpms_patients' ) . ' WHERE id = %d LIMIT 1',
+			[ $patient_id ]
+		);
+		if ( null === $patient || (int) $patient['clinic_id'] !== $clinic_id ) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'بیمار یافت نشد' );
+		}
+
+		$prior_rows = $db->fetchAll(
+			'SELECT v.id, v.visit_date, v.status, v.clinician_id, c.full_name AS clinician_name'
+			. ' FROM ' . $db->table( 'cpms_visits' ) . ' v'
+			. ' LEFT JOIN ' . $db->table( 'cpms_clinicians' ) . ' c ON c.id = v.clinician_id'
+			. ' WHERE v.clinic_id = %d AND v.patient_id = %d AND v.id <> %d'
+			. ' ORDER BY v.visit_date DESC, v.id DESC LIMIT 10',
+			[ $clinic_id, $patient_id, $visit_id ]
+		);
+		$prior_rows = is_array( $prior_rows ) ? $prior_rows : [];
+
+		$authorization    = App::authorization_service();
+		$can_read_private = user_can( $user_id, RolesAndCapabilities::PRIVATE_NOTE_READ )
+			&& $authorization->can( $user_id, $clinic_id, RolesAndCapabilities::PRIVATE_NOTE_READ );
+		$can_read_rx      = user_can( $user_id, RolesAndCapabilities::RX_READ )
+			&& $authorization->can( $user_id, $clinic_id, RolesAndCapabilities::RX_READ );
+
+		$notes_by_visit = [];
+		$rx_by_visit    = [];
+		$fu_by_visit    = [];
+
+		if ( [] !== $prior_rows ) {
+			$prior_ids    = array_map( static fn( array $row ): int => (int) $row['id'], $prior_rows );
+			$placeholders = implode( ',', array_fill( 0, count( $prior_ids ), '%d' ) );
+
+			$note_rows = $db->fetchAll(
+				'SELECT id, visit_id, category, visibility, content_text'
+				. ' FROM ' . $db->table( 'cpms_clinical_notes' )
+				. ' WHERE clinic_id = %d AND is_archived = 0 AND visit_id IN (' . $placeholders . ')'
+				. " AND ( visibility = 'patient_visible' OR ( visibility = 'doctor_private' AND clinician_id = %d AND 1 = %d ) )"
+				. ' ORDER BY id ASC',
+				array_merge( [ $clinic_id ], $prior_ids, [ $clinician_id, $can_read_private ? 1 : 0 ] )
+			);
+			foreach ( is_array( $note_rows ) ? $note_rows : [] as $note ) {
+				$vid                      = (int) $note['visit_id'];
+				$notes_by_visit[ $vid ][] = [
+					'id'           => (int) $note['id'],
+					'category'     => (string) $note['category'],
+					'visibility'   => (string) $note['visibility'],
+					'content_text' => mb_substr( (string) $note['content_text'], 0, 500 ),
+				];
+			}
+
+			if ( $can_read_rx ) {
+				$rx_rows = $db->fetchAll(
+					'SELECT id, visit_id, prescription_number'
+					. ' FROM ' . $db->table( 'cpms_prescriptions' )
+					. ' WHERE clinic_id = %d AND visit_id IN (' . $placeholders . ") AND status = 'finalized'"
+					. ' ORDER BY id DESC',
+					array_merge( [ $clinic_id ], $prior_ids )
+				);
+				$rx_rows = is_array( $rx_rows ) ? $rx_rows : [];
+				if ( [] !== $rx_rows ) {
+					$rx_ids          = array_map( static fn( array $rx ): int => (int) $rx['id'], $rx_rows );
+					$rx_placeholders = implode( ',', array_fill( 0, count( $rx_ids ), '%d' ) );
+					$item_rows       = $db->fetchAll(
+						'SELECT prescription_id, generic_name, dose, frequency, duration_days'
+						. ' FROM ' . $db->table( 'cpms_prescription_items' )
+						. ' WHERE prescription_id IN (' . $rx_placeholders . ') ORDER BY id ASC',
+						$rx_ids
+					);
+					$items_by_rx     = [];
+					foreach ( is_array( $item_rows ) ? $item_rows : [] as $item ) {
+						$rx_id                  = (int) $item['prescription_id'];
+						$items_by_rx[ $rx_id ][] = [
+							'generic_name'  => (string) $item['generic_name'],
+							'dose'          => (string) $item['dose'],
+							'frequency'     => (string) $item['frequency'],
+							'duration_days' => null !== $item['duration_days'] ? (int) $item['duration_days'] : null,
+						];
+					}
+					foreach ( $rx_rows as $rx ) {
+						$vid                   = (int) $rx['visit_id'];
+						$rx_id                 = (int) $rx['id'];
+						$rx_by_visit[ $vid ][] = [
+							'prescription_number' => (string) $rx['prescription_number'],
+							'items'               => $items_by_rx[ $rx_id ] ?? [],
+						];
+					}
+				}
+			}
+
+			$fu_rows = $db->fetchAll(
+				'SELECT visit_id, is_needed, suggested_date, interval_days, reason, status'
+				. ' FROM ' . $db->table( 'cpms_follow_ups' )
+				. ' WHERE clinic_id = %d AND visit_id IN (' . $placeholders . ') ORDER BY id DESC',
+				array_merge( [ $clinic_id ], $prior_ids )
+			);
+			foreach ( is_array( $fu_rows ) ? $fu_rows : [] as $fu ) {
+				$vid                   = (int) $fu['visit_id'];
+				$suggested             = isset( $fu['suggested_date'] ) && '' !== (string) $fu['suggested_date'] ? (string) $fu['suggested_date'] : null;
+				$fu_by_visit[ $vid ][] = [
+					'is_needed'             => 1 === (int) $fu['is_needed'],
+					'suggested_date'        => $suggested,
+					'suggested_date_jalali' => null !== $suggested ? Jalali::formatYmd( $suggested ) : null,
+					'interval_days'         => null !== $fu['interval_days'] ? (int) $fu['interval_days'] : null,
+					'reason'                => isset( $fu['reason'] ) ? (string) $fu['reason'] : '',
+					'status'                => (string) $fu['status'],
+				];
+			}
+		}
+
+		$prior_visits = [];
+		foreach ( $prior_rows as $pv ) {
+			$vid            = (int) $pv['id'];
+			$vdate          = (string) $pv['visit_date'];
+			$prior_visits[] = [
+				'visit_id'       => $vid,
+				'visit_date'     => $vdate,
+				'jalali_date'    => preg_match( '/^\d{4}-\d{2}-\d{2}$/', $vdate ) ? Jalali::formatYmd( $vdate ) : $vdate,
+				'status'         => (string) $pv['status'],
+				'clinician_name' => (string) ( $pv['clinician_name'] ?? '' ),
+				'notes'          => $notes_by_visit[ $vid ] ?? [],
+				'prescriptions'  => $rx_by_visit[ $vid ] ?? [],
+				'follow_ups'     => $fu_by_visit[ $vid ] ?? [],
+			];
+		}
+
+		$decode_json_list = static function ( $raw ): array {
+			if ( ! is_string( $raw ) || '' === trim( $raw ) ) {
+				return [];
+			}
+			$decoded = json_decode( $raw, true );
+			if ( ! is_array( $decoded ) ) {
+				return [ trim( $raw ) ];
+			}
+			$clean = [];
+			foreach ( $decoded as $entry ) {
+				if ( is_scalar( $entry ) && '' !== trim( (string) $entry ) ) {
+					$clean[] = trim( (string) $entry );
+				}
+			}
+			return $clean;
+		};
+
+		App::audit()->log(
+			'MEDICAL_RECORD_VIEWED',
+			[
+				'wp_user_id' => $user_id,
+				'role'       => RolesAndCapabilities::ROLE_DOCTOR,
+			],
+			'visit',
+			$visit_id,
+			$patient_id,
+			null,
+			null,
+			[
+				'via'       => 'doctor_portal_medical_history',
+				'clinic_id' => $clinic_id,
+			]
+		);
+
+		return $this->success(
+			[
+				'visit_id'        => $visit_id,
+				'patient_summary' => [
+					'mrn'                 => (string) ( $patient['mrn'] ?? '' ),
+					'blood_group'         => isset( $patient['blood_group'] ) ? (string) $patient['blood_group'] : '',
+					'allergies'           => $decode_json_list( $patient['allergies'] ?? null ),
+					'chronic_conditions'  => $decode_json_list( $patient['chronic_conditions'] ?? null ),
+					'current_medications' => $decode_json_list( $patient['current_medications'] ?? null ),
+				],
+				'prior_visits'    => $prior_visits,
+			]
 		);
 	}
 

@@ -331,6 +331,7 @@ final class RestClinicContext
             '#^/clinic/v1/booking/#',
             '#^/clinic/v1/appointments/mine$#',
             '#^/clinic/v1/appointments/\d+/reschedule$#',
+            '#^/clinic/v1/appointments/\d+/reschedule-options$#',
             '#^/clinic/v1/patient/me$#',
             '#^/clinic/v1/patient/enroll$#', // Patient-self authorization, not staff membership.
             '#^/clinic/v1/patient/my-records$#',

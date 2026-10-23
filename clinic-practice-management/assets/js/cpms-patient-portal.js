@@ -1355,6 +1355,362 @@
 		});
 	}
 
+	function generateUuid4() {
+		if (window.crypto && typeof window.crypto.randomUUID === 'function') {
+			return window.crypto.randomUUID();
+		}
+		if (window.crypto && typeof window.crypto.getRandomValues === 'function') {
+			var buf = new Uint8Array(16);
+			window.crypto.getRandomValues(buf);
+			buf[6] = (buf[6] & 0x0f) | 0x40;
+			buf[8] = (buf[8] & 0x3f) | 0x80;
+			var hex = [];
+			for (var i = 0; i < 16; i += 1) {
+				hex.push((buf[i] + 0x100).toString(16).substring(1));
+			}
+			return hex.slice(0, 4).join('') + '-' +
+				hex.slice(4, 6).join('') + '-' +
+				hex.slice(6, 8).join('') + '-' +
+				hex.slice(8, 10).join('') + '-' +
+				hex.slice(10, 16).join('');
+		}
+		return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (ch) {
+			var rnd = (Math.random() * 16) | 0;
+			var val = ch === 'x' ? rnd : ((rnd & 0x3) | 0x8);
+			return val.toString(16);
+		});
+	}
+
+	function bindReschedule(config) {
+		if (!isNonEmptyString(config.reschedule_options_path) || !isNonEmptyString(config.reschedule_path)) {
+			return;
+		}
+		var panel = document.querySelector('[data-role="reschedule-panel"]');
+		var buttons = document.querySelectorAll('button[data-role="reschedule-appointment"]');
+		if (!panel || !buttons.length) {
+			return;
+		}
+		var summaryNode = panel.querySelector('[data-role="reschedule-summary"]');
+		var loadingNode = panel.querySelector('[data-role="reschedule-loading"]');
+		var errorNode = panel.querySelector('[data-role="reschedule-error"]');
+		var successNode = panel.querySelector('[data-role="reschedule-success"]');
+		var emptyNode = panel.querySelector('[data-role="reschedule-empty"]');
+		var pickerNode = panel.querySelector('[data-role="reschedule-picker"]');
+		var daysNode = panel.querySelector('[data-role="reschedule-days"]');
+		var slotsNode = panel.querySelector('[data-role="reschedule-slots"]');
+		var selectedNode = panel.querySelector('[data-role="reschedule-selected"]');
+		var confirmBtn = panel.querySelector('[data-role="reschedule-confirm"]');
+		var abortBtn = panel.querySelector('[data-role="reschedule-abort"]');
+
+		var state = {
+			appointmentId: 0,
+			triggerBtn: null,
+			days: [],
+			selectedDayIndex: -1,
+			selectedSlot: null,
+			busy: false,
+			requestSeq: 0
+		};
+
+		function resetMessages() {
+			if (errorNode) {
+				errorNode.textContent = '';
+				errorNode.removeAttribute('data-error-code');
+				errorNode.hidden = true;
+			}
+			if (successNode) {
+				successNode.textContent = '';
+				successNode.hidden = true;
+			}
+			if (emptyNode) {
+				emptyNode.hidden = true;
+			}
+		}
+
+		function showRescheduleError(message, code) {
+			if (!errorNode) {
+				return;
+			}
+			errorNode.textContent = message;
+			if (code) {
+				errorNode.setAttribute('data-error-code', code);
+			}
+			errorNode.hidden = false;
+		}
+
+		function closePanel() {
+			state.requestSeq += 1;
+			state.appointmentId = 0;
+			state.days = [];
+			state.selectedDayIndex = -1;
+			state.selectedSlot = null;
+			state.busy = false;
+			panel.hidden = true;
+			resetMessages();
+			if (loadingNode) { loadingNode.hidden = true; }
+			if (pickerNode) { pickerNode.hidden = true; }
+			if (daysNode) { daysNode.innerHTML = ''; }
+			if (slotsNode) { slotsNode.innerHTML = ''; }
+			if (selectedNode) { selectedNode.textContent = ''; }
+			if (confirmBtn) {
+				confirmBtn.disabled = true;
+				confirmBtn.setAttribute('aria-busy', 'false');
+				confirmBtn.textContent = 'تأیید تغییر نوبت';
+			}
+			if (state.triggerBtn) {
+				state.triggerBtn.focus();
+				state.triggerBtn = null;
+			}
+		}
+
+		function updateSelectionSummary() {
+			if (!selectedNode || !confirmBtn) {
+				return;
+			}
+			if (!state.selectedSlot || state.selectedDayIndex < 0 || !state.days[state.selectedDayIndex]) {
+				selectedNode.textContent = '';
+				confirmBtn.disabled = true;
+				return;
+			}
+			var day = state.days[state.selectedDayIndex];
+			var text = 'زمان جدید انتخابی: ' + String(day.jalali || day.date || '') + ' ساعت ' + String(state.selectedSlot.time || '');
+			if (state.selectedSlot.location_name) {
+				text += ' (' + String(state.selectedSlot.location_name) + ')';
+			}
+			selectedNode.textContent = text;
+			confirmBtn.disabled = state.busy;
+		}
+
+		function renderSlotsForDay(dayIndex) {
+			if (!slotsNode) {
+				return;
+			}
+			slotsNode.innerHTML = '';
+			state.selectedSlot = null;
+			var day = state.days[dayIndex];
+			if (!day || !Array.isArray(day.slots) || !day.slots.length) {
+				updateSelectionSummary();
+				return;
+			}
+			day.slots.forEach(function (slot) {
+				var btn = document.createElement('button');
+				btn.type = 'button';
+				btn.className = 'cpms-pp-reschedule__slot';
+				btn.setAttribute('data-role', 'reschedule-slot');
+				btn.setAttribute('data-slot-id', String(slot.slot_id || ''));
+				btn.setAttribute('data-slot-time', String(slot.time || ''));
+				btn.setAttribute('aria-pressed', 'false');
+				btn.textContent = String(slot.time || '');
+				btn.addEventListener('click', function () {
+					if (state.busy) {
+						return;
+					}
+					var siblings = slotsNode.querySelectorAll('button[data-role="reschedule-slot"]');
+					Array.prototype.forEach.call(siblings, function (sib) {
+						sib.classList.remove('is-selected');
+						sib.setAttribute('aria-pressed', 'false');
+					});
+					btn.classList.add('is-selected');
+					btn.setAttribute('aria-pressed', 'true');
+					state.selectedSlot = {
+						slot_id: Number(slot.slot_id || 0),
+						slot_date: String(day.date || ''),
+						slot_time: String(slot.time || ''),
+						time: String(slot.time || ''),
+						location_name: String(slot.location_name || '')
+					};
+					resetMessages();
+					updateSelectionSummary();
+				});
+				slotsNode.appendChild(btn);
+			});
+			updateSelectionSummary();
+		}
+
+		function renderDays() {
+			if (!daysNode) {
+				return;
+			}
+			daysNode.innerHTML = '';
+			state.days.forEach(function (day, idx) {
+				var btn = document.createElement('button');
+				btn.type = 'button';
+				btn.className = 'cpms-pp-reschedule__day' + (idx === state.selectedDayIndex ? ' is-selected' : '');
+				btn.setAttribute('data-role', 'reschedule-day');
+				btn.setAttribute('data-slot-date', String(day.date || ''));
+				btn.setAttribute('aria-pressed', idx === state.selectedDayIndex ? 'true' : 'false');
+				btn.textContent = String(day.jalali || day.date || '');
+				btn.addEventListener('click', function () {
+					if (state.busy) {
+						return;
+					}
+					state.selectedDayIndex = idx;
+					var siblings = daysNode.querySelectorAll('button[data-role="reschedule-day"]');
+					Array.prototype.forEach.call(siblings, function (sib, sibIdx) {
+						var active = sibIdx === idx;
+						sib.classList.toggle('is-selected', active);
+						sib.setAttribute('aria-pressed', active ? 'true' : 'false');
+					});
+					renderSlotsForDay(idx);
+				});
+				daysNode.appendChild(btn);
+			});
+			if (state.days.length > 0) {
+				state.selectedDayIndex = 0;
+				var firstBtn = daysNode.querySelector('button[data-role="reschedule-day"]');
+				if (firstBtn) {
+					firstBtn.classList.add('is-selected');
+					firstBtn.setAttribute('aria-pressed', 'true');
+				}
+				renderSlotsForDay(0);
+			}
+		}
+
+		function loadOptionsForAppointment(appointmentId, triggerBtn) {
+			var seq = state.requestSeq + 1;
+			state.requestSeq = seq;
+			state.appointmentId = appointmentId;
+			state.triggerBtn = triggerBtn || null;
+			state.days = [];
+			state.selectedDayIndex = -1;
+			state.selectedSlot = null;
+			resetMessages();
+			if (pickerNode) { pickerNode.hidden = true; }
+			if (summaryNode) { summaryNode.textContent = ''; }
+			if (selectedNode) { selectedNode.textContent = ''; }
+			if (confirmBtn) { confirmBtn.disabled = true; }
+			panel.hidden = false;
+			if (loadingNode) { loadingNode.hidden = false; }
+
+			var path = cancelPath(config.reschedule_options_path, appointmentId);
+			requestJson(apiUrl(config.rest_root, path), {
+				method: 'GET',
+				credentials: 'same-origin',
+				headers: {
+					'Accept': 'application/json',
+					'X-WP-Nonce': config.nonce
+				}
+			}).then(function (result) {
+				if (seq !== state.requestSeq) {
+					return;
+				}
+				if (loadingNode) { loadingNode.hidden = true; }
+				if (!result.ok) {
+					showRescheduleError(
+						serverMessage(result) || 'دریافت زمان‌های آزاد انجام نشد. لطفاً دوباره تلاش کنید.',
+						serverCode(result)
+					);
+					return;
+				}
+				var payload = result.body && result.body.data ? result.body.data : {};
+				var summaryParts = [];
+				if (payload.clinician_name) {
+					summaryParts.push('پزشک: ' + String(payload.clinician_name));
+				}
+				if (payload.current_jalali) {
+					summaryParts.push('نوبت فعلی: ' + String(payload.current_jalali) + (payload.current_time ? ' ساعت ' + String(payload.current_time) : ''));
+				}
+				if (payload.reference_code) {
+					summaryParts.push('کد رهگیری فعلی: ' + String(payload.reference_code));
+				}
+				if (summaryNode) {
+					summaryNode.textContent = summaryParts.join(' — ');
+				}
+				state.days = Array.isArray(payload.days) ? payload.days : [];
+				if (!state.days.length) {
+					if (emptyNode) { emptyNode.hidden = false; }
+					return;
+				}
+				if (pickerNode) { pickerNode.hidden = false; }
+				renderDays();
+			}).catch(function () {
+				if (seq !== state.requestSeq) {
+					return;
+				}
+				if (loadingNode) { loadingNode.hidden = true; }
+				showRescheduleError('ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.', 'NETWORK');
+			});
+		}
+
+		if (abortBtn) {
+			abortBtn.addEventListener('click', function () {
+				if (state.busy) {
+					return;
+				}
+				closePanel();
+			});
+		}
+
+		if (confirmBtn) {
+			confirmBtn.addEventListener('click', function () {
+				if (state.busy || !state.appointmentId || !state.selectedSlot) {
+					return;
+				}
+				state.busy = true;
+				resetMessages();
+				setBusy(confirmBtn, true, 'تأیید تغییر نوبت', 'در حال ثبت جابه‌جایی…');
+				var path = cancelPath(config.reschedule_path, state.appointmentId);
+				requestJson(apiUrl(config.rest_root, path), {
+					method: 'POST',
+					credentials: 'same-origin',
+					headers: {
+						'Content-Type': 'application/json',
+						'X-WP-Nonce': config.nonce,
+						'Idempotency-Key': generateUuid4()
+					},
+					body: JSON.stringify({
+						slot_date: state.selectedSlot.slot_date,
+						slot_time: state.selectedSlot.slot_time,
+						slot_id: state.selectedSlot.slot_id
+					})
+				}).then(function (result) {
+					if (!result.ok) {
+						state.busy = false;
+						setBusy(confirmBtn, false, 'تأیید تغییر نوبت', 'در حال ثبت جابه‌جایی…');
+						var code = serverCode(result);
+						showRescheduleError(
+							serverMessage(result) || 'جابه‌جایی نوبت انجام نشد. لطفاً زمان دیگری را انتخاب کنید یا با مطب تماس بگیرید.',
+							code
+						);
+						if (code === 'CLINIC_SLOT_TAKEN') {
+							loadOptionsForAppointment(state.appointmentId, state.triggerBtn);
+						} else {
+							confirmBtn.focus();
+						}
+						return;
+					}
+					var data = result.body && result.body.data ? result.body.data : {};
+					var newRef = data.reference_code ? (' — کد رهگیری جدید: ' + String(data.reference_code)) : '';
+					if (successNode) {
+						successNode.textContent = 'نوبت شما با موفقیت جابه‌جا شد' + newRef + '. در حال به‌روزرسانی فهرست…';
+						successNode.hidden = false;
+					}
+					window.setTimeout(function () {
+						window.location.reload();
+					}, 500);
+				}).catch(function () {
+					state.busy = false;
+					setBusy(confirmBtn, false, 'تأیید تغییر نوبت', 'در حال ثبت جابه‌جایی…');
+					showRescheduleError('ارتباط با سرور برقرار نشد. نوبت فعلی شما بدون تغییر باقی مانده است؛ دوباره تلاش کنید.', 'NETWORK');
+					confirmBtn.focus();
+				});
+			});
+		}
+
+		Array.prototype.forEach.call(buttons, function (button) {
+			button.addEventListener('click', function () {
+				var rawId = parseInt(button.getAttribute('data-appointment-id') || '0', 10);
+				if (!rawId || rawId <= 0) {
+					return;
+				}
+				loadOptionsForAppointment(rawId, button);
+				if (typeof panel.scrollIntoView === 'function') {
+					panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+				}
+			});
+		});
+	}
+
 	function init() {
 		bindPatientOtpLogin();
 		var config = readConfig();
@@ -1362,6 +1718,7 @@
 			return;
 		}
 		bind(config);
+		bindReschedule(config);
 		bindMarkAllRead(config);
 		bindProfile(config);
 		bindVisits(config);

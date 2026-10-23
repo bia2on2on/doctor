@@ -224,6 +224,28 @@ final class FinancePortalController extends RestBase {
 				),
 			)
 		);
+
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/reconciliation',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->reconciliation( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request ),
+					'args'                => array(
+						'from' => array(
+							'required' => false,
+							'type'     => 'string',
+						),
+						'to'   => array(
+							'required' => false,
+							'type'     => 'string',
+						),
+					),
+				),
+			)
+		);
 	}
 
 	/** Context returns only eligible Location choices; no patient or finance data. */
@@ -346,6 +368,220 @@ final class FinancePortalController extends RestBase {
 				'location_id'   => $location_id,
 				'location_name' => (string) $current['name'],
 				'visits'        => $visits,
+				'has_more'      => $has_more,
+			)
+		);
+	}
+
+	/**
+	 * Scoped daily reconciliation & financial summary for the CURRENT trusted
+	 * Location inside the trusted Clinic.
+	 *
+	 * Guarded by `permission()` (`FINANCE_READ` + `INVOICE_READ`), so Accountant
+	 * and authorized custom Clinic roles access ONLY their authorized Clinic and
+	 * eligible operational Location with zero permission escalation and zero PHI
+	 * exposure.
+	 */
+	private function reconciliation( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->success(
+				array(
+					'from'          => null,
+					'to'            => null,
+					'jalali_from'   => null,
+					'jalali_to'     => null,
+					'location_id'   => null,
+					'location_name' => null,
+					'currency'      => 'IRR',
+					'totals'        => array(
+						'captured_count'      => 0,
+						'captured_total'      => '0.00',
+						'cash_total'          => '0.00',
+						'card_pos_total'      => '0.00',
+						'other_total'         => '0.00',
+						'issued_count'        => 0,
+						'paid_count'          => 0,
+						'open_count'          => 0,
+						'invoiced_total'      => '0.00',
+						'outstanding_balance' => '0.00',
+					),
+					'payments'      => array(),
+					'has_more'      => false,
+				)
+			);
+		}
+
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+
+		$location_id = (int) $current['location_id'];
+		$timezone    = $current['timezone'];
+		$today_local = (string) $current['date'];
+
+		$raw_from  = is_string( $request->get_param( 'from' ) ) ? trim( (string) $request->get_param( 'from' ) ) : '';
+		$raw_to    = is_string( $request->get_param( 'to' ) ) ? trim( (string) $request->get_param( 'to' ) ) : '';
+		$from_date = '' !== $raw_from ? $raw_from : $today_local;
+		$to_date   = '' !== $raw_to ? $raw_to : $from_date;
+
+		if (
+			! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $from_date )
+			|| ! preg_match( '/^\d{4}-\d{2}-\d{2}$/', $to_date )
+		) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'فرمت بازهٔ تاریخ نامعتبر است.' );
+		}
+
+		$from_dt = DateTimeImmutable::createFromFormat( '!Y-m-d', $from_date, $timezone );
+		$to_dt   = DateTimeImmutable::createFromFormat( '!Y-m-d', $to_date, $timezone );
+		if (
+			false === $from_dt
+			|| false === $to_dt
+			|| $from_dt->format( 'Y-m-d' ) !== $from_date
+			|| $to_dt->format( 'Y-m-d' ) !== $to_date
+			|| $from_date > $to_date
+		) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'بازهٔ تاریخ انتخابی معتبر نیست.' );
+		}
+
+		$days_span = (int) $from_dt->diff( $to_dt )->days;
+		if ( $days_span > 93 ) {
+			return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'حداکثر بازهٔ مجاز گزارش ۹۳ روز است.' );
+		}
+
+		$utc_zone  = new DateTimeZone( 'UTC' );
+		$utc_start = $from_dt->setTimezone( $utc_zone )->format( 'Y-m-d H:i:s' );
+		$utc_end   = $to_dt->modify( '+1 day' )->setTimezone( $utc_zone )->format( 'Y-m-d H:i:s' );
+
+		$db = App::db();
+
+		// Aggregate captured payments in the Location-local window.
+		$payment_agg_rows = $db->fetchAll(
+			'SELECT p.method, COUNT(*) AS cnt,'
+			. ' COALESCE(SUM(p.amount - COALESCE(p.refunded_amount, 0)), 0) AS net_amount'
+			. ' FROM ' . $db->table( 'cpms_payments' ) . ' p'
+			. ' INNER JOIN ' . $db->table( 'cpms_invoices' ) . ' i ON i.id = p.invoice_id AND i.clinic_id = p.clinic_id'
+			. ' INNER JOIN ' . $db->table( 'cpms_visits' ) . ' v ON v.id = i.visit_id AND v.clinic_id = i.clinic_id'
+			. ' WHERE p.clinic_id = %d AND v.location_id = %d'
+			. ' AND ( p.location_id IS NULL OR p.location_id = %d )'
+			. ' AND ( i.location_id IS NULL OR i.location_id = %d )'
+			. " AND p.status = 'captured' AND p.voided_at IS NULL AND i.voided_at IS NULL"
+			. ' AND p.created_at >= %s AND p.created_at < %s'
+			. ' GROUP BY p.method',
+			array( $clinic_id, $location_id, $location_id, $location_id, $utc_start, $utc_end )
+		);
+
+		$captured_count = 0;
+		$cash_cents     = 0;
+		$card_cents     = 0;
+		$other_cents    = 0;
+		foreach ( is_array( $payment_agg_rows ) ? $payment_agg_rows : array() as $agg ) {
+			$method          = (string) ( $agg['method'] ?? '' );
+			$cnt             = (int) ( $agg['cnt'] ?? 0 );
+			$net_cents       = max( 0, $this->cents( $agg['net_amount'] ?? 0 ) );
+			$captured_count += $cnt;
+			if ( 'cash' === $method ) {
+				$cash_cents += $net_cents;
+			} elseif ( 'card_pos' === $method ) {
+				$card_cents += $net_cents;
+			} else {
+				$other_cents += $net_cents;
+			}
+		}
+		$captured_cents = $cash_cents + $card_cents + $other_cents;
+
+		// Aggregate invoices issued in the Location-local window.
+		$invoice_agg = $db->fetchRow(
+			'SELECT COUNT(*) AS issued_cnt,'
+			. " SUM(CASE WHEN i.status = 'paid' THEN 1 ELSE 0 END) AS paid_cnt,"
+			. " SUM(CASE WHEN i.status IN ('open', 'partial') THEN 1 ELSE 0 END) AS open_cnt,"
+			. ' COALESCE(SUM(i.total), 0) AS invoiced_sum,'
+			. ' COALESCE(SUM(i.balance), 0) AS balance_sum'
+			. ' FROM ' . $db->table( 'cpms_invoices' ) . ' i'
+			. ' INNER JOIN ' . $db->table( 'cpms_visits' ) . ' v ON v.id = i.visit_id AND v.clinic_id = i.clinic_id'
+			. ' WHERE i.clinic_id = %d AND v.location_id = %d'
+			. ' AND ( i.location_id IS NULL OR i.location_id = %d )'
+			. " AND i.status IN ('open', 'partial', 'paid') AND i.voided_at IS NULL"
+			. ' AND i.created_at >= %s AND i.created_at < %s',
+			array( $clinic_id, $location_id, $location_id, $utc_start, $utc_end )
+		);
+
+		// Bounded PHI-free captured payment ledger rows.
+		$ledger_rows = $db->fetchAll(
+			'SELECT p.payment_number, p.method, p.amount, p.refunded_amount, p.created_at, i.invoice_number, i.currency'
+			. ' FROM ' . $db->table( 'cpms_payments' ) . ' p'
+			. ' INNER JOIN ' . $db->table( 'cpms_invoices' ) . ' i ON i.id = p.invoice_id AND i.clinic_id = p.clinic_id'
+			. ' INNER JOIN ' . $db->table( 'cpms_visits' ) . ' v ON v.id = i.visit_id AND v.clinic_id = i.clinic_id'
+			. ' WHERE p.clinic_id = %d AND v.location_id = %d'
+			. ' AND ( p.location_id IS NULL OR p.location_id = %d )'
+			. ' AND ( i.location_id IS NULL OR i.location_id = %d )'
+			. " AND p.status = 'captured' AND p.voided_at IS NULL AND i.voided_at IS NULL"
+			. ' AND p.created_at >= %s AND p.created_at < %s'
+			. ' ORDER BY p.created_at DESC, p.id DESC'
+			. ' LIMIT %d',
+			array( $clinic_id, $location_id, $location_id, $location_id, $utc_start, $utc_end, self::RESULT_LIMIT + 1 )
+		);
+		$ledger_rows = is_array( $ledger_rows ) ? $ledger_rows : array();
+		$has_more    = count( $ledger_rows ) > self::RESULT_LIMIT;
+		if ( $has_more ) {
+			$ledger_rows = array_slice( $ledger_rows, 0, self::RESULT_LIMIT );
+		}
+
+		$format_money = static fn( int $cents ): string => number_format( $cents / 100, 2, '.', '' );
+
+		$payments = array();
+		foreach ( $ledger_rows as $lrow ) {
+			$net_row_cents = max( 0, $this->cents( $lrow['amount'] ?? 0 ) - $this->cents( $lrow['refunded_amount'] ?? 0 ) );
+			$local_dt      = ( new DateTimeImmutable( (string) $lrow['created_at'], $utc_zone ) )->setTimezone( $timezone );
+			$local_ymd     = $local_dt->format( 'Y-m-d' );
+			$method_val    = (string) ( $lrow['method'] ?? 'other' );
+			if ( ! in_array( $method_val, self::PAYMENT_METHODS, true ) ) {
+				$method_val = 'other';
+			}
+			$payments[] = array(
+				'payment_number' => (string) ( $lrow['payment_number'] ?? '' ),
+				'invoice_number' => (string) ( $lrow['invoice_number'] ?? '' ),
+				'method'         => $method_val,
+				'amount'         => $format_money( $net_row_cents ),
+				'currency'       => (string) ( $lrow['currency'] ?? 'IRR' ),
+				'payment_date'   => $local_ymd,
+				'jalali_date'    => Jalali::formatYmd( $local_ymd ),
+				'payment_time'   => $local_dt->format( 'H:i' ),
+			);
+		}
+
+		return $this->success(
+			array(
+				'from'          => $from_date,
+				'to'            => $to_date,
+				'jalali_from'   => Jalali::formatYmd( $from_date ),
+				'jalali_to'     => Jalali::formatYmd( $to_date ),
+				'location_id'   => $location_id,
+				'location_name' => (string) $current['name'],
+				'currency'      => 'IRR',
+				'totals'        => array(
+					'captured_count'      => $captured_count,
+					'captured_total'      => $format_money( $captured_cents ),
+					'cash_total'          => $format_money( $cash_cents ),
+					'card_pos_total'      => $format_money( $card_cents ),
+					'other_total'         => $format_money( $other_cents ),
+					'issued_count'        => (int) ( $invoice_agg['issued_cnt'] ?? 0 ),
+					'paid_count'          => (int) ( $invoice_agg['paid_cnt'] ?? 0 ),
+					'open_count'          => (int) ( $invoice_agg['open_cnt'] ?? 0 ),
+					'invoiced_total'      => $format_money( $this->cents( $invoice_agg['invoiced_sum'] ?? 0 ) ),
+					'outstanding_balance' => $format_money( $this->cents( $invoice_agg['balance_sum'] ?? 0 ) ),
+				),
+				'payments'      => $payments,
 				'has_more'      => $has_more,
 			)
 		);
