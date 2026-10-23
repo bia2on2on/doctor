@@ -1702,3 +1702,47 @@ Verification performed locally: brace/paren balance lint on all 8 touched PHP fi
 (OK); closure free-variable audit (custom parser, strings/comments stripped);
 git-diff review; green-head method comparisons. Not runnable locally: PHPUnit,
 WPCS, PHPStan, MySQL — all evidence must come from the next exact-SHA CI run.
+
+## 2026-10-23 (fourth session) — run 39916313749 (head 2ba0a46) outcome and second WPCS pass
+
+CI evidence at head 2ba0a46:
+- Static Analysis (PHPStan level 3): PASS (59s). The three missing closure
+  imports (Handwriting createDocument/addPage, Clinical voidPrescription) were
+  the level-3 defects; no other PHPStan findings exist.
+- Integration (WP 7.1 + MySQL 8), 2316 tests: the previous 21 errors + 4
+  failures collapsed to a single FAILURE deliberately produced by the temporary
+  OTP_DIAG self::fail() (65601 assertions, zero errors). All five new fault
+  suites, the full Handwriting/Clinical/Booking/Roles flows and both retry
+  paths otherwise pass.
+- OTP root cause CONFIRMED via the diagnostic:
+  "RuntimeException: audit event was not persisted: OTP_VERIFY_OK" (empty
+  wpdb::last_error) — i.e. once the closure fatals were repaired, provisioning
+  (wp_insert_user + patient link) completes inside the boundary, the injected
+  audit 1054 fires exactly where designed, and AuditLogger fails closed. The
+  run-39913056317 wp_insert_user WP_Error was collateral global-state pollution
+  from the earlier undefined-variable fatals in tests executing before this
+  suite, not an OtpService defect (OtpService runtime code is byte-identical in
+  that path between the two runs). TEMP DEBUG removed in this session's commit;
+  the original assertTrue($threw) assertion is restored verbatim.
+
+Second WPCS pass (run 39916313749) found violations created by the first-pass
+compact `use()` edits; fixes in this session:
+- The three compact inline closures (Handwriting L88/L182, Clinical L621) are
+  restructured to the codebase's variable-bound multi-line closure pattern
+  already used by BookingService::$no_show and HandwritingService::$save_page:
+  `$closure = function () use ( ... ): array { // phpcs:ignore ...VariableNotSnakeCase`
+  followed by `$this->db->transactional( $closure )`. Same boundary, same
+  captured variables, identical return targets; only the closure declaration
+  site moves. PEAR ContentAfterOpenBracket / Squiz argument spacing /
+  VariableNotSnakeCase findings all resolved by the established pattern.
+- Generic.Formatting.MultipleStatementAlignment: restored column-16 padding for
+  the two stable func_get_arg alias groups and the createPrescription
+  $number/$rx_id group; the single remaining cross-scope `$id` line inside the
+  recommendations foreach carries an exact-sniff standalone
+  `// phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning`
+  matching TrustedClinicEstablisher/VisitService precedent. No ruleset changes.
+
+Verification: brace/paren balance lint OK on all touched files; free-variable
+audit rerun (only the two known parser false positives at non-closure lines).
+PHPUnit/WPCS/PHPStan remain CI-only evidence; the next exact-SHA run is the
+authority for the all-green claim.

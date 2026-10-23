@@ -85,7 +85,10 @@ final class HandwritingService
             $pages = [['width' => 1240, 'height' => 1754]];
         }
 
-        $doc = $this->db->transactional(function () use ($actorUserId, $trustedClinicId, $visitId, $visit, $title, $pages): array {
+        // Bound to a variable first so the multi-line closure keeps the
+        // PEAR.Functions.FunctionCallSignature contract (open parenthesis last
+        // on its line) and the legacy camelCase imports stay explicitly scoped.
+        $create_document = function () use ( $actorUserId, $trustedClinicId, $visitId, $visit, $title, $pages ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy parameter naming preserved inside the transactional boundary.
             $documentId = $this->handwriting->insertDocument($trustedClinicId, [
                 'visit_id' => $visitId,
                 'patient_id' => (int) $visit['patient_id'],
@@ -122,7 +125,8 @@ final class HandwritingService
             );
 
             return $doc;
-        });
+        };
+        $doc = $this->db->transactional( $create_document );
 
         // D6: HW_DOC_CREATE now commits inside the document transaction above.
 
@@ -179,7 +183,10 @@ final class HandwritingService
         $existing = $this->handwriting->pagesForDocument($documentId);
         $index = count($existing);
 
-        $row = $this->db->transactional(function () use ($actorUserId, $documentId, $page, $index, $doc): array {
+        // Bound to a variable first so the multi-line closure keeps the
+        // PEAR.Functions.FunctionCallSignature contract (open parenthesis last
+        // on its line) and the legacy camelCase imports stay explicitly scoped.
+        $add_page = function () use ( $actorUserId, $documentId, $page, $index, $doc ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy parameter naming preserved inside the transactional boundary.
             $rowId = $this->handwriting->insertPage($this->pageRow($page, $documentId, $index));
             $this->handwriting->updateDocument($documentId, ['page_count' => $index + 1]);
 
@@ -201,7 +208,8 @@ final class HandwritingService
             );
 
             return $row;
-        });
+        };
+        $row = $this->db->transactional( $add_page );
 
         // D6: HW_PAGE_ADD now commits inside the page transaction above.
 

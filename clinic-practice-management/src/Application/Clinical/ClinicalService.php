@@ -465,8 +465,8 @@ final class ClinicalService
                 $correction_of = isset( $input['correction_of_prescription_id'] )
                     ? (int) $input['correction_of_prescription_id']
                     : null;
-                $number = $this->prescriptions->nextPrescriptionNumber();
-                $rx_id = $this->prescriptions->insert(
+                $number         = $this->prescriptions->nextPrescriptionNumber();
+                $rx_id          = $this->prescriptions->insert(
                     (int) $visit['clinic_id'],
                     [
                         'prescription_number'           => $number,
@@ -618,7 +618,10 @@ final class ClinicalService
             'prescription',
             $prescriptionId
         );
-        $rx = $this->db->transactional(function () use ($actorUserId, $prescriptionId, $reason, $clinicId): array {
+        // Bound to a variable first so the multi-line closure keeps the
+        // PEAR.Functions.FunctionCallSignature contract (open parenthesis last
+        // on its line) and the legacy camelCase imports stay explicitly scoped.
+        $void_rx = function () use ( $actorUserId, $prescriptionId, $reason, $clinicId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy parameter naming preserved inside the transactional boundary.
             $rx = $this->prescriptions->findForUpdateForClinic($prescriptionId, $clinicId);
             if ($rx === null) {
                 throw ClinicalException::of('CLINIC_NOT_FOUND', 'نسخه یافت نشد', 404);
@@ -648,7 +651,8 @@ final class ClinicalService
             );
 
             return $rx;
-        });
+        };
+        $rx = $this->db->transactional( $void_rx );
 
         // D6: PRESCRIPTION_VOIDED now commits inside the locked transaction above.
 
@@ -689,7 +693,7 @@ final class ClinicalService
         // D6 audit atomicity: every recommendation row and the mandatory audit
         // commit/roll back together — a partial set can never survive.
         $actor_user_id = (int) func_get_arg( 0 );
-        $visit_id = (int) func_get_arg( 1 );
+        $visit_id      = (int) func_get_arg( 1 );
 
         $created = $this->db->transactional(
             function () use ( $visit, $visit_id, $actor_user_id, $items ): array {
@@ -704,6 +708,7 @@ final class ClinicalService
                         throw ClinicalException::of( 'CLINIC_VALIDATION_FAILED', 'متن توصیه الزامی است (حداکثر ۱۰۰۰ نویسه)', 422 );
                     }
 
+                    // phpcs:ignore Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- D6 closure keeps the foreach's single-space assignment style; cross-scope alignment anchor is outside this block.
                     $id = $this->recommendations->insert(
                         (int) $visit['clinic_id'],
                         [
