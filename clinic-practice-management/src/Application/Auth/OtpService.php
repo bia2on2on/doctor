@@ -13,7 +13,7 @@ use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Sms\SmsMessageStatus;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
-use ClinicCore\Infrastructure\Cache\UserCacheRollback;
+use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;

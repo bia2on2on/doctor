@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace ClinicCore\Infrastructure\Cache;
+namespace ClinicCore\Infrastructure;
 
 /**
  * Narrow post-rollback invalidation of WordPress user caches.

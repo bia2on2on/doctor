@@ -12,7 +12,7 @@ use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Membership\MembershipException;
-use ClinicCore\Infrastructure\Cache\UserCacheRollback;
+use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 

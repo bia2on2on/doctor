@@ -54,7 +54,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Domain\Membership\MembershipException;
-use ClinicCore\Infrastructure\Cache\UserCacheRollback;
+use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\ClinicRepository;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\LocationRepository;

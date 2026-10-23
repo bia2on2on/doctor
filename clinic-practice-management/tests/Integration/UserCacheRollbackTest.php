@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
-use ClinicCore\Infrastructure\Cache\UserCacheRollback;
+use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Tests\Support\ObjectCacheDeleteRecorder;
 use WP_UnitTestCase;
 
