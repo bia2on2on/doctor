@@ -337,6 +337,10 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 		</div>
 	</header>
 
+	<?php if ( $cpms_mp_logged_in && ( array() !== $cpms_mp_organizations || array() !== $cpms_mp_clinics ) ) : ?>
+		<?php \ClinicCore\Frontend\LicenseStatusNotice::render(); ?>
+	<?php endif; ?>
+
 	<?php if ( is_array( $cpms_mp_notice ) ) : ?>
 		<div class="cpms-mgmt-notice <?php echo esc_attr( (string) $cpms_mp_notice['class'] ); ?>"
 			<?php echo 'is-success' === (string) $cpms_mp_notice['class'] ? 'role="status"' : 'role="alert"'; ?>
@@ -422,6 +426,18 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					<?php endforeach; ?>
 				</ul>
 				<p class="cpms-mgmt-empty">سطح موردنظر را صریحاً انتخاب کنید؛ هیچ سازمان یا درمانگاهی به‌صورت خودکار انتخاب نمی‌شود.</p>
+			</section>
+		<?php endif; ?>
+
+		<?php if ( array() === $cpms_mp_organizations && array() !== $cpms_mp_clinics && 0 === $cpms_mp_org_id && 0 === $cpms_mp_clinic_id ) : ?>
+			<section class="cpms-mgmt-card" aria-labelledby="cpms-clinic-overview-title">
+				<h2 id="cpms-clinic-overview-title">درمانگاه‌های تحت مدیریت</h2>
+				<ul>
+					<?php foreach ( $cpms_mp_clinics as $cpms_mp_clinic ) : ?>
+						<li><a href="<?php echo esc_url( add_query_arg( ManagementPortalShell::CLINIC_PARAM, (string) $cpms_mp_clinic['id'], $cpms_mp_url ) ); ?>"><?php echo esc_html( $cpms_mp_clinic['name'] ); ?></a></li>
+					<?php endforeach; ?>
+				</ul>
+				<p class="cpms-mgmt-empty">درمانگاه موردنظر را صریحاً انتخاب کنید.</p>
 			</section>
 		<?php endif; ?>
 
@@ -528,7 +544,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 							<?php endforeach; ?>
 						</ul>
 						<?php if ( ! $cpms_mp_plan_rules['outpatient_ack'] && 'hospital_network' !== $cpms_mp_plan_flow ) : ?>
-							<p class="cpms-mgmt-meta">گام‌های الزامی این نوع مرکز به نوع و ساختار آن بستگی دارد؛ گام‌های ویژهٔ بیمارستان (تأیید محدودهٔ فقط سرپایی) برای این جریان الزامی نیست.</p>
+							<p class="cpms-mgmt-meta">گام‌های الزامی این مرکز با نوع و ساختار انتخاب‌شده تعیین می‌شود.</p>
 						<?php endif; ?>
 
 						<?php if ( 'hospital_network' === (string) $cpms_mp_facility['flow'] && (int) $cpms_mp_facility['outpatient_ack_by'] <= 0 ) : ?>

@@ -116,27 +116,35 @@ final class ProtectedBackupStore
     {
         $this->assertWritable('ensureGuards');
         if (!is_dir($this->basePath)) {
-            if (!mkdir($this->basePath, 0750, true) && !is_dir($this->basePath)) {
+            if ( ! @mkdir( $this->basePath, 0750, true ) && ! is_dir( $this->basePath ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Handle failure as typed backup error; no warning reaches redirect.
                 throw BackupException::of('CLINIC_BACKUP_IO', 'backup dir mkdir failed: ' . $this->basePath);
             }
         }
         $ht = $this->basePath . '/.htaccess';
         if (!is_file($ht)) {
-            @file_put_contents($ht, self::GUARD_HTACCESS);
+            if ( false === @file_put_contents( $ht, self::GUARD_HTACCESS ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
+            }
         }
         $idx = $this->basePath . '/index.php';
         if (!is_file($idx)) {
-            @file_put_contents($idx, "<?php\n// silence\n");
+            if ( false === @file_put_contents( $idx, "<?php\n// silence\n" ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
+            }
         }
         // Phase 1A: یک بکاپ کاملِ پایگاه داده در دسترس مستقیم HTTP یک
         // نشت تمام‌عیار است و `.htaccess` روی nginx خوانده نمی‌شود.
         $webConfig = $this->basePath . '/web.config';
         if (!is_file($webConfig)) {
-            @file_put_contents($webConfig, self::GUARD_WEBCONFIG);
+            if ( false === @file_put_contents( $webConfig, self::GUARD_WEBCONFIG ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Typed failure is checked; warnings must not leak into redirects.
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
+            }
         }
         $readme = $this->basePath . '/README-SECURITY.txt';
         if (!is_file($readme)) {
-            @file_put_contents($readme, self::GUARD_README);
+            if ( false === @file_put_contents( $readme, self::GUARD_README ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
+            }
         }
     }
 
@@ -160,7 +168,7 @@ final class ProtectedBackupStore
         if (is_dir($dir)) {
             throw BackupException::of('CLINIC_BACKUP_EXISTS', 'backup already exists: ' . $backupId);
         }
-        if (!mkdir($dir, 0750, true) && !is_dir($dir)) {
+        if ( ! @mkdir( $dir, 0750, true ) && ! is_dir( $dir ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- Handle failure as typed backup error.
             throw BackupException::of('CLINIC_BACKUP_IO', 'backup mkdir failed: ' . $backupId);
         }
 
@@ -188,8 +196,9 @@ final class ProtectedBackupStore
     {
         // OD-9: مخزن فقط‌خواندنی هیچ گاردی نمی‌نویسد — فهرست‌کردن یک عمل
         // خواندن است و مبدأ legacy نباید دست‌خورد شود.
-        if (!$this->readonly) {
-            $this->ensureGuards();
+        // Listing must never create storage or write guard files.
+        if ( ! is_dir( $this->basePath ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- existing property.
+            return [];
         }
         $ids = [];
         foreach ((array) glob($this->basePath . '/*') as $entry) {

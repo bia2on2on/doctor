@@ -248,7 +248,7 @@ final class SystemPage
                 <thead><tr><th>ID</th><th>زمان (UTC)</th><th>جدول‌ها/ردیف‌ها</th><th>فایل‌ها</th><th>یکپارچگی</th><th></th></tr></thead>
                 <tbody>
                 <?php if ($backups === []) : ?>
-                    <tr><td colspan="6"><?php echo CpmsUi::emptyState('🗄', 'هنوز بکاپی ساخته نشده', 'برای امنیت اطلاعات، در صورت فعال بودن بکاپ دوره‌ای خودکار ساخته می‌شود؛ یا همین حالا با دکمهٔ زیر بکاپ دستی بگیرید.', 'اجرای بکاپ دستی', admin_url('admin.php?page=cpms-system')); ?></td></tr>
+                    <tr><td colspan="6"><?php echo CpmsUi::emptyState( '🗄', 'هنوز بکاپی ساخته نشده', 'در صورت فعال بودن بکاپ دوره‌ای، پشتیبان‌گیری خودکار انجام می‌شود. برای بکاپ دستی از فرم بالای فهرست استفاده کنید.' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CpmsUi escapes its structured HTML. ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($backups as $b) : ?>
                     <tr>
@@ -258,13 +258,13 @@ final class SystemPage
                         <td><?php echo esc_html((string) $b['storage_files']); ?></td>
                         <td><?php echo esc_html((string) $b['integrity']); ?></td>
                         <td>
-                            <form method="post" style="display:inline">
+                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline">
                                 <?php wp_nonce_field('cpms_backup_verify'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_verify">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
                                 <button class="button button-small">تأیید کامل</button>
                             </form>
-                            <form method="post" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
+                            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
                                 <?php wp_nonce_field('cpms_backup_delete'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_delete">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">

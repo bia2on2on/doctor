@@ -551,6 +551,19 @@ final class ClinicalFlowTest extends WP_UnitTestCase
         $this->assertContains($visible['prescription_number'], $numbers);
         $this->assertNotContains($hidden['prescription_number'], $numbers, 'is_patient_visible=0 must be hidden');
         $this->assertNotContains($draft['prescription_number'], $numbers, 'draft must be hidden until finalized');
+
+        $defaultVisible = $this->clinical()->createPrescription($this->doctorUserId, $visitId, [
+            'items' => [['generic_name' => 'داروی پیش‌فرض', 'dose' => '1', 'frequency' => 'روزانه']],
+        ]);
+        $this->assertTrue($defaultVisible['is_patient_visible']);
+        $this->clinical()->finalizePrescription($this->doctorUserId, (int) $defaultVisible['id']);
+        $after = $this->clinical()->patientPrescriptions($this->patientAUser);
+        $afterNumbers = array_map(static fn (array $rx): string => $rx['prescription_number'], $after['prescriptions']);
+        $this->assertContains($defaultVisible['prescription_number'], $afterNumbers);
+        $this->clinical()->finalizePrescription($this->doctorUserId, (int) $hidden['id']);
+        $afterHidden = $this->clinical()->patientPrescriptions($this->patientAUser);
+        $hiddenNumbers = array_map(static fn (array $rx): string => $rx['prescription_number'], $afterHidden['prescriptions']);
+        $this->assertNotContains($hidden['prescription_number'], $hiddenNumbers);
     }
 
     // ================= E12/E13 — توصیه/پیگیری =================

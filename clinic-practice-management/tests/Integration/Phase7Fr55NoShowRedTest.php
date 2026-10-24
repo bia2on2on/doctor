@@ -403,7 +403,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
             $this->futureSlotSpec(3, '10:00:00'),
             'av'
         );
-        $visit = App::visitService()->checkIn($this->secretaryA, $this->patientA, $seed['id']);
+        $visit = $this->checkInOnAppointmentDay($seed['id']);
         self::assertGreaterThan(0, (int) ($visit['id'] ?? 0), 'precondition: check-in of an upcoming appointment creates a live Visit');
         $slotBefore = $this->slotRow($seed['slot_id']);
 
@@ -444,7 +444,7 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
             $this->soonSlotSpec(2),
             'as'
         );
-        $visit = App::visitService()->checkIn($this->secretaryA, $this->patientA, $seed['id']);
+        $visit = $this->checkInOnAppointmentDay($seed['id']);
         self::assertGreaterThan(0, (int) ($visit['id'] ?? 0), 'precondition: live Visit bound');
         $slotBefore = $this->slotRow($seed['slot_id']);
 
@@ -700,63 +700,34 @@ final class Phase7Fr55NoShowRedTest extends WP_UnitTestCase {
         self::assertSame(self::RACE_ATTEMPTS, count($observations), 'race evidence must exist for every attempt');
     }
 
-    private function assertRaceLegal(array $state, array $outcomes, string $context): void {
-        $status = $state['status'];
-        $live = $state['live_visits'];
-        $pointer = $state['active_visit_id'];
-
-        if ($status === 'no_show') {
-            self::assertNotNull($state['no_show_at'], "{$context}: no_show_at must be written by the winning T8");
-            $scheduledLive = array_values(array_filter(
-                $live,
-                static fn (array $v): bool => (string) ($v['source'] ?? '') === 'scheduled'
-            ));
-            self::assertSame(
-                0,
-                count($scheduledLive),
-                "{$context}: FORBIDDEN — T8 over a pre-existing genuinely active scheduled Visit: "
-                . wp_json_encode($scheduledLive)
-            );
-            $walkInLive = array_values(array_filter(
-                $live,
-                static fn (array $v): bool => (string) ($v['source'] ?? '') === 'walk_in'
-            ));
-            if ($walkInLive !== []) {
-                // Legal lazy ER-06: late check-in atomically T8s then binds
-                // exactly one walk-in-like Visit to the same appointment.
-                self::assertCount(1, $walkInLive, "{$context}: lazy ER-06 must leave exactly one bound walk-in Visit");
-                self::assertSame((int) $walkInLive[0]['id'], (int) $pointer, "{$context}: pointer must reference the walk-in Visit");
-                self::assertSame('ok', $outcomes['check_in']['result'] ?? null, "{$context}: late check-in must complete");
-                self::assertSame(
-                    (int) ($outcomes['check_in']['visit_id'] ?? 0),
-                    (int) $walkInLive[0]['id'],
-                    "{$context}: check-in result must be the bound walk-in Visit"
-                );
-            } else {
-                self::assertSame(0, count($live), "{$context}: sweep-win must not leave a bound live Visit");
-                self::assertNull($pointer, "{$context}: sweep-win T8 must clear active_visit_id");
-                self::assertContains(
-                    $outcomes['check_in']['result'] ?? null,
-                    ['ok', 'rejected'],
-                    "{$context}: check-in outcome must be a legal product envelope"
-                );
-            }
-        } elseif ($status === 'confirmed') {
-            self::assertSame('ok', $outcomes['check_in']['result'] ?? null, "{$context}: the check-in must complete as a product call");
-            self::assertCount(1, $live, "{$context}: order A must leave exactly one live bound Visit");
-            self::assertSame((int) $live[0]['id'], (int) $pointer, "{$context}: the pointer must reference the live Visit");
-            self::assertSame(
-                (int) ($outcomes['check_in']['visit_id'] ?? 0),
-                (int) $live[0]['id'],
-                "{$context}: the check-in result must be the live bound Visit"
-            );
-        } else {
-            $this->fail("{$context}: unexpected terminal status {$status} (expected confirmed or no_show)");
+    /** Fixture check-in uses the existing deterministic clock on its trusted Location day. */
+    private function checkInOnAppointmentDay(int $appointmentId): array {
+        $date = (string) App::db()->fetchValue(
+            'SELECT slot_date FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$appointmentId]
+        );
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc(
+            new \DateTimeImmutable($date . ' 00:00:00', new \DateTimeZone(self::TZ))
+        );
+        try {
+            return App::visitService()->checkIn($this->secretaryA, $this->patientA, $appointmentId);
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
         }
+    }
 
-        // Unrelated slot counters must never drift.
-        self::assertSame(1, $state['slot_booked'], "{$context}: slot booked counter must stay 1");
-        self::assertSame(0, $state['slot_held'], "{$context}: slot held counter must stay 0");
+    private function assertRaceLegal(array $state, array $outcomes, string $context): void {
+        // The sweep alone may perform T8; an expired-grace check-in must never
+        // create a Visit or mutate the appointment, in either lock order.
+        self::assertSame('no_show', $state['status'], "{$context}: sweep must mark no-show");
+        self::assertNotNull($state['no_show_at'], "{$context}: T8 timestamp is present");
+        self::assertSame([], $state['live_visits'], "{$context}: denied check-in cannot create a Visit");
+        self::assertNull($state['active_visit_id'], "{$context}: no Visit pointer after denial");
+        self::assertSame('ok', $outcomes['no_show']['result'] ?? null, "{$context}: sweep completes");
+        self::assertSame('rejected', $outcomes['check_in']['result'] ?? null, "{$context}: expired check-in denied");
+        self::assertSame('CLINIC_INVALID_APPOINTMENT_STATE', $outcomes['check_in']['error_code'] ?? null);
+        self::assertSame(1, $state['slot_booked'], "{$context}: booked counter unchanged");
+        self::assertSame(0, $state['slot_held'], "{$context}: hold counter unchanged");
     }
 
     // ================= Concurrency harness (real-DB, independent connections) =================

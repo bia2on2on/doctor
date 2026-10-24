@@ -350,18 +350,19 @@ final class SystemHealthService
     }
 
     /**
-     * Expected release ZIP size for upload-limits guidance (D3).
-     * The ZIP includes offline catalog + vendor; many hosts default to
-     * post_max_size=8M / upload_max_filesize=2M which triggers WordPress's
-     * generic "link expired" on POST overflow. This is a host-level limit;
-     * CPMS never silently raises it.
+     * Conservative HOST policy, NOT the release ZIP size. The installable ZIP
+     * measured 10,302,900 bytes in the reviewed PR CI runs; the outer Actions
+     * artifact is a different archive. Require 32 MiB upload and 40 MiB POST
+     * (multipart headroom) for this policy. Future releases must be measured
+     * independently; they may exceed this floor.
      */
-    public const EXPECTED_ZIP_BYTES = 16 * 1024 * 1024;
+    public const MIN_UPLOAD_BYTES = 32 * 1024 * 1024;
+    public const MIN_POST_BYTES   = 40 * 1024 * 1024;
 
     public const ZIP_SIZE_GUIDANCE_FA = 'بستهٔ انتشار CPMS (حاوی runtime vendor و کاتالوگ آفلاین ۳۱ استان) از سقف پیش‌فرض بسیاری از هاست‌ها بزرگ‌تر است. '
         . 'اگر حجم POST از post_max_size بیشتر شود، وردپرس بدون توضیحِ علت خطای گمراه‌کنندهٔ «پیوند منقضی شده» را نشان می‌دهد؛ '
         . 'این محدودیت در سطح میزبان/PHP است و افزونه آن را بی‌صدا تغییر نمی‌دهد. '
-        . 'برای نصب: یا post_max_size و upload_max_filesize را در php.ini/.user.ini یا پنل هاست به حداقل ۲۰M افزایش دهید، '
+        . 'برای نصب: حجم ZIP قابل‌نصب را اندازه بگیرید؛ upload_max_filesize را بالاتر از حجم آن و post_max_size را بالاتر از مجموع آپلود و سربار درخواست در php.ini/.user.ini یا پنل هاست تنظیم کنید، '
         . 'یا ZIP را از طریق FTP/پنل فایل یا WP-CLI (wp plugin install --activate file.zip) بارگذاری کنید. '
         . 'مقدار مجاز آپلود را می‌توانید در «رسانه ← افزودن» یا همین صفحهٔ سلامت ببینید.';
 
@@ -377,19 +378,21 @@ final class SystemHealthService
 
         $post_bytes   = self::parse_bytes( $raw_post );
         $upload_bytes = self::parse_bytes( $raw_upload );
-        $expected     = self::EXPECTED_ZIP_BYTES;
         $label_post   = trim( $raw_post ) !== '' ? trim( $raw_post ) : 'نامشخص';
         $label_up     = trim( $raw_upload ) !== '' ? trim( $raw_upload ) : 'نامشخص';
         $detail       = 'post_max_size=' . $label_post . ' (' . self::describe_bytes( $post_bytes ) . ')'
             . ' | upload_max_filesize=' . $label_up . ' (' . self::describe_bytes( $upload_bytes ) . ')'
-            . ' | انتظار ZIP ≈ ' . self::format_bytes( $expected )
-            . ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+            . ' | آستانهٔ احتیاطی (نه اندازهٔ ZIP): آپلود ' . self::format_bytes( self::MIN_UPLOAD_BYTES )
+            . ' / POST ' . self::format_bytes( self::MIN_POST_BYTES );
 
         // null = unreadable/unparseable → WARNING (unknown is never a false PASS).
         // 0 = explicitly unlimited (PHP treats "0" as no limit).
-        $ok_post   = null !== $post_bytes && ( 0 === $post_bytes || $post_bytes >= $expected );
-        $ok_upload = null !== $upload_bytes && ( 0 === $upload_bytes || $upload_bytes >= $expected );
+        $ok_post   = null !== $post_bytes && ( 0 === $post_bytes || $post_bytes >= self::MIN_POST_BYTES );
+        $ok_upload = null !== $upload_bytes && ( 0 === $upload_bytes || $upload_bytes >= self::MIN_UPLOAD_BYTES );
         $status    = ( $ok_post && $ok_upload ) ? self::PASS : self::WARNING;
+        if ( $status !== self::PASS ) {
+            $detail .= ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+        }
         if ( null === $post_bytes || null === $upload_bytes ) {
             $detail .= ' | مقدار یکی از سقف‌ها قابل خواندن/تجزیه نبود؛ وضعیت نامشخص (fail-safe، نه PASS).';
         }

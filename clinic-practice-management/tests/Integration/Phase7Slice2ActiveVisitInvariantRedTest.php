@@ -678,7 +678,16 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
      */
     private function checkIn(int $appointmentId): array
     {
-        return $this->visitService()->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
+        $date = (string) App::db()->fetchValue(
+            'SELECT slot_date FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$appointmentId]
+        );
+        VisitService::setTestNowUtc(new \DateTimeImmutable($date . ' 00:00:00', new \DateTimeZone(self::TZ)));
+        try {
+            return $this->visitService()->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
+        } finally {
+            VisitService::setTestNowUtc(null);
+        }
     }
 
     /**
@@ -1157,7 +1166,13 @@ final class Phase7Slice2ActiveVisitInvariantRedTest extends WP_UnitTestCase
                 null,
                 new MembershipRepository($cpms)
             );
-            $visit = $visits->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
+            $row = $cpms->fetchRow('SELECT slot_date FROM ' . $cpms->table('cpms_appointments') . ' WHERE id = %d', [$appointmentId]);
+            VisitService::setTestNowUtc(new \DateTimeImmutable((string) $row['slot_date'] . ' 00:00:00', new \DateTimeZone(self::TZ)));
+            try {
+                $visit = $visits->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
+            } finally {
+                VisitService::setTestNowUtc(null);
+            }
 
             return [
                 'result' => 'ok',

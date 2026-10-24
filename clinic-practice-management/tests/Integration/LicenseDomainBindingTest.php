@@ -355,11 +355,20 @@ final class LicenseDomainBindingTest extends WP_UnitTestCase
         $patientId = (int) $created['id'];
         $this->assertGreaterThan(0, $patientId);
 
-        $apptAId = $this->makeAppointmentRow(time() + 3600, $patientId); // برای check-in امروز
-        $apptBId = $this->makeAppointmentRow(time() + 2 * 86400, $patientId); // بدون ویزیت — برای لغو
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $local_day = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $slot = new \DateTimeImmutable($local_day . ' 14:00:00', $tz);
+        $arrival = new \DateTimeImmutable($local_day . ' 09:00:00', $tz);
+        $apptAId = $this->makeAppointmentRow($slot->getTimestamp(), $patientId); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing fixture identifiers.
+        $apptBId = $this->makeAppointmentRow(time() + 2 * 86400, $patientId); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing fixture identifiers.
 
         $visits = App::visitService();
-        $visit = $visits->checkIn($this->secretaryUserId, $patientId, $apptAId);
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
+        try {
+            $visit = $visits->checkIn($this->secretaryUserId, $patientId, $apptAId); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing fixture identifiers.
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
         $visitId = (int) $visit['id'];
         $this->assertSame('waiting', (string) $visit['status']);
 

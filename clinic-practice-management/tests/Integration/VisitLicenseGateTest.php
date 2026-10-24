@@ -113,8 +113,11 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testCheckInOfPreExistingAppointmentIsAllowedInReadOnlyMode(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $local_day = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $dt = new \DateTimeImmutable($local_day . ' 14:00:00', $tz);
+        $arrival = new \DateTimeImmutable($local_day . ' 09:00:00', $tz);
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
         $apptId = $this->makeAppointment($dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         $visit = $this->service(new FakeLicenseGate(false))->checkIn($this->secretaryUserId, $this->patientId, $apptId);
@@ -128,8 +131,11 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
     public function testInProgressVisitTransitionsAreAllowedInReadOnlyMode(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $local_day = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $dt = new \DateTimeImmutable($local_day . ' 14:00:00', $tz);
+        $arrival = new \DateTimeImmutable($local_day . ' 09:00:00', $tz);
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
         $apptId = $this->makeAppointment($dt->format('Y-m-d'), $dt->format('H:i:s'));
         $svc = $this->service(new FakeLicenseGate(false));
 
@@ -144,6 +150,12 @@ final class VisitLicenseGateTest extends WP_UnitTestCase
 
         $completed = $svc->transition($this->doctorUserId, (int) $visit['id'], 'complete');
         $this->assertSame('consultation_completed', $completed['status']);
+    }
+
+    protected function tearDown(): void
+    {
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        parent::tearDown();
     }
 
     // ================= Helpers =================

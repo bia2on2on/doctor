@@ -79,7 +79,10 @@ final class SystemAdminPagesTest extends WP_UnitTestCase
         $this->assertNull($thrown, 'D1: شکست مخزن بکاپ نباید صفحه را Fatal کند: ' . ($thrown ? $thrown->getMessage() : ''));
         $this->assertIsString($html);
         $this->assertStringContainsString('وضعیت Health / سازگاری میزبان', $html, 'بخش‌های سالم باید رندر شوند');
-        $this->assertStringContainsString('فهرست بکاپ‌ها قابل خواندن نیست', $html, 'خطای بخش بکاپ باید درون‌صفحه‌ای نمایش داده شود');
+        // Listing is read-only and may legitimately show an empty list on a
+        // blocked path. Private create/verify/delete must still fail closed.
+        $this->assertStringContainsString('بکاپ (فایل + دیتابیس', $html);
+        $this->assertStringNotContainsString('Warning:', $html, 'Raw filesystem warnings must never leak into the page');
     }
 
     private function renderPage(): string

@@ -130,6 +130,25 @@ final class FacilityAwareStepTitlesAndHeadingTest extends WP_UnitTestCase {
         self::assertContains('پزشکان متخصص', $missing, 'the doctors step must be reported with the specialized-clinic clinician term');
     }
 
+    /** @dataProvider facilityHeadingCases */
+    public function testActiveStepHeadingNamesTheSelectedFacilityAndStep(string $facility, string $structure): void {
+        $uid = $this->authorize();
+        $this->selectFacility($uid, $facility, $structure);
+        $html = $this->renderStep('clinic');
+        $expected = FacilityTypeCatalog::wizard_heading($facility) . ' — '
+            . FacilityTypeCatalog::step_title($facility, 'clinic', 'اطلاعات کلینیک');
+        self::assertStringContainsString($expected, $html);
+    }
+
+    public static function facilityHeadingCases(): array {
+        return [
+            'practice' => ['doctor_practice', 'single'],
+            'hospital' => ['hospital', 'hospital_network'],
+            'medical building' => ['other', 'medical_building'],
+            'dental' => ['dental_clinic', 'multi_doctor'],
+        ];
+    }
+
     public function testUnselectedFacilityKeepsLegacyGenericWording(): void {
         // No facility selection at all: legacy pre-existing behaviour must be byte-identical.
         $this->authorize();

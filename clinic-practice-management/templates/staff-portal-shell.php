@@ -168,6 +168,10 @@ echo $cpms_styles_html;
         <?php endif; ?>
     </header>
 
+    <?php if ( $cpms_logged_in && array() !== $cpms_modules ) : ?>
+        <?php \ClinicCore\Frontend\LicenseStatusNotice::render(); ?>
+    <?php endif; ?>
+
     <?php if ( array() !== $cpms_modules ) : ?>
         <nav class="cpms-staff-portal-shell__nav" data-role="staff-nav" aria-label="ماژول‌های عملیاتی">
             <ul class="cpms-staff-portal-shell__nav-list">

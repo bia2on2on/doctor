@@ -176,7 +176,7 @@ final class CpmsSetupWizard
         ?>
         <?php $shell_profile = self::current_facility_profile(); ?>
         <div class="wrap" dir="rtl">
-            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?></h1>
+            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — <?php echo esc_html( (string) $step['title'] ); ?> (قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?>)</h1>
             <?php self::render_active_clinic_banner(); ?>
             <p class="description">
                 این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، <?php echo esc_html( $shell_profile['unit'] ); ?> را راه بیندازید.

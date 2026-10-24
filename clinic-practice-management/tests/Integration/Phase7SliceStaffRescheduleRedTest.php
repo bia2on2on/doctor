@@ -336,7 +336,7 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
     {
         $appt = $this->seedConfirmedAppointment($this->clinicA, $this->locationA, $this->patientA, $this->clinicianA, 3, '13:00:00', 'vis');
         $dest = $this->seedOpenSlot($this->clinicA, $this->locationA, $this->clinicianA, 5, '17:00:00');
-        $visit = App::visitService()->checkIn($this->secretaryA, $this->patientA, $appt['id']);
+        $visit = $this->checkInOnAppointmentDay($this->secretaryA, $this->patientA, $appt['id']);
         self::assertContains((string) $visit['status'], self::LIVE_VISIT_STATUSES);
 
         $error = $this->captureBookingError(function () use ($appt, $dest): void {
@@ -362,7 +362,7 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
     {
         $appt = $this->seedConfirmedAppointment($this->clinicA, $this->locationA, $this->patientA, $this->clinicianA, 3, '09:00:00', 'stale');
         $dest = $this->seedOpenSlot($this->clinicA, $this->locationA, $this->clinicianA, 6, '09:30:00');
-        $visit = App::visitService()->checkIn($this->secretaryA, $this->patientA, $appt['id']);
+        $visit = $this->checkInOnAppointmentDay($this->secretaryA, $this->patientA, $appt['id']);
         App::visitService()->transition($this->secretaryA, (int) $visit['id'], 'cancel', ['reason' => 'پایان ویزیت']);
         self::assertSame((int) $visit['id'], (int) $this->appointmentRow($appt['id'])['active_visit_id']);
 
@@ -392,7 +392,7 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
         self::assertSame(400, $missing->get_status());
         $this->assertClinicError($missing, 'CLINIC_VALIDATION_FAILED');
 
-        $visit = App::visitService()->checkIn($this->secretaryA, $this->patientA, $appt['id']);
+        $visit = $this->checkInOnAppointmentDay($this->secretaryA, $this->patientA, $appt['id']);
         $key = $this->uuid();
         $failed = $this->captureBookingError(function () use ($appt, $dest, $key): void {
             $this->staffReschedule(
@@ -576,6 +576,22 @@ final class Phase7SliceStaffRescheduleRedTest extends WP_UnitTestCase
     /**
      * @return array{id: int, slot_id: int, date: string, time: string}
      */
+    /** Check in with the existing deterministic Visit clock on the trusted local date. */
+    private function checkInOnAppointmentDay(int $actor, int $patient, int $appointment): array
+    {
+        $date = (string) App::db()->fetchValue(
+            'SELECT slot_date FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$appointment]
+        );
+        $midnight = new \DateTimeImmutable($date . ' 00:00:00', new \DateTimeZone(self::TZ));
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($midnight);
+        try {
+            return App::visitService()->checkIn($actor, $patient, $appointment);
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
+    }
+
     private function seedConfirmedAppointment(
         int $clinicId,
         int $locationId,

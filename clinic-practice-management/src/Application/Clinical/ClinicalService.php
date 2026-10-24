@@ -476,7 +476,7 @@ final class ClinicalService
                         'visit_id'                      => $visit_id,
                         'patient_id'                    => (int) $visit['patient_id'],
                         'clinician_id'                  => (int) $visit['clinician_id'],
-                        'is_patient_visible'            => ! empty( $input['is_patient_visible'] ) ? 1 : 0,
+                        'is_patient_visible'            => ! array_key_exists( 'is_patient_visible', $input ) || (bool) $input['is_patient_visible'] ? 1 : 0,
                         'correction_of_prescription_id' => $correction_of,
                     ]
                 );

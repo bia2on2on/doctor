@@ -257,6 +257,16 @@ def run_selftest():
     return 0
 
 
+def visible_or_diagnose(page, selector, stage):
+    """Keep the existing visibility gate; report a bounded, non-PII failure stage."""
+    try:
+        page.locator(selector).wait_for(state="visible", timeout=25000)
+    except Exception as exc:
+        root = page.locator(".cpms-public-booking")
+        state = root.get_attribute("data-state", timeout=1000) if root.count() else "missing"
+        raise AssertionError(f"public booking stage={stage} root_state={state} visible=0") from exc
+
+
 def run_journey_a_public_booking(browser, cfg):
     ctx_pub = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
     page_pub = ctx_pub.new_page()
@@ -346,12 +356,12 @@ def run_journey_a_public_booking(browser, cfg):
 
         # 4) OTP handoff + first-time identity gate + final booking confirmation
         page_pub.locator('[data-role="continue-auth"]').click()
-        page_pub.locator('[data-role="otp-mobile"]').wait_for(state="visible")
+        visible_or_diagnose(page_pub, '[data-role="otp-mobile"]', "otp-mobile")
         page_pub.locator('[data-role="otp-mobile"]').fill(SYN_MOBILE)
         with page_pub.expect_response(lambda r: "/clinic/v1/otp/request" in r.url, timeout=25000) as otp_req:
             page_pub.locator('[data-auth-action="otp-request"]').click()
         assert otp_req.value.status == 200, f"otp/request HTTP {otp_req.value.status}"
-        page_pub.locator('[data-role="otp-code"]').wait_for(state="visible")
+        visible_or_diagnose(page_pub, '[data-role="otp-code"]', "otp-code")
 
         trows = dbrows(
             f"SELECT id, clinic_id FROM {T('cpms_otp_tokens')} WHERE mobile='{SYN_MOBILE}' ORDER BY id DESC LIMIT 1"
@@ -368,21 +378,21 @@ def run_journey_a_public_booking(browser, cfg):
         assert otp_ver.value.status == 200, f"otp/verify HTTP {otp_ver.value.status}"
         page_pub.wait_for_load_state("networkidle")
 
-        page_pub.locator('[data-role="hold-countdown"]').wait_for(state="visible", timeout=25000)
-        page_pub.locator('[data-role="confirm-btn"]').wait_for(state="visible", timeout=25000)
+        visible_or_diagnose(page_pub, '[data-role="hold-countdown"]', "hold-countdown")
+        visible_or_diagnose(page_pub, '[data-role="confirm-btn"]', "confirm-btn")
 
         # First-time patient identity gate: confirm without names -> 400 CLINIC_VALIDATION_FAILED
         with page_pub.expect_response(lambda r: "/clinic/v1/booking/confirm" in r.url, timeout=25000) as gate_resp:
             page_pub.locator('[data-role="confirm-btn"]').click()
         assert gate_resp.value.status == 400, f"expected 400 identity gate, got {gate_resp.value.status}"
-        page_pub.locator('[data-role="names-form"]').wait_for(state="visible")
+        visible_or_diagnose(page_pub, '[data-role="names-form"]', "names-form")
 
         page_pub.locator('[data-role="patient-first-name"]').fill(SYN_FIRST_NAME)
         page_pub.locator('[data-role="patient-last-name"]').fill(SYN_LAST_NAME)
         with page_pub.expect_response(lambda r: "/clinic/v1/booking/confirm" in r.url, timeout=25000) as conf_resp:
             page_pub.locator('[data-role="confirm-btn"]').click()
         assert conf_resp.value.status == 200, f"booking/confirm HTTP {conf_resp.value.status}"
-        page_pub.locator('[data-role="receipt"]').wait_for(state="visible")
+        visible_or_diagnose(page_pub, '[data-role="receipt"]', "receipt")
         ref_code = (page_pub.locator('[data-role="reference-code"]').first.text_content() or "").strip()
         assert re.fullmatch(r"AP-\d{8}-\d{2}", ref_code), "receipt reference_code format invalid"
         page_pub.set_viewport_size({"width": 320, "height": 740})
