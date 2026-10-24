@@ -221,7 +221,39 @@ def run_selftest():
     assert u2 == "http://localhost:8080/?rest_route=/clinic/v1/appointments/9/reschedule-options"
     assert wp_route(u1) == "/clinic/v1/staff/portal/finance/reconciliation"
     assert wp_route(u2) == "/clinic/v1/appointments/9/reschedule-options"
-    print("PASS day2-selftest — deterministic URL/route helper self-test passed")
+
+    # Reception board envelope (RestBase::success => {"data": {...}}).
+    good = parse_board_envelope(
+        {"data": {"date": "2026-10-24", "appointments": [
+            {"id": 11, "status": "confirmed", "time": "09:05"},
+            {"id": 12, "status": "confirmed", "time": "09:06"},
+        ]}}
+    )
+    assert good["date"] == "2026-10-24"
+    assert good["appointment_ids"] == [11, 12]
+
+    malformed_payloads = {
+        "missing envelope": {"date": "2026-10-24", "appointments": []},
+        "envelope not object": {"data": "2026-10-24"},
+        "date missing": {"data": {"appointments": []}},
+        "date not Y-m-d": {"data": {"date": "24/10/2026", "appointments": []}},
+        "appointments missing": {"data": {"date": "2026-10-24"}},
+        "appointments not list": {"data": {"date": "2026-10-24", "appointments": {}}},
+        "appointment not object": {"data": {"date": "2026-10-24", "appointments": ["11"]}},
+        "appointment id not int": {"data": {"date": "2026-10-24", "appointments": [{"id": "11", "status": "confirmed"}]}},
+        "appointment id zero": {"data": {"date": "2026-10-24", "appointments": [{"id": 0, "status": "confirmed"}]}},
+        "appointment status missing": {"data": {"date": "2026-10-24", "appointments": [{"id": 11}]}},
+        "top-level list": [{"date": "2026-10-24"}],
+        "top-level null": None,
+    }
+    for label, payload in malformed_payloads.items():
+        try:
+            parse_board_envelope(payload)
+        except AssertionError:
+            continue
+        raise AssertionError(f"malformed reception board payload was accepted: {label}")
+
+    print("PASS day2-selftest — deterministic URL/route + REST envelope self-test passed")
     return 0
 
 
@@ -490,6 +522,116 @@ def run_journey_a_patient_reschedule(browser, cfg):
         ctx_pt.close()
 
 
+def parse_board_envelope(payload):
+    """Read the reception board payload from the real CPMS REST envelope.
+
+    `RestBase::success()` wraps every payload as `{"data": <payload>}`. The board
+    handler's payload carries `date` (the server-authoritative operational date)
+    and `appointments` (the operational-day projection). Malformed or unexpected
+    shapes must fail loudly: silently accepting them is how a date/envelope
+    mismatch could hide a real regression.
+    """
+    if not isinstance(payload, dict):
+        raise AssertionError(f"reception board envelope is not an object: {type(payload).__name__}")
+    if "data" not in payload:
+        raise AssertionError(
+            "reception board response is missing the CPMS REST 'data' envelope; "
+            f"top-level keys={sorted(payload.keys())[:6]}"
+        )
+    data = payload["data"]
+    if not isinstance(data, dict):
+        raise AssertionError(f"reception board 'data' is not an object: {type(data).__name__}")
+    date = data.get("date")
+    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
+        raise AssertionError(f"reception board 'data.date' is not a Y-m-d string: {date!r}")
+    appointments = data.get("appointments")
+    if not isinstance(appointments, list):
+        raise AssertionError(f"reception board 'data.appointments' is not a list: {type(appointments).__name__}")
+    ids = []
+    for row in appointments:
+        if not isinstance(row, dict):
+            raise AssertionError("reception board appointment entry is not an object")
+        row_id = row.get("id")
+        if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id <= 0:
+            raise AssertionError(f"reception board appointment id is not a positive int: {row_id!r}")
+        if not isinstance(row.get("status"), str) or row["status"] == "":
+            raise AssertionError(f"reception board appointment {row_id} has no status")
+        ids.append(row_id)
+    return {"date": date, "appointment_ids": ids}
+
+
+def anchor_reception_rows(cfg, target_date=None):
+    """Re-anchor the Journey B reception rows against the SERVER clock.
+
+    The rows must be, at the instant the reception board is read: already due,
+    still inside `queue.no_show_grace_minutes`, and on the operational date the
+    server itself resolves. Any fixed wall time (the retired 08:20/08:40/09:00
+    Tehran rows) fails that for some clock, which is the defect this PR fixes.
+    The anchor delegates to the same pure policy the fixture uses, with the
+    server's `now`, the Location's IANA timezone from the database and each
+    Clinic's own grace. It never changes status and never disables the job.
+    """
+    ids = cfg["sec_reanchor_ids"]
+    cmd = ["php", "tests/bin/day2-anchor-reception-rows.php", f"--ids={ids}"]
+    if target_date:
+        cmd.append(f"--date={target_date}")
+    env = dict(os.environ)
+    env["WP_HOME"] = WP_DIR
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0 or "DAY2_ANCHOR_OK" not in out:
+        raise AssertionError(
+            "reception row anchor failed: exit="
+            f"{proc.returncode} detail={(err or out)[:300]}"
+        )
+    match = re.search(r"\bdate=(\d{4}-\d{2}-\d{2})\b", out)
+    if not match:
+        raise AssertionError(f"reception row anchor returned no date: {out[:200]}")
+    info(out)
+    return match.group(1)
+
+
+def select_reception_scope_and_load_board(page, cfg):
+    """Existing reception scope selection, unchanged; returns the board payload."""
+    assert "/wp-admin/" not in (page.url or ""), "Receptionist portal must stay out of wp-admin"
+
+    clinic_sel = page.locator('[data-role="sr-clinic-select"]')
+    clinic_sel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function(
+        """(cid) => {
+            const s = document.querySelector('[data-role="sr-clinic-select"]');
+            return s && Array.from(s.options).some(o => o.value === String(cid));
+        }""",
+        arg=cfg["clinic_a"],
+        timeout=20000,
+    )
+    with page.expect_response(
+        lambda r: "/staff/portal/reception/context" in r.url, timeout=25000
+    ) as ctx_info:
+        clinic_sel.select_option(str(cfg["clinic_a"]))
+    assert ctx_info.value.status == 200, "reception clinic context failed"
+
+    loc_sel = page.locator('[data-role="sr-location-select"]')
+    page.wait_for_function(
+        """(lid) => {
+            const s = document.querySelector('[data-role="sr-location-select"]');
+            return s && !s.disabled && Array.from(s.options).some(o => o.value === String(lid));
+        }""",
+        arg=cfg["loc_a1"],
+        timeout=20000,
+    )
+    with page.expect_response(
+        lambda r: "/staff/portal/reception/board" in r.url, timeout=25000
+    ) as board_info:
+        loc_sel.select_option(str(cfg["loc_a1"]))
+    assert board_info.value.status == 200, "reception board load failed"
+    try:
+        return board_info.value.json()
+    except Exception as exc:  # malformed body is a failure, never a silent pass
+        raise AssertionError(f"reception board response is not decodable JSON: {exc}") from exc
+
+
 def run_journey_b_receptionist(browser, cfg):
     assert_subscriber_in_db(cfg["sec_user_id"], "receptionist")
     ctx_sec = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
@@ -500,36 +642,42 @@ def run_journey_b_receptionist(browser, cfg):
         page_sec.goto(cfg["reception_url"], wait_until="networkidle")
         assert "/wp-admin/" not in (page_sec.url or ""), "Receptionist portal must stay out of wp-admin"
 
-        clinic_sel = page_sec.locator('[data-role="sr-clinic-select"]')
-        clinic_sel.wait_for(state="visible", timeout=20000)
-        page_sec.wait_for_function(
-            """(cid) => {
-                const s = document.querySelector('[data-role="sr-clinic-select"]');
-                return s && Array.from(s.options).some(o => o.value === String(cid));
-            }""",
-            arg=cfg["clinic_a"],
-            timeout=20000,
-        )
-        with page_sec.expect_response(
-            lambda r: "/staff/portal/reception/context" in r.url, timeout=25000
-        ) as ctx_info:
-            clinic_sel.select_option(str(cfg["clinic_a"]))
-        assert ctx_info.value.status == 200, "reception clinic context failed"
+        # Clock-safe anchoring: the rows are placed "already due, inside grace,
+        # on the server's operational date" immediately before the board is
+        # read, so the real visits.no_show job cannot sweep them first and the
+        # board cannot resolve a different operational date.
+        #
+        # The retry loop exists for ONE reason: a genuine local-midnight
+        # rollover between the anchor and the board read. It then reloads the
+        # portal, re-establishes the intended Clinic + Location, fetches a fresh
+        # board and re-anchors to the date the SERVER reports. It never sleeps,
+        # never loosens an assertion and is bounded.
+        anchor_date = anchor_reception_rows(cfg)
+        board = {}
+        for attempt in (1, 2, 3):
+            if attempt > 1:
+                page_sec.reload(wait_until="networkidle")
+                page_sec.wait_for_selector('[data-role="sr-clinic-select"]', timeout=20000)
+            payload = select_reception_scope_and_load_board(page_sec, cfg)
+            board = parse_board_envelope(payload)
+            if board["date"] == anchor_date:
+                break
+            assert attempt < 3, (
+                "reception board operational date never converged with the anchored "
+                f"date after {attempt} attempts: anchored={anchor_date} board={board['date']}"
+            )
+            info(
+                f"reception_reanchor attempt={attempt} anchored={anchor_date} "
+                f"board={board['date']}"
+            )
+            anchor_date = anchor_reception_rows(cfg, board["date"])
 
-        loc_sel = page_sec.locator('[data-role="sr-location-select"]')
-        page_sec.wait_for_function(
-            """(lid) => {
-                const s = document.querySelector('[data-role="sr-location-select"]');
-                return s && !s.disabled && Array.from(s.options).some(o => o.value === String(lid));
-            }""",
-            arg=cfg["loc_a1"],
-            timeout=20000,
+        assert cfg["sec_appt_doc1"] in board["appointment_ids"], (
+            "anchored Doc1 reception row is missing from the operational-day board"
         )
-        with page_sec.expect_response(
-            lambda r: "/staff/portal/reception/board" in r.url, timeout=25000
-        ) as board_info:
-            loc_sel.select_option(str(cfg["loc_a1"]))
-        assert board_info.value.status == 200, "reception board load failed"
+        assert cfg["sec_appt_doc2"] in board["appointment_ids"], (
+            "anchored Doc2 reception row is missing from the operational-day board"
+        )
 
         row_doc1 = page_sec.locator(
             f'tr[data-role="sr-row"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'
@@ -925,6 +1073,7 @@ def main():
         "resched_beyond_slot": int(env_req("DAY2_RESCHED_BEYOND_SLOT")),
         "sec_login": env_req("DAY2_SEC_LOGIN"),
         "sec_user_id": int(env_req("DAY2_SEC_USER_ID")),
+        "sec_reanchor_ids": env_req("DAY2_SEC_REANCHOR_IDS"),
         "sec_appt_doc1": int(env_req("DAY2_SEC_APPT_DOC1")),
         "sec_appt_doc2": int(env_req("DAY2_SEC_APPT_DOC2")),
         "foreign_appt": int(env_req("DAY2_FOREIGN_APPT")),
@@ -942,6 +1091,18 @@ def main():
         "pay_a2_pos": env_req("DAY2_PAY_A2_POS"),
         "pay_b1_pos": env_req("DAY2_PAY_B1_POS"),
     }
+
+    # Evidence only (no assertion): the reception rows must be ALREADY DUE yet
+    # still inside `queue.no_show_grace_minutes`, so the real visits.no_show
+    # background job cannot sweep them before Journey B. The fixture fails closed
+    # when the Location-local clock cannot host that window.
+    info(
+        "reception_rows=already_due_inside_grace "
+        f"grace_min={os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', 'n/a')} "
+        f"doc1_slot={os.environ.get('DAY2_SEC_SLOT_DOC1', 'n/a')} "
+        f"doc2_slot={os.environ.get('DAY2_SEC_SLOT_DOC2', 'n/a')} "
+        f"foreign_slot={os.environ.get('DAY2_SEC_SLOT_FOREIGN', 'n/a')}"
+    )
 
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as pw:
