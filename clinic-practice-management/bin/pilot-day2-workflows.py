@@ -943,6 +943,18 @@ def main():
         "pay_b1_pos": env_req("DAY2_PAY_B1_POS"),
     }
 
+    # Evidence only (no assertion): the reception rows must be ALREADY DUE yet
+    # still inside `queue.no_show_grace_minutes`, so the real visits.no_show
+    # background job cannot sweep them before Journey B. The fixture fails closed
+    # when the Location-local clock cannot host that window.
+    info(
+        "reception_rows=already_due_inside_grace "
+        f"grace_min={os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', 'n/a')} "
+        f"doc1_slot={os.environ.get('DAY2_SEC_SLOT_DOC1', 'n/a')} "
+        f"doc2_slot={os.environ.get('DAY2_SEC_SLOT_DOC2', 'n/a')} "
+        f"foreign_slot={os.environ.get('DAY2_SEC_SLOT_FOREIGN', 'n/a')}"
+    )
+
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
