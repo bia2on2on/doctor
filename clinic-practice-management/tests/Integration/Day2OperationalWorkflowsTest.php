@@ -376,6 +376,11 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         ]);
 
         wp_set_current_user($accountant);
+        // Live-browser bootstrap parity: Subscriber Accountant calling finance/context without X-CPMS-Clinic-Id resolves unique membership.
+        $ctxUnscoped = $this->dispatch('GET', '/clinic/v1/staff/portal/finance/context');
+        self::assertSame(200, $ctxUnscoped->get_status(), 'Subscriber Accountant unique-Clinic finance/context bootstrap must succeed without X-CPMS-Clinic-Id.');
+        self::assertSame($clinicA, (int) ($this->payload($ctxUnscoped)['clinic_id'] ?? 0));
+
         $headersLocA = ['X-CPMS-Clinic-Id' => (string) $clinicA, 'X-CPMS-Location-Id' => (string) $locA];
 
         // 1. Range > 93 days rejected with 422.
@@ -687,7 +692,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $apptId   = $this->insertAppointment($clinicA, $locA, $ownerPt, $clinician, $slotId, $tomorrow, '09:30:00', 'confirmed');
 
         $opBefore = (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE event = 'booking.unexpected_error'"
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE message = 'booking.unexpected_error'"
         );
 
         $auditTable = App::db()->table('cpms_audit_logs');
@@ -715,7 +720,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         self::assertSame(0, $this->auditCount('FORBIDDEN_ACCESS_ATTEMPT', $apptId));
 
         $opAfter = (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE event = 'booking.unexpected_error'"
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . " WHERE message = 'booking.unexpected_error'"
         );
         self::assertGreaterThan($opBefore, $opAfter, 'Audit write failure must record booking.unexpected_error in operational logs.');
 

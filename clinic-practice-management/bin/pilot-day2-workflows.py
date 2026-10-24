@@ -406,6 +406,12 @@ def run_journey_a_patient_reschedule(browser, cfg):
         assert cfg["resched_clean_slot"] in offered_ids, "clean destination slot missing"
         assert cfg["resched_beyond_slot"] not in offered_ids, "+40d slot must be excluded by max_future_days=30"
 
+        resched_date = next(
+            d["date"]
+            for d in (opt_data.get("days") or [])
+            if any(int(s["slot_id"]) == cfg["resched_collide_slot"] for s in (d.get("slots") or []))
+        )
+
         page_pt.locator('[data-role="reschedule-picker"]').wait_for(state="visible")
         assert_no_horizontal_overflow(page_pt, "patient-reschedule-panel-390")
         page_pt.set_viewport_size({"width": 320, "height": 740})
@@ -413,7 +419,11 @@ def run_journey_a_patient_reschedule(browser, cfg):
         assert_no_horizontal_overflow(page_pt, "patient-reschedule-panel-320")
         page_pt.set_viewport_size({"width": 390, "height": 844})
 
-        # Select collision slot, then simulate concurrent booking taking its last seat
+        # Select the target day tab first, then select the collision slot
+        day_tab = page_pt.locator(f'[data-role="reschedule-day"][data-slot-date="{resched_date}"]')
+        day_tab.wait_for(state="visible")
+        day_tab.click()
+
         collide_btn = page_pt.locator(
             f'[data-role="reschedule-slot"][data-slot-id="{cfg["resched_collide_slot"]}"]'
         )
@@ -435,7 +445,14 @@ def run_journey_a_patient_reschedule(browser, cfg):
                 page_pt.locator('[data-role="reschedule-confirm"]').click()
         assert col_resp_info.value.status == 409, f"expected 409 slot collision, got {col_resp_info.value.status}"
         assert refresh_info.value.status == 200, "collision recovery auto-refresh failed"
+        page_pt.locator('[data-role="reschedule-picker"]').wait_for(state="visible")
         page_pt.locator('[data-role="reschedule-error"]').wait_for(state="visible")
+
+        # Re-select target day tab after options reload; verify taken slot is gone and error stayed visible
+        day_tab = page_pt.locator(f'[data-role="reschedule-day"][data-slot-date="{resched_date}"]')
+        day_tab.wait_for(state="visible")
+        day_tab.click()
+        assert page_pt.locator('[data-role="reschedule-error"]').is_visible(), "collision error must stay visible across refresh"
         assert (
             page_pt.locator(
                 f'[data-role="reschedule-slot"][data-slot-id="{cfg["resched_collide_slot"]}"]'
@@ -483,8 +500,31 @@ def run_journey_b_receptionist(browser, cfg):
         page_sec.goto(cfg["reception_url"], wait_until="networkidle")
         assert "/wp-admin/" not in (page_sec.url or ""), "Receptionist portal must stay out of wp-admin"
 
+        clinic_sel = page_sec.locator('[data-role="sr-clinic-select"]')
+        clinic_sel.wait_for(state="visible", timeout=20000)
+        page_sec.wait_for_function(
+            """(cid) => {
+                const s = document.querySelector('[data-role="sr-clinic-select"]');
+                return s && Array.from(s.options).some(o => o.value === String(cid));
+            }""",
+            arg=cfg["clinic_a"],
+            timeout=20000,
+        )
+        with page_sec.expect_response(
+            lambda r: "/staff/portal/reception/context" in r.url, timeout=25000
+        ) as ctx_info:
+            clinic_sel.select_option(str(cfg["clinic_a"]))
+        assert ctx_info.value.status == 200, "reception clinic context failed"
+
         loc_sel = page_sec.locator('[data-role="sr-location-select"]')
-        loc_sel.wait_for(state="visible", timeout=20000)
+        page_sec.wait_for_function(
+            """(lid) => {
+                const s = document.querySelector('[data-role="sr-location-select"]');
+                return s && !s.disabled && Array.from(s.options).some(o => o.value === String(lid));
+            }""",
+            arg=cfg["loc_a1"],
+            timeout=20000,
+        )
         with page_sec.expect_response(
             lambda r: "/staff/portal/reception/board" in r.url, timeout=25000
         ) as board_info:
@@ -492,10 +532,10 @@ def run_journey_b_receptionist(browser, cfg):
         assert board_info.value.status == 200, "reception board load failed"
 
         row_doc1 = page_sec.locator(
-            f'tr[data-role="sr-appt-row"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'
+            f'tr[data-role="sr-row"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'
         )
         row_doc2 = page_sec.locator(
-            f'tr[data-role="sr-appt-row"][data-appointment-id="{cfg["sec_appt_doc2"]}"]'
+            f'tr[data-role="sr-row"][data-appointment-id="{cfg["sec_appt_doc2"]}"]'
         )
         row_doc1.wait_for(state="visible", timeout=15000)
         row_doc2.wait_for(state="visible", timeout=15000)
@@ -503,10 +543,11 @@ def run_journey_b_receptionist(browser, cfg):
         # 1) Daily clinician filter isolates Clinician 1 vs Clinician 2 rows
         clin_filter = page_sec.locator('[data-role="sr-schedule-clinician-filter"]')
         clin_filter.select_option(str(cfg["clinician_1"]))
-        assert row_doc1.is_visible(), "Clinician 1 row must stay visible when filtered to Clinician 1"
-        assert not row_doc2.is_visible(), "Clinician 2 row must hide when filtered to Clinician 1 (including 390px mobile)"
+        assert row_doc1.count() == 1 and row_doc1.is_visible(), "Clinician 1 row must stay visible when filtered to Clinician 1"
+        assert row_doc2.count() == 0, "Clinician 2 row must be excluded when filtered to Clinician 1"
         clin_filter.select_option("")
-        assert row_doc1.is_visible() and row_doc2.is_visible(), "clearing clinician filter must restore both rows"
+        row_doc1.wait_for(state="visible", timeout=10000)
+        row_doc2.wait_for(state="visible", timeout=10000)
 
         # Check 320px and 390px reception layout
         assert_no_horizontal_overflow(page_sec, "reception-390")
@@ -518,11 +559,12 @@ def run_journey_b_receptionist(browser, cfg):
         # 2) Required reason validation (blank reason rejected client-side without mutating DB)
         row_doc1.locator('[data-role="sr-noshow-open"]').click()
         ns_row = page_sec.locator(
-            f'tr[data-role="sr-row-noshow"][data-for-appointment="{cfg["sec_appt_doc1"]}"]'
+            f'tr[data-role="sr-row-noshow"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'
         )
         ns_row.wait_for(state="visible")
         ns_row.locator('[data-role="sr-noshow-reason"]').fill("   ")
         ns_row.locator('[data-role="sr-noshow-confirm"]').click()
+        assert ns_row.locator('[data-role="sr-noshow-reason"]').get_attribute("aria-invalid") == "true"
         assert (
             db(f"SELECT status FROM {T('cpms_appointments')} WHERE id={cfg['sec_appt_doc1']}") == "confirmed"
         ), "blank no-show reason must not mutate appointment status"

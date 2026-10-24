@@ -542,6 +542,19 @@ final class RestClinicContext
         return self::has_active_staff_membership_in_request( (int) get_current_user_id(), $request );
     }
 
+    private static function is_staff_role_key( string $role_key ): bool {
+        return in_array(
+            $role_key,
+            [
+                RolesAndCapabilities::ROLE_SECRETARY,
+                RolesAndCapabilities::ROLE_DOCTOR,
+                RolesAndCapabilities::ROLE_ACCOUNTANT,
+                RolesAndCapabilities::ROLE_MANAGER,
+            ],
+            true
+        ) || CustomRolePolicy::is_definable_role_key( $role_key );
+    }
+
     /**
      * Durable, request-scoped staff-membership probe (routing signal only; never
      * an authorization decision — see the contract above).
@@ -558,6 +571,15 @@ final class RestClinicContext
         }
         $clinic_id = is_scalar( $raw ) ? (int) $raw : 0;
         if ( $clinic_id <= 0 ) {
+            if ( preg_match( '#^/clinic/v1/staff/portal/finance(?:/|$)#', (string) $request->get_route() ) !== 1 ) {
+                return false;
+            }
+            foreach ( ( new MembershipRepository( App::db() ) )->active_for_user( $user_id ) as $membership ) {
+                if ( self::is_staff_role_key( (string) ( $membership['role_key'] ?? '' ) ) ) {
+                    return true;
+                }
+            }
+
             return false;
         }
 
@@ -565,18 +587,8 @@ final class RestClinicContext
         if ( $membership === null ) {
             return false;
         }
-        $role_key = (string) ( $membership['role_key'] ?? '' );
 
-        return in_array(
-            $role_key,
-            [
-                RolesAndCapabilities::ROLE_SECRETARY,
-                RolesAndCapabilities::ROLE_DOCTOR,
-                RolesAndCapabilities::ROLE_ACCOUNTANT,
-                RolesAndCapabilities::ROLE_MANAGER,
-            ],
-            true
-        ) || CustomRolePolicy::is_definable_role_key( $role_key );
+        return self::is_staff_role_key( (string) ( $membership['role_key'] ?? '' ) );
     }
 
     /**
