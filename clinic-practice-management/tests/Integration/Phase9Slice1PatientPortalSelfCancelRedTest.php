@@ -233,6 +233,28 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
 
         $row = $this->tableRowContaining($html, $fx['reference_code'], 'upcoming appointment row');
 
+        // Completion contract: the landing/dashboard and the reused real booking
+        // flow are present, and each appointment carries server-resolved details.
+        self::assertStringContainsString('data-role="dashboard-section"', $html);
+        self::assertStringContainsString('data-role="booking-section"', $html);
+        self::assertStringContainsString('class="cpms-public-booking', $html, 'Portal booking must reuse the real public Hold→Confirm surface.');
+        self::assertStringNotContainsString('به‌زودی فعال می‌شود', $html);
+        self::assertStringContainsString('data-role="appointment-details"', $row);
+        self::assertStringContainsString('Dr P9S1 r1', $row);
+        self::assertStringContainsString('Portal Patient r1', $row);
+        $clinicName = (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$fx['clinic_id']]
+        );
+        $locationName = (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d',
+            [$fx['location_id']]
+        );
+        self::assertNotSame('', $clinicName);
+        self::assertNotSame('', $locationName);
+        self::assertStringContainsString($clinicName, $row);
+        self::assertStringContainsString($locationName, $row);
+
         // ---- INTENDED RED (C1): no self-cancel action exists on live main. ----
         $actions = $this->cancelActionTags($html);
         self::assertCount(
@@ -425,10 +447,11 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
 
     /**
      * G2 — only the server-known `confirmed` status is cancellable from the portal.
-     * Any other upcoming status renders no cancel action (no client-side deadline
-     * or state guessing); the one confirmed row still renders exactly one action.
+     * Pending rows remain upcoming without an action; terminal states belong to
+     * history even when their scheduled date is today/future. No state is guessed
+     * client-side, and the one confirmed row still renders exactly one action.
      */
-    public function testPortalRendersNoSelfCancelActionForNonCancellableUpcomingStatuses(): void
+    public function testPortalSeparatesTerminalHistoryAndNonCancellableUpcomingStatuses(): void
     {
         $fx = $this->buildOwnedConfirmedUpcomingAppointmentFixture('g2');
         $this->assertFixtureMaterialized($fx);
@@ -436,7 +459,8 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
         $nonCancellable = [];
         // Distinct (clinician, date, time) per row — cpms_schedule_slots has UNIQUE u_slot.
-        // completed / no_show sit earlier TODAY (date >= today ⇒ still listed as upcoming).
+        // Terminal rows deliberately use today/future dates to prove status, not
+        // date alone, decides whether the portal presents them as history.
         foreach ([['pending', 6, '11:00:00'], ['rescheduled', 7, '11:20:00'], ['completed', 0, '00:05:00'], ['no_show', 0, '00:25:00']] as [$status, $daysAhead, $time]) {
             $date = $this->ymdDaysOffset($daysAhead);
             $slotId = $this->insertSlot($fx['clinic_id'], $fx['location_id'], $fx['clinician_id'], $date, $time, 1);
@@ -453,9 +477,13 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         foreach ($nonCancellable as $status => $reference) {
             $posRef = strpos($html, $reference);
             self::assertNotFalse($posRef, 'positive control: ' . $status . ' appointment is listed.');
-            self::assertLessThan($posHistory, $posRef, 'positive control: ' . $status . ' appointment (date >= today, not cancelled) is listed in the UPCOMING table.');
+            if ($status === 'pending') {
+                self::assertLessThan($posHistory, $posRef, 'A future pending appointment remains in the upcoming table.');
+            } else {
+                self::assertGreaterThan($posHistory, $posRef, 'A terminal appointment belongs to history regardless of its scheduled date.');
+            }
             $row = $this->tableRowContaining($html, $reference, $status . ' row');
-            self::assertCount(0, $this->cancelActionTags($row), 'GREEN G2: an upcoming «' . $status . '» appointment must NOT expose a self-cancel action (only confirmed is cancellable).');
+            self::assertCount(0, $this->cancelActionTags($row), 'GREEN G2: a non-confirmed «' . $status . '» appointment must NOT expose a self-cancel action.');
         }
         self::assertCount(0, $this->cancelActionTags($this->tableRowContaining($html, $fx['history_reference_code'], 'history row')), 'GREEN G2: history row exposes no action.');
 
@@ -734,6 +762,23 @@ final class Phase9Slice1PatientPortalSelfCancelRedTest extends WP_UnitTestCase
         self::assertSame('confirmed', (string) $byId[(int) $fx['appointment_id']]['status'], 'positive control: listMine() view status = confirmed.');
         self::assertGreaterThanOrEqual(gmdate('Y-m-d'), (string) $byId[(int) $fx['appointment_id']]['date'], 'positive control: listMine() view date is upcoming.');
         self::assertSame((string) $fx['reference_code'], (string) $byId[(int) $fx['appointment_id']]['reference_code'], 'positive control: listMine() view reference_code.');
+        $expectedClinician = (string) App::db()->fetchValue(
+            'SELECT full_name FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d',
+            [(int) $fx['clinician_id']]
+        );
+        $expectedPatient = App::db()->fetchRow(
+            'SELECT first_name, last_name FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [(int) $fx['patient_id']]
+        );
+        self::assertNotNull($expectedPatient);
+        self::assertSame($expectedClinician, (string) $byId[(int) $fx['appointment_id']]['clinician_name'], 'listMine resolves the clinician label.');
+        self::assertSame(
+            trim((string) $expectedPatient['first_name'] . ' ' . (string) $expectedPatient['last_name']),
+            (string) $byId[(int) $fx['appointment_id']]['patient_name'],
+            'listMine resolves the booked patient label.'
+        );
+        self::assertNotSame('', (string) $byId[(int) $fx['appointment_id']]['clinic_name']);
+        self::assertNotSame('', (string) $byId[(int) $fx['appointment_id']]['location_name']);
         self::assertArrayHasKey((int) $fx['history_appointment_id'], $byId, 'positive control: listMine() includes the cancelled history row.');
         self::assertSame('cancelled_by_patient', (string) $byId[(int) $fx['history_appointment_id']]['status'], 'positive control: history row status.');
     }

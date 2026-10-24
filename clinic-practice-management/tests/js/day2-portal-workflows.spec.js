@@ -951,11 +951,37 @@ async function testFinanceReconciliationVm() {
   assert.strictEqual(rowsWrap.hidden, true, 'Switching Location hides stale reconciliation rows');
 }
 
+function testPatientPortalCompletionTemplateContracts() {
+  var page = readPluginFile('src/Admin/PatientPortalPage.php');
+  var shell = readPluginFile('templates/patient-portal-shell.php');
+  var css = readPluginFile('assets/css/cpms-patient-portal.css');
+  var portalJs = readPluginFile('assets/js/cpms-patient-portal.js');
+
+  [
+    'dashboard-section',
+    'booking-section',
+    'PublicBookingShortcode::render',
+    'appointment-details'
+  ].forEach(function (marker) {
+    assert.ok(page.indexOf(marker) !== -1, 'Patient portal completion page includes ' + marker);
+  });
+  ['nav-dashboard', 'nav-booking', 'PublicBookingAssets::HANDLE', 'cpms_has_booking_body'].forEach(function (marker) {
+    assert.ok(shell.indexOf(marker) !== -1, 'Patient shell integrates booking asset/navigation marker ' + marker);
+  });
+  ['.cpms-pp-dashboard__stats', '.cpms-pp-dashboard__next', '.cpms-pp-appointment-details', '@media (max-width: 340px)'].forEach(function (marker) {
+    assert.ok(css.indexOf(marker) !== -1, 'Patient portal mobile CSS includes ' + marker);
+  });
+  assert.ok(portalJs.indexOf("['dashboard', 'booking', 'appointments'") !== -1, 'Section navigation recognizes dashboard and booking hashes');
+  assert.ok(portalJs.indexOf(": 'dashboard';") !== -1, 'Dashboard remains the default active navigation target');
+  assert.strictEqual(page.indexOf('رزرو آنلاین اینترنتی به‌زودی فعال می‌شود'), -1, 'Stale booking-soon placeholder is removed');
+}
+
 (async function main() {
   try {
     await testPatientPortalReschedule();
     await testPublicBookingOtpAndTripwires();
     testStaffTemplatesContracts();
+    testPatientPortalCompletionTemplateContracts();
     await testFinanceReconciliationVm();
     console.log('OK: all Day-2 portal workflow JS & template assertions passed');
   } catch (err) {

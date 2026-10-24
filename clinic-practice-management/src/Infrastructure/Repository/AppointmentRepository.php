@@ -186,6 +186,40 @@ final class AppointmentRepository
     }
 
     /**
+     * Patient Portal appointment list. Ownership and presentation metadata are
+     * resolved in one bounded query: an active Patient, a durable user link,
+     * and exact link/Patient/Appointment Clinic consistency are all mandatory.
+     * Names and Location address are display data only and never authority.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function list_for_patient_portal( int $wp_user_id, string $from_date, string $to_date ): array {
+        if ( $wp_user_id <= 0 ) {
+            return [];
+        }
+
+        return $this->db->fetchAll(
+            'SELECT a.*, c.name AS clinic_name, loc.name AS location_name,'
+            . ' loc.address AS location_address, d.full_name AS clinician_name,'
+            . ' p.first_name AS patient_first_name, p.last_name AS patient_last_name'
+            . ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' pul'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = pul.patient_id AND p.clinic_id = pul.clinic_id'
+            . " AND p.status = 'active'"
+            . ' INNER JOIN ' . $this->db->table( 'cpms_appointments' ) . ' a'
+            . ' ON a.patient_id = p.id AND a.clinic_id = p.clinic_id'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c ON c.id = a.clinic_id'
+            . ' LEFT JOIN ' . $this->db->table( 'cpms_locations' ) . ' loc'
+            . ' ON loc.id = a.location_id AND loc.clinic_id = a.clinic_id'
+            . ' LEFT JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' d'
+            . ' ON d.id = a.clinician_id AND d.clinic_id = a.clinic_id'
+            . ' WHERE pul.wp_user_id = %d AND a.slot_date BETWEEN %s AND %s'
+            . ' ORDER BY a.slot_date ASC, a.slot_time ASC, a.id ASC',
+            [ $wp_user_id, $from_date, $to_date ]
+        );
+    }
+
+    /**
      * نوبت‌های پزشک در یک روز (D9).
      *
      * @return list<array<string, mixed>>

@@ -1063,6 +1063,12 @@ final class Phase9Slice3PatientPortalShellRedTest extends WP_UnitTestCase
 			|| str_contains( $html, self::TITLE_MY_APPOINTMENTS ),
 			'Slice 3 S1: appointments section must remain available inside the shell.'
 		);
+		self::assertStringContainsString( 'data-role="dashboard-section"', $html, 'Completion: dashboard landing is inside the Classic shell.' );
+		self::assertStringContainsString( 'data-role="nav-dashboard"', $html, 'Completion: dashboard navigation is available.' );
+		self::assertStringContainsString( 'data-role="nav-booking"', $html, 'Completion: booking navigation is available.' );
+		self::assertStringContainsString( 'data-role="booking-section"', $html, 'Completion: trusted booking section is available.' );
+		self::assertStringContainsString( 'class="cpms-public-booking', $html, 'Completion: booking reuses the existing real surface.' );
+		self::assertStringContainsString( 'data-role="appointment-details"', $html, 'Completion: appointment details render in the shell.' );
 		self::assertTrue(
 			str_contains( $html, 'data-role="' . self::NOTIFICATIONS_SECTION_ROLE . '"' )
 			|| str_contains( $html, self::NOTIFICATIONS_SECTION_ROLE ),

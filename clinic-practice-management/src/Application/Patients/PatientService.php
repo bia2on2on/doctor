@@ -111,6 +111,17 @@ final class PatientService
     }
 
     /**
+     * Booking destinations are deliberately broader than clinical selectors:
+     * an explicitly linked dependent may be a booking subject without gaining
+     * profile or clinical-record access for the current user.
+     *
+     * @return list<array{id:int, name:string}>
+     */
+    public function booking_clinics( int $wp_user_id ): array {
+        return $this->patients->active_booking_clinics_for_user( $wp_user_id );
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function me( int $wp_user_id, ?int $link_id = null ): array {

@@ -14,6 +14,7 @@ use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
+use ClinicCore\Infrastructure\Repository\PatientRepository;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
@@ -232,8 +233,8 @@ final class MedicalFileService
         if ($isPatient) {
             // P-8 + Phase 9 Slice 7 — مجوز بر پایهٔ **عضویت پایدار**: فایل باید
             // patient_visible و بدون حذف باشد و patient_id آن به رکوردِ بیمارِ
-            // فعالی تعلق داشته باشد که با لینک پایدار به کاربرِ جاری متصل است
-            // (Clinicِ ردیف فایل = Clinicِ بیمار/لینک). هیچ سلکتور کلاینتی مجوز
+            // فعالی تعلق داشته باشد که با لینک بالینی identity-aware به کاربرِ
+            // جاری متصل است (Clinicِ فایل = Clinicِ بیمار/لینک). هیچ selector
             // نمی‌سازد و هیچ fallback اصلی/اولی وجود ندارد. رد = همان 404 امن،
             // همیشه پیش از خواندنِ دیسک.
             $membership = $this->patient_record_linked_to_user( $actorUserId, (int) $row['patient_id'], (int) $row['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- پارامتر قدیمیِ متدِ میزبان.
@@ -776,25 +777,17 @@ final class MedicalFileService
     }
 
     /**
-     * عضویت پایدار برای مجوز stream بیمار (Slice 7): کاربرِ جاری باید لینکِ
-     * فعالِ پایدار به همان رکورد بیمار داشته باشد و Clinicِ ردیفِ فایل با
-     * Clinicِ بیمار/لینک یکی باشد — پیش از هر خواندن از دیسک.
+     * مالکیت بالینی برای مجوز stream بیمار: کاربرِ جاری باید لینکِ فعال و
+     * Clinic-consistent به همان Patient داشته باشد و برای رکوردهای identity-backed
+     * نیز لینک صریح همان Organization Identity را حمل کند. لینک subject رزروِ
+     * فرد وابسته به‌تنهایی پیش از هر خواندن از دیسک رد می‌شود.
      */
     private function patient_record_linked_to_user( int $wp_user_id, int $patient_id, int $clinic_id ): bool {
-        global $wpdb;
-        $linked = $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT 1 FROM ' . $wpdb->prefix . 'cpms_patient_user_links l' .
-                ' JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
-                ' WHERE l.wp_user_id = %d AND p.id = %d AND l.clinic_id = %d AND p.status = %s LIMIT 1',
-                $wp_user_id,
-                $patient_id,
-                $clinic_id,
-                'active'
-            )
-        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-
-        return $linked !== null;
+        return ( new PatientRepository( App::db() ) )->user_has_clinical_access_to_patient(
+            $wp_user_id,
+            $patient_id,
+            $clinic_id
+        );
     }
 
     /**

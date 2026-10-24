@@ -1153,3 +1153,163 @@
 		text-align: center;
 	}
 }
+
+/* ---------- Completion pass: dashboard, booking and appointment detail ---------- */
+.cpms-pp-dashboard__head {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 12px;
+	flex-wrap: wrap;
+}
+
+.cpms-pp-dashboard__head h1,
+.cpms-pp-booking > h2 {
+	margin: 0 0 4px;
+	font-size: 1.3rem;
+}
+
+.cpms-pp-dashboard__stats {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 10px;
+	margin: 18px 0;
+}
+
+.cpms-pp-dashboard__stats > div {
+	min-inline-size: 0;
+	padding: 12px;
+	border: 1px solid var(--cpms-pp-border);
+	border-radius: var(--cpms-pp-radius-sm);
+	background: var(--cpms-pp-surface-alt);
+}
+
+.cpms-pp-dashboard__stats dt {
+	color: var(--cpms-pp-muted);
+	font-size: 0.78rem;
+	font-weight: 600;
+}
+
+.cpms-pp-dashboard__stats dd {
+	margin: 2px 0 0;
+	color: var(--cpms-pp-primary);
+	font-size: 1.35rem;
+	font-weight: 800;
+	font-variant-numeric: tabular-nums;
+}
+
+.cpms-pp-dashboard__next {
+	display: grid;
+	grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.5fr) auto;
+	align-items: center;
+	gap: 14px;
+	padding: 14px;
+	border: 1px solid #abd8d5;
+	border-radius: var(--cpms-pp-radius);
+	background: var(--cpms-pp-primary-soft);
+}
+
+.cpms-pp-dashboard__eyebrow {
+	color: var(--cpms-pp-primary);
+	font-size: 0.78rem;
+	font-weight: 700;
+}
+
+.cpms-pp-dashboard__when {
+	font-weight: 700;
+}
+
+.cpms-pp-dashboard__quick {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	margin-block-start: 14px;
+}
+
+.cpms-pp-dashboard__quick a {
+	min-block-size: var(--cpms-pp-touch);
+	display: inline-flex;
+	align-items: center;
+	padding: 8px 12px;
+	border: 1px solid var(--cpms-pp-border);
+	border-radius: var(--cpms-pp-radius-sm);
+	color: var(--cpms-pp-primary);
+	font-weight: 600;
+	text-decoration: none;
+}
+
+.cpms-pp-booking__privacy {
+	margin: 10px 0 14px;
+	padding: 10px 12px;
+	border-inline-start: 4px solid var(--cpms-pp-primary);
+	border-radius: var(--cpms-pp-radius-sm);
+	background: var(--cpms-pp-primary-soft);
+	color: var(--cpms-pp-text);
+	font-size: 0.9rem;
+}
+
+.cpms-pp-booking .cpms-public-booking {
+	margin-block: 16px 0;
+}
+
+.cpms-pp-appointment-details {
+	min-inline-size: 0;
+	margin: 0;
+	font-size: 0.82rem;
+	line-height: 1.55;
+}
+
+.cpms-pp-appointment-details > div {
+	display: grid;
+	grid-template-columns: max-content minmax(0, 1fr);
+	gap: 4px 7px;
+	min-inline-size: 0;
+}
+
+.cpms-pp-appointment-details dt {
+	color: var(--cpms-pp-muted);
+	font-weight: 600;
+}
+
+.cpms-pp-appointment-details dt::after {
+	content: ":";
+}
+
+.cpms-pp-appointment-details dd {
+	min-inline-size: 0;
+	margin: 0;
+	font-weight: 600;
+	overflow-wrap: anywhere;
+}
+
+@media (min-width: 720px) {
+	.cpms-pp-dashboard__stats {
+		grid-template-columns: repeat(4, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 719px) {
+	.cpms-pp-dashboard__next {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.cpms-pp-dashboard__next > .cpms-pp-btn {
+		inline-size: 100%;
+	}
+}
+
+@media (max-width: 340px) {
+	.cpms-pp-dashboard__stats {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.cpms-pp-dashboard__head > .cpms-pp-btn,
+	.cpms-pp-dashboard__quick a {
+		inline-size: 100%;
+		justify-content: center;
+	}
+
+	.cpms-pp-booking .cpms-public-booking {
+		padding-inline: 10px;
+	}
+}

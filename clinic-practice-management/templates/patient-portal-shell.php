@@ -20,6 +20,7 @@ defined( 'ABSPATH' ) || exit;
 use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Frontend\PatientOtpLogin;
 use ClinicCore\Frontend\PatientPortalShell;
+use ClinicCore\Frontend\PublicBookingAssets;
 
 // Fail-safe: if loaded outside the normal request lifecycle, exit quietly.
 if ( ! function_exists( 'wp_get_current_user' ) ) {
@@ -66,13 +67,25 @@ if ( $cpms_is_patient ) {
 }
 $cpms_body_html = (string) ob_get_clean();
 
-// Collect only the portal-scoped style/script tags (no theme wp_head/wp_footer).
+// Collect only the portal-scoped local assets (no theme wp_head/wp_footer).
+// The existing public-booking handles are added only when the authenticated
+// portal body actually rendered a trusted Clinic booking surface.
+$cpms_style_handles    = [ PatientPortalShell::CSS_HANDLE ];
+$cpms_script_handles   = [ PatientPortalShell::JS_HANDLE ];
+$cpms_has_booking_body = str_contains( $cpms_body_html, 'class="cpms-public-booking' );
+if ( $cpms_has_booking_body && ( wp_style_is( PublicBookingAssets::HANDLE, 'enqueued' ) || wp_style_is( PublicBookingAssets::HANDLE, 'queue' ) ) ) {
+	$cpms_style_handles[] = PublicBookingAssets::HANDLE;
+}
+if ( $cpms_has_booking_body && ( wp_script_is( PublicBookingAssets::HANDLE, 'enqueued' ) || wp_script_is( PublicBookingAssets::HANDLE, 'queue' ) ) ) {
+	$cpms_script_handles[] = PublicBookingAssets::HANDLE;
+}
+
 ob_start();
-wp_print_styles( [ PatientPortalShell::CSS_HANDLE ] );
+wp_print_styles( $cpms_style_handles );
 $cpms_styles_html = (string) ob_get_clean();
 
 ob_start();
-wp_print_scripts( [ PatientPortalShell::JS_HANDLE ] );
+wp_print_scripts( $cpms_script_handles );
 $cpms_scripts_html = (string) ob_get_clean();
 
 ?><!DOCTYPE html>
@@ -101,7 +114,7 @@ echo $cpms_styles_html;
 			<div class="cpms-patient-portal-shell__titles">
 				<p class="cpms-patient-portal-shell__product">پورتال بیمار</p>
 				<?php if ( $cpms_is_patient ) : ?>
-					<p class="cpms-patient-portal-shell__title" data-role="portal-header-title">نوبت‌های من</p>
+					<p class="cpms-patient-portal-shell__title" data-role="portal-header-title">داشبورد بیمار</p>
 				<?php else : ?>
 					<h1 class="cpms-patient-portal-shell__title">پورتال بیمار</h1>
 				<?php endif; ?>
@@ -122,7 +135,9 @@ echo $cpms_styles_html;
 	<?php if ( $cpms_is_patient ) : ?>
 	<nav class="cpms-patient-portal-shell__nav" role="navigation" aria-label="ناوبری پورتال بیمار" data-role="patient-nav">
 		<ul class="cpms-patient-portal-shell__nav-list">
-			<li><a class="is-active" href="<?php echo esc_url( $cpms_portal_url ); ?>#appointments" data-role="nav-appointments" aria-current="page">نوبت‌های من</a></li>
+			<li><a class="is-active" href="<?php echo esc_url( $cpms_portal_url ); ?>#dashboard" data-role="nav-dashboard" aria-current="page">داشبورد</a></li>
+			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#booking" data-role="nav-booking">رزرو نوبت</a></li>
+			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#appointments" data-role="nav-appointments">نوبت‌های من</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#profile" data-role="nav-profile">پروفایل</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#enrollment" data-role="nav-enrollment">ثبت پرونده</a></li>
 			<li><a href="<?php echo esc_url( $cpms_portal_url ); ?>#visits" data-role="nav-visits"><?php esc_html_e( 'ویزیت‌های من', 'cpms' ); ?></a></li>

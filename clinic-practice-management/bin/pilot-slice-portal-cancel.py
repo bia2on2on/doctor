@@ -384,8 +384,8 @@ def run_journey(browser, run):
         stage = "render"
         page.wait_for_selector("h1", timeout=15000)
         h1 = page.locator("h1").first.inner_text().strip()
-        if "نوبت" not in h1 or "من" not in h1:
-            raise RuntimeError(f"portal title not rendered (h1={h1[:40]!r} url={page.url})")
+        if h1 != "داشبورد بیمار":
+            raise RuntimeError(f"patient dashboard title not rendered (h1={h1[:40]!r} url={page.url})")
         cfg_nodes = page.locator("script.cpms-patient-portal__config")
         if cfg_nodes.count() != 1:
             raise RuntimeError(f"exactly one runtime config script expected, got {cfg_nodes.count()}")
@@ -431,9 +431,16 @@ def run_journey(browser, run):
         cfg_raw_scan = cfg_raw.replace("{patient_id}", "").replace("{id}", "")
         if "clinic_id" in cfg_raw_scan or "patient_id" in cfg_raw_scan or "user_id" in cfg_raw_scan or "recipient" in cfg_raw_scan:
             raise RuntimeError("config must not carry clinic_id/patient_id/user_id/recipient")
-        html = page.content()
-        if "data-clinic-id" in html or "data-patient-id" in html:
-            raise RuntimeError("portal markup must not publish clinic/patient ids")
+        # The reused public-booking surface legitimately carries its public Clinic
+        # selector and the server-authorized booking-subject ids. Keep the original
+        # authority-leak guard everywhere else in the portal DOM.
+        authority_leaks = page.evaluate(
+            """() => Array.from(document.querySelectorAll('[data-clinic-id], [data-patient-id]'))
+                .filter((node) => !node.closest('.cpms-public-booking'))
+                .map((node) => node.outerHTML.slice(0, 120))"""
+        )
+        if authority_leaks:
+            raise RuntimeError(f"non-booking portal markup must not publish clinic/patient ids: {authority_leaks[:2]}")
         buttons = page.locator(BTN)
         btn_ids = sorted(int(x) for x in page.evaluate(
             "() => Array.from(document.querySelectorAll('button[data-role=\"cancel-appointment\"]')).map(b => b.getAttribute('data-appointment-id'))"

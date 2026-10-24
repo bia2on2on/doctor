@@ -1391,10 +1391,12 @@ final class ClinicalService
             $this->auditAndThrow($wpUserId, 'visit', $visitId, (int) $visit['patient_id'], 'ویزیت به این بیمار تعلق ندارد');
         }
 
-        // فقط نسخه‌های نهایی‌شده/ابطال‌شده برای بیمار (Draft داده پزشکی نهایی نیست)
+        // فقط نسخهٔ دقیقاً نهایی‌شده برای بیمار؛ draft/voided تاریخچهٔ حرفه‌ای‌اند.
         $rxList = array_values(array_filter(
             $this->prescriptions->forPatient($patientId, true),
-            static fn (array $rx): bool => (int) $rx['visit_id'] === $visitId && (string) $rx['status'] !== 'draft'
+            static fn ( array $rx ): bool => (int) $rx['visit_id'] === $visitId // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+                && (string) $rx['status'] === 'finalized'
+                && ! empty( $rx['finalized_at'] )
         ));
 
         return [
@@ -1433,7 +1435,9 @@ final class ClinicalService
         $rows = array_values(
             array_filter(
                 $this->prescriptions->forPatient( $patient_id, true ),
-                static fn ( array $rx ): bool => (int) ( $rx['clinic_id'] ?? 0 ) === $clinic_id && (string) $rx['status'] !== 'draft'
+                static fn ( array $rx ): bool => (int) ( $rx['clinic_id'] ?? 0 ) === $clinic_id
+                    && (string) $rx['status'] === 'finalized'
+                    && ! empty( $rx['finalized_at'] )
             )
         );
 
