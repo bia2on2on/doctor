@@ -1074,7 +1074,7 @@ final class PatientPortalPage
             'محل مراجعه'  => trim( (string) ( $appointment['location_name'] ?? '' ) ),
             'نشانی'       => trim( (string) ( $appointment['location_address'] ?? '' ) ),
         ];
-        $html = '<dl class="cpms-pp-appointment-details" data-role="appointment-details">';
+        $html   = '<dl class="cpms-pp-appointment-details" data-role="appointment-details">';
         foreach ( $labels as $label => $value ) {
             if ( $value === '' ) {
                 continue;
