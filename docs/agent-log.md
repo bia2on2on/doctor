@@ -1963,3 +1963,5 @@ Receipt 18:42:08 UTC; live main/base aa6f3b5…, open Draft #266 head bd33dd1…
 
 ### Continuation follow-up (18:45 UTC)
 Previous exact-head WPCS annotations on PR #266 identify 107 added-line formatting/style findings; service/backup formatting revised but not locally linted (PHP missing). GitHub artifact API exposes only an outer Actions ZIP of 8,714,312 bytes for run 40121717533; `gh run download` failed on an inaccessible blob host. That outer value must not be used as the installable plugin ZIP size. Upload guidance no longer prescribes a universal 20M; the retained 16 MiB diagnostic floor is historical code, NOT an independently measured release size. N3 no-show reconciliation, N7 true concurrent collision retry and broad regression coverage are still outstanding; do not accept this PR as complete.
+
+Facility heading matrix assertions added for doctor practice, hospital, medical building and dental. Execution pending CI; no local PHP runner. Do not treat unexecuted assertions as verification.
