@@ -12,7 +12,12 @@
  *  - Authenticated pure-patient reschedule journey with concurrent slot
  *    collision recovery + Clinic `booking.max_future_days = 30` window check.
  *  - Receptionist daily clinician filter + authorized no-show + blank-reason
- *    validation + cross-Clinic refusal.
+ *    validation + cross-Clinic refusal. The three reception rows are ALREADY
+ *    DUE but still inside `queue.no_show_grace_minutes`, so the real
+ *    `visits.no_show` background job cannot sweep them before Journey B; the
+ *    shared clock policy fails closed when the Location-local day cannot host
+ *    that proof (it never borrows yesterday, seeds future rows, shortens the
+ *    grace window or disables the job).
  *  - Doctor Visit Workspace medical-history panel: own `doctor_private` note
  *    visible, colleague's `doctor_private` note hidden, `RX_READ` prescription
  *    visibility, and `DENY > GRANT` override persona.
@@ -29,11 +34,16 @@ require getenv('WP_HOME') . '/wp-load.php';
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingWindow;
+use ClinicCore\Domain\Slots\DurationResolver;
 use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Infrastructure\Repository\ClinicalNoteRepository;
 use ClinicCore\Infrastructure\Repository\FollowUpRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Tests\Support\Day2ReceptionFixtureClockPolicy;
+
+require_once __DIR__ . '/../Support/Day2ReceptionFixtureClockPolicy.php';
 
 global $wpdb;
 
@@ -80,6 +90,9 @@ function d2w_user(string $prefix, string $pass, string $wpRole): int
 
 $tz         = new \DateTimeZone('Asia/Tehran');
 $nowLocal   = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->setTimezone($tz);
+// One clock snapshot for every date- and time-sensitive row below: local
+// midnight or a date rollover during setup must not split day references.
+$nowUtc     = $nowLocal->setTimezone(new \DateTimeZone('UTC'));
 $today      = $nowLocal->format('Y-m-d');
 $tomorrow   = $nowLocal->modify('+1 day')->format('Y-m-d');
 $day2       = $nowLocal->modify('+2 days')->format('Y-m-d');
@@ -312,16 +325,80 @@ $foreignPt = d2w_insert(
     'foreign patient'
 );
 
-$secSlot1    = $seedSlot($clinicA, $locA1, $clinician1, $today, '08:20:00', 1, 1);
-$secSlot2    = $seedSlot($clinicA, $locA1, $clinician2, $today, '08:40:00', 1, 1);
-$foreignSlot = $seedSlot($clinicB, $locB1, $clinicianForeign, $today, '09:00:00', 1, 1);
+// Clock-safe reception rows — root cause of the time-dependent Journey B failure.
+//
+// The reception board resolves TODAY from the Location timezone and lists only
+// `status IN ('pending','confirmed')`, while the real `visits.no_show` job marks
+// a `confirmed` row `no_show` as soon as `slot + queue.no_show_grace_minutes`
+// has passed. The retired fixed 08:20/08:40/09:00 Tehran rows were therefore
+// already swept for any run after local 08:50 (08:30 for the second row): the
+// board returned no row, Journey B timed out on `wait_for`, and the foreign
+// Clinic B row was swept too, which would break the "foreign appointment not
+// mutated" assertion.
+//
+// The rows must instead stay ALREADY DUE (a no-show is a reception-desk
+// judgement, not a future cancellation) and INSIDE the grace window. The shared
+// clock policy fails closed when the local day cannot host that proof; it never
+// borrows yesterday, seeds future rows, shortens the grace window or disables
+// the background job.
+$graceA = (int) App::settingsFactory()->forClinic($clinicA)->get(
+    'queue.no_show_grace_minutes',
+    Settings::DEFAULTS['queue.no_show_grace_minutes']
+);
+$graceB = (int) App::settingsFactory()->forClinic($clinicB)->get(
+    'queue.no_show_grace_minutes',
+    Settings::DEFAULTS['queue.no_show_grace_minutes']
+);
+$receptionGrace = min($graceA, $graceB);
+$receptionTimes = Day2ReceptionFixtureClockPolicy::slotTimes($nowLocal, $today, $receptionGrace);
+if ($receptionTimes === null) {
+    // Total policy: this is a configuration defect (grace below the documented
+    // floor), not a wall-clock window.
+    d2w_fail(sprintf(
+        'reception grace window unusable: grace=%d min (minimum %d s) at local %s',
+        $receptionGrace,
+        Day2ReceptionFixtureClockPolicy::MINIMUM_GRACE_SECONDS,
+        $nowLocal->format('Y-m-d H:i:s')
+    ));
+}
+$secTime1    = $receptionTimes['doc1']->format('H:i:s');
+$secTime2    = $receptionTimes['doc2']->format('H:i:s');
+$foreignTime = $receptionTimes['foreign']->format('H:i:s');
+
+// Re-prove the invariant with the SAME production rule the background job uses
+// (`VisitService::processNoShows()`: Location-local slot instant + grace,
+// compared with now UTC). A mismatch must fail the fixture loudly instead of
+// surfacing later as a confusing browser timeout.
+foreach ([
+    ['doc1', $secTime1, $graceA],
+    ['doc2', $secTime2, $graceA],
+    ['foreign', $foreignTime, $graceB],
+] as [$receptionLabel, $receptionTime, $receptionRowGrace]) {
+    $receptionInstant = BookingWindow::slotUtcInstant($today, $receptionTime, $tz);
+    if ($receptionInstant === null) {
+        d2w_fail('reception row ' . $receptionLabel . ' has no unambiguous Location-local instant');
+    }
+    $graceRemaining = $receptionInstant
+        ->add(new \DateInterval('PT' . $receptionRowGrace . 'M'))
+        ->getTimestamp() - $nowUtc->getTimestamp();
+    if ($receptionInstant > $nowUtc) {
+        d2w_fail('reception row ' . $receptionLabel . ' must already be due');
+    }
+    if ($graceRemaining < Day2ReceptionFixtureClockPolicy::graceRemainderSeconds($receptionRowGrace * 60)) {
+        d2w_fail('reception row ' . $receptionLabel . ' has less than the documented grace remainder');
+    }
+}
+
+$secSlot1    = $seedSlot($clinicA, $locA1, $clinician1, $today, $secTime1, 1, 1);
+$secSlot2    = $seedSlot($clinicA, $locA1, $clinician2, $today, $secTime2, 1, 1);
+$foreignSlot = $seedSlot($clinicB, $locB1, $clinicianForeign, $today, $foreignTime, 1, 1);
 
 $secApptDoc1 = d2w_insert(
     $wpdb,
     'INSERT INTO ' . $db->table('cpms_appointments')
     . ' (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, wp_user_id, slot_date, slot_time, duration_min, slot_end_time, status, reason, is_walkin_express, confirmed_at, created_at, updated_at)'
     . ' VALUES (%d, %d, %s, %d, %d, %d, 0, %s, %s, 20, %s, %s, %s, 0, %s, %s, %s)',
-    [$clinicA, $locA1, 'AP-D2S1-' . $uniq, $secPt1, $clinician1, $secSlot1, $today, '08:20:00', '08:40:00', 'confirmed', 'چکاپ دوره‌ای', $now, $now, $now],
+    [$clinicA, $locA1, 'AP-D2S1-' . $uniq, $secPt1, $clinician1, $secSlot1, $today, $secTime1, DurationResolver::slotEndTime($secTime1, 20), 'confirmed', 'چکاپ دوره‌ای', $now, $now, $now],
     'sec appt doc1'
 );
 $secApptDoc2 = d2w_insert(
@@ -329,7 +406,7 @@ $secApptDoc2 = d2w_insert(
     'INSERT INTO ' . $db->table('cpms_appointments')
     . ' (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, wp_user_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at)'
     . ' VALUES (%d, %d, %s, %d, %d, %d, 0, %s, %s, 20, %s, %s, 0, %s, %s, %s)',
-    [$clinicA, $locA1, 'AP-D2S2-' . $uniq, $secPt2, $clinician2, $secSlot2, $today, '08:40:00', '09:00:00', 'confirmed', $now, $now, $now],
+    [$clinicA, $locA1, 'AP-D2S2-' . $uniq, $secPt2, $clinician2, $secSlot2, $today, $secTime2, DurationResolver::slotEndTime($secTime2, 20), 'confirmed', $now, $now, $now],
     'sec appt doc2'
 );
 $foreignApptId = d2w_insert(
@@ -337,7 +414,7 @@ $foreignApptId = d2w_insert(
     'INSERT INTO ' . $db->table('cpms_appointments')
     . ' (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, wp_user_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at)'
     . ' VALUES (%d, %d, %s, %d, %d, %d, 0, %s, %s, 20, %s, %s, 0, %s, %s, %s)',
-    [$clinicB, $locB1, 'AP-D2FB-' . $uniq, $foreignPt, $clinicianForeign, $foreignSlot, $today, '09:00:00', '09:20:00', 'confirmed', $now, $now, $now],
+    [$clinicB, $locB1, 'AP-D2FB-' . $uniq, $foreignPt, $clinicianForeign, $foreignSlot, $today, $foreignTime, DurationResolver::slotEndTime($foreignTime, 20), 'confirmed', $now, $now, $now],
     'foreign appt'
 );
 
@@ -619,6 +696,14 @@ $envPayload = [
     'DAY2_RESCHED_BEYOND_SLOT' => (string) $reschedBeyondWindow,
     'DAY2_SEC_LOGIN'           => $secLogin,
     'DAY2_SEC_USER_ID'         => (string) $secUserId,
+    'DAY2_SEC_SLOT_DOC1'       => $secTime1,
+    'DAY2_SEC_SLOT_DOC2'       => $secTime2,
+    'DAY2_SEC_SLOT_FOREIGN'    => $foreignTime,
+    'DAY2_MAX_GRACE_MINUTES'   => (string) $receptionGrace,
+    'DAY2_RECEPTION_GRACE_MINUTES' => (string) $receptionGrace,
+    'DAY2_SEC_REANCHOR_IDS'    => implode(',', [$secApptDoc1, $secApptDoc2, $foreignApptId]),
+    'DAY2_LOC_A1_TZ'           => 'Asia/Tehran',
+    'DAY2_LOC_B1_TZ'           => 'Asia/Tehran',
     'DAY2_SEC_APPT_DOC1'       => (string) $secApptDoc1,
     'DAY2_SEC_APPT_DOC2'       => (string) $secApptDoc2,
     'DAY2_FOREIGN_APPT'        => (string) $foreignApptId,
