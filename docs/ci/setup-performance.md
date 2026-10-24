@@ -61,19 +61,28 @@ each suite is preserved (the Responsive job still provisions chromium **and**
 firefox **and** webkit, because its Firefox/WebKit smoke step is part of its
 acceptance contract).
 
-### 2.1 apt — install against the indexes the job already has
+### 2.1 apt — bounded index refresh, bounded install, fail closed
 
-* `apt-get install` runs first, with `Acquire::Retries=3`,
+* One refresh, then one install, both with `Acquire::Retries=3`,
   `Acquire::http/https::Timeout=45`, `DPkg::Lock::Timeout=120`,
-  `Acquire::Languages=none`, `DEBIAN_FRONTEND=noninteractive`. No unconditional
-  `apt-get update`: the job's `setup-php` step refreshed the indexes it needs
-  seconds earlier in the same job, and the runner image ships populated
-  `/var/lib/apt/lists`.
-* Only if that install fails (stale index, superseded package version,
-  transient mirror error) does the action refresh the indexes **once** and retry
-  **once**, both inside the same bounded budget, then fail with an apt
-  annotation. There is no shell retry loop and no masking of a permanent
-  failure.
+  `Acquire::Languages=none` and `DEBIAN_FRONTEND=noninteractive`.
+* The refresh is wrapped in a **hard wall-clock cap** (default 240 s, input
+  `apt-update-cap-seconds`) executed as root around apt itself. Because
+  `setup-php` adds `ppa:ondrej/php` whenever a lane PHP version or extension
+  comes from it, this refresh is the step that waits on Launchpad; the cap turns
+  the observed multi-minute stalls into a bounded failure with an annotation.
+* There is no shell retry loop, and a failed install fails the step with the apt
+  tail — nothing is masked.
+
+**A variant that was tried on this branch and reverted, with the evidence:**
+skipping the refresh and installing against the indexes the job already had
+(`setup-php` refreshed them, the image ships `/var/lib/apt/lists`). On the real
+runner that install failed at fetch time in *every* lane —
+`E: Failed to fetch mirror+file:/etc/apt/apt-mirrors.txt/pool/main/p/php8.3/libapache2-mod-php8.3…`
+— so the refresh ran anyway and the job paid one extra failed attempt
+(run 40063885047/40063885049/40063885036 annotations). The hypothesis that the
+image's lists are fresh enough is therefore false on `ubuntu-latest`, and the
+install-first path was removed again.
 * Sources, pins and preferences are untouched, so apt resolves exactly the same
   candidates as before — which matters for the unversioned
   `libapache2-mod-php` / `php-*` metapackages.
@@ -105,8 +114,9 @@ acceptance contract).
   later release exists), so the pin freezes the browser revisions the suites
   were last proven on instead of drifting per release.
 * Cache: `~/.cache/ms-playwright`, exact key
-  `pw-browsers-v1-<os>-<arch>-<version>-<browser-set>`, no `restore-keys`, so a
-  cache can never cross versions or browser sets. Restore and save are explicit
+  `pw-browsers-v2-<os>-<arch>-<version>-<browser-set>`, no `restore-keys`, so a
+  cache can never cross versions or browser sets (v2 marks the switch to
+  explicit restore/save and the launch-verified dependency path). Restore and save are explicit
   steps, and the save runs only on a miss and only after the install/launch
   verification in the same run succeeded.
   Microsoft's CI documentation warns that restoring browsers can cost as much as

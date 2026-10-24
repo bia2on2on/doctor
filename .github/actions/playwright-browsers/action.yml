@@ -81,7 +81,7 @@ runs:
           echo "::error title=playwright-browsers::no browsers requested"
           exit 1
         fi
-        key="pw-browsers-v1-${PW_OS}-${PW_ARCH}-${PW_VERSION}-${normalised}"
+        key="pw-browsers-v2-${PW_OS}-${PW_ARCH}-${PW_VERSION}-${normalised}"
         echo "PW_CACHE_KEY=${key}" >> "$GITHUB_ENV"
         echo "normalised_browsers=${normalised}"
 
