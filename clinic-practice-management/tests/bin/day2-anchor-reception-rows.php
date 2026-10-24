@@ -189,6 +189,14 @@ foreach ($groups as $key => $group) {
         $slotEnd = DurationResolver::slotEndTime($slotTime, 20);
         $nowIso = $nowUtc->format('Y-m-d H:i:s');
 
+        // Per-appointment data for THIS id. The earlier `$row` variable holds the
+        // last appointment of the pre-pass, so reusing it silently compared a
+        // Clinic A row against Clinic B scope (READBACK_SCOPE_MISMATCH).
+        $current = $rows[$id] ?? null;
+        if ($current === null) {
+            d2r_fail($argv, 'APPOINTMENT_MISSING', 'id=' . $id);
+        }
+
         $slotInstant = BookingWindow::slotUtcInstant($slotDate, $slotTime, $group['timezone']);
         if ($slotInstant === null) {
             d2r_fail($argv, 'AMBIGUOUS_LOCAL_TIME', 'id=' . $id);
@@ -213,7 +221,7 @@ foreach ($groups as $key => $group) {
                 'UPDATE ' . $db->table('cpms_appointments')
                 . ' SET slot_date = %s, slot_time = %s, slot_end_time = %s, updated_at = %s'
                 . ' WHERE id = %d AND clinic_id = %d AND location_id = %d AND status = %s',
-                [$slotDate, $slotTime, $slotEnd, $nowIso, $id, $row['clinic_id'], $row['location_id'], 'confirmed']
+                [$slotDate, $slotTime, $slotEnd, $nowIso, $id, $current['clinic_id'], $current['location_id'], 'confirmed']
             );
         } catch (Throwable $e) {
             d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=appointment');
@@ -230,7 +238,7 @@ foreach ($groups as $key => $group) {
                     'UPDATE ' . $db->table('cpms_schedule_slots')
                     . ' SET slot_date = %s, slot_time = %s, updated_at = %s'
                     . ' WHERE id = %d AND clinic_id = %d AND location_id = %d',
-                    [$slotDate, $slotTime, $nowIso, $rows[$id]['slot_id'], $row['clinic_id'], $row['location_id']]
+                    [$slotDate, $slotTime, $nowIso, $rows[$id]['slot_id'], $current['clinic_id'], $current['location_id']]
                 );
             } catch (Throwable $e) {
                 d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=slot');
@@ -255,8 +263,8 @@ foreach ($groups as $key => $group) {
         $violation = Day2ReceptionFixtureClockPolicy::readbackViolation(
             [
                 'id' => $id,
-                'clinic_id' => (int) $row['clinic_id'],
-                'location_id' => (int) $row['location_id'],
+                'clinic_id' => (int) $current['clinic_id'],
+                'location_id' => (int) $current['location_id'],
                 'slot_date' => $slotDate,
                 'slot_time' => $slotTime,
                 'slot_end_time' => $slotEnd,
