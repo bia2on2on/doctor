@@ -350,11 +350,11 @@ final class SystemHealthService
     }
 
     /**
-     * Provisional HOST policy, NOT a measured release ZIP size. The run-bound
-     * outer Actions artifact is not the installable ZIP; until the actual inner
-     * ZIP is measured, require 32 MiB upload and 40 MiB POST (8 MiB of headroom
-     * for multipart/form data). This deliberately refuses the old 20M PASS.
-     * Hosts may need more when a future release exceeds this provisional floor.
+     * Conservative HOST policy, NOT the release ZIP size. The installable ZIP
+     * measured 10,302,900 bytes in the reviewed PR CI runs; the outer Actions
+     * artifact is a different archive. Require 32 MiB upload and 40 MiB POST
+     * (multipart headroom) for this policy. Future releases must be measured
+     * independently; they may exceed this floor.
      */
     public const MIN_UPLOAD_BYTES = 32 * 1024 * 1024;
     public const MIN_POST_BYTES   = 40 * 1024 * 1024;

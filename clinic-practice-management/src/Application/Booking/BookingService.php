@@ -2791,18 +2791,13 @@ final class BookingService
             . ' AND SUBSTRING(reference_code, %d) REGEXP %s',
             [$suffix_at, $prefix . '%', $suffix_at, '^[0-9]+$']
         );
-        // The database unique index, not these probes, is the final arbiter.
-        for ( $i = 1; $i <= 8; $i++ ) {
-            $candidate = $prefix . str_pad( (string) ( $max + $i ), 2, '0', STR_PAD_LEFT );
-            if ( (int) $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_appointments' ) . ' WHERE reference_code = %s',
-                [$candidate]
-            ) === 0 ) {
-                return $candidate;
-            }
+        // VARCHAR(24) leaves twelve digits after AP-YYYYMMDD-.
+        if ( $max >= 999999999999 ) {
+            throw BookingException::of( 'CLINIC_DUPLICATE_APPOINTMENT', 'شماره نوبت یکتا ایجاد نشد؛ دوباره تلاش کنید', 409 );
         }
-        for ( $i = 0; $i < 8; $i++ ) {
-            $candidate = $prefix . strtoupper( bin2hex( random_bytes( 5 ) ) );
+        // The database unique index, not these probes, is the final arbiter.
+        for ( $i = 1; $i <= 8 && $max + $i <= 999999999999; $i++ ) {
+            $candidate = $prefix . str_pad( (string) ( $max + $i ), 2, '0', STR_PAD_LEFT );
             if ( (int) $this->db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_appointments' ) . ' WHERE reference_code = %s',
                 [$candidate]

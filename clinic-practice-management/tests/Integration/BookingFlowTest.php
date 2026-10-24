@@ -231,6 +231,15 @@ final class BookingFlowTest extends WP_UnitTestCase
             (int) substr((string) $first['reference_code'], -2) + 1,
             (int) substr((string) $reference, -2)
         );
+        $third_id = App::db()->transactional(static function () use ($repo, $existing): int {
+            return $repo->create($existing);
+        });
+        $third_reference = (string) App::db()->fetchValue(
+            'SELECT reference_code FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$third_id]
+        );
+        self::assertMatchesRegularExpression('/^AP-[0-9]{8}-[0-9]+$/', $third_reference);
+        self::assertSame((int) substr((string) $reference, -2) + 1, (int) substr($third_reference, -2));
     }
 
     public function testReferenceSequenceAdvancesPastGapAndLegacySuffix(): void
