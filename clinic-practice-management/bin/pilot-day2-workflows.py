@@ -855,8 +855,8 @@ def run_journey_d_accountant(browser, cfg):
         assert "800000.00" in txt_a2 and cfg["pay_a2_pos"] in txt_a2
         assert cfg["pay_a1_cash"] not in txt_a2, "Loc A1 payment leaked after switching to Loc A2"
 
-        # Cross-Clinic denial check against Clinic B
-        foreign_fin_status = page_acc.evaluate(
+        # Cross-Clinic denial check against Clinic B (matches CustomRoleStaffPortalFinanceModuleTest: 400/403 with zero foreign data)
+        foreign_fin = page_acc.evaluate(
             """async ([clinicB, locB1]) => {
                 const cfgEl = document.getElementById('cpms-finance-board-config');
                 const c = JSON.parse(cfgEl.textContent);
@@ -877,14 +877,17 @@ def run_journey_d_accountant(browser, cfg):
                         'X-CPMS-Location-Id': String(locB1)
                     }
                 });
-                return r.status;
+                const txt = await r.text();
+                return { status: r.status, body: txt };
             }""",
             [cfg["clinic_b"], cfg["loc_b1"]],
         )
-        assert foreign_fin_status == 403, f"expected 403 on foreign Clinic B reconciliation, got {foreign_fin_status}"
+        foreign_fin_status = int(foreign_fin["status"])
+        assert foreign_fin_status in (400, 403), f"expected 400/403 refusal on foreign Clinic B reconciliation, got {foreign_fin_status}"
+        assert cfg["pay_b1_pos"] not in foreign_fin["body"] and "990000" not in foreign_fin["body"], "foreign Clinic B finance data leaked"
         ok(
             "day2-D-subscriber-accountant",
-            "Subscriber Accountant: scoped reconciliation + Location switch + cross-Clinic 403 + zero PHI + 390/320 layout",
+            "Subscriber Accountant: scoped reconciliation + Location switch + cross-Clinic refusal + zero PHI + 390/320 layout",
             f"acc_sub=1 loc_a1={cfg['loc_a1']} loc_a2={cfg['loc_a2']} foreign_clinic={foreign_fin_status} phi_leak=0",
         )
     finally:
