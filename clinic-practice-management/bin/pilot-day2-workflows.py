@@ -418,6 +418,29 @@ def run_journey_a_patient_reschedule(browser, cfg):
         page_pt.wait_for_selector(".cpms-patient-portal-shell", timeout=15000)
         assert "/wp-admin/" not in (page_pt.url or ""), "Patient Portal must not use wp-admin"
 
+        # Completion surface: real landing summary + embedded real booking flow.
+        page_pt.locator('[data-role="dashboard-section"]').wait_for(state="visible")
+        page_pt.locator('[data-role="booking-section"] .cpms-public-booking[data-state="bookable"]').wait_for(
+            state="visible"
+        )
+        assert page_pt.locator('[data-role="nav-dashboard"][aria-current="page"]').count() == 1
+        assert page_pt.locator('[data-role="nav-booking"]').count() == 1
+        assert page_pt.locator("html").get_attribute("dir") == "rtl"
+        page_pt.locator('[data-role="nav-booking"]').click()
+        page_pt.locator('[data-role="nav-booking"][aria-current="page"]').wait_for()
+        page_pt.locator('[data-role="nav-dashboard"]').click()
+        page_pt.locator('[data-role="nav-dashboard"][aria-current="page"]').wait_for()
+
+        appt_id = cfg["resched_appt"]
+        appt_row = page_pt.locator(
+            f'button[data-role="reschedule-appointment"][data-appointment-id="{appt_id}"]'
+        ).locator("xpath=ancestor::tr[1]")
+        appointment_detail = appt_row.locator('[data-role="appointment-details"]')
+        appointment_detail.wait_for(state="visible")
+        detail_text = appointment_detail.inner_text()
+        for label in ("بیمار", "پزشک", "مرکز درمانی", "محل مراجعه"):
+            assert label in detail_text, f"appointment detail missing {label}"
+
         # Verify 390px and 320px mobile layouts on Patient Portal
         assert_no_horizontal_overflow(page_pt, "patient-portal-390")
         page_pt.set_viewport_size({"width": 320, "height": 740})
@@ -525,8 +548,8 @@ def run_journey_a_patient_reschedule(browser, cfg):
         assert old_status == "rescheduled" and new_count == 1, "DB state after reschedule mismatch"
         ok(
             "day2-A2-reschedule-collision-recovery",
-            "Patient Portal: reschedule window + 409 collision recovery + clean reschedule + 390/320 layout",
-            f"old_appt={appt_id} old_status={old_status} new_confirmed={new_count} beyond_excluded=1",
+            "Patient Portal: dashboard + integrated booking + clear details + reschedule collision recovery + 390/320 layout",
+            f"old_appt={appt_id} old_status={old_status} new_confirmed={new_count} beyond_excluded=1 details=1 booking=1",
         )
     finally:
         ctx_pt.close()

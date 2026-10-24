@@ -618,8 +618,8 @@
 
 	/**
 	 * Anchor-based section nav (in-page, no SPA framework): toggle is-active + aria-current
-	 * between appointments/profile links. Purely presentational; server-side render owns
-	 * what is on the page.
+	 * between dashboard, booking, appointment, profile and clinical links. Purely
+	 * presentational; server-side render owns what is on the page.
 	 */
 	/** C5/C6: the server owns authorization. Selection and request generation are UI state only. */
 	function bindVisits(config) {
@@ -1242,7 +1242,8 @@
 		var navLinks = document.querySelectorAll('[data-role="patient-nav"] a');
 		function apply() {
 			var hash = (window.location.hash || '').replace(/^#/, '');
-			var target = (hash === 'profile' || hash === 'enrollment' || hash === 'visits' || hash === 'prescriptions' || hash === 'files') ? hash : 'appointments';
+			var sections = ['dashboard', 'booking', 'appointments', 'profile', 'enrollment', 'visits', 'prescriptions', 'files'];
+			var target = sections.indexOf(hash) !== -1 ? hash : 'dashboard';
 			Array.prototype.forEach.call(navLinks, function (a) {
 				var role = a.getAttribute('data-role');
 				var isActive = role === 'nav-' + target;

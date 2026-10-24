@@ -10,6 +10,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Frontend\PatientPortalShell;
+use ClinicCore\Frontend\PublicBookingShortcode;
 
 /**
  * «نوبت‌های من» — محتوای پورتال بیمار (ADR-0030 / Part 1 + Phase 9 Slices 1–3).
@@ -235,8 +236,10 @@ final class PatientPortalPage
 
         $past = [];
         foreach ((is_array($rows) ? $rows : []) as $row) {
-            if ((string) $row['date'] >= $today
-                && !in_array($row['status'], ['cancelled_by_patient', 'cancelled_by_staff'], true)) {
+            if (
+                (string) $row['date'] >= $today
+                && in_array( (string) $row['status'], [ 'pending', 'confirmed' ], true )
+            ) {
                 $upcoming[] = $row;
             } else {
                 $past[] = $row;
@@ -305,6 +308,9 @@ final class PatientPortalPage
             $login_mobile = '';
         }
 
+        $enrollment_options = self::enrollment_options( $user_id );
+        $booking_clinics    = self::booking_clinics( $user_id, $enrollment_options );
+
         // اصلاح بین‌فازی: «تماس با مطب» از Clinic Profileِ رسمی (cpms_clinics.phone)
         //ِ Clinicِ resolve‌شده از زمینهٔ قابل‌اعتمادِ پورتال (linked_recordsِ کاربر
         // جاری) خوانده می‌شود. رکوردهای معتبر باید دقیقاً یک Clinicِ متمایز را
@@ -330,8 +336,10 @@ final class PatientPortalPage
 
         $html = '<div class="wrap cpms-patient-portal" dir="rtl" style="max-width:860px">';
 
+        $html .= self::dashboard_section( $upcoming, $past, $inbox, $booking_clinics );
+        $html .= self::booking_section( $booking_clinics );
         $html .= '<section class="cpms-pp-section" data-role="appointments-section" id="appointments" aria-labelledby="cpms-pp-appointments-heading">';
-        $html .= '<h1 id="cpms-pp-appointments-heading">نوبت‌های من</h1>';
+        $html .= '<h2 id="cpms-pp-appointments-heading">نوبت‌های من</h2>';
         $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
         $html .= '<h2>نوبت‌های پیش‌رو</h2>';
         $html .= '<p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا جابه‌جا یا لغو کنید.</p>';
@@ -341,15 +349,15 @@ final class PatientPortalPage
         $html .= self::notifications_section( $inbox, $clinic_tz );
         $html .= '<h2>تاریخچه</h2>';
         $html .= self::table( $past, 'تاریخچه‌ای ثبت نشده است.', false );
-        $html .= '<div class="card" style="max-width:840px;padding:8px 16px;margin-top:16px"><p>برای رزرو یا تغییر نوبت، و لغو نوبت‌هایی که دکمهٔ لغو ندارند، با مطب در تماس باشید';
+        $html .= '<div class="card" style="max-width:840px;padding:8px 16px;margin-top:16px"><p>برای تغییر یا لغو نوبت‌هایی که دکمهٔ مربوط را ندارند، با مطب در تماس باشید';
 
         if ( $phone !== '' ) {
             $html .= ' (تلفن: <b dir="ltr">' . esc_html( $phone ) . '</b>)';
         }
 
-        $html .= '. رزرو آنلاین اینترنتی به‌زودی فعال می‌شود.</p></div>';
+        $html .= '. برای رزرو تازه از بخش «رزرو نوبت» همین پورتال استفاده کنید.</p></div>';
         $html .= '</section>';
-        $html .= self::enrollment_section( $user_id );
+        $html .= self::enrollment_section( $enrollment_options );
         $html .= self::profile_section( $profile_records, $profile_initial, $login_mobile );
         $html .= self::visits_section( $profile_records, $user_id );
         $html .= self::prescriptions_section( $profile_records, $user_id );
@@ -942,6 +950,142 @@ final class PatientPortalPage
     }
 
     /**
+     * Booking destinations come only from persisted active subject links or
+     * the existing server-authorized enrollment preview. Browser input never
+     * chooses or expands this list.
+     *
+     * @param array{state:string, clinics:list<array{id:int,name:string}>} $enrollment_options
+     * @return list<array{id:int,name:string}>
+     */
+    private static function booking_clinics( int $user_id, array $enrollment_options ): array {
+        $by_id = [];
+        try {
+            $linked = App::patientService()->booking_clinics( $user_id );
+        } catch ( \Throwable ) {
+            $linked = [];
+        }
+
+        foreach ( array_merge( $linked, (array) ( $enrollment_options['clinics'] ?? [] ) ) as $clinic ) {
+            if ( ! is_array( $clinic ) ) {
+                continue;
+            }
+            $id = (int) ( $clinic['id'] ?? 0 );
+            if ( $id <= 0 ) {
+                continue;
+            }
+            $by_id[ $id ] = [
+                'id'   => $id,
+                'name' => trim( (string) ( $clinic['name'] ?? '' ) ),
+            ];
+        }
+
+        $clinics = array_values( $by_id );
+        usort(
+            $clinics,
+            static function ( array $a, array $b ): int {
+                $by_name = strcmp( $a['name'], $b['name'] );
+
+                return 0 !== $by_name ? $by_name : ( $a['id'] <=> $b['id'] );
+            }
+        );
+
+        return $clinics;
+    }
+
+    /**
+     * Persian RTL landing summary using only already-authorized portal views.
+     *
+     * @param list<array<string,mixed>> $upcoming
+     * @param list<array<string,mixed>> $past
+     * @param array<string,mixed>       $inbox
+     * @param list<array{id:int,name:string}> $booking_clinics
+     */
+    private static function dashboard_section( array $upcoming, array $past, array $inbox, array $booking_clinics ): string {
+        $unread = max( 0, (int) ( $inbox['unread_count'] ?? 0 ) );
+        $next   = $upcoming[0] ?? null;
+
+        $html  = '<section class="cpms-pp-section cpms-pp-dashboard" data-role="dashboard-section" id="dashboard" aria-labelledby="cpms-pp-dashboard-heading">';
+        $html .= '<div class="cpms-pp-dashboard__head"><div><h1 id="cpms-pp-dashboard-heading">داشبورد بیمار</h1>';
+        $html .= '<p class="description">خلاصهٔ نوبت‌ها و دسترسی سریع به خدمات پورتال</p></div>';
+        $html .= '<a class="cpms-pp-btn cpms-pp-btn--primary" href="#booking">رزرو نوبت تازه</a></div>';
+        $html .= '<dl class="cpms-pp-dashboard__stats">';
+        $html .= '<div><dt>نوبت پیش‌رو</dt><dd>' . esc_html( (string) count( $upcoming ) ) . '</dd></div>';
+        $html .= '<div><dt>سوابق نوبت</dt><dd>' . esc_html( (string) count( $past ) ) . '</dd></div>';
+        $html .= '<div><dt>اعلان خوانده‌نشده</dt><dd>' . esc_html( (string) $unread ) . '</dd></div>';
+        $html .= '<div><dt>مرکز قابل رزرو</dt><dd>' . esc_html( (string) count( $booking_clinics ) ) . '</dd></div>';
+        $html .= '</dl>';
+
+        if ( is_array( $next ) ) {
+            $jalali = (string) ( $next['jalali'] ?? Jalali::formatYmd( (string) ( $next['date'] ?? '' ) ) );
+            $time   = (string) ( $next['time'] ?? '' );
+            $html  .= '<article class="cpms-pp-dashboard__next" data-role="next-appointment">';
+            $html  .= '<div><p class="cpms-pp-dashboard__eyebrow">نزدیک‌ترین نوبت</p>';
+            $html  .= '<p class="cpms-pp-dashboard__when"><span>' . esc_html( $jalali ) . '</span>، ساعت <span dir="ltr">' . esc_html( $time ) . '</span></p></div>';
+            $html  .= self::appointment_details( $next );
+            $html  .= '<a class="cpms-pp-btn cpms-pp-btn--ghost" href="#appointments">مدیریت نوبت</a>';
+            $html  .= '</article>';
+        } else {
+            $html .= '<div class="cpms-empty" data-role="dashboard-no-upcoming"><span class="cpms-empty-title">نوبت پیش‌رویی ندارید</span>';
+            $html .= '<span class="cpms-empty-desc">برای انتخاب پزشک، محل و زمان مراجعه از رزرو آنلاین استفاده کنید.</span></div>';
+        }
+
+        $html .= '<nav class="cpms-pp-dashboard__quick" aria-label="دسترسی سریع">';
+        $html .= '<a href="#appointments">نوبت‌ها</a><a href="#visits">ویزیت‌ها</a><a href="#prescriptions">نسخه‌ها</a><a href="#profile">پروفایل</a>';
+        $html .= '</nav></section>';
+
+        return $html;
+    }
+
+    /**
+     * Reuses the complete public-booking Hold→Confirm flow inside the trusted
+     * Classic portal; no duplicate form, mock state or new backend contract.
+     *
+     * @param list<array{id:int,name:string}> $clinics
+     */
+    private static function booking_section( array $clinics ): string {
+        $html  = '<section class="cpms-pp-section cpms-pp-booking" data-role="booking-section" id="booking" aria-labelledby="cpms-pp-booking-heading">';
+        $html .= '<h2 id="cpms-pp-booking-heading">رزرو نوبت</h2>';
+        $html .= '<p class="description">پزشک، محل مراجعه و زمان را انتخاب کنید. ظرفیت و قوانین رزرو در لحظه از سرور بررسی می‌شود.</p>';
+        $html .= '<p class="cpms-pp-booking__privacy">اگر فرد وابسته‌ای به‌طور صریح برای رزرو به حساب شما متصل است، می‌توانید او را انتخاب کنید؛ این انتخاب دسترسی به پروندهٔ بالینی او ایجاد نمی‌کند.</p>';
+
+        if ( $clinics === [] ) {
+            $html .= '<div class="cpms-empty" data-role="booking-empty-state"><span class="cpms-empty-title">مرکز قابل رزروی پیدا نشد</span>';
+            $html .= '<span class="cpms-empty-desc">ابتدا پروندهٔ مجاز خود را در بخش ثبت پرونده فعال کنید یا با مرکز درمانی تماس بگیرید.</span></div>';
+        } else {
+            foreach ( $clinics as $clinic ) {
+                $html .= PublicBookingShortcode::render( [ 'clinic_id' => (string) $clinic['id'] ] );
+            }
+        }
+
+        return $html . '</section>';
+    }
+
+    /**
+     * Clear, bounded appointment labels. Values are server-joined display data,
+     * escaped here, and never fed back as authorization selectors.
+     *
+     * @param array<string,mixed> $appointment
+     */
+    private static function appointment_details( array $appointment ): string {
+        $labels = [
+            'بیمار'       => trim( (string) ( $appointment['patient_name'] ?? '' ) ),
+            'پزشک'        => trim( (string) ( $appointment['clinician_name'] ?? '' ) ),
+            'مرکز درمانی' => trim( (string) ( $appointment['clinic_name'] ?? '' ) ),
+            'محل مراجعه'  => trim( (string) ( $appointment['location_name'] ?? '' ) ),
+            'نشانی'       => trim( (string) ( $appointment['location_address'] ?? '' ) ),
+        ];
+        $html = '<dl class="cpms-pp-appointment-details" data-role="appointment-details">';
+        foreach ( $labels as $label => $value ) {
+            if ( $value === '' ) {
+                continue;
+            }
+            $html .= '<div><dt>' . esc_html( $label ) . '</dt><dd>' . esc_html( $value ) . '</dd></div>';
+        }
+
+        return $html . '</dl>';
+    }
+
+    /**
      * Cross-Clinic first-enrollment surface (Classic Patient Portal).
      *
      * The option list is resolved server-side from the authenticated user's
@@ -949,16 +1093,18 @@ final class PatientPortalPage
      * here, no default Clinic is inferred, and a resolver failure degrades to a
      * safe "unavailable" notice with no clinic names or PHI.
      */
-    private static function enrollment_section( int $user_id ): string {
+    private static function enrollment_options( int $user_id ): array {
         try {
-            $options = App::patient_enrollment_options()->for_user( $user_id );
-        } catch ( \Throwable $exception ) {
-            $options = [
+            return App::patient_enrollment_options()->for_user( $user_id );
+        } catch ( \Throwable ) {
+            return [
                 'state'   => \ClinicCore\Application\Patients\PatientEnrollmentOptions::STATE_UNAVAILABLE,
                 'clinics' => [],
             ];
         }
+    }
 
+    private static function enrollment_section( array $options ): string {
         return PatientEnrollmentSection::render( $options );
     }
 
@@ -1121,7 +1267,7 @@ final class PatientPortalPage
         // `cpms-table-responsive` + `data-label`: الگوی موجود cpms-admin.css — در
         // viewport باریک (≤782px) هر ردیف کارت می‌شود؛ بدون overflow افقی.
         $html = '<table class="widefat striped cpms-table-responsive" style="max-width:840px"><thead><tr>'
-            . '<th>تاریخ</th><th>ساعت</th><th>وضعیت</th><th>کد رهگیری</th>'
+            . '<th>تاریخ</th><th>ساعت</th><th>جزئیات مراجعه</th><th>وضعیت</th><th>کد رهگیری</th>'
             . ( $with_actions ? '<th>عملیات</th>' : '' )
             . '</tr></thead><tbody>';
         foreach ($rows as $r) {
@@ -1131,6 +1277,7 @@ final class PatientPortalPage
             $html .= '<tr>'
                 . '<td data-label="تاریخ">' . esc_html( $jalali ) . '</td>'
                 . '<td data-label="ساعت"><span dir="ltr">' . esc_html( $time ) . '</span></td>'
+                . '<td data-label="جزئیات مراجعه">' . self::appointment_details( $r ) . '</td>'
                 . '<td data-label="وضعیت">' . esc_html( $statuses[ $status ] ?? $status ) . '</td>'
                 . '<td data-label="کد رهگیری"><span dir="ltr">' . esc_html( (string) $r['reference_code'] ) . '</span></td>';
             if ( $with_actions ) {

@@ -155,7 +155,9 @@ final class PrescriptionRepository
     }
 
     /**
-     * نسخه‌های بیمار — فیلتر `is_patient_visible` برای نمای بیمار (C7/FR-11.6).
+     * نسخه‌های بیمار — نمای patient-visible فقط lifecycle نهایی و دارای
+     * `finalized_at` را در خود SQL برمی‌گرداند (C7/FR-11.6). Draft و voided
+     * حتی با visibility قدیمیِ ۱، فقط در تاریخچهٔ حرفه‌ای باقی می‌مانند.
      *
      * @return list<array<string, mixed>>
      */
@@ -166,6 +168,12 @@ final class PrescriptionRepository
         if ($onlyPatientVisible !== null) {
             $where .= ' AND is_patient_visible = %d';
             $params[] = $onlyPatientVisible ? 1 : 0;
+        }
+        if ( true === $onlyPatientVisible ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameter is retained.
+            // Patient surfaces expose active prescriptions only. A voided row
+            // remains durable clinical history for staff, even when its legacy
+            // visibility flag is still set, and must never reach the patient.
+            $where .= " AND status = 'finalized' AND finalized_at IS NOT NULL";
         }
         $params[] = $limit;
 

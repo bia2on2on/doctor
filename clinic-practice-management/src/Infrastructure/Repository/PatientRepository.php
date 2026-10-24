@@ -92,9 +92,68 @@ final class PatientRepository
             ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
             ' ON c.id = l.clinic_id' .
             ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            $this->clinical_access_identity_predicate() .
             ' ORDER BY l.is_primary DESC, l.id ASC',
             [ $wp_user_id, 'active' ]
         );
+    }
+
+    /**
+     * Trusted booking destinations derived only from active, Clinic-consistent
+     * subject links. This intentionally does not apply clinical identity proof:
+     * an explicitly linked dependent may be booked while remaining absent from
+     * profile, visits, prescriptions and files selectors.
+     *
+     * @return list<array{id:int, name:string}>
+     */
+    public function active_booking_clinics_for_user( int $wp_user_id ): array {
+        if ( $wp_user_id <= 0 ) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT DISTINCT c.id, c.name'
+            . ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c ON c.id = l.clinic_id'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id'
+            . " WHERE l.wp_user_id = %d AND p.status = 'active'"
+            . " AND c.status = 'active' AND o.status = 'active'"
+            . ' ORDER BY c.name ASC, c.id ASC',
+            [ $wp_user_id ]
+        );
+
+        return array_map(
+            static fn ( array $row ): array => [
+                'id'   => (int) $row['id'],
+                'name' => (string) $row['name'],
+            ],
+            $rows
+        );
+    }
+
+    /**
+     * Exact identity-aware clinical ownership predicate for object-level reads
+     * such as protected file streaming. Booking-only dependent links fail here.
+     */
+    public function user_has_clinical_access_to_patient( int $wp_user_id, int $patient_id, int $clinic_id ): bool {
+        if ( $wp_user_id <= 0 || $patient_id <= 0 || $clinic_id <= 0 ) {
+            return false;
+        }
+
+        $value = $this->db->fetchValue(
+            'SELECT 1 FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c ON c.id = l.clinic_id'
+            . " WHERE l.wp_user_id = %d AND l.patient_id = %d AND l.clinic_id = %d AND p.status = 'active'"
+            . $this->clinical_access_identity_predicate()
+            . ' LIMIT 1',
+            [ $wp_user_id, $patient_id, $clinic_id ]
+        );
+
+        return null !== $value;
     }
 
     /**
@@ -111,6 +170,7 @@ final class PatientRepository
             ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
             ' ON c.id = l.clinic_id' .
             ' WHERE l.wp_user_id = %d AND p.status = %s' .
+            $this->clinical_access_identity_predicate() .
             ' ORDER BY l.is_primary DESC, l.id ASC LIMIT 2',
             [ $wp_user_id, 'active' ]
         );
@@ -127,7 +187,8 @@ final class PatientRepository
             ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id' .
             ' INNER JOIN ' . $this->db->table( 'cpms_clinics' ) . ' c' .
             ' ON c.id = l.clinic_id' .
-            ' WHERE l.id = %d AND l.wp_user_id = %d AND p.status = %s LIMIT 1',
+            ' WHERE l.id = %d AND l.wp_user_id = %d AND p.status = %s' .
+            $this->clinical_access_identity_predicate() . ' LIMIT 1',
             [ $link_id, $wp_user_id, 'active' ]
         );
     }
@@ -188,6 +249,24 @@ final class PatientRepository
         }
 
         return $this->db->update('cpms_patients', $data, ['id' => $id]);
+    }
+
+    /**
+     * Identity-bearing records require explicit Organization-level self proof.
+     * This keeps a Clinic booking-subject link useful for a dependent without
+     * silently turning it into profile or clinical-record access. Records that
+     * predate Organization identities (identity_id IS NULL) retain their
+     * explicit legacy clinical link for backwards compatibility.
+     */
+    private function clinical_access_identity_predicate(): string {
+        return ' AND (p.identity_id IS NULL OR EXISTS ('
+            . ' SELECT 1 FROM ' . $this->db->table( 'cpms_patient_identity_links' ) . ' pil'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patient_identities' ) . ' pi'
+            . ' ON pi.id = pil.identity_id AND pi.organization_id = pil.organization_id'
+            . ' WHERE pil.identity_id = p.identity_id'
+            . ' AND pil.wp_user_id = l.wp_user_id'
+            . ' AND pil.organization_id = c.organization_id'
+            . '))';
     }
 
     /**

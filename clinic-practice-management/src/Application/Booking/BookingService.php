@@ -1103,17 +1103,7 @@ final class BookingService
      */
     public function listMine(int $wpUserId, string $fromDate, string $toDate): array
     {
-        $patientIds = $this->patientIdsForUser($wpUserId);
-        if ($patientIds === []) {
-            return [];
-        }
-
-        $placeholders = implode(',', array_fill(0, count($patientIds), '%d'));
-        $rows = $this->db->fetchAll(
-            'SELECT * FROM ' . $this->db->table('cpms_appointments') .
-            " WHERE patient_id IN ({$placeholders}) AND slot_date BETWEEN %s AND %s ORDER BY slot_date, slot_time",
-            array_merge($patientIds, [$fromDate, $toDate])
-        );
+        $rows = $this->appointments->list_for_patient_portal( $wpUserId, $fromDate, $toDate ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameters are retained.
 
         return $this->mapAppointmentViews($rows);
     }
@@ -1329,11 +1319,6 @@ final class BookingService
         }
         $idem_clinic_id = (int) $scope_appt['clinic_id'];
 
-        $check = $this->idem->check( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
-        if ($check['is_replay']) {
-            return $this->replayOrInFlight( $check, $actor_user_id );
-        }
-
         // Authorize against the source Appointment before acquiring any tenant
         // lifecycle lock. The same checks are repeated after the locked row is read.
         if ( $actor === 'staff' ) {
@@ -1341,11 +1326,26 @@ final class BookingService
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
             }
             $this->assertAppointmentWithinExplicitScope( $scope_appt );
-        } elseif ( $actor === 'patient' && ! $this->userHasPatient( $actor_user_id, (int) $scope_appt['patient_id'] ) ) {
+        } elseif ( $actor === 'patient' && ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $scope_appt['patient_id'], (int) $scope_appt['clinic_id'] ) ) {
             throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
         }
 
+        // Non-locking lifecycle preflight avoids claiming idempotency state for
+        // a request that is already ineligible. The transaction repeats these
+        // checks under the canonical Organization -> Clinic locks before write.
+        if ( ! $this->clinic_organization_is_active( $idem_clinic_id ) ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
+        }
+        $this->assert_clinic_accepting_new_demand( $idem_clinic_id );
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_RESCHEDULE);
+
+        // Claim only after role, tenant/object ownership and lifecycle gates.
+        // A denied selector must not leave idempotency state behind, and a
+        // previously valid key must never replay after authority is revoked.
+        $check = $this->idem->check( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
+        if ( $check['is_replay'] ) {
+            return $this->replayOrInFlight( $check, $actor_user_id );
+        }
 
         try {
             [$old_appt, $new_appt_id, $new_slot] = $this->db->transactional(
@@ -1375,7 +1375,7 @@ final class BookingService
                     if ( $actor === 'staff' ) {
                         $this->assertAppointmentWithinExplicitScope( $appt );
                     }
-                    if ( $actor === 'patient' && ! $this->userHasPatient( $actor_user_id, (int) $appt['patient_id'] ) ) {
+                    if ( $actor === 'patient' && ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $appt['patient_id'], (int) $appt['clinic_id'] ) ) {
                         $this->audit(
                             'FORBIDDEN_ACCESS_ATTEMPT',
                             $actor_user_id,
@@ -1894,7 +1894,14 @@ final class BookingService
                 // شاخه بیمار (B4) مالکیت خودش را در ادامه اعمال می‌کند.
                 $this->assertAppointmentWithinExplicitScope($appt);
             }
-            if ($actor === 'patient' && !$this->userHasPatient($wpUserId, (int) $appt['patient_id'])) {
+            if (
+                $actor === 'patient'
+                && ! $this->user_has_active_patient_in_clinic(
+                    $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameter is retained.
+                    (int) $appt['patient_id'],
+                    (int) $appt['clinic_id']
+                )
+            ) {
                 // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
@@ -2720,43 +2727,37 @@ final class BookingService
         return mb_substr($clean, 0, 120);
     }
 
-    /**
-     * @return list<int>
-     */
-    private function patientIdsForUser(int $wpUserId): array
-    {
-        $rows = $this->db->fetchAll(
-            'SELECT patient_id FROM ' . $this->db->table('cpms_patient_user_links') .
-            ' WHERE wp_user_id = %d ORDER BY is_primary DESC, id ASC',
-            [$wpUserId]
-        );
+    private function user_has_active_patient_in_clinic( int $wp_user_id, int $patient_id, int $clinic_id ): bool {
+        if ( $wp_user_id <= 0 || $patient_id <= 0 || $clinic_id <= 0 ) {
+            return false;
+        }
 
-        return array_map(static fn (array $r): int => (int) $r['patient_id'], $rows);
-    }
-
-    private function userHasPatient(int $wpUserId, int $patientId): bool
-    {
         $v = $this->db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patient_user_links') .
-            ' WHERE wp_user_id = %d AND patient_id = %d',
-            [$wpUserId, $patientId]
+            'SELECT 1 FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . " WHERE l.wp_user_id = %d AND l.patient_id = %d AND l.clinic_id = %d AND p.status = 'active' LIMIT 1",
+            [ $wp_user_id, $patient_id, $clinic_id ]
         );
 
-        return (int) $v > 0;
+        return null !== $v;
     }
 
     private function findActiveByUserSlot(int $wpUserId, int $slotId): ?array
     {
-        $patientIds = $this->patientIdsForUser($wpUserId);
-        if ($patientIds === []) {
-            return null;
-        }
-        $placeholders = implode(',', array_fill(0, count($patientIds), '%d'));
+        $wp_user_id = (int) $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
+
+        $slot_id = (int) $slotId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
 
         return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_appointments') .
-            " WHERE slot_id = %d AND patient_id IN ({$placeholders}) AND status IN ('pending','confirmed') ORDER BY id DESC LIMIT 1",
-            array_merge([$slotId], $patientIds)
+            'SELECT a.* FROM ' . $this->db->table( 'cpms_appointments' ) . ' a'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' ON l.patient_id = a.patient_id AND l.clinic_id = a.clinic_id'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . " WHERE a.slot_id = %d AND l.wp_user_id = %d AND p.status = 'active'"
+            . " AND a.status IN ('pending','confirmed') ORDER BY a.id DESC LIMIT 1",
+            [ $slot_id, $wp_user_id ]
         );
     }
 
@@ -2891,7 +2892,7 @@ final class BookingService
     {
         $date = (string) $row['slot_date'];
 
-        return [
+        $view = [
             'id' => (int) $row['id'],
             // API Contract B2/B5: کلید پاسخ Confirm/Reschedule = appointment_id
             'appointment_id' => (int) $row['id'],
@@ -2905,6 +2906,21 @@ final class BookingService
             'reason' => $row['reason'] ?? null,
             'is_walkin_express' => (bool) ($row['is_walkin_express'] ?? 0),
         ];
+
+        if ( array_key_exists( 'clinic_name', $row ) ) {
+            // Bounded patient-facing display metadata. These labels are joined
+            // only by list_for_patient_portal() and are never authority. Keeping
+            // them conditional preserves the established B2/B5/staff projection.
+            $view['clinic_name']      = trim( (string) ( $row['clinic_name'] ?? '' ) );
+            $view['location_name']    = trim( (string) ( $row['location_name'] ?? '' ) );
+            $view['location_address'] = trim( (string) ( $row['location_address'] ?? '' ) );
+            $view['clinician_name']   = trim( (string) ( $row['clinician_name'] ?? '' ) );
+            $view['patient_name']     = trim(
+                (string) ( $row['patient_first_name'] ?? '' ) . ' ' . (string) ( $row['patient_last_name'] ?? '' )
+            );
+        }
+
+        return $view;
     }
 
     /**

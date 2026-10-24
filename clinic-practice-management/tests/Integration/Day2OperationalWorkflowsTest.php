@@ -97,7 +97,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $otherPtUser  = $this->makeUser('d2a_pt2', RolesAndCapabilities::ROLE_PATIENT);
         $patientA     = $this->insertPatient($clinicA, 'PA');
         $otherPatient = $this->insertPatient($clinicA, 'PB');
-        $this->linkPatient($clinicA, $patientA, $patientUser, '09121112233');
+        $patientLink  = $this->linkPatient($clinicA, $patientA, $patientUser, '09121112233');
         $this->linkPatient($clinicA, $otherPatient, $otherPtUser, '09124445566');
 
         $tomorrow   = $this->localDate(self::TZ, '+1 day');
@@ -115,9 +115,26 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         self::assertSame(403, $denied->get_status());
         self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($denied));
         self::assertGreaterThan(0, $this->auditCount('FORBIDDEN_ACCESS_ATTEMPT', $apptId));
+        $foreignCancel = $this->dispatch('POST', '/clinic/v1/appointments/' . $apptId . '/cancel');
+        self::assertSame(403, $foreignCancel->get_status(), 'Direct REST cancellation of another patient appointment must be denied.');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($foreignCancel));
 
-        // 2. Owning patient receives same-Location open slots excluding current slot, with zero authority/PHI keys.
+        // 2. Owning patient receives a bounded appointment projection with clear,
+        // server-resolved display details and same-Location reschedule choices.
         wp_set_current_user($patientUser);
+        $mine = $this->dispatch('GET', '/clinic/v1/appointments/mine', [
+            'from' => $tomorrow,
+            'to'   => $dayAfter,
+        ]);
+        self::assertSame(200, $mine->get_status());
+        $mineRows = $this->payload($mine);
+        self::assertCount(1, $mineRows);
+        self::assertSame($apptId, (int) $mineRows[0]['appointment_id']);
+        self::assertSame('D2A Clinic A', $mineRows[0]['clinic_name']);
+        self::assertSame('D2A Branch A', $mineRows[0]['location_name']);
+        self::assertSame('دکتر رضایی', $mineRows[0]['clinician_name']);
+        self::assertSame('بیمار آزمایشی PA', $mineRows[0]['patient_name']);
+
         $ok = $this->dispatch('GET', '/clinic/v1/appointments/' . $apptId . '/reschedule-options');
         self::assertSame(200, $ok->get_status());
         $data = $this->payload($ok);
@@ -138,6 +155,51 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         foreach (['clinic_id', 'location_id', 'patient_id', 'organization_id', 'mrn', 'mobile', 'national_id'] as $forbiddenKey) {
             self::assertStringNotContainsString('"' . $forbiddenKey . '"', $encoded);
         }
+
+        // A stale/malformed link is not authority: Clinic consistency and active
+        // Patient state are enforced identically by list, options and mutations.
+        self::assertSame(1, App::db()->update('cpms_patient_user_links', ['clinic_id' => $clinicF], ['id' => $patientLink]));
+        $mismatchedMine = $this->dispatch('GET', '/clinic/v1/appointments/mine', [
+            'from' => $tomorrow,
+            'to'   => $dayAfter,
+        ]);
+        self::assertSame(200, $mismatchedMine->get_status());
+        self::assertSame([], $this->payload($mismatchedMine), 'A Clinic-mismatched link must not list the appointment.');
+        $mismatchedOptions = $this->dispatch('GET', '/clinic/v1/appointments/' . $apptId . '/reschedule-options');
+        self::assertSame(403, $mismatchedOptions->get_status());
+        $mismatchedReschedule = $this->dispatch(
+            'POST',
+            '/clinic/v1/appointments/' . $apptId . '/reschedule',
+            [
+                'clinician_id' => $clinician,
+                'slot_id'      => $altSlotLocA,
+                'slot_date'    => $dayAfter,
+                'slot_time'    => '10:30:00',
+            ],
+            ['Idempotency-Key' => '123e4567-e89b-42d3-a456-4266141740a1']
+        );
+        self::assertSame(403, $mismatchedReschedule->get_status(), 'Malformed ownership must deny the direct REST mutation too.');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->errCode($mismatchedReschedule));
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_idempotency_keys') . ' WHERE `key` = %s',
+            ['123e4567-e89b-42d3-a456-4266141740a1']
+        ), 'A denied reschedule selector must not claim idempotency state.');
+        $mismatchedCancel = $this->dispatch('POST', '/clinic/v1/appointments/' . $apptId . '/cancel');
+        self::assertSame(403, $mismatchedCancel->get_status());
+        self::assertSame('confirmed', (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$apptId]
+        ));
+        self::assertSame(1, App::db()->update('cpms_patient_user_links', ['clinic_id' => $clinicA], ['id' => $patientLink]));
+
+        self::assertSame(1, App::db()->update('cpms_patients', ['status' => 'archived'], ['id' => $patientA]));
+        $archivedMine = $this->dispatch('GET', '/clinic/v1/appointments/mine', [
+            'from' => $tomorrow,
+            'to'   => $dayAfter,
+        ]);
+        self::assertSame([], $this->payload($archivedMine), 'An archived Patient must not retain portal appointment authority.');
+        self::assertSame(403, $this->dispatch('POST', '/clinic/v1/appointments/' . $apptId . '/cancel')->get_status());
+        self::assertSame(1, App::db()->update('cpms_patients', ['status' => 'active'], ['id' => $patientA]));
 
         // 3. Appointment with active Visit cannot load reschedule options (409 HAS_ACTIVE_VISIT).
         $this->insertLiveVisit($clinicA, $locA, $clinician, $patientA, $apptId, $tomorrow);
@@ -996,7 +1058,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         return (int) $wpdb->insert_id;
     }
 
-    private function linkPatient(int $clinicId, int $patientId, int $wpUserId, string $mobile): void
+    private function linkPatient(int $clinicId, int $patientId, int $wpUserId, string $mobile): int
     {
         App::db()->insert('cpms_patient_user_links', [
             'clinic_id'      => $clinicId,
@@ -1006,6 +1068,8 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
             'is_primary'     => 1,
             'linked_at'      => App::db()->nowUtcSql(),
         ]);
+
+        return App::db()->wpdb_last_insert_id();
     }
 
     /**

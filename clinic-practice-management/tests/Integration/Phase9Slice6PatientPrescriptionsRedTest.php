@@ -139,7 +139,23 @@ final class Phase9Slice6PatientPrescriptionsRedTest extends WP_UnitTestCase
             $rxNumbers,
             'is_patient_visible = 0 prescriptions must be excluded from patient responses.'
         );
+        self::assertNotContains(
+            $this->b['voided_rx']['prescription_number'],
+            $rxNumbers,
+            'Voided prescriptions are historical clinical corrections, not finalized patient-visible prescriptions.'
+        );
         self::assertStringNotContainsString('PRIVATE', (string) wp_json_encode($data));
+
+        // C6 visit detail reuses the same repository boundary and must not
+        // reintroduce a voided/hidden/draft row through its nested projection.
+        $visitResponse = $this->get('/visits/' . $this->b['visit'], ['link_id' => $this->b['link']]);
+        self::assertSame(200, $visitResponse->get_status());
+        $visitData = $visitResponse->get_data()['data'];
+        self::assertSame(
+            [$this->b['rx']['prescription_number']],
+            array_column($visitData['prescriptions'], 'prescription_number')
+        );
+        self::assertStringNotContainsString('PRIVATE', (string) wp_json_encode($visitData));
 
         $rxQueries = array_filter(
             $queries,
@@ -151,6 +167,16 @@ final class Phase9Slice6PatientPrescriptionsRedTest extends WP_UnitTestCase
                 '/is_patient_visible\s*=\s*(1|%d)/',
                 $sql,
                 'Visibility must remain a query-level predicate.'
+            );
+            self::assertMatchesRegularExpression(
+                "/status\s*=\s*('finalized'|%s)/",
+                $sql,
+                'Patient prescription lifecycle must be restricted to finalized rows in SQL, not post-filtered in PHP.'
+            );
+            self::assertMatchesRegularExpression(
+                '/finalized_at\s+IS\s+NOT\s+NULL/i',
+                $sql,
+                'A finalized patient prescription must carry its durable finalization timestamp.'
             );
         }
 
@@ -441,6 +467,35 @@ final class Phase9Slice6PatientPrescriptionsRedTest extends WP_UnitTestCase
             'created_at' => $now,
         ]);
         $record['hidden_rx'] = ['id' => $hiddenRxId, 'prescription_number' => $hiddenNumber];
+
+        // 4. Voided prescription: patient-visible flag may remain set for audit/history,
+        // but a voided clinical correction is never an active patient prescription.
+        $voidedNumber = 'RX-VOIDED-' . strtoupper(bin2hex(random_bytes(2))) . '-' . $name;
+        $voidedRxId = $this->insert('cpms_prescriptions', [
+            'clinic_id' => $clinic,
+            'location_id' => $location,
+            'prescription_number' => $voidedNumber,
+            'visit_id' => $visit,
+            'patient_id' => $patient,
+            'clinician_id' => $clinician,
+            'status' => 'voided',
+            'is_patient_visible' => 1,
+            'void_reason' => 'PRIVATE-VOID-REASON ' . $name,
+            'finalized_at' => $now,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->insert('cpms_prescription_items', [
+            'prescription_id' => $voidedRxId,
+            'generic_name' => 'PRIVATE-VOIDED-DRUG ' . $name,
+            'dose' => '1 tab',
+            'frequency' => 'daily',
+            'form' => 'tablet',
+            'route' => 'oral',
+            'sort_order' => 0,
+            'created_at' => $now,
+        ]);
+        $record['voided_rx'] = ['id' => $voidedRxId, 'prescription_number' => $voidedNumber];
 
         return $record;
     }

@@ -39,11 +39,11 @@
 
 | # | Method/Path | Body | توضیح |
 |---|---|---|---|
-| B1 | `POST /booking/hold` | `{clinician_id (الزامی), slot_date, slot_time, slot_id?, patient_id?}` | Hold (TTL 10 دقیقه). **Phase 8 Slice 3:** `patient_id` raw selector — linked-only (`patient_user_links` + trusted Clinic + active). `0` linked→`NULL` (new), `1`→auto-bind, `N>1` بدون `patient_id`→`422 CLINIC_PATIENT_SELECTION_REQUIRED` (pre-capacity), با `patient_id`→authorize vs linked active (`422 CLINIC_VALIDATION_FAILED` اگر unlinked/cross, `400` اگر inactive). Persist `Hold.patient_id` (FK RESTRICT). Response: `{hold_token, expires_at, slot:{...}}`. RateLimit: 10/hr. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_POLICY_VIOLATION`, `CLINIC_PATIENT_SELECTION_REQUIRED`, `CLINIC_VALIDATION_FAILED`. (GAP-1/G-3: 2026-09-05) |
+| B1 | `POST /booking/hold` | `{clinician_id (الزامی), slot_date, slot_time, slot_id?, patient_id?}` | Hold (TTL 10 دقیقه). **Phase 8 Slice 3:** `patient_id` raw selector — linked-only (`patient_user_links` + trusted Clinic + active). `0` linked→`NULL` (new), `1`→auto-bind, `N>1` بدون `patient_id`→`422 CLINIC_PATIENT_SELECTION_REQUIRED` (pre-capacity), با `patient_id`→authorize vs linked active (`422 CLINIC_VALIDATION_FAILED` اگر unlinked/cross, `400` اگر inactive). Persist `Hold.patient_id` (FK RESTRICT). انتخاب/تأیید subject وابسته هیچ `patient_identity_link` یا مجوز profile/clinical برای رزروکننده ایجاد نمی‌کند. Response: `{hold_token, expires_at, slot:{...}}`. RateLimit: 10/hr. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_POLICY_VIOLATION`, `CLINIC_PATIENT_SELECTION_REQUIRED`, `CLINIC_VALIDATION_FAILED`. (GAP-1/G-3: 2026-09-05) |
 | B2 | `POST /booking/confirm` | `{hold_token, reason?, first_name?, last_name?}` + `Idempotency-Key` (الزامی) | بازبینی نهایی Slot → Appointment `confirmed`. `Hold.patient_id` frozen إذا non-null (revalidates active/clinic/link, ignore names, immutability); إذا `NULL` historical→compat resolver: `0`→new (requires names, same-mobile collision→`400`), `1`→auto single, `N>1`→`422 CLINIC_PATIENT_SELECTION_REQUIRED` (never accept B2 `patient_id`). Response: `{reference_code, appointment_id, slot:{...jalali}, status}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_HOLD_EXPIRED`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_PATIENT_SELECTION_REQUIRED`. Replay = پاسخ Origin. (Phase 8 Slice 2: نام‌ها فقط برای بیمارِ «جدید» در hold.clinic_id الزامی می‌شوند — تصمیم سرور؛ بیمارِ موجود نام‌های ارسالی را نادیده می‌گیرد.) |
-| B3 | `GET /appointments/mine?from&to` | — | لیست نوبت‌های من (تاریخ/وضعیت) |
-| B4 | `POST /appointments/{id}/cancel` | `{reason?}` | در Policy (FR-4.9 — حداقل X ساعت قبل؛ Configurable). خطا: `CLINIC_POLICY_VIOLATION`, `CLINIC_INVALID_TRANSITION` |
-| B5 | `POST /appointments/{id}/reschedule` | `{slot_date, slot_time, clinician_id? (اختیاری — Default = پزشک فعلی نوبت)}` + `Idempotency-Key` (الزامی) | مسیر بیمار: در Policy (FR-4.10 — deadline + destination min-lead) + انتقال Hold. Response: `{appointment_id (جدید), reference_code, slot:{...}, previous_appointment_id}`. خطا: `CLINIC_SLOT_TAKEN`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3). Staff uses the same path — see D11b. |
+| B3 | `GET /appointments/mine?from&to` | — | فهرست نوبت‌های کاربر از روی پیوند پایدارِ Patient فعال، با الزام هم‌خوانی Clinic در link/Patient/Appointment. projection بیمار: `{id, appointment_id, reference_code, date, time, jalali, jalali_time, status, duration_min, reason, is_walkin_express, clinic_name, location_name, location_address, clinician_name, patient_name}`؛ نام‌ها/نشانی فقط دادهٔ نمایشیِ server-resolved هستند و هرگز authority نیستند. لینک ناسازگار یا Patient بایگانی‌شده هیچ ردیفی برنمی‌گرداند. |
+| B4 | `POST /appointments/{id}/cancel` | `{reason?}` | در Policy (FR-4.9 — حداقل X ساعت قبل؛ Configurable). مسیر بیمار فقط با نقش بیمار و پیوند persisted همان کاربر به Patient فعال با هم‌خوانی دقیق Clinicِ link/Patient/Appointment مجاز است؛ Administrator shortcut وجود ندارد. خطا: `CLINIC_PERMISSION_DENIED`, `CLINIC_POLICY_VIOLATION`, `CLINIC_INVALID_TRANSITION` |
+| B5 | `POST /appointments/{id}/reschedule` | `{slot_date, slot_time, clinician_id? (اختیاری — Default = پزشک فعلی نوبت)}` + `Idempotency-Key` (الزامی) | مسیر بیمار: همان مالکیت active/Clinic-consistent در B4 + Policy (FR-4.10 — deadline + destination min-lead) + انتقال Hold. authorization و lifecycle پیش از claim کلید idempotency بررسی می‌شود؛ درخواستِ غیرمجاز نه Appointment را تغییر می‌دهد و نه کلید را claim می‌کند. Response: `{appointment_id (جدید), reference_code, slot:{...}, previous_appointment_id}`. خطا: `CLINIC_PERMISSION_DENIED`, `CLINIC_SLOT_TAKEN`, `CLINIC_DUPLICATE_APPOINTMENT`, `CLINIC_POLICY_VIOLATION`. (GAP-1/G-3). Staff uses the same path — see D11b. |
 | B6 | `GET /booking/resume?hold_token` | — | ادامه رزرو بعد از قطعی (ER-03). Response: `{hold_token, status: active|converted, expires_at?, slot?}`. خطا: `CLINIC_HOLD_EXPIRED` |
 
 ## 3. Patient (Authenticated: patient)
@@ -66,14 +66,14 @@
 > window. Repeated clicks are disabled in-flight; C0a remains the race-safe,
 > duplicate-rejecting authority. Preview is read-only and performs no mutation.
 
-| C0 | `GET /patient/my-records` | انتخاب‌گر پرونده‌های خود: در `data` فقط آرایه‌ای از `{link_id, clinic_id, clinic_name, patient_id, patient_display_name, mrn, is_primary}` برای پیوند پایدارِ کاربرِ احرازشده با Patient فعال و Clinicِ هم‌خوان برمی‌گردد؛ هیچ فیلد پروفایل/PHI دیگری ندارد. |
+| C0 | `GET /patient/my-records` | انتخاب‌گر پرونده‌های خود: در `data` فقط آرایه‌ای از `{link_id, clinic_id, clinic_name, patient_id, patient_display_name, mrn, is_primary}` برای پیوند پایدارِ کاربرِ احرازشده با Patient فعال و Clinicِ هم‌خوان برمی‌گردد؛ هیچ فیلد پروفایل/PHI دیگری ندارد. برای Patient دارای Organization Identity، لینک صریح همان کاربر به همان Identity و Organization نیز الزامی است؛ بنابراین لینکِ subject برای رزرو فرد وابسته به‌تنهایی دسترسی profile/clinical نمی‌سازد. فقط رکوردهای legacy با `identity_id IS NULL` پیوند بالینی صریح قدیمی را حفظ می‌کنند. |
 | C1 | `GET /patient/me?link_id?` | پروفایل خود (فیلدهای مجاز). `link_id` فقط selector است؛ `0` پیوند فعال → `404 CLINIC_NOT_FOUND`، `1` → رفتار خودکار سازگار، `N>1` بدون selector → `422 CLINIC_SELECTION_REQUIRED` (بدون fallback primary/اولین). selector خارجی/غیرفعال/ناموجود همگی `404 CLINIC_NOT_FOUND` غیرقابل‌شمارش‌اند. |
 | C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. |
-| C3 | `POST /patients/{patient_id}/files` | آپلود (multipart) — Validation: MIME/Extension/Size |
-| C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز |
+| C3 | `POST /patients/{patient_id}/files` | آپلود (multipart) — Validation: MIME/Extension/Size؛ شاخهٔ بیمار همان selector و مالکیت identity-aware در C0/C1 را اعمال می‌کند. |
+| C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز؛ `patient_id` فقط selector است و لینکِ booking-only فرد وابسته مجوز فهرست یا stream بالینی نیست. |
 | C5 | `GET /visits?from&to&link_id?` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |
 | C6 | `GET /visits/{id}?link_id?` | جزئیات ویزیت (نماهای مجاز: notes patient_visible, prescription, recommendations, follow-ups) |
-| C7 | `GET /prescriptions?link_id?` | نسخه‌های من (مجاز) — **فقط فیلدهای patient_visible و غیر-draft** |
+| C7 | `GET /prescriptions?link_id?` | نسخه‌های من (مجاز) — فقط `is_patient_visible = 1` و lifecycle دقیق `status = finalized` با `finalized_at IS NOT NULL` در خود query. Draft، hidden و voided (حتی اگر visibility قدیمیِ ۱ داشته باشند) هرگز در پاسخ بیمار نیستند. |
 | C8 | `GET /invoices` | فقط اگر `patient.profile_invoices_visible=true` |
 
 ## 4. Secretary (Authenticated: `clinic_secretary` + Capabilities)
@@ -185,7 +185,7 @@ Anything else fails closed with **409 `CLINIC_RECEIPT_NOT_ELIGIBLE`** and a boun
 | E14 | `POST /visits/{id}/complete` | `cpms_consult_complete` | Validation → `consultation_completed` (یک‌بار) |
 | E15 | `POST /visits/{id}/reopen` | `cpms_consult_reopen` | Correction (مجوز بالا) `{reason}` |
 | E16 | `POST /files` | `cpms_file_upload` | آپلود (patient_id/visit_id) |
-| E17 | `GET /files/{id}/stream` | `cpms_file_read` + Data-Access | Stream مجاز (Audit برای private) |
+| E17 | `GET /files/{id}/stream` | `cpms_file_read` + Data-Access | Stream مجاز (Audit برای private). شاخهٔ بیمار پیش از خواندن دیسک، active/Clinic-consistent link و برای رکورد identity-backed همان Organization Identity link را بررسی می‌کند؛ booking-only dependent با 404 امن + Audit رد می‌شود. |
 | E18 | `GET /search?q=&type=patient|note|rx&from&to` | `cpms_search` | جستجوی جامع Role-Aware |
 
 ## 6. Handwriting (Doctor)

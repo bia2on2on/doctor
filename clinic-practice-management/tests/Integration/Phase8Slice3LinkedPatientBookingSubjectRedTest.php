@@ -801,6 +801,162 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
     }
 
     // =================================================================
+    // DEPENDENT PRIVACY — booking relationship is not clinical self access
+    // =================================================================
+
+    public function testDependentCanBeBookedWithoutAutomaticClinicalAccess(): void
+    {
+        $this->buildTwoClinicFixture();
+        $now = App::db()->nowUtcSql();
+
+        $ownMobile = $this->mobileFor('dependent-own');
+        $depMobile = $this->mobileFor('dependent-child');
+        $own = $this->insertPatient($this->clinicA, $ownMobile, 'Caregiver', 'Self');
+        $dependent = $this->insertPatient($this->clinicA, $depMobile, 'Dependent', 'Child');
+        $caregiver = $this->createPatientUserWithLinks($this->clinicA, [
+            ['id' => $own, 'mobile' => $ownMobile, 'primary' => 1],
+        ]);
+        $dependentLink = $this->insertLink($this->clinicA, $dependent, $caregiver, $depMobile, 0);
+
+        // The dependent owns a distinct Organization identity. The caregiver has
+        // a Clinic booking-subject link only, never an identity/self link.
+        $identity = $this->insertRow('cpms_patient_identities', [
+            'organization_id' => $this->orgA,
+            'internal_ref' => 'PID-DEP-' . strtoupper(bin2hex(random_bytes(4))),
+            'normalized_mobile' => $depMobile,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['%d', '%s', '%s', '%s', '%s'], 'dependent identity');
+        self::assertSame(1, App::db()->update('cpms_patients', ['identity_id' => $identity], ['id' => $dependent]));
+        $dependentUser = (int) wp_create_user(
+            'p8s3_dependent_' . uniqid('', false),
+            'pass-not-used-123',
+            uniqid('p8s3_dependent_', true) . '@test.local'
+        );
+        self::assertGreaterThan(0, $dependentUser);
+        $this->setRole($dependentUser, 'cpms_patient');
+        $this->insertRow('cpms_patient_identity_links', [
+            'organization_id' => $this->orgA,
+            'identity_id' => $identity,
+            'wp_user_id' => $dependentUser,
+            'mobile_at_link' => $depMobile,
+            'is_primary' => 1,
+            'linked_at' => $now,
+        ], ['%d', '%d', '%d', '%s', '%d', '%s'], 'dependent identity owner link');
+        $dependentFile = $this->insertRow('cpms_medical_attachments', [
+            'clinic_id' => $this->clinicA,
+            'patient_id' => $dependent,
+            'category' => 'document',
+            'original_filename' => 'dependent-private-boundary.pdf',
+            'stored_filename' => 'dependent-' . bin2hex(random_bytes(8)) . '.pdf',
+            'mime_type' => 'application/pdf',
+            'file_size' => 8,
+            'storage_path' => 'not-readable-before-authorization.pdf',
+            'visibility' => 'patient_visible',
+            'uploaded_by_wp_user_id' => $dependentUser,
+            'created_at' => $now,
+        ], ['%d', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s', '%d', '%s'], 'dependent file');
+
+        wp_set_current_user($caregiver);
+        $records = App::patientService()->linked_records($caregiver);
+        self::assertSame([$own], array_column($records, 'patient_id'), 'Booking-only dependent must not enter profile/clinical selectors.');
+        self::assertSame(
+            [$this->clinicA],
+            array_column(App::patientService()->booking_clinics($caregiver), 'id'),
+            'The active linked Clinic remains an authorized booking destination.'
+        );
+
+        $recordResponse = $this->restGet(self::NS . '/patient/my-records', [], $caregiver, true);
+        self::assertSame(200, $recordResponse->get_status());
+        self::assertSame([$own], array_column((array) ($recordResponse->get_data()['data'] ?? []), 'patient_id'));
+        foreach (['/patient/me', '/visits', '/prescriptions', '/patients/' . $dependent . '/files'] as $path) {
+            $denied = $this->restGet(self::NS . $path, ['link_id' => $dependentLink], $caregiver, true);
+            $this->assertClinicError($denied, 'CLINIC_NOT_FOUND', 404, 'Dependent clinical selector must fail closed: ' . $path);
+        }
+        $streamDenied = $this->restGet(self::NS . '/files/' . $dependentFile . '/stream', [], $caregiver, true);
+        $this->assertClinicError($streamDenied, 'CLINIC_NOT_FOUND', 404, 'Direct file stream must enforce identity-backed clinical ownership before disk read.');
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') .
+            ' WHERE action = %s AND resource_type = %s AND resource_id = %d AND actor_wp_user_id = %d',
+            ['FORBIDDEN_ACCESS_ATTEMPT', 'file', $dependentFile, $caregiver]
+        ), 'Denied dependent stream is audited as an object-level access attempt.');
+
+        // WordPress Administrator is not a patient authority shortcut.
+        $admin = (int) wp_create_user(
+            'p8s3_admin_' . uniqid('', false),
+            'pass-not-used-123',
+            uniqid('p8s3_admin_', true) . '@test.local'
+        );
+        self::assertGreaterThan(0, $admin);
+        $this->setRole($admin, 'administrator');
+        foreach (['/appointments/mine', '/prescriptions'] as $path) {
+            $adminDenied = $this->restGet(self::NS . $path, ['link_id' => $dependentLink], $admin, true);
+            $this->assertClinicError($adminDenied, 'CLINIC_PERMISSION_DENIED', 403, 'Administrator must not bypass patient REST role: ' . $path);
+        }
+
+        // Existing public-booking chooser still offers both explicitly linked
+        // booking subjects; no patient is inferred from mobile or request data.
+        $surface = $this->renderSurface($this->clinicA);
+        self::assertStringContainsString('Caregiver Self', $surface);
+        self::assertStringContainsString('Dependent Child', $surface);
+        self::assertSame(2, substr_count($surface, 'data-role="patient-option"'));
+
+        $slot = $this->seedSlot(
+            $this->clinicA,
+            $this->locationA,
+            $this->clinicianA,
+            $this->ymdDaysAhead(5),
+            '16:20:00',
+            1
+        );
+        $hold = $this->restPost(self::NS . self::HOLD_PATH, [
+            'clinician_id' => $this->clinicianA,
+            'slot_date' => $slot['date'],
+            'slot_time' => $slot['time'],
+            'slot_id' => $slot['slot_id'],
+            'patient_id' => $dependent,
+        ], asUserId: $caregiver, withNonce: true);
+        self::assertSame(200, $hold->get_status(), (string) wp_json_encode($hold->get_data()));
+        $token = (string) ($hold->get_data()['data']['hold_token'] ?? '');
+        self::assertNotSame('', $token);
+        $confirm = $this->restPost(self::NS . self::CONFIRM_PATH, [
+            'hold_token' => $token,
+        ], asUserId: $caregiver, withNonce: true, idempotencyKey: $this->uuid());
+        self::assertSame(200, $confirm->get_status(), (string) wp_json_encode($confirm->get_data()));
+        $appointmentId = (int) ($confirm->get_data()['data']['appointment_id'] ?? 0);
+        self::assertGreaterThan(0, $appointmentId);
+        self::assertSame($dependent, (int) App::db()->fetchValue(
+            'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$appointmentId]
+        ));
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_identity_links') .
+            ' WHERE identity_id = %d AND wp_user_id = %d',
+            [$identity, $caregiver]
+        ), 'Hold/confirm must never auto-create dependent Organization identity access.');
+
+        $mine = $this->restGet(self::NS . '/appointments/mine', [
+            'from' => $slot['date'],
+            'to' => $slot['date'],
+        ], $caregiver, true);
+        self::assertSame(200, $mine->get_status());
+        self::assertSame($appointmentId, (int) ($mine->get_data()['data'][0]['appointment_id'] ?? 0));
+        self::assertSame('Dependent Child', (string) ($mine->get_data()['data'][0]['patient_name'] ?? ''));
+
+        // Re-check after booking: the clinical selector remains absent.
+        self::assertSame([$own], array_column(App::patientService()->linked_records($caregiver), 'patient_id'));
+
+        // Dashboard booking destinations respect both Clinic and Organization
+        // lifecycle gates; historical appointments remain durable elsewhere.
+        self::assertSame(1, App::db()->update('cpms_clinics', ['status' => 'suspended'], ['id' => $this->clinicA]));
+        self::assertSame([], App::patientService()->booking_clinics($caregiver));
+        self::assertSame(1, App::db()->update('cpms_clinics', ['status' => 'active'], ['id' => $this->clinicA]));
+        self::assertSame(1, App::db()->update('cpms_organizations', ['status' => 'suspended'], ['id' => $this->orgA]));
+        self::assertSame([], App::patientService()->booking_clinics($caregiver));
+        self::assertSame(1, App::db()->update('cpms_organizations', ['status' => 'active'], ['id' => $this->orgA]));
+    }
+
+    // =================================================================
     // T11 ANONYMOUS PRIVACY
     // =================================================================
 
@@ -1253,6 +1409,21 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         if ($idempotencyKey !== null) {
             $request->set_header('Idempotency-Key', $idempotencyKey);
         }
+        return rest_do_request($request);
+    }
+
+    /** @param array<string, mixed> $params */
+    private function restGet(string $route, array $params, int $asUserId, bool $withNonce): WP_REST_Response
+    {
+        wp_set_current_user($asUserId);
+        $request = new WP_REST_Request('GET', $route);
+        foreach ($params as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        if ($withNonce) {
+            $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        }
+
         return rest_do_request($request);
     }
 
