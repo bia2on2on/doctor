@@ -2780,25 +2780,40 @@ final class BookingService
 
     private function referenceCode(string $slotDate): string
     {
+        // References are globally unique for a calendar date (not per Clinic).
+        // A bounded index range over reference_code avoids counting unrelated
+        // dates, and excludes historical nonnumeric collision fallbacks.
         $base = 'AP-' . str_replace('-', '', $slotDate);
-        $count = (int) $this->db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $this->db->table('cpms_appointments') . ' WHERE slot_date = %s',
-            [$slotDate]
+        $prefix = $base . '-';
+        $max = (int) $this->db->fetchValue(
+            'SELECT COALESCE(MAX(CAST(SUBSTRING(reference_code, %d) AS UNSIGNED)), 0) FROM '
+            . $this->db->table('cpms_appointments')
+            . ' WHERE reference_code >= %s AND reference_code < %s'
+            . ' AND SUBSTRING(reference_code, %d) REGEXP %s',
+            [strlen($prefix) + 1, $prefix, $prefix . '~', strlen($prefix) + 1, '^[0-9]+$']
         );
-        $candidate = $base . '-' . str_pad((string) ($count + 1), 2, '0', STR_PAD_LEFT);
-
-        for ($i = 0; $i < 5; $i++) {
-            $exists = $this->db->fetchValue(
+        // Other booking transactions may insert after the range read. The
+        // existing unique index remains authoritative; bounded probes avoid
+        // reusing a reference visible to this transaction.
+        for ($i = 1; $i <= 8; $i++) {
+            $candidate = $prefix . str_pad((string) ($max + $i), 2, '0', STR_PAD_LEFT);
+            if ((int) $this->db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $this->db->table('cpms_appointments') . ' WHERE reference_code = %s',
                 [$candidate]
-            );
-            if ((int) $exists === 0) {
+            ) === 0) {
                 return $candidate;
             }
-            $candidate = $base . '-' . strtoupper(substr(bin2hex(random_bytes(2)), 0, 3));
         }
-
-        return $candidate;
+        for ($i = 0; $i < 8; $i++) {
+            $candidate = $prefix . strtoupper(bin2hex(random_bytes(5)));
+            if ((int) $this->db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_appointments') . ' WHERE reference_code = %s',
+                [$candidate]
+            ) === 0) {
+                return $candidate;
+            }
+        }
+        throw BookingException::of('CLINIC_CONFLICT', 'شماره نوبت یکتا ایجاد نشد؛ دوباره تلاش کنید', 409);
     }
 
     /**

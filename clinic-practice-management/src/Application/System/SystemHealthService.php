@@ -382,14 +382,16 @@ final class SystemHealthService
         $label_up     = trim( $raw_upload ) !== '' ? trim( $raw_upload ) : 'نامشخص';
         $detail       = 'post_max_size=' . $label_post . ' (' . self::describe_bytes( $post_bytes ) . ')'
             . ' | upload_max_filesize=' . $label_up . ' (' . self::describe_bytes( $upload_bytes ) . ')'
-            . ' | انتظار ZIP ≈ ' . self::format_bytes( $expected )
-            . ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+            . ' | حداقل تشخیصی بسته: ' . self::format_bytes( $expected );
 
         // null = unreadable/unparseable → WARNING (unknown is never a false PASS).
         // 0 = explicitly unlimited (PHP treats "0" as no limit).
         $ok_post   = null !== $post_bytes && ( 0 === $post_bytes || $post_bytes >= $expected );
         $ok_upload = null !== $upload_bytes && ( 0 === $upload_bytes || $upload_bytes >= $expected );
         $status    = ( $ok_post && $ok_upload ) ? self::PASS : self::WARNING;
+        if ( $status !== self::PASS ) {
+            $detail .= ' | ' . self::ZIP_SIZE_GUIDANCE_FA;
+        }
         if ( null === $post_bytes || null === $upload_bytes ) {
             $detail .= ' | مقدار یکی از سقف‌ها قابل خواندن/تجزیه نبود؛ وضعیت نامشخص (fail-safe، نه PASS).';
         }

@@ -31,6 +31,7 @@ final class UploadLimitsDiagnosisTest extends TestCase {
     public function testAdequateLimitsPass(): void {
         $check = SystemHealthService::upload_limits_check( '64M', '64M' );
         self::assertSame( SystemHealthService::PASS, $check['status'] );
+        self::assertStringNotContainsString( 'wp plugin install', $check['detail'], 'healthy hosts need no remediation instructions' );
 
         // post_max_size alone is enough when upload_max_filesize is unlimited.
         self::assertSame( SystemHealthService::PASS, SystemHealthService::upload_limits_check( '32M', '0' )['status'] );
