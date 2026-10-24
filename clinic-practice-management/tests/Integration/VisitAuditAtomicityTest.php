@@ -76,13 +76,17 @@ final class VisitAuditAtomicityTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->restoreAuditInserts();
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
         parent::tearDown();
     }
 
     public function testCheckInAuditFailureRollsBackVisitAndAppointmentLink(): void
     {
-        $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $local_day = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $dt = new \DateTimeImmutable($local_day . ' 14:00:00', $tz);
+        $arrival = new \DateTimeImmutable($local_day . ' 09:00:00', $tz);
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         $depthBefore = $this->savepointDepth();
 

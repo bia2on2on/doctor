@@ -166,18 +166,26 @@ final class RestQueueTest extends WP_UnitTestCase
     public function testCheckInHappyPath(): void
     {
         wp_set_current_user($this->secretaryUserId);
-        $apptId = $this->makeAppointment($this->patientId, time() + 3600);
+        $tz = new \DateTimeZone('Asia/Tehran');
+        $local_day = (new \DateTimeImmutable('now', $tz))->format('Y-m-d');
+        $slot = new \DateTimeImmutable($local_day . ' 14:00:00', $tz);
+        $arrival = new \DateTimeImmutable($local_day . ' 09:00:00', $tz);
+        $apptId = $this->makeAppointment($this->patientId, $slot->getTimestamp());
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
+        try {
+            $response = $this->dispatch('POST', self::NS . '/visits/checkin', [
+                'patient_id' => $this->patientId,
+                'appointment_id' => $apptId,
+            ]);
 
-        $response = $this->dispatch('POST', self::NS . '/visits/checkin', [
-            'patient_id' => $this->patientId,
-            'appointment_id' => $apptId,
-        ]);
-
-        $this->assertSame(200, $response->get_status());
-        $data = $response->get_data()['data'];
-        $this->assertSame('waiting', $data['status']);
-        $this->assertSame('scheduled', $data['source']);
-        $this->assertSame($apptId, $data['appointment_id']);
+            $this->assertSame(200, $response->get_status());
+            $data = $response->get_data()['data'];
+            $this->assertSame('waiting', $data['status']);
+            $this->assertSame('scheduled', $data['source']);
+            $this->assertSame($apptId, $data['appointment_id']);
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
     }
 
     public function testWalkInHappyPath(): void
