@@ -109,9 +109,9 @@ final class AppointmentRepository
                 throw new RuntimeException( 'Appointment insert failed' );
             }
             $reference = (string) $data['reference_code'];
-            $dash = strrpos( $reference, '-' );
-            $prefix = substr( $reference, 0, $dash + 1 );
-            $suffix = substr( $reference, $dash + 1 );
+            $dash      = strrpos( $reference, '-' );
+            $prefix    = substr( $reference, 0, $dash + 1 );
+            $suffix    = substr( $reference, $dash + 1 );
             // Keep every successful appointment reference numeric, even when
             // a concurrent insert wins several successive unique-key races.
             // VARCHAR(24) leaves at most 12 suffix digits after AP-YYYYMMDD-.
