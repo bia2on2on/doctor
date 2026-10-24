@@ -228,6 +228,10 @@ final class App
 
         RolesAndCapabilities::register();
 
+        // Optional demo accounts: request-driven expiry plus password, cookie,
+        // REST and OTP-session enforcement. Inert when no demo state exists.
+        \ClinicCore\Application\Demo\DemoAccessGuard::register();
+
         // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
         // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
         self::loginRateLimiter()->register();
@@ -373,6 +377,7 @@ final class App
         CpmsActivationRedirect::register(); // Phase 3 — one-shot safe redirect to the wizard on the literal post-activation landing (plugins.php only)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
         FirstPracticeSetupPage::register(); // Custom Role Slice 3A — راه‌اندازی اولیهٔ مطب (one-shot first-practice bootstrap)
+        \ClinicCore\Admin\DemoSetupPage::register(); // Optional, Administrator-only disposable-site demo.
         \ClinicCore\Admin\OrganizationManagerPage::register(); // ADR-0031 extension — Organization-scoped provisioning
         \ClinicCore\Admin\ClinicManagementPage::register(); // Post-onboarding — Clinic settings & lifecycle (Organization-scoped, history-preserving)
         LocationAdminPage::register(); // Phase 4 — شعبه‌ها (Location master data: create + name/timezone update)
@@ -1134,6 +1139,7 @@ final class App
     {
         if (self::$providers === null) {
             $registry = new SmsProviderRegistry();
+            $registry->register(new \ClinicCore\Infrastructure\Sms\Providers\DemoSmsProvider());
             $registry->register(new LogSmsProvider(self::op()));
             // Phase 2 (§A-3 / RT-6): `sms.generic` **per-Clinic** است. اگر همین‌جا
             // خوانده می‌شد، پیکربندیِ Clinicِ bootstrap برای کلِ فرآیند freeze
@@ -1328,6 +1334,16 @@ final class App
 
     public static function organization_clinic_provisioning_service(): \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService {
         return new \ClinicCore\Application\Onboarding\OrganizationClinicProvisioningService( self::db(), self::audit() );
+    }
+
+    /** Optional disposable-site demo lifecycle. No state or users exist by default. */
+    public static function demo_service(): \ClinicCore\Application\Demo\DemoService {
+        static $service = null;
+        if ( $service === null ) {
+            $service = new \ClinicCore\Application\Demo\DemoService( self::db(), self::vault() );
+        }
+
+        return $service;
     }
 
     public static function audit(): AuditLogger

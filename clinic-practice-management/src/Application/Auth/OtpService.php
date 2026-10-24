@@ -395,6 +395,14 @@ final class OtpService
                     $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
                     $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
 
+                    // Final server-side session authorization, after normal OTP
+                    // consumption/identity resolution and before LOGIN_SUCCESS or
+                    // the post-commit cookie. Demo expiry/revocation uses this
+                    // seam; the default remains allowed for every other install.
+                    if ( $session_issued && ! apply_filters( 'cpms_otp_session_authorized', true, $user_id, $clinic_id ) ) {
+                        throw new OtpException( 'CLINIC_OTP_SESSION_DENIED', 'ایجاد نشست برای این حساب مجاز نیست' );
+                    }
+
                     $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
                     if ( $session_issued ) {
                         $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip, [], $clinic_id );
