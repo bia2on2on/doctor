@@ -66,19 +66,19 @@ jobs:
           extensions: mysqli, mbstring, xml, pcntl, curl, zip, sodium
           coverage: none
 
+      # Apt package list unchanged (`mariadb-client` only) + pinned, verified WP-CLI.
       - name: Install MariaDB client and WP-CLI
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mariadb-client
+          apt-log-dir: /tmp/mariadb-compat
+
+      # The client binaries are the same assertion the combined step made.
+      - name: Client binaries present
         run: |
           set -euo pipefail
-          mkdir -p /tmp/mariadb-compat
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mariadb-client > /tmp/mariadb-compat/apt.log 2>&1 \
-            || { tail -n 80 /tmp/mariadb-compat/apt.log; exit 1; }
           command -v mysql
           command -v mariadb-dump
-          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
-            -o /tmp/wp-cli.phar
-          sudo install -m 0755 /tmp/wp-cli.phar /usr/local/bin/wp
-          wp --allow-root --version
 
       - name: Fail closed on database identity (exact MariaDB image release)
         id: database_identity

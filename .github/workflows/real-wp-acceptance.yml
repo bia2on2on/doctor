@@ -119,16 +119,28 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
           coverage: none
 
+      # The apt package list is unchanged, character for character: it is passed
+      # to the shared action, which only adds bounded apt retries/timeouts and a
+      # fail-closed dpkg verification. Browsers moved to their own pinned,
+      # cache-backed step; the check name of this job is unchanged.
       - name: Tooling (apache + wp-cli + playwright/chromium)
-        run: |
-          mkdir -p /tmp/acc
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mysql-client apache2 "libapache2-mod-php${APACHE_PHP_SUFFIX}" "php${APACHE_PHP_SUFFIX}-mysql" "php${APACHE_PHP_SUFFIX}-mbstring" "php${APACHE_PHP_SUFFIX}-xml" "php${APACHE_PHP_SUFFIX}-curl" "php${APACHE_PHP_SUFFIX}-zip" "php${APACHE_PHP_SUFFIX}-gd" > /tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; exit 1; }
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-          wp --allow-root --version
-          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
-          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: >-
+            mysql-client apache2
+            libapache2-mod-php${{ env.APACHE_PHP_SUFFIX }}
+            php${{ env.APACHE_PHP_SUFFIX }}-mysql
+            php${{ env.APACHE_PHP_SUFFIX }}-mbstring
+            php${{ env.APACHE_PHP_SUFFIX }}-xml
+            php${{ env.APACHE_PHP_SUFFIX }}-curl
+            php${{ env.APACHE_PHP_SUFFIX }}-zip
+            php${{ env.APACHE_PHP_SUFFIX }}-gd
+          apt-log-dir: /tmp/acc
+
+      - name: Playwright chromium (pinned + cached)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
 
       - name: Lint ابزار Acceptance
         run: |
