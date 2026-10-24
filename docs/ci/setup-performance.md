@@ -171,6 +171,71 @@ same `matrix.source == 'wordpress_org'` condition.
 Numbers are reported as measured, including any lane where the change is
 neutral or slower.
 
+### 4.1 Measured result (three full matrices on the delivered code)
+
+Three complete matrices of all eight workflows were measured; between them the
+action code is identical (the last head differs only by a no-op commit):
+
+| head | role | runs | cache |
+| --- | --- | --- | --- |
+| `2f675a2` (main) | baseline | 7 push runs, all `success` | no browser cache at all |
+| `e9642e1` | cold | 8/8 `success` | 11 of 13 browser lanes miss, 2 hit |
+| `f2cc05e` | warm | 8/8 `success` | 13 of 13 browser lanes hit |
+
+Per-job *provisioning* time = `setup-php` + every `Tooling …` step + every
+`Playwright …` step, over the 27 lanes present in all three matrices:
+
+| metric | main `2f675a2` | cold `e9642e1` | warm `f2cc05e` |
+| --- | --- | --- | --- |
+| sum, all 27 lanes | 2509 s | 1240 s | 1117 s |
+| sum, excluding the one 1402 s lane | 1107 s | 1136 s (+29 s, +2.6%) | 1040 s (−67 s, −6.1%) |
+| median lane | 8 s | 12 s | 10 s |
+| mean lane | 92.9 s | 45.9 s | 41.4 s |
+| worst lane | 1402 s | 127 s | 131 s |
+| lanes faster / neutral (±2 s) / slower | — | 4 / 14 / 9 | 8 / 14 / 5 |
+
+What that means, stated without rounding it up:
+
+* **The tail is what changed, not the median.** The worst provisioning lane on
+  main was 1402 s; on the delivered code the worst lane is 127 s (cold) and
+  131 s (warm). The single-lane saving of 1298–1325 s *is* that outlier, so it
+  is reported as a bound, not as a speed-up: the apt index refresh is still
+  executed every run, it is now capped by `apt-update-cap-seconds` (240 s, run
+  as root via `sudo timeout`) instead of being allowed to sit on a stalled
+  Launchpad mirror. Measured `apt phase` annotations: cold 4–82 s (n=20, median
+  61 s), warm 5–90 s (n=20, median 62 s), against 68 / 264 / 970 / 1041 / 1396 s
+  samples on main and one 24m36s run that was cancelled at the job timeout.
+* **A warm browser cache is worth ~15–25 s per chromium lane.** `Playwright …`
+  step: 26–35 s cold, 8–18 s warm (the warm step still pays pip install, the
+  cache restore, `playwright install` build-revision validation and a real
+  launch). The `playwright browsers` annotation reports `cache_hit=true
+  deps=reused seconds=2` on those lanes.
+* **The three-browser lane does not get the same saving, and that is expected.**
+  `Responsive smoke` hits the cache warm (`browsers=chromium firefox webkit
+  cache_hit=true`) but the cached binaries do not launch on a fresh runner
+  because the firefox/webkit OS packages are not part of the cache; the
+  fail-closed fallback installs exactly Playwright's reported package list
+  (`deps=installed (bounded, after a launch failure on cached binaries)`,
+  48–58 s) and re-verifies the launch. Net: 54 s cold / 58 s warm against one
+  113 s combined step on main — i.e. slightly slower than the single
+  `install --with-deps` step it replaced, because that step is now bounded apt
+  for an exact list plus an explicit launch proof. This is the price of the
+  dependency gate and it is not hidden.
+* **Lanes that are slower** (provisioning delta vs main): cold — First-practice
+  browser (mariadb) +38 s, Closure PHP 8.1 +12 s, Responsive smoke +11 s,
+  Closure PHP 8.3 +5 s, two coexistence lanes +5 s, security-authentication
+  +4 s; warm — First-practice browser (mariadb) +18 s, Staging Gate +16 s,
+  Responsive smoke +15 s, Real WP (prefix `clinic_`) +15 s, Upgrade path +4 s.
+  Causes that are actually visible in the data: the cold closure lanes pay one
+  WP-CLI download-and-verify (16 s) where main downloaded through a mutable
+  `gh-pages` alias inside a 5 s step — warm they are +0…+2 s because the phar
+  comes from cache (`source=cache seconds=0`); the three-browser lane is
+  explained above; and the rest track run-to-run variance of the bounded apt
+  phase for the *same* package list (e.g. Staging Gate: `apt phase` 59 s cold /
+  74 s warm for the 11 packages main installed inside a 60–63 s step). No
+  slower lane is caused by a missing cache key, a retry loop or an extra
+  download that the cache could have avoided.
+
 ## 5. Observed but deliberately not changed
 
 The three lanes that declare `PHP_VERSION: '8.2'` install unversioned
