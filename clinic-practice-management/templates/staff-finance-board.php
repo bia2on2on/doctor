@@ -75,17 +75,31 @@ if ( empty( $cpms_staff_embed ) ) {
 .cpms-finance-board__receipt-total { font-weight: 700; }
 .cpms-finance-board__receipt-table { width: 100%; border-collapse: collapse; margin: 6px 0 10px; }
 .cpms-finance-board__receipt-table th, .cpms-finance-board__receipt-table td { padding: 6px 4px; border-bottom: 1px solid var(--cpms-border); text-align: right; vertical-align: top; overflow-wrap: anywhere; }
+.cpms-finance-board__recon-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 10px 0; }
+.cpms-finance-board__recon-card { padding: 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #f8fafc; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.cpms-finance-board__recon-card span { font-size: .84rem; color: var(--cpms-muted); }
+.cpms-finance-board__recon-card strong { font-size: 1rem; font-weight: 700; }
 @media (max-width: 760px) {
     .cpms-finance-board__panel { padding: 11px; }
     .cpms-finance-board__table thead { display: none; }
-    .cpms-finance-board__table, .cpms-finance-board__table tbody, .cpms-finance-board__table tr, .cpms-finance-board__table td { display: block; width: 100%; }
+    .cpms-finance-board__table, .cpms-finance-board__table tbody, .cpms-finance-board__table tr, .cpms-finance-board__table td { display: block; width: 100%; box-sizing: border-box; }
     .cpms-finance-board__table tr { padding: 9px 0; border-bottom: 1px solid var(--cpms-border); }
     .cpms-finance-board__table tr:last-child { border-bottom: 0; }
     .cpms-finance-board__table td { display: grid; grid-template-columns: minmax(95px, 34%) minmax(0, 1fr); gap: 8px; padding: 4px 2px; border: 0; }
     .cpms-finance-board__table td::before { content: attr(data-label); color: var(--cpms-muted); font-size: .82rem; }
+    .cpms-finance-board__invoice { min-width: 0; }
     .cpms-finance-board__empty { display: block !important; }
     .cpms-finance-board__fields { grid-template-columns: minmax(0, 1fr); }
-    .cpms-finance-board__action, .cpms-finance-board__submit { width: 100%; }
+    .cpms-finance-board__action, .cpms-finance-board__submit { width: 100%; box-sizing: border-box; }
+}
+@media (max-width: 390px) {
+    .cpms-finance-board__panel { padding: 10px; }
+    .cpms-finance-board__recon-stats { grid-template-columns: minmax(0, 1fr); }
+    .cpms-finance-board__action, .cpms-finance-board__submit, .cpms-finance-board__location { min-height: 44px; width: 100%; box-sizing: border-box; }
+}
+@media (max-width: 340px) {
+    .cpms-finance-board__panel { padding: 8px; }
+    .cpms-finance-board__table td { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
 /* Print isolation: only the receipt surface is printed; the portal chrome and
     every other panel are masked while the browser print dialog is active. */
@@ -209,6 +223,30 @@ if ( empty( $cpms_staff_embed ) ) {
             <button type="button" class="cpms-finance-board__action" data-role="finance-receipt-close">بستن</button>
         </div>
     </section>
+    <section class="cpms-finance-board__panel" data-role="finance-reconciliation" aria-label="تطبیق روزانه و گزارش مالی محدوده">
+        <h2 class="cpms-finance-board__heading">تطبیق روزانه و گزارش مالی همین موقعیت</h2>
+        <p class="cpms-finance-board__hint">خلاصهٔ دریافتی‌ها به تفکیک روش پرداخت و وضعیت فاکتورهای صادرشده در منطقهٔ زمانی همین موقعیت عملیاتی (بدون دادهٔ هویتی بیمار).</p>
+        <div class="cpms-finance-board__fields">
+            <label class="cpms-finance-board__field">از تاریخ (میلادی موقعیت)
+                <input type="date" data-role="finance-recon-from" dir="ltr" aria-label="از تاریخ">
+            </label>
+            <label class="cpms-finance-board__field">تا تاریخ (میلادی موقعیت)
+                <input type="date" data-role="finance-recon-to" dir="ltr" aria-label="تا تاریخ">
+            </label>
+            <div class="cpms-finance-board__form-actions">
+                <button type="button" class="cpms-finance-board__submit" data-role="finance-recon-load">نمایش گزارش بازه</button>
+                <button type="button" class="cpms-finance-board__action" data-role="finance-recon-today">تطبیق امروز</button>
+            </div>
+        </div>
+        <p class="cpms-finance-board__hint" data-role="finance-recon-range" hidden></p>
+        <div class="cpms-finance-board__recon-stats" data-role="finance-recon-summary" hidden></div>
+        <div class="cpms-finance-board__table-wrap" data-role="finance-recon-table-wrap" hidden>
+            <table class="cpms-finance-board__table">
+                <thead><tr><th>شماره پرداخت</th><th>شماره فاکتور</th><th>روش پرداخت</th><th>مبلغ خالص</th><th>تاریخ و ساعت عملیاتی</th></tr></thead>
+                <tbody data-role="finance-recon-rows"></tbody>
+            </table>
+        </div>
+    </section>
 </main>
 <script type="application/json" id="cpms-finance-board-config">
 <?php
@@ -250,6 +288,14 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var receiptBodyNode = document.querySelector('[data-role="finance-receipt-body"]');
     var receiptPrintNode = document.querySelector('[data-role="finance-receipt-print"]');
     var receiptCloseNode = document.querySelector('[data-role="finance-receipt-close"]');
+    var reconFromInput = document.querySelector('[data-role="finance-recon-from"]');
+    var reconToInput = document.querySelector('[data-role="finance-recon-to"]');
+    var reconLoadNode = document.querySelector('[data-role="finance-recon-load"]');
+    var reconTodayNode = document.querySelector('[data-role="finance-recon-today"]');
+    var reconRangeNode = document.querySelector('[data-role="finance-recon-range"]');
+    var reconSummaryNode = document.querySelector('[data-role="finance-recon-summary"]');
+    var reconTableWrap = document.querySelector('[data-role="finance-recon-table-wrap"]');
+    var reconRowsNode = document.querySelector('[data-role="finance-recon-rows"]');
     var formNode = document.querySelector('[data-role="finance-issue-form"]');
     var targetNode = document.querySelector('[data-role="finance-issue-target"]');
     var descriptionInput = document.querySelector('[data-role="finance-issue-description"]');
@@ -758,6 +804,91 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     receiptPrintNode.addEventListener('click', function () { printReceipt(); });
     receiptCloseNode.addEventListener('click', function () { closeReceipt(); });
 
+    var reconLabels = ['شماره پرداخت', 'شماره فاکتور', 'روش پرداخت', 'مبلغ خالص', 'تاریخ و ساعت عملیاتی'];
+    function paymentMethodLabel(method) {
+        var map = { cash: 'نقد', card_pos: 'کارت‌خوان — ثبت دستی', other: 'سایر' };
+        return map[method] || method;
+    }
+    function resetReconciliation() {
+        if (reconRangeNode) { reconRangeNode.hidden = true; reconRangeNode.textContent = ''; }
+        if (reconSummaryNode) { reconSummaryNode.hidden = true; reconSummaryNode.innerHTML = ''; }
+        if (reconTableWrap) reconTableWrap.hidden = true;
+        if (reconRowsNode) reconRowsNode.innerHTML = '';
+    }
+    function loadReconciliation(useToday) {
+        if (state.busy) return;
+        if (!state.clinicId || (!state.locationId && state.locations.length > 1)) {
+            setStatus('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
+            return;
+        }
+        var qsParts = [];
+        if (!useToday) {
+            var fromVal = reconFromInput && reconFromInput.value ? String(reconFromInput.value).trim() : '';
+            var toVal = reconToInput && reconToInput.value ? String(reconToInput.value).trim() : '';
+            if (fromVal) qsParts.push('from=' + encodeURIComponent(fromVal));
+            if (toVal) qsParts.push('to=' + encodeURIComponent(toVal));
+        }
+        var path = '/staff/portal/finance/reconciliation' + (qsParts.length ? ('?' + qsParts.join('&')) : '');
+        state.busy = true;
+        if (reconLoadNode) reconLoadNode.disabled = true;
+        if (reconTodayNode) reconTodayNode.disabled = true;
+        request(path, 'GET').then(function (result) {
+            state.busy = false;
+            if (reconLoadNode) reconLoadNode.disabled = false;
+            if (reconTodayNode) reconTodayNode.disabled = false;
+            if (!result.ok) {
+                setStatus(showError(result, 'دریافت گزارش مالی ناموفق بود.'), 'error');
+                return;
+            }
+            var data = payload(result);
+            var totals = data.totals || {};
+            var cur = String(data.currency || 'IRR');
+            if (reconFromInput && data.from) reconFromInput.value = String(data.from);
+            if (reconToInput && data.to) reconToInput.value = String(data.to);
+            if (reconRangeNode) {
+                reconRangeNode.textContent = 'موقعیت: ' + String(data.location_name || '—') +
+                    ' · بازه: ' + String(data.jalali_from || data.from || '—') + ' تا ' + String(data.jalali_to || data.to || '—');
+                reconRangeNode.hidden = false;
+            }
+            if (reconSummaryNode) {
+                reconSummaryNode.innerHTML =
+                    '<div class="cpms-finance-board__recon-card"><span>جمع دریافتی ثبت‌شده (' + Number(totals.captured_count || 0) + ' مورد)</span><strong>' + esc(totals.captured_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>نقد</span><strong>' + esc(totals.cash_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>کارت‌خوان — ثبت دستی</span><strong>' + esc(totals.card_pos_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>سایر روش‌ها</span><strong>' + esc(totals.other_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>فاکتورهای صادرشده (' + Number(totals.issued_count || 0) + ' مورد)</span><strong>' + esc(totals.invoiced_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>ماندهٔ باز (' + Number(totals.open_count || 0) + ' فاکتور باز)</span><strong>' + esc(totals.outstanding_balance || '0.00') + ' ' + esc(cur) + '</strong></div>';
+                reconSummaryNode.hidden = false;
+            }
+            var payments = Array.isArray(data.payments) ? data.payments : [];
+            if (reconRowsNode && reconTableWrap) {
+                if (payments.length === 0) {
+                    reconRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">دریافتی ثبت‌شده‌ای در این بازه برای این موقعیت وجود ندارد.</td></tr>';
+                } else {
+                    reconRowsNode.innerHTML = payments.map(function (row) {
+                        var stamp = esc(row.payment_date || '') + (row.jalali_date ? ' · ' + esc(row.jalali_date) : '') + ' · ' + esc(row.payment_time || '');
+                        return '<tr>' +
+                            '<td data-label="' + esc(reconLabels[0]) + '">' + esc(row.payment_number) + '</td>' +
+                            '<td data-label="' + esc(reconLabels[1]) + '">' + esc(row.invoice_number) + '</td>' +
+                            '<td data-label="' + esc(reconLabels[2]) + '">' + esc(paymentMethodLabel(row.method)) + '</td>' +
+                            '<td data-label="' + esc(reconLabels[3]) + '">' + esc(row.amount) + ' ' + esc(row.currency || cur) + '</td>' +
+                            '<td data-label="' + esc(reconLabels[4]) + '">' + stamp + '</td>' +
+                            '</tr>';
+                    }).join('');
+                }
+                reconTableWrap.hidden = false;
+            }
+            setStatus('', '');
+        }).catch(function () {
+            state.busy = false;
+            if (reconLoadNode) reconLoadNode.disabled = false;
+            if (reconTodayNode) reconTodayNode.disabled = false;
+            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+        });
+    }
+    if (reconLoadNode) reconLoadNode.addEventListener('click', function () { loadReconciliation(false); });
+    if (reconTodayNode) reconTodayNode.addEventListener('click', function () { loadReconciliation(true); });
+
     eligibleRowsNode.addEventListener('click', function (event) {
         var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-issue-open"]') : null;
         if (!trigger) return;
@@ -777,6 +908,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         closePayForm();
         closeCheckoutForm();
         closeReceipt();
+        resetReconciliation();
         refreshAll();
     });
 

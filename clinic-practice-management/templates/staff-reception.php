@@ -92,10 +92,10 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-btn--ghost { background: #fff; color: var(--cpms-primary); }
 .cpms-staff-reception .cpms-sr-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpms-staff-reception .cpms-sr-cancel { display: grid; gap: 8px; padding: 8px 2px; }
-.cpms-staff-reception .cpms-sr-cancel[hidden], .cpms-staff-reception tr[data-role="sr-row-cancel"][hidden] { display: none; }
+.cpms-staff-reception .cpms-sr-cancel[hidden], .cpms-staff-reception tr[data-role="sr-row-cancel"][hidden], .cpms-staff-reception tr[data-role="sr-row-noshow"][hidden] { display: none; }
 .cpms-staff-reception .cpms-sr-cancel-hint { margin: 0; color: var(--cpms-muted); font-size: 0.88rem; }
 .cpms-staff-reception .cpms-sr-cancel-field { display: grid; gap: 4px; font-size: 0.88rem; }
-.cpms-staff-reception .cpms-sr-cancel-field input { min-height: 40px; padding: 6px 10px; border: 1px solid #c9ccd6; border-radius: 8px; }
+.cpms-staff-reception .cpms-sr-cancel-field input { min-height: 40px; width: 100%; box-sizing: border-box; padding: 6px 10px; border: 1px solid #c9ccd6; border-radius: 8px; }
 .cpms-staff-reception .cpms-sr-cancel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 .cpms-staff-reception .cpms-sr-status { font-size: 0.92rem; overflow-wrap: anywhere; }
 .cpms-staff-reception .cpms-sr-status--error { color: #a12828; }
@@ -188,14 +188,39 @@ $cpms_reception_cfg = [
 .cpms-staff-reception .cpms-sr-reschedule-state--error { color: #a12828; }
 .cpms-staff-reception .cpms-sr-reschedule-state--ok { color: var(--cpms-primary); font-weight: bold; }
 .cpms-staff-reception .cpms-sr-reschedule-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.cpms-staff-reception .cpms-sr-schedule-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--cpms-border); box-sizing: border-box; }
+.cpms-staff-reception .cpms-sr-schedule-summary { margin: 0; font-size: 0.92rem; font-weight: 700; color: var(--cpms-text); }
+.cpms-staff-reception .cpms-sr-schedule-filter { display: inline-flex; align-items: center; gap: 6px; font-size: 0.88rem; box-sizing: border-box; }
+.cpms-staff-reception .cpms-sr-schedule-filter select { min-height: 44px; padding: 6px 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #fff; font: inherit; max-width: 100%; box-sizing: border-box; }
+.cpms-staff-reception .cpms-sr-btn--noshow { border-color: #a12828; color: #a12828; background: #fff; }
+.cpms-staff-reception .cpms-sr-btn--noshow:hover { background: #fdf2f2; }
 @media (max-width: 768px) {
     .cpms-staff-reception .cpms-sr-top { flex-direction: column; align-items: stretch; }
     .cpms-staff-reception .cpms-sr-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .cpms-staff-reception .cpms-sr-table thead { display: none; }
-    .cpms-staff-reception .cpms-sr-table, .cpms-staff-reception .cpms-sr-table tbody, .cpms-staff-reception .cpms-sr-table tr, .cpms-staff-reception .cpms-sr-table td { display: block; width: 100%; }
+    .cpms-staff-reception .cpms-sr-table, .cpms-staff-reception .cpms-sr-table tbody, .cpms-staff-reception .cpms-sr-table tr, .cpms-staff-reception .cpms-sr-table td { display: block; width: 100%; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-table tr[hidden] { display: none; }
     .cpms-staff-reception .cpms-sr-table tr { border-bottom: 1px solid var(--cpms-border); padding: 8px 0; }
     .cpms-staff-reception .cpms-sr-table td { border-bottom: 0; padding: 3px 4px; }
     .cpms-staff-reception .cpms-sr-create-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 390px) {
+    .cpms-staff-reception { padding: 8px; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-panel { padding: 10px; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-schedule-bar,
+    .cpms-staff-reception .cpms-sr-schedule-filter { flex-direction: column; align-items: stretch; width: 100%; box-sizing: border-box; }
+    .cpms-staff-reception .cpms-sr-schedule-filter select,
+    .cpms-staff-reception .cpms-sr-actions .cpms-sr-btn,
+    .cpms-staff-reception .cpms-sr-cancel-actions .cpms-sr-btn,
+    .cpms-staff-reception .cpms-sr-reschedule-actions .cpms-sr-btn { width: 100%; box-sizing: border-box; justify-content: center; text-align: center; }
+    .cpms-staff-reception .cpms-sr-chip { width: 100%; box-sizing: border-box; justify-content: space-between; }
+    .cpms-staff-reception .cpms-sr-select { width: 100%; min-width: 0; box-sizing: border-box; }
+}
+@media (max-width: 340px) {
+    .cpms-staff-reception { padding: 6px 4px; }
+    .cpms-staff-reception .cpms-sr-stats { grid-template-columns: minmax(0, 1fr); }
+    .cpms-staff-reception .cpms-sr-book-slots-list,
+    .cpms-staff-reception .cpms-sr-reschedule-slots-list { display: grid; grid-template-columns: minmax(0, 1fr); }
 }
 </style>
 <div class="cpms-staff-reception" data-role="reception-app">
@@ -367,6 +392,15 @@ $cpms_reception_cfg = [
         </div>
 
         <div class="cpms-sr-panel" data-role="sr-appointments-panel">
+            <div class="cpms-sr-schedule-bar" data-role="sr-schedule-bar">
+                <p class="cpms-sr-schedule-summary" data-role="sr-schedule-summary">برنامهٔ نوبت‌های امروز</p>
+                <label class="cpms-sr-schedule-filter" for="cpms-sr-schedule-clinician-filter">
+                    <span>فیلتر برنامه بر اساس پزشک:</span>
+                    <select id="cpms-sr-schedule-clinician-filter" data-role="sr-schedule-clinician-filter">
+                        <option value="">همهٔ پزشکان این موقعیت</option>
+                    </select>
+                </label>
+            </div>
             <table class="cpms-sr-table" data-role="sr-appointments">
                 <thead>
                     <tr>
@@ -587,18 +621,66 @@ $cpms_reception_cfg = [
         });
     }
 
+    var boardAppointmentsCache = [];
+    var scheduleClinicianFilter = '';
+
+    function syncScheduleClinicianOptions() {
+        var select = el('sr-schedule-clinician-filter');
+        if (!select) {
+            return;
+        }
+        var seen = {};
+        var list = [];
+        Object.keys(dayDoctors).forEach(function (apptId) {
+            var doc = dayDoctors[apptId];
+            if (doc && doc.id && !seen[String(doc.id)]) {
+                seen[String(doc.id)] = true;
+                list.push({ id: String(doc.id), name: doc.name || ('پزشک ' + doc.id) });
+            }
+        });
+        var current = scheduleClinicianFilter;
+        var html = '<option value="">همهٔ پزشکان این موقعیت</option>';
+        var currentValid = current === '';
+        for (var i = 0; i < list.length; i += 1) {
+            if (list[i].id === current) {
+                currentValid = true;
+            }
+            html += '<option value="' + escapeHtml(list[i].id) + '">' + escapeHtml(list[i].name) + '</option>';
+        }
+        select.innerHTML = html;
+        if (!currentValid) {
+            scheduleClinicianFilter = '';
+        }
+        select.value = scheduleClinicianFilter;
+    }
+
     function renderAppointments(rows) {
+        boardAppointmentsCache = Array.isArray(rows) ? rows : [];
         var body = el('sr-appointments-body');
+        var summary = el('sr-schedule-summary');
         if (!body) {
             return;
         }
-        if (!rows || rows.length === 0) {
-            body.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">نوبتی برای امروز در این موقعیت ثبت نشده است.</td></tr>';
+        var filtered = [];
+        for (var f = 0; f < boardAppointmentsCache.length; f += 1) {
+            var item = boardAppointmentsCache[f];
+            var itemDoc = doctorsOf(item.id);
+            if (!scheduleClinicianFilter || String(itemDoc.id || '') === String(scheduleClinicianFilter)) {
+                filtered.push(item);
+            }
+        }
+        if (summary) {
+            summary.textContent = scheduleClinicianFilter
+                ? ('برنامهٔ امروز (فیلتر پزشک): ' + filtered.length + ' از ' + boardAppointmentsCache.length + ' نوبت')
+                : ('برنامهٔ امروز: ' + boardAppointmentsCache.length + ' نوبت فعال');
+        }
+        if (filtered.length === 0) {
+            body.innerHTML = '<tr><td colspan="4" class="cpms-sr-empty">' + (boardAppointmentsCache.length > 0 ? 'نوبتی برای پزشک انتخاب‌شده در برنامهٔ امروز ثبت نشده است.' : 'نوبتی برای امروز در این موقعیت ثبت نشده است.') + '</td></tr>';
             return;
         }
             var html = '';
-            for (var i = 0; i < rows.length; i += 1) {
-                var row = rows[i];
+            for (var i = 0; i < filtered.length; i += 1) {
+                var row = filtered[i];
                 var canArrive = !row.visit_status && (row.status === 'pending' || row.status === 'confirmed');
                 var canRecover = row.visit_status === 'checked_in';
                 // Presentation rule (not a second state machine): a booked row
@@ -607,6 +689,7 @@ $cpms_reception_cfg = [
                 // called / in consultation expose no cancel action — the
                 // backend stays authoritative for every refusal.
                 var canCancel = canArrive;
+                var canNoShow = !row.visit_status && row.status === 'confirmed';
             // Presentation-only clarity: the real appointment state badge is
             // kept as-is; a booked row without a visit also shows that the
             // patient has NOT yet been received (no state semantics change).
@@ -622,6 +705,9 @@ $cpms_reception_cfg = [
             }
             var cancelAction = canCancel
                 ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-cancel-open" data-appointment-id="' + escapeHtml(row.id) + '">لغو نوبت</button>'
+                : '';
+            var noshowAction = canNoShow
+                ? '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost cpms-sr-btn--noshow" data-role="sr-noshow-open" data-appointment-id="' + escapeHtml(row.id) + '">ثبت عدم حضور</button>'
                 : '';
             // Phase 11 Slice 7 — presentation rule only (never a second state
             // machine): the existing T7 machine reschedules a CONFIRMED row and
@@ -650,12 +736,26 @@ $cpms_reception_cfg = [
                     '</div>' +
                 '</td></tr>'
                 : '';
+            var noshowRow = canNoShow
+                ? '<tr data-role="sr-row-noshow" data-appointment-id="' + escapeHtml(row.id) + '" hidden><td colspan="4">' +
+                    '<div class="cpms-sr-cancel" data-role="sr-noshow-form" data-appointment-id="' + escapeHtml(row.id) + '">' +
+                        '<p class="cpms-sr-cancel-hint">ثبت عدم حضور وضعیت نوبت را به «عدم حضور» تغییر می‌دهد و از تختهٔ امروز خارج می‌کند. درج دلیل الزامی است.</p>' +
+                        '<label class="cpms-sr-cancel-field">دلیل عدم حضور <span class="cpms-sr-create-req">*</span>' +
+                            '<input type="text" data-role="sr-noshow-reason" maxlength="255" autocomplete="off" required placeholder="مثلاً: عدم مراجعهٔ بیمار در ساعت نوبت">' +
+                        '</label>' +
+                        '<div class="cpms-sr-cancel-actions">' +
+                            '<button type="button" class="cpms-sr-btn" data-role="sr-noshow-confirm" data-appointment-id="' + escapeHtml(row.id) + '">تأیید عدم حضور</button>' +
+                            '<button type="button" class="cpms-sr-btn cpms-sr-btn--ghost" data-role="sr-noshow-abort" data-appointment-id="' + escapeHtml(row.id) + '">انصراف</button>' +
+                        '</div>' +
+                    '</div>' +
+                '</td></tr>'
+                : '';
             html += '<tr data-role="sr-row" data-appointment-id="' + escapeHtml(row.id) + '">' +
                 '<td data-role="sr-row-time">' + escapeHtml(row.time) + '</td>' +
                 '<td data-role="sr-row-name"><span class="cpms-sr-name">' + escapeHtml(row.patient_name) + express + '</span> <span>· پزشک: ' + escapeHtml(doctor.name) + '</span></td>' +
                 '<td data-role="sr-row-status">' + badge + '</td>' +
-                '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + rescheduleAction + cancelAction + '</div></td>' +
-                '</tr>' + cancelRow;
+                '<td data-role="sr-row-action"><div class="cpms-sr-actions">' + action + rescheduleAction + noshowAction + cancelAction + '</div></td>' +
+                '</tr>' + cancelRow + noshowRow;
         }
         body.innerHTML = html;
     }
@@ -749,10 +849,12 @@ $cpms_reception_cfg = [
             // Fail-closed empty board (no operational day yet): show the
             // explicit empty state, never the "select scope" placeholder.
             doctorsIndex(data);
+            syncScheduleClinicianOptions();
             renderAppointments([]);
             return;
         }
         doctorsIndex(data);
+        syncScheduleClinicianOptions();
         state.date = data.date || null;
         renderScope();
         renderStats(data.stats);
@@ -928,7 +1030,7 @@ $cpms_reception_cfg = [
     }
 
     function cancelOpen(target) {
-        if (state.busy || cancelBusy) {
+        if (state.busy || cancelBusy || noshowBusy) {
             return;
         }
         var id = target.getAttribute('data-appointment-id');
@@ -936,10 +1038,11 @@ $cpms_reception_cfg = [
             return;
         }
         // Only one open confirmation at a time.
-        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"], [data-role="sr-row-noshow"]');
         for (var i = 0; i < wrappers.length; i += 1) {
             wrappers[i].hidden = true;
         }
+        rescheduleAbort();
         var wrap = cancelRowNode(id);
         if (!wrap) {
             return;
@@ -950,6 +1053,103 @@ $cpms_reception_cfg = [
         if (reason) {
             reason.focus();
         }
+    }
+
+    var noshowBusy = false;
+
+    function noshowRowNode(appointmentId) {
+        return document.querySelector('[data-role="sr-row-noshow"][data-appointment-id="' + String(appointmentId) + '"]');
+    }
+
+    function noshowClose(appointmentId) {
+        var wrap = noshowRowNode(appointmentId);
+        if (wrap) {
+            wrap.hidden = true;
+            var reason = wrap.querySelector('[data-role="sr-noshow-reason"]');
+            if (reason) {
+                reason.value = '';
+                reason.removeAttribute('aria-invalid');
+            }
+        }
+    }
+
+    function noshowOpen(target) {
+        if (state.busy || cancelBusy || noshowBusy) {
+            return;
+        }
+        var id = target.getAttribute('data-appointment-id');
+        if (!id) {
+            return;
+        }
+        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"], [data-role="sr-row-noshow"]');
+        for (var i = 0; i < wrappers.length; i += 1) {
+            wrappers[i].hidden = true;
+        }
+        rescheduleAbort();
+        var wrap = noshowRowNode(id);
+        if (!wrap) {
+            return;
+        }
+        wrap.hidden = false;
+        setStatus('برای ثبت عدم حضور، دلیل الزامی را وارد کنید و «تأیید عدم حضور» را بزنید.', null);
+        var reason = wrap.querySelector('[data-role="sr-noshow-reason"]');
+        if (reason) {
+            reason.focus();
+        }
+    }
+
+    function noshowSubmit(target) {
+        if (noshowBusy) {
+            return;
+        }
+        var id = target.getAttribute('data-appointment-id');
+        if (!id) {
+            return;
+        }
+        var wrap = noshowRowNode(id);
+        if (!wrap) {
+            return;
+        }
+        var reasonNode = wrap.querySelector('[data-role="sr-noshow-reason"]');
+        var reason = reasonNode ? String(reasonNode.value || '').trim() : '';
+        if (reason === '') {
+            if (reasonNode) {
+                reasonNode.setAttribute('aria-invalid', 'true');
+                reasonNode.focus();
+            }
+            setStatus('ثبت دلیل عدم حضور الزامی است.', 'error', true);
+            return;
+        }
+        if (reasonNode) {
+            reasonNode.removeAttribute('aria-invalid');
+        }
+        noshowBusy = true;
+        target.disabled = true;
+        setStatus('در حال ثبت عدم حضور…', null);
+        var refreshed = false;
+        api('/staff/portal/reception/appointments/' + encodeURIComponent(id) + '/no-show', { method: 'POST', body: { reason: reason } })
+            .then(function (result) {
+                var data = payloadOf(result.body);
+                if (result.ok && data.appointment) {
+                    noshowClose(id);
+                    setStatus('عدم حضور بیمار ثبت شد و نوبت از تختهٔ امروز خارج شد.', 'ok');
+                    refreshed = true;
+                    return loadBoard(true).then(loadUpcoming);
+                }
+                setStatus('ثبت عدم حضور انجام نشد: ' + errorMessageOf(result.body, ''), 'error', true);
+                refreshed = true;
+                return loadBoard(true);
+            })
+            .catch(function () {
+                setStatus('خطای شبکه هنگام ثبت عدم حضور.', 'error');
+            })
+            .then(function () {
+                noshowBusy = false;
+                target.disabled = false;
+                if (!refreshed) {
+                    loadBoard(true);
+                }
+            });
     }
 
     function cancelSubmit(target) {
@@ -1353,8 +1553,8 @@ $cpms_reception_cfg = [
         if (!id) {
             return;
         }
-        // فقط یک تأیید باز در هر لحظه (لغو هم بسته می‌شود).
-        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        // فقط یک تأیید باز در هر لحظه (لغو و عدم حضور هم بسته می‌شوند).
+        var wrappers = document.querySelectorAll('[data-role="sr-row-cancel"], [data-role="sr-row-noshow"]');
         for (var i = 0; i < wrappers.length; i += 1) {
             wrappers[i].hidden = true;
         }
@@ -1523,6 +1723,16 @@ $cpms_reception_cfg = [
         }
     }());
 
+    (function bindScheduleFilter() {
+        var filter = el('sr-schedule-clinician-filter');
+        if (filter) {
+            filter.addEventListener('change', function () {
+                scheduleClinicianFilter = filter.value ? String(filter.value) : '';
+                renderAppointments(boardAppointmentsCache);
+            });
+        }
+    }());
+
     document.addEventListener('click', function (event) {
         var target = event.target;
         if (target && target.getAttribute) {
@@ -1538,6 +1748,16 @@ $cpms_reception_cfg = [
             }
             if (role === 'sr-cancel-abort') {
                 cancelClose(target.getAttribute('data-appointment-id'));
+                setStatus('', null);
+            }
+            if (role === 'sr-noshow-open') {
+                noshowOpen(target);
+            }
+            if (role === 'sr-noshow-confirm') {
+                noshowSubmit(target);
+            }
+            if (role === 'sr-noshow-abort') {
+                noshowClose(target.getAttribute('data-appointment-id'));
                 setStatus('', null);
             }
             if (role === 'sr-reschedule-open') {
@@ -1559,7 +1779,7 @@ $cpms_reception_cfg = [
     });
 
     function scopeSwitchBlocked() {
-        return Boolean(state.busy || cancelBusy || createBusy || (reschedule && reschedule.busy) || (walkin && walkin.busy) || (book && book.busy));
+        return Boolean(state.busy || cancelBusy || noshowBusy || createBusy || (reschedule && reschedule.busy) || (walkin && walkin.busy) || (book && book.busy));
     }
 
     // The board carries an explicit busy marker for the current document so a
@@ -1598,7 +1818,13 @@ $cpms_reception_cfg = [
         if (upcomingState) { upcomingState.textContent = 'در حال بارگذاری…'; }
         var stats = el('sr-stats');
         if (stats) { stats.hidden = true; }
-        var cancelRows = document.querySelectorAll('[data-role="sr-row-cancel"]');
+        boardAppointmentsCache = [];
+        scheduleClinicianFilter = '';
+        var filterSelect = el('sr-schedule-clinician-filter');
+        if (filterSelect) { filterSelect.innerHTML = '<option value="">همهٔ پزشکان این موقعیت</option>'; filterSelect.value = ''; }
+        var summaryNode = el('sr-schedule-summary');
+        if (summaryNode) { summaryNode.textContent = 'برنامهٔ نوبت‌های امروز'; }
+        var cancelRows = document.querySelectorAll('[data-role="sr-row-cancel"], [data-role="sr-row-noshow"]');
         for (var i = 0; i < cancelRows.length; i += 1) { cancelRows[i].hidden = true; }
         state.date = null;
         setBoardBusy(true);

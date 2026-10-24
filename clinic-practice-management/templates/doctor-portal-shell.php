@@ -239,6 +239,19 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                     <div data-role="workspace-error" class="cpms-doc-error" role="alert" hidden></div>
                     <div data-role="workspace-body" hidden>
                         <div class="cpms-doc-ws-header" data-role="workspace-header"></div>
+                        <div class="cpms-doc-ws-med-history" data-role="workspace-med-history-section">
+                            <div class="cpms-doc-section-head cpms-doc-ws-subhead">
+                                <h3>خلاصه و سوابق بالینی مرتبط بیمار (این مطب)</h3>
+                                <span class="cpms-doc-count" data-role="workspace-med-history-count"></span>
+                            </div>
+                            <div class="cpms-doc-ws-med-summary" data-role="workspace-med-history-summary"></div>
+                            <div class="cpms-doc-ws-med-actions">
+                                <button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-med-history-load">مشاهدهٔ جزئیات مراجعات قبلی</button>
+                            </div>
+                            <div class="cpms-doc-loading" data-role="workspace-med-history-loading" hidden>در حال دریافت سوابق بالینی مرتبط…</div>
+                            <div class="cpms-doc-error" data-role="workspace-med-history-error" role="alert" hidden></div>
+                            <ul class="cpms-doc-ws-med-list" data-role="workspace-med-history-list" hidden></ul>
+                        </div>
                         <button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-handwriting-open">🖋️ دست‌خط ویزیت</button>
 <div id="cpms-hw-app" dir="rtl" data-role="workspace-handwriting-editor" hidden role="dialog" aria-label="دست‌خط ویزیت">
     <div id="cpms-hw-head">
@@ -1011,6 +1024,145 @@ function resetRecFuUi(){
     clearFuComposer();
 }
 
+function resetMedHistoryUi(){
+    state.workspaceMedHistoryBusy = false;
+    var summary = qs('[data-role="workspace-med-history-summary"]');
+    if ( summary ) summary.innerHTML = '';
+    var count = qs('[data-role="workspace-med-history-count"]');
+    if ( count ) count.textContent = '';
+    var list = qs('[data-role="workspace-med-history-list"]');
+    if ( list ) { list.innerHTML = ''; hide(list); }
+    hide(qs('[data-role="workspace-med-history-loading"]'));
+    hide(qs('[data-role="workspace-med-history-error"]'));
+    var btn = qs('[data-role="workspace-med-history-load"]');
+    if ( btn ) { btn.disabled = false; show(btn); }
+}
+
+function formatClinicalList(value){
+    if ( Array.isArray(value) ) {
+        var clean = value.map(function(v){ return String(v || '').trim(); }).filter(Boolean);
+        return clean.length ? clean.join('، ') : 'ثبت نشده';
+    }
+    if ( value && typeof value === 'object' ) {
+        var combined = [].concat(
+            Array.isArray(value.medication) ? value.medication : [],
+            Array.isArray(value.other) ? value.other : []
+        ).map(function(v){ return String(v || '').trim(); }).filter(Boolean);
+        return combined.length ? combined.join('، ') : 'ثبت نشده';
+    }
+    if ( typeof value === 'string' && value.trim() !== '' ) return value.trim();
+    return 'ثبت نشده';
+}
+
+function renderWorkspaceMedSummary(data){
+    var box = qs('[data-role="workspace-med-history-summary"]');
+    var count = qs('[data-role="workspace-med-history-count"]');
+    var btn = qs('[data-role="workspace-med-history-load"]');
+    if ( !box ) return;
+    var p = (data && data.patient) || {};
+    var v = (data && data.visit) || {};
+    var past = Array.isArray(data && data.past_visits) ? data.past_visits.filter(function(item){
+        return Number(item && item.id) !== Number(v.id || 0);
+    }) : [];
+    if ( count ) count.textContent = past.length + ' مراجعهٔ قبلی';
+    var items = [
+        '<div class="cpms-doc-ws-med-pill"><span>گروه خونی:</span> <b>' + esc(p.blood_group || 'ثبت نشده') + '</b></div>',
+        '<div class="cpms-doc-ws-med-pill"><span>حساسیت‌ها:</span> <b>' + esc(formatClinicalList(p.allergies)) + '</b></div>',
+        '<div class="cpms-doc-ws-med-pill"><span>بیماری‌های زمینه‌ای:</span> <b>' + esc(formatClinicalList(p.chronic_conditions)) + '</b></div>',
+        '<div class="cpms-doc-ws-med-pill"><span>داروهای مصرفی:</span> <b>' + esc(formatClinicalList(p.current_medications)) + '</b></div>'
+    ];
+    box.innerHTML = items.join('');
+    if ( btn ) {
+        if ( past.length === 0 ) hide(btn);
+        else { btn.disabled = false; show(btn); }
+    }
+}
+
+function noteCategoryLabel(cat){
+    return {
+        chief_complaint: 'شکایت اصلی',
+        history: 'شرح حال',
+        examination: 'معاینه',
+        diagnosis: 'تشخیص',
+        clinical_note: 'یادداشت بالینی',
+        recommendation_text: 'توصیه',
+        plan: 'طرح درمان',
+        private_note: 'یادداشت خصوصی',
+        other: 'سایر',
+        general: 'یادداشت عمومی'
+    }[cat] || cat || 'یادداشت';
+}
+
+function loadWorkspaceMedHistory(){
+    if ( state.workspaceMedHistoryBusy || !state.workspaceVisitId || !state.selectedClinicId || !state.selectedLocationId ) return;
+    var visitId = state.workspaceVisitId;
+    var clinicId = state.selectedClinicId;
+    var locationId = state.selectedLocationId;
+    var btn = qs('[data-role="workspace-med-history-load"]');
+    var loading = qs('[data-role="workspace-med-history-loading"]');
+    var err = qs('[data-role="workspace-med-history-error"]');
+    var list = qs('[data-role="workspace-med-history-list"]');
+    state.workspaceMedHistoryBusy = true;
+    if ( btn ) btn.disabled = true;
+    hide(err);
+    show(loading);
+    api('GET', '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/medical-history', null, scopeHeaders()).then(function(r){
+        if ( state.workspaceVisitId !== visitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
+        state.workspaceMedHistoryBusy = false;
+        hide(loading);
+        if ( btn ) btn.disabled = false;
+        if ( r.status !== 200 ) {
+            if ( err ) {
+                err.textContent = (r.body && r.body.message) ? String(r.body.message).slice(0, 200) : 'خطا در دریافت سوابق بالینی مرتبط';
+                show(err);
+            }
+            return;
+        }
+        var payload = (r.body && r.body.data) || r.body || {};
+        var visits = Array.isArray(payload.prior_visits) ? payload.prior_visits : [];
+        if ( !list ) return;
+        if ( visits.length === 0 ) {
+            list.innerHTML = '<li class="cpms-doc-ws-med-visit">سابقهٔ مراجعهٔ قبلی در این مطب ثبت نشده است.</li>';
+            show(list);
+            if ( btn ) hide(btn);
+            return;
+        }
+        list.innerHTML = visits.map(function(pv){
+            var notes = Array.isArray(pv.notes) ? pv.notes : [];
+            var rxs = Array.isArray(pv.prescriptions) ? pv.prescriptions : [];
+            var fus = Array.isArray(pv.follow_ups) ? pv.follow_ups : [];
+            var notesHtml = notes.length ? ('<div class="cpms-doc-ws-med-block"><strong>یادداشت‌ها:</strong> ' + notes.map(function(n){
+                return '<span class="cpms-doc-ws-med-entry">[' + esc(noteCategoryLabel(n.category)) + '] ' + esc(n.content_text || '') + '</span>';
+            }).join(' · ') + '</div>') : '';
+            var rxHtml = rxs.length ? ('<div class="cpms-doc-ws-med-block"><strong>نسخه‌های نهایی‌شده:</strong> ' + rxs.map(function(rx){
+                var drugs = Array.isArray(rx.items) ? rx.items.map(function(it){
+                    return esc(it.generic_name || '') + (it.dose ? ' (' + esc(it.dose) + ')' : '');
+                }).join('، ') : '';
+                return '<span class="cpms-doc-ws-med-entry">' + esc(rx.prescription_number || '') + (drugs ? ': ' + drugs : '') + '</span>';
+            }).join(' · ') + '</div>') : '';
+            var fuHtml = fus.length ? ('<div class="cpms-doc-ws-med-block"><strong>پیگیری:</strong> ' + fus.map(function(fu){
+                var when = fu.suggested_date_jalali || (fu.interval_days ? (fu.interval_days + ' روز بعد') : '');
+                return '<span class="cpms-doc-ws-med-entry">' + esc(when ? (when + (fu.reason ? ' — ' + fu.reason : '')) : (fu.reason || 'ثبت‌شده')) + '</span>';
+            }).join(' · ') + '</div>') : '';
+            var emptyDetail = (!notesHtml && !rxHtml && !fuHtml) ? '<div class="cpms-doc-ws-med-block cpms-doc-muted">جزئیات بالینی ثبت‌شده برای این مراجعه وجود ندارد.</div>' : '';
+            return '<li class="cpms-doc-ws-med-visit" data-role="workspace-med-history-item" data-prior-visit-id="' + esc(pv.visit_id) + '">' +
+                '<div class="cpms-doc-ws-med-visit-head"><strong>' + esc(pv.jalali_date || pv.visit_date || '—') + '</strong>' +
+                '<span>پزشک: ' + esc(pv.clinician_name || '—') + '</span>' +
+                '<span class="cpms-doc-badge status-' + esc(pv.status || '') + '">' + esc(visitStatusLabel(pv.status)) + '</span></div>' +
+                notesHtml + rxHtml + fuHtml + emptyDetail +
+                '</li>';
+        }).join('');
+        show(list);
+        if ( btn ) hide(btn);
+    }).catch(function(){
+        if ( state.workspaceVisitId !== visitId || state.selectedClinicId !== clinicId || state.selectedLocationId !== locationId ) return;
+        state.workspaceMedHistoryBusy = false;
+        hide(loading);
+        if ( btn ) btn.disabled = false;
+        if ( err ) { err.textContent = 'خطای ارتباط هنگام دریافت سوابق بالینی مرتبط'; show(err); }
+    });
+}
+
 function closeWorkspace(){
     if (handwritingStop) closeHandwriting();
     state.workspaceVisitId = null;
@@ -1024,6 +1176,7 @@ function closeWorkspace(){
     var contentEl = qs('[data-role="workspace-content"]');
     if ( contentEl ) contentEl.value = '';
     setNoteSubmitBusy(false);
+    resetMedHistoryUi();
     resetRxUi();
     resetRecFuUi();
     resetFilesUi();
@@ -1053,6 +1206,7 @@ function openWorkspace(visitId){
     hide(qs('[data-role="workspace-form-error"]'));
     hide(qs('[data-role="workspace-form-success"]'));
     setNoteSubmitBusy(false);
+    resetMedHistoryUi();
     resetRxUi();
     resetRecFuUi();
     resetFilesUi();
@@ -1092,6 +1246,7 @@ function renderWorkspace(data){
     var body = qs('[data-role="workspace-body"]');
     if ( !body ) return;
     renderWorkspaceHeader(data);
+    renderWorkspaceMedSummary(data);
     state.workspaceNotes = (data && data.notes) || [];
     renderWorkspaceNotes();
     state.workspaceRx = (data && data.prescriptions) || [];
@@ -2418,6 +2573,13 @@ document.addEventListener('click', function(ev){
         finalizeWorkspaceRx(finBtn, finBtn.getAttribute('data-rx-id'));
         return;
     }
+    var medHistBtn = target ? target.closest('[data-role="workspace-med-history-load"]') : null;
+    if ( medHistBtn ) {
+        ev.preventDefault();
+        if ( medHistBtn.disabled ) return;
+        loadWorkspaceMedHistory();
+        return;
+    }
     var item = target ? target.closest('[data-role="queue-item"]') : null;
     if ( !item ) return;
     var selectedVisitId = item.getAttribute('data-visit-id');
@@ -2525,9 +2687,20 @@ document.addEventListener('visibilitychange', function(){
     }
 });
 
+function stopQueuePolling(){
+    state.pollPaused = true;
+    if ( state.timer ) {
+        clearInterval(state.timer);
+        state.timer = null;
+    }
+}
+window.addEventListener('beforeunload', stopQueuePolling);
+window.addEventListener('pagehide', stopQueuePolling);
+
 function start(){
     if ( !CFG.is_doctor ) return;
     loadContext().then(function(){
+        if ( state.pollPaused && document.visibilityState === 'hidden' ) return;
         state.timer = setInterval(pollQueue, 5000);
     });
 }
