@@ -208,6 +208,29 @@ final class BookingFlowTest extends WP_UnitTestCase
 
     // ---------- B1/B2 ----------
 
+    public function testReferenceSequenceAdvancesPastGapAndLegacySuffix(): void
+    {
+        $firstSlot = $this->makeSlot(4, '10:00', 1, 20);
+        $hold = $this->booking()->hold($this->patientUserId, $this->clinicianId, $firstSlot['date'], $firstSlot['time']);
+        $first = $this->booking()->confirm($hold['hold_token'], $this->patientUserId, 'اول', $this->uuid());
+        $prefix = 'AP-' . str_replace('-', '', $firstSlot['date']) . '-';
+        global $wpdb;
+        foreach ([$prefix . '07', $prefix . 'LEG'] as $reference) {
+            $wpdb->query($wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
+                 (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, booked_at, confirmed_at, created_at, updated_at)
+                 SELECT clinic_id, location_id, %s, patient_id, clinician_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, booked_at, confirmed_at, created_at, updated_at
+                 FROM ' . $wpdb->prefix . 'cpms_appointments WHERE id = %d',
+                $reference,
+                $first['appointment_id']
+            ));
+        }
+        $secondSlot = $this->makeSlot(4, '11:00', 1, 20);
+        $secondHold = $this->booking()->hold($this->patientUserId, $this->clinicianId, $secondSlot['date'], $secondSlot['time']);
+        $second = $this->booking()->confirm($secondHold['hold_token'], $this->patientUserId, 'دوم', $this->uuid());
+        self::assertSame($prefix . '08', $second['reference_code']);
+    }
+
     public function testHoldThenConfirmFullFlow(): void
     {
         $slot = $this->makeSlot(3, '10:00', 1, 25);

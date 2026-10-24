@@ -318,7 +318,6 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
                 ],
                 ['generic_name' => 'دیفن‌هیدرامین', 'dose' => '1 آمپول', 'frequency' => 'شب‌ها'],
             ],
-            'is_patient_visible' => true,
         ];
 
         $rCreate = $this->dispatch('POST', '/' . sprintf(self::PORTAL_RX_CREATE, $visit), $body, $headers);

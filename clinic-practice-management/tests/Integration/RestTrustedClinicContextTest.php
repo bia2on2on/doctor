@@ -1295,11 +1295,11 @@ final class RestTrustedClinicContextTest extends WP_UnitTestCase
                 'dose' => '500 mg',
                 'frequency' => 'once daily',
             ]],
-            'is_patient_visible' => true,
         ], $headers);
         $this->assertSame(200, $draft->get_status(), (string) json_encode($draft->get_data(), JSON_UNESCAPED_UNICODE));
         $prescriptionId = (int) ($this->payload($draft)['id'] ?? 0);
         $this->assertGreaterThan(0, $prescriptionId);
+        $this->assertTrue((bool) ($this->payload($draft)['is_patient_visible'] ?? false));
 
         $finalized = $this->dispatch('POST', self::NS . '/prescriptions/' . $prescriptionId . '/finalize', [], $headers);
         $this->assertSame(200, $finalized->get_status(), (string) json_encode($finalized->get_data(), JSON_UNESCAPED_UNICODE));
