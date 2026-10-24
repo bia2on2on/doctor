@@ -628,41 +628,45 @@ final class PublicBookingShortcode
             esc_html('ادامهٔ رزرو با کد تأیید پیامکی')
         );
 
-        $lines[] = sprintf('<div class="%1$s" data-auth-step="otp-mobile" hidden>', esc_attr($b . '__auth-step'));
+        $lines[] = sprintf( '<div class="%1$s" data-auth-step="otp-mobile" hidden>', esc_attr( $b . '__auth-step' ) );
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
-            esc_attr($b . '__label'),
-            esc_attr($mobileInputId),
-            esc_html('شماره موبایل')
+            esc_attr( $b . '__label' ),
+            esc_attr( $mobileInputId ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_html( 'شماره موبایل (۱۱ رقم با پیش‌شماره ۰۹)' )
         );
         $lines[] = sprintf(
-            '<input type="tel" class="%1$s" id="%2$s" data-role="otp-mobile" inputmode="tel" autocomplete="tel" dir="ltr">',
-            esc_attr($b . '__input'),
-            esc_attr($mobileInputId)
+            '<input type="tel" class="%1$s" id="%2$s" data-role="otp-mobile" inputmode="tel" maxlength="11" autocomplete="tel" placeholder="09XXXXXXXXX" dir="ltr">',
+            esc_attr( $b . '__input' ),
+            esc_attr( $mobileInputId ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
         );
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-auth-action="otp-request">%2$s</button>',
-            esc_attr($b . '__btn'),
-            esc_html('دریافت کد تأیید')
+            esc_attr( $b . '__btn' ),
+            esc_html( 'دریافت کد تأیید' )
         );
         $lines[] = '</div>';
 
-        $lines[] = sprintf('<div class="%1$s" data-auth-step="otp-code" hidden>', esc_attr($b . '__auth-step'));
+        $lines[] = sprintf( '<div class="%1$s" data-auth-step="otp-code" hidden>', esc_attr( $b . '__auth-step' ) );
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
-            esc_attr($b . '__label'),
-            esc_attr($codeInputId),
-            esc_html('کد ۶ رقمی پیامک‌شده')
+            esc_attr( $b . '__label' ),
+            esc_attr( $codeInputId ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_html( 'کد ۶ رقمی پیامک‌شده' )
         );
         $lines[] = sprintf(
             '<input type="text" class="%1$s" id="%2$s" data-role="otp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" dir="ltr">',
-            esc_attr($b . '__input'),
-            esc_attr($codeInputId)
+            esc_attr( $b . '__input' ),
+            esc_attr( $codeInputId ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
         );
         $lines[] = sprintf(
-            '<button type="button" class="%1$s" data-auth-action="otp-verify">%2$s</button>',
-            esc_attr($b . '__btn'),
-            esc_html('تأیید و ادامه')
+            '<div class="%1$s"><button type="button" class="%2$s" data-auth-action="otp-verify">%3$s</button>'
+            . '<button type="button" class="%4$s" data-auth-action="otp-change-mobile">%5$s</button></div>',
+            esc_attr( $b . '__auth-actions' ),
+            esc_attr( $b . '__btn' ),
+            esc_html( 'تأیید و ادامه' ),
+            esc_attr( $b . '__link-btn' ),
+            esc_html( 'تغییر شماره موبایل' )
         );
         $lines[] = '</div>';
 
@@ -696,72 +700,80 @@ final class PublicBookingShortcode
         // Phase 8 Slice 3 — chooser برای N>1 linked active Patients (LINKED-ONLY authority).
         // فقط برای N>1 رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد. هرگز decoy/same-mobile/cross-clinic/archived را نشان نمی‌دهد.
         // Render chooser OUTSIDE the hidden booking-continue box so it is visible immediately after login.
-        $chooserHtml = '';
+        $chooser_html     = '';
+        $is_first_patient = false;
         try {
             $uid = get_current_user_id();
-            if ($uid > 0 && $clinicId > 0) {
-                $dbChooser = \ClinicCore\Bootstrap\App::db();
-                $linkedPatients = $dbChooser->fetchAll(
-                    'SELECT p.id, p.first_name, p.last_name FROM ' . $dbChooser->table('cpms_patient_user_links') . ' l JOIN ' . $dbChooser->table('cpms_patients') . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
-                    [$uid, $clinicId, 'active', $clinicId]
+            if ( $uid > 0 && $clinicId > 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method signature.
+                $db_chooser      = \ClinicCore\Bootstrap\App::db();
+                $linked_patients = $db_chooser->fetchAll(
+                    'SELECT p.id, p.first_name, p.last_name FROM ' . $db_chooser->table( 'cpms_patient_user_links' ) . ' l JOIN ' . $db_chooser->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
+                    [ $uid, $clinicId, 'active', $clinicId ] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method signature.
                 );
-                if (is_array($linkedPatients) && count($linkedPatients) > 1) {
-                    $chooserParts = [];
-                    $chooserParts[] = sprintf('<div class="%s" data-role="patient-chooser">', esc_attr($b . '__chooser'));
-                    $chooserParts[] = sprintf('<p class="%s">%s</p>', esc_attr($b . '__chooser-hint'), esc_html('لطفاً بیمار مورد نظر برای رزرو را انتخاب کنید:'));
-                    foreach ($linkedPatients as $lp) {
-                        if (!is_array($lp)) {
+                if ( is_array( $linked_patients ) && count( $linked_patients ) === 0 ) {
+                    $is_first_patient = true;
+                } elseif ( is_array( $linked_patients ) && count( $linked_patients ) > 1 ) {
+                    $chooser_parts   = [];
+                    $chooser_parts[] = sprintf( '<div class="%s" data-role="patient-chooser">', esc_attr( $b . '__chooser' ) );
+                    $chooser_parts[] = sprintf( '<p class="%s">%s</p>', esc_attr( $b . '__chooser-hint' ), esc_html( 'لطفاً بیمار مورد نظر برای رزرو را انتخاب کنید:' ) );
+                    foreach ( $linked_patients as $lp ) {
+                        if ( ! is_array( $lp ) ) {
                             continue;
                         }
-                        $pid = (int) ($lp['id'] ?? 0);
-                        if ($pid <= 0) {
+                        $pid = (int) ( $lp['id'] ?? 0 );
+                        if ( $pid <= 0 ) {
                             continue;
                         }
-                        $fn = trim((string) ($lp['first_name'] ?? ''));
-                        $ln = trim((string) ($lp['last_name'] ?? ''));
-                        $label = trim($fn . ' ' . $ln);
-                        if ($label === '') {
+                        $fn    = trim( (string) ( $lp['first_name'] ?? '' ) );
+                        $ln    = trim( (string) ( $lp['last_name'] ?? '' ) );
+                        $label = trim( $fn . ' ' . $ln );
+                        if ( $label === '' ) {
                             $label = 'بیمار #' . $pid;
                         }
-                        $chooserParts[] = sprintf(
+                        $chooser_parts[] = sprintf(
                             '<button type="button" class="%s" data-role="patient-option" data-patient-id="%d" aria-pressed="false">%s</button>',
-                            esc_attr($b . '__patient-option'),
+                            esc_attr( $b . '__patient-option' ),
                             $pid,
-                            esc_html($label)
+                            esc_html( $label )
                         );
                     }
-                    $chooserParts[] = '</div>';
-                    $chooserHtml = implode('', $chooserParts);
+                    $chooser_parts[] = '</div>';
+                    $chooser_html    = implode( '', $chooser_parts );
                 }
             }
-        } catch (\Throwable $e) {
-            $chooserHtml = '';
+        } catch ( \Throwable $e ) {
+            $chooser_html     = '';
+            $is_first_patient = false;
         }
 
         $lines = [];
-        if ($chooserHtml !== '') {
-            $lines[] = $chooserHtml;
+        if ( $chooser_html !== '' ) {
+            $lines[] = $chooser_html;
         }
         $lines[] = sprintf(
             '<div class="%1$s" data-role="booking-continue" hidden>',
-            esc_attr($b . '__continue-box')
+            esc_attr( $b . '__continue-box' )
         );
 
         $lines[] = sprintf(
-            '<p class="%1$s" data-role="continue-status" role="status" aria-live="polite" hidden></p>',
-            esc_attr($b . '__status')
+            '<p class="%1$s" data-role="continue-status" role="alert" aria-live="assertive" hidden></p>',
+            esc_attr( $b . '__status' )
         );
 
         // شمارشِ معکوس TTL Hold — فقط مقدار عددی توسط JS پر می‌شود.
         $lines[] = sprintf(
             '<p class="%1$s" data-role="hold-countdown" hidden>%2$s <b data-role="countdown-value" dir="ltr"></b></p>',
-            esc_attr($b . '__countdown'),
-            esc_html('زمان باقی‌ماندهٔ نگه‌داشتن نوبت:')
+            esc_attr( $b . '__countdown' ),
+            esc_html( 'زمان باقی‌ماندهٔ نگه‌داشتن نوبت:' )
         );
 
-        // فرمِ نام — فقط برای بیمارِ «جدید» در Clinicِ نوبت؛ سرور الزام را
-        // با CLINIC_VALIDATION_FAILED اعلام می‌کند و فرم همین‌جا باز می‌شود.
-        $lines[] = sprintf('<div class="%1$s" data-role="names-form" hidden>', esc_attr($b . '__names'));
+        // فرمِ نام — برای بیمارِ «جدید» در Clinicِ نوبت به‌صورت پیش‌دستانه پس از Hold هم نمایش داده می‌شود؛
+        // سرور همچنان مرجع نهایی الزام با CLINIC_VALIDATION_FAILED باقی می‌ماند.
+        $lines[] = sprintf(
+            '<div class="%1$s" data-role="names-form"%2$s hidden>',
+            esc_attr( $b . '__names' ),
+            $is_first_patient ? ' data-first-time="1"' : ''
+        );
         $lines[] = sprintf(
             '<p class="%1$s">%2$s</p>',
             esc_attr($b . '__names-hint'),
@@ -791,31 +803,62 @@ final class PublicBookingShortcode
         );
         $lines[] = '</div>';
 
+        $reason_id = $surfaceId . '-booking-reason'; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method signature.
+        $lines[]   = sprintf( '<div class="%1$s" data-role="reason-wrap" hidden>', esc_attr( $b . '__reason' ) );
+        $lines[]   = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr( $b . '__label' ),
+            esc_attr( $reason_id ),
+            esc_html( 'علت مراجعه (اختیاری)' )
+        );
+        $lines[]   = sprintf(
+            '<input type="text" class="%1$s" id="%2$s" data-role="booking-reason" maxlength="255">',
+            esc_attr( $b . '__input' ),
+            esc_attr( $reason_id )
+        );
+        $lines[]   = '</div>';
+
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-role="confirm-btn" hidden>%2$s</button>',
-            esc_attr($b . '__btn'),
-            esc_html('تأیید نهایی نوبت')
+            esc_attr( $b . '__btn' ),
+            esc_html( 'تأیید نهایی نوبت' )
         );
 
         // رسیدِ نهایی — مقادیر (کد رهگیری/تاریخ جلالی/ساعت) توسط JS از پاسخ
         // خودِ B2 با textContent جای‌گذاری می‌شوند.
-        $lines[] = sprintf('<div class="%1$s" data-role="receipt" hidden>', esc_attr($b . '__receipt'));
+        $portal_url = '';
+        try {
+            $portal_url = PatientPortalShell::portal_url();
+        } catch ( \Throwable $e ) {
+            $portal_url = '';
+        }
+
+        $lines[] = sprintf( '<div class="%1$s" data-role="receipt" hidden>', esc_attr( $b . '__receipt' ) );
         $lines[] = sprintf(
             '<p class="%1$s">%2$s</p>',
-            esc_attr($b . '__receipt-title'),
-            esc_html('نوبت شما با موفقیت ثبت شد.')
+            esc_attr( $b . '__receipt-title' ),
+            esc_html( 'نوبت شما با موفقیت ثبت شد.' )
         );
         $lines[] = sprintf(
             '<p class="%1$s">%2$s <b data-role="reference-code" dir="ltr"></b></p>',
-            esc_attr($b . '__receipt-line'),
-            esc_html('کد رهگیری:')
+            esc_attr( $b . '__receipt-line' ),
+            esc_html( 'کد رهگیری:' )
         );
         $lines[] = sprintf(
             '<p class="%1$s">%2$s <b data-role="slot-jalali"></b> — %3$s <b data-role="slot-time" dir="ltr"></b></p>',
-            esc_attr($b . '__receipt-line'),
-            esc_html('تاریخ نوبت:'),
-            esc_html('ساعت:')
+            esc_attr( $b . '__receipt-line' ),
+            esc_html( 'تاریخ نوبت:' ),
+            esc_html( 'ساعت:' )
         );
+        if ( $portal_url !== '' ) {
+            $lines[] = sprintf(
+                '<p class="%1$s"><a class="%2$s" data-role="receipt-portal-link" href="%3$s">%4$s</a></p>',
+                esc_attr( $b . '__receipt-actions' ),
+                esc_attr( $b . '__portal-link' ),
+                esc_url( $portal_url ),
+                esc_html( 'مشاهده، تغییر یا لغو نوبت در پرتال بیمار' )
+            );
+        }
         $lines[] = '</div>';
 
         // پیشنهادهای نزدیک پس از CLINIC_SLOT_TAKEN — از دادهٔ خودِ سرور

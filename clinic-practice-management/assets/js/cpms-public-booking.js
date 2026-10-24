@@ -663,9 +663,11 @@
 				if (continueBox) { continueBox.hidden = true; }
 				var confirmButton = root.querySelector('[data-role="confirm-btn"]');
 				var namesForm = root.querySelector('[data-role="names-form"]');
+				var reasonWrap = root.querySelector('[data-role="reason-wrap"]');
 				var receipt = root.querySelector('[data-role="receipt"]');
 				if (confirmButton) { confirmButton.hidden = true; }
 				if (namesForm) { namesForm.hidden = true; }
+				if (reasonWrap) { reasonWrap.hidden = true; }
 				if (receipt) { receipt.hidden = true; }
 				hideNearby();
 			}
@@ -1022,11 +1024,13 @@
 				return;
 			}
 			var mobile = digitsOnly(input.value);
-			if (mobile === '') {
-				setNodeMessage(status, '');
+			if (!/^09\d{9}$/.test(mobile)) {
+				input.setAttribute('aria-invalid', 'true');
+				setNodeMessage(status, 'شماره موبایل معتبر ۱۱ رقمی با پیش‌شماره ۰۹ وارد کنید.');
 				input.focus();
 				return;
 			}
+			input.removeAttribute('aria-invalid');
 
 			var payload = { mobile: mobile };
 			// Phase 8 Slice 2 — Clinicِ چالش از انتخابِ واقعیِ صفحه مشتق می‌شود؛
@@ -1054,13 +1058,16 @@
 					showAuthStep('otp-code');
 					var codeInput = root.querySelector('[data-role="otp-code"]');
 					if (codeInput) {
+						codeInput.removeAttribute('aria-invalid');
 						codeInput.focus();
 					}
 					return;
 				}
-				setNodeMessage(status, serverMessage(result));
+				input.setAttribute('aria-invalid', 'true');
+				setNodeMessage(status, serverMessage(result) || 'ارسال کد تأیید انجام نشد. لطفاً دوباره تلاش کنید.');
 			}, function () {
 				setBusy(false);
+				setNodeMessage(status, 'ارتباط با سرور برقرار نشد. لطفاً اتصال اینترنت را بررسی و دوباره تلاش کنید.');
 			});
 		}
 
@@ -1073,10 +1080,13 @@
 			}
 			var mobile = digitsOnly(input.value);
 			var code = digitsOnly(codeInput.value);
-			if (mobile === '' || code === '') {
-				setNodeMessage(status, '');
+			if (mobile === '' || code.length < 4) {
+				codeInput.setAttribute('aria-invalid', 'true');
+				setNodeMessage(status, 'کد تأیید پیامک‌شده را کامل وارد کنید.');
+				codeInput.focus();
 				return;
 			}
+			codeInput.removeAttribute('aria-invalid');
 
 			setBusy(true);
 			requestJson(config.rest_root + config.otp_verify_path, {
@@ -1096,9 +1106,11 @@
 					window.location.reload();
 					return;
 				}
-				setNodeMessage(status, result.ok ? '' : serverMessage(result));
+				codeInput.setAttribute('aria-invalid', 'true');
+				setNodeMessage(status, result.ok ? '' : (serverMessage(result) || 'کد تأیید معتبر نیست یا منقضی شده است.'));
 			}, function () {
 				setBusy(false);
+				setNodeMessage(status, 'ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.');
 			});
 		}
 
@@ -1240,6 +1252,14 @@
 					setDisabled(slotButtons(), true);
 					setDisabled(locationOptionButtons(), true);
 					startCountdown(isNonEmptyString(payload.expires_at) ? payload.expires_at : '');
+					var namesForm = root.querySelector('[data-role="names-form"]');
+					if (namesForm && namesForm.getAttribute('data-first-time') === '1') {
+						namesForm.hidden = false;
+					}
+					var reasonWrap = root.querySelector('[data-role="reason-wrap"]');
+					if (reasonWrap) {
+						reasonWrap.hidden = false;
+					}
 					var confirmBtn = root.querySelector('[data-role="confirm-btn"]');
 					if (confirmBtn) {
 						confirmBtn.hidden = false;
@@ -1250,6 +1270,7 @@
 			}, function () {
 				setBusy(false);
 				unfreeze();
+				setContinueMessage('ارتباط با سرور برای نگه‌داشتن نوبت برقرار نشد. لطفاً دوباره تلاش کنید.');
 			});
 		}
 
@@ -1269,12 +1290,18 @@
 			}
 			var firstInput = root.querySelector('[data-role="patient-first-name"]');
 			var lastInput = root.querySelector('[data-role="patient-last-name"]');
+			var reasonInput = root.querySelector('[data-role="booking-reason"]');
+			if (firstInput) { firstInput.removeAttribute('aria-invalid'); }
+			if (lastInput) { lastInput.removeAttribute('aria-invalid'); }
 			var body = { hold_token: holdToken };
 			if (firstInput && isNonEmptyString(firstInput.value.trim())) {
 				body.first_name = firstInput.value.trim();
 			}
 			if (lastInput && isNonEmptyString(lastInput.value.trim())) {
 				body.last_name = lastInput.value.trim();
+			}
+			if (reasonInput && isNonEmptyString(reasonInput.value.trim())) {
+				body.reason = reasonInput.value.trim().slice(0, 255);
 			}
 
 			setBusy(true);
@@ -1299,6 +1326,10 @@
 					var namesForm = root.querySelector('[data-role="names-form"]');
 					if (namesForm) {
 						namesForm.hidden = true;
+					}
+					var reasonWrap = root.querySelector('[data-role="reason-wrap"]');
+					if (reasonWrap) {
+						reasonWrap.hidden = true;
 					}
 					var confirmBtn = root.querySelector('[data-role="confirm-btn"]');
 					if (confirmBtn) {
@@ -1336,8 +1367,16 @@
 						if (form) {
 							form.hidden = false;
 						}
-						if (firstInput) {
+						if (firstInput && !isNonEmptyString(firstInput.value.trim())) {
+							firstInput.setAttribute('aria-invalid', 'true');
+						}
+						if (lastInput && !isNonEmptyString(lastInput.value.trim())) {
+							lastInput.setAttribute('aria-invalid', 'true');
+						}
+						if (firstInput && !isNonEmptyString(firstInput.value.trim())) {
 							firstInput.focus();
+						} else if (lastInput) {
+							lastInput.focus();
 						}
 					}
 					handleBookingFailure(result);
@@ -1347,6 +1386,7 @@
 			}, function () {
 				setBusy(false);
 				unfreeze();
+				setContinueMessage('ارتباط با سرور برای تأیید نهایی نوبت برقرار نشد. نوبت شما همچنان نگه داشته شده است؛ دوباره تلاش کنید.');
 			});
 		}
 
@@ -1488,6 +1528,14 @@
 					otpRequest();
 				} else if (action === 'otp-verify') {
 					otpVerify();
+				} else if (action === 'otp-change-mobile') {
+					var authStatus = root.querySelector('[data-role="auth-status"]');
+					setNodeMessage(authStatus, '');
+					showAuthStep('otp-mobile');
+					var mobileNode = root.querySelector('[data-role="otp-mobile"]');
+					if (mobileNode) {
+						mobileNode.focus();
+					}
 				}
 				return;
 			}

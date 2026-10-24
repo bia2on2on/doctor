@@ -4,10 +4,10 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
-use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Booking\BookingException;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -120,6 +120,24 @@ final class BookingController extends RestBase
                 ],
             ],
         ]);
+
+        register_rest_route(
+            self::NS,
+            '/appointments/(?P<id>\d+)/reschedule-options',
+            [
+                [
+                    'methods'             => WP_REST_Server::READABLE,
+                    'callback'            => fn ( WP_REST_Request $request ) => $this->reschedule_options( $request ),
+                    'permission_callback' => fn ( WP_REST_Request $request ) => $this->requirePatient( $request ),
+                    'args'                => [
+                        'id' => [
+                            'required' => true,
+                            'type'     => 'integer',
+                        ],
+                    ],
+                ],
+            ]
+        );
 
         register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule', [
             [
@@ -276,6 +294,21 @@ final class BookingController extends RestBase
             (string) $request->get_param('from'),
             (string) $request->get_param('to')
         ));
+    }
+
+    /**
+     * گزینه‌های اسلات آزاد برای جابه‌جایی نوبتِ خودِ بیمار (بدون افشای clinic_id/patient_id).
+     */
+    private function reschedule_options( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+        $user           = wp_get_current_user();
+        $appointment_id = (int) $request->get_param( 'id' );
+        if ( $appointment_id <= 0 ) {
+            return $this->error( 'CLINIC_VALIDATION_FAILED', 422, 'شناسهٔ نوبت نامعتبر است' );
+        }
+
+        return $this->wrap(
+            fn () => $this->booking->reschedule_options( (int) $user->ID, $appointment_id )
+        );
     }
 
     private function reschedule(WP_REST_Request $request): WP_REST_Response|WP_Error
@@ -536,6 +569,10 @@ final class BookingController extends RestBase
             return $this->success($fn(), 200);
         } catch (BookingException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch ( \Throwable $e ) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational boundary log without leaking raw exception details to client.
+            error_log( '[CPMS][BookingController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );
+            return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور؛ لطفاً دوباره تلاش کنید.' );
         }
     }
 }

@@ -743,15 +743,113 @@
 	gap: 0.5rem;
 }
 
-/* ---------- نقاط شکست باریک: چیدمان ستونی + بدون سرریز ---------- */
+/* ---------- نقاط شکست باریک: چیدمان ستونی + بدون سرریز (390px و 320px) ---------- */
+
+.cpms-public-booking__input[aria-invalid="true"] {
+	border-color: var(--cpms-pb-danger);
+	background: var(--cpms-pb-danger-bg);
+}
+
+.cpms-public-booking__auth-actions {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	gap: 0.5rem;
+}
+
+.cpms-public-booking__link-btn {
+	min-block-size: var(--cpms-pb-touch);
+	padding: 0.45rem 0.85rem;
+	background: transparent;
+	border: 1px solid var(--cpms-pb-border);
+	border-radius: var(--cpms-pb-radius-sm);
+	color: var(--cpms-pb-text);
+	font: inherit;
+	font-weight: 600;
+	cursor: pointer;
+}
+
+.cpms-public-booking__reason {
+	display: flex;
+	flex-direction: column;
+	gap: 0.4rem;
+}
+
+.cpms-public-booking__reason[hidden] {
+	display: none;
+}
+
+.cpms-public-booking__receipt-actions {
+	margin: 0.5rem 0 0;
+}
+
+.cpms-public-booking__portal-link {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	min-block-size: var(--cpms-pb-touch);
+	padding: 0.45rem 0.9rem;
+	border-radius: var(--cpms-pb-radius-sm);
+	background: var(--cpms-pb-accent);
+	color: #fff;
+	text-decoration: none;
+	font-weight: 700;
+}
 
 @media (max-width: 480px) {
 	.cpms-public-booking__btn,
-	.cpms-public-booking__continue-btn {
+	.cpms-public-booking__continue-btn,
+	.cpms-public-booking__link-btn,
+	.cpms-public-booking__portal-link {
+		inline-size: 100%;
 		align-self: stretch;
+		text-align: center;
+		justify-content: center;
 	}
 
 	.cpms-public-booking__input {
+		inline-size: 100%;
+	}
+}
+
+@media (max-width: 390px) {
+	.cpms-public-booking {
+		padding: 12px;
+	}
+
+	.cpms-public-booking__panel,
+	.cpms-public-booking__continue-box {
+		padding: 10px;
+	}
+
+	.cpms-public-booking__slots,
+	.cpms-public-booking__nearby-list {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		gap: 8px;
+	}
+
+	.cpms-public-booking__slot {
+		inline-size: 100%;
+	}
+}
+
+@media (max-width: 340px) {
+	.cpms-public-booking {
+		padding: 10px 8px;
+	}
+
+	.cpms-public-booking__slots,
+	.cpms-public-booking__nearby-list {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.cpms-public-booking__day {
+		padding: 8px;
+	}
+
+	.cpms-public-booking__clinician,
+	.cpms-public-booking__location-option {
 		inline-size: 100%;
 	}
 }
