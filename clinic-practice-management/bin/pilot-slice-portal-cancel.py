@@ -384,8 +384,8 @@ def run_journey(browser, run):
         stage = "render"
         page.wait_for_selector("h1", timeout=15000)
         h1 = page.locator("h1").first.inner_text().strip()
-        if "نوبت" not in h1 or "من" not in h1:
-            raise RuntimeError(f"portal title not rendered (h1={h1[:40]!r} url={page.url})")
+        if h1 != "داشبورد بیمار":
+            raise RuntimeError(f"patient dashboard title not rendered (h1={h1[:40]!r} url={page.url})")
         cfg_nodes = page.locator("script.cpms-patient-portal__config")
         if cfg_nodes.count() != 1:
             raise RuntimeError(f"exactly one runtime config script expected, got {cfg_nodes.count()}")
