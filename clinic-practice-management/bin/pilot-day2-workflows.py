@@ -490,6 +490,78 @@ def run_journey_a_patient_reschedule(browser, cfg):
         ctx_pt.close()
 
 
+def anchor_reception_rows(cfg, target_date=None):
+    """Re-anchor the Journey B reception rows against the SERVER clock.
+
+    The rows must be, at the instant the reception board is read: already due,
+    still inside `queue.no_show_grace_minutes`, and on the operational date the
+    server itself resolves. Any fixed wall time (the retired 08:20/08:40/09:00
+    Tehran rows) fails that for some clock, which is the defect this PR fixes.
+    The anchor delegates to the same pure policy the fixture uses, with the
+    server's `now`, the Location's IANA timezone from the database and each
+    Clinic's own grace. It never changes status and never disables the job.
+    """
+    ids = cfg["sec_reanchor_ids"]
+    cmd = ["php", "tests/bin/day2-anchor-reception-rows.php", f"--ids={ids}"]
+    if target_date:
+        cmd.append(f"--date={target_date}")
+    env = dict(os.environ)
+    env["WP_HOME"] = WP_DIR
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
+    out = (proc.stdout or "").strip()
+    err = (proc.stderr or "").strip()
+    if proc.returncode != 0 or "DAY2_ANCHOR_OK" not in out:
+        raise AssertionError(
+            "reception row anchor failed: exit="
+            f"{proc.returncode} detail={(err or out)[:300]}"
+        )
+    match = re.search(r"\bdate=(\d{4}-\d{2}-\d{2})\b", out)
+    if not match:
+        raise AssertionError(f"reception row anchor returned no date: {out[:200]}")
+    info(out)
+    return match.group(1)
+
+
+def select_reception_scope_and_load_board(page, cfg):
+    """Existing reception scope selection, unchanged; returns the board payload."""
+    assert "/wp-admin/" not in (page.url or ""), "Receptionist portal must stay out of wp-admin"
+
+    clinic_sel = page.locator('[data-role="sr-clinic-select"]')
+    clinic_sel.wait_for(state="visible", timeout=20000)
+    page.wait_for_function(
+        """(cid) => {
+            const s = document.querySelector('[data-role="sr-clinic-select"]');
+            return s && Array.from(s.options).some(o => o.value === String(cid));
+        }""",
+        arg=cfg["clinic_a"],
+        timeout=20000,
+    )
+    with page.expect_response(
+        lambda r: "/staff/portal/reception/context" in r.url, timeout=25000
+    ) as ctx_info:
+        clinic_sel.select_option(str(cfg["clinic_a"]))
+    assert ctx_info.value.status == 200, "reception clinic context failed"
+
+    loc_sel = page.locator('[data-role="sr-location-select"]')
+    page.wait_for_function(
+        """(lid) => {
+            const s = document.querySelector('[data-role="sr-location-select"]');
+            return s && !s.disabled && Array.from(s.options).some(o => o.value === String(lid));
+        }""",
+        arg=cfg["loc_a1"],
+        timeout=20000,
+    )
+    with page.expect_response(
+        lambda r: "/staff/portal/reception/board" in r.url, timeout=25000
+    ) as board_info:
+        loc_sel.select_option(str(cfg["loc_a1"]))
+    assert board_info.value.status == 200, "reception board load failed"
+    try:
+        return board_info.value.json() or {}
+    except Exception:
+        return {}
+
+
 def run_journey_b_receptionist(browser, cfg):
     assert_subscriber_in_db(cfg["sec_user_id"], "receptionist")
     ctx_sec = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
@@ -500,36 +572,45 @@ def run_journey_b_receptionist(browser, cfg):
         page_sec.goto(cfg["reception_url"], wait_until="networkidle")
         assert "/wp-admin/" not in (page_sec.url or ""), "Receptionist portal must stay out of wp-admin"
 
-        clinic_sel = page_sec.locator('[data-role="sr-clinic-select"]')
-        clinic_sel.wait_for(state="visible", timeout=20000)
-        page_sec.wait_for_function(
-            """(cid) => {
-                const s = document.querySelector('[data-role="sr-clinic-select"]');
-                return s && Array.from(s.options).some(o => o.value === String(cid));
-            }""",
-            arg=cfg["clinic_a"],
-            timeout=20000,
-        )
-        with page_sec.expect_response(
-            lambda r: "/staff/portal/reception/context" in r.url, timeout=25000
-        ) as ctx_info:
-            clinic_sel.select_option(str(cfg["clinic_a"]))
-        assert ctx_info.value.status == 200, "reception clinic context failed"
+        # Clock-safe anchoring: the rows are placed "already due, inside grace,
+        # on the server's operational date" immediately before the board is
+        # read, so the real visits.no_show job cannot sweep them first and the
+        # board cannot resolve a different operational date. The loop is
+        # bounded and only re-anchors when the server reports a different date
+        # (i.e. local midnight actually crossed between the two reads); it never
+        # sleeps and never loosens an assertion.
+        anchor_date = anchor_reception_rows(cfg)
+        board = {}
+        for attempt in (1, 2, 3):
+            board = select_reception_scope_and_load_board(page_sec, cfg)
+            if not board:
+                # Payload unavailable (unexpected response shape): the DOM
+                # assertions below stay authoritative. Recorded, never hidden.
+                info("reception_board_payload=unavailable")
+                break
+            board_date = str(board.get("date") or "")
+            if board_date and board_date == anchor_date:
+                break
+            assert attempt < 3, (
+                "reception board operational date never converged with the anchored "
+                f"date: anchored={anchor_date} board={board_date or 'missing'}"
+            )
+            info(
+                f"reception_reanchor attempt={attempt} anchored={anchor_date} "
+                f"board={board_date or 'missing'}"
+            )
+            anchor_date = anchor_reception_rows(cfg, board_date or None)
 
-        loc_sel = page_sec.locator('[data-role="sr-location-select"]')
-        page_sec.wait_for_function(
-            """(lid) => {
-                const s = document.querySelector('[data-role="sr-location-select"]');
-                return s && !s.disabled && Array.from(s.options).some(o => o.value === String(lid));
-            }""",
-            arg=cfg["loc_a1"],
-            timeout=20000,
-        )
-        with page_sec.expect_response(
-            lambda r: "/staff/portal/reception/board" in r.url, timeout=25000
-        ) as board_info:
-            loc_sel.select_option(str(cfg["loc_a1"]))
-        assert board_info.value.status == 200, "reception board load failed"
+        if board:
+            board_ids = {
+                int(row.get("id", 0)) for row in (board.get("appointments") or [])
+            }
+            assert cfg["sec_appt_doc1"] in board_ids, (
+                "anchored Doc1 reception row is missing from the operational-day board"
+            )
+            assert cfg["sec_appt_doc2"] in board_ids, (
+                "anchored Doc2 reception row is missing from the operational-day board"
+            )
 
         row_doc1 = page_sec.locator(
             f'tr[data-role="sr-row"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'
@@ -925,6 +1006,7 @@ def main():
         "resched_beyond_slot": int(env_req("DAY2_RESCHED_BEYOND_SLOT")),
         "sec_login": env_req("DAY2_SEC_LOGIN"),
         "sec_user_id": int(env_req("DAY2_SEC_USER_ID")),
+        "sec_reanchor_ids": env_req("DAY2_SEC_REANCHOR_IDS"),
         "sec_appt_doc1": int(env_req("DAY2_SEC_APPT_DOC1")),
         "sec_appt_doc2": int(env_req("DAY2_SEC_APPT_DOC2")),
         "foreign_appt": int(env_req("DAY2_FOREIGN_APPT")),

@@ -7,133 +7,159 @@ namespace ClinicCore\Tests\Support;
 use ClinicCore\Domain\Booking\BookingWindow;
 use DateInterval;
 use DateTimeImmutable;
+use DateTimeZone;
 
 /**
  * Pure clock policy for the Day-2 reception acceptance fixture's ALREADY-DUE rows.
  *
- * Journey B proves a real receptionist no-show on TODAY's reception board. The
- * three reception rows therefore have to be BOTH:
- *   - already due (the appointment time has passed — a no-show is a real
- *     reception-desk judgement, not a future cancellation), and
+ * Journey B proves a real receptionist no-show on the reception board. Each
+ * reception row therefore has to be, AT THE INSTANT THE BOARD IS READ:
+ *   - already due (`slot_start <= now` — a no-show is a reception-desk
+ *     judgement, never a future cancellation), and
  *   - still inside `queue.no_show_grace_minutes`, so the real `visits.no_show`
- *     background job has NOT already flipped them to `no_show`.
+ *     job has not already flipped it to `no_show` and dropped it from
+ *     `AppointmentRepository::list_for_reception_operational_day()`
+ *     (`status IN ('pending','confirmed')`), and
+ *   - on the exact operational date the server resolves for the Location.
  *
- * A fixed wall time cannot satisfy that pair for every clock. The retired
- * `08:20:00` / `08:40:00` / `09:00:00` Asia/Tehran rows were past
- * slot + grace for any run after 08:50 local (08:30 for the second row), so
- * `VisitService::processNoShows()` legitimately marked them `no_show` and
- * `AppointmentRepository::list_for_reception_operational_day()`
- * (`status IN ('pending','confirmed')`) dropped them before the browser
- * journey started. That is a fixture defect, not a reschedule and not a flake.
+ * The retired `08:20:00` / `08:40:00` / `09:00:00` Asia/Tehran rows satisfied
+ * none of those properties for arbitrary clocks: after local 08:50 they were
+ * past slot + grace, the job legitimately marked them `no_show`, and the board
+ * returned nothing (observed `journey-B-reception … Locator.wait_for` timeout).
  *
- * The caller supplies the Location-local clock explicitly, so every
- * day-boundary decision is testable without changing the product clock, the
- * timezone policy, or the background job. This mirrors
- * `ReceptionFixtureClockPolicy`.
+ * This policy is TOTAL for every instant of the local day: instead of failing
+ * when "now minus the preferred age" would fall before local midnight, it clamps
+ * the slot to the start of the operational day. Because the clamp only ever
+ * moves a slot LATER (never earlier than midnight, never later than now), the
+ * resulting row is still due and keeps at least the documented grace remainder.
+ * The first seconds of a local day are the only place where the three rows can
+ * coincide — they legitimately share the day-start second, which is harmless
+ * because they belong to distinct appointments (and, for the Clinic A pair, to
+ * distinct clinicians, so `cpms_schedule_slots` `u_slot` stays satisfied).
+ *
+ * The caller supplies the clock, the operational date and the Location's IANA
+ * timezone explicitly, so every day-boundary decision is testable without
+ * changing the product clock, the timezone policy or the background job.
  */
 final class Day2ReceptionFixtureClockPolicy
 {
-    /**
-     * Remaining grace guaranteed at seed time. The grace window is what keeps
-     * the rows `confirmed` while the real background job sweeps; five minutes
-     * is ~7x the observed 24–40 s Day-2 browser step but still a normal
-     * reception-desk interval.
-     */
-    public const MINIMUM_GRACE_REMAINDER_SECONDS = 300;
+    /** Grace remaining after the anchor when the window is wide enough. */
+    public const PREFERRED_REMAINDER_SECONDS = 300;
+
+    /** Floor for the grace remainder on a narrow configured window. */
+    public const MINIMUM_REMAINDER_SECONDS = 30;
+
+    /** Below this the row cannot be guaranteed to survive the browser step. */
+    public const MINIMUM_GRACE_SECONDS = 60;
+
+    /** Preferred ages of the three already-due rows (distinct, seconds before now). */
+    public const PREFERRED_AGES = [
+        'doc1' => 300,
+        'doc2' => 240,
+        'foreign' => 180,
+    ];
 
     /**
-     * Local-day runway required after seeding.
+     * Grace remainder this policy guarantees for a configured grace window.
      *
-     * The board date is resolved server-side from the Location-local calendar
-     * day, so the browser step must finish before local midnight. 18 minutes is
-     * also > 20 min slot duration − 3 min oldest age, which keeps every seeded
-     * `slot_end_time` inside the same operational day (no midnight wrap).
+     * At the shipped `queue.no_show_grace_minutes = 30` this is the documented
+     * 300 s; a narrower configured window degrades gracefully instead of
+     * creating a clock-dependent failure window.
      */
-    public const MINIMUM_RUNWAY_SECONDS = 1080;
-
-    /** Age of the three already-due rows (distinct, seconds before `now`). */
-    public const PRIMARY_AGE_SECONDS = 300;
-    public const SECONDARY_AGE_SECONDS = 240;
-    public const FOREIGN_AGE_SECONDS = 180;
+    public static function graceRemainderSeconds(int $graceSeconds): int
+    {
+        return min(
+            self::PREFERRED_REMAINDER_SECONDS,
+            max(self::MINIMUM_REMAINDER_SECONDS, intdiv($graceSeconds, 2))
+        );
+    }
 
     /**
-     * A local day younger than this cannot host three distinct already-due rows
-     * without borrowing yesterday's date, which the board would not show.
-     */
-    public const MINIMUM_DAY_ELAPSED_SECONDS = 180;
-
-    /** Below this grace the proof cannot be made without weakening the rule. */
-    public const MINIMUM_GRACE_MINUTES = 10;
-
-    /**
-     * Already-due, still-inside-grace slot times on the SAME local day, or null
-     * when today cannot honestly satisfy the Journey B proof.
+     * Already-due, still-inside-grace slot instants on one operational day.
      *
-     * Null is a fail-closed result: the fixture must never silently borrow
-     * yesterday's date, push the rows into the future, disable the background
-     * job or shorten the grace window to make the browser step pass.
+     * Returns null only for genuinely unusable inputs, never because of the
+     * wall clock: a configured grace below `MINIMUM_GRACE_SECONDS`, a clock that
+     * does not belong to `$operationalDate` (a rollover race the caller resolves
+     * by re-reading the server date), or a day whose every candidate wall time
+     * is a DST gap/fold with no unambiguous instant.
      *
-     * @param int $graceMinutes the Location's effective `queue.no_show_grace_minutes`
      * @return array{doc1: DateTimeImmutable, doc2: DateTimeImmutable, foreign: DateTimeImmutable}|null
      */
-    public static function alreadyDueSameDaySlotTimes(DateTimeImmutable $nowLocal, int $graceMinutes): ?array
-    {
-        if ($graceMinutes < self::MINIMUM_GRACE_MINUTES) {
+    public static function slotTimes(
+        DateTimeImmutable $nowLocal,
+        string $operationalDate,
+        int $graceMinutes
+    ): ?array {
+        $timezone = $nowLocal->getTimezone();
+        if (!self::isValidDate($operationalDate)) {
             return null;
         }
 
-        $timezone = $nowLocal->getTimezone();
-        $today    = $nowLocal->format('Y-m-d');
+        $graceSeconds = $graceMinutes * 60;
+        if ($graceSeconds < self::MINIMUM_GRACE_SECONDS) {
+            return null;
+        }
 
-        // Second precision only: the persisted slot is H:i:s, and the
-        // eligibility comparison below must not be moved by sub-second drift.
         $now = $nowLocal->setTime(
             (int) $nowLocal->format('H'),
             (int) $nowLocal->format('i'),
             (int) $nowLocal->format('s')
         );
 
-        $dayStart = $now->setTime(0, 0, 0);
-        $elapsed  = $now->getTimestamp() - $dayStart->getTimestamp();
-        $runway   = $dayStart->add(new DateInterval('P1D'))->getTimestamp() - $now->getTimestamp();
-
-        if ($elapsed < self::MINIMUM_DAY_ELAPSED_SECONDS || $runway < self::MINIMUM_RUNWAY_SECONDS) {
+        // The caller anchors to the date the SERVER resolves. If this clock is
+        // not on that date the pair is inconsistent (midnight crossed between
+        // the two reads) and the caller must re-anchor — never silently pass.
+        if ($now->format('Y-m-d') !== $operationalDate) {
             return null;
         }
 
-        $maximumAge = $graceMinutes * 60 - self::MINIMUM_GRACE_REMAINDER_SECONDS;
+        $dayStart = new DateTimeImmutable($operationalDate . ' 00:00:00', $timezone);
+        $dayEnd = $dayStart->add(new DateInterval('P1D'));
+        $nowUtc = $now->setTimezone(new DateTimeZone('UTC'));
+
+        $remainder = self::graceRemainderSeconds($graceSeconds);
+        $maximumAge = $graceSeconds - $remainder;
         if ($maximumAge <= 0) {
             return null;
         }
 
-        $preferredAges = [
-            'doc1' => self::PRIMARY_AGE_SECONDS,
-            'doc2' => self::SECONDARY_AGE_SECONDS,
-            'foreign' => self::FOREIGN_AGE_SECONDS,
-        ];
-
         $times = [];
         $index = 0;
-        foreach ($preferredAges as $key => $preferredAge) {
-            // Stay inside the grace window (maximumAge) and inside today
-            // (elapsed). The per-index term keeps the three rows distinct even
-            // in the first minutes of a local day, where the day itself is the
-            // binding constraint.
-            $age = min($preferredAge, $maximumAge, $elapsed - $index);
+        foreach (self::PREFERRED_AGES as $key => $preferredAge) {
+            // The per-row decrement keeps the three rows distinct even when a
+            // narrow configured grace window, rather than the preferred age,
+            // is the binding constraint.
+            $age = min($preferredAge, $maximumAge - $index);
             if ($age <= 0) {
                 return null;
             }
+            $candidate = $now->sub(new DateInterval('PT' . $age . 'S'));
+            if ($candidate < $dayStart) {
+                // Clamp to the operational day start instead of failing or
+                // borrowing yesterday's date.
+                $candidate = $dayStart;
+            }
 
-            $slot = $now->sub(new DateInterval('PT' . $age . 'S'));
-
-            if ($slot->format('Y-m-d') !== $today) {
+            $resolved = self::nearestUnambiguousInstant(
+                $candidate,
+                $dayStart,
+                $dayEnd,
+                $now,
+                $maximumAge,
+                $timezone
+            );
+            if ($resolved === null) {
                 return null;
             }
 
-            // A DATE+TIME slot has no offset/fold column. Reject an ambiguous
-            // or non-existent local wall time instead of guessing an occurrence.
-            if (BookingWindow::slotUtcInstant($slot->format('Y-m-d'), $slot->format('H:i:s'), $timezone) === null) {
-                return null;
+            [$slot, $slotInstant] = $resolved;
+
+            if ($slotInstant > $nowUtc) {
+                return null; // must be already due
+            }
+            if ($slotInstant->add(new DateInterval('PT' . $graceSeconds . 'S'))->getTimestamp()
+                - $nowUtc->getTimestamp() < $remainder) {
+                return null; // must keep the documented grace remainder
             }
 
             $times[$key] = $slot;
@@ -141,5 +167,55 @@ final class Day2ReceptionFixtureClockPolicy
         }
 
         return $times;
+    }
+
+    /**
+     * Walk earlier by whole minutes until the Location-local wall time maps to
+     * exactly one instant. A DATE+TIME column has no offset/fold field, so a
+     * repeated or non-existent wall time is rejected rather than guessed.
+     *
+     * @return array{0: DateTimeImmutable, 1: DateTimeImmutable}|null [local wall time, UTC instant]
+     */
+    private static function nearestUnambiguousInstant(
+        DateTimeImmutable $candidate,
+        DateTimeImmutable $dayStart,
+        DateTimeImmutable $dayEnd,
+        DateTimeImmutable $now,
+        int $maximumAge,
+        DateTimeZone $timezone
+    ): ?array {
+        $attempt = $candidate;
+        // Bounded search: at most the whole allowed age, one minute per step.
+        for ($step = 0; $step <= intdiv($maximumAge, 60) + 1; ++$step) {
+            if ($attempt < $dayStart) {
+                $attempt = $dayStart;
+            }
+            if ($attempt >= $dayEnd || $attempt > $now) {
+                return null;
+            }
+
+            $instant = BookingWindow::slotUtcInstant(
+                $attempt->format('Y-m-d'),
+                $attempt->format('H:i:s'),
+                $timezone
+            );
+            if ($instant !== null) {
+                return [$attempt, $instant];
+            }
+
+            $attempt = $attempt->sub(new DateInterval('PT60S'));
+        }
+
+        return null;
+    }
+
+    private static function isValidDate(string $date): bool
+    {
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {
+            return false;
+        }
+        $parsed = DateTimeImmutable::createFromFormat('!Y-m-d', $date, new DateTimeZone('UTC'));
+
+        return $parsed !== false && $parsed->format('Y-m-d') === $date;
     }
 }

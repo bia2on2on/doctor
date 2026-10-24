@@ -350,15 +350,15 @@ $graceB = (int) App::settingsFactory()->forClinic($clinicB)->get(
     Settings::DEFAULTS['queue.no_show_grace_minutes']
 );
 $receptionGrace = min($graceA, $graceB);
-$receptionTimes = Day2ReceptionFixtureClockPolicy::alreadyDueSameDaySlotTimes($nowLocal, $receptionGrace);
+$receptionTimes = Day2ReceptionFixtureClockPolicy::slotTimes($nowLocal, $today, $receptionGrace);
 if ($receptionTimes === null) {
+    // Total policy: this is a configuration defect (grace below the documented
+    // floor), not a wall-clock window.
     d2w_fail(sprintf(
-        'reception clock window unavailable: local %s with grace %d min needs >= %d min grace, >= %d s since local midnight and >= %d s before local midnight',
-        $nowLocal->format('Y-m-d H:i:s'),
+        'reception grace window unusable: grace=%d min (minimum %d s) at local %s',
         $receptionGrace,
-        Day2ReceptionFixtureClockPolicy::MINIMUM_GRACE_MINUTES,
-        Day2ReceptionFixtureClockPolicy::MINIMUM_DAY_ELAPSED_SECONDS,
-        Day2ReceptionFixtureClockPolicy::MINIMUM_RUNWAY_SECONDS
+        Day2ReceptionFixtureClockPolicy::MINIMUM_GRACE_SECONDS,
+        $nowLocal->format('Y-m-d H:i:s')
     ));
 }
 $secTime1    = $receptionTimes['doc1']->format('H:i:s');
@@ -384,10 +384,7 @@ foreach ([
     if ($receptionInstant > $nowUtc) {
         d2w_fail('reception row ' . $receptionLabel . ' must already be due');
     }
-    if ($graceRemaining <= 0) {
-        d2w_fail('reception row ' . $receptionLabel . ' would already be no-show eligible');
-    }
-    if ($graceRemaining < Day2ReceptionFixtureClockPolicy::MINIMUM_GRACE_REMAINDER_SECONDS) {
+    if ($graceRemaining < Day2ReceptionFixtureClockPolicy::graceRemainderSeconds($receptionRowGrace * 60)) {
         d2w_fail('reception row ' . $receptionLabel . ' has less than the documented grace remainder');
     }
 }
@@ -702,7 +699,11 @@ $envPayload = [
     'DAY2_SEC_SLOT_DOC1'       => $secTime1,
     'DAY2_SEC_SLOT_DOC2'       => $secTime2,
     'DAY2_SEC_SLOT_FOREIGN'    => $foreignTime,
+    'DAY2_MAX_GRACE_MINUTES'   => (string) $receptionGrace,
     'DAY2_RECEPTION_GRACE_MINUTES' => (string) $receptionGrace,
+    'DAY2_SEC_REANCHOR_IDS'    => implode(',', [$secApptDoc1, $secApptDoc2, $foreignApptId]),
+    'DAY2_LOC_A1_TZ'           => 'Asia/Tehran',
+    'DAY2_LOC_B1_TZ'           => 'Asia/Tehran',
     'DAY2_SEC_APPT_DOC1'       => (string) $secApptDoc1,
     'DAY2_SEC_APPT_DOC2'       => (string) $secApptDoc2,
     'DAY2_FOREIGN_APPT'        => (string) $foreignApptId,
