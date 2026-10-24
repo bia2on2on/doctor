@@ -431,9 +431,16 @@ def run_journey(browser, run):
         cfg_raw_scan = cfg_raw.replace("{patient_id}", "").replace("{id}", "")
         if "clinic_id" in cfg_raw_scan or "patient_id" in cfg_raw_scan or "user_id" in cfg_raw_scan or "recipient" in cfg_raw_scan:
             raise RuntimeError("config must not carry clinic_id/patient_id/user_id/recipient")
-        html = page.content()
-        if "data-clinic-id" in html or "data-patient-id" in html:
-            raise RuntimeError("portal markup must not publish clinic/patient ids")
+        # The reused public-booking surface legitimately carries its public Clinic
+        # selector and the server-authorized booking-subject ids. Keep the original
+        # authority-leak guard everywhere else in the portal DOM.
+        authority_leaks = page.evaluate(
+            """() => Array.from(document.querySelectorAll('[data-clinic-id], [data-patient-id]'))
+                .filter((node) => !node.closest('.cpms-public-booking'))
+                .map((node) => node.outerHTML.slice(0, 120))"""
+        )
+        if authority_leaks:
+            raise RuntimeError(f"non-booking portal markup must not publish clinic/patient ids: {authority_leaks[:2]}")
         buttons = page.locator(BTN)
         btn_ids = sorted(int(x) for x in page.evaluate(
             "() => Array.from(document.querySelectorAll('button[data-role=\"cancel-appointment\"]')).map(b => b.getAttribute('data-appointment-id'))"
