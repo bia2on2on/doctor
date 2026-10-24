@@ -116,27 +116,35 @@ final class ProtectedBackupStore
     {
         $this->assertWritable('ensureGuards');
         if (!is_dir($this->basePath)) {
-            if (!mkdir($this->basePath, 0750, true) && !is_dir($this->basePath)) {
+            if (!@mkdir($this->basePath, 0750, true) && !is_dir($this->basePath)) {
                 throw BackupException::of('CLINIC_BACKUP_IO', 'backup dir mkdir failed: ' . $this->basePath);
             }
         }
         $ht = $this->basePath . '/.htaccess';
         if (!is_file($ht)) {
-            @file_put_contents($ht, self::GUARD_HTACCESS);
+            if (@file_put_contents($ht, self::GUARD_HTACCESS) === false) {
+                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+            }
         }
         $idx = $this->basePath . '/index.php';
         if (!is_file($idx)) {
-            @file_put_contents($idx, "<?php\n// silence\n");
+            if (@file_put_contents($idx, "<?php\n// silence\n") === false) {
+                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+            }
         }
         // Phase 1A: یک بکاپ کاملِ پایگاه داده در دسترس مستقیم HTTP یک
         // نشت تمام‌عیار است و `.htaccess` روی nginx خوانده نمی‌شود.
         $webConfig = $this->basePath . '/web.config';
         if (!is_file($webConfig)) {
-            @file_put_contents($webConfig, self::GUARD_WEBCONFIG);
+            if (@file_put_contents($webConfig, self::GUARD_WEBCONFIG) === false) {
+                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+            }
         }
         $readme = $this->basePath . '/README-SECURITY.txt';
         if (!is_file($readme)) {
-            @file_put_contents($readme, self::GUARD_README);
+            if (@file_put_contents($readme, self::GUARD_README) === false) {
+                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+            }
         }
     }
 
@@ -160,7 +168,7 @@ final class ProtectedBackupStore
         if (is_dir($dir)) {
             throw BackupException::of('CLINIC_BACKUP_EXISTS', 'backup already exists: ' . $backupId);
         }
-        if (!mkdir($dir, 0750, true) && !is_dir($dir)) {
+        if (!@mkdir($dir, 0750, true) && !is_dir($dir)) {
             throw BackupException::of('CLINIC_BACKUP_IO', 'backup mkdir failed: ' . $backupId);
         }
 
@@ -188,8 +196,9 @@ final class ProtectedBackupStore
     {
         // OD-9: مخزن فقط‌خواندنی هیچ گاردی نمی‌نویسد — فهرست‌کردن یک عمل
         // خواندن است و مبدأ legacy نباید دست‌خورد شود.
-        if (!$this->readonly) {
-            $this->ensureGuards();
+        // Listing must never create storage or write guard files.
+        if (!is_dir($this->basePath)) {
+            return [];
         }
         $ids = [];
         foreach ((array) glob($this->basePath . '/*') as $entry) {

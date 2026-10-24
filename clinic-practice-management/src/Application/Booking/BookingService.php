@@ -2270,7 +2270,7 @@ final class BookingService
         $decision = $this->licenseGate->assert($operation);
         if (!$decision->allowed) {
             $this->op->warning('license.blocked', ['operation' => $operation, 'reason' => $decision->reason]);
-            throw BookingException::of('CLINIC_LICENSE_BLOCKED', 'سیستم در حالت Read-Only است (مجازت) — عملیات جدید مجاز نیست', 503);
+            throw BookingException::of('CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ثبت نوبت جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503);
         }
     }
 

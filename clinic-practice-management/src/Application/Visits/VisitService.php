@@ -140,6 +140,17 @@ final class VisitService
                     409,
                     ['appointment_status' => $status] ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
             }
+            // Check-in is only valid on the appointment's Gregorian calendar date
+            // in its trusted Location timezone. A browser-supplied date is never used.
+            $trustedTimezone = $this->resolveLocationTimezone($locationId, $clinicId);
+            $scheduledDate = (string) ($appt['slot_date'] ?? '');
+            $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $scheduledDate);
+            if ( $trustedTimezone === null || $parsedDate === false || $parsedDate->format('Y-m-d') !== $scheduledDate ) {
+                throw VisitException::of('CLINIC_VALIDATION_FAILED', 'تاریخ یا منطقه زمانی نوبت معتبر نیست', 422);
+            }
+            if ( $nowUtc->setTimezone($trustedTimezone)->format('Y-m-d') !== $scheduledDate ) {
+                throw VisitException::of('CLINIC_INVALID_APPOINTMENT_STATE', 'پذیرش فقط در روز محلی نوبت مجاز است', 409);
+            }
             if ( $status === 'no_show' ) {
                 // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
                 // a genuinely active Visit to a terminal no_show appointment).
@@ -1744,7 +1755,7 @@ final class VisitService
         $decision = $this->licenseGate->assert( $operation, $context ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing injected property.
         if ( !$decision->allowed ) { // phpcs:ignore WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
             throw VisitException::of( 'CLINIC_LICENSE_BLOCKED', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- WPCS
-                'سیستم در حالت Read-Only است (مجازت) — ثبت مراجعه جدید مجاز نیست',
+                'مجوز سامانه اجازه پذیرش جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد',
                 503 ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent -- WPCS
         }
     }

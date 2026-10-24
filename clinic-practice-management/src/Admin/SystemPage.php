@@ -258,13 +258,13 @@ final class SystemPage
                         <td><?php echo esc_html((string) $b['storage_files']); ?></td>
                         <td><?php echo esc_html((string) $b['integrity']); ?></td>
                         <td>
-                            <form method="post" style="display:inline">
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline">
                                 <?php wp_nonce_field('cpms_backup_verify'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_verify">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">
                                 <button class="button button-small">تأیید کامل</button>
                             </form>
-                            <form method="post" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
+                            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" style="display:inline" data-cpms-confirm="حذف این بکاپ؟">
                                 <?php wp_nonce_field('cpms_backup_delete'); ?>
                                 <input type="hidden" name="action" value="cpms_backup_delete">
                                 <input type="hidden" name="backup_id" value="<?php echo esc_attr((string) $b['backup_id']); ?>">

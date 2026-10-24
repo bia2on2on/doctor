@@ -425,6 +425,18 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 			</section>
 		<?php endif; ?>
 
+		<?php if ( array() === $cpms_mp_organizations && array() !== $cpms_mp_clinics && 0 === $cpms_mp_org_id && 0 === $cpms_mp_clinic_id ) : ?>
+			<section class="cpms-mgmt-card" aria-labelledby="cpms-clinic-overview-title">
+				<h2 id="cpms-clinic-overview-title">درمانگاه‌های تحت مدیریت</h2>
+				<ul>
+					<?php foreach ( $cpms_mp_clinics as $cpms_mp_clinic ) : ?>
+						<li><a href="<?php echo esc_url( add_query_arg( ManagementPortalShell::CLINIC_PARAM, (string) $cpms_mp_clinic['id'], $cpms_mp_url ) ); ?>"><?php echo esc_html( $cpms_mp_clinic['name'] ); ?></a></li>
+					<?php endforeach; ?>
+				</ul>
+				<p class="cpms-mgmt-empty">درمانگاه موردنظر را صریحاً انتخاب کنید.</p>
+			</section>
+		<?php endif; ?>
+
 		<?php if ( $cpms_mp_org_view !== null ) : ?>
 			<?php $cpms_mp_org_can = $cpms_mp_org_view['can']; ?>
 			<section class="cpms-mgmt-card" data-cpms-org="<?php echo esc_attr( (string) $cpms_mp_org_view['organization']['id'] ); ?>">
