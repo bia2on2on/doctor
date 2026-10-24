@@ -68,7 +68,6 @@ jobs:
       - name: Measure inner installable release ZIP (not the outer Actions artifact)
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           zip=dist/clinic-practice-management-1.0.0.zip
           test -f "$zip"
@@ -86,8 +85,9 @@ jobs:
               echo 'Inner ZIP fits the provisional 32 MiB PHP upload policy (independent of the 40 MiB POST limit).'
             fi
           } | tee /tmp/cpms-inner-zip-evidence.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-inner-zip-evidence.md \
+          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" --body-file /tmp/cpms-inner-zip-evidence.md \
               || echo '::notice::Inner ZIP PR mirror failed (step summary remains available)'
           fi
 
