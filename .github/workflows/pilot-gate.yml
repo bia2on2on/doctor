@@ -65,6 +65,32 @@ jobs:
       - name: Build release ZIP (whitelist-only)
         run: bash bin/build-release.sh
 
+      - name: Measure inner installable release ZIP (not the outer Actions artifact)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          zip=dist/clinic-practice-management-1.0.0.zip
+          test -f "$zip"
+          bytes=$(wc -c < "$zip" | tr -d ' ')
+          sha=$(sha256sum "$zip" | cut -d' ' -f1)
+          echo "INNER_INSTALLABLE_ZIP_BYTES=$bytes"
+          echo "INNER_INSTALLABLE_ZIP_SHA256=$sha"
+          {
+            echo "### Inner installable ZIP — run ${{ github.run_id }}, head ${{ github.sha }}"
+            echo "Exact ZIP bytes: $bytes; SHA-256: $sha"
+            echo 'This is the direct `bin/build-release.sh` output, not the compressed Actions artifact.'
+            if [ "$bytes" -gt 33554432 ]; then
+              echo 'WARNING: inner ZIP exceeds the provisional 32 MiB PHP upload policy.'
+            else
+              echo 'Inner ZIP fits the provisional 32 MiB PHP upload policy (independent of the 40 MiB POST limit).'
+            fi
+          } | tee /tmp/cpms-inner-zip-evidence.md >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$PR_NUMBER" ]; then
+            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-inner-zip-evidence.md \
+              || echo '::notice::Inner ZIP PR mirror failed (step summary remains available)'
+          fi
+
       - name: Runtime SDK contract (built ZIP, no network)
         run: python3 tests/bin/release-runtime-contract.py
 

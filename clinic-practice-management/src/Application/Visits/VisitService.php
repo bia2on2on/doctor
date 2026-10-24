@@ -122,7 +122,7 @@ final class VisitService
             }
 
             // ER-06: نوبت پایان‌یافته/لغوشده قابل Check-in نیست؛
-            // دیرهنگام (پس از Grace) → no_show + Visit فوری Walk-in-like (ارجاع حفظ می‌شود).
+            // بعد از مهلت Grace نیز پذیرش رد می‌شود، بدون ساخت Visit یا تغییر نوبت.
             $source = 'scheduled';
             $status = (string) $appt['status'];
             $nowSql = $this->db->nowUtcSql();

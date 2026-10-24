@@ -328,7 +328,7 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
             self::fail('After T2 fix, checkIn should succeed as scheduled, but threw VisitException: ' . $e->getMessage());
         }
 
-        // Positive control: overdue appointment check-in should be walk_in + no_show (ER-06)
+        // Positive control: overdue appointment cannot create a Visit at check-in.
         // Use distinct patient to avoid active-visit collision (fixture isolation)
         $overduePatientId = $this->fxTInsertPatient();
         $overdueLocal = $nowLocalNY->sub(new \DateInterval('PT3H'));
@@ -336,8 +336,20 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $overdueTime = $overdueLocal->format('H:i:s');
         $overdueApptId = $this->fxTInsertAppointment(self::FX_T_LOC_C_ID, $overdueDate, $overdueTime, 'confirmed', null, $overduePatientId);
         $secretaryId2 = $this->makeSecretaryUser(self::FX_T_CLINIC_ID);
-        $visit2 = $visitService->checkIn($secretaryId2, $overduePatientId, $overdueApptId, []);
-        self::assertSame('walk_in', $visit2['source'] ?? '', 'positive control: overdue appointment check-in must be walk_in (ER-06)');
+        try {
+            $visitService->checkIn($secretaryId2, $overduePatientId, $overdueApptId, []);
+            self::fail('Overdue check-in must be rejected after the Location-local grace deadline');
+        } catch (\ClinicCore\Domain\Visits\VisitException $e) {
+            self::assertSame('CLINIC_INVALID_APPOINTMENT_STATE', $e->errorCode);
+        }
+        self::assertSame(0, (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_visits') . ' WHERE appointment_id = %d',
+            [$overdueApptId]
+        ));
+        self::assertSame('confirmed', (string) $db->fetchValue(
+            'SELECT status FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+            [$overdueApptId]
+        ));
     }
 
     // =================================================================

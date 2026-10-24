@@ -217,10 +217,8 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         self::assertNotEmpty($row['waiting_since'], 'R2: waiting_since is stamped by the existing enqueue transition');
 
         // Presentation-only clarity never takes ownership of appointment
-        // state: after the flow the state is exactly the EXISTING appointment
-        // machine outcome for this late fixture (ER-06 lazy T8 to no_show),
-        // unchanged by the reception wording work.
-        self::assertSame('no_show', (string) $this->findAppointment($appt)['status'], 'R2: the appointment state stays the existing ER-06 machine outcome');
+        // state: same-day early arrival leaves the booked row confirmed.
+        self::assertSame('confirmed', (string) $this->findAppointment($appt)['status'], 'R2: the appointment remains confirmed after an early arrival');
 
         $history = App::db()->fetchAll(
             'SELECT from_status, to_status FROM ' . App::db()->table('cpms_visit_status_history') . ' WHERE visit_id = %d ORDER BY id ASC',
@@ -252,8 +250,8 @@ final class Phase11ReceptionPartialArrivalRecoveryRedTest extends WP_UnitTestCas
         // A second, unrelated waiting visit — the client will try to point the
         // recovery at it via a client-supplied visit id.
         $patientB = $this->insertPatient($fx['clinic'], 'r3b');
-        $slotB    = $this->insertSlot($fx['clinic'], $fx['loc_tehran'], $fx['clinician'], self::TEHRAN_DATE, '21:00:00');
-        $apptB    = $this->insertAppointment($fx['clinic'], $fx['loc_tehran'], 'r3-b', $patientB, $fx['clinician'], $slotB, self::TEHRAN_DATE, '21:00:00');
+        $slotB    = $this->insertSlot($fx['clinic'], $fx['loc_tehran'], $fx['clinician'], self::TEHRAN_DATE, '22:30:00');
+        $apptB    = $this->insertAppointment($fx['clinic'], $fx['loc_tehran'], 'r3-b', $patientB, $fx['clinician'], $slotB, self::TEHRAN_DATE, '22:30:00');
         $resB = $this->dispatch('POST', '/' . self::REST_NS . '/staff/portal/reception/arrivals', [
             'patient_id'     => $patientB,
             'appointment_id' => $apptB,

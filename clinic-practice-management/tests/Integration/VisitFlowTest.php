@@ -107,6 +107,9 @@ final class VisitFlowTest extends WP_UnitTestCase
                 'SELECT COUNT(*) FROM ' . App::db()->table('cpms_visits') . ' WHERE appointment_id = %d',
                 [$appointmentId]
             );
+            $auditBefore = (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs')
+            );
             try {
                 App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
                 $this->fail('A different Location calendar date must be denied');
@@ -121,6 +124,9 @@ final class VisitFlowTest extends WP_UnitTestCase
                 'SELECT status FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
                 [$appointmentId]
             ));
+            $this->assertSame($auditBefore, (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs')
+            ), 'denied check-in must not append an audit event');
         }
     }
 
@@ -464,7 +470,7 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         $this->assertSame('no_show', $status($late));
         $this->assertSame('confirmed', $status($upcoming));
-        $this->assertSame('no_show', $status($visitedLate)); // از check-in دیرهنگام (ER-06)
+        $this->assertSame('confirmed', $status($visitedLate)); // checked in before grace; active Visit prevents sweep
 
         // Idempotent: اجرای دوباره هیچ نوبت جدیدی نمی‌گیرد
         $resZero = App::visitService()->processNoShows();

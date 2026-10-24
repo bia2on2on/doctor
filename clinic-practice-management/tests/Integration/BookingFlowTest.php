@@ -241,7 +241,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         $prefix = 'AP-' . str_replace('-', '', $firstSlot['date']) . '-';
         global $wpdb;
         foreach ([$prefix . '07', $prefix . 'LEG'] as $reference) {
-            $wpdb->query($wpdb->prepare(
+            $inserted = $wpdb->query($wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments
                  (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, booked_at, confirmed_at, created_at, updated_at)
                  SELECT clinic_id, location_id, %s, patient_id, clinician_id, slot_id, slot_date, slot_time, duration_min, slot_end_time, status, is_walkin_express, booked_at, confirmed_at, created_at, updated_at
@@ -249,6 +249,7 @@ final class BookingFlowTest extends WP_UnitTestCase
                 $reference,
                 $first['appointment_id']
             ));
+            self::assertSame(1, $inserted, 'Legacy reference fixture must persist: ' . $wpdb->last_error);
         }
         $secondSlot = $this->makeSlot(4, '11:00', 1, 20);
         $secondHold = $this->booking()->hold($this->patientUserId, $this->clinicianId, $secondSlot['date'], $secondSlot['time']);

@@ -2778,18 +2778,18 @@ final class BookingService
         throw new BookingException('CLINIC_VALIDATION_FAILED', 'خطا در ساخت MRN — دوباره تلاش کنید', 500);
     }
 
-    private function referenceCode(string $slotDate): string // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established private API signature.
+    private function referenceCode( string $slot_date ): string // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established private method.
     {
         // The existing reference contract is global per calendar date.
-        $base      = 'AP-' . str_replace( '-', '', $slotDate );
+        $base      = 'AP-' . str_replace( '-', '', $slot_date );
         $prefix    = $base . '-';
         $suffix_at = strlen( $prefix ) + 1;
         $max       = (int) $this->db->fetchValue(
             'SELECT COALESCE(MAX(CAST(SUBSTRING(reference_code, %d) AS UNSIGNED)), 0) FROM '
             . $this->db->table( 'cpms_appointments' )
-            . ' WHERE reference_code >= %s AND reference_code < %s'
+            . ' WHERE reference_code LIKE %s'
             . ' AND SUBSTRING(reference_code, %d) REGEXP %s',
-            [$suffix_at, $prefix, $prefix . '~', $suffix_at, '^[0-9]+$']
+            [$suffix_at, $prefix . '%', $suffix_at, '^[0-9]+$']
         );
         // The database unique index, not these probes, is the final arbiter.
         for ( $i = 1; $i <= 8; $i++ ) {

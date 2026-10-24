@@ -331,7 +331,21 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $id = (int) $appointment['appointment_id'];
         // Fixture an appointment booked before the now-expired signed term.
         App::db()->update('cpms_appointments', ['created_at' => gmdate('Y-m-d H:i:s', $this->expiresAt - 1), 'booked_at' => gmdate('Y-m-d H:i:s', $this->expiresAt - 1)], ['id' => $id]);
-        $visit = $this->visitService($licenses)->checkIn($this->secretaryUserId, $this->patientId, $id);
+        // Simulate arrival on the booked Location-local calendar date; license
+        // continuity is independent of the separate same-day check-in rule.
+        $timezone = (string) App::db()->fetchValue(
+            'SELECT l.timezone FROM ' . App::db()->table('cpms_locations') . ' l JOIN '
+            . App::db()->table('cpms_appointments') . ' a ON a.location_id = l.id WHERE a.id = %d',
+            [$id]
+        );
+        $this->assertNotEmpty($timezone);
+        $arrival = new \DateTimeImmutable($slot['date'] . ' 00:00:00', new \DateTimeZone($timezone));
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($arrival->setTimezone(new \DateTimeZone('UTC')));
+        try {
+            $visit = $this->visitService($licenses)->checkIn($this->secretaryUserId, $this->patientId, $id);
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
         $this->assertSame('waiting', $visit['status']);
         $this->assertSame($id, (int) $visit['appointment_id']);
         $this->assertTrue(App::audit()->verifyChain(500)['ok']);

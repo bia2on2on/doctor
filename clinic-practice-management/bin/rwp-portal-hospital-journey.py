@@ -354,6 +354,10 @@ def main() -> int:
                 return False
             body = page.content()
             check(f"{tag}.no_organization_surface", "راه‌اندازی مرکز" not in body, "Clinic Manager gets no Organization wizard")
+            check(f"{tag}.landing_overview", page.locator('#cpms-clinic-overview-title').count() == 1,
+                  "authorized Clinic overview is visible without a selector")
+            check(f"{tag}.no_implicit_selection", 'data-cpms-clinic=' not in body,
+                  "landing does not silently enter a Clinic workspace")
             page.goto(portal, wait_until="domcontentloaded")
             page.wait_for_timeout(400)
             tab = page.locator(".cpms-mgmt-tab").filter(has_text=clinic_name)
