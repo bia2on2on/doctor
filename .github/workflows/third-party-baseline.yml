@@ -609,7 +609,15 @@ jobs:
         if: matrix.source == 'wordpress_org'
         run: |
           set -Eeuo pipefail
-          sudo apt-get update -qq
+          # Bounded network behaviour only: bounded per-connection timeouts and
+          # bounded retries. No source, pin or preference is changed here.
+          APT_BOUNDED=(
+            -o Acquire::Retries=3
+            -o Acquire::http::Timeout=30
+            -o Acquire::https::Timeout=30
+            -o DPkg::Lock::Timeout=120
+          )
+          sudo apt-get update -qq "${APT_BOUNDED[@]}"
 
           # The lane pins PHP 8.3, so the module Apache loads must be 8.3 too —
           # whatever mod_php the distro happens to enable is not acceptable
@@ -723,7 +731,7 @@ jobs:
             # image already carries a higher (PPA) build of the same packages.
             # `Acquire::Retries` is apt's own bounded mirror retry — there is no
             # shell retry loop here.
-            if sudo apt-get install -y -qq --allow-downgrades -o Acquire::Retries=3 \
+            if sudo apt-get install -y -qq --allow-downgrades "${APT_BOUNDED[@]}" \
                  "${PHP_PINS[@]}" apache2 mysql-client 2>&1 \
                  | tee /tmp/apt-archive.log > /dev/null; then
               if assert_lane_php; then
@@ -745,7 +753,7 @@ jobs:
           if [ -z "$PHP_SOURCE" ]; then
             echo "adding ppa:ondrej/php as the fallback source for PHP ${PHP_VERSION}"
             if ! command -v add-apt-repository > /dev/null 2>&1; then
-              if ! sudo apt-get install -y -qq software-properties-common 2>&1 \
+              if ! sudo apt-get install -y -qq "${APT_BOUNDED[@]}" software-properties-common 2>&1 \
                    | tee /tmp/apt-ppa.log > /dev/null; then
                 echo "::error::Class C environment failure: PHP ${PHP_VERSION} is not available from the Ubuntu archive on this runner and software-properties-common is not installable, so ppa:ondrej/php cannot be added. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
                 exit 1
@@ -756,12 +764,12 @@ jobs:
               echo "::error::Class C environment failure: PHP ${PHP_VERSION} is not available from the Ubuntu archive on this runner and ppa:ondrej/php could not be added. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
               exit 1
             fi
-            sudo apt-get update -qq
+            sudo apt-get update -qq "${APT_BOUNDED[@]}"
             # One bounded attempt: apt's own Acquire::Retries (3) covers a
             # struggling mirror, and a second failure here is final. No shell
             # retry loop deliberately — an unbounded retry against a 503-ing
             # Launchpad would turn an infrastructure outage into a hang.
-            if ! sudo apt-get install -y -qq -o Acquire::Retries=3 \
+            if ! sudo apt-get install -y -qq "${APT_BOUNDED[@]}" \
                  "${PHP_PACKAGES[@]}" apache2 mysql-client 2>&1 \
                  | tee /tmp/apt-ppa.log > /dev/null; then
               echo "::error::Class C environment failure: PHP ${PHP_VERSION} Apache module is not installable on this runner from either the Ubuntu archive or ppa:ondrej/php. Refusing to measure a lane on the wrong PHP. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
@@ -779,11 +787,17 @@ jobs:
           # as a check-run annotation, which stays retrievable when the raw job
           # log blob does not.
           echo "::notice title=PHP ${PHP_VERSION} provenance (subject ${{ matrix.id }})::source=$(printf '%s' "$PHP_SOURCE" | sed 's/%/%25/g')"
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-          wp --allow-root --version
-          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
-          python3 -m playwright install --with-deps chromium > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+      # WP-CLI and the chromium binary are provisioned by the next step: the
+      # PHP/Apache provisioning above is deliberately left exactly as it was,
+      # because its archive-first/PPA-fallback evidence contract is specific to
+      # this lane. See docs/ci/setup-performance.md.
+      - name: Tooling (wp-cli + chromium, cached)
+        if: matrix.source == 'wordpress_org'
+        uses: ./.github/actions/cpms-tooling
+        with:
+          apt-packages: ''
+          playwright-version: '1.64.1'
+          playwright-browsers: chromium
 
       - name: Clean WordPress on this job's own database
         if: matrix.source == 'wordpress_org'

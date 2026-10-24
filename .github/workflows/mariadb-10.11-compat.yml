@@ -66,19 +66,16 @@ jobs:
           extensions: mysqli, mbstring, xml, pcntl, curl, zip, sodium
           coverage: none
 
+      # Same step name and the same client binaries as before; the composite
+      # action keeps the mysql/mariadb-dump assertions as a fail-closed
+      # post-condition and validates the WP-CLI phar against its published
+      # sha512 before it is installed executable.
       - name: Install MariaDB client and WP-CLI
-        run: |
-          set -euo pipefail
-          mkdir -p /tmp/mariadb-compat
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mariadb-client > /tmp/mariadb-compat/apt.log 2>&1 \
-            || { tail -n 80 /tmp/mariadb-compat/apt.log; exit 1; }
-          command -v mysql
-          command -v mariadb-dump
-          curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
-            -o /tmp/wp-cli.phar
-          sudo install -m 0755 /tmp/wp-cli.phar /usr/local/bin/wp
-          wp --allow-root --version
+        uses: ./.github/actions/cpms-tooling
+        with:
+          log-dir: /tmp/mariadb-compat
+          apt-packages: mariadb-client
+          require-commands: mysql mariadb-dump
 
       - name: Fail closed on database identity (exact MariaDB image release)
         id: database_identity

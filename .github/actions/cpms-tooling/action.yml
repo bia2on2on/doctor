@@ -1,0 +1,443 @@
+name: CPMS CI tooling
+description: >-
+  Provisions the OS packages, WP-CLI and Playwright browser binaries that a CPMS
+  acceptance lane needs. Provisioning only: it never changes which suites run,
+  which browsers a suite uses, or any assertion. Design constraints (see
+  docs/ci/setup-performance.md): bounded apt network timeouts with a single
+  explicit refresh fallback, an exact Playwright pin, exact-key browser caching,
+  and no repeat of `playwright --with-deps` when the OS dependencies are already
+  satisfied.
+author: CPMS maintainers
+
+inputs:
+  apt-packages:
+    description: >-
+      Space- or newline-separated apt package list required by the lane.
+      An empty value skips apt entirely.
+    required: false
+    default: ''
+  require-commands:
+    description: >-
+      Space-separated commands that must resolve on PATH after provisioning.
+      Fails closed; use it to prove a package really landed (e.g. "mysql mariadb-dump").
+    required: false
+    default: ''
+  wp-cli:
+    description: Install WP-CLI (sha512-validated, fail closed).
+    required: false
+    default: 'true'
+  playwright-version:
+    description: >-
+      Exact PyPI Playwright version to install (e.g. 1.64.1). An empty value
+      skips the whole Playwright block.
+    required: false
+    default: ''
+  playwright-browsers:
+    description: >-
+      Space-separated Playwright browsers required by the suite
+      (chromium, firefox, webkit). An empty value skips the whole Playwright block.
+    required: false
+    default: ''
+  launch-check:
+    description: >-
+      Launch every requested browser once after provisioning to prove the
+      binaries and system dependencies are usable (true/false).
+    required: false
+    default: 'true'
+  log-dir:
+    description: Directory for provisioning logs and phase timings.
+    required: false
+    default: /tmp/cpms-tooling
+
+outputs:
+  playwright-browsers:
+    description: Normalised, de-duplicated browser list used for the cache key.
+    value: ${{ steps.pw.outputs.browsers }}
+  timings:
+    description: Per-phase provisioning timings (also emitted as a check annotation).
+    value: ${{ steps.timings.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    # ------------------------------------------------------------------ #
+    # 0. Log directory (call sites rely on it for their own evidence files)
+    # ------------------------------------------------------------------ #
+    - name: Provisioning log directory
+      shell: bash
+      env:
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        mkdir -p "$LOG_DIR"
+        : > "$LOG_DIR/cpms-tooling-timings.txt"
+
+    # ------------------------------------------------------------------ #
+    # 1. OS packages — apt without a redundant index refetch.
+    #
+    # Every call site runs after shivammathur/setup-php, which has already
+    # refreshed the package indexes it needs in the same job. The previous
+    # `sudo apt-get update && sudo apt-get install ...` therefore refetched
+    # every configured index again, including ppa:ondrej/php (added by
+    # setup-php when the lane PHP or an extension comes from it). When
+    # Launchpad answered slowly that refetch is what stretched setup steps
+    # from ~1.5 min to 16-23 min in the measured baseline.
+    #
+    # So: install against the indexes that already exist, with bounded
+    # network timeouts and retries; only if that fails refresh them ONCE and
+    # retry ONCE. A permanent failure still fails the step with the apt tail.
+    # Package resolution itself is unchanged: apt sees exactly the same
+    # sources, pins and candidates it saw before.
+    # ------------------------------------------------------------------ #
+    - name: OS packages (bounded apt)
+      if: inputs.apt-packages != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        APT_PACKAGES: ${{ inputs.apt-packages }}
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        read -r -a packages <<< "$(printf '%s' "$APT_PACKAGES" | tr '\n' ' ')"
+        if [ "${#packages[@]}" -eq 0 ]; then
+          echo "No apt packages requested; nothing to do."
+          exit 0
+        fi
+        echo "apt packages requested: ${packages[*]}"
+
+        # Bounded network behaviour only: bounded retries, bounded per-connection
+        # timeouts, bounded dpkg lock wait. No source, pin or preference change.
+        apt_opts=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30
+          -o DPkg::Lock::Timeout=120
+        )
+        install_log="$LOG_DIR/apt.log"
+        update_log="$LOG_DIR/apt-update.log"
+
+        apt_install() {
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y "${apt_opts[@]}" "${packages[@]}"
+        }
+
+        started=$SECONDS
+        if apt_install >"$install_log" 2>&1; then
+          echo "apt install succeeded against the existing package indexes (no index refetch)."
+        else
+          first_status=$?
+          echo "::warning::apt install failed against the existing package indexes (exit ${first_status}); refreshing the indexes once with bounded timeouts and retrying once."
+          tail -n 20 "$install_log" || true
+          if ! sudo env DEBIAN_FRONTEND=noninteractive \
+                 apt-get update -qq "${apt_opts[@]}" >"$update_log" 2>&1; then
+            echo "::error::apt-get update failed after bounded retries; this is an index download failure, not a package-selection failure. Diagnostic follows."
+            tail -n 40 "$update_log" || true
+            exit 1
+          fi
+          if ! apt_install >"$install_log" 2>&1; then
+            echo "::error::apt install still failed after one bounded index refresh; refusing to continue on a partially provisioned runner. Diagnostic follows."
+            tail -n 40 "$install_log" || true
+            exit 1
+          fi
+          1>&2 echo "apt install succeeded after one bounded index refresh."
+        fi
+        echo "apt=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+        echo "installed: $(dpkg-query -W -f='${Package}=${Version} ' "${packages[@]}" 2>/dev/null || true)"
+
+    - name: Required commands resolve
+      if: inputs.require-commands != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        REQUIRE_COMMANDS: ${{ inputs.require-commands }}
+      run: |
+        set -Eeuo pipefail
+        read -r -a commands <<< "$(printf '%s' "$REQUIRE_COMMANDS" | tr '\n' ' ')"
+        for cmd in "${commands[@]}"; do
+          if ! command -v "$cmd" > /dev/null 2>&1; then
+            echo "::error::required command '$cmd' is not on PATH after provisioning; the lane cannot run its database/browser steps."
+            exit 1
+          fi
+          echo "found: $cmd -> $(command -v "$cmd")"
+        done
+
+    # ------------------------------------------------------------------ #
+    # 2. WP-CLI — verified against the publisher's sha512 before it is
+    #    ever made executable. The previous install used `curl -sS` (no -f,
+    #    no checksum) into /usr/local/bin/wp, so a truncated or substituted
+    #    download became executable code. The digest is fetched from the same
+    #    hosts/gh-pages tree WordPress publishes it in and is re-checked over
+    #    the bytes on disk, then the binary is installed only if it matches.
+    # ------------------------------------------------------------------ #
+    - name: WP-CLI (sha512-verified)
+      if: inputs.wp-cli == 'true'
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        started=$SECONDS
+        phar_url="https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar"
+        digest_url="${phar_url}.sha512"
+        log="$LOG_DIR/wp-cli.log"
+
+        if ! expected="$(curl -fsSL --retry 3 --retry-delay 2 --max-time 60 "$digest_url" | tr -d '[:space:]')"; then
+          echo "::error::could not download the published WP-CLI sha512 ($digest_url); refusing to install an unverified phar."
+          exit 1
+        fi
+        if ! [[ "$expected" =~ ^[0-9a-f]{128}$ ]]; then
+          echo "::error::the published WP-CLI sha512 is not a 128-character hex digest ('${expected:0:16}...'); refusing to install an unverified phar."
+          exit 1
+        fi
+        echo "published WP-CLI sha512: $expected"
+
+        staged=/tmp/wp-cli-verified.phar
+        if ! curl -fsSL --retry 3 --retry-delay 2 --max-time 120 "$phar_url" -o "$staged"; then
+          echo "::error::could not download WP-CLI from $phar_url (bounded retries exhausted)."
+          exit 1
+        fi
+        actual="$(sha512sum "$staged" | cut -d' ' -f1)"
+        if [ "$actual" != "$expected" ]; then
+          echo "::error::WP-CLI sha512 mismatch: published=$expected downloaded=$actual. Refusing to install."
+          exit 1
+        fi
+        sudo install -m 0755 "$staged" /usr/local/bin/wp
+        rm -f "$staged"
+        wp --allow-root --version | tee "$log"
+        echo "wp-cli=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+
+    # ------------------------------------------------------------------ #
+    # 3. Playwright — exact pin, exact-key browser cache, dependency guard.
+    # ------------------------------------------------------------------ #
+    - name: Resolve Playwright cache identity
+      if: inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      id: pw
+      shell: bash
+      env:
+        BROWSERS: ${{ inputs.playwright-browsers }}
+      run: |
+        set -Eeuo pipefail
+        read -r -a browsers <<< "$(printf '%s' "$BROWSERS" | tr '\n' ' ')"
+        if [ "${#browsers[@]}" -eq 0 ]; then
+          echo "::error::playwright-browsers is empty but Playwright was requested."
+          exit 1
+        fi
+        for browser in "${browsers[@]}"; do
+          case "$browser" in
+            chromium|firefox|webkit) ;;
+            *)
+              echo "::error::unsupported Playwright browser '$browser' (expected chromium, firefox or webkit)."
+              exit 1 ;;
+          esac
+        done
+        slug="$(printf '%s\n' "${browsers[@]}" | sort -u | paste -sd- -)"
+        echo "browsers=$slug" >> "$GITHUB_OUTPUT"
+        echo "Normalised browser set: $slug"
+
+    - name: Restore Playwright browser cache
+      if: inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      id: pw-cache
+      uses: actions/cache/restore@v4
+      with:
+        # Exact key: the Playwright version pins the browser revisions, so a
+        # different version can never restore these binaries. The key is also
+        # scoped by runner image and architecture, and carries an explicit
+        # layout version so a future path change invalidates it.
+        key: playwright-${{ inputs.playwright-version }}-${{ steps.pw.outputs.browsers }}-${{ runner.os }}-${{ runner.arch }}-v1
+        path: ~/.cache/ms-playwright
+
+    - name: Install Playwright Python package (pinned)
+      if: inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        EXPECTED_VERSION: ${{ inputs.playwright-version }}
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        started=$SECONDS
+        log="$LOG_DIR/pip-playwright.log"
+        if ! [[ "$EXPECTED_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+          echo "::error::playwright-version must be an exact semver pin (got '$EXPECTED_VERSION'), not a range or a bare major."
+          exit 1
+        fi
+        # Same interpreter selection as before (system python3, no setup-python),
+        # same PEP 668 fallback; only the version is now explicit.
+        if ! pip install --quiet --disable-pip-version-check --no-input \
+               "playwright==${EXPECTED_VERSION}" >"$log" 2>&1; then
+          echo "::notice::pip refused the system environment (PEP 668); retrying with --break-system-packages, as before."
+          pip install --quiet --disable-pip-version-check --no-input --break-system-packages \
+            "playwright==${EXPECTED_VERSION}" >>"$log" 2>&1 || {
+            echo "::error::pip could not install playwright==${EXPECTED_VERSION}. Diagnostic follows."
+            tail -n 40 "$log" || true
+            exit 1
+          }
+        fi
+        installed="$(python3 -m playwright --version | awk '{print $2}')"
+        if [ "$installed" != "$EXPECTED_VERSION" ]; then
+          echo "::error::installed Playwright is '${installed}', expected '${EXPECTED_VERSION}'. Refusing to run the suites on a different browser engine set than the pin."
+          exit 1
+        fi
+        echo "playwright python package: $installed"
+        echo "pip=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+
+    - name: Install Playwright browsers (exact pin)
+      if: inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        BROWSERS: ${{ steps.pw.outputs.browsers }}
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        started=$SECONDS
+        log="$LOG_DIR/pw.log"
+        read -r -a browsers <<< "$(printf '%s' "$BROWSERS" | tr '-' ' ')"
+        # No --with-deps here: system dependencies are handled by the guard in
+        # the next step, which is a no-op when they are already satisfied.
+        if ! python3 -m playwright install --no-progress "${browsers[@]}" >"$log" 2>&1; then
+          echo "::error::playwright install failed for: ${browsers[*]}. Diagnostic follows."
+          tail -n 30 "$log" || true
+          exit 1
+        fi
+        tail -n 20 "$log" || true
+        echo "playwright-browsers=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+        du -sh "$HOME/.cache/ms-playwright" 2>/dev/null || true
+
+    - name: Playwright system dependencies (skip when already satisfied)
+      if: inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        BROWSERS: ${{ steps.pw.outputs.browsers }}
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        started=$SECONDS
+        log="$LOG_DIR/pw-deps.log"
+        apt_log="$LOG_DIR/pw-deps-apt.log"
+        read -r -a browsers <<< "$(printf '%s' "$BROWSERS" | tr '-' ' ')"
+
+        # `playwright install-deps --dry-run` is the documented, Playwright-native
+        # way to ask "which of my required OS packages are missing?": it runs
+        # `apt-get install -s` for the dependency list of exactly these browsers
+        # and exits non-zero when anything would still have to be installed
+        # (microsoft/playwright docs/src/ci.md, browsers.md#install-system-dependencies,
+        # and the CLI help text of `install-deps --dry-run`).
+        if python3 -m playwright install-deps --dry-run "${browsers[@]}" >"$log" 2>&1; then
+          echo "All Playwright system dependencies for ${browsers[*]} are already satisfied; skipping apt (no index refetch, no PPA contact)."
+          tail -n 1 "$log" || true
+          echo "playwright-deps=0s (already satisfied)" >> "$LOG_DIR/cpms-tooling-timings.txt"
+          exit 0
+        fi
+
+        echo "::warning::Playwright reports missing system dependencies for ${browsers[*]}; installing them with bounded apt options."
+        tail -n 25 "$log" || true
+
+        # The dry-run prints the resolved package names it would install. Use
+        # exactly that list so apt resolves nothing else; fall back to the
+        # Playwright-provided installer if the list cannot be read.
+        mapfile -t missing < <(sed -n 's/^  \([a-z0-9][a-z0-9+.-]*\(:[a-z0-9]*\)\{0,1\}\)$/\1/p' "$log" | sort -u)
+        apt_opts=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=30
+          -o Acquire::https::Timeout=30
+          -o DPkg::Lock::Timeout=120
+        )
+        if [ "${#missing[@]}" -eq 0 ]; then
+          echo "::notice::could not read a package list from the dry-run output; using 'playwright install-deps' (the previous behaviour)."
+          sudo env DEBIAN_FRONTEND=noninteractive \
+            python3 -m playwright install-deps "${browsers[@]}" >"$apt_log" 2>&1 || {
+            echo "::error::playwright install-deps failed. Diagnostic follows."
+            tail -n 40 "$apt_log" || true
+            exit 1
+          }
+        else
+          echo "missing Playwright system dependencies: ${missing[*]}"
+          if ! sudo env DEBIAN_FRONTEND=noninteractive \
+                 apt-get install -y "${apt_opts[@]}" "${missing[@]}" >"$apt_log" 2>&1; then
+            echo "::warning::installing the missing dependencies against the existing indexes failed; refreshing once with bounded timeouts and retrying once."
+            tail -n 20 "$apt_log" || true
+            sudo env DEBIAN_FRONTEND=noninteractive \
+              apt-get update -qq "${apt_opts[@]}" >>"$apt_log" 2>&1 || {
+              echo "::error::apt-get update failed while provisioning Playwright system dependencies. Diagnostic follows."
+              tail -n 40 "$apt_log" || true
+              exit 1
+            }
+            sudo env DEBIAN_FRONTEND=noninteractive \
+              apt-get install -y "${apt_opts[@]}" "${missing[@]}" >>"$apt_log" 2>&1 || {
+              echo "::error::Playwright system dependencies are still not installable after one bounded index refresh. Diagnostic follows."
+              tail -n 40 "$apt_log" || true
+              exit 1
+            }
+          fi
+        fi
+
+        # Fail closed: prove the dependency set is complete before the suite runs.
+        if ! python3 -m playwright install-deps --dry-run "${browsers[@]}" >>"$log" 2>&1; then
+          echo "::error::Playwright still reports missing system dependencies after provisioning. Diagnostic follows."
+          tail -n 25 "$log" || true
+          exit 1
+        fi
+        echo "playwright-deps=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+
+    - name: Verify browsers launch
+      if: inputs.launch-check == 'true' && inputs.playwright-version != '' && inputs.playwright-browsers != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        BROWSERS: ${{ steps.pw.outputs.browsers }}
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        started=$SECONDS
+        log="$LOG_DIR/pw-launch.log"
+        if ! BROWSERS="$BROWSERS" python3 - >"$log" 2>&1 <<'PY'
+        import os
+        from playwright.sync_api import sync_playwright
+
+        browsers = os.environ["BROWSERS"].split("-")
+        with sync_playwright() as p:
+            for name in browsers:
+                browser = getattr(p, name).launch()
+                print(f"{name}: launched {browser.version}", flush=True)
+                browser.close()
+        PY
+        then
+          echo "::error::a provisioned Playwright browser could not be launched, so the suite would fail on the same runner. Diagnostic follows."
+          tail -n 30 "$log" || true
+          exit 1
+        fi
+        cat "$log"
+        echo "playwright-launch=$((SECONDS - started))s" >> "$LOG_DIR/cpms-tooling-timings.txt"
+
+    - name: Save Playwright browser cache
+      if: >-
+        inputs.playwright-version != '' && inputs.playwright-browsers != '' &&
+        steps.pw-cache.outputs.cache-hit != 'true' &&
+        github.event.pull_request.head.repo.fork != true
+      uses: actions/cache/save@v4
+      with:
+        key: playwright-${{ inputs.playwright-version }}-${{ steps.pw.outputs.browsers }}-${{ runner.os }}-${{ runner.arch }}-v1
+        path: ~/.cache/ms-playwright
+
+    # ------------------------------------------------------------------ #
+    # 4. Phase timings as a check annotation. Raw job logs live on
+    #    *.blob.core.windows.net, which the review sandbox cannot read;
+    #    annotations can be read through the checks API, so the numbers
+    #    needed to judge this change survive.
+    # ------------------------------------------------------------------ #
+    - name: Provisioning timings
+      id: timings
+      if: always()
+      shell: bash
+      env:
+        LOG_DIR: ${{ inputs.log-dir }}
+      run: |
+        set -Eeuo pipefail
+        summary="$(paste -sd' ' "$LOG_DIR/cpms-tooling-timings.txt" 2>/dev/null || true)"
+        summary="${summary:-none}"
+        echo "summary=$summary" >> "$GITHUB_OUTPUT"
+        echo "CPMS tooling phase timings: $summary"
+        echo "::notice title=CPMS tooling timings::${summary}"
