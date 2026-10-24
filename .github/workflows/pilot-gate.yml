@@ -139,13 +139,16 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd
           coverage: none
 
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification). No browser on this job.
       - name: Tooling (wp-cli, mysql-client, apache, ab, bc)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd apache2-utils bc > /tmp/apt.log 2>&1 || { tail -20 /tmp/apt.log; exit 1; }
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-          wp --allow-root --version
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: >-
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl php-zip php-gd
+            apache2-utils bc
+          apt-log-dir: /tmp
 
       - name: Lint gate tools (php -l)
         run: |
@@ -1427,11 +1430,12 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: shivammathur/setup-php@v2
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
+      # Apt package list unchanged (`mysql-client` only) + pinned, verified WP-CLI.
       - name: Tooling
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mysql-client
+          apt-log-dir: /tmp
       - name: WordPress + pinned previous CPMS source
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
@@ -1539,13 +1543,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification). The responsive smoke keeps ALL THREE browsers:
+      # the acceptance contract for this lane is Chromium + Firefox + WebKit, and
+      # the browser step below installs exactly that set.
       - name: Tooling (wp-cli + apache + playwright)
-        run: |
-          sudo apt-get update -qq && sudo apt-get install -y -qq mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl faketime > /tmp/apt.log 2>&1 || { tail -5 /tmp/apt.log; exit 1; }
-          curl -sS https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /tmp/wp-cli.phar
-          sudo mv /tmp/wp-cli.phar /usr/local/bin/wp && sudo chmod +x /usr/local/bin/wp
-          (pip install --quiet playwright 2>/dev/null || pip install --quiet --break-system-packages playwright)
-          python3 -m playwright install --with-deps chromium firefox webkit > /tmp/pw.log 2>&1 || { tail -10 /tmp/pw.log; exit 1; }
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: >-
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl faketime
+          apt-log-dir: /tmp
+
+      - name: Playwright chromium + firefox + webkit (pinned + cached)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium firefox webkit
       - name: WP + Plugin از Artifact + داده حداقلی Synthetic
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
