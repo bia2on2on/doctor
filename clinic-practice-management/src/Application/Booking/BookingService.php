@@ -2270,7 +2270,7 @@ final class BookingService
         $decision = $this->licenseGate->assert($operation);
         if (!$decision->allowed) {
             $this->op->warning('license.blocked', ['operation' => $operation, 'reason' => $decision->reason]);
-            throw BookingException::of('CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ثبت نوبت جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503);
+            throw BookingException::of( 'CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ثبت نوبت جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503);
         }
     }
 
@@ -2813,7 +2813,7 @@ final class BookingService
                 return $candidate;
             }
         }
-        throw BookingException::of('CLINIC_CONFLICT', 'شماره نوبت یکتا ایجاد نشد؛ دوباره تلاش کنید', 409);
+        throw BookingException::of( 'CLINIC_DUPLICATE_APPOINTMENT', 'شماره نوبت یکتا ایجاد نشد؛ دوباره تلاش کنید', 409 );
     }
 
     /**

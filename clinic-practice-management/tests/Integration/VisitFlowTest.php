@@ -81,6 +81,33 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     // ================= V1 — Check-in =================
 
+    public function testOtherLocalDaysCannotCheckInOrCreateVisitOrAudit(): void
+    {
+        $localNow = new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran'));
+        foreach ([-2, 2] as $offsetDays) {
+            $date = $localNow->modify(sprintf('%+d days', $offsetDays))->format('Y-m-d');
+            $appointmentId = $this->makeAppointment($this->patientId, $this->clinicianId, $date, '12:00:00');
+            $before = (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_visits') . ' WHERE appointment_id = %d',
+                [$appointmentId]
+            );
+            try {
+                App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $appointmentId);
+                $this->fail('A different Location calendar date must be denied');
+            } catch (VisitException $e) {
+                $this->assertSame('CLINIC_INVALID_APPOINTMENT_STATE', $e->errorCode);
+            }
+            $this->assertSame($before, (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_visits') . ' WHERE appointment_id = %d',
+                [$appointmentId]
+            ));
+            $this->assertSame('confirmed', App::db()->fetchValue(
+                'SELECT status FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+                [$appointmentId]
+            ));
+        }
+    }
+
     public function testCheckInCreatesVisitAndAutoEnqueues(): void
     {
                 $t = time() + 3600;

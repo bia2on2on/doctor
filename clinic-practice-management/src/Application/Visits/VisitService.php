@@ -142,14 +142,14 @@ final class VisitService
             }
             // Check-in is only valid on the appointment's Gregorian calendar date
             // in its trusted Location timezone. A browser-supplied date is never used.
-            $trustedTimezone = $this->resolveLocationTimezone($locationId, $clinicId);
-            $scheduledDate = (string) ($appt['slot_date'] ?? '');
-            $parsedDate = DateTimeImmutable::createFromFormat('!Y-m-d', $scheduledDate);
-            if ( $trustedTimezone === null || $parsedDate === false || $parsedDate->format('Y-m-d') !== $scheduledDate ) {
-                throw VisitException::of('CLINIC_VALIDATION_FAILED', 'تاریخ یا منطقه زمانی نوبت معتبر نیست', 422);
+            $trusted_timezone = $this->resolveLocationTimezone( $locationId, $clinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established service variables.
+            $scheduled_date  = (string) ( $appt['slot_date'] ?? '' );
+            $parsed_date     = DateTimeImmutable::createFromFormat( '!Y-m-d', $scheduled_date );
+            if ( null === $trusted_timezone || false === $parsed_date || $parsed_date->format( 'Y-m-d' ) !== $scheduled_date ) {
+                throw VisitException::of( 'CLINIC_VALIDATION_FAILED', 'تاریخ یا منطقه زمانی نوبت معتبر نیست', 422 );
             }
-            if ( $nowUtc->setTimezone($trustedTimezone)->format('Y-m-d') !== $scheduledDate ) {
-                throw VisitException::of('CLINIC_INVALID_APPOINTMENT_STATE', 'پذیرش فقط در روز محلی نوبت مجاز است', 409);
+            if ( $nowUtc->setTimezone( $trusted_timezone )->format( 'Y-m-d' ) !== $scheduled_date ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- existing UTC instant.
+                throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', 'پذیرش فقط در روز محلی نوبت مجاز است', 409 );
             }
             if ( $status === 'no_show' ) {
                 // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
