@@ -209,6 +209,45 @@ final class Day2ReceptionFixtureClockPolicy
         return null;
     }
 
+    /**
+     * The single success criterion for the test-only reception anchor.
+     *
+     * `CpmsDb::execute()` is soft (`ensureNoSqlError()` only throws in strict
+     * mode) and returns the affected-row count, so a legitimately idempotent
+     * UPDATE can report 0 rows. The persisted row, not the affected count,
+     * therefore decides success — and this rule is pure so it can be tested
+     * exhaustively without a database.
+     *
+     * @param array{id: int, clinic_id: int, location_id: int, slot_date: string, slot_time: string, slot_end_time: string} $expected
+     * @param array<string, mixed>|null $stored
+     * @return string|null violation code, or null when the persisted row matches
+     */
+    public static function readbackViolation(array $expected, ?array $stored): ?string
+    {
+        if ($stored === null) {
+            return 'APPOINTMENT_MISSING_AFTER_WRITE';
+        }
+        if (!isset($stored['id']) || (int) $stored['id'] !== (int) $expected['id']) {
+            return 'READBACK_ID_MISMATCH';
+        }
+        if ((int) ($stored['clinic_id'] ?? 0) !== (int) $expected['clinic_id']
+            || (int) ($stored['location_id'] ?? 0) !== (int) $expected['location_id']) {
+            return 'READBACK_SCOPE_MISMATCH';
+        }
+        if ((string) ($stored['status'] ?? '') !== 'confirmed') {
+            return 'READBACK_STATUS_MISMATCH';
+        }
+        if ((string) ($stored['slot_date'] ?? '') !== $expected['slot_date']
+            || (string) ($stored['slot_time'] ?? '') !== $expected['slot_time']) {
+            return 'READBACK_SLOT_MISMATCH';
+        }
+        if ((string) ($stored['slot_end_time'] ?? '') !== $expected['slot_end_time']) {
+            return 'READBACK_END_MISMATCH';
+        }
+
+        return null;
+    }
+
     private static function isValidDate(string $date): bool
     {
         if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $date) !== 1) {

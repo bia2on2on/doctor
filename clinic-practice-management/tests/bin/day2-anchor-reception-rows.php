@@ -89,10 +89,15 @@ $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
 
 $rows = [];
 foreach ($ids as $id) {
+    // Clinic ownership is part of the join: a Location row may only supply the
+    // timezone for an appointment of the SAME Clinic (tenant isolation), never
+    // for a cross-Clinic id.
     $row = $db->fetchRow(
-        'SELECT a.id, a.clinic_id, a.location_id, a.slot_id, a.status, l.timezone AS loc_timezone'
+        'SELECT a.id, a.clinic_id, a.location_id, a.slot_id, a.status,'
+        . ' l.clinic_id AS loc_clinic_id, l.timezone AS loc_timezone'
         . ' FROM ' . $db->table('cpms_appointments') . ' a'
-        . ' LEFT JOIN ' . $db->table('cpms_locations') . ' l ON l.id = a.location_id'
+        . ' LEFT JOIN ' . $db->table('cpms_locations') . ' l'
+        . ' ON l.id = a.location_id AND l.clinic_id = a.clinic_id'
         . ' WHERE a.id = %d LIMIT 1',
         [$id]
     );
@@ -102,6 +107,10 @@ foreach ($ids as $id) {
     if ((string) $row['status'] !== 'confirmed') {
         // The real sweep already claimed it: report honestly, never resurrect.
         d2r_fail($argv, 'APPOINTMENT_NOT_CONFIRMED', 'id=' . $id);
+    }
+    if ((int) ($row['loc_clinic_id'] ?? 0) !== (int) $row['clinic_id']) {
+        // Missing Location, or a Location owned by another Clinic.
+        d2r_fail($argv, 'LOCATION_CLINIC_MISMATCH', 'id=' . $id);
     }
     $timezoneName = trim((string) ($row['loc_timezone'] ?? ''));
     if ($timezoneName === '') {
@@ -134,6 +143,10 @@ foreach ($rows as $id => $row) {
     $key = $row['clinic_id'] . '|' . $row['location_id'] . '|' . $row['timezone_name'] . '|' . $grace;
     $groups[$key] ??= [
         'grace' => $grace,
+        // The trusted Location timezone NAME is kept with the group so the
+        // diagnostics report the value the database actually supplied, not a
+        // value reconstructed from a DateTimeZone object.
+        'timezone_name' => $row['timezone_name'],
         'timezone' => $row['timezone'],
         'ids' => [],
         'local_now' => $row['local_now'],
@@ -186,38 +199,72 @@ foreach ($groups as $key => $group) {
             d2r_fail($argv, 'POLICY_INVARIANT', 'id=' . $id);
         }
 
-        $updated = $db->execute(
-            'UPDATE ' . $db->table('cpms_appointments')
-            . ' SET slot_date = %s, slot_time = %s, slot_end_time = %s, updated_at = %s'
-            . ' WHERE id = %d AND status = %s',
-            [$slotDate, $slotTime, $slotEnd, $nowIso, $id, 'confirmed']
-        );
-        if ($updated !== 1) {
-            d2r_fail($argv, 'APPOINTMENT_UPDATE_FAILED', 'id=' . $id);
+        // `CpmsDb::execute()` returns the affected-row count and is soft:
+        // `ensureNoSqlError()` only throws in strict mode, which this runtime
+        // does not enable. A genuinely idempotent UPDATE (row already carries the
+        // anchored values) legitimately affects 0 rows, so the affected count is
+        // NOT the success criterion — the authoritative read-back below is.
+        // Real SQL failures are detected explicitly through $wpdb->last_error,
+        // never forgiven broadly.
+        global $wpdb;
+        $wpdb->last_error = '';
+        try {
+            $db->execute(
+                'UPDATE ' . $db->table('cpms_appointments')
+                . ' SET slot_date = %s, slot_time = %s, slot_end_time = %s, updated_at = %s'
+                . ' WHERE id = %d AND clinic_id = %d AND location_id = %d AND status = %s',
+                [$slotDate, $slotTime, $slotEnd, $nowIso, $id, $row['clinic_id'], $row['location_id'], 'confirmed']
+            );
+        } catch (Throwable $e) {
+            d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=appointment');
+        }
+        if ((string) $wpdb->last_error !== '') {
+            // The error text may embed row values; only the code is emitted.
+            d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=appointment');
         }
 
         if ($rows[$id]['slot_id'] > 0) {
-            $db->execute(
-                'UPDATE ' . $db->table('cpms_schedule_slots')
-                . ' SET slot_date = %s, slot_time = %s, updated_at = %s WHERE id = %d',
-                [$slotDate, $slotTime, $nowIso, $rows[$id]['slot_id']]
-            );
+            $wpdb->last_error = '';
+            try {
+                $db->execute(
+                    'UPDATE ' . $db->table('cpms_schedule_slots')
+                    . ' SET slot_date = %s, slot_time = %s, updated_at = %s'
+                    . ' WHERE id = %d AND clinic_id = %d AND location_id = %d',
+                    [$slotDate, $slotTime, $nowIso, $rows[$id]['slot_id'], $row['clinic_id'], $row['location_id']]
+                );
+            } catch (Throwable $e) {
+                d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=slot');
+            }
+            if ((string) $wpdb->last_error !== '') {
+                d2r_fail($argv, 'SQL_ERROR', 'id=' . $id . ' op=slot');
+            }
         }
 
-        // Read back through the database: the anchor is only proven if the
-        // persisted row really carries the anchored date/time.
+        // Read back through the database. This is the single success criterion:
+        // exact appointment id, same trusted Clinic/Location, expected slot
+        // date/time/end, and the row still confirmed. Any mismatch is a hard
+        // failure — an idempotent 0-row update must still prove the target state.
         $stored = $db->fetchRow(
-            'SELECT slot_date, slot_time, status FROM ' . $db->table('cpms_appointments')
-            . ' WHERE id = %d LIMIT 1',
+            'SELECT a.id, a.clinic_id, a.location_id, a.slot_date, a.slot_time, a.slot_end_time, a.status'
+            . ' FROM ' . $db->table('cpms_appointments') . ' a'
+            . ' LEFT JOIN ' . $db->table('cpms_locations') . ' l'
+            . ' ON l.id = a.location_id AND l.clinic_id = a.clinic_id'
+            . ' WHERE a.id = %d LIMIT 1',
             [$id]
         );
-        if (
-            $stored === null
-            || (string) $stored['slot_date'] !== $slotDate
-            || (string) $stored['slot_time'] !== $slotTime
-            || (string) $stored['status'] !== 'confirmed'
-        ) {
-            d2r_fail($argv, 'READBACK_MISMATCH', 'id=' . $id);
+        $violation = Day2ReceptionFixtureClockPolicy::readbackViolation(
+            [
+                'id' => $id,
+                'clinic_id' => (int) $row['clinic_id'],
+                'location_id' => (int) $row['location_id'],
+                'slot_date' => $slotDate,
+                'slot_time' => $slotTime,
+                'slot_end_time' => $slotEnd,
+            ],
+            is_array($stored) ? $stored : null
+        );
+        if ($violation !== null) {
+            d2r_fail($argv, $violation, 'id=' . $id);
         }
 
         $anchored[] = $id;

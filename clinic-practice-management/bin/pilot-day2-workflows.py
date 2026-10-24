@@ -221,7 +221,39 @@ def run_selftest():
     assert u2 == "http://localhost:8080/?rest_route=/clinic/v1/appointments/9/reschedule-options"
     assert wp_route(u1) == "/clinic/v1/staff/portal/finance/reconciliation"
     assert wp_route(u2) == "/clinic/v1/appointments/9/reschedule-options"
-    print("PASS day2-selftest — deterministic URL/route helper self-test passed")
+
+    # Reception board envelope (RestBase::success => {"data": {...}}).
+    good = parse_board_envelope(
+        {"data": {"date": "2026-10-24", "appointments": [
+            {"id": 11, "status": "confirmed", "time": "09:05"},
+            {"id": 12, "status": "confirmed", "time": "09:06"},
+        ]}}
+    )
+    assert good["date"] == "2026-10-24"
+    assert good["appointment_ids"] == [11, 12]
+
+    malformed_payloads = {
+        "missing envelope": {"date": "2026-10-24", "appointments": []},
+        "envelope not object": {"data": "2026-10-24"},
+        "date missing": {"data": {"appointments": []}},
+        "date not Y-m-d": {"data": {"date": "24/10/2026", "appointments": []}},
+        "appointments missing": {"data": {"date": "2026-10-24"}},
+        "appointments not list": {"data": {"date": "2026-10-24", "appointments": {}}},
+        "appointment not object": {"data": {"date": "2026-10-24", "appointments": ["11"]}},
+        "appointment id not int": {"data": {"date": "2026-10-24", "appointments": [{"id": "11", "status": "confirmed"}]}},
+        "appointment id zero": {"data": {"date": "2026-10-24", "appointments": [{"id": 0, "status": "confirmed"}]}},
+        "appointment status missing": {"data": {"date": "2026-10-24", "appointments": [{"id": 11}]}},
+        "top-level list": [{"date": "2026-10-24"}],
+        "top-level null": None,
+    }
+    for label, payload in malformed_payloads.items():
+        try:
+            parse_board_envelope(payload)
+        except AssertionError:
+            continue
+        raise AssertionError(f"malformed reception board payload was accepted: {label}")
+
+    print("PASS day2-selftest — deterministic URL/route + REST envelope self-test passed")
     return 0
 
 
@@ -490,6 +522,44 @@ def run_journey_a_patient_reschedule(browser, cfg):
         ctx_pt.close()
 
 
+def parse_board_envelope(payload):
+    """Read the reception board payload from the real CPMS REST envelope.
+
+    `RestBase::success()` wraps every payload as `{"data": <payload>}`. The board
+    handler's payload carries `date` (the server-authoritative operational date)
+    and `appointments` (the operational-day projection). Malformed or unexpected
+    shapes must fail loudly: silently accepting them is how a date/envelope
+    mismatch could hide a real regression.
+    """
+    if not isinstance(payload, dict):
+        raise AssertionError(f"reception board envelope is not an object: {type(payload).__name__}")
+    if "data" not in payload:
+        raise AssertionError(
+            "reception board response is missing the CPMS REST 'data' envelope; "
+            f"top-level keys={sorted(payload.keys())[:6]}"
+        )
+    data = payload["data"]
+    if not isinstance(data, dict):
+        raise AssertionError(f"reception board 'data' is not an object: {type(data).__name__}")
+    date = data.get("date")
+    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
+        raise AssertionError(f"reception board 'data.date' is not a Y-m-d string: {date!r}")
+    appointments = data.get("appointments")
+    if not isinstance(appointments, list):
+        raise AssertionError(f"reception board 'data.appointments' is not a list: {type(appointments).__name__}")
+    ids = []
+    for row in appointments:
+        if not isinstance(row, dict):
+            raise AssertionError("reception board appointment entry is not an object")
+        row_id = row.get("id")
+        if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id <= 0:
+            raise AssertionError(f"reception board appointment id is not a positive int: {row_id!r}")
+        if not isinstance(row.get("status"), str) or row["status"] == "":
+            raise AssertionError(f"reception board appointment {row_id} has no status")
+        ids.append(row_id)
+    return {"date": date, "appointment_ids": ids}
+
+
 def anchor_reception_rows(cfg, target_date=None):
     """Re-anchor the Journey B reception rows against the SERVER clock.
 
@@ -557,9 +627,9 @@ def select_reception_scope_and_load_board(page, cfg):
         loc_sel.select_option(str(cfg["loc_a1"]))
     assert board_info.value.status == 200, "reception board load failed"
     try:
-        return board_info.value.json() or {}
-    except Exception:
-        return {}
+        return board_info.value.json()
+    except Exception as exc:  # malformed body is a failure, never a silent pass
+        raise AssertionError(f"reception board response is not decodable JSON: {exc}") from exc
 
 
 def run_journey_b_receptionist(browser, cfg):
@@ -575,42 +645,39 @@ def run_journey_b_receptionist(browser, cfg):
         # Clock-safe anchoring: the rows are placed "already due, inside grace,
         # on the server's operational date" immediately before the board is
         # read, so the real visits.no_show job cannot sweep them first and the
-        # board cannot resolve a different operational date. The loop is
-        # bounded and only re-anchors when the server reports a different date
-        # (i.e. local midnight actually crossed between the two reads); it never
-        # sleeps and never loosens an assertion.
+        # board cannot resolve a different operational date.
+        #
+        # The retry loop exists for ONE reason: a genuine local-midnight
+        # rollover between the anchor and the board read. It then reloads the
+        # portal, re-establishes the intended Clinic + Location, fetches a fresh
+        # board and re-anchors to the date the SERVER reports. It never sleeps,
+        # never loosens an assertion and is bounded.
         anchor_date = anchor_reception_rows(cfg)
         board = {}
         for attempt in (1, 2, 3):
-            board = select_reception_scope_and_load_board(page_sec, cfg)
-            if not board:
-                # Payload unavailable (unexpected response shape): the DOM
-                # assertions below stay authoritative. Recorded, never hidden.
-                info("reception_board_payload=unavailable")
-                break
-            board_date = str(board.get("date") or "")
-            if board_date and board_date == anchor_date:
+            if attempt > 1:
+                page_sec.reload(wait_until="networkidle")
+                page_sec.wait_for_selector('[data-role="sr-clinic-select"]', timeout=20000)
+            payload = select_reception_scope_and_load_board(page_sec, cfg)
+            board = parse_board_envelope(payload)
+            if board["date"] == anchor_date:
                 break
             assert attempt < 3, (
                 "reception board operational date never converged with the anchored "
-                f"date: anchored={anchor_date} board={board_date or 'missing'}"
+                f"date after {attempt} attempts: anchored={anchor_date} board={board['date']}"
             )
             info(
                 f"reception_reanchor attempt={attempt} anchored={anchor_date} "
-                f"board={board_date or 'missing'}"
+                f"board={board['date']}"
             )
-            anchor_date = anchor_reception_rows(cfg, board_date or None)
+            anchor_date = anchor_reception_rows(cfg, board["date"])
 
-        if board:
-            board_ids = {
-                int(row.get("id", 0)) for row in (board.get("appointments") or [])
-            }
-            assert cfg["sec_appt_doc1"] in board_ids, (
-                "anchored Doc1 reception row is missing from the operational-day board"
-            )
-            assert cfg["sec_appt_doc2"] in board_ids, (
-                "anchored Doc2 reception row is missing from the operational-day board"
-            )
+        assert cfg["sec_appt_doc1"] in board["appointment_ids"], (
+            "anchored Doc1 reception row is missing from the operational-day board"
+        )
+        assert cfg["sec_appt_doc2"] in board["appointment_ids"], (
+            "anchored Doc2 reception row is missing from the operational-day board"
+        )
 
         row_doc1 = page_sec.locator(
             f'tr[data-role="sr-row"][data-appointment-id="{cfg["sec_appt_doc1"]}"]'

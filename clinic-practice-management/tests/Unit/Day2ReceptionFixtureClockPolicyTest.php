@@ -272,6 +272,70 @@ final class Day2ReceptionFixtureClockPolicyTest extends TestCase
     }
 
     /**
+     * The anchor's success criterion is the persisted row, never the affected
+     * row count: `CpmsDb::execute()` is soft and a legitimately idempotent
+     * UPDATE reports 0 rows.
+     */
+    public function testReadbackAcceptsAnIdempotentUpdateThatChangedNothing(): void
+    {
+        $expected = [
+            'id' => 40,
+            'clinic_id' => 16,
+            'location_id' => 17,
+            'slot_date' => '2026-10-24',
+            'slot_time' => '12:25:53',
+            'slot_end_time' => '12:45:53',
+        ];
+        $stored = $expected + ['status' => 'confirmed'];
+
+        self::assertNull(
+            Day2ReceptionFixtureClockPolicy::readbackViolation($expected, $stored),
+            'A 0-row idempotent UPDATE whose persisted row is already correct is a success'
+        );
+    }
+
+    #[DataProvider('readbackViolationCases')]
+    public function testReadbackRejectsEveryMismatch(?array $stored, string $expectedCode): void
+    {
+        $expected = [
+            'id' => 40,
+            'clinic_id' => 16,
+            'location_id' => 17,
+            'slot_date' => '2026-10-24',
+            'slot_time' => '12:25:53',
+            'slot_end_time' => '12:45:53',
+        ];
+
+        self::assertSame($expectedCode, Day2ReceptionFixtureClockPolicy::readbackViolation($expected, $stored));
+    }
+
+    /** @return iterable<string, array{array<string, mixed>|null, string}> */
+    public static function readbackViolationCases(): iterable
+    {
+        $ok = [
+            'id' => 40,
+            'clinic_id' => 16,
+            'location_id' => 17,
+            'slot_date' => '2026-10-24',
+            'slot_time' => '12:25:53',
+            'slot_end_time' => '12:45:53',
+            'status' => 'confirmed',
+        ];
+
+        yield 'row vanished' => [null, 'APPOINTMENT_MISSING_AFTER_WRITE'];
+        yield 'different appointment id' => [array_merge($ok, ['id' => 41]), 'READBACK_ID_MISMATCH'];
+        yield 'id missing' => [array_diff_key($ok, ['id' => true]), 'READBACK_ID_MISMATCH'];
+        yield 'foreign clinic' => [array_merge($ok, ['clinic_id' => 17]), 'READBACK_SCOPE_MISMATCH'];
+        yield 'foreign location' => [array_merge($ok, ['location_id' => 18]), 'READBACK_SCOPE_MISMATCH'];
+        yield 'swept to no_show' => [array_merge($ok, ['status' => 'no_show']), 'READBACK_STATUS_MISMATCH'];
+        yield 'cancelled' => [array_merge($ok, ['status' => 'cancelled']), 'READBACK_STATUS_MISMATCH'];
+        yield 'status missing' => [array_diff_key($ok, ['status' => true]), 'READBACK_STATUS_MISMATCH'];
+        yield 'stale slot date' => [array_merge($ok, ['slot_date' => '2026-10-23']), 'READBACK_SLOT_MISMATCH'];
+        yield 'stale slot time' => [array_merge($ok, ['slot_time' => '12:20:53']), 'READBACK_SLOT_MISMATCH'];
+        yield 'stale end time' => [array_merge($ok, ['slot_end_time' => '12:40:53']), 'READBACK_END_MISMATCH'];
+    }
+
+    /**
      * @param array{doc1: DateTimeImmutable, doc2: DateTimeImmutable, foreign: DateTimeImmutable} $times
      */
     private function render(array $times): string
