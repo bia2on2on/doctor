@@ -126,7 +126,7 @@ final class VisitService
             $source = 'scheduled';
             $status = (string) $appt['status'];
             $nowSql = $this->db->nowUtcSql();
-            $nowUtc = $this->nowUtc();
+            $nowUtc = $this->nowUtc(); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established UTC instant local.
 
             // T2: per-Clinic grace + Location timezone
             $clinicId = (int) ($appt['clinic_id'] ?? 0);

@@ -126,8 +126,7 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInCreatesVisitAndAutoEnqueues(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
@@ -153,8 +152,7 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testDuplicateActiveVisitIsRejected(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
 
@@ -171,8 +169,11 @@ final class VisitFlowTest extends WP_UnitTestCase
     public function testExpiredGraceCheckInIsDeniedWithoutVisitOrAppointmentMutation(): void
     {
         // Same-day expired grace, independent of the calendar-date gate.
-        $local = new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran'));
-        $date = $local->format('Y-m-d');
+        $date = '2026-10-24';
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc(
+            new \DateTimeImmutable('2026-10-24 08:30:00', new \DateTimeZone('UTC'))
+        );
+        try {
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $date, '00:00:00');
         try {
             App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
@@ -186,6 +187,9 @@ final class VisitFlowTest extends WP_UnitTestCase
         $this->assertSame(0, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_visits') . ' WHERE appointment_id = %d', [$apptId]
         ));
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
     }
 
     public function testNoShowAppointmentCheckInIsDenied(): void
@@ -206,8 +210,7 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testCheckInOnCancelledAppointmentIsRejected(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         App::db()->update('cpms_appointments', ['status' => 'cancelled_by_staff'], ['id' => $apptId]);
 
@@ -236,8 +239,7 @@ final class VisitFlowTest extends WP_UnitTestCase
         );
         $otherPatientId = (int) $wpdb->insert_id;
 
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
 
         try {
@@ -263,8 +265,7 @@ final class VisitFlowTest extends WP_UnitTestCase
 
     public function testFullQueueLifecycleThroughCheckout(): void
     {
-                $t = time() + 3600;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'));
         $visit = App::visitService()->checkIn($this->secretaryUserId, $this->patientId, $apptId);
         $visitId = (int) $visit['id'];
@@ -390,8 +391,7 @@ final class VisitFlowTest extends WP_UnitTestCase
             )
         );
         $expressPatientId = (int) $wpdb->insert_id;
-        $t = time() + 1800;
-        $dt = (new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'));
+        $dt = (new \DateTimeImmutable('now', new \DateTimeZone('Asia/Tehran')))->setTime(23, 59, 59);
         $apptId = $this->makeAppointment($expressPatientId, $this->clinicianId, $dt->format('Y-m-d'), $dt->format('H:i:s'), isWalkinExpress: 1);
         $express = App::visitService()->checkIn($this->secretaryUserId, $expressPatientId, $apptId);
 
@@ -444,7 +444,15 @@ final class VisitFlowTest extends WP_UnitTestCase
                 $visitedLate
             )
         );
-        App::visitService()->checkIn($this->secretaryUserId, $sweepPatientId, $visitedLate);
+        // Simulate the patient's actual earlier arrival before the deadline;
+        // the sweep runs at real time after the deadline and must respect the Visit.
+        $early = (new \DateTimeImmutable((new \DateTimeImmutable('@' . $t))->setTimezone(new \DateTimeZone('Asia/Tehran'))->format('Y-m-d') . ' 00:00:00', new \DateTimeZone('Asia/Tehran')));
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($early);
+        try {
+            App::visitService()->checkIn($this->secretaryUserId, $sweepPatientId, $visitedLate);
+        } finally {
+            \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
+        }
 
         $res = App::visitService()->processNoShows();
         $count = is_array($res) ? ($res['processed'] ?? 0) : (int) $res;

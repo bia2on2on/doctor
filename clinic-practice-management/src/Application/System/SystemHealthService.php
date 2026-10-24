@@ -357,7 +357,7 @@ final class SystemHealthService
      * Hosts may need more when a future release exceeds this provisional floor.
      */
     public const MIN_UPLOAD_BYTES = 32 * 1024 * 1024;
-    public const MIN_POST_BYTES = 40 * 1024 * 1024;
+    public const MIN_POST_BYTES   = 40 * 1024 * 1024;
 
     public const ZIP_SIZE_GUIDANCE_FA = 'بستهٔ انتشار CPMS (حاوی runtime vendor و کاتالوگ آفلاین ۳۱ استان) از سقف پیش‌فرض بسیاری از هاست‌ها بزرگ‌تر است. '
         . 'اگر حجم POST از post_max_size بیشتر شود، وردپرس بدون توضیحِ علت خطای گمراه‌کنندهٔ «پیوند منقضی شده» را نشان می‌دهد؛ '

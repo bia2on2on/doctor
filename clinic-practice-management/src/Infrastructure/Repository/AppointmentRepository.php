@@ -108,10 +108,10 @@ final class AppointmentRepository
             if ( ! $this->is_reference_collision( (string) $this->db->wpdb()->last_error, $data ) ) {
                 throw new RuntimeException( 'Appointment insert failed' );
             }
-            $reference = (string) $data['reference_code'];
-            $dash = strrpos( $reference, '-' );
-            $prefix = substr( $reference, 0, $dash + 1 );
-            $suffix = substr( $reference, $dash + 1 );
+            $reference              = (string) $data['reference_code'];
+            $dash                   = strrpos( $reference, '-' );
+            $prefix                 = substr( $reference, 0, $dash + 1 );
+            $suffix                 = substr( $reference, $dash + 1 );
             $data['reference_code'] = ctype_digit( $suffix ) && $attempt < 7
                 ? $prefix . str_pad( (string) ( (int) $suffix + 1 ), 2, '0', STR_PAD_LEFT )
                 : $prefix . strtoupper( bin2hex( random_bytes( 5 ) ) );

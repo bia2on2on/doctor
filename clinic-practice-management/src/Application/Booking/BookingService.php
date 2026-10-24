@@ -2778,7 +2778,7 @@ final class BookingService
         throw new BookingException('CLINIC_VALIDATION_FAILED', 'خطا در ساخت MRN — دوباره تلاش کنید', 500);
     }
 
-    private function referenceCode(string $slotDate): string
+    private function referenceCode(string $slotDate): string // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established private API signature.
     {
         // The existing reference contract is global per calendar date.
         $base      = 'AP-' . str_replace( '-', '', $slotDate );

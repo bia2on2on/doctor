@@ -208,6 +208,31 @@ final class BookingFlowTest extends WP_UnitTestCase
 
     // ---------- B1/B2 ----------
 
+    public function testReferenceUniqueIndexCollisionRetriesInsideAppointmentInsert(): void
+    {
+        $slot = $this->makeSlot(5, '10:00', 1, 20);
+        $hold = $this->booking()->hold($this->patientUserId, $this->clinicianId, $slot['date'], $slot['time']);
+        $first = $this->booking()->confirm($hold['hold_token'], $this->patientUserId, 'اول', $this->uuid());
+        $existing = App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$first['appointment_id']]
+        );
+        self::assertNotNull($existing);
+        $repo = new \ClinicCore\Infrastructure\Repository\AppointmentRepository(App::db());
+        $inserted = App::db()->transactional(static function () use ($repo, $existing): int {
+            return $repo->create($existing);
+        });
+        $reference = App::db()->fetchValue(
+            'SELECT reference_code FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$inserted]
+        );
+        self::assertNotSame($first['reference_code'], $reference);
+        self::assertSame(
+            (int) substr((string) $first['reference_code'], -2) + 1,
+            (int) substr((string) $reference, -2)
+        );
+    }
+
     public function testReferenceSequenceAdvancesPastGapAndLegacySuffix(): void
     {
         $firstSlot = $this->makeSlot(4, '10:00', 1, 20);
