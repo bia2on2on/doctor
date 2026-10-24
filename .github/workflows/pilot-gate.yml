@@ -139,13 +139,16 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd
           coverage: none
 
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification). No browser on this job.
       - name: Tooling (wp-cli, mysql-client, apache, ab, bc)
-        uses: ./.github/actions/cpms-tooling
+        uses: ./.github/actions/wp-stack-tooling
         with:
-          log-dir: /tmp
           apt-packages: >-
-            mysql-client apache2 libapache2-mod-php php-mysql php-mbstring
-            php-xml php-curl php-zip php-gd apache2-utils bc
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl php-zip php-gd
+            apache2-utils bc
+          apt-log-dir: /tmp
 
       - name: Lint gate tools (php -l)
         run: |
@@ -1427,11 +1430,12 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: shivammathur/setup-php@v2
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
+      # Apt package list unchanged (`mysql-client` only) + pinned, verified WP-CLI.
       - name: Tooling
-        uses: ./.github/actions/cpms-tooling
+        uses: ./.github/actions/wp-stack-tooling
         with:
           apt-packages: mysql-client
-          log-dir: /tmp
+          apt-log-dir: /tmp
       - name: WordPress + pinned previous CPMS source
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
@@ -1539,19 +1543,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: shivammathur/setup-php@v2
         with: { php-version: '8.2', extensions: 'mysqli, curl, mbstring, xml', coverage: none }
-      # Same step name, same package set and — unchanged — all three engine
-      # binaries: the "Firefox/WebKit compatibility smoke" step below is part
-      # of this job's acceptance contract, so chromium, firefox and webkit all
-      # stay installed. See docs/ci/setup-performance.md.
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification). The responsive smoke keeps ALL THREE browsers:
+      # the acceptance contract for this lane is Chromium + Firefox + WebKit, and
+      # the browser step below installs exactly that set.
       - name: Tooling (wp-cli + apache + playwright)
-        uses: ./.github/actions/cpms-tooling
+        uses: ./.github/actions/wp-stack-tooling
         with:
-          log-dir: /tmp
           apt-packages: >-
-            mysql-client apache2 libapache2-mod-php php-mysql php-mbstring
-            php-xml php-curl faketime
-          playwright-version: '1.64.1'
-          playwright-browsers: chromium firefox webkit
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl faketime
+          apt-log-dir: /tmp
+
+      - name: Playwright chromium + firefox + webkit (pinned + cached)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium firefox webkit
       - name: WP + Plugin از Artifact + داده حداقلی Synthetic
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"

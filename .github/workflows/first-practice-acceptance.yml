@@ -76,18 +76,20 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
           coverage: none
 
-      # Same step name and the same package/browser set as before; see
-      # docs/ci/setup-performance.md for the provisioning contract of the
-      # shared composite action.
+      # Apt package list unchanged (shared action only adds bounded retries and a
+      # fail-closed verification); browsers are a pinned, cache-backed step.
       - name: Tooling (apache + wp-cli + playwright/chromium)
-        uses: ./.github/actions/cpms-tooling
+        uses: ./.github/actions/wp-stack-tooling
         with:
-          log-dir: /tmp/fp
           apt-packages: >-
-            mysql-client apache2 libapache2-mod-php php-mysql php-mbstring
-            php-xml php-curl php-zip php-gd
-          playwright-version: '1.64.1'
-          playwright-browsers: chromium
+            mysql-client apache2 libapache2-mod-php
+            php-mysql php-mbstring php-xml php-curl php-zip php-gd
+          apt-log-dir: /tmp/fp
+
+      - name: Playwright chromium (pinned + cached)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
 
       - name: Lint first-practice harness
         run: |

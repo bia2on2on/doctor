@@ -1,0 +1,287 @@
+name: WP stack tooling (bounded apt + pinned, checksum-verified WP-CLI)
+description: >-
+  Installs exactly the apt package list a lane asks for, with bounded apt
+  retries/timeouts and a fail-closed dpkg verification of every requested
+  package, then installs an exact WP-CLI release phar whose SHA-256/SHA-512 are
+  pinned and verified before the phar is ever executed.
+
+  This action never adds, removes, upgrades or substitutes a package: the apt
+  package list is an input and is passed to `apt-get install` unchanged, so a
+  lane's provisioned environment is what it asked for (including the unversioned
+  `libapache2-mod-php` / `php-*` metapackages that currently resolve to the
+  distro PHP on ubuntu-24.04). Which mod_php module ends up enabled is recorded
+  as a check-run annotation, so the served PHP version is evidence rather than
+  assumption.
+
+  What this action deliberately does NOT do: it does not add a PPA, does not
+  reorder or pin apt sources, and does not retry a failed installation in a
+  shell loop. A failure that survives apt's own bounded retries fails the step.
+
+inputs:
+  apt-packages:
+    description: >-
+      Space-separated apt packages to install — pass the lane's existing list
+      verbatim. Empty string skips apt entirely.
+    required: false
+    default: ''
+  apt-log-dir:
+    description: 'Directory that receives apt.log (created when missing).'
+    required: false
+    default: '/tmp/cpms-ci-tooling'
+  apt-retries:
+    description: 'apt Acquire::Retries value (bounded mirror retry, not a shell loop).'
+    required: false
+    default: '3'
+  apt-timeout-seconds:
+    description: >-
+      apt Acquire::http/https::Timeout in seconds. A mirror that stops sending
+      data fails the step inside this budget instead of stalling the job.
+    required: false
+    default: '45'
+  wp-cli-version:
+    description: 'Exact WP-CLI release to install (official wp-cli/wp-cli release).'
+    required: false
+    default: '2.12.0'
+  wp-cli-sha256:
+    description: >-
+      SHA-256 of the official wp-cli-<version>.phar release asset. Published by
+      wp-cli/builds (gh-pages phar/wp-cli.phar.sha256) and cross-checked against
+      the GitHub release-asset digest.
+    required: false
+    default: 'ce34ddd838f7351d6759068d09793f26755463b4a4610a5a5c0a97b68220d85c'
+  wp-cli-sha512:
+    description: 'SHA-512 of the same official release asset (phar/wp-cli.phar.sha512).'
+    required: false
+    default: 'be928f6b8ca1e8dfb9d2f4b75a13aa4aee0896f8a9a0a1c45cd5d2c98605e6172e6d014dda2e27f88c98befc16c040cbb2bd1bfa121510ea5cdf5f6a30fe8832'
+  wp-cli-cache:
+    description: >-
+      Cache the verified phar between runs. The cache key is exact (version +
+      pinned SHA-256), there are no restore-keys, and the phar is re-hashed on
+      every run before `install` — a cache entry is a download shortcut, never
+      an executable that is trusted without validation.
+    required: false
+    default: 'true'
+  wp-cli-cache-path:
+    description: 'Directory that holds the cached phar.'
+    required: false
+    default: '~/.cache/cpms-ci'
+
+outputs:
+  apt-seconds:
+    description: 'Wall-clock seconds spent in the apt phase (0 when skipped).'
+    value: ${{ steps.apt.outputs.apt_seconds }}
+  mod-php-enabled:
+    description: 'mod_php load file names enabled after the apt phase (evidence only).'
+    value: ${{ steps.apt.outputs.mod_php }}
+  wp-cli-seconds:
+    description: 'Wall-clock seconds spent installing/verifying WP-CLI.'
+    value: ${{ steps.wpcli.outputs.wp_cli_seconds }}
+  wp-cli-source:
+    description: '`cache` when the verified phar came from the cache, `download` otherwise.'
+    value: ${{ steps.wpcli.outputs.wp_cli_source }}
+
+runs:
+  using: composite
+  steps:
+    # restore/save are used explicitly instead of the combined `actions/cache`
+    # step: the combined action saves in a *post* step, and inside a composite
+    # action that save point is not what this repository can reason about from
+    # the logs. An explicit save also means the cache is only written after the
+    # phar has been checksum-verified in this run.
+    - name: Restore verified WP-CLI phar cache
+      id: wpcli-cache
+      if: inputs.wp-cli-cache == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ inputs.wp-cli-cache-path }}
+        # Exact key only: version + the pinned checksum. No restore-keys, so a
+        # cache entry can never come from a different WP-CLI release or from an
+        # older pin. The file is still re-hashed before use (see next step).
+        key: wp-cli-${{ runner.os }}-${{ inputs.wp-cli-version }}-${{ inputs.wp-cli-sha256 }}
+
+    - name: apt install (bounded retries/timeouts, fail-closed verification)
+      id: apt
+      if: inputs.apt-packages != ''
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        APT_PACKAGES: ${{ inputs.apt-packages }}
+        APT_LOG_DIR: ${{ inputs.apt-log-dir }}
+        APT_RETRIES: ${{ inputs.apt-retries }}
+        APT_TIMEOUT_SECONDS: ${{ inputs.apt-timeout-seconds }}
+      run: |
+        set -euo pipefail
+        LOG_DIR="$APT_LOG_DIR"
+        LOG="$LOG_DIR/apt.log"
+        mkdir -p "$LOG_DIR"
+
+        # apt's own bounded retry covers a struggling mirror. Acquire::Languages=none
+        # drops the translated package indexes, which are pure download weight on a
+        # CI runner that never reads a package description in another language.
+        APT_OPTS=(
+          -o "Acquire::Retries=${APT_RETRIES}"
+          -o "Acquire::http::Timeout=${APT_TIMEOUT_SECONDS}"
+          -o "Acquire::https::Timeout=${APT_TIMEOUT_SECONDS}"
+          -o "DPkg::Lock::Timeout=120"
+        )
+
+        apt_fail() {
+          # The apt tail is an annotation on purpose: raw job logs are served from
+          # *.blob.core.windows.net, which is not always retrievable from a review
+          # environment, whereas check-run annotations are.
+          local diag
+          diag="$(tail -25 "$LOG" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1500)"
+          echo "::error title=apt phase failed::$1 — apt diagnostic: ${diag}"
+          tail -40 "$LOG" 2>/dev/null || true
+          exit 1
+        }
+
+        read -r -a PKGS <<< "$APT_PACKAGES"
+        if [ "${#PKGS[@]}" -eq 0 ]; then
+          echo "::error title=apt phase::no packages parsed from 'apt-packages'"
+          exit 1
+        fi
+
+        # No unconditional `apt-get update`.
+        #
+        # Every caller runs this action after shivammathur/setup-php in the same
+        # job, which has already refreshed the indexes it needs, and the runner
+        # image ships populated /var/lib/apt/lists. A second full index refetch
+        # therefore buys nothing — and because setup-php adds ppa:ondrej/php
+        # whenever a lane PHP version or extension comes from it, that refetch is
+        # exactly what makes a job wait on Launchpad: on 2f675a2 the same step on
+        # identically configured legs took 68 s, 1041 s and 1396 s in the same
+        # push, and pilot-gate run 39991158296 lost its Responsive job to a 24 m
+        # 36 s Tooling step.
+        #
+        # So install first; if (and only if) that fails — stale index, superseded
+        # package version, transient mirror error — refresh the indexes once and
+        # retry once, both inside the bounded retry/timeout budget, then fail.
+        # Sources, pins and preferences are untouched, so apt resolves exactly
+        # the same candidates as before.
+        install_pkgs() {
+          sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" install -y -qq "${PKGS[@]}"
+        }
+        refresh_index() {
+          sudo apt-get "${APT_OPTS[@]}" -o Acquire::Languages=none update -qq
+        }
+
+        started=$(date +%s)
+        echo "+ apt-get install -y -qq ${PKGS[*]} (existing indexes; Acquire::Retries=${APT_RETRIES}, http/https timeout=${APT_TIMEOUT_SECONDS}s)"
+        if install_pkgs > "$LOG" 2>&1; then
+          echo "apt install succeeded against the package indexes this job already had (no index refetch)"
+        else
+          echo "::warning title=apt install::the install failed against the existing indexes; refreshing them once inside the bounded budget and retrying once. First failure tail: $(tail -10 "$LOG" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-800)"
+          refresh_index >> "$LOG" 2>&1 \
+            || apt_fail "apt-get update did not complete inside the bounded retry/timeout budget"
+          install_pkgs >> "$LOG" 2>&1 \
+            || apt_fail "apt-get install failed for: ${PKGS[*]} (also after one bounded index refresh)"
+        fi
+
+        # Fail closed. apt's exit status is not proof that every requested package
+        # landed: a partially applied run must never be measured as a provisioned
+        # environment.
+        for pkg in "${PKGS[@]}"; do
+          status="$(dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null || true)"
+          if [ "$status" != "install ok installed" ]; then
+            apt_fail "package '${pkg}' reports dpkg status '${status:-absent}' after apt reported success"
+          fi
+        done
+
+        # Evidence, never an assertion: record which mod_php module is enabled, so
+        # the PHP that Apache will actually serve is visible in the check run.
+        mod_php="$(ls /etc/apache2/mods-enabled/php*.load 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ' || true)"
+        mod_php="${mod_php% }"
+        seconds=$(( $(date +%s) - started ))
+        echo "apt_seconds=${seconds}" >> "$GITHUB_OUTPUT"
+        echo "mod_php=${mod_php:-none}" >> "$GITHUB_OUTPUT"
+        echo "apt_seconds=${seconds} packages=${#PKGS[@]} mod_php=${mod_php:-none}" >> "$GITHUB_STEP_SUMMARY"
+        echo "::notice title=apt phase::seconds=${seconds} packages=${#PKGS[@]} mod_php_enabled=${mod_php:-none}"
+
+    - name: WP-CLI ${{ inputs.wp-cli-version }} (pinned + checksum-verified)
+      id: wpcli
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        WP_CLI_VERSION: ${{ inputs.wp-cli-version }}
+        WP_CLI_SHA256: ${{ inputs.wp-cli-sha256 }}
+        WP_CLI_SHA512: ${{ inputs.wp-cli-sha512 }}
+        WP_CLI_CACHE_DIR: ${{ inputs.wp-cli-cache-path }}
+        WP_CLI_CACHE_HIT: ${{ steps.wpcli-cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        # actions/cache expands a leading ~ itself; bash does not, so resolve it
+        # once here and use the resolved directory for every filesystem operation.
+        CACHE_DIR="${WP_CLI_CACHE_DIR/#\~/${HOME}}"
+        PHAR="${CACHE_DIR}/wp-cli-${WP_CLI_VERSION}.phar"
+        URL="https://github.com/wp-cli/wp-cli/releases/download/v${WP_CLI_VERSION}/wp-cli-${WP_CLI_VERSION}.phar"
+        mkdir -p "$CACHE_DIR"
+
+        verify_phar() {
+          local target="$1" got256 got512
+          got256="$(sha256sum "$target" | cut -d' ' -f1)"
+          got512="$(sha512sum "$target" | cut -d' ' -f1)"
+          if [ "$got256" != "$WP_CLI_SHA256" ]; then
+            echo "sha256 observed=${got256} pinned=${WP_CLI_SHA256}"
+            return 1
+          fi
+          if [ "$got512" != "$WP_CLI_SHA512" ]; then
+            echo "sha512 observed=${got512} pinned=${WP_CLI_SHA512}"
+            return 1
+          fi
+          return 0
+        }
+
+        started=$(date +%s)
+        source_kind=cache
+        if [ -f "$PHAR" ]; then
+          if ! verify_phar "$PHAR" > /tmp/wp-cli-verify.log 2>&1; then
+            echo "::warning title=WP-CLI cache entry rejected::the phar restored from cache does not match the pinned SHA-256/SHA-512 ($(tail -2 /tmp/wp-cli-verify.log | tr '\n' ' ')); discarding it and downloading the official release asset instead."
+            rm -f "$PHAR"
+          fi
+        fi
+
+        if [ ! -f "$PHAR" ]; then
+          source_kind=download
+          # The versioned release asset is immutable, unlike the mutable
+          # gh-pages phar/wp-cli.phar alias this workflow used to fetch.
+          curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
+            "$URL" -o "${PHAR}.part"
+          mv "${PHAR}.part" "$PHAR"
+          if ! verify_phar "$PHAR"; then
+            rm -f "$PHAR"
+            echo "::error title=WP-CLI checksum mismatch::the downloaded WP-CLI ${WP_CLI_VERSION} phar does not match the pinned checksum from wp-cli/builds. Refusing to install or execute it."
+            exit 1
+          fi
+        fi
+
+        # Same install shape as before (a real binary at /usr/local/bin/wp), now
+        # only after the content has been proven to be the pinned release.
+        sudo install -m 0755 "$PHAR" /usr/local/bin/wp
+        installed="$(wp --allow-root --version 2>/dev/null || true)"
+        case "$installed" in
+          *"${WP_CLI_VERSION}"*) : ;;
+          *)
+            echo "::error title=WP-CLI version mismatch::expected WP-CLI ${WP_CLI_VERSION}, 'wp --version' reported '${installed:-nothing}'"
+            exit 1
+            ;;
+        esac
+
+        seconds=$(( $(date +%s) - started ))
+        echo "wp_cli_seconds=${seconds}" >> "$GITHUB_OUTPUT"
+        echo "wp_cli_source=${source_kind}" >> "$GITHUB_OUTPUT"
+        echo "wp_cli_seconds=${seconds} version=${WP_CLI_VERSION} source=${source_kind} cache_hit=${WP_CLI_CACHE_HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+        echo "wp --version: ${installed}"
+        echo "::notice title=WP-CLI::version=${WP_CLI_VERSION} source=${source_kind} cache_hit=${WP_CLI_CACHE_HIT:-false} seconds=${seconds}"
+
+    - name: Save verified WP-CLI phar cache
+      id: wpcli-cache-save
+      if: >-
+        inputs.wp-cli-cache == 'true' &&
+        steps.wpcli-cache.outputs.cache-hit != 'true' &&
+        steps.wpcli.outputs.wp_cli_source == 'download' &&
+        github.event.pull_request.head.repo.fork != true
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ inputs.wp-cli-cache-path }}
+        key: wp-cli-${{ runner.os }}-${{ inputs.wp-cli-version }}-${{ inputs.wp-cli-sha256 }}

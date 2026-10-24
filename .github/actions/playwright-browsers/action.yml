@@ -1,0 +1,264 @@
+name: Playwright browsers (pinned + exact-key cache)
+description: >-
+  Installs one exact Playwright Python release and the exact browser builds that
+  release pins, reusing them from an exact-key cache on later runs.
+
+  Browsers are executables, so the cache handling is deliberately strict:
+  * the cache key is exact — runner OS + arch + Playwright version + the exact
+    browser set — with no `restore-keys`, so a different version or a different
+    browser set can never be restored by accident;
+  * GitHub caches are branch-scoped, so a pull request from a fork cannot write
+    the cache that default-branch runs read;
+  * after a restore the browsers are re-validated every run: `playwright
+    install` (which checks the pinned build revisions) and a real headless
+    launch of each browser;
+  * system dependencies are asked for, never assumed: `playwright install-deps
+    --dry-run` reports which required OS packages are missing for exactly this
+    browser set, and only that list is installed — with bounded apt retries and
+    timeouts, and one index refresh only if the install itself fails. The
+    answer is re-verified, and `install --with-deps` is not used at all, so the
+    dependency set is never re-installed when it is already satisfied and apt
+    never repeats a full index refetch on a happy path.
+
+  Cold (cache miss): `playwright install <browsers>` downloads the pinned
+  builds, the bounded dependency check runs, then a real launch is verified.
+  Warm (cache hit): no download; a launch proves the dependencies are still
+  present, and only a launch failure provisions them (once, bounded).
+
+inputs:
+  playwright-version:
+    description: >-
+      Exact `playwright` PyPI release. 1.64.1 is the release the previously
+      unpinned install resolved to (PyPI latest, published 2026-10-22T16:29Z)
+      and the pin freezes that resolution. Browser builds are fixed per release:
+      chromium-1248, firefox-1555, webkit-2370, ffmpeg-1013.
+    required: false
+    default: '1.64.1'
+  browsers:
+    description: 'Space-separated browsers to install: chromium, firefox, webkit.'
+    required: false
+    default: 'chromium'
+  cache:
+    description: 'Reuse the exact-key browser cache (recommended).'
+    required: false
+    default: 'true'
+  install-timeout-seconds:
+    description: >-
+      Upper bound for one `playwright install` / `install-deps` invocation, so a
+      stalled CDN or apt mirror fails the step instead of hanging the job.
+    required: false
+    default: '900'
+
+outputs:
+  cache-hit:
+    description: '`true` when the exact-key browser cache was restored.'
+    value: ${{ steps.browsers-cache.outputs.cache-hit }}
+  seconds:
+    description: 'Wall-clock seconds spent in the browser install/verify phase.'
+    value: ${{ steps.browsers.outputs.playwright_seconds }}
+  deps:
+    description: 'How system dependencies were handled on this run.'
+    value: ${{ steps.browsers.outputs.playwright_deps }}
+
+runs:
+  using: composite
+  steps:
+    - name: Prepare cache key
+      id: key
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PW_BROWSERS: ${{ inputs.browsers }}
+        PW_VERSION: ${{ inputs.playwright-version }}
+        PW_ARCH: ${{ runner.arch }}
+        PW_OS: ${{ runner.os }}
+      run: |
+        set -euo pipefail
+        # Cache keys are a single token: normalise the browser list here so the
+        # key is byte-stable and the same list is still passed as argv later.
+        normalised="$(printf '%s' "$PW_BROWSERS" | tr -s ' ' '-' | sed 's/^-//; s/-$//')"
+        if [ -z "$normalised" ]; then
+          echo "::error title=playwright-browsers::no browsers requested"
+          exit 1
+        fi
+        key="pw-browsers-v1-${PW_OS}-${PW_ARCH}-${PW_VERSION}-${normalised}"
+        echo "PW_CACHE_KEY=${key}" >> "$GITHUB_ENV"
+        echo "normalised_browsers=${normalised}"
+
+    - name: Install Playwright Python package (exact version)
+      id: pkg
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PW_VERSION: ${{ inputs.playwright-version }}
+      run: |
+        set -euo pipefail
+        spec="playwright==${PW_VERSION}"
+        if ! python3 -m pip install --quiet --disable-pip-version-check "$spec" > /tmp/pw-pip.log 2>&1; then
+          # Ubuntu 24.04 marks the system interpreter externally managed (PEP 668);
+          # the previously used install line had the same fallback. The reason for
+          # the fallback stays visible instead of being discarded.
+          echo "::notice title=playwright pip::default pip install was refused; retrying with --break-system-packages (PEP 668 externally-managed environment). Detail: $(tail -2 /tmp/pw-pip.log | tr '\n' ' ' | cut -c1-300)"
+          python3 -m pip install --quiet --disable-pip-version-check --break-system-packages "$spec" >> /tmp/pw-pip.log 2>&1 || {
+            tail -30 /tmp/pw-pip.log
+            echo "::error title=playwright pip::could not install ${spec}"
+            exit 1
+          }
+        fi
+        actual="$(python3 -m playwright --version | awk '{print $NF}')"
+        if [ "$actual" != "$PW_VERSION" ]; then
+          echo "::error title=playwright version::expected ${PW_VERSION}, interpreter reports '${actual}'"
+          exit 1
+        fi
+        echo "playwright --version: ${actual}"
+
+    # restore/save are used explicitly instead of the combined `actions/cache`
+    # step: the combined action writes the cache in a *post* step, and inside a
+    # composite action that save point is not observable from this repository's
+    # evidence. Saving explicitly also means a cache entry is only written after
+    # the install and launch verification in this run succeeded.
+    - name: Restore browser cache (exact key, no restore-keys)
+      id: browsers-cache
+      if: inputs.cache == 'true'
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ env.PW_CACHE_KEY }}
+
+    - name: Install/verify browsers
+      id: browsers
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        PW_BROWSERS: ${{ inputs.browsers }}
+        PW_VERSION: ${{ inputs.playwright-version }}
+        PW_CACHE_HIT: ${{ steps.browsers-cache.outputs.cache-hit }}
+        PW_INSTALL_TIMEOUT: ${{ inputs.install-timeout-seconds }}
+      run: |
+        set -euo pipefail
+        read -r -a BROWSERS <<< "$PW_BROWSERS"
+        if [ "${#BROWSERS[@]}" -eq 0 ]; then
+          echo "::error title=playwright-browsers::no browsers requested"
+          exit 1
+        fi
+        # Documented Playwright knob: idle socket timeout for a stalled browser
+        # download (default 30s is short for cdn.playwright.dev under load).
+        export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=120000
+        verifier="$GITHUB_ACTION_PATH/verify_launch.py"
+        started=$(date +%s)
+        install_log=/tmp/pw-install.log
+        deps_log=/tmp/pw-deps.log
+        deps_apt_log=/tmp/pw-deps-apt.log
+        # Bounded apt behaviour only: bounded mirror retries, bounded
+        # per-connection timeouts, bounded dpkg lock wait. No source, pin or
+        # preference is changed, so apt resolves the same candidates as before.
+        apt_opts=(
+          -o Acquire::Retries=3
+          -o Acquire::http::Timeout=45
+          -o Acquire::https::Timeout=45
+          -o DPkg::Lock::Timeout=120
+        )
+        deps_note=""
+
+        install_browsers() {
+          # `install` validates the pinned build revisions of a restored cache and
+          # repairs a partial one, so the cache is re-checked on every run rather
+          # than trusted.
+          timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install --no-progress "${BROWSERS[@]}" > "$install_log" 2>&1 || {
+            echo "::error title=playwright install failed::$(tail -15 "$install_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+            tail -40 "$install_log" || true
+            exit 1
+          }
+        }
+
+        install_pw_deps() {
+          # Playwright's own apt path, used only when its dry-run output cannot be
+          # read as a package list. Still bounded, still fail-closed.
+          timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install-deps "${BROWSERS[@]}" > "$deps_apt_log" 2>&1 || {
+            echo "::error title=playwright install-deps failed::$(tail -15 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+            tail -40 "$deps_apt_log" || true
+            exit 1
+          }
+        }
+
+        ensure_system_deps() {
+          # `install-deps --dry-run` is the Playwright-native answer to "which of
+          # my required OS packages are missing?": it simulates the apt install for
+          # exactly this browser set and exits non-zero when anything would still
+          # have to be installed. When it exits 0 nothing is installed at all.
+          if timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install-deps --dry-run "${BROWSERS[@]}" > "$deps_log" 2>&1; then
+            echo "playwright install-deps --dry-run: every required system dependency is already installed"
+            deps_note="reused (Playwright reports every required system dependency present)"
+            return 0
+          fi
+          echo "::warning title=playwright system dependencies::Playwright reports missing system dependencies for ${BROWSERS[*]}; installing exactly that list with bounded apt options."
+          tail -20 "$deps_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200 || true
+          mapfile -t MISSING < <(sed -n 's/^  \([a-z0-9][a-z0-9+.-]*\(:[a-z0-9]*\)\{0,1\}\)$/\1/p' "$deps_log" | sort -u)
+          if [ "${#MISSING[@]}" -eq 0 ]; then
+            echo "::notice title=playwright system dependencies::no package list could be read from the dry-run output; falling back to 'playwright install-deps' (Playwright's own apt path)."
+            install_pw_deps
+          else
+            echo "missing system dependencies: ${MISSING[*]}"
+            if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" > "$deps_apt_log" 2>&1; then
+              echo "::warning title=playwright system dependencies::the bounded install failed against the existing indexes; refreshing them once inside the bounded budget and retrying once."
+              tail -10 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-800 || true
+              sudo apt-get "${apt_opts[@]}" -o Acquire::Languages=none update -qq >> "$deps_apt_log" 2>&1 || {
+                echo "::error title=playwright system dependencies::apt-get update failed inside the bounded retry/timeout budget. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+                exit 1
+              }
+              sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" >> "$deps_apt_log" 2>&1 || {
+                echo "::error title=playwright system dependencies::still not installable after one bounded index refresh. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+                exit 1
+              }
+            fi
+          fi
+          # Fail closed: the dependency set has to verify before the suite runs.
+          if ! timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install-deps --dry-run "${BROWSERS[@]}" >> "$deps_log" 2>&1; then
+            echo "::error title=playwright system dependencies::Playwright still reports missing system dependencies after provisioning. Diagnostic: $(tail -15 "$deps_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+            exit 1
+          fi
+          deps_note="installed (bounded apt for exactly Playwright's missing-package list)"
+        }
+
+        if [ "$PW_CACHE_HIT" = "true" ]; then
+          # `install` against a complete cache validates the pinned build
+          # revisions and downloads nothing; it also prunes builds that this
+          # browser set does not use.
+          install_browsers
+          if python3 "$verifier" "${BROWSERS[@]}"; then
+            deps_note="reused (cached browsers launched; system dependencies already present)"
+          else
+            echo "::warning title=playwright system dependencies::cached browser binaries did not launch on this runner, so the dependency set is provisioned once (bounded) and re-verified."
+            ensure_system_deps
+            python3 "$verifier" "${BROWSERS[@]}" || {
+              echo "::error title=playwright launch failed::browsers still do not launch after one bounded dependency provisioning"
+              exit 1
+            }
+            deps_note="installed (bounded, after a launch failure on cached binaries)"
+          fi
+        else
+          install_browsers
+          ensure_system_deps
+          python3 "$verifier" "${BROWSERS[@]}" || {
+            echo "::error title=playwright launch failed::freshly installed browsers do not launch"
+            exit 1
+          }
+          deps_note="${deps_note} [cache miss]"
+        fi
+
+        seconds=$(( $(date +%s) - started ))
+        builds="$(ls "${HOME}/.cache/ms-playwright" 2>/dev/null | tr '\n' ' ' || true)"
+        echo "playwright_seconds=${seconds}" >> "$GITHUB_OUTPUT"
+        echo "playwright_deps=${deps_note}" >> "$GITHUB_OUTPUT"
+        echo "playwright version=${PW_VERSION} browsers=${BROWSERS[*]} cache_hit=${PW_CACHE_HIT:-false} deps=${deps_note} seconds=${seconds} builds=${builds}" >> "$GITHUB_STEP_SUMMARY"
+        echo "::notice title=playwright browsers::version=${PW_VERSION} browsers=${BROWSERS[*]} cache_hit=${PW_CACHE_HIT:-false} deps=${deps_note} seconds=${seconds} builds=${builds:-none}"
+
+    - name: Save browser cache (exact key)
+      if: >-
+        inputs.cache == 'true' &&
+        steps.browsers-cache.outputs.cache-hit != 'true' &&
+        github.event.pull_request.head.repo.fork != true
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/ms-playwright
+        key: ${{ env.PW_CACHE_KEY }}

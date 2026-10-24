@@ -609,15 +609,17 @@ jobs:
         if: matrix.source == 'wordpress_org'
         run: |
           set -Eeuo pipefail
-          # Bounded network behaviour only: bounded per-connection timeouts and
-          # bounded retries. No source, pin or preference is changed here.
+          # Bounded apt policy for the whole step: apt's own mirror retry (3) plus
+          # an explicit http/https timeout, so a mirror that stops sending data
+          # fails inside the budget instead of stalling the job for minutes. This
+          # adds no shell retry loop and changes no source or package resolution.
           APT_BOUNDED=(
             -o Acquire::Retries=3
-            -o Acquire::http::Timeout=30
-            -o Acquire::https::Timeout=30
+            -o Acquire::http::Timeout=45
+            -o Acquire::https::Timeout=45
             -o DPkg::Lock::Timeout=120
           )
-          sudo apt-get update -qq "${APT_BOUNDED[@]}"
+          sudo apt-get "${APT_BOUNDED[@]}" -o Acquire::Languages=none update -qq
 
           # The lane pins PHP 8.3, so the module Apache loads must be 8.3 too —
           # whatever mod_php the distro happens to enable is not acceptable
@@ -764,7 +766,7 @@ jobs:
               echo "::error::Class C environment failure: PHP ${PHP_VERSION} is not available from the Ubuntu archive on this runner and ppa:ondrej/php could not be added. apt diagnostic: $(apt_diag /tmp/apt-ppa.log)"
               exit 1
             fi
-            sudo apt-get update -qq "${APT_BOUNDED[@]}"
+            sudo apt-get "${APT_BOUNDED[@]}" -o Acquire::Languages=none update -qq
             # One bounded attempt: apt's own Acquire::Retries (3) covers a
             # struggling mirror, and a second failure here is final. No shell
             # retry loop deliberately — an unbounded retry against a 503-ing
@@ -787,17 +789,22 @@ jobs:
           # as a check-run annotation, which stays retrievable when the raw job
           # log blob does not.
           echo "::notice title=PHP ${PHP_VERSION} provenance (subject ${{ matrix.id }})::source=$(printf '%s' "$PHP_SOURCE" | sed 's/%/%25/g')"
-      # WP-CLI and the chromium binary are provisioned by the next step: the
-      # PHP/Apache provisioning above is deliberately left exactly as it was,
-      # because its archive-first/PPA-fallback evidence contract is specific to
-      # this lane. See docs/ci/setup-performance.md.
-      - name: Tooling (wp-cli + chromium, cached)
+
+      # WP-CLI and Chromium keep their own steps: the apt/PHP provisioning above
+      # is this lane's bespoke, PPA-aware evidence code and stays untouched.
+      # Only the mutable gh-pages phar download is replaced by the pinned,
+      # checksum-verified install, and Chromium by the pinned cache-backed set.
+      - name: WP-CLI (pinned + checksum-verified)
         if: matrix.source == 'wordpress_org'
-        uses: ./.github/actions/cpms-tooling
+        uses: ./.github/actions/wp-stack-tooling
         with:
           apt-packages: ''
-          playwright-version: '1.64.1'
-          playwright-browsers: chromium
+
+      - name: Playwright chromium (pinned + cached)
+        if: matrix.source == 'wordpress_org'
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
 
       - name: Clean WordPress on this job's own database
         if: matrix.source == 'wordpress_org'
