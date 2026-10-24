@@ -896,6 +896,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
 
         // Existing public-booking chooser still offers both explicitly linked
         // booking subjects; no patient is inferred from mobile or request data.
+        wp_set_current_user($caregiver);
         $surface = $this->renderSurface($this->clinicA);
         self::assertStringContainsString('Caregiver Self', $surface);
         self::assertStringContainsString('Dependent Child', $surface);
