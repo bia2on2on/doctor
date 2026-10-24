@@ -123,13 +123,13 @@ final class ProtectedBackupStore
         $ht = $this->basePath . '/.htaccess';
         if (!is_file($ht)) {
             if ( false === @file_put_contents( $ht, self::GUARD_HTACCESS ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
-                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
             }
         }
         $idx = $this->basePath . '/index.php';
         if (!is_file($idx)) {
             if ( false === @file_put_contents( $idx, "<?php\n// silence\n" ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
-                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
             }
         }
         // Phase 1A: یک بکاپ کاملِ پایگاه داده در دسترس مستقیم HTTP یک
@@ -137,13 +137,13 @@ final class ProtectedBackupStore
         $webConfig = $this->basePath . '/web.config';
         if (!is_file($webConfig)) {
             if ( false === @file_put_contents( $webConfig, self::GUARD_WEBCONFIG ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Typed failure is checked; warnings must not leak into redirects.
-                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
             }
         }
         $readme = $this->basePath . '/README-SECURITY.txt';
         if (!is_file($readme)) {
             if ( false === @file_put_contents( $readme, self::GUARD_README ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
-                throw BackupException::of('CLINIC_BACKUP_IO', 'backup guard write failed');
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed' );
             }
         }
     }

@@ -25,20 +25,16 @@ final class BackupStoreReadOnlyListingTest extends TestCase
         self::assertIsString($parent);
         try {
             $store = ProtectedBackupStore::active($parent . '/private-backups');
-            $warnings = [];
-            set_error_handler(static function (int $severity, string $message) use (&$warnings): bool {
-                $warnings[] = $message;
-                return true;
-            });
+            ob_start();
             try {
                 $store->createDir('backup-20261024');
                 self::fail('private storage must fail closed');
             } catch (BackupException $e) {
                 self::assertSame('CLINIC_BACKUP_IO', $e->errorCode);
             } finally {
-                restore_error_handler();
+                $output = (string) ob_get_clean();
             }
-            self::assertSame([], $warnings, 'filesystem warnings must not leak into HTTP output');
+            self::assertSame('', $output, 'filesystem warnings must not appear in HTTP output');
             self::assertFalse(is_dir($parent . '/private-backups'));
         } finally {
             unlink($parent);

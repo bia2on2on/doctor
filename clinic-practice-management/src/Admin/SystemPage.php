@@ -248,7 +248,7 @@ final class SystemPage
                 <thead><tr><th>ID</th><th>زمان (UTC)</th><th>جدول‌ها/ردیف‌ها</th><th>فایل‌ها</th><th>یکپارچگی</th><th></th></tr></thead>
                 <tbody>
                 <?php if ($backups === []) : ?>
-                    <tr><td colspan="6"><?php echo CpmsUi::emptyState( '🗄', 'هنوز بکاپی ساخته نشده', 'در صورت فعال بودن بکاپ دوره‌ای، پشتیبان‌گیری خودکار انجام می‌شود. برای بکاپ دستی از فرم بالای فهرست استفاده کنید.' ); ?></td></tr>
+                    <tr><td colspan="6"><?php echo CpmsUi::emptyState( '🗄', 'هنوز بکاپی ساخته نشده', 'در صورت فعال بودن بکاپ دوره‌ای، پشتیبان‌گیری خودکار انجام می‌شود. برای بکاپ دستی از فرم بالای فهرست استفاده کنید.' ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- CpmsUi escapes its structured HTML. ?></td></tr>
                 <?php endif; ?>
                 <?php foreach ($backups as $b) : ?>
                     <tr>

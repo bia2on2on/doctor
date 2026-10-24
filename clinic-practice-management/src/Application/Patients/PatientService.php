@@ -565,7 +565,7 @@ final class PatientService
     {
         $decision = $this->licenseGate->assert( $operation, $context ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing injected property.
         if (!$decision->allowed) {
-            throw new BookingException('CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ایجاد بیمار جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503);
+            throw new BookingException( 'CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ایجاد بیمار جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503 );
         }
     }
 

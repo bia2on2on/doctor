@@ -2270,7 +2270,7 @@ final class BookingService
         $decision = $this->licenseGate->assert($operation);
         if (!$decision->allowed) {
             $this->op->warning('license.blocked', ['operation' => $operation, 'reason' => $decision->reason]);
-            throw BookingException::of( 'CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ثبت نوبت جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503);
+            throw BookingException::of( 'CLINIC_LICENSE_BLOCKED', 'مجوز سامانه اجازه ثبت نوبت جدید را نمی‌دهد؛ خدمات مجاز برای بیماران موجود ادامه دارد', 503 );
         }
     }
 
@@ -2780,36 +2780,33 @@ final class BookingService
 
     private function referenceCode(string $slotDate): string
     {
-        // References are globally unique for a calendar date (not per Clinic).
-        // A bounded index range over reference_code avoids counting unrelated
-        // dates, and excludes historical nonnumeric collision fallbacks.
-        $base = 'AP-' . str_replace('-', '', $slotDate);
-        $prefix = $base . '-';
-        $max = (int) $this->db->fetchValue(
+        // The existing reference contract is global per calendar date.
+        $base      = 'AP-' . str_replace( '-', '', $slotDate );
+        $prefix    = $base . '-';
+        $suffix_at = strlen( $prefix ) + 1;
+        $max       = (int) $this->db->fetchValue(
             'SELECT COALESCE(MAX(CAST(SUBSTRING(reference_code, %d) AS UNSIGNED)), 0) FROM '
-            . $this->db->table('cpms_appointments')
+            . $this->db->table( 'cpms_appointments' )
             . ' WHERE reference_code >= %s AND reference_code < %s'
             . ' AND SUBSTRING(reference_code, %d) REGEXP %s',
-            [strlen($prefix) + 1, $prefix, $prefix . '~', strlen($prefix) + 1, '^[0-9]+$']
+            [$suffix_at, $prefix, $prefix . '~', $suffix_at, '^[0-9]+$']
         );
-        // Other booking transactions may insert after the range read. The
-        // existing unique index remains authoritative; bounded probes avoid
-        // reusing a reference visible to this transaction.
-        for ($i = 1; $i <= 8; $i++) {
-            $candidate = $prefix . str_pad((string) ($max + $i), 2, '0', STR_PAD_LEFT);
-            if ((int) $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_appointments') . ' WHERE reference_code = %s',
+        // The database unique index, not these probes, is the final arbiter.
+        for ( $i = 1; $i <= 8; $i++ ) {
+            $candidate = $prefix . str_pad( (string) ( $max + $i ), 2, '0', STR_PAD_LEFT );
+            if ( (int) $this->db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_appointments' ) . ' WHERE reference_code = %s',
                 [$candidate]
-            ) === 0) {
+            ) === 0 ) {
                 return $candidate;
             }
         }
-        for ($i = 0; $i < 8; $i++) {
-            $candidate = $prefix . strtoupper(bin2hex(random_bytes(5)));
-            if ((int) $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_appointments') . ' WHERE reference_code = %s',
+        for ( $i = 0; $i < 8; $i++ ) {
+            $candidate = $prefix . strtoupper( bin2hex( random_bytes( 5 ) ) );
+            if ( (int) $this->db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_appointments' ) . ' WHERE reference_code = %s',
                 [$candidate]
-            ) === 0) {
+            ) === 0 ) {
                 return $candidate;
             }
         }

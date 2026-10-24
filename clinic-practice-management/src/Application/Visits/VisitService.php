@@ -126,7 +126,7 @@ final class VisitService
             $source = 'scheduled';
             $status = (string) $appt['status'];
             $nowSql = $this->db->nowUtcSql();
-            $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+            $nowUtc = $this->nowUtc();
 
             // T2: per-Clinic grace + Location timezone
             $clinicId = (int) ($appt['clinic_id'] ?? 0);
@@ -143,8 +143,8 @@ final class VisitService
             // Check-in is only valid on the appointment's Gregorian calendar date
             // in its trusted Location timezone. A browser-supplied date is never used.
             $trusted_timezone = $this->resolveLocationTimezone( $locationId, $clinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established service variables.
-            $scheduled_date  = (string) ( $appt['slot_date'] ?? '' );
-            $parsed_date     = DateTimeImmutable::createFromFormat( '!Y-m-d', $scheduled_date );
+            $scheduled_date   = (string) ( $appt['slot_date'] ?? '' );
+            $parsed_date      = DateTimeImmutable::createFromFormat( '!Y-m-d', $scheduled_date );
             if ( null === $trusted_timezone || false === $parsed_date || $parsed_date->format( 'Y-m-d' ) !== $scheduled_date ) {
                 throw VisitException::of( 'CLINIC_VALIDATION_FAILED', 'تاریخ یا منطقه زمانی نوبت معتبر نیست', 422 );
             }
@@ -152,10 +152,7 @@ final class VisitService
                 throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', 'پذیرش فقط در روز محلی نوبت مجاز است', 409 );
             }
             if ( $status === 'no_show' ) {
-                // ER-06: late arrival after T8 — unbound walk-in (must NOT bind
-                // a genuinely active Visit to a terminal no_show appointment).
-                $source = 'walk_in';
-                $appointmentId = null;
+                throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', 'مهلت پذیرش این نوبت پایان یافته است', 409 );
             } else {
                 // T2: Location-aware lazy no-show check
                 $shouldMarkNoShow = false;
@@ -185,11 +182,9 @@ final class VisitService
                 }
 
                 if ( $shouldMarkNoShow ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-                    // ER-06 / FR-6.5: late arrival atomically T8s the
-                    // appointment then creates a walk-in-like Visit that
-                    // keeps the appointment reference.
-                    $this->markAppointmentNoShow($appt, $this->db->nowUtc(), $actorUserId);
-                    $source = 'walk_in';
+                    // Reject before appointment/visit/audit writes; the existing
+                    // scheduled no-show processor remains responsible for T8.
+                    throw VisitException::of( 'CLINIC_INVALID_APPOINTMENT_STATE', 'مهلت پذیرش این نوبت پایان یافته است', 409 );
                 } elseif ( $status === 'pending' ) {
                     // حضور بیمار = تایید نوبت (T3) — تا Checkout مسیر کامل شود
                     $this->confirmAppointment($appt, $nowSql, $actorUserId);

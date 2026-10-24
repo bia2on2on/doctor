@@ -34,7 +34,13 @@ final class UploadLimitsDiagnosisTest extends TestCase {
         self::assertStringNotContainsString( 'wp plugin install', $check['detail'], 'healthy hosts need no remediation instructions' );
 
         // post_max_size alone is enough when upload_max_filesize is unlimited.
-        self::assertSame( SystemHealthService::PASS, SystemHealthService::upload_limits_check( '32M', '0' )['status'] );
+        self::assertSame( SystemHealthService::PASS, SystemHealthService::upload_limits_check( '40M', '0' )['status'] );
+    }
+
+    public function testTwentyMegabyteLimitsNeverPassWithoutVerifiedZipSize(): void {
+        self::assertSame( SystemHealthService::WARNING, SystemHealthService::upload_limits_check( '20M', '20M' )['status'] );
+        self::assertSame( SystemHealthService::WARNING, SystemHealthService::upload_limits_check( '32M', '32M' )['status'], 'POST requires multipart headroom' );
+        self::assertSame( SystemHealthService::PASS, SystemHealthService::upload_limits_check( '40M', '32M' )['status'] );
     }
 
     public function testOneInsufficientLimitStillWarns(): void {
