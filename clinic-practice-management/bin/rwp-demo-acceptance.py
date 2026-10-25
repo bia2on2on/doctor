@@ -204,10 +204,43 @@ def public_booking(browser, admin_page, links, credentials):
 
     page.goto(links["patient"], wait_until="domcontentloaded")
     page.wait_for_timeout(1200)
-    check("patient dashboard after OTP", "wp-login.php" not in page.url and page.locator("body").count() == 1)
+    check("patient dashboard after OTP", page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "patient")
     assert_no_horizontal_overflow(page, "patient portal mobile has no horizontal overflow")
     page.screenshot(path=f"{OUT}/screenshots/demo-patient-mobile.png", full_page=True)
-    return context, page
+    return context, page, reference
+
+
+def reception_arrival(browser, credentials, staff_url, clinic_id, reference):
+    stage("reception check-in and enqueue of the public booking")
+    output = wp_eval(r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$row = $db->fetchRow("SELECT id FROM " . $db->table("cpms_appointments") . " WHERE clinic_id = %d AND reference_code = %s LIMIT 1", [(int) getenv("DEMO_CLINIC_ID"), (string) getenv("DEMO_REFERENCE")]);
+echo "DEMO_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
+''', {"DEMO_CLINIC_ID": str(clinic_id), "DEMO_REFERENCE": reference})
+    marker = next((line for line in output.splitlines() if line.startswith("DEMO_APPOINTMENT=")), "")
+    appointment_id = int(marker.split("=", 1)[1]) if marker else 0
+    check("receipt resolves to exact demo appointment", appointment_id > 0)
+    if appointment_id <= 0:
+        raise RuntimeError("Booked appointment was not found in the demo Clinic")
+
+    context, page = open_account(browser, credentials, "receptionist")
+    page.goto(staff_url + ("&" if "?" in staff_url else "?") + urlencode({"cpms-module": "reception"}), wait_until="domcontentloaded")
+    arrive = page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
+    arrive.wait_for(state="visible", timeout=35000)
+    arrive.click()
+    arrive.wait_for(state="detached", timeout=35000)
+
+    output = wp_eval(r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$row = $db->fetchRow("SELECT id, status FROM " . $db->table("cpms_visits") . " WHERE clinic_id = %d AND appointment_id = %d AND active = 1 ORDER BY id DESC LIMIT 1", [(int) getenv("DEMO_CLINIC_ID"), (int) getenv("DEMO_APPOINTMENT_ID")]);
+echo "DEMO_ARRIVAL=" . wp_json_encode(["id" => (int) ($row["id"] ?? 0), "status" => (string) ($row["status"] ?? "")]) . PHP_EOL;
+''', {"DEMO_CLINIC_ID": str(clinic_id), "DEMO_APPOINTMENT_ID": str(appointment_id)})
+    marker = next((line for line in output.splitlines() if line.startswith("DEMO_ARRIVAL=")), "")
+    arrival = json.loads(marker.split("=", 1)[1]) if marker else {}
+    check("reception checked in and enqueued booked appointment", arrival.get("id", 0) > 0 and arrival.get("status") == "waiting", json.dumps(arrival))
+    if arrival.get("id", 0) <= 0 or arrival.get("status") != "waiting":
+        raise RuntimeError("Reception arrival did not produce a waiting Visit")
+    return context, page, int(arrival["id"])
 
 
 def doctor_journey(browser, credentials, staff_url, visit_id):
@@ -369,13 +402,15 @@ def main():
                     context.close()
                     contexts.remove(context)
 
-            patient_context, patient_page = public_booking(browser, admin, links, credentials)
+            patient_context, patient_page, booking_reference = public_booking(browser, admin, links, credentials)
             contexts.append(patient_context)
-            doctor_context, doctor_page = doctor_journey(browser, credentials, links["staff"], fixture["active_visit_id"])
+            arrival_context, arrival_page, live_visit_id = reception_arrival(browser, credentials, links["staff"], fixture["clinic_id"], booking_reference)
+            contexts.append(arrival_context)
+            doctor_context, doctor_page = doctor_journey(browser, credentials, links["staff"], live_visit_id)
             contexts.append(doctor_context)
-            reception_context, reception_page = finance_journey(browser, credentials, links["staff"], fixture["active_visit_id"])
+            reception_context, reception_page = finance_journey(browser, credentials, links["staff"], live_visit_id)
             contexts.append(reception_context)
-            verify_operational_db(fixture["active_visit_id"])
+            verify_operational_db(live_visit_id)
 
             stage("management review and rotation")
             manager_context, manager = open_account(browser, credentials, "organization_manager")
@@ -412,7 +447,7 @@ def main():
             check("end acknowledgement without secrets", admin.locator(".notice-success").count() >= 1 and admin.locator("[data-demo-credentials]").count() == 0)
             patient_page.goto(links["patient"], wait_until="domcontentloaded")
             patient_page.wait_for_timeout(500)
-            check("end revokes existing patient OTP/WP cookie", patient_page.locator('[data-role="portal-login"], [data-role="portal-access-denied"]').count() > 0 or "wp-login.php" in patient_page.url)
+            check("end revokes existing patient OTP/WP cookie", patient_page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "anonymous")
             old_doctor = browser.new_context()
             old_page = old_doctor.new_page()
             check("ended account cannot newly authenticate", not login(old_page, credentials["doctor"]["username"], credentials["doctor"]["password"]))

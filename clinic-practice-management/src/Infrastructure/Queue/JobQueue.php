@@ -69,8 +69,8 @@ final class JobQueue
         // Process-local observation hook for bounded owners that need to track
         // their own asynchronous side effects. Payloads stay private to the
         // persisted queue; the hook does not alter queue semantics.
-        if (function_exists('do_action')) {
-            do_action('cpms_job_enqueued', $job_id, $type);
+        if ( function_exists( 'do_action' ) ) {
+            do_action( 'cpms_job_enqueued', $job_id, $type );
         }
 
         // Advisory fast wake-up (never throws, never changes the result above).

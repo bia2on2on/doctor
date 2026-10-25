@@ -1139,7 +1139,7 @@ final class App
     {
         if (self::$providers === null) {
             $registry = new SmsProviderRegistry();
-            $registry->register(new \ClinicCore\Infrastructure\Sms\Providers\DemoSmsProvider());
+            $registry->register( new \ClinicCore\Infrastructure\Sms\Providers\DemoSmsProvider() );
             $registry->register(new LogSmsProvider(self::op()));
             // Phase 2 (§A-3 / RT-6): `sms.generic` **per-Clinic** است. اگر همین‌جا
             // خوانده می‌شد، پیکربندیِ Clinicِ bootstrap برای کلِ فرآیند freeze

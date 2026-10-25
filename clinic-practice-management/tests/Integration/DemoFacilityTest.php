@@ -102,6 +102,11 @@ final class DemoFacilityTest extends WP_UnitTestCase
         self::assertSame((int) $state['acknowledged_at'] + DemoService::LIFETIME_SECONDS, (int) $state['expires_at']);
         self::assertGreaterThan((int) $sentinel['id'], (int) $state['clinic_id']);
         self::assertSame(6, count((array) $state['users']));
+        self::assertNotContains('slots.generate', (array) ($state['job_types'] ?? []));
+        self::assertSame(7, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule') . ' WHERE clinic_id = %d', [(int) $state['clinic_id']]));
+        $bounded_slots = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE clinic_id = %d', [(int) $state['clinic_id']]);
+        self::assertGreaterThanOrEqual(2, $bounded_slots);
+        self::assertLessThanOrEqual(3, $bounded_slots);
 
         foreach ((array) $state['users'] as $key => $entry) {
             $user = get_userdata((int) $entry['id']);
