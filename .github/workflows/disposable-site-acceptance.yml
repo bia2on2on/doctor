@@ -257,6 +257,45 @@ jobs:
             exit "$RC"
           fi
 
+      - name: Teardown refuses wrong confirmation and non-demo markers without writes
+        run: |
+          set -Eeuo pipefail
+          PRIVATE_DIR="$(dirname "$CPMS_DISPOSABLE_STATE")"
+          BEFORE="$(wp db query 'SHOW TABLES' --path="$WP_DIR" --allow-root)"
+          if CPMS_DISPOSABLE_CONFIRM=WRONG_CONFIRMATION CPMS_DISPOSABLE_STATE="$CPMS_DISPOSABLE_STATE" \
+            WP_DIR="$WP_DIR" ADMIN_USER="$ADMIN_USER" bash tests/disposable-site/teardown.sh \
+            > /tmp/acc/logs/teardown-wrong-confirmation.log 2>&1; then
+            echo '::error::teardown with wrong confirmation unexpectedly succeeded'
+            exit 1
+          fi
+          grep -q 'DESTROY_CONFIRMATION_REQUIRED' /tmp/acc/logs/teardown-wrong-confirmation.log
+          NON_DEMO="$PRIVATE_DIR/non-demo-marker.json"
+          python3 - "$NON_DEMO" "$WP_URL" '${{ matrix.prefix }}' <<'PY'
+          import json
+          import os
+          import secrets
+          import sys
+
+          path, home_url, prefix = sys.argv[1:]
+          data = {"format": 1, "fixture_id": secrets.token_hex(8), "status": "active", "site": {"home_url": home_url, "table_prefix": prefix}, "clinic_id": 0, "organization_id": 0}
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              os.fchmod(handle.fileno(), 0o600)
+              json.dump(data, handle)
+              handle.write("\n")
+          PY
+          if CPMS_DISPOSABLE_CONFIRM=DESTROY_DISPOSABLE_SITE_AND_DATABASE CPMS_DISPOSABLE_STATE="$NON_DEMO" \
+            WP_DIR="$WP_DIR" ADMIN_USER="$ADMIN_USER" bash tests/disposable-site/teardown.sh \
+            > /tmp/acc/logs/teardown-non-demo-refusal.log 2>&1; then
+            echo '::error::teardown with a non-demo marker unexpectedly succeeded'
+            exit 1
+          fi
+          grep -q 'STATE_OWNERSHIP' /tmp/acc/logs/teardown-non-demo-refusal.log
+          AFTER="$(wp db query 'SHOW TABLES' --path="$WP_DIR" --allow-root)"
+          test "$BEFORE" = "$AFTER"
+          test -f "$CPMS_DISPOSABLE_STATE"
+          echo 'PASS: wrong confirmation and non-demo marker refused without database changes'
+
       - name: Post-browser security, OTP, operational and evidence checks
         run: |
           set -Eeuo pipefail
@@ -341,15 +380,9 @@ jobs:
             echo '```'
             echo '- verification/teardown:'
             echo '```'
-            tail -3 /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-browser-complete.log /tmp/acc/logs/teardown.log 2>/dev/null || echo '(not reached)'
+            tail -3 /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-browser-complete.log /tmp/acc/logs/teardown-wrong-confirmation.log /tmp/acc/logs/teardown-non-demo-refusal.log /tmp/acc/logs/teardown.log 2>/dev/null || echo '(not reached)'
             echo '```'
             echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
-            echo 'On a successful job, this exact comment is scanned against all 14 generated credentials immediately before publication; a match prevents publication.'
+            echo 'The post-browser scan covers generated-source and public evidence; teardown emits only fixed non-secret status lines and then removes protected inputs.'
           } > /tmp/acc/evidence-comment.md
-          if [ -f /tmp/acc/evidence-scan.json ] && [ -f /tmp/acc/package-proof-full.json ]; then
-            python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" \
-              --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" --source-ref "$HEAD_SHA" \
-              --require-secret-count 14 --output /tmp/cpms-public-comment-proof.json \
-              > /tmp/cpms-public-comment-proof.log
-          fi
           gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'

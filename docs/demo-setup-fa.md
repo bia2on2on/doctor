@@ -161,7 +161,7 @@ python3 tests/disposable-site/scan-evidence.py \
   --output /tmp/cpms-disposable-evidence/evidence-scan.json
 ```
 
-اسکن اسناد نشت رمزها، Blobهای Commit دقیق و ابعاد Screenshot را بررسی می‌کند؛ این به معنای بازبینی بصری Pixel-by-Pixel نیست. رمزها، OTP، Cookie و HTML صفحه در نتایج ذخیره نمی‌شوند. Workflow علاوه بر State، Manifest محرمانه را با `--require-secret-count 14` و ZIP نهایی را دوباره بررسی می‌کند؛ خروجی عمومی فقط تعداد مقادیر و PASS/FAIL است.
+اسکن اسناد نشت رمزها، Blobهای Commit دقیق و ابعاد Screenshot را بررسی می‌کند؛ این به معنای بازبینی بصری Pixel-by-Pixel نیست. رمزها، OTP، Cookie و HTML صفحه در نتایج ذخیره نمی‌شوند. Workflow علاوه بر State، Manifest محرمانه را با `--require-secret-count 14` و ZIP نهایی را دوباره بررسی می‌کند؛ خروجی عمومی فقط تعداد مقادیر و PASS/FAIL است. Verifier همچنین Denial نقش‌ها و عبور به Clinic پیش‌فرضِ دست‌نخورده را با Sentinel واقعی بررسی می‌کند.
 
 ## ۷) Teardown — ترجیحاً نابودی کل محیط
 
@@ -175,7 +175,7 @@ CPMS_DISPOSABLE_OTP_FILE="$CPMS_DISPOSABLE_OTP_FILE" \
   bash tests/disposable-site/teardown.sh
 ```
 
-پس از آن Container/VM و فایل‌های WordPress یک‌بارمصرف را نیز نابود کنید. اگر Reset شکست بخورد، فایل‌های محرمانه عمداً باقی می‌مانند تا وضعیت پنهان یا گزارش موفقیت کاذب نشود.
+Workflow پیش از Reset موفق، تأیید اشتباه و Marker فعالِ غیر Demo را نیز آزمایش می‌کند و تطابق فهرست جداول پیش/پس از هر دو Refusal و بقای State را اثبات می‌کند. پس از آن Container/VM و فایل‌های WordPress یک‌بارمصرف را نیز نابود کنید. اگر Reset شکست بخورد، فایل‌های محرمانه عمداً باقی می‌مانند تا وضعیت پنهان یا گزارش موفقیت کاذب نشود.
 
 ## ۸) وضعیت شواهد و محدودیت‌های شناخته‌شده
 

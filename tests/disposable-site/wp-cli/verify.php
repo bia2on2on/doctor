@@ -155,6 +155,22 @@ try {
     if (App::authorization_service()->can((int) $state['accounts']['doctor']['id'], $clinic_id + 1000000, RolesAndCapabilities::NOTE_CREATE)) {
         cpms_ds_fail('SCOPED_DENY', 'doctor authority escaped its exact Clinic');
     }
+    $cross_clinic_id = 1; // untouched bootstrap Clinic, never the synthetic Clinic
+    if ($cross_clinic_id === $clinic_id) {
+        cpms_ds_fail('SCOPED_DENY', 'cross-Clinic sentinel is not distinct');
+    }
+    $cross_clinic = [
+        'clinic_manager' => RolesAndCapabilities::CONFIG,
+        'doctor' => RolesAndCapabilities::NOTE_CREATE,
+        'receptionist' => RolesAndCapabilities::PATIENT_CREATE,
+        'accountant' => RolesAndCapabilities::PAYMENT_CREATE,
+        'patient' => RolesAndCapabilities::PATIENT_READ,
+    ];
+    foreach ($cross_clinic as $key => $capability) {
+        if (App::authorization_service()->can((int) $state['accounts'][$key]['id'], $cross_clinic_id, $capability)) {
+            cpms_ds_fail('CROSS_CLINIC_DENY', 'scoped authority escaped into the untouched bootstrap Clinic for ' . $key);
+        }
+    }
 
     $cpms_ds_stage = 'verify-pages';
     $page = get_post((int) $state['booking_page_id']);
@@ -334,6 +350,8 @@ try {
         'authorization' => [
             'scoped_grants' => array_keys($positive),
             'scoped_denials' => array_keys($negative),
+            'cross_clinic_denials' => array_keys($cross_clinic),
+            'cross_clinic_sentinel_id' => $cross_clinic_id,
             'administrator_clinical_finance' => false,
         ],
         'sms_provider' => 'log',

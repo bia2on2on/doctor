@@ -53,15 +53,19 @@ def find_secrets(data, secrets):
 def scan_evidence(root, secrets):
     findings = []
     files = 0
+    protected_names = {"credentials.json", "otp.json", "generated-secrets.json", "non-demo-marker.json", "second-fixture.json"}
     for path in root.rglob("*"):
         if path.is_symlink():
             raise RuntimeError("symbolic link in evidence root: " + path.relative_to(root).as_posix())
         if not path.is_file():
             continue
+        relative = path.relative_to(root)
+        if relative.name in protected_names or relative.name.endswith(".lock") or any(part.startswith("cpms-disposable-private-") for part in relative.parts):
+            raise RuntimeError("protected credential path found in evidence root: " + relative.as_posix())
         files += 1
         data = path.read_bytes()
         if find_secrets(data, secrets):
-            findings.append(path.relative_to(root).as_posix())
+            findings.append(relative.as_posix())
     if findings:
         raise RuntimeError("generated credential material found in evidence files: " + ", ".join(findings))
     return files

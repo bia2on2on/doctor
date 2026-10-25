@@ -15,11 +15,24 @@ try {
     }
     $state_path = cpms_ds_secret_path(cpms_ds_env('CPMS_DISPOSABLE_STATE'));
     $state = cpms_ds_load_state($state_path, false);
-    if (!in_array((string) $state['status'], ['provisioning', 'active', 'failed'], true)) {
+    $status = (string) $state['status'];
+    if (!in_array($status, ['provisioning', 'active', 'failed'], true)) {
         cpms_ds_fail('STATE_INVALID', 'teardown requires a provisioning, active, or failed disposable marker');
     }
-    if ((int) ($state['clinic_id'] ?? 0) > 0) {
+    $clinic_id = (int) ($state['clinic_id'] ?? 0);
+    if ($clinic_id > 0) {
         cpms_ds_assert_fixture_owner($state);
+    } else {
+        // Only a partially-created fixture may lack a Clinic. An active or
+        // arbitrary/non-demo JSON marker must never authorize database reset.
+        $accounts = (array) ($state['accounts'] ?? []);
+        $expected = ['organization_manager', 'clinic_manager', 'doctor', 'receptionist', 'accountant', 'patient'];
+        if ($status === 'active' || array_keys($accounts) !== $expected
+            || (int) ($state['provisioning_admin_id'] ?? 0) <= 0
+            || (string) ($state['patient_mobile'] ?? '') !== CPMS_DS_MOBILE
+        ) {
+            cpms_ds_fail('STATE_OWNERSHIP', 'teardown requires a verified disposable fixture marker');
+        }
     }
     echo 'CPMS_DISPOSABLE_TEARDOWN_PREFLIGHT=' . wp_json_encode([
         'ok' => true,
