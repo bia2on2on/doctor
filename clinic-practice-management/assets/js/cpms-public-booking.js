@@ -888,7 +888,7 @@
 				firstAvailableBtn.hidden = target < 0 || Math.floor(target / 7) === weekOffset;
 			}
 			if (weekEmptyNotice) {
-				weekEmptyNotice.hidden = !(calendarScaffold.length > 0 && slotCount === 0);
+				weekEmptyNotice.hidden = !(calendarScaffold.length > 0 && slotCount === 0 && selectedClinicianId > 0);
 			}
 			return slotCount;
 		}
@@ -1778,6 +1778,12 @@
 			specialtyFilter.addEventListener('change', applyDoctorFilters);
 		}
 		if (clinicSelect) {
+			// The first option is the server's own first listed Clinic; adopting it
+			// here means the very first A1 request already carries clinic_id.
+			if (activeClinicId <= 0) {
+				activeClinicId = toInt(clinicSelect.value);
+				root.setAttribute('data-clinic-id', String(activeClinicId));
+			}
 			clinicSelect.addEventListener('change', function () {
 				var next = toInt(clinicSelect.value);
 				activeClinicId = next > 0 ? next : 0;
