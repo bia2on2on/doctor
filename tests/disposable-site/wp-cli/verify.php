@@ -197,13 +197,18 @@ try {
         'SELECT COUNT(*) FROM ' . $db->table('cpms_schedule') . ' WHERE clinic_id = %d AND is_active = 1',
         [$clinic_id]
     );
+    $non_generating_templates = (int) $db->fetchValue(
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_schedule')
+        . ' WHERE clinic_id = %d AND is_active = 1 AND start_time = %s AND end_time = %s AND appointment_duration_min = %d',
+        [$clinic_id, '00:00:00', '00:01:00', 20]
+    );
     $foreign_slots = (int) $db->fetchValue(
         'SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots')
         . ' WHERE clinic_id <> %d OR location_id <> %d OR clinician_id <> %d',
         [$clinic_id, (int) $state['location_id'], (int) $state['clinician_id']]
     );
-    if ($active_templates !== 0 || $foreign_slots !== 0) {
-        cpms_ds_fail('BOUNDED_FIXTURE', 'inactive bounded templates or exact synthetic slot scope was violated');
+    if ($active_templates !== 7 || $non_generating_templates !== 7 || $foreign_slots !== 0) {
+        cpms_ds_fail('BOUNDED_FIXTURE', 'non-generating bounded templates or exact synthetic slot scope was violated');
     }
     if (!$after_browser) {
         $initial = [

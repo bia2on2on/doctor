@@ -108,8 +108,8 @@ jobs:
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
           # Disable only the WP-Cron fallback in this disposable installation;
-          # production fast-wake/job behavior remains unmodified. Inactive
-          # bounded schedule templates prevent future slot generation.
+          # production fast-wake/job behavior remains unmodified. Active
+          # one-minute bounded templates prevent future slot generation.
           wp config set DISABLE_WP_CRON true --raw --allow-root
           PRIVATE_DIR="/tmp/cpms-disposable-private-${{ matrix.prefix }}"
           install -d -m 700 "$PRIVATE_DIR"
