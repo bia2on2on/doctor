@@ -41,6 +41,7 @@ env:
   DB_RESTORE: cpms_restore
   STORAGE_OUT: /home/runner/clinic-storage
   GH_TOKEN: ${{ github.token }}
+  CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}
 
 jobs:
   # ============================================================
@@ -87,11 +88,7 @@ jobs:
               echo 'Inner ZIP fits the provisional 32 MiB PHP upload policy (independent of the 40 MiB POST limit).'
             fi
           } | tee /tmp/cpms-inner-zip-evidence.md >> "$GITHUB_STEP_SUMMARY"
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/cpms-inner-zip-evidence.md \
-              || echo '::notice::Inner ZIP PR mirror failed (step summary remains available)'
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/cpms-inner-zip-evidence.md
 
       - name: Runtime SDK contract (built ZIP, no network)
         run: python3 tests/bin/release-runtime-contract.py
@@ -184,8 +181,8 @@ jobs:
           php -l bin/pilot-smoke.php
           php -l bin/pilot-job-start.php
           bash -n bin/build-release.sh
-          # The benchmark step runs on every watched push (main / arena/**) as well as on
-          # schedule and workflow_dispatch. The parse/report/privacy self-tests below prove
+          # The benchmark step runs on pull_request, main push, schedule, and
+          # workflow_dispatch events. The parse/report/privacy self-tests below prove
           # that logic deterministically on every run, regardless of whether `ab`/the server
           # are reachable (no network, no WordPress, no `ab` binary needed).
           python3 -m py_compile bin/pilot-bench-report.py bin/pilot-bench-diagnostics.py bin/pilot-page-overhead.py bin/pilot-job-start.py
@@ -195,7 +192,7 @@ jobs:
           python3 bin/pilot-job-start.py --test
           {
             echo '### Pilot benchmark harness self-test — PASSED on this run'
-            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on watched pushes (`main` / `arena/**`) as well as on `schedule` and `workflow_dispatch`.'
+            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on pull_request, main push, schedule, and workflow_dispatch events.'
             echo 'The Phase 17 queue-start self-test (`bin/pilot-job-start.py --test`) also proves fail-closed first-claim/retry/outcome validation, the pinned measurement label and nearest-rank stats; the live autonomous pass uses the production enqueue API and the production fast-wake path with NO tick call, while the explicit-tick control pass stays explicitly labelled and the System Cron step follows both.'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -836,8 +833,8 @@ jobs:
 
       # ---------- Performance benchmark ----------
       # Phase 17 Slice 0 / Slice 0.5 — MEASUREMENT ONLY (collection ≠ NFR adjudication).
-      #   • runs on watched pushes (`main` / `arena/**`) as well as on weekly schedule and
-      #     workflow_dispatch — ordinary engineering activity produces run-bound artifacts
+      #   • runs on pull_request, main push, weekly schedule, and workflow_dispatch events
+      #     — ordinary engineering activity produces run-bound artifacts
       #   • the fixed endpoint set is unchanged: /health, /availability, /wp-json/
       #   • the pre-existing c=10/50/100 warm measurements are preserved verbatim (same URL,
       #     same -n, same two warm-up requests); c=1 is newly added at every endpoint
@@ -857,7 +854,7 @@ jobs:
       #     by `bin/pilot-bench-report.py --evidence-prefix` from the post-privacy-scan structured
       #     report — never from raw `ab` bytes and never by shell text extraction
       - name: Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact
-        if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push' }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push' }}
         run: |
           FROM=$(date -u +%F); TO=$(date -u -d "+29 days" +%F)
           BENCH=/tmp/cpms-bench
@@ -1160,12 +1157,7 @@ jobs:
           fi
           python3 bin/pilot-bench-report.py --verify-evidence "$EVIDENCE" \
             || { echo '::error::safe evidence projection failed pre-publication re-validation — NOT posted (fail closed)'; exit 1; }
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file "$EVIDENCE" || echo "::notice::safe benchmark evidence PR comment failed (GitHub/API permission or network) — benchmark correctness is unaffected; numbers remain in artifact pilot-benchmark-${{ github.run_id }}"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@"$EVIDENCE" || echo "::notice::safe benchmark evidence commit comment failed (GitHub/API permission or network) — benchmark correctness is unaffected; numbers remain in artifact pilot-benchmark-${{ github.run_id }}"
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" "$EVIDENCE"
 
       - name: Upload benchmark artifact (per-run numbers never enter Git history)
         if: always()
@@ -1395,12 +1387,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/debug.md || true
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1532,12 +1519,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/debug.md || true
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
 
   # ============================================================
   # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
@@ -2244,12 +2226,7 @@ jobs:
             done
             echo '```'
           } > /tmp/resp-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/resp-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/resp-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md
 
       # همان الگوی evidence channel — sandbox نمی‌تواند blob artifact را دانلود
       # کند، پس خلاصهٔ PASS/FAIL سفر OTP هم (فقط boolean/شناسه/تعداد) به PR
@@ -2269,12 +2246,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/شناسه/تعداد — کد OTP، موبایل، نام بیمار(ها)، cookie، nonce و secret در شواهد نشت نکرده‌اند.'
           } > /tmp/journey-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/journey-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/journey-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/journey-evidence.md
 
       # Slice 3 — همان کانال شواهد: مرورگر واقعی با Clinicِ سوم و N>1 chooser.
       # sandbox نمی‌تواند blob را دانلود کند، پس خلاصه PASS/FAIL هم به PR پست
@@ -2294,12 +2266,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/تعداد/شناسه‌های غیرحساس — هیچ نام/موبایل/nonce/cookie/secret در شواهد نشت نکرده.'
           } > /tmp/slice3-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/slice3-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/slice3-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/slice3-evidence.md
 
       # Phase 9 Slice 1 + Slice 2 — همان کانال شواهد برای پورتال بیمار (لغو نوبت +
       # اعلان‌های داخلی). فقط boolean/تعداد/شناسه — بدون نام/موبایل/رمز/nonce/cookie.
@@ -2318,12 +2285,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/تعداد/شناسه‌های غیرحساس — هیچ نام/موبایل/رمز/nonce/cookie/secret در شواهد نشت نکرده.'
           } > /tmp/portal-cancel-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/portal-cancel-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/portal-cancel-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-cancel-evidence.md
 
       # Phase 9 Slice 4 — همان کانال. فقط PASS/FAIL/INFO/SHOT و شناسه‌های PROFILE_PUBLIC.
       # env کامل (رمز) هرگز cat نمی‌شود. always() تا شکستِ سفر هم قابل بازیابی باشد.
@@ -2342,12 +2304,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/تعداد/شناسه‌های synthetic — هیچ موبایل/کدملی/رمز/nonce/cookie/OTP در شواهد نشت نکرده. ظاهر توسط مالک تأیید نشده است.'
           } > /tmp/portal-profile-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/portal-profile-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/portal-profile-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-profile-evidence.md
 
       - name: Post Doctor Portal evidence to PR
         if: always()
@@ -2364,12 +2321,7 @@ jobs:
             echo '```'
             echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
           } > /tmp/doctor-portal-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/doctor-portal-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/doctor-portal-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md
 
       - name: Post Reception evidence to PR
         if: always()
@@ -2394,12 +2346,7 @@ jobs:
             echo '```'
             echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
           } > /tmp/reception-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/reception-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/reception-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/reception-evidence.md
 
       - name: Post Day-2 Operational Workflows evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always()
@@ -2416,12 +2363,7 @@ jobs:
             echo '```'
             echo 'Evidence is booleans, HTTP statuses, and synthetic numeric IDs only — no passwords, OTP codes, mobile numbers, patient names, nonces, or cookies.'
           } > /tmp/day2-workflows-evidence.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/day2-workflows-evidence.md || echo "::notice::PR comment failed (permissions?)"
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/day2-workflows-evidence.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md
 
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()
@@ -2453,12 +2395,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/debug.md || true
-          else
-            gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/comments" -F body=@/tmp/debug.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
       - uses: actions/upload-artifact@v4
         if: always()
         with:

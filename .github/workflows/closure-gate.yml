@@ -40,6 +40,7 @@ defaults:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}
 
 jobs:
   # ============================================================
@@ -301,10 +302,7 @@ jobs:
             if [ -f "$EVIDF" ]; then tail -n 100 "$EVIDF"; else echo '(job failed before evidence)'; fi
             echo '```'
           } > /tmp/closure-comment.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -546,10 +544,7 @@ jobs:
             done
             echo '```'
           } > /tmp/closure-comment.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
 
       - uses: actions/upload-artifact@v4
         if: always()

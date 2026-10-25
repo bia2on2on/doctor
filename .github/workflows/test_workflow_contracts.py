@@ -1,10 +1,15 @@
-"""Static trigger/matrix contract checks for acceptance workflows (stdlib only)."""
+"""Static and executable contracts for acceptance workflow routing (stdlib only)."""
 from pathlib import Path
+import json
+import os
 import re
+import subprocess
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
+PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
 
 
 def workflow(name):
@@ -26,7 +31,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", text)
         self.assertIn("main-run-{0}', github.run_id)", text)
 
-    def test_closure_and_pilot_gates_cover_arbitrary_pr_branch_names_once(self):
+    def test_closure_and_pilot_gates_keep_branch_independent_pr_triggers(self):
         for filename in ("closure-gate.yml", "pilot-gate.yml"):
             with self.subTest(filename=filename):
                 text = workflow(filename)
@@ -54,6 +59,182 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("run.py begin-b", reusable)
         self.assertIn("id: cpms_install", reusable)
         self.assertIn("run.py finalize", reusable)
+
+    def test_all_fifteen_evidence_publishers_use_shared_fail_loud_router(self):
+        for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 13)):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                self.assertEqual(text.count(".github/scripts/post-pr-evidence.sh"), expected_count)
+                self.assertNotIn('gh pr list --head "${{ github.ref_name }}"', text)
+                self.assertNotRegex(text, r'gh pr comment "\$PR"[^\n]*\|\|')
+                self.assertIn("CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}", text)
+        helper = PUBLISHER.read_text(encoding="utf-8")
+        self.assertIn('case "$EVENT" in', helper)
+        self.assertIn('PR_NUMBER=${CPMS_PR_NUMBER:-}', helper)
+        self.assertIn("Required evidence comment to PR", helper)
+        self.assertNotIn("gh api", helper, "do not broaden commit-comment permissions")
+        self.assertIn("cat \"$EVIDENCE\" >> \"$GITHUB_STEP_SUMMARY\"", helper)
+
+    def test_failure_dump_guards_and_bounds_are_preserved(self):
+        text = workflow("pilot-gate.yml")
+        self.assertEqual(text.count("- name: Debug dump به PR"), 3)
+        self.assertEqual(text.count("if: failure()"), 3)
+        self.assertEqual(text.count('tail -50 "$f"'), 3)
+        self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 3)
+
+    def test_benchmark_runs_on_pr_and_retains_other_events_and_measurement_matrix(self):
+        text = workflow("pilot-gate.yml")
+        self.assertIn("CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}", text)
+        self.assertIn(
+            "if: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push' }}",
+            text,
+        )
+        self.assertIn("- name: Performance benchmark — ab (cold + warm, c=1/10/50/100) → JSON/MD artifact", text)
+        self.assertIn("measure cold 'GET /health", text)
+        self.assertIn("measure cold 'GET /availability", text)
+        self.assertIn("measure cold 'GET /wp-json/", text)
+        self.assertEqual(text.count("for C in 10 50 100; do measure warm"), 2)
+        self.assertIn("3000 \"$C\" 2", text)
+        self.assertIn("1500 \"$C\" 2", text)
+        self.assertIn("1000 50 2", text)
+        self.assertIn("NO latency threshold is asserted here", text)
+
+
+class EvidenceTargetRuntimeTests(unittest.TestCase):
+    """Execute the real publisher with a deterministic fake gh executable."""
+
+    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_comment=False, fail_list=False):
+        with tempfile.TemporaryDirectory(prefix="evidence-target-test-") as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, pathlib, sys\n"
+                "args = sys.argv[1:]\n"
+                "with open(os.environ['GH_TEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps(args) + '\\n')\n"
+                "if args[:2] == ['pr', 'list'] and os.environ.get('GH_TEST_FAIL_LIST') == '1':\n"
+                "    print('simulated PR lookup failure', file=sys.stderr)\n"
+                "    sys.exit(22)\n"
+                "elif args[:2] == ['pr', 'list']:\n"
+                "    print(os.environ.get('GH_TEST_CANDIDATES', '[]'))\n"
+                "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_FAIL_COMMENT') == '1':\n"
+                "    print('simulated comment transport failure', file=sys.stderr)\n"
+                "    sys.exit(23)\n"
+                "elif args[:2] != ['pr', 'comment']:\n"
+                "    print('unexpected gh command: ' + repr(args), file=sys.stderr)\n"
+                "    sys.exit(24)\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            evidence = tmp_path / "evidence.md"
+            evidence.write_text("synthetic safe evidence\n", encoding="utf-8")
+            calls_file = tmp_path / "gh-calls.jsonl"
+            summary = tmp_path / "summary.md"
+            summary.touch()
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                    "GH_TEST_CALLS": str(calls_file),
+                    "GH_TEST_CANDIDATES": json.dumps(candidates or []),
+                    "GH_TEST_FAIL_COMMENT": "1" if fail_comment else "0",
+                    "GH_TEST_FAIL_LIST": "1" if fail_list else "0",
+                    "GITHUB_EVENT_NAME": event,
+                    "GITHUB_REPOSITORY": "bia2on2on/doctor",
+                    "GITHUB_REPOSITORY_OWNER": "bia2on2on",
+                    "GITHUB_REF_NAME": ref_name,
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                    "CPMS_PR_NUMBER": pr_number,
+                }
+            )
+            result = subprocess.run(
+                ["bash", str(PUBLISHER), str(evidence)],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            return result, calls, summary.read_text(encoding="utf-8")
+
+    def test_pull_request_uses_event_number_not_merge_ref_lookup(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:6], ["pr", "comment", "269", "--repo", "bia2on2on/doctor", "--body-file"])
+        self.assertTrue(Path(calls[0][6]).is_absolute())
+        self.assertFalse(any(call[:2] == ["pr", "list"] for call in calls))
+        self.assertEqual(summary, "")
+
+    def test_main_push_schedule_and_main_dispatch_use_summary_not_an_inferred_pr(self):
+        for event in ("push", "schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result, calls, summary = self.run_publisher(event, "main")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(calls, [])
+                self.assertEqual(summary, "synthetic safe evidence\n")
+
+    def test_manual_source_branch_resolves_only_one_exact_same_repository_target(self):
+        candidates = [
+            {"number": 269, "headRefName": "arena/topic", "baseRefName": "main", "headRepositoryOwner": {"login": "bia2on2on"}},
+            {"number": 991, "headRefName": "other", "baseRefName": "main", "headRepositoryOwner": {"login": "bia2on2on"}},
+            {"number": 992, "headRefName": "arena/topic", "baseRefName": "main", "headRepositoryOwner": {"login": "fork-owner"}},
+            {"number": 993, "headRefName": "arena/topic", "baseRefName": "develop", "headRepositoryOwner": {"login": "bia2on2on"}},
+        ]
+        result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", candidates=candidates)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[0][:2], ["pr", "list"])
+        self.assertIn("--head", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--head") + 1], "arena/topic")
+        self.assertEqual(calls[1][:3], ["pr", "comment", "269"])
+        self.assertEqual(summary, "")
+
+    def test_unrelated_or_ambiguous_pr_is_never_commented(self):
+        unrelated = [
+            {"number": 991, "headRefName": "different-branch", "baseRefName": "main", "headRepositoryOwner": {"login": "bia2on2on"}},
+            {"number": 992, "headRefName": "arena/topic", "baseRefName": "main", "headRepositoryOwner": {"login": "other-owner"}},
+        ]
+        result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", candidates=unrelated)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["pr", "list"])
+        self.assertNotIn("comment", [call[1] for call in calls if len(call) > 1])
+        self.assertEqual(summary, "synthetic safe evidence\n")
+        self.assertIn("no PR comment will be attempted", result.stdout)
+
+        duplicate = [
+            {"number": n, "headRefName": "arena/topic", "baseRefName": "main", "headRepositoryOwner": {"login": "bia2on2on"}}
+            for n in (269, 270)
+        ]
+        result, calls, _ = self.run_publisher("workflow_dispatch", "arena/topic", candidates=duplicate)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1)
+
+    def test_required_pr_comment_failure_is_nonzero_and_evidence_remains_in_summary(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", fail_comment=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls[0][:3], ["pr", "comment", "269"])
+        self.assertEqual(summary, "synthetic safe evidence\n")
+        self.assertIn("Required evidence comment to PR #269 failed", result.stderr)
+
+    def test_manual_target_lookup_failure_is_not_silenced(self):
+        result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", fail_list=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][:2], ["pr", "list"])
+        self.assertNotIn("comment", [call[1] for call in calls if len(call) > 1])
+        self.assertEqual(summary, "")
+        self.assertIn("simulated PR lookup failure", result.stderr)
+
+    def test_invalid_pull_request_number_fails_closed_without_any_comment(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(calls, [])
+        self.assertEqual(summary, "")
 
 
 if __name__ == "__main__":
