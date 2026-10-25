@@ -590,7 +590,7 @@ final class App
                 // (پزشک/نوبتِ پایدار، یا Scopeِ معتبرِ کارکنان) — نه از یک
                 // Clinicِ محیطی که در زمانِ ثبتِ مسیرهای REST حل شده باشد.
                 self::settingsFactory(),
-                self::licenseGate(),
+                self::license_gate(),
                 self::audit(),
                 self::op(),
                 self::idem(),
@@ -626,7 +626,7 @@ final class App
                 new AppointmentRepository($db),
                 self::settingsFactory(),
                 self::audit(),
-                self::licenseGate(),
+                self::license_gate(),
                 $op,
                 static fn (int $clinicId): NotificationService => new NotificationService(
                     $db,
@@ -1092,7 +1092,7 @@ final class App
                 new PatientRepository($db),
                 // وابستگیِ Settings حذف شد: این سرویس هرگز از آن نمی‌خواند و
                 // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
-                self::licenseGate(),
+                self::license_gate(),
                 self::audit(),
                 self::op(),
                 self::patient_identity_activator()
@@ -1187,7 +1187,7 @@ final class App
      * پایان پنجره بدون سند → RESTRICTED. حالت توسعه فقط صریح (CPMS_DEV_MODE
      * یا فیلتر cpms_license_dev_mode). ایمنی بیمار هرگز قفل نمی‌شود (§1).
      */
-    public static function licenseGate(): LicenseGate
+    public static function license_gate(): LicenseGate
     {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established legacy property name; renaming is a class-wide API change. No security sniff suppressed.
         if ( self::$licenseGate === null ) {

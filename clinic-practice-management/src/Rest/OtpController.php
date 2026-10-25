@@ -230,7 +230,7 @@ final class OtpController extends RestBase
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             if ( $requestedClinicId !== $clinicId
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-                && !App::membershipRepository()->clinician_participates_in( $clinicianId, $requestedClinicId ) ) {
+                && ! App::membership_repository()->clinician_participates_in( $clinicianId, $requestedClinicId ) ) {
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.

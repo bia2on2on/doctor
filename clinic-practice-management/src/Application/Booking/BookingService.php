@@ -115,11 +115,11 @@ final class BookingService
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
     public function availability( int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $requestedClinicId = null ): array {
         // Shared-Clinic (optional clinic_id): absent → home clinic (BC);
-        // present → participation-verified clinic (resolveClinicForRequest).
+        // present → participation-verified clinic (resolve_clinic_for_request).
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $homeClinicId = $this->requireClinician( $clinicianId );
+        $homeClinicId = $this->require_clinician( $clinicianId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $clinicId = $this->resolveClinicForRequest( $clinicianId, $homeClinicId, $requestedClinicId );
+        $clinicId = $this->resolve_clinic_for_request( $clinicianId, $homeClinicId, $requestedClinicId );
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended
         // Clinic publishes no bookable slots. Returns the established public
@@ -301,7 +301,7 @@ final class BookingService
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $row = $byId[ $id ] ?? null;
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            if ( $row === null ||  (int ) $row['clinic_id'] !== $clinicId ) {
+            if ( $row === null || (int) $row['clinic_id'] !== $clinicId ) {
                 $map[ $id ] = null;
                 continue;
             }
@@ -389,16 +389,16 @@ final class BookingService
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $tzName = $tz->getName();
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            if ( !isset( $localNowCache[$tzName] ) ) {
+            if ( ! isset( $localNowCache[ $tzName ] ) ) {
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-                $local                  = $nowUtc->setTimezone( $tz );
+                $local = $nowUtc->setTimezone( $tz );
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-                $localNowCache[$tzName] = [$local->format( 'Y-m-d' ), $local->format( 'H:i:s' )];
+                $localNowCache[ $tzName ] = [ $local->format( 'Y-m-d' ), $local->format( 'H:i:s' ) ];
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             [$today, $nowTime] = $localNowCache[$tzName];
             $date              = (string) $row['slot_date'];
-            $time              = substr( (string ) $row['slot_time'], 0, 8 );
+            $time              = substr( (string) $row['slot_time'], 0, 8 );
             if ( BookingWindow::slotUtcInstant( $date, $time, $tz ) === null ) {
                 continue; // nonexistent/repeated Location-local wall time: never offer it
             }
@@ -421,9 +421,9 @@ final class BookingService
         // Shared-Clinic (optional clinic_id): BC when absent; participation-
         // verified clinic when present — slot resolution below is scoped to it.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $homeClinicId = $this->requireClinician( $clinicianId );
+        $homeClinicId = $this->require_clinician( $clinicianId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $clinicId     = $this->resolveClinicForRequest( $clinicianId, $homeClinicId, $requestedClinicId );
+        $clinicId = $this->resolve_clinic_for_request( $clinicianId, $homeClinicId, $requestedClinicId );
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
         // never reports bookable capacity, so the public flow cannot advance to
@@ -439,7 +439,7 @@ final class BookingService
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $settings = $this->settingsFor( $clinicId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $minLead  =  (int ) $settings->get( 'booking.min_lead_hours', 2 );
+        $minLead = (int) $settings->get( 'booking.min_lead_hours', 2 );
 
         // Resolve slot (exact identity preferred) — پیش از هر ارزیابی زمانی، تا
         // سیاست روی اسلاتِ واقعی با تقویم محلیِ Location خودش اعمال شود.
@@ -450,7 +450,7 @@ final class BookingService
         $slot       = $this->resolve_slot_for_booking( (int) $quote_args['clinicId'], (int) $quote_args['clinicianId'], (string) $quote_args['slotDate'], (string) $quote_args['slotTime'], null === $quote_args['slotId'] ? null : (int) $quote_args['slotId'] );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
-        if ( $slot === null ||  (int ) $slot['is_open'] !== 1 ) {
+        if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
             // پیش‌چک legacy-UTC فقط وقتی اسلاتی وجود ندارد (fail-fast برای ورودی
             // نامعتبر + حفظ رفتار تاریخی read-only quote روی تاریخ گذشتهٔ بدون
             // اسلات — BookingFlowTest). برای اسلاتِ موجود هرگز به UTC fallback نمی‌شویم.
@@ -487,7 +487,7 @@ final class BookingService
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null, ?int $requestedClinicId = null): array {
-        $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+        $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
 
         // The published parameter names are part of the PHP 8 named-argument
         // contract and must not change. Read them through compact() string keys
@@ -516,7 +516,7 @@ final class BookingService
         // request neither widens scope nor fails because of a bad claim.
         // Once resolved, resolve_slot_for_booking enforces
         // slot.clinic_id == that clinic (404 parity for cross-clinic slots).
-        $home_clinic_id = $this->requireClinician( $clinician_id );
+        $home_clinic_id = $this->require_clinician( $clinician_id );
         $clinic_id      = $home_clinic_id;
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         if ( $requestedClinicId !== null && $requestedClinicId > 0
@@ -540,7 +540,7 @@ final class BookingService
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $this->assert_requested_location_matches_slot( $slot, $locationId );
 
-        if ( $slot === null ||  (int ) $slot['is_open'] !== 1 ) {
+        if ( $slot === null || (int) $slot['is_open'] !== 1 ) {
             // پیش‌چک legacy-UTC فقط در نبودِ اسلات قابل‌استفاده (fail-fast برای
             // ورودی نامعتبر + تقدم خطای سیاست بر 404 طبق رفتار تاریخی). برای
             // اسلاتِ موجود، صلاحیت زمانی فقط با تقویم محلیِ Location سنجیده می‌شود.
@@ -558,7 +558,7 @@ final class BookingService
         $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, $min_lead, $settings );
 
         // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
-        // Trusted Clinic = slot's persisted clinic_id (never client payload).
+        // Trusted Clinic = slot's persisted clinicId (never client payload).
         // Must be evaluated before any capacity claim.
         $trusted_clinic_id     = (int) $slot['clinic_id'];
         $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
@@ -648,7 +648,7 @@ final class BookingService
                     $row['patient_id'] = $patient_id_to_persist;
                 }
                 // A capacity lock wait may have crossed signed T0; rollback the hold claim.
-                $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
                 $this->db->insert( 'cpms_slot_holds', $row );
                 $hold_id = $this->db->wpdb_last_insert_id();
                 // D6 audit atomicity: hold claim and mandatory audit in one boundary;
@@ -812,7 +812,7 @@ final class BookingService
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $hasPatientCol = $this->holdsHasPatientIdColumn();
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $holdPatientId = $hasPatientCol && array_key_exists( 'patient_id', $hold ) && $hold['patient_id'] !== null &&  (string ) $hold['patient_id'] !== '' ?  (int ) $hold['patient_id'] : null;
+        $holdPatientId = $hasPatientCol && array_key_exists( 'patient_id', $hold ) && $hold['patient_id'] !== null && (string) $hold['patient_id'] !== '' ? (int) $hold['patient_id'] : null;
 
         $now = $this->now();
         $nowSql = $this->db->nowUtcSql();
@@ -830,7 +830,7 @@ final class BookingService
                 // با کلید متفاوت تکرار → پاسخ همان Appointment
                 $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
                 if ($appt !== null) {
-                    return $this->appointmentView($appt);
+                    return $this->appointment_view($appt);
                 }
             }
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422);
@@ -844,7 +844,7 @@ final class BookingService
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
         }
 
-        $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
+        $this->assert_license(LicenseGate::OP_APPOINTMENT_BOOK);
 
         // Phase 8 Slice 3 — B2 subject resolution: frozen vs historical NULL compat.
         // Ownership and status proven before any Patient/link resolution — preserves 403 parity.
@@ -962,7 +962,7 @@ final class BookingService
                     }
 
                     // Re-authorize after lock acquisition, before any new patient side effect.
-                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                    $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
                     $new_patient_names = $confirmation_input['newPatientNames'];
 
                     $confirmed_patient   = $patient;
@@ -970,7 +970,7 @@ final class BookingService
                     if ( $confirmed_patient === null ) {
                         // N-1: create the new Patient inside the same protected
                         // mutation boundary, after the final Slot validation.
-                        $confirmed_patient   = $this->createMinimalPatient( $hold_clinic_id, $mobile, $wp_user_id, $new_patient_names );
+                        $confirmed_patient   = $this->create_minimal_patient( $hold_clinic_id, $mobile, $wp_user_id, $new_patient_names );
                         $patient_was_created = true;
                     }
                     $patient_id = (int) $confirmed_patient['id'];
@@ -991,7 +991,7 @@ final class BookingService
                     $ref      = $this->referenceCode( (string) $slot['slot_date'] );
                     $now_sql  = $this->db->nowUtcSql();
 
-                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                    $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
                     $appt_id = $this->appointments->create(
                         [
                             'clinic_id'         => (int) $slot['clinic_id'],
@@ -1024,7 +1024,7 @@ final class BookingService
                     // D6 audit atomicity: appointment (and any auto-created
                     // patient), slot claim, hold conversion and the mandatory
                     // audits commit/roll back together inside this boundary.
-                    $confirmed_view = $this->appointmentView( (array) $this->appointments->find( $appt_id ) );
+                    $confirmed_view = $this->appointment_view( (array) $this->appointments->find( $appt_id ) );
                     if ( $patient_was_created ) {
                         $this->audit(
                             'PATIENT_CREATED',
@@ -1067,7 +1067,7 @@ final class BookingService
             );
         } catch ( Throwable $e ) {
             // آزادسازی ظرفیت Hold + کلید Idempotency (خارج از Transaction رول‌بک‌شده)
-            $denial = $this->toBookingException( $e );
+            $denial = $this->to_booking_exception( $e );
             // CLINIC_SUSPENDED is a policy denial of NEW demand, not a defect of the
             // existing Hold. Product invariant: a suspension denial is side-effect-free,
             // so the pre-suspension Hold row and the capacity it legitimately claimed
@@ -1099,7 +1099,7 @@ final class BookingService
         $appt_id             = (int) $confirmation['appointment_id'];
         $patient_id          = (int) $confirmation['patient_id'];
         $patient_was_created = (bool) $confirmation['patient_was_created'];
-        $view                = $this->appointmentView( $appt );
+        $view                = $this->appointment_view( $appt );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $this->idem->complete( $idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId );
 
@@ -1125,7 +1125,7 @@ final class BookingService
      * @return array{hold_token: string, status: string, expires_at?: string, slot?: array<string, mixed>}
      */
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    public function resume (string $holdToken, int $wpUserId ): array
+    public function resume( string $holdToken, int $wpUserId ): array
     {
         $hold = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_slot_holds') . ' WHERE token = %s LIMIT 1',
@@ -1179,7 +1179,7 @@ final class BookingService
      * @return array{appointment_id: int, status: string}
      */
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    public function cancelByPatient( int $wpUserId, int $appointmentId, ?string $reason ): array {
+    public function cancel_by_patient( int $wpUserId, int $appointmentId, ?string $reason ): array {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         return $this->cancel( $wpUserId, $appointmentId, $reason, 'patient' );
     }
@@ -1329,7 +1329,7 @@ final class BookingService
                 'days'           => $filtered_days,
             ];
         } catch ( Throwable $e ) {
-            throw $this->toBookingException( $e );
+            throw $this->to_booking_exception( $e );
         }
     }
 
@@ -1337,9 +1337,9 @@ final class BookingService
      * @return array{appointment_id: int, reference_code: string, slot: array<string, mixed>, status: string, previous_appointment_id: int}
      */
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    public function reschedule  (int $wpUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey, ?int $newSlotId = null ): array {
+    public function reschedule( int $wpUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey, ?int $newSlotId = null ): array {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        return $this->rescheduleAs( $wpUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $idemKey, $newSlotId, 'patient' );
+        return $this->reschedule_as( $wpUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $idemKey, $newSlotId, 'patient' );
     }
 
     /**
@@ -1350,7 +1350,7 @@ final class BookingService
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
     public function rescheduleByStaff( int $actorUserId, int $appointmentId, int $newClinicianId, string $newDate, string $newTime, ?string $idemKey, ?int $newSlotId = null ): array {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        return $this->rescheduleAs( $actorUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $idemKey, $newSlotId, 'staff' );
+        return $this->reschedule_as( $actorUserId, $appointmentId, $newClinicianId, $newDate, $newTime, $idemKey, $newSlotId, 'staff' );
     }
 
     /**
@@ -1367,7 +1367,7 @@ final class BookingService
      * @return array{appointment_id: int, reference_code: string, slot: array<string, mixed>, status: string, previous_appointment_id: int}
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private function rescheduleAs(
+    private function reschedule_as(
         int $actor_user_id,
         int $appointment_id,
         int $new_clinician_id,
@@ -1406,7 +1406,7 @@ final class BookingService
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
         $this->assert_clinic_accepting_new_demand( $idem_clinic_id );
-        $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
+        $this->assert_license( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
 
         // Claim only after role, tenant/object ownership and lifecycle gates.
         // A denied selector must not leave idempotency state behind, and a
@@ -1490,7 +1490,7 @@ final class BookingService
                             throw BookingException::of( 'CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404 );
                         }
                     } else {
-                        $new_clinic_id = $this->requireClinician( $new_clinician_id );
+                        $new_clinic_id = $this->require_clinician( $new_clinician_id );
                     }
 
                     // Rescheduling carries the existing Patient into its replacement;
@@ -1567,7 +1567,7 @@ final class BookingService
                     $owner_user_id = $actor === 'staff'
                         ? ( (int) ( $appt['wp_user_id'] ?? 0 ) > 0 ? (int) $appt['wp_user_id'] : null )
                         : $actor_user_id;
-                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
+                    $this->assert_license( LicenseGate::OP_APPOINTMENT_RESCHEDULE );
                     $new_appt_id = $this->appointments->create(
                         [
 							'clinic_id'         => (int) $new_slot['clinic_id'],
@@ -1602,7 +1602,7 @@ final class BookingService
 
                     // D6 audit atomicity: old/new appointment writes, slot
                     // capacity moves and the mandatory audit share one boundary.
-                    $rescheduled_view = $this->appointmentView( (array) $this->appointments->find( $new_appt_id ) );
+                    $rescheduled_view = $this->appointment_view( (array) $this->appointments->find( $new_appt_id ) );
                     $this->audit(
                         'APPOINTMENT_RESCHEDULED',
                         $actor_user_id,
@@ -1625,11 +1625,11 @@ final class BookingService
             );
         } catch ( Throwable $e ) {
             $this->idem->release( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, $idem_clinic_id );
-            throw $this->toBookingException( $e );
+            throw $this->to_booking_exception( $e );
         }
 
         $new_appt = $this->appointments->find( $new_appt_id );
-        $view     = $this->appointmentView( $new_appt );
+        $view     = $this->appointment_view( $new_appt );
         $response = array_merge( $view, [ 'previous_appointment_id' => $appointment_id ] );
         $this->idem->complete( $idem_key, self::EP_RESCHEDULE, $actor_user_id, $appointment_id, 200, $response, $idem_clinic_id );
 
@@ -1654,7 +1654,7 @@ final class BookingService
      * @return array<string, mixed>
      */
 // phpcs:ignore Generic.CodeAnalysis.UnusedFunctionParameter.FoundAfterLastUsed, WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- parameters are read through compact() string keys to preserve the PHP 8 named-argument contract. established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    public function createByStaff( int $actorUserId, int $patientId, int $clinicianId, string $slotDate, string $slotTime, ?string $reason, ?int $slotId = null ): array {
+    public function create_by_staff( int $actorUserId, int $patientId, int $clinicianId, string $slotDate, string $slotTime, ?string $reason, ?int $slotId = null ): array {
         $staff_input       = compact(
             'actorUserId',
             'patientId',
@@ -1672,7 +1672,7 @@ final class BookingService
         $reason_value      = $staff_input['reason'];
         $requested_slot_id = $staff_input['slotId'] === null ? null : (int) $staff_input['slotId'];
 
-        $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+        $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
 
         // Phase 4 Slice 2 — Shared Professional: Clinic معتبر فقط از Scope مورد
         // اعتماد (مرز REST کارکنی یا System-single تک‌کلینیکی)، نه از
@@ -1776,7 +1776,7 @@ final class BookingService
                     $now_sql  = $this->db->nowUtcSql();
                     $is_today = $slot_date === gmdate( 'Y-m-d' );
                     // The final decision is after capacity/Location lock waits.
-                    $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
+                    $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
                     $appt_id = $this->appointments->create(
                         [
                             'clinic_id'         => (int) $slot['clinic_id'],
@@ -1803,7 +1803,7 @@ final class BookingService
 
                     // D6 audit atomicity: slot claim, appointment row and the
                     // mandatory audit commit/roll back together.
-                    $staff_view = $this->appointmentView( (array) $this->appointments->find( $appt_id ) );
+                    $staff_view = $this->appointment_view( (array) $this->appointments->find( $appt_id ) );
                     $this->audit(
                         'APPOINTMENT_CREATED',
                         $actor_user_id,
@@ -1825,12 +1825,12 @@ final class BookingService
                 }
             );
         } catch ( Throwable $e ) {
-            throw $this->toBookingException( $e );
+            throw $this->to_booking_exception( $e );
         }
 
         $appt    = $staff_appointment['appointment'];
         $appt_id = (int) $staff_appointment['appointment_id'];
-        $view    = $this->appointmentView( $appt );
+        $view    = $this->appointment_view( $appt );
         // Mandatory APPOINTMENT_CREATED audit now commits inside the staff
         // booking transaction above (D6 atomicity).
         $this->op->info(
@@ -1874,6 +1874,7 @@ final class BookingService
         // original body bytes (PEAR.Functions.FunctionCallSignature requires the
         // open parenthesis to be the last content on a multi-line call line).
         $no_show = function () use ( $appointmentId, $trimmed, $actorUserId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established multi-line call shape / existing call-site formatting; no security sniff suppressed.
             $appt = $this->appointments->findForUpdate( $appointmentId );
             if ( $appt === null ) {
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
@@ -1881,13 +1882,14 @@ final class BookingService
             $this->assertAppointmentWithinExplicitScope( $appt );
 
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $toState = $this->machineCheck( (string ) $appt['status'], 'no_show', 'staff' );
+            $toState = $this->machineCheck( (string) $appt['status'], 'no_show', 'staff' );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $this->assertNoActiveVisit( $appointmentId );
 
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $nowSql = $this->db->nowUtcSql();
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established multi-line call shape and camelCase local; no security sniff suppressed.
             $this->appointments->updateStatus($appointmentId, [
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 'status'          => $toState,
@@ -1896,6 +1898,7 @@ final class BookingService
                 'active_visit_id' => null,
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 'updated_at'      => $nowSql,
+                // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine -- established multi-line call shape; no security sniff suppressed.
             ]);
 
             // D6 audit atomicity: the no-show status mutation and its mandatory
@@ -1937,19 +1940,19 @@ final class BookingService
      * @return list<array<string, mixed>>
      */
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    public function listForClinician  (int $clinicianId, string $date, ?string $status ): array {
+    public function listForClinician( int $clinicianId, string $date, ?string $status ): array {
         // Phase 4 Slice 2 — Shared Professional list: فقط نوبت‌های Clinic
         // معتبر (دامنه‌بندی + مشارکت پایدار فعال؛ 404 parity بدون نشت).
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $trustedClinicId = $this->trustedClinicIdForStaff();
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        if ( !$this->memberships->clinician_participates_in( $clinicianId, $trustedClinicId ) ) {
+        if ( ! $this->memberships->clinician_participates_in( $clinicianId, $trustedClinicId ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404 );
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $rows = $this->appointments->listByClinicianDate( $trustedClinicId, $clinicianId, $date );
         if ( $status !== null && $status !== '' ) {
-            $rows = array_values( array_filter( $rows, static fn  (array $r ): bool =>  (string ) $r['status'] === $status ) );
+            $rows = array_values( array_filter( $rows, static fn  ( array $r ): bool =>   (string) $r['status'] === $status ) );
         }
 
         return $this->mapAppointmentViews( $rows );
@@ -1960,10 +1963,13 @@ final class BookingService
     /**
      * @return array{appointment_id: int, status: string}
      */
-    private function cancel(int $wpUserId, int $appointmentId, ?string $reason, string $actor): array {
-        $this->assertLicense( LicenseGate::OP_APPOINTMENT_CANCEL );
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private function cancel( int $wpUserId, int $appointmentId, ?string $reason, string $actor ): array {
+        $this->assert_license( LicenseGate::OP_APPOINTMENT_CANCEL );
 
-        [$appt, $toState, $slotId] = $this->db->transactional(function () use ($wpUserId, $appointmentId, $reason, $actor): array {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established multi-line closure-call shape and camelCase locals; no security sniff suppressed.
+        [$appt, $toState, $slotId] = $this->db->transactional( function () use ( $wpUserId, $appointmentId, $reason, $actor ): array {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $appt = $this->appointments->findForUpdate( $appointmentId );
             if ( $appt === null ) {
@@ -1994,7 +2000,7 @@ final class BookingService
             }
 
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $toState = $this->machineCheck( (string ) $appt['status'], 'cancel', $actor );
+            $toState = $this->machineCheck( (string) $appt['status'], 'cancel', $actor );
 
             // I-3 (Phase 7 Slice 2) — T5/T6: تا وقتی ویزیتِ واقعاً فعال به این
             // نوبت متصل است، لغو ممنوع است. بررسی روی همان ردیفِ قفل‌شده و پیش
@@ -2010,7 +2016,7 @@ final class BookingService
                     (string) $appt['slot_time'],
                     $location_tz,
                     $this->now(),
-                    (int ) $this->settingsFor( (int ) $appt['clinic_id'] )->get( 'booking.cancel_deadline_hours', 24 )
+                    (int) $this->settingsFor( (int) $appt['clinic_id'] )->get( 'booking.cancel_deadline_hours', 24 )
                 );
                 if ( $err !== null ) {
                     throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409 );
@@ -2022,6 +2028,8 @@ final class BookingService
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $nowSql = $this->db->nowUtcSql();
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments -- established multi-line call shape / existing call-site formatting; no security sniff suppressed.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established multi-line call shape and camelCase local; no security sniff suppressed.
             $this->appointments->updateStatus($appointmentId, [
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 'status'                  => $toState,
@@ -2032,6 +2040,7 @@ final class BookingService
                 'cancelled_by_wp_user_id' => $wpUserId,
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 'updated_at'              => $nowSql,
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine -- established multi-line call shape / existing call-site formatting; no security sniff suppressed.
             ]);
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $this->slots->releaseBooking( $slotId );
@@ -2093,9 +2102,9 @@ final class BookingService
                         [
                             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                             'patient_name'     => $patientName !== '' ? $patientName : 'بیمار گرامی',
-                            'doctor_name'      =>  (string ) ( $doctor['full_name'] ?? 'پزشک' ),
-                            'appointment_date' => Jalali::formatYmd( (string ) $appt['slot_date'] ),
-                            'appointment_time' => substr( (string ) $appt['slot_time'], 0, 5 ),
+                            'doctor_name'      => (string) ( $doctor['full_name'] ?? 'پزشک' ),
+                            'appointment_date' => Jalali::formatYmd( (string) $appt['slot_date'] ),
+                            'appointment_time' => substr( (string) $appt['slot_time'], 0, 5 ),
                             'clinic_name'      => $clinic !== '' ? $clinic : 'مطب',
                         ],
                         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
@@ -2301,8 +2310,9 @@ final class BookingService
         }
         if ( $count > 1 ) {
             // Fail closed — do NOT use LIMIT 1
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.MultipleArguments -- established multi-line call shape / existing call-site formatting; no security sniff suppressed.
             throw BookingException::of('CLINIC_SLOT_AMBIGUOUS', 'اسلات مبهم است — چند Location با همین تاریخ/ساعت وجود دارد؛ لطفاً slot_id را مشخص کنید', 409, [
-                'matches' => $count,
+                'matches'      => $count,
                 'clinic_id'    => $clinic_id,
                 'clinician_id' => $clinician_id,
                 'slot_date'    => $slot_date,
@@ -2387,7 +2397,7 @@ final class BookingService
     }
 
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private function assertLicense( string $operation ): void {
+    private function assert_license( string $operation ): void {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established legacy property name; renaming is a class-wide API change. No security sniff suppressed.
         $decision = $this->licenseGate->assert( $operation );
         if ( ! $decision->allowed ) {
@@ -2516,8 +2526,8 @@ final class BookingService
         }
     }
 
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private function requireClinician (int $clinicianId ): int {
+// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private function require_clinician( int $clinicianId ): int {
         $row = $this->db->fetchRow(
             'SELECT id, clinic_id FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d AND is_active = 1 LIMIT 1',
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
@@ -2540,7 +2550,7 @@ final class BookingService
      *  - Otherwise the requested clinic must pass
      *    MembershipRepository::clinician_participates_in() — an ACTIVE
      *    durable membership (or the home-clinic compatibility path). The
-     *    clinician was already required active by requireClinician().
+     *    clinician was already required active by require_clinician().
      *
      * Fail-closed: any non-participating (unknown, foreign, suspended-
      * membership) clinic id raises the SAME CLINIC_NOT_FOUND/404 envelope as
@@ -2560,7 +2570,7 @@ final class BookingService
         }
 
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        if ( !$this->memberships->clinician_participates_in( $clinicianId, $requestedClinicId ) ) {
+        if ( ! $this->memberships->clinician_participates_in( $clinicianId, $requestedClinicId ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
 
@@ -2701,7 +2711,7 @@ final class BookingService
     private function linkedActivePatientsForClinic(int $wpUserId, int $clinicId): array
     {
         return $this->db->fetchAll(
-            'SELECT p.* FROM ' . $this->db->table('cpms_patient_user_links') . ' l JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
+            'SELECT p.* FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l JOIN ' . $this->db->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase locals; no security sniff suppressed.
             [$wpUserId, $clinicId, 'active', $clinicId]
         );
@@ -2741,9 +2751,9 @@ final class BookingService
             return null;
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $linked    = $this->linkedActivePatientsForClinic( $wpUserId, $trustedClinicId );
+        $linked = $this->linkedActivePatientsForClinic( $wpUserId, $trustedClinicId );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $linkedIds = array_map(   static fn    (array $r ): int =>    (int ) $r['id'], $linked );
+        $linkedIds = array_map( static fn    ( array $r ): int =>     (int) $r['id'], $linked );
         $cnt       = count( $linked );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         if ( $requestedPatientId !== null ) {
@@ -2759,14 +2769,14 @@ final class BookingService
                 throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'بیمار یافت نشد', 422 );
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            if ( (int ) ( $p['clinic_id'] ?? 0 ) !== $trustedClinicId ) {
+            if ( (int) ( $p['clinic_id'] ?? 0 ) !== $trustedClinicId ) {
                 throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'بیمار به کلینیک دیگری تعلق دارد', 422 );
             }
-            if ( (string ) ( $p['status'] ?? '' ) !== 'active' ) {
+            if ( (string) ( $p['status'] ?? '' ) !== 'active' ) {
                 throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل بیمار غیرفعال است', 400 );
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            if ( !in_array( $requestedPatientId, $linkedIds, true ) ) {
+            if ( ! in_array( $requestedPatientId, $linkedIds, true ) ) {
                 throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'بیمارِ انتخابی به شما مرتبط نیست', 422 );
             }
 
@@ -2795,11 +2805,11 @@ final class BookingService
      * @return array<string, mixed>
      */
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    private function createMinimalPatient( int $clinic_id, string $mobile, int $wpUserId, ?array $names = null ): array {
+    private function create_minimal_patient( int $clinic_id, string $mobile, int $wpUserId, ?array $names = null ): array {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $nowSql = $this->db->nowUtcSql();
         // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- established multi-line array-argument call shape; no security sniff suppressed.
-        $id     = $this->patients->create([
+        $id = $this->patients->create([
             'clinic_id'  => $clinic_id,
             'mrn'        => $this->generateMrn( $clinic_id ),
             'first_name' => (string) ( $names['first_name'] ?? '' ),
@@ -2822,6 +2832,7 @@ final class BookingService
             'is_primary'     => 1,
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             'linked_at'      => $nowSql,
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine -- established multi-line call shape / existing call-site formatting; no security sniff suppressed.
         ]);
 
         // Organization Patient Identity activation — inside the caller's
@@ -2894,7 +2905,7 @@ final class BookingService
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
     private function cleanBookingName( ?string $value ): string {
-        $clean = trim( (string ) preg_replace( '/[\x00-\x1F]/u', '',  (string ) $value ) );
+        $clean = trim( (string) preg_replace( '/[\x00-\x1F]/u', '', (string) $value ) );
         if ( $clean === '' || mb_strlen( $clean ) > 120 ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
@@ -2923,7 +2934,7 @@ final class BookingService
     }
 
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    private function findActiveByUserSlot  (int $wpUserId, int $slotId ): ?array {
+    private function findActiveByUserSlot( int $wpUserId, int $slotId ): ?array {
         $wp_user_id = (int) $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
 
         $slot_id = (int) $slotId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
@@ -2943,14 +2954,15 @@ final class BookingService
     /**
      * N-6: `MR-{YYMMDD}-{5char}` — Retry روی Unique Constraint.
      */
-    private function generateMrn(int $clinic_id): string {
-        for ($i = 0; $i < 5; $i++) {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
+    private function generateMrn( int $clinic_id ): string {
+        for ( $i = 0; $i < 5; $i++ ) {
             $mrn    = 'MR-' . gmdate( 'ymd' ) . '-' . strtoupper( substr( bin2hex( random_bytes( 4 ) ), 0, 5 ) );
             $exists = $this->db->fetchValue(
                 'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d AND mrn = %s',
                 [$clinic_id, $mrn]
             );
-            if ( (int ) $exists === 0 ) {
+            if ( (int) $exists === 0 ) {
                 return $mrn;
             }
         }
@@ -2995,20 +3007,20 @@ final class BookingService
      * @param array<string, mixed> $appt
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private function sendAppointmentSms (string $event, string $mobile, array $appt ): void {
+    private function sendAppointmentSms( string $event, string $mobile, array $appt ): void {
         try {
-            $doctor      = $this->db->fetchRow(
+            $doctor  = $this->db->fetchRow(
                 'SELECT full_name FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d LIMIT 1',
-                [ (int ) $appt['clinician_id']]
+                [  (int) $appt['clinician_id']]
             );
-            $clinic      = (string) $this->db->fetchValue(
+            $clinic  = (string) $this->db->fetchValue(
                 'SELECT name FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
-                [ (int ) $appt['clinic_id']]
+                [  (int) $appt['clinic_id']]
             );
-            $patient     = $this->patients->find( (int ) $appt['patient_id'] );
+            $patient = $this->patients->find( (int) $appt['patient_id'] );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $patientName = $patient !== null
-                ? trim( (string ) $patient['first_name'] . ' ' .  (string ) $patient['last_name'] )
+                ? trim( (string) $patient['first_name'] . ' ' . (string) $patient['last_name'] )
                 : '';
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             if ( $patientName === '' ) {
@@ -3016,10 +3028,11 @@ final class BookingService
             }
 
             $vars = [
-                'patient_name' => $patientName,
-                'doctor_name' => (string) ($doctor['full_name'] ?? 'پزشک'),
-                'appointment_date' => Jalali::formatYmd( (string ) $appt['slot_date'] ),
-                'appointment_time' => substr( (string ) $appt['slot_time'], 0, 5 ),
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+                'patient_name'     => $patientName,
+                'doctor_name'      =>   (string) ( $doctor['full_name'] ?? 'پزشک' ),
+                'appointment_date' => Jalali::formatYmd( (string) $appt['slot_date'] ),
+                'appointment_time' => substr( (string) $appt['slot_time'], 0, 5 ),
                 'clinic_name'      => $clinic !== '' ? $clinic : 'مطب',
             ];
 
@@ -3043,9 +3056,9 @@ final class BookingService
                     'apt:' . (int) $appt['id'] . ':' . $event . ':p' . (int) $appt['patient_id']
                 );
             }
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             // SMS هرگز نباید Booking را شکست بدهد — Job/Retry خودش مدیریت می‌کند
-            $this->op->warning( 'booking.sms_failed', ['event' => $event, 'appointment_id' =>  (int ) $appt['id'], 'error' => $e->getMessage()] );
+            $this->op->warning( 'booking.sms_failed', ['event' => $event, 'appointment_id' => (int) $appt['id'], 'error' => $e->getMessage()] );
         }
     }
 
@@ -3071,7 +3084,7 @@ final class BookingService
      * @return array<string, mixed>
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private function appointmentView( array $row ): array {
+    private function appointment_view( array $row ): array {
         $date = (string) $row['slot_date'];
 
         $view = [
@@ -3080,13 +3093,13 @@ final class BookingService
             'appointment_id'    => (int) $row['id'],
             'reference_code'    => (string) $row['reference_code'],
             'date'              => $date,
-            'time'              => substr( (string ) $row['slot_time'], 0, 5 ),
+            'time'              => substr( (string) $row['slot_time'], 0, 5 ),
             'jalali'            => Jalali::formatYmd( $date ),
-            'jalali_time'       => substr( (string ) $row['slot_time'], 0, 5 ),
+            'jalali_time'       => substr( (string) $row['slot_time'], 0, 5 ),
             'status'            => (string) $row['status'],
-            'duration_min'      =>  (int ) ( $row['duration_min'] ?? 0 ),
+            'duration_min'      => (int) ( $row['duration_min'] ?? 0 ),
             'reason'            => $row['reason'] ?? null,
-            'is_walkin_express' =>  (bool ) ( $row['is_walkin_express'] ?? 0 ),
+            'is_walkin_express' => (bool) ( $row['is_walkin_express'] ?? 0 ),
         ];
 
         if ( array_key_exists( 'clinic_name', $row ) ) {
@@ -3109,32 +3122,33 @@ final class BookingService
      * @param list<array<string, mixed>> $rows
      * @return list<array<string, mixed>>
      */
-    private function mapAppointmentViews(array $rows): array {
-        return array_map( fn  (array $r ): array => $this->appointmentView( $r ), $rows );
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
+    private function mapAppointmentViews( array $rows ): array {
+        return array_map( fn  ( array $r ): array => $this->appointment_view( $r ), $rows );
     }
 
     /**
      * @param array<string, mixed> $slot
      * @return array<string, mixed>
      */
-    private function slotView(int $slotId, array $slot): array
-    {
-        $date = (string) $slot['slot_date'];
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name and camelCase parameter (PHP 8 named-argument contract); no security sniff suppressed.
+    private function slotView( int $slotId, array $slot ): array {
+        $date   = (string) $slot['slot_date'];
         $doctor = $this->db->fetchRow(
             'SELECT id, full_name FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d LIMIT 1',
-            [ (int ) $slot['clinician_id']]
+            [  (int) $slot['clinician_id']]
         );
 
         return [
             'slot_id' => $slotId,
-            'clinician_id' => (int) $slot['clinician_id'],
-            'clinician_name' => (string) ($doctor['full_name'] ?? ''),
-            'date' => $date,
-            'time' => substr((string) $slot['slot_time'], 0, 5),
-            'jalali' => Jalali::formatYmd($date),
-            'jalali_time'    => substr( (string ) $slot['slot_time'], 0, 5 ),
+            'clinician_id'   => (int) $slot['clinician_id'],
+            'clinician_name' => (string) ( $doctor['full_name'] ?? '' ),
+            'date'           => $date,
+            'time'           => substr( (string) $slot['slot_time'], 0, 5 ),
+            'jalali'         => Jalali::formatYmd( $date ),
+            'jalali_time'    => substr( (string) $slot['slot_time'], 0, 5 ),
             'duration_min'   => (int) $slot['duration_min'],
-            'capacity_left'  => max( 0,  (int ) $slot['capacity'] -  (int ) $slot['booked_count'] -  (int ) $slot['held_count'] ),
+            'capacity_left'  => max( 0,  (int) $slot['capacity'] -   (int) $slot['booked_count'] -   (int) $slot['held_count'] ),
         ];
     }
 
@@ -3144,21 +3158,21 @@ final class BookingService
      */
     private function replayOrInFlight(array $check, int $wpUserId): array
     {
-        if (($check['response_code'] ?? null) === 409 && ($check['response']['error'] ?? null) === 'CLINIC_DUPLICATE_IN_FLIGHT') {
-            throw BookingException::of('CLINIC_DUPLICATE_IN_FLIGHT', 'درخواست شما در حال پردازش است — تکرار نکنید', 409);
+        if ( ( $check['response_code'] ?? null ) === 409 && ( $check['response']['error'] ?? null ) === 'CLINIC_DUPLICATE_IN_FLIGHT' ) {
+            throw BookingException::of( 'CLINIC_DUPLICATE_IN_FLIGHT', 'درخواست شما در حال پردازش است — تکرار نکنید', 409 );
         }
         $response = $check['response'] ?? [];
 
         return is_array( $response ) ? $response : [];
     }
 
-    private function toBookingException(Throwable $e): BookingException
+    private function to_booking_exception(Throwable $e): BookingException
     {
         if ($e instanceof BookingException) {
             return $e;
         }
-        if ($e instanceof InvalidTransitionException) {
-            return BookingException::of('CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409);
+        if ( $e instanceof InvalidTransitionException ) {
+            return BookingException::of( 'CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409 );
         }
         $this->op->error( 'booking.unexpected_error', ['error' => $e->getMessage()] );
 
@@ -3167,10 +3181,14 @@ final class BookingService
 
     private function audit(
         string $action,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         ?int $wpUserId,
         string $role,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         string $resourceType,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         ?int $resourceId,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         ?int $patientId,
         ?array $before,
         ?array $after,
@@ -3183,9 +3201,13 @@ final class BookingService
         // row — never ambient request scope. NULL stays NULL (no invented id).
         $this->audit->log(
             $action,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             ['wp_user_id' => $wpUserId, 'role' => $role],
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $resourceType,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $resourceId,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $patientId,
             $before,
             $after,

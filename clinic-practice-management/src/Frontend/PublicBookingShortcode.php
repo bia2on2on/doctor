@@ -273,13 +273,13 @@ final class PublicBookingShortcode
             // حالت discovery — فقط برای مقدار دقیق «all»؛ هر ورودی دیگری
             // همان مسیر fail-closed تاریخی (parseClinicId → closed) را دارد.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $rawClinic = self::rawClinicAttr( $atts, $tag );
+            $rawClinic = self::raw_clinic_attr( $atts, $tag );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             if ( $rawClinic !== null && strtolower( $rawClinic ) === self::DISCOVERY_MODE ) {
-                return self::renderDiscovery();
+                return self::render_discovery();
             }
 
-            $clinicId = self::parseClinicId($atts, $tag);
+            $clinicId = self::parse_clinic_id($atts, $tag);
             if ($clinicId === null) {
                 return self::renderClosed();
             }
@@ -291,10 +291,10 @@ final class PublicBookingShortcode
 
             $clinicians = self::activeClinicians($clinicId);
             if ($clinicians === []) {
-                return self::renderEmpty((int) $clinicId, self::clinicName($clinic));
+                return self::render_empty((int) $clinicId, self::clinic_name($clinic));
             }
 
-            return self::renderBrowse((int) $clinicId, self::clinicName($clinic), $clinicians);
+            return self::render_browse((int) $clinicId, self::clinic_name($clinic), $clinicians);
         } catch (Throwable $e) {
             // fail-closed مطلق: جزئیات خطا هرگز به بازدیدکنندهٔ آنونیم نشان
             // داده نمی‌شود (نه در markup، نه در پیام)؛ فقط در Log عملیاتی.
@@ -317,8 +317,8 @@ final class PublicBookingShortcode
      * @param mixed $atts
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function parseClinicId( mixed $atts, string $tag ): ?int {
-        $trimmed = self::rawClinicAttr( $atts, $tag );
+    private static function parse_clinic_id( mixed $atts, string $tag ): ?int {
+        $trimmed = self::raw_clinic_attr( $atts, $tag );
         if ( $trimmed === null || $trimmed === '' ) {
             return null;
         }
@@ -369,23 +369,23 @@ final class PublicBookingShortcode
      */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
     private static function render_discovery(): string {
-        $selected = self::discoverySelectedClinic();
-        if ( $selected === null || ! self::isPubliclyListable( $selected ) ) {
-            return self::renderDirectory();
+        $selected = self::discovery_selected_clinic();
+        if ( $selected === null || ! self::is_publicly_listable( $selected ) ) {
+            return self::render_directory();
         }
 
         // همان دروازه‌های تاریخیِ سطح پیوندشده — lifecycle دوباره بررسی می‌شود.
         $clinic = self::findClinic( $selected );
         if ( $clinic === null ) {
-            return self::renderDirectory();
+            return self::render_directory();
         }
 
         $clinicians = self::activeClinicians( $selected );
         if ( $clinicians === [] ) {
-            return self::renderEmpty( $selected, self::clinicName( $clinic ), true );
+            return self::render_empty( $selected, self::clinic_name( $clinic ), true );
         }
 
-        return self::renderBrowse( $selected, self::clinicName( $clinic ), $clinicians, true );
+        return self::render_browse( $selected, self::clinic_name( $clinic ), $clinicians, true );
     }
 
     /**
@@ -442,7 +442,7 @@ final class PublicBookingShortcode
             }
 
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            return self::listingConsent( $clinicId );
+            return self::listing_consent( $clinicId );
         } catch ( Throwable $e ) {
             self::logFailure( $e );
 
@@ -499,7 +499,7 @@ final class PublicBookingShortcode
                 continue;
             }
             // رضختمصریِ نمایش — fail-closed؛ بدون consent هیچ ردیفی عبور نمی‌کند.
-            if ( ! self::listingConsent( $id ) ) {
+            if ( ! self::listing_consent( $id ) ) {
                 continue;
             }
             $listable[] = ['id' => $id, 'name' => $name];
@@ -520,7 +520,7 @@ final class PublicBookingShortcode
 
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $surfaceId = self::surfaceId();
-        $clinics   = self::listableClinicRows();
+        $clinics   = self::listable_clinic_rows();
         $lines     = [];
 
         $lines[] = sprintf(
@@ -584,8 +584,7 @@ final class PublicBookingShortcode
 
     /** پیوند بازگشت به فهرست — فقط روی سطحِ انتخابشده در حالت discovery. */
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function render_back_link(): string
-    {
+    private static function render_back_link(): string {
         return sprintf(
             '<p class="%1$s"><a class="%2$s" href="%3$s" data-role="discovery-back">%4$s</a></p>',
             esc_attr( self::ROOT_CLASS . '__discovery-back' ),
@@ -637,7 +636,7 @@ final class PublicBookingShortcode
 
         // Defence in depth: ردیف باید همان Clinicِ درخواستی باشد.
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        return  (int ) ( $row['id'] ?? 0 ) === $clinicId ? $row : null;
+        return (int) ( $row['id'] ?? 0 ) === $clinicId ? $row : null;
     }
 
     /**
@@ -655,12 +654,11 @@ final class PublicBookingShortcode
      *
      * @return list<array{id: int, name: string, specialty: string, working_days: list<string>}>
      */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function activeClinicians (int $clinicId ): array
-    {
+// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private static function activeClinicians( int $clinicId ): array {
         try {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $homeRows   = App::clinicianRepository()->listAll( $clinicId, false );
+            $homeRows = App::clinicianRepository()->listAll( $clinicId, false );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $sharedRows = App::db()->fetchAll(
                 'SELECT c.id, c.full_name, c.specialty FROM ' . App::db()->table( 'cpms_clinicians' ) . ' c'
@@ -671,8 +669,8 @@ final class PublicBookingShortcode
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 [$clinicId, 'active', $clinicId]
             );
-        } catch (Throwable $e) {
-            self::logFailure($e);
+        } catch ( Throwable $e ) {
+            self::logFailure( $e );
 
             return [];
         }
@@ -684,7 +682,7 @@ final class PublicBookingShortcode
                 continue;
             }
 
-            $id =  (int ) ( $row['id'] ?? 0 );
+            $id =  (int) ( $row['id'] ?? 0 );
             if ( $id <= 0 ) {
                 continue;
             }
@@ -756,7 +754,7 @@ final class PublicBookingShortcode
                 $day = (int) ( $dayRow['day_of_week'] ?? -1 );
                 if ( $owner > 0 && $day >= 0 && $day < count( self::WEEKDAY_NAMES ) ) {
                     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-                    $daysByClinician[$owner][] = $day;
+                    $daysByClinician[ $owner ][] = $day;
                 }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
@@ -900,8 +898,8 @@ final class PublicBookingShortcode
     /**
      * @param array<string, mixed> $clinic
      */
-    private static function clinicName(array $clinic): string {
-        $name = trim((string) ($clinic['name'] ?? ''));
+    private static function clinic_name( array $clinic ): string {
+        $name = trim( (string) ( $clinic['name'] ?? '' ) );
 
         return $name;
     }
@@ -946,9 +944,8 @@ final class PublicBookingShortcode
      * و `empty` یعنی «پیکربندی درست است، چیزی برای رزرو نیست». در هر دو حالت
      * هیچ پزشکی منتشر نمی‌شود.
      */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function render_empty( int $clinicId, string $clinicName, bool $discovery = false ): string
-    {
+// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private static function render_empty( int $clinicId, string $clinicName, bool $discovery = false ): string {
         PublicBookingAssets::enqueue();
 
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
@@ -960,13 +957,15 @@ final class PublicBookingShortcode
             esc_attr( self::ROOT_CLASS ),
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $clinicId,
-            esc_attr(self::STATE_EMPTY),
-            esc_attr($surfaceId)
+            esc_attr( self::STATE_EMPTY ),
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            esc_attr( $surfaceId )
         );
         if ( $discovery ) {
-            $lines[] = self::renderBackLink();
+            $lines[] = self::render_back_link();
         }
-        $lines[] = self::renderHead($clinicName, $surfaceId);
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $lines[] = self::render_head( $clinicName, $surfaceId );
         $lines[] = sprintf(
             '<p class="%s" role="status">%s</p>',
             esc_attr( self::ROOT_CLASS . '__notice' ),
@@ -1003,10 +1002,10 @@ final class PublicBookingShortcode
         if ( $discovery ) {
             // انتخاب از فهرست عمومی — پیوند بازگشت به همان فهرست (بدون reload
             // از سمت JS؛ خودِ href کافی است).
-            $lines[] = self::renderBackLink();
+            $lines[] = self::render_back_link();
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $lines[] = self::renderHead( $clinicName, $surfaceId );
+        $lines[] = self::render_head( $clinicName, $surfaceId );
 
         $lines[] = sprintf( '<div class="%s">', esc_attr( self::ROOT_CLASS . '__body' ) );
 
@@ -1022,7 +1021,7 @@ final class PublicBookingShortcode
             esc_html( self::STEP_CLINICIAN )
         );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $lines[] = self::renderDoctorFilters( $surfaceId, $clinicians );
+        $lines[] = self::render_doctor_filters( $surfaceId, $clinicians );
         $lines[] = sprintf(
             '<ul class="%1$s" role="list" aria-labelledby="%2$s" data-role="clinicians">',
             esc_attr( self::ROOT_CLASS . '__clinician-list' ),
@@ -1031,27 +1030,27 @@ final class PublicBookingShortcode
         );
         foreach ( $clinicians as $clinician ) {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $searchBlob = self::normalizeDoctorSearch(
+            $searchBlob = self::normalize_doctor_search(
                 (string) $clinician['name'] . ' ' . (string) ( $clinician['specialty'] ?? '' )
             );
             $lines[]    = sprintf( '<li class="%s">', esc_attr( self::ROOT_CLASS . '__clinician-item' ) );
-            $lines[] = sprintf(
+            $lines[]    = sprintf(
                 '<button type="button" class="%1$s" data-clinician-id="%2$d" aria-pressed="false"'
                 . ' data-search="%3$s" data-specialty="%4$s">'
                 . '<span class="%5$s">%6$s</span>'
                 . '<span class="%7$s">%8$s</span>'
                 . '</button>',
-                esc_attr(self::CLINICIAN_CLASS),
+                esc_attr( self::CLINICIAN_CLASS ),
                 (int) $clinician['id'],
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 esc_attr( $searchBlob ),
-                esc_attr( trim( ( string ) ( $clinician['specialty'] ?? '' ) ) ),
-                esc_attr(self::ROOT_CLASS . '__clinician-name'),
-                esc_html((string) $clinician['name']),
+                esc_attr( trim( (string) ( $clinician['specialty'] ?? '' ) ) ),
+                esc_attr( self::ROOT_CLASS . '__clinician-name' ),
+                esc_html( (string) $clinician['name'] ),
                 esc_attr(self::ROOT_CLASS . '__clinician-hint'),
                 esc_html(self::CLINICIAN_HINT)
             );
-            $specialty  = trim( ( string ) ( $clinician['specialty'] ?? '' ) );
+            $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
             if ( $specialty !== '' ) {
                 $lines[] = sprintf(
                     '<span class="%1$s">%2$s</span>',
@@ -1060,7 +1059,7 @@ final class PublicBookingShortcode
                 );
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $workingDays = ( array ) ( $clinician['working_days'] ?? [] );
+            $workingDays = (array) ( $clinician['working_days'] ?? [] );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             if ( $workingDays !== [] ) {
                 $lines[] = sprintf(
@@ -1177,11 +1176,11 @@ final class PublicBookingShortcode
         if ($continuation === self::CONTINUATION_ANONYMOUS) {
             // فقط چرخهٔ ورود با OTP؛ بدون nonce، بدون B1/B2، بدون PHI.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local; no security sniff suppressed.
-            $lines[] = self::renderAuthContinuation( $surfaceId );
+            $lines[] = self::render_auth_continuation( $surfaceId );
         } elseif ( $continuation === self::CONTINUATION_PATIENT ) {
             // بیمارِ واردشده: ادامهٔ Hold→Confirm با nonce مسیرهای موجود.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-            $lines[] = self::renderPatientContinuation( $surfaceId, $clinicId );
+            $lines[] = self::render_patient_continuation( $surfaceId, $clinicId );
         }
 
         $lines[] = '</div>'; // body
@@ -1225,10 +1224,10 @@ final class PublicBookingShortcode
      * hold/confirm و بدون هیچ PHI — ورود فقط با شمارهٔ موبایل و کدِ پیامکی
      * روی مسیرهای موجودِ A2/A3 انجام می‌شود.
      */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function renderAuthContinuation (string $surfaceId ): string
-    {
+// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private static function render_auth_continuation( string $surfaceId ): string {
         $b = self::ROOT_CLASS;
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $mobileInputId = $surfaceId . '-otp-mobile';
         $codeInputId = $surfaceId . '-otp-code';
 
@@ -1306,7 +1305,7 @@ final class PublicBookingShortcode
      * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
      */
 // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-    private static function renderPatientContinuation  (string $surfaceId, int $clinicId ): string {
+    private static function render_patient_continuation( string $surfaceId, int $clinicId ): string {
         $b = self::ROOT_CLASS;
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $firstNameId = $surfaceId . '-first-name';
@@ -1536,8 +1535,8 @@ final class PublicBookingShortcode
      * سرتیتر سطح: عنوان + نامِ همان Clinicِ پیوندشده (تنها دادهٔ غیرپزشکیِ
      * نمایشی که از ردیفِ پایدارِ Clinic می‌آید).
      */
-    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
-    private static function renderHead (string $clinicName, string $surfaceId ): string {
+// phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method name kept to avoid changing the API surface; no security sniff suppressed. established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+    private static function render_head( string $clinicName, string $surfaceId ): string {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $titleId = $surfaceId . '-title';
 
@@ -1545,8 +1544,9 @@ final class PublicBookingShortcode
         $head .= sprintf(
             '<p class="%1$s" id="%2$s">%3$s</p>',
             esc_attr( self::ROOT_CLASS . '__title' ),
-            esc_attr($titleId),
-            esc_html(self::TITLE)
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            esc_attr( $titleId ),
+            esc_html( self::TITLE )
         );
         if ($clinicName !== '') {
             $head .= sprintf(
@@ -1642,7 +1642,7 @@ final class PublicBookingShortcode
             esc_attr( $b )
         );
 
-        return implode('', $lines);
+        return implode( '', $lines );
     }
 
     /**

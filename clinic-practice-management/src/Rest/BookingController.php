@@ -232,12 +232,12 @@ final class BookingController extends RestBase
         ));
     }
 
-    private function quote(WP_REST_Request $request): WP_REST_Response|WP_Error {
+    private function quote( WP_REST_Request $request ): WP_REST_Response|WP_Error {
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
         $slotId      = $request->get_param( 'slot_id' );
         $location_id = $request->get_param( 'location_id' );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $clinicId    = $request->get_param( 'clinic_id' );
+        $clinicId = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->quote(
             (int) $request->get_param( 'clinician_id' ),
             (string) $request->get_param( 'slot_date' ),
@@ -262,7 +262,7 @@ final class BookingController extends RestBase
         $patientId = $request->get_param('patient_id');
         $location_id = $request->get_param( 'location_id' );
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
-        $clinicId    = $request->get_param( 'clinic_id' );
+        $clinicId = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
             (int) $request->get_param( 'clinician_id' ),
@@ -415,7 +415,7 @@ final class BookingController extends RestBase
         }
 
         $slotId = $request->get_param('slot_id');
-        return $this->wrap(fn () => $this->booking->createByStaff(
+        return $this->wrap(fn () => $this->booking->create_by_staff(
             (int) $user->ID,
             (int) $request->get_param('patient_id'),
             (int) $request->get_param('clinician_id'),
@@ -457,7 +457,7 @@ final class BookingController extends RestBase
 
         return $this->wrap(fn () => $isStaff
             ? $this->booking->cancelByStaff((int) $user->ID, $appointmentId, $reason)
-            : $this->booking->cancelByPatient((int) $user->ID, $appointmentId, $reason));
+            : $this->booking->cancel_by_patient((int) $user->ID, $appointmentId, $reason));
     }
 
     // ---------- Permission / error helpers ----------
