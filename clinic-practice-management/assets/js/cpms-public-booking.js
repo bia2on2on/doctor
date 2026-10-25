@@ -343,10 +343,12 @@
 		var busy = false;
 		var selectedClinicianId = 0;
 		var selectedLocationId = 0;
+		// Per-surface (not module-global) selection storage: the key embeds the
+		// server-minted surface id, so two widgets on one page never share state.
 		var selectKey = selectionKeyFor(config.surface_id, config.clinic_id);
-		function readSel() { return readStoredSelectionFor(selectKey); }
-		function storeSel(selection) { storeSelectionFor(selection, selectKey); }
-		function clearSel() { clearStoredSelectionFor(selectKey); }
+		function readStoredSelection() { return readStoredSelectionFor(selectKey); }
+		function storeSelection(selection) { storeSelectionFor(selection, selectKey); }
+		function clearStoredSelection() { clearStoredSelectionFor(selectKey); }
 
 		var availableDays = [];
 		var weekOffset = 0;
@@ -710,7 +712,7 @@
 
 			if (invalidateSelection !== false) {
 				lastSelection = null;
-				clearSel();
+				clearStoredSelection();
 				holdToken = '';
 				stopCountdown();
 				if (continueBox) { continueBox.hidden = true; }
@@ -937,7 +939,7 @@
 			if (locationHint) { locationHint.hidden = true; }
 			if (!restoreSelection) {
 				lastSelection = null;
-				clearSel();
+				clearStoredSelection();
 			}
 			panelState(STATE_LOADING);
 			setBusy(true);
@@ -991,18 +993,18 @@
 						}
 					}
 					if (matches.length !== 1) {
-						clearSel();
+						clearStoredSelection();
 						panelState(STATE_EMPTY);
 						return;
 					}
 					var restoredLocationId = toInt(matches[0].location_id);
 					if (toInt(restoreSelection.location_id) > 0 && toInt(restoreSelection.location_id) !== restoredLocationId) {
-						clearSel();
+						clearStoredSelection();
 						panelState(STATE_ERROR);
 						return;
 					}
 					if (!setLocationChoice(restoredLocationId, false)) {
-						clearSel();
+						clearStoredSelection();
 						panelState(STATE_ERROR);
 						return;
 					}
@@ -1017,7 +1019,7 @@
 							return;
 						}
 					}
-					clearSel();
+					clearStoredSelection();
 					panelState(STATE_EMPTY);
 					return;
 				}
@@ -1060,7 +1062,7 @@
 				showDetail('detail-capacity', { capacity: toInt(payload.capacity_left) });
 				// Phase 8 Slice 2 — انتخابِ غیر-PHI برای عبور از مرز login.
 				if (lastSelection) {
-					storeSel(lastSelection);
+					storeSelection(lastSelection);
 					if (authMode === 'patient') {
 						// بیمارِ واردشده: ادامه با B1 موجود — Hold فقط اینجاست.
 						beginHold(lastSelection);
@@ -1202,7 +1204,7 @@
 			// سرور tuple را فقط وقتی کامل می‌پذیرد (پزشک+اسلات+تاریخ+ساعت).
 			// در نصب با بیش از یک Clinic بدون همین انتخاب، A2 با
 			// CLINIC_SCOPE_REQUIRED مسدود می‌شود (class A — یافتهٔ مرورگر واقعی).
-			var a2Selection = validSelection(lastSelection) || readSel();
+			var a2Selection = validSelection(lastSelection) || readStoredSelection();
 			if (a2Selection && toInt(a2Selection.slot_id) > 0) {
 				payload.clinician_id = toInt(a2Selection.clinician_id);
 				payload.slot_id = toInt(a2Selection.slot_id);
@@ -1274,7 +1276,7 @@
 					// session کوکی هم‌مبدأ است؛ رندرِ تازه نقش/nonce/B1/B2 را
 					// منتشر می‌کند و انتخابِ حفظ‌شده باز-می‌نشیند.
 					if (lastSelection) {
-						storeSel(lastSelection);
+						storeSelection(lastSelection);
 					}
 					window.location.reload();
 					return;
@@ -1452,7 +1454,7 @@
 			if (code === 'CLINIC_SLOT_TAKEN') {
 				var payload = result.body && result.body.data ? result.body.data : null;
 				renderNearby(payload && Array.isArray(payload.nearby_slots) ? payload.nearby_slots : null);
-				clearSel();
+				clearStoredSelection();
 			}
 			setContinueMessage(serverMessage(result));
 		}
@@ -1529,7 +1531,7 @@
 					if (receipt) {
 						receipt.hidden = false;
 					}
-					clearSel();
+					clearStoredSelection();
 					clearStoredPatientId();
 					return;
 				}
@@ -1617,23 +1619,23 @@
 				if (result.ok && p && p.available === true && toInt(p.location_id) === locationId) {
 					panelState(STATE_BOOKABLE);
 					showDetail('detail-capacity', { capacity: toInt(p.capacity_left) });
-					storeSel(lastSelection);
+					storeSelection(lastSelection);
 					if (autoHold) { beginHold(lastSelection); }
 					return;
 				}
 				applyVerdict(result);
-				clearSel();
+				clearStoredSelection();
 			}, function () {
 				setBusy(false);
 				unfreeze();
-				clearSel();
+				clearStoredSelection();
 			});
 		}
 
 		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
 
 		if (authMode === 'patient') {
-			var restored = readSel();
+			var restored = readStoredSelection();
 			if (restored && toInt(restored.clinician_id) > 0) {
 				selectedClinicianId = toInt(restored.clinician_id);
 				for (var restoreIndex = 0; restoreIndex < clinicianButtons.length; restoreIndex++) {
@@ -1794,7 +1796,7 @@
 				lastSelection = null;
 				weekOffset = 0;
 				availableDays = [];
-				clearSel();
+				clearStoredSelection();
 				setText(daysHost, '');
 				setPressed(clinicianButtons, null);
 				panelState(STATE_IDLE);
