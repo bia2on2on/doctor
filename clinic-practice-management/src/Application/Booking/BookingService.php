@@ -112,9 +112,11 @@ final class BookingService
      *
      * @return array{days: list<array<string, mixed>>}
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
     public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $clinicId = null): array
     {
         // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local of this method.
         $clinicId = $this->resolve_booking_clinic($clinicianId, $clinicId);
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended
@@ -401,6 +403,7 @@ final class BookingService
      * @return array{available: bool, capacity_left: int, slot_id?: int, location_id?: int}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
     public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null, ?int $clinicId = null): array
     {
         // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
@@ -462,6 +465,7 @@ final class BookingService
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
     public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null, ?int $clinicId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);

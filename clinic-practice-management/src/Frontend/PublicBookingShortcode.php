@@ -1175,6 +1175,7 @@ final class PublicBookingShortcode
      * (کد رهگیری + تاریخ جلالی). انتخابِ قبلیِ غیر-PHI توسط JS باز-نشانی و
      * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names of this method.
     private static function renderPatientContinuation(string $surfaceId, int|array $clinicId): string
     {
         // Phase 8 Slice 4 — discovery mode passes every listed Clinic so the
@@ -1548,6 +1549,7 @@ final class PublicBookingShortcode
      * markup ظاهر نمی‌شود — گاردهای «نبودِ affordance» (pilot/Slice 1) و
      * منتشرشدهٔ decoded (Slice 2) همزمان معنادار می‌مانند.
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names of this method.
     private static function renderConfig(int $clinicId, string $surfaceId, ?array $discovery = null): string
     {
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
@@ -1612,8 +1614,10 @@ final class PublicBookingShortcode
      * @param array{clinics?: list<array<string,mixed>>}|null $discovery
      * @return list<array{date:string,jalali:string,weekday:string}>
      */
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter of this method.
     private static function calendar_scaffold(int $clinicId, ?array $discovery): array
     {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- same established local.
         $timezones = [];
         $clinic_ids = [];
         if ($discovery !== null) {
