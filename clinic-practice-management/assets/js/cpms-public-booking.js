@@ -1222,9 +1222,12 @@
 				payload.slot_id = toInt(a2Selection.slot_id);
 				payload.slot_date = a2Selection.slot_date;
 				payload.slot_time = a2Selection.slot_time;
-				// Phase 8 Slice 4 — the challenge must be bound to the Clinic the
-				// visitor actually selected; the server only accepts it when the
-				// persisted slot and an active participation agree.
+				// Phase 8 Slice 4 — the challenge is bound to the Clinic of the
+				// PERSISTED slot, and the server never treats this field as a
+				// selector: it re-derives the Clinic and fails closed with the
+				// non-enumerating CLINIC_NOT_FOUND when the clinician has no ACTIVE
+				// participation in that slot's Clinic. Keeping it in the payload
+				// only preserves the established request shape.
 				if (toInt(a2Selection.clinic_id) > 0) {
 					payload.clinic_id = toInt(a2Selection.clinic_id);
 				} else {
