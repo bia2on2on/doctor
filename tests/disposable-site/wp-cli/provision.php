@@ -26,7 +26,7 @@ require __DIR__ . '/common.php';
 $cpms_ds_stage = 'bootstrap';
 
 try {
-    if (!hash_equals(CPMS_DS_CONFIRM, cpms_ds_env('CPMS_DISPOSABLE_CONFIRM'))) {
+    if (!hash_equals(CPMS_DS_CONFIRM, cpms_ds_env('CPMS_DISPOSABLE_CONFIRM', false))) {
         cpms_ds_fail('CONFIRMATION_REQUIRED', 'explicit empty disposable-site confirmation is required');
     }
     $state_path = cpms_ds_secret_path(cpms_ds_env('CPMS_DISPOSABLE_STATE'));

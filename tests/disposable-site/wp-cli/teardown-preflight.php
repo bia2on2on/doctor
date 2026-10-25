@@ -10,7 +10,7 @@ $cpms_ds_stage = 'teardown-preflight';
 
 try {
     cpms_ds_admin_id();
-    if (!hash_equals(CPMS_DS_DESTROY_CONFIRM, cpms_ds_env('CPMS_DISPOSABLE_CONFIRM'))) {
+    if (!hash_equals(CPMS_DS_DESTROY_CONFIRM, cpms_ds_env('CPMS_DISPOSABLE_CONFIRM', false))) {
         cpms_ds_fail('DESTROY_CONFIRMATION_REQUIRED', 'explicit whole-database destruction confirmation is required');
     }
     $state_path = cpms_ds_secret_path(cpms_ds_env('CPMS_DISPOSABLE_STATE'));
