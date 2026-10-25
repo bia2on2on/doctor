@@ -11,6 +11,7 @@ import re
 import shutil
 import tempfile
 import subprocess
+import sys
 import threading
 import unittest
 from unittest.mock import patch
@@ -1115,6 +1116,25 @@ class PermissionDiagnosisTests(unittest.TestCase):
         result = module.load(lane_slice.root / "A/result.json")
         self.assertTrue(result["measurement_complete"])
         self.assertEqual(result["status"], "FAIL")
+        # Prove the run.py command entry point propagates this completed material
+        # failure through the same integer consumed by `sys.exit(main())`.
+        def material_failure_exit():
+            store = lane_slice.store("A")
+            store.check("redirect_loop", False, module.probe.PRODUCT, "observed loop", material=True)
+            store.save()
+            with patch.object(lane_slice, "log_bytes", return_value={"debug": b"", "apache": b""}):
+                return lane_slice.end_a(True)
+
+        with patch.object(module.argparse.ArgumentParser, "parse_args",
+                          return_value=argparse.Namespace(command="stage-a")), \
+                patch.object(module, "Slice", return_value=lane_slice), \
+                patch.dict(os.environ, {"WP_DIR": str(self.root / "wp"),
+                                        "WP_URL": "http://example.test", "DB_NAME": "fixture"}), \
+                patch.object(lane_slice, "stage_a", side_effect=material_failure_exit), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                sys.exit(module.main())
+        self.assertEqual(raised.exception.code, 1)
         summary = module.load(lane_slice.root / "summary.json")
         self.assertEqual(summary["stage_b"]["status"], "NOT RUN")
 
