@@ -1,0 +1,136 @@
+<?php
+/**
+ * Independent CSPRNG credentials for the six synthetic personas.
+ *
+ * Passwords exist only in the response of the request that generated them.
+ * They are never written to the manifest, an option, a transient, a log, a file,
+ * an audit row, or the HTML that follows.
+ *
+ * @package CpmsDisposableDemo
+ */
+
+namespace CpmsDemo;
+
+defined( 'ABSPATH' ) || exit;
+
+/**
+ * Persona catalogue + credential lifecycle.
+ */
+class Credentials {
+
+	public const PERSONA_ORDER = array(
+		'organization_manager',
+		'clinic_manager',
+		'doctor',
+		'receptionist',
+		'accountant',
+		'patient',
+	);
+
+	/**
+	 * Persona definitions. `wp_role` is the WordPress role; CPMS authority comes
+	 * from memberships created through the production membership service.
+	 *
+	 * @return array<string,array{label:string,wp_role:string,scope:string}>
+	 */
+	public static function personas(): array {
+		return array(
+			'organization_manager' => array(
+				'label'   => 'مدیر سازمان',
+				'wp_role' => 'subscriber',
+				'scope'   => 'عضویت Organization برای سازمان ساختگی (بدون اختیار سایت)',
+			),
+			'clinic_manager' => array(
+				'label'   => 'مدیر درمانگاه',
+				'wp_role' => 'subscriber',
+				'scope'   => 'عضویت cpms_manager در درمانگاه ساختگی',
+			),
+			'doctor' => array(
+				'label'   => 'پزشک',
+				'wp_role' => 'subscriber',
+				'scope'   => 'Clinician + عضویت پزشک و دسترسی هر دو شعبهٔ ساختگی',
+			),
+			'receptionist' => array(
+				'label'   => 'پذیرش',
+				'wp_role' => 'subscriber',
+				'scope'   => 'عضویت cpms_secretary در درمانگاه/شعبهٔ ساختگی',
+			),
+			'accountant' => array(
+				'label'   => 'حسابدار',
+				'wp_role' => 'subscriber',
+				'scope'   => 'عضویت cpms_accountant در درمانگاه ساختگی',
+			),
+			'patient' => array(
+				'label'   => 'بیمار',
+				'wp_role' => 'cpms_patient',
+				'scope'   => 'نقش cpms_patient + پیوند بیمار پس از OTP به بیمار ساختگی',
+			),
+		);
+	}
+
+	/**
+	 * @var Env
+	 */
+	private Env $env;
+
+	/**
+	 * @param Env $env Environment.
+	 */
+	public function __construct( Env $env ) {
+		$this->env = $env;
+	}
+
+	/**
+	 * A single CSPRNG password: 192 bits of entropy, base64url alphabet.
+	 *
+	 * @return string
+	 */
+	public static function generate_password(): string {
+		return rtrim( strtr( base64_encode( random_bytes( 24 ) ), '+/', '-_' ), '=' );
+	}
+
+	/**
+	 * @return array<string,string> persona => password
+	 */
+	public function generate_all(): array {
+		$out = array();
+		foreach ( self::PERSONA_ORDER as $persona ) {
+			$out[ $persona ] = self::generate_password();
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Rotate all six passwords: WP user password is replaced and every existing
+	 * session of that persona is invalidated. Nothing is returned to storage.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return array<string,string> persona => new password
+	 * @throws Exception When a manifest account is missing or out of scope.
+	 */
+	public function rotate( array $manifest ): array {
+		$fixture = (string) $manifest['fixture_id'];
+		$users   = (array) ( $manifest['ids']['user_ids'] ?? array() );
+		$out     = array();
+		foreach ( self::PERSONA_ORDER as $persona ) {
+			$user_id = (int) ( $users[ $persona ] ?? 0 );
+			$account = $user_id > 0 ? $this->env->user( $user_id ) : null;
+			if ( null === $account ) {
+				throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی «' . $persona . '» یافت نشد؛ چرخش رمز متوقف شد.' );
+			}
+			if ( ! str_starts_with( $account['login'], 'cpdd-' . $persona . '-' . $fixture ) ) {
+				throw new Exception( 'ROTATE_SCOPE', 'نام کاربری «' . $persona . '» با شناسهٔ دمو هم‌خوان نیست؛ چرخش رمز متوقف شد.' );
+			}
+			if ( in_array( 'administrator', $account['roles'], true ) ) {
+				throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی نباید Administrator باشد؛ چرخش رمز متوقف شد.' );
+			}
+			$password                = self::generate_password();
+			$out[ $persona ]         = $password;
+			$this->env->set_user_password( $user_id, $password );
+			$this->env->destroy_sessions( $user_id );
+		}
+
+		return $out;
+	}
+}
