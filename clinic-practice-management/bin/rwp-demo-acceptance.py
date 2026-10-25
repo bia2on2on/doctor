@@ -172,10 +172,18 @@ def public_booking(browser, admin_page, links, credentials):
     slot = root.locator(".cpms-public-booking__slot:not([disabled])").first
     slot.wait_for(state="visible", timeout=30000)
     slot.click()
+    # Slot selection starts an asynchronous A4 quote. The delegated click
+    # handler intentionally ignores continuation clicks while that quote is
+    # busy, so wait for its actual terminal bookable/not-busy contract.
+    quoted = root.locator('[data-role="panel"][data-state="bookable"][aria-busy="false"]')
+    quoted.wait_for(state="visible", timeout=30000)
+    check("public quote completed before OTP", quoted.count() == 1)
     continue_button = root.locator('[data-role="continue-auth"]')
     continue_button.wait_for(state="visible")
     continue_button.click()
-    root.locator('[data-role="otp-mobile"]').fill(MOBILE)
+    mobile_input = root.locator('[data-role="otp-mobile"]')
+    mobile_input.wait_for(state="visible")
+    mobile_input.fill(MOBILE)
     root.locator('[data-auth-action="otp-request"]').click()
     root.locator('[data-role="otp-code"]').wait_for(state="visible")
 
