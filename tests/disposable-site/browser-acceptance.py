@@ -227,7 +227,7 @@ def attach_finance_diagnostics(page):
     return data
 
 
-def capture_finance_diagnostics(page, data, probe=None):
+def _capture_finance_diagnostics(page, data, probe=None):
     try:
         dom = page.evaluate("""() => {
             const root = document.querySelector('[data-role="finance-root"]');
@@ -275,9 +275,19 @@ def capture_finance_diagnostics(page, data, probe=None):
     try:
         os.makedirs(f"{OUT}/screenshots", exist_ok=True)
         page.screenshot(path=f"{OUT}/screenshots/disposable-finance-diagnostics.png", full_page=True)
-        print("PASS finance diagnostic screenshot captured (pixels not inspected)", flush=True)
+        print("DIAG finance diagnostic screenshot captured (pixels not inspected)", flush=True)
     except Exception as exc:
         print("ERROR: finance diagnostic screenshot failed: " + type(exc).__name__, flush=True)
+
+
+def capture_finance_diagnostics(page, data, probe=None):
+    # Diagnostics must never replace the acceptance exception or prevent the
+    # original UI failure from being reported.
+    try:
+        _capture_finance_diagnostics(page, data, probe)
+    except Exception as exc:
+        fallback = {"capture_error": type(exc).__name__}
+        print("DISPOSABLE_FINANCE_DIAG=" + json.dumps(fallback), flush=True)
 
 
 def public_booking(browser, links, fixture):
@@ -509,6 +519,7 @@ def finance_journey(browser, credentials, staff_url, visit_id, clinic_id, locati
         json.dumps(probe, ensure_ascii=False),
     )
     issue = accountant.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
+    capture_finance_diagnostics(accountant, diagnostics, probe)
     try:
         issue.wait_for(state="visible", timeout=35000)
     except Exception:
