@@ -59,7 +59,7 @@ final class Settings
         // فقط زمانی که صراحتاً true شود، این Clinic در فهرست عمومی
         // `[cpms_public_booking clinic_id="all"]` ظاهر می‌شود؛ پیش‌فرضِ
         // false یعنی هیچ فهرست‌گذاری عمومی‌ای بدون رضختمصری وجود ندارد.
-        'public.listing_enabled' => false,
+        'public.listing_enabled'            => false,
         // دست‌خط
         'hw.local_retain' => 'off', // off|last|always
         'hw.autosave_sec' => 5,

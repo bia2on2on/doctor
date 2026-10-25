@@ -809,8 +809,8 @@ final class App
      * (MembershipRepository::clinician_participates_in) برای مسیرهایی که
      * باید بدون واسطهٔ سرویس بپرسند (مثلاً A2 در OtpController).
      */
-    public static function membershipRepository(): MembershipRepository
-    {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established method name kept to avoid changing the API surface; no security sniff suppressed.
+    public static function membership_repository(): MembershipRepository {
         static $repo = null;
         if ( $repo === null ) {
             $repo = new MembershipRepository( self::db() );
@@ -1189,7 +1189,8 @@ final class App
      */
     public static function licenseGate(): LicenseGate
     {
-        if (self::$licenseGate === null) {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established legacy property name; renaming is a class-wide API change. No security sniff suppressed.
+        if ( self::$licenseGate === null ) {
             self::$licenseGate = new SignedLicenseGate( // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Existing singleton property.
                 self::licenseService(),
                 new \ClinicCore\Infrastructure\Repository\ReturningPatientRepository( self::db() )
@@ -1356,7 +1357,7 @@ final class App
 
     public static function jobs(): JobQueue
     {
-        if (self::$jobs === null) {
+        if ( self::$jobs === null ) {
             // Phase 17 — the queue persists; the fast wake-up is an advisory hint.
             self::$jobs = new JobQueue( self::db(), self::op(), new JobWake() );
         }

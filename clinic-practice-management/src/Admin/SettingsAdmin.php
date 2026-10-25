@@ -121,21 +121,21 @@ final class SettingsAdmin
                 <tr><th>سقف بازه گزارش (روز)</th><td><?php echo esc_html((string) $settings->get('reports.max_range_days')); ?></td></tr>
             </table>
 
-            <?php
-            // نمایش عمومی (فهرست discovery) — رضختمصریِ per-Clinic؛ پیش‌فرض
-            // fail-closed (false) و فقط همین‌جا (با scope انتخابشده و nonce
-            // موجودِ cpms_save_settings) قابل تغییر است. بدون consent، هیچ
-            // Clinicی در `[cpms_public_booking clinic_id="all"]` فهرست نمی‌شود.
-            ?>
-            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-cpms-public-listing-form>
+				<?php
+				// نمایش عمومی (فهرست discovery) — رضختمصریِ per-Clinic؛ پیش‌فرض
+				// fail-closed (false) و فقط همین‌جا (با scope انتخابشده و nonce
+				// موجودِ cpms_save_settings) قابل تغییر است. بدون consent، هیچ
+				// Clinicی در `[cpms_public_booking clinic_id="all"]` فهرست نمی‌شود.
+				?>
+            <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" data-cpms-public-listing-form>
                 <input type="hidden" name="action" value="cpms_save_settings" />
-                <?php wp_nonce_field('cpms_save_settings'); ?>
+                <?php wp_nonce_field( 'cpms_save_settings' ); ?>
                 <input type="hidden" name="cpms_public_listing_form" value="1" />
                 <input type="hidden" name="clinic_id" value="<?php echo (int) $selected_clinic_id; ?>" />
                 <h3>نمایش در فهرست عمومی نوبت‌دهی</h3>
                 <p>
                     <label>
-                        <input type="checkbox" name="public_listing_enabled" value="1" <?php checked((bool) $settings->get('public.listing_enabled', false)); ?> />
+                        <input type="checkbox" name="public_listing_enabled" value="1" <?php checked( (bool) $settings->get( 'public.listing_enabled', false ) ); ?> />
                         این Clinic در فهرست عمومی <code>[cpms_public_booking clinic_id="all"]</code> نمایش داده شود
                     </label>
                 </p>
@@ -162,18 +162,18 @@ final class SettingsAdmin
         // استقراریافتهٔ CONFIG (همان AdminClinicSelector::establish صفحهٔ
         // render) و همان nonce — در غیر این صورت هیچ نوشتنی رخ نمی‌دهد.
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified on the line above
-        $posted_clinic_id = isset($_POST['clinic_id']) ? absint(wp_unslash((string) $_POST['clinic_id'])) : 0;
+        $posted_clinic_id = isset( $_POST['clinic_id'] ) ? absint( wp_unslash( (string) $_POST['clinic_id'] ) ) : 0;
         // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified on the line above
-        if (isset($_POST['cpms_public_listing_form']) && $posted_clinic_id > 0) {
+        if ( isset( $_POST['cpms_public_listing_form'] ) && $posted_clinic_id > 0 ) {
             $actor_user_id = (int) get_current_user_id();
             try {
-                $clinic_scope = AdminClinicSelector::establish($actor_user_id, $posted_clinic_id, RolesAndCapabilities::CONFIG);
-            } catch (\Throwable) {
+                $clinic_scope = AdminClinicSelector::establish( $actor_user_id, $posted_clinic_id, RolesAndCapabilities::CONFIG );
+            } catch ( \Throwable ) {
                 $clinic_scope = null;
             }
-            if (null !== $clinic_scope) {
-                (new Settings(App::db(), (int) $clinic_scope->clinicId, App::audit())) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
-                    ->set('public.listing_enabled', isset($_POST['public_listing_enabled']), $actor_user_id);
+            if ( null !== $clinic_scope ) {
+                ( new Settings( App::db(), (int) $clinic_scope->clinicId, App::audit() ) ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+                    ->set( 'public.listing_enabled', isset( $_POST['public_listing_enabled'] ), $actor_user_id );
             }
         }
 

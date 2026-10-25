@@ -47,7 +47,7 @@ final class BookingController extends RestBase
                     // Shared-Clinic discovery: OPTIONAL selected-clinic selector.
                     // Absent → historical home-clinic derivation (BC). Present →
                     // participation-verified clinic only (fail-closed 404).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
+                    'clinic_id'    => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -64,7 +64,7 @@ final class BookingController extends RestBase
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
                     // Shared-Clinic discovery — optional selected clinic (BC when absent).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
+                    'clinic_id'    => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -83,7 +83,7 @@ final class BookingController extends RestBase
                     'patient_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
                     // Shared-Clinic discovery — optional selected clinic (BC when absent).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
+                    'clinic_id'    => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -220,28 +220,32 @@ final class BookingController extends RestBase
     {
         $from = $request->get_param('from');
         $to = $request->get_param('to');
-        $clinicId = $request->get_param('clinic_id');
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $clinicId = $request->get_param( 'clinic_id' );
 
         return $this->wrap(fn () => $this->booking->availability(
             (int) $request->get_param('clinician_id'),
-            is_string($from) && $from !== '' ? $from : null,
-            is_string($to) && $to !== '' ? $to : null,
+            is_string( $from ) && $from !== '' ? $from : null,
+            is_string( $to ) && $to !== '' ? $to : null,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
 
-    private function quote(WP_REST_Request $request): WP_REST_Response|WP_Error
-    {
-        $slotId = $request->get_param('slot_id');
+    private function quote(WP_REST_Request $request): WP_REST_Response|WP_Error {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $slotId      = $request->get_param( 'slot_id' );
         $location_id = $request->get_param( 'location_id' );
-        $clinicId = $request->get_param('clinic_id');
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $clinicId    = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->quote(
-            (int) $request->get_param('clinician_id'),
-            (string) $request->get_param('slot_date'),
-            (string) $request->get_param('slot_time'),
+            (int) $request->get_param( 'clinician_id' ),
+            (string) $request->get_param( 'slot_date' ),
+            (string) $request->get_param( 'slot_time' ),
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
             $location_id !== null && $location_id !== '' ? (int) $location_id : null,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
@@ -257,16 +261,18 @@ final class BookingController extends RestBase
         $slotId = $request->get_param('slot_id');
         $patientId = $request->get_param('patient_id');
         $location_id = $request->get_param( 'location_id' );
-        $clinicId = $request->get_param('clinic_id');
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $clinicId    = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
-            (int) $request->get_param('clinician_id'),
-            (string) $request->get_param('slot_date'),
-            (string) $request->get_param('slot_time'),
+            (int) $request->get_param( 'clinician_id' ),
+            (string) $request->get_param( 'slot_date' ),
+            (string) $request->get_param( 'slot_time' ),
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $patientId !== null && $patientId !== '' ? (int) $patientId : null,
             $location_id !== null && $location_id !== '' ? (int) $location_id : null,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
@@ -305,8 +311,9 @@ final class BookingController extends RestBase
 
         return $this->wrap(fn () => $this->booking->listMine(
             (int) $user->ID,
-            (string) $request->get_param('from'),
-            (string) $request->get_param('to')
+            (string) $request->get_param( 'from' ),
+            (string) $request->get_param( 'to' )
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine -- established multi-line call shape; no security sniff suppressed.
         ));
     }
 
@@ -577,10 +584,10 @@ final class BookingController extends RestBase
      * @param callable(): T $fn
      * @return WP_REST_Response|WP_Error
      */
-    private function wrap(callable $fn): WP_REST_Response|WP_Error
-    {
+    // phpcs:ignore Universal.NamingConventions.NoReservedKeywordParameterNames -- established private helper parameter name.
+    private function wrap( callable $fn ): WP_REST_Response|WP_Error {
         try {
-            return $this->success($fn(), 200);
+            return $this->success( $fn(), 200 );
         } catch (BookingException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
         } catch ( \Throwable $e ) {

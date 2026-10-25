@@ -46,7 +46,7 @@ final class OtpController extends RestBase
                     // Shared-Clinic discovery — OPTIONAL selected-clinic selector.
                     // Absent → historical home-clinic derivation (BC). Present →
                     // participation-verified clinic only (same fail-closed 404).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
+                    'clinic_id'    => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -202,7 +202,8 @@ final class OtpController extends RestBase
         // slot (non-enumerating). The slot lookup then runs against the
         // verified clinic, so slot.clinic_id == selected clinic is enforced
         // BEFORE any challenge or SMS.
-        $requestedClinicId = $request->get_param('clinic_id');
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        $requestedClinicId = $request->get_param( 'clinic_id' );
 
         // ۱+۲) clinicianِ فعالِ persisted — Clinic فقط از ردیفِ persisted.
         $clinician = App::db()->fetchRow(
@@ -214,19 +215,25 @@ final class OtpController extends RestBase
         }
         $clinicId = (int) $clinician['clinic_id'];
 
-        if (self::hasValue($requestedClinicId)) {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+        if ( self::hasValue( $requestedClinicId ) ) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $requestedClinicId = (int) $requestedClinicId;
-            if ($requestedClinicId <= 0) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            if ( $requestedClinicId <= 0 ) {
                 throw BookingException::of(
                     'CLINIC_VALIDATION_FAILED',
                     'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
                     422
                 );
             }
-            if ($requestedClinicId !== $clinicId
-                && !App::membershipRepository()->clinician_participates_in($clinicianId, $requestedClinicId)) {
-                throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            if ( $requestedClinicId !== $clinicId
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+                && !App::membershipRepository()->clinician_participates_in( $clinicianId, $requestedClinicId ) ) {
+                throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
             }
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
             $clinicId = $requestedClinicId;
         }
 
