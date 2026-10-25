@@ -252,7 +252,7 @@ def attach_finance_diagnostics(page):
         "type": message.type,
         "text": finance_safe_text(message.text),
     }) if message.type in ("error", "warning") else None)
-    page.on("pageerror", lambda error: append("page_errors", finance_safe_text(error)))
+    page.on("pageerror", lambda error: append("page_errors", finance_page_error(error)))
     page.on("requestfailed", lambda request: append("failed_requests", {
         "method": request.method,
         "route": finance_route(request.url),

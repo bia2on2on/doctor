@@ -380,7 +380,14 @@ jobs:
             echo '```'
             echo '- verification/teardown:'
             echo '```'
-            tail -3 /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-browser-complete.log /tmp/acc/logs/teardown-wrong-confirmation.log /tmp/acc/logs/teardown-non-demo-refusal.log /tmp/acc/logs/teardown.log 2>/dev/null || echo '(not reached)'
+            for LOG in verify-active-before.log verify-browser-complete.log teardown-wrong-confirmation.log teardown-non-demo-refusal.log teardown.log; do
+              if [ -f "/tmp/acc/logs/$LOG" ]; then
+                echo "--- $LOG"
+                tail -3 "/tmp/acc/logs/$LOG"
+              else
+                echo "--- $LOG (not reached)"
+              fi
+            done
             echo '```'
             echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
             echo 'The post-browser scan covers generated-source and public evidence; teardown emits only fixed non-secret status lines and then removes protected inputs.'
