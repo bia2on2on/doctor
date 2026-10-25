@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 env:
   WP_VERSION: '7.1.3'
@@ -241,6 +242,32 @@ jobs:
             echo 'FAIL: possible credential material in evidence' >&2; exit 1
           fi
           echo 'PASS: integration evidence contains no credential material'
+
+      - name: Publish sanitized acceptance detail to the PR (no credentials)
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpdd-ci
+          {
+            echo '### CPMS disposable demo — real-WordPress acceptance detail'
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo
+            echo '```'
+            echo '--- surface ---'
+            sed -E 's/([A-Za-z0-9_-]{24,})/<redacted>/g' /tmp/cpdd-ci/surface.log 2>/dev/null | tail -20 || true
+            echo '--- integration ---'
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -80 || true
+            echo '--- post-teardown ---'
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
+            echo '```'
+          } > /tmp/cpdd-ci/pr-comment.md
+          if [ -s /tmp/cpdd-ci/pr-comment.md ]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/cpdd-ci/pr-comment.md
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

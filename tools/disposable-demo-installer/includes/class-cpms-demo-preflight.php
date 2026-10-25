@@ -366,27 +366,72 @@ class Preflight {
 	}
 
 	/**
-	 * WordPress must still hold only its default starter content.
+	 * WordPress must still hold only its default starter content, plus the
+	 * portal pages the production plugin itself registers (identified by the
+	 * CPMS page option AND the matching portal slug). Theme/navigation
+	 * infrastructure post types cannot hold user content and are ignored;
+	 * attachments, comments and any other post/page block the run.
 	 *
 	 * @return array{id:string,label:string,status:string,detail:string}
 	 */
 	private function check_content(): array {
-		$id           = 'content';
-		$label        = 'محتوای پیش‌فرض وردپرس (بدون برگه/نوشته دیگر)';
-		$allowed      = array(
+		$id    = 'content';
+		$label = 'محتوای پیش‌فرض وردپرس (بدون برگه/نوشته دیگر)';
+
+		$default_slugs = array(
 			'post:hello-world',
 			'page:sample-page',
 			'page:privacy-policy',
 		);
-		$unexpected   = array();
+		// Infrastructure post types created by WordPress itself and by block
+		// themes; they are never end-user content in this context.
+		$infrastructure = array(
+			'wp_navigation',
+			'wp_global_styles',
+			'wp_template',
+			'wp_template_part',
+			'wp_block',
+			'wp_pattern',
+			'wp_font_family',
+			'wp_font_face',
+			'custom_css',
+			'customize_changeset',
+			'oembed_cache',
+			'nav_menu_item',
+			'revision',
+		);
+		// Pages created by the production plugin on demand, each recorded in a
+		// CPMS option; anything else under those slugs is not accepted.
+		$portal_options = array(
+			'cpms_patient_portal_page_id'    => 'cpms-patient-portal',
+			'cpms_staff_portal_page_id'      => 'cpms-staff-portal',
+			'cpms_management_portal_page_id' => 'cpms-management-portal',
+			'cpms_doctor_portal_page_id'     => 'cpms-doctor-portal',
+		);
+		$portal_ids = array();
+		foreach ( $portal_options as $option => $slug ) {
+			$value = (int) $this->env->option_get( $option, 0 );
+			if ( $value > 0 ) {
+				$portal_ids[ $value ] = $slug;
+			}
+		}
+
+		$unexpected = array();
 		foreach ( $this->env->posts_summary() as $post ) {
+			if ( in_array( $post['type'], $infrastructure, true ) ) {
+				continue;
+			}
 			if ( 'attachment' === $post['type'] || ! in_array( $post['type'], array( 'post', 'page' ), true ) ) {
 				$unexpected[] = $post['type'] . '#' . $post['id'];
 				continue;
 			}
-			if ( ! in_array( $post['type'] . ':' . $post['slug'], $allowed, true ) ) {
-				$unexpected[] = $post['type'] . ':' . $post['slug'];
+			if ( in_array( $post['type'] . ':' . $post['slug'], $default_slugs, true ) ) {
+				continue;
 			}
+			if ( isset( $portal_ids[ $post['id'] ] ) && $portal_ids[ $post['id'] ] === $post['slug'] && 'publish' === $post['status'] ) {
+				continue;
+			}
+			$unexpected[] = $post['type'] . ':' . $post['slug'];
 		}
 		if ( $this->env->comment_count() > 0 ) {
 			return $this->result( $id, $label, 'fail', 'دیدگاه (Comment) در سایت وجود دارد.' );
@@ -395,7 +440,7 @@ class Preflight {
 			return $this->result( $id, $label, 'fail', 'محتوای غیرپیش‌فرض: ' . implode( ', ', $unexpected ) );
 		}
 
-		return $this->result( $id, $label, 'pass', 'تنها محتوای پیش‌فرض وردپرس موجود است.' );
+		return $this->result( $id, $label, 'pass', 'تنها محتوای پیش‌فرض وردپرس (و برگه‌های Portal خودِ CPMS) موجود است.' );
 	}
 
 	/**

@@ -105,6 +105,54 @@ $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->r
 Cpdd_Test::ok( in_array( 'content', $state['blocking'], true ), 'preflight: non-default WordPress content blocks provisioning' );
 
 $ctx = cpdd_fixture();
+$ctx['env']->insert_page(
+	array(
+		'title'   => 'Patient portal',
+		'slug'    => 'cpms-patient-portal',
+		'content' => '',
+		'author'  => 1,
+	)
+);
+Cpdd_Test::ok(
+	in_array( 'content', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'preflight: an unregistered portal-slug page is still unexpected content'
+);
+$portal_id = max( array_keys( $ctx['env']->posts ) );
+$ctx['env']->options['cpms_patient_portal_page_id'] = $portal_id;
+Cpdd_Test::ok(
+	true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'preflight: the CPMS-registered portal page is accepted as bootstrap content'
+);
+
+$ctx = cpdd_fixture();
+$ctx['env']->posts[ 90 ] = array(
+	'id'      => 90,
+	'type'    => 'wp_navigation',
+	'status'  => 'publish',
+	'slug'    => 'navigation',
+	'content' => '',
+	'author'  => 0,
+);
+Cpdd_Test::ok(
+	true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'preflight: block-theme infrastructure post types are ignored'
+);
+
+$ctx = cpdd_fixture();
+$ctx['env']->posts[ 91 ] = array(
+	'id'      => 91,
+	'type'    => 'attachment',
+	'status'  => 'inherit',
+	'slug'    => 'x-ray',
+	'content' => '',
+	'author'  => 1,
+);
+Cpdd_Test::ok(
+	in_array( 'content', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'preflight: an attachment blocks provisioning'
+);
+
+$ctx = cpdd_fixture();
 $ctx['env']->plugin_list[] = 'woocommerce/woocommerce.php';
 $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
 Cpdd_Test::ok( in_array( 'plugins', $state['blocking'], true ), 'preflight: another active plugin blocks provisioning' );
