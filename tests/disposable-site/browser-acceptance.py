@@ -189,6 +189,97 @@ def rest_response(responses, path):
     return None
 
 
+def finance_route(url):
+    parsed = urlparse(url)
+    route = parse_qs(parsed.query).get("rest_route", [""])[0]
+    return route or parsed.path
+
+
+def finance_safe_text(value):
+    text = str(value or "")
+    text = re.sub(r"\b[a-f0-9]{48}\b", "[REDACTED]", text, flags=re.I)
+    text = re.sub(r"(?i)(password|passwd|otp|token|secret|authorization|cookie|nonce)(\s*[:=]\s*)[^\s,;]+", r"\1\2[REDACTED]", text)
+    text = re.sub(r"https?://[^\s]+", "[URL]", text)
+    return text[:240]
+
+
+def attach_finance_diagnostics(page):
+    data = {"console_errors": [], "page_errors": [], "failed_requests": [], "finance_responses": []}
+
+    def append(key, value):
+        if len(data[key]) < 20:
+            data[key].append(value)
+
+    page.on("console", lambda message: append("console_errors", {
+        "type": message.type,
+        "text": finance_safe_text(message.text),
+    }) if message.type in ("error", "warning") else None)
+    page.on("pageerror", lambda error: append("page_errors", finance_safe_text(error)))
+    page.on("requestfailed", lambda request: append("failed_requests", {
+        "method": request.method,
+        "route": finance_route(request.url),
+        "error": finance_safe_text(request.failure),
+    }))
+    page.on("response", lambda response: append("finance_responses", {
+        "route": finance_route(response.url),
+        "status": response.status,
+    }) if "/staff/portal/finance/" in response.url else None)
+    return data
+
+
+def capture_finance_diagnostics(page, data, probe=None):
+    try:
+        dom = page.evaluate("""() => {
+            const root = document.querySelector('[data-role="finance-root"]');
+            const panel = document.querySelector('[data-role="finance-eligible"]');
+            const rows = document.querySelector('[data-role="finance-eligible-rows"]');
+            const status = document.querySelector('[data-role="finance-status"]');
+            const location = document.querySelector('[data-role="finance-location"]');
+            const form = document.querySelector('[data-role="finance-issue-form"]');
+            const buttons = Array.from(document.querySelectorAll('[data-role="finance-issue-open"]'));
+            return {
+                root_count: document.querySelectorAll('[data-role="finance-root"]').length,
+                config_present: Boolean(document.getElementById('cpms-finance-board-config')),
+                eligible_panel_hidden: panel ? panel.hidden : null,
+                eligible_panel_present: Boolean(panel),
+                eligible_row_count: rows ? rows.querySelectorAll('tr').length : null,
+                issue_button_count: buttons.length,
+                issue_button_visit_ids: buttons.map((button) => Number(button.getAttribute('data-visit-id') || 0)),
+                issue_form_hidden: form ? form.hidden : null,
+                status_kind: status ? String(status.dataset.kind || '') : null,
+                status_text_length: status ? String(status.textContent || '').length : null,
+                location_present: Boolean(location),
+                location_hidden: location ? location.hidden : null,
+                location_disabled: location ? location.disabled : null,
+                location_value: location ? String(location.value || '') : null,
+                location_option_ids: location ? Array.from(location.options).map((option) => Number(option.value || 0)) : [],
+                document_direction: document.documentElement.dir || null,
+                viewport_width: window.innerWidth,
+                root_present: Boolean(root)
+            };
+        }""")
+    except Exception as exc:
+        dom = {"capture_error": type(exc).__name__}
+    payload = {
+        "dom": dom,
+        "probe": probe or {},
+        "console_errors": data["console_errors"],
+        "page_errors": data["page_errors"],
+        "failed_requests": data["failed_requests"],
+        "finance_responses": data["finance_responses"],
+    }
+    os.makedirs(f"{OUT}/logs", exist_ok=True)
+    with open(f"{OUT}/logs/finance-diagnostics.json", "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    print("DISPOSABLE_FINANCE_DIAG=" + json.dumps(payload, ensure_ascii=False), flush=True)
+    try:
+        os.makedirs(f"{OUT}/screenshots", exist_ok=True)
+        page.screenshot(path=f"{OUT}/screenshots/disposable-finance-diagnostics.png", full_page=True)
+        print("PASS finance diagnostic screenshot captured (pixels not inspected)", flush=True)
+    except Exception as exc:
+        print("ERROR: finance diagnostic screenshot failed: " + type(exc).__name__, flush=True)
+
+
 def public_booking(browser, links, fixture):
     stage("public booking normal OTP hold confirm")
     context = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
@@ -367,6 +458,7 @@ def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visi
 def finance_journey(browser, credentials, staff_url, visit_id, clinic_id, location_id):
     stage("accountant invoice payment and reception checkout")
     accountant_context, accountant = open_account(browser, credentials, "accountant")
+    diagnostics = attach_finance_diagnostics(accountant)
     finance_url = with_query(staff_url, **{"cpms-module": "finance"})
     accountant.goto(finance_url, wait_until="domcontentloaded")
     accountant.locator('[data-role="finance-root"]').wait_for(state="visible")
@@ -397,8 +489,11 @@ def finance_journey(browser, credentials, staff_url, visit_id, clinic_id, locati
             clinic_id: Number(context.clinic_id || 0),
             location_id: Number(context.location_id || 0),
             can_issue_invoice: context.can_issue_invoice === true,
+            context_keys: Object.keys(context).sort(),
             eligible_status: eligibleResult.status,
             eligible_code: String(eligibleResult.body && eligibleResult.body.code || ''),
+            eligible_keys: Object.keys(eligible).sort(),
+            eligible_row_keys: Array.isArray(eligible.visits) && eligible.visits.length ? Object.keys(eligible.visits[0]).sort() : [],
             eligible_visit_ids: Array.isArray(eligible.visits) ? eligible.visits.map((row) => Number(row.visit_id || 0)).filter((id) => id > 0) : []
         };
     }""")
@@ -414,7 +509,11 @@ def finance_journey(browser, credentials, staff_url, visit_id, clinic_id, locati
         json.dumps(probe, ensure_ascii=False),
     )
     issue = accountant.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
-    issue.wait_for(state="visible", timeout=35000)
+    try:
+        issue.wait_for(state="visible", timeout=35000)
+    except Exception:
+        capture_finance_diagnostics(accountant, diagnostics, probe)
+        raise
     issue.click()
     accountant.fill('[data-role="finance-issue-description"]', "ویزیت آزمایشی مرورگر")
     accountant.fill('[data-role="finance-issue-quantity"]', "1")

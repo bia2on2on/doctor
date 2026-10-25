@@ -291,7 +291,7 @@ jobs:
             echo '```'
             echo '- non-secret stage/check diagnostics:'
             echo '```'
-            grep -E '^(STAGE|PASS |FAIL |ERROR:|DISPOSABLE_DIAG=|DISPOSABLE_RESULTS=|RESULT:|CPMS_DISPOSABLE_ERROR)' /tmp/acc/disposable-browser.log /tmp/acc/logs/*.log 2>/dev/null | tail -140 || echo '(not reached)'
+            grep -E '^(STAGE|PASS |FAIL |ERROR:|DISPOSABLE_DIAG=|DISPOSABLE_FINANCE_DIAG=|DISPOSABLE_RESULTS=|RESULT:|CPMS_DISPOSABLE_ERROR)' /tmp/acc/disposable-browser.log /tmp/acc/logs/*.log 2>/dev/null | tail -140 || echo '(not reached)'
             for LOG in plugin-install.log activation-empty-1.log activation-empty-2.log refusals-left-empty.log; do
               if [ -f "/tmp/acc/logs/$LOG" ]; then
                 echo "--- $LOG"
