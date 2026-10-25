@@ -83,10 +83,8 @@ failures = []
 
 def require(condition, message):
     if not condition:
+        # Keep assertion details internal; messages may contain seeded values.
         failures.append(message)
-        print("FAIL " + message)
-    else:
-        print("PASS " + message)
 
 
 def is_rest_url(url):
@@ -593,7 +591,7 @@ with sync_playwright() as playwright:
         require(dimensions["paid"] <= dimensions["width"] + 1, f"{label}: paid panel fits viewport width")
         require("/wp-admin/" not in urlparse(page.url).path, f"{label}: remains in independent front-end Staff Portal")
         page.screenshot(path=str(OUT / f"finance-board-{label}.png"), full_page=True)
-        print(f"INFO {label}: {width}x{height}, clinic={CLINIC_ID}, location={LOCATION_ID}")
+        print(f"INFO screenshot captured: {label} viewport={width}x{height}")
 
     # ------------------------------------------------------------------
     # Phase 12 Slice 2 — real first issuance journey (desktop viewport).
@@ -876,12 +874,11 @@ with sync_playwright() as playwright:
     require(not console_errors, "no browser console errors")
     require(not bad_responses, "no failed HTTP/API responses")
     require(not failed_requests, "no failed browser requests")
-    for error in page_errors + console_errors:
-        print("INFO browser error: " + error[:300])
-    for status, url in bad_responses:
-        print(f"INFO HTTP {status}: {url[:300]}")
-    for url in failed_requests:
-        print("INFO request failed: " + url[:300])
+    print(
+        "INFO browser diagnostics: "
+        f"page_errors={len(page_errors)} console_errors={len(console_errors)} "
+        f"http_errors={len(bad_responses)} failed_requests={len(failed_requests)}"
+    )
 
     context.close()
     browser.close()

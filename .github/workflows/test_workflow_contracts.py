@@ -206,6 +206,61 @@ class SensitiveEvidenceProjectionTests(unittest.TestCase):
         self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", text)
 
 
+class FixtureEnvironmentContractTests(unittest.TestCase):
+    def test_doctor_portal_internal_finance_handoff_is_restored_without_public_projection(self):
+        doctor_fixture = (
+            ROOT / "clinic-practice-management" / "tests" / "fixtures" / "pilot-doctor-portal-fixture.php"
+        ).read_text(encoding="utf-8")
+        finance_fixture = (
+            ROOT / "clinic-practice-management" / "tests" / "fixtures" / "pilot-finance-board-fixture.php"
+        ).read_text(encoding="utf-8")
+        finance_browser = (
+            ROOT / "clinic-practice-management" / "bin" / "pilot-finance-board.py"
+        ).read_text(encoding="utf-8")
+        pilot = workflow("pilot-gate.yml")
+
+        self.assertRegex(
+            doctor_fixture,
+            r"\$financeContext\s*=\s*implode\(\s*'\|'\s*,\s*\[\s*\$url\s*,\s*"
+            r"\(string\)\s*\$oneClinic\s*,\s*\(string\)\s*\$oneLoc\s*\]\s*\)\s*;",
+        )
+        self.assertIn("'DOCTOR_PORTAL_PUBLIC=' . $financeContext", doctor_fixture)
+        self.assertIn("getenv('DOCTOR_PORTAL_PUBLIC')", finance_fixture)
+        self.assertIn("$clinicId = (int) $portalFixture[1]", finance_fixture)
+        self.assertIn("$locationId = (int) $portalFixture[2]", finance_fixture)
+
+        doctor_setup = pilot.split("- name: Doctor Portal fixture", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn('cat /tmp/doctor-portal.env >> "$GITHUB_ENV"', doctor_setup)
+        self.assertIn("grep '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertNotIn("log_tail=", doctor_setup)
+        self.assertNotIn("tail -c", doctor_setup)
+        self.assertNotIn("DOCTOR_PORTAL_PUBLIC", doctor_setup)
+
+        finance_setup = pilot.split("- name: Phase 12 Finance board fixture", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn('cat /tmp/finance-board.env >> "$GITHUB_ENV"', finance_setup)
+        self.assertIn("Finance board fixture environment loaded; values withheld.", finance_setup)
+        self.assertNotIn("grep '^FINANCE_BOARD_URL='", finance_setup)
+        self.assertIn("fixture values and raw diagnostics withheld", finance_setup)
+        self.assertNotIn("log_tail=", finance_setup)
+        self.assertNotIn("tail -c", finance_setup)
+
+        finance_browser_step = pilot.split("- name: Phase 12 Finance board — real browser", 1)[1].split("\n      - name:", 1)[0]
+        self.assertIn("dynamic diagnostics withheld", finance_browser_step)
+        self.assertNotIn("fail_lines=", finance_browser_step)
+
+        evidence = pilot.split("- name: Post Doctor Portal evidence to PR", 1)[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("DOCTOR_PORTAL_PUBLIC", evidence)
+        self.assertNotIn("doctor-portal.env", evidence)
+        self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", evidence)
+
+        self.assertNotIn("FINANCE_BOARD_ACCOUNTANT_PUBLIC", finance_fixture)
+        self.assertIn("FINANCE_BOARD_ACCOUNTANT_FIXTURE_OK", finance_fixture)
+        self.assertIn("FINANCE_BOARD_FIXTURE_OK", finance_fixture)
+        self.assertNotIn('print("INFO browser error: " + error', finance_browser)
+        self.assertNotIn('print("INFO request failed: " + url', finance_browser)
+        self.assertIn("browser diagnostics:", finance_browser)
+
+
 class EvidenceTargetRuntimeTests(unittest.TestCase):
     """Execute the real publisher with a deterministic fake gh executable."""
 

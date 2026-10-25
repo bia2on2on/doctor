@@ -447,6 +447,10 @@ $loosenStorageTree($filesStorage);
 
 
 
+// Finance fixture consumes only the public portal URL plus trusted fixture
+// clinic/location context. Keep this handoff local to GITHUB_ENV; never stdout.
+$financeContext = implode('|', [$url, (string) $oneClinic, (string) $oneLoc]);
+
 file_put_contents(
     '/tmp/doctor-portal.env',
     'DOCTOR_PORTAL_URL=' . $url . "\n"
@@ -455,6 +459,7 @@ file_put_contents(
     . 'DOCTOR_ONE=' . $oneLine . "\n"
     . 'DOCTOR_OTHER=' . $otherLine . "\n"
     . 'DOCTOR_MULTI=' . $multiLine . "\n"
+    . 'DOCTOR_PORTAL_PUBLIC=' . $financeContext . "\n"
 );
 
 echo 'DOCTOR_PORTAL_FIXTURE_OK scenarios=one-location,multi-location,visit-isolation' . "\n";

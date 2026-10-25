@@ -2036,7 +2036,7 @@ jobs:
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-doctor-portal-fixture.php 2>&1 | tee /tmp/doctor-portal-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/doctor-portal.env ]; then
-            echo "::error::doctor-portal-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/doctor-portal.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/doctor-portal-fixture.log 2>/dev/null | tr '\n' '~')"
+            echo "::error::Doctor Portal fixture failed (exit=${FIX_EXIT}); environment and diagnostic details withheld"
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/doctor-portal.env
@@ -2046,10 +2046,14 @@ jobs:
       - name: Phase 12 Finance board fixture — awaiting-payment rows + invoice/no-invoice
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-finance-board-fixture.php 2>&1 | tee /tmp/finance-board-fixture.log
-          test "${PIPESTATUS[0]}" -eq 0
+          FIX_EXIT="${PIPESTATUS[0]}"
+          if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/finance-board.env ]; then
+            echo "::error::Finance board fixture failed validation (exit=${FIX_EXIT}); fixture values and raw diagnostics withheld"
+          fi
+          test "${FIX_EXIT}" -eq 0
           test -s /tmp/finance-board.env
           cat /tmp/finance-board.env >> "$GITHUB_ENV"
-          grep '^FINANCE_BOARD_URL=' /tmp/finance-board.env
+          echo 'Finance board fixture environment loaded; values withheld.'
 
       - name: Phase 12 Finance board — real browser (390×844, 768×1024, 1366×768)
         env:
@@ -2059,7 +2063,7 @@ jobs:
           python3 bin/pilot-finance-board.py | tee /tmp/finance-board-browser.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::finance-board-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/finance-board-browser.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/finance-board-browser.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+            echo "::error::Finance board browser acceptance failed (exit=${BROWSER_EXIT}); dynamic diagnostics withheld"
           fi
           test "${BROWSER_EXIT}" -eq 0
 
@@ -2317,7 +2321,7 @@ jobs:
             echo '--- PASS/FAIL/INFO/SHOT ---'
             grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/doctor-portal.log 2>/dev/null || echo '(doctor-portal.log missing)'
             echo '```'
-            echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
+            echo 'Evidence is status-only; fixture environment values and identifiers are withheld. Screenshot pixels are not inspected by this comment.'
           } > /tmp/doctor-portal-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md
 
