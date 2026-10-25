@@ -122,7 +122,10 @@ class StaticBoundaryTest(unittest.TestCase):
                 self.assertFalse(prefix.endswith("\\\\"), line)
         verify = (TOOL / "wp-cli/verify.php").read_text(encoding="utf-8")
         self.assertNotIn("provider, consumed_at FROM", verify)
-        self.assertIn("consumed_at IS NULL", (TOOL / "wp-cli/otp.php").read_text(encoding="utf-8"))
+        otp = (TOOL / "wp-cli/otp.php").read_text(encoding="utf-8")
+        self.assertIn("consumed_at IS NULL", otp)
+        self.assertIn("$updated = $db->execute(", otp)
+        self.assertNotIn("$updated = $db->query(", otp)
 
     def test_all_tooling_is_outside_installable_plugin(self):
         self.assertFalse(TOOL.is_relative_to(ROOT / "clinic-practice-management"))

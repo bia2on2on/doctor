@@ -49,7 +49,7 @@ try {
     }
 
     $code = OtpPolicy::generateCode(6);
-    $updated = $db->query(
+    $updated = $db->execute(
         'UPDATE ' . $db->table('cpms_otp_tokens') . ' SET code_hash = %s'
         . ' WHERE id = %d AND consumed_at IS NULL AND attempts = 0',
         [OtpPolicy::hashCode($code, $pepper), (int) $row['id']]
