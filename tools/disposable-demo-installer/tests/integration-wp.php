@@ -129,12 +129,16 @@ try {
 	cpdd_assert( null !== $token_row && ! str_contains( (string) $token_row['code_hash'], (string) $issued['code'] ), 'only the hash is stored; the code is never persisted' );
 	cpdd_assert( 0 === (int) $token_row['attempts'] && null === $token_row['consumed_at'], 'attempt counter and consumption state are untouched before verify' );
 
+	add_filter( 'send_auth_cookies', '__return_false' );
 	try {
 		$verified = App::otpService()->verify( $mobile, (string) $issued['code'], 'login', '127.0.0.1' );
 		cpdd_assert( isset( $verified['user_id'] ) || isset( $verified['wp_user_id'] ), 'real verify route accepts the demo code' );
 	} catch ( Throwable $e ) {
 		cpdd_assert( false, 'real verify route accepts the demo code (' . get_class( $e ) . ')' );
+	} finally {
+		remove_filter( 'send_auth_cookies', '__return_false' );
 	}
+	wp_set_current_user( $admin_id );
 
 	$consumed = $db->fetchValue( 'SELECT consumed_at FROM ' . $db->table( 'cpms_otp_tokens' ) . ' WHERE id = %d', array( (int) $issued['token_id'] ) );
 	cpdd_assert( null !== $consumed, 'OTP is consumed exactly once by the real route' );
@@ -173,20 +177,22 @@ cpdd_assert( str_contains( $admin_html, 'class="wrap cpdd" dir="rtl"' ), 'admin 
 cpdd_assert( str_contains( $admin_html, 'پیوندها و نقشهٔ نقش ← صفحه' ), 'admin page renders role-to-page mapping table' );
 cpdd_assert( str_contains( $admin_html, 'دستورالعمل فارسی' ), 'admin page renders Persian step-by-step instructions' );
 cpdd_assert( str_contains( $admin_html, 'ROTATE_DEMO_PASSWORDS' ) && str_contains( $admin_html, 'DESTROY_DEMO_DATA_ONLY' ), 'admin page renders confirmation-phrase forms' );
+$all_links_present = str_contains( $admin_html, (string) $fixture['booking_url'] );
+foreach ( $fixture['personas'] as $persona_meta ) {
+	if ( ! str_contains( $admin_html, (string) $persona_meta['target_url'] ) ) {
+		$all_links_present = false;
+	}
+}
+cpdd_assert( $all_links_present, 'admin page renders clickable booking and persona portal links' );
+$css = (string) file_get_contents( CPMS_DEMO_DIR . 'assets/admin.css' );
+cpdd_assert( str_contains( $css, 'direction: rtl' ) && str_contains( $css, '@media (max-width: 782px)' ) && str_contains( $css, '@media (max-width: 420px)' ), 'admin stylesheet enforces RTL and 320px/390px mobile responsive breakpoints' );
 $leaked_pw = false;
 foreach ( $passwords as $pw ) {
 	if ( '' !== $pw && str_contains( $admin_html, (string) $pw ) ) {
 		$leaked_pw = true;
 	}
 }
-cpdd_assert( ! $leaked_pw, 'subsequent admin page render contains zero plaintext persona passwords' );
-if ( is_dir( '/tmp/cpdd-ci' ) ) {
-	$css = (string) file_get_contents( CPMS_DEMO_DIR . 'assets/admin.css' );
-	file_put_contents(
-		'/tmp/cpdd-ci/admin-rendered.html',
-		"<!doctype html><html lang=\"fa\" dir=\"rtl\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><style>body{margin:0;padding:8px;font-family:Tahoma,sans-serif;}" . $css . "</style></head><body>" . $admin_html . "</body></html>"
-	);
-}
+cpdd_assert( ! $leaked_pw, 'subsequent admin page render omits one-time persona secrets' );
 
 // --- 6. Ownership-proofed teardown ---------------------------------------
 $teardown = new Teardown( $env, $platform, $manifest );
