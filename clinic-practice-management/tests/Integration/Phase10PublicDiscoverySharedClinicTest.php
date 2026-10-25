@@ -462,13 +462,14 @@ final class Phase10PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         $this->insertRow('cpms_schedule', [
             'clinic_id' => $this->clinicBeta,
             'clinician_id' => $this->doctorShared,
+            'location_id' => $this->locationBeta,
             'day_of_week' => 0,
             'start_time' => '09:00:00',
             'end_time' => '13:00:00',
             'is_active' => 1,
             'created_at' => $now,
             'updated_at' => $now,
-        ], ['%d', '%d', '%d', '%s', '%s', '%d', '%s', '%s'], 'schedule');
+        ], ['%d', '%d', '%d', '%d', '%s', '%s', '%d', '%s', '%s'], 'schedule');
 
         // Booking policy for both clinics used on the A1/A4 paths.
         Settings::flushCache();

@@ -487,13 +487,22 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        // Shared-Clinic (optional clinic_id): BC when absent; participation-
-        // verified clinic when present. resolve_slot_for_booking below then
-        // enforces slot.clinic_id == that clinic (findByIdAndClinic / scoped
-        // tuple lookup), so a forged cross-clinic slot keeps the established
-        // CLINIC_NOT_FOUND/404 parity.
+        // Shared-Clinic on B1 — a browser `clinic_id` claim carries NO
+        // authority by itself (Phase8Slice2 T13 pins that tampered raw
+        // clinic claims are ignored and the persisted data governs): it can
+        // only move the scope OUT of the home clinic when the clinician
+        // actually participates there (active durable membership). Anything
+        // else silently keeps the historical home-clinic derivation — the
+        // request neither widens scope nor fails because of a bad claim.
+        // Once resolved, resolve_slot_for_booking enforces
+        // slot.clinic_id == that clinic (404 parity for cross-clinic slots).
         $home_clinic_id = $this->requireClinician( $clinician_id );
-        $clinic_id      = $this->resolveClinicForRequest( $clinician_id, $home_clinic_id, $requestedClinicId );
+        $clinic_id      = $home_clinic_id;
+        if ( $requestedClinicId !== null && $requestedClinicId > 0
+            && $requestedClinicId !== $home_clinic_id
+            && $this->memberships->clinician_participates_in( $clinician_id, $requestedClinicId ) ) {
+            $clinic_id = $requestedClinicId;
+        }
         if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
