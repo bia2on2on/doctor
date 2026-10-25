@@ -1,6 +1,6 @@
 installer=/home/user/doctor/dist/cpms-disposable-demo-1.0.0.zip
 filename=cpms-disposable-demo-1.0.0.zip
 version=1.0.0
-bytes=43616
-sha256=3f547fa4ee8b18a916ccad88191270022abf6df8e7208974ad054b09448f272a
+bytes=43707
+sha256=0035c3acd7dbfa496449aa2d3a71f70b0e2bce00f47a4fb93593abbe10d4b4b7
 entries=15
