@@ -116,14 +116,14 @@ failures = []
 
 
 def ok(key, title, detail=""):
-    results.append({"key": key, "status": "PASS", "detail": detail})
-    print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
+    results.append({"key": key, "status": "PASS"})
+    print(f"PASS {key}")
 
 
 def fail(key, title, err):
     failures.append(key)
-    results.append({"key": key, "status": "FAIL", "detail": str(err)})
-    print(f"FAIL {key} — {title} — {err}")
+    results.append({"key": key, "status": "FAIL"})
+    print(f"FAIL {key}")
 
 
 def shot(name):

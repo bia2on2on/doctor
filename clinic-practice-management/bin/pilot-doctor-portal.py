@@ -52,13 +52,13 @@ failures = []
 
 def ok(key, title, detail=""):
     results.append({"key": key, "status": "PASS"})
-    print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
+    print(f"PASS {key}")
 
 
 def fail(key, title, err):
     failures.append(key)
     results.append({"key": key, "status": "FAIL"})
-    print(f"FAIL {key} — {title} — {err}")
+    print(f"FAIL {key}")
 
 
 def page_hint(page):
@@ -99,7 +99,8 @@ def page_hint(page):
 
 
 def info(line):
-    print(f"INFO {line}")
+    # Dynamic DOM content, IDs, and diagnostic values are deliberately withheld.
+    print("INFO diagnostic detail withheld")
 
 
 def shot(page, name):

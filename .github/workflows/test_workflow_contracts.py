@@ -10,6 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
+SAFE_PILOT_EVIDENCE = ROOT / "clinic-practice-management" / "bin" / "pilot-safe-evidence.py"
 
 
 def workflow(name):
@@ -113,6 +114,96 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("1500 \"$C\" 2", text)
         self.assertIn("1000 50 2", text)
         self.assertIn("NO latency threshold is asserted here", text)
+
+
+class SensitiveEvidenceProjectionTests(unittest.TestCase):
+    def render(self, suite, fixture, results):
+        with tempfile.TemporaryDirectory(prefix="pilot-safe-evidence-") as tmp:
+            tmp_path = Path(tmp)
+            env_file = tmp_path / "fixture.env"
+            results_file = tmp_path / "results.json"
+            env_file.write_text(fixture, encoding="utf-8")
+            results_file.write_text(json.dumps(results), encoding="utf-8")
+            return subprocess.run(
+                [
+                    "python3",
+                    str(SAFE_PILOT_EVIDENCE),
+                    "--suite",
+                    suite,
+                    "--env-file",
+                    str(env_file),
+                    "--results-file",
+                    str(results_file),
+                ],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+    def test_slice3_fixture_fields_nine_and_ten_and_result_details_are_never_projected(self):
+        login = "SYNTHETIC_LOGIN_SENTINEL_DO_NOT_PUBLISH"
+        password = "SYNTHETIC_PASSWORD_SENTINEL_DO_NOT_PUBLISH"
+        fixture = (
+            "SLICE3_PAGE=https://example.invalid/pilot|1|2|3|4|5|6|7|"
+            f"{login}|{password}\n"
+        )
+        safe_results = {
+            "summary": {"ok": True, "runs": 2, "failed": []},
+            "results": [{"key": "slice3-mobile-390-01", "status": "PASS"}],
+        }
+        result = self.render("slice3", fixture, safe_results)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Checks: 1 passed; 0 failed", result.stdout)
+        self.assertNotIn(login, result.stdout)
+        self.assertNotIn(password, result.stdout)
+
+        # Even if a future runner accidentally adds an arbitrary detail field,
+        # the renderer rejects the schema and emits only a fixed safe fallback.
+        unsafe_results = {
+            "summary": {"ok": True, "runs": 2, "failed": []},
+            "results": [
+                {
+                    "key": "slice3-mobile-390-01",
+                    "status": "PASS",
+                    "detail": f"{login} {password} otp nonce cookie session token",
+                }
+            ],
+        }
+        rejected = self.render("slice3", fixture, unsafe_results)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertNotIn(login, rejected.stdout)
+        self.assertNotIn(password, rejected.stdout)
+        self.assertIn("contents withheld", rejected.stdout)
+
+    def test_portal_cancel_projection_withholds_login_password_and_patient_ids(self):
+        login = "PORTAL_LOGIN_SENTINEL_DO_NOT_PUBLISH"
+        password = "PORTAL_PASSWORD_SENTINEL_DO_NOT_PUBLISH"
+        fixture = (
+            "PORTAL_CANCEL=" + login + "|" + password
+            + "|12|PATIENT_ID_SENTINEL|21|22|23|24|25|26,27,28|29\n"
+        )
+        results = {
+            "summary": {"ok": True, "runs": 2, "failed": []},
+            "results": [{"key": "portal-cancel-mobile-390", "status": "PASS"}],
+        }
+        result = self.render("portal-cancel", fixture, results)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for sentinel in (login, password, "PATIENT_ID_SENTINEL"):
+            self.assertNotIn(sentinel, result.stdout)
+        self.assertIn("Result: PASS", result.stdout)
+
+    def test_workflow_uses_safe_projection_and_removes_confirmed_raw_identifier_rows(self):
+        text = workflow("pilot-gate.yml")
+        self.assertIn("pilot-safe-evidence.py --suite slice3", text)
+        self.assertIn("pilot-safe-evidence.py --suite portal-cancel", text)
+        self.assertNotIn("cat /tmp/slice3.env 2>/dev/null", text)
+        self.assertIn('cat /tmp/slice3.env >> "$GITHUB_ENV"', text)
+        self.assertNotIn("cut -d'|' -f1,3- /tmp/portal-cancel.env", text)
+        self.assertNotIn("PROFILE_PUBLIC", text)
+        self.assertNotIn("DOCTOR_PORTAL_PUBLIC", text)
+        self.assertIn("PROFILE_FIXTURE_OK", text)
+        self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", text)
 
 
 class EvidenceTargetRuntimeTests(unittest.TestCase):
