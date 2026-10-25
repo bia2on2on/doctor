@@ -624,7 +624,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public function restore_scope( $previous ): void {
 	}
 
-	public function create_location( int $actor_id, int $clinic_id, string $name, string $slug ): int {
+	public function create_location( int $actor_id, int $clinic_id, string $name, string $slug, string $timezone = 'Asia/Tehran' ): int {
 		$this->calls[] = 'create_location';
 		$id            = max( array_map( static fn ( $row ) => (int) $row['id'], $this->tables_data['cpms_locations'] ) ) + 1;
 		$this->tables_data['cpms_locations'][] = array(

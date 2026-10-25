@@ -203,7 +203,8 @@ class Provisioner {
 					$manager_id,
 					$clinic_id,
 					'شعبهٔ دوم آزمایشی',
-					$manifest['slugs']['location_secondary']
+					$manifest['slugs']['location_secondary'],
+					'Asia/Tehran'
 				);
 				$manifest['ids']['location_ids'] = array( $location_primary, $location_secondary );
 				$manifest = $this->manifest->save( $manifest );

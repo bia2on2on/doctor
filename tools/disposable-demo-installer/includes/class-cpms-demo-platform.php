@@ -396,19 +396,24 @@ class Platform {
 	}
 
 	/**
+	 * LocationService requires an explicit IANA timezone; omitting it raises
+	 * VALIDATION (observed in real WordPress acceptance).
+	 *
 	 * @param int    $actor_id Clinic manager.
 	 * @param int    $clinic_id Clinic.
 	 * @param string $name Location name.
 	 * @param string $slug Location slug.
+	 * @param string $timezone IANA timezone identifier.
 	 * @return int Location id.
 	 */
-	public function create_location( int $actor_id, int $clinic_id, string $name, string $slug ): int {
+	public function create_location( int $actor_id, int $clinic_id, string $name, string $slug, string $timezone = 'Asia/Tehran' ): int {
 		$result = App::locationService()->createLocation(
 			$actor_id,
 			$clinic_id,
 			array(
-				'name' => $name,
-				'slug' => $slug,
+				'name'     => $name,
+				'slug'     => $slug,
+				'timezone' => $timezone,
 			)
 		);
 		$id     = isset( $result['location_id'] ) ? (int) $result['location_id'] : (int) ( $result['id'] ?? 0 );
