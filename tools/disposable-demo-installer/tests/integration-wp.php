@@ -30,16 +30,15 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 
-$cpdd_fail = 0;
+$GLOBALS['cpdd_fail'] = 0;
 
 /**
  * @param bool   $ok Pass/fail.
  * @param string $label Evidence line.
  */
 function cpdd_assert( bool $ok, string $label ): void {
-	global $cpdd_fail;
 	if ( ! $ok ) {
-		++$cpdd_fail;
+		++$GLOBALS['cpdd_fail'];
 	}
 	echo ( $ok ? 'PASS ' : 'FAIL ' ) . $label . PHP_EOL;
 }
@@ -177,9 +176,11 @@ cpdd_assert( str_contains( $admin_html, 'class="wrap cpdd" dir="rtl"' ), 'admin 
 cpdd_assert( str_contains( $admin_html, 'پیوندها و نقشهٔ نقش ← صفحه' ), 'admin page renders role-to-page mapping table' );
 cpdd_assert( str_contains( $admin_html, 'دستورالعمل فارسی' ), 'admin page renders Persian step-by-step instructions' );
 cpdd_assert( str_contains( $admin_html, 'ROTATE_DEMO_PASSWORDS' ) && str_contains( $admin_html, 'DESTROY_DEMO_DATA_ONLY' ), 'admin page renders confirmation-phrase forms' );
-$all_links_present = str_contains( $admin_html, (string) $fixture['booking_url'] );
-foreach ( $fixture['personas'] as $persona_meta ) {
-	if ( ! str_contains( $admin_html, (string) $persona_meta['target_url'] ) ) {
+$links_map         = (array) ( $fixture['links'] ?? array() );
+$all_links_present = true;
+foreach ( array( 'booking', 'patient', 'management', 'doctor', 'receptionist', 'accountant' ) as $link_key ) {
+	$target_href = (string) ( $links_map[ $link_key ] ?? '' );
+	if ( '' === $target_href || ! str_contains( $admin_html, esc_url( $target_href ) ) ) {
 		$all_links_present = false;
 	}
 }
@@ -211,7 +212,13 @@ foreach ( $cleanup['remaining'] as $item ) {
 }
 
 cpdd_assert( false === get_option( 'cpdd_manifest', false ), 'manifest option removed after verified cleanup' );
-cpdd_assert( null === get_userdata( $patient_wp_id ), 'demo personas removed' );
+$personas_gone = true;
+foreach ( (array) $fixture['ids']['user_ids'] as $persona_uid ) {
+	if ( false !== get_userdata( (int) $persona_uid ) ) {
+		$personas_gone = false;
+	}
+}
+cpdd_assert( $personas_gone, 'demo personas removed' );
 $owner = get_userdata( $admin_id );
 cpdd_assert( $owner instanceof WP_User && user_can( $admin_id, 'manage_options' ), 'Owner Administrator account and session authority preserved' );
 $default_clinic = $db->fetchRow( 'SELECT id, slug FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = 1' );
@@ -221,7 +228,7 @@ cpdd_assert( 0 === $leftover, 'no synthetic patients remain in the fixture clini
 $post_state = ( new Preflight( $env, $platform, $manifest ) )->run();
 cpdd_assert( true === $post_state['ok'], 'preflight passes again after verified teardown' );
 
-echo 'CPDD_INTEGRATION=' . ( 0 === $cpdd_fail ? 'PASS' : 'FAIL' ) . ' failures=' . $cpdd_fail . PHP_EOL;
-if ( $cpdd_fail > 0 ) {
+echo 'CPDD_INTEGRATION=' . ( 0 === (int) $GLOBALS['cpdd_fail'] ? 'PASS' : 'FAIL' ) . ' failures=' . (int) $GLOBALS['cpdd_fail'] . PHP_EOL;
+if ( (int) $GLOBALS['cpdd_fail'] > 0 ) {
 	exit( 1 );
 }
