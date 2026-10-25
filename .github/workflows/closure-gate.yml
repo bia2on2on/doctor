@@ -163,7 +163,10 @@ jobs:
           $roleDoctor = get_role('cpms_doctor');
           ok('roles-registered', $roleDoctor !== null && get_role('cpms_secretary') !== null && get_role('cpms_patient') !== null);
           $meta = App::licenseService()->statusMeta();
-          ok('license-fresh', ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh', json_encode($meta));
+          $installIdValid = isset($meta['install_id']) && preg_match('/^[0-9a-f]{32}$/', (string) $meta['install_id']) === 1;
+          $licenseFresh = ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh';
+          unset($meta['install_id'], $meta['install_id_masked']); // never publish even a partial installation identifier
+          ok('license-fresh', $licenseFresh && $installIdValid, json_encode($meta));
           if (!function_exists('rest_get_server')) { require_once ABSPATH . 'wp-includes/rest-api.php'; }
           if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
           $routes = rest_get_server()->get_routes();

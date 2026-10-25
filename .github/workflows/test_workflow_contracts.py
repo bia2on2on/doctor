@@ -91,6 +91,12 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(text.count('tail -50 "$f"'), 3)
         self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 3)
 
+    def test_closure_evidence_redacts_full_and_masked_install_identifiers(self):
+        text = workflow("closure-gate.yml")
+        self.assertIn("$installIdValid = isset($meta['install_id'])", text)
+        self.assertIn("unset($meta['install_id'], $meta['install_id_masked']);", text)
+        self.assertIn("json_encode($meta)", text)
+
     def test_benchmark_runs_on_pr_and_retains_other_events_and_measurement_matrix(self):
         text = workflow("pilot-gate.yml")
         self.assertIn("CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}", text)
