@@ -133,6 +133,31 @@ if (!/function selectionKeyFor/.test(code)) {
   failures.push('per-surface selection storage key helper must exist (multi-widget isolation)');
 }
 
+// ---- Multi-widget isolation: the selection storage key must stay exactly the
+// legacy key on a single-widget page (the pinned preserved-selection contract)
+// and must be namespaced per surface only when the page really has >1 root. ----
+if (typeof D.selectionKeyFor === 'function') {
+  var LEGACY = 'cpms-public-booking:selection:v1';
+  var single = D.selectionKeyFor('cpms-public-booking-7', 3, 1);
+  if (single !== LEGACY) {
+    failures.push('single-widget page must keep the legacy selection key, got ' + single);
+  }
+  var legacyFallback = D.selectionKeyFor('cpms-public-booking-7', 3, 0);
+  if (legacyFallback !== LEGACY) {
+    failures.push('a page with no counted root must keep the legacy selection key, got ' + legacyFallback);
+  }
+  var multi = D.selectionKeyFor('cpms-public-booking-7', 3, 2);
+  if (multi !== LEGACY + ':cpms-public-booking-7') {
+    failures.push('multi-widget page must namespace the key by surface id, got ' + multi);
+  }
+  var multiNoSurface = D.selectionKeyFor('', 3, 2);
+  if (multiNoSurface !== LEGACY + ':clinic-3') {
+    failures.push('multi-widget page without a surface id must fall back to the Clinic id, got ' + multiNoSurface);
+  }
+} else {
+  failures.push('selectionKeyFor must be exported for the standalone isolation spec');
+}
+
 // ===================== Result =====================
 
 if (failures.length > 0) {

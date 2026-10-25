@@ -1903,7 +1903,10 @@
 		normalizeSearchText: normalizeSearchText,
 		weekStartIndex: weekStartIndex,
 		weekOffsetInBounds: weekOffsetInBounds,
-		firstAvailableIndex: firstAvailableIndex
+		firstAvailableIndex: firstAvailableIndex,
+		// صرفاً برای specِ مستقلِ Node (multi-widget isolation) صادر می‌شود:
+		// تنها یک تابعِ خالص است و هیچ state یا side effect ندارد.
+		selectionKeyFor: selectionKeyFor
 	};
 
 	/* ====================== راه‌اندازی ====================== */
