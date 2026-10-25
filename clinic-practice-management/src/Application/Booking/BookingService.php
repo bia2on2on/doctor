@@ -2464,16 +2464,23 @@ final class BookingService
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404 );
         }
 
-        if ( (int) $slot['clinician_id'] !== $clinician_id ) {
-            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422 );
-        }
-
         $slot_clinic_id = (int) $slot['clinic_id'];
+
+        // Same-Clinic path: byte-for-byte the established behaviour. The
+        // caller's existing resolve_slot_for_booking() keeps ownership of the
+        // "slot belongs to another clinician" 422 envelope there, so this method
+        // never changes a pinned same-Clinic outcome.
         if ( $slot_clinic_id === $home_clinic_id ) {
             return $home_clinic_id;
         }
 
-        if ( $slot_clinic_id <= 0 || ! $this->memberships->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
+        // Cross-Clinic path: the pinned contract for a slot persisted in another
+        // Clinic is the non-enumerating 404 (Phase 8 Slice 1 T17), regardless of
+        // whose slot it is. A legitimate switch is therefore gated behind BOTH
+        // the clinician identity AND an ACTIVE durable participation.
+        if ( $slot_clinic_id <= 0
+            || (int) $slot['clinician_id'] !== $clinician_id
+            || ! $this->memberships->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404 );
         }
 
