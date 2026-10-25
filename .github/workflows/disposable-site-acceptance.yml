@@ -159,11 +159,11 @@ jobs:
           wp plugin install "$GITHUB_WORKSPACE/$ZIP_PATH" --activate --path="$WP_DIR" --allow-root > /tmp/acc/logs/plugin-install.log 2>&1
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
           export CPMS_DISPOSABLE_EXPECT=empty
-          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/activation-empty-1.log
+          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/activation-empty-1.log
           wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root
           wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
           wp eval '\ClinicCore\Bootstrap\App::activate(false);' --path="$WP_DIR" --allow-root --user="$ADMIN_USER"
-          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/activation-empty-2.log
+          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/activation-empty-2.log
           PREFIX='${{ matrix.prefix }}'
           ACTUAL="$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME' AND table_name LIKE '${PREFIX}cpms_%';")"
           test "$ACTUAL" -ge 30
@@ -188,17 +188,17 @@ jobs:
             exit 1
           fi
           grep -q 'SECRET_PATH' /tmp/acc/logs/webroot-refusal.log
-          CPMS_DISPOSABLE_EXPECT=empty wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/refusals-left-empty.log
+          CPMS_DISPOSABLE_EXPECT=empty wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/refusals-left-empty.log 2>&1
           echo 'PASS: missing confirmation and web-root credential path both failed closed without fixture writes'
 
       - name: Provision six scoped accounts and bounded synthetic operations
         run: |
           set -Eeuo pipefail
           export CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE
-          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/provision.log
+          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/provision.log
           test "$(stat -c '%a' "$CPMS_DISPOSABLE_STATE")" = '600'
           test "$(stat -c '%a' "$(dirname "$CPMS_DISPOSABLE_STATE")")" = '700'
-          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/verify-active-before.log
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/verify-active-before.log
           python3 tests/disposable-site/assert-package.py \
             --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
             --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
@@ -208,8 +208,8 @@ jobs:
         run: |
           set -Eeuo pipefail
           export CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE
-          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/idempotent-repeat.log
-          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after.log
+          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/idempotent-repeat.log
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after.log 2>&1
           cmp /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-active-after.log
           SECOND_STATE="$(dirname "$CPMS_DISPOSABLE_STATE")/second-fixture.json"
           if CPMS_DISPOSABLE_STATE="$SECOND_STATE" wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/nonempty-refusal.log 2>&1; then
@@ -217,7 +217,7 @@ jobs:
             exit 1
           fi
           grep -q 'NONEMPTY_SITE' /tmp/acc/logs/nonempty-refusal.log
-          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after-denial.log
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after-denial.log 2>&1
           cmp /tmp/acc/logs/verify-active-after.log /tmp/acc/logs/verify-active-after-denial.log
           echo 'PASS: repeat made no changes; a second fixture was refused without changing existing data'
 
@@ -238,7 +238,7 @@ jobs:
       - name: Post-browser security, OTP, operational and evidence checks
         run: |
           set -Eeuo pipefail
-          CPMS_DISPOSABLE_EXPECT=browser-complete wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/verify-browser-complete.log
+          CPMS_DISPOSABLE_EXPECT=browser-complete wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/verify-browser-complete.log
           python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" --output /tmp/acc/evidence-scan.json | tee /tmp/acc/logs/evidence-scan.log
           FATALS=0
           for LOG in "$WP_DIR/wp-content/debug.log" /var/log/apache2/disposable-error.log; do
