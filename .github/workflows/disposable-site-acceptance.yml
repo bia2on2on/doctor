@@ -124,8 +124,8 @@ jobs:
               AllowOverride All
               Require all granted
             </Directory>
-            ErrorLog \\${APACHE_LOG_DIR}/disposable-error.log
-            CustomLog \\${APACHE_LOG_DIR}/disposable-access.log combined
+            ErrorLog \${APACHE_LOG_DIR}/disposable-error.log
+            CustomLog \${APACHE_LOG_DIR}/disposable-access.log combined
           </VirtualHost>
           CONF
           sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf

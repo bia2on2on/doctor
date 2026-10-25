@@ -113,6 +113,17 @@ class StaticBoundaryTest(unittest.TestCase):
         self.assertIn("dialog.accept()", source)
         self.assertIn('data-invoice-id="{invoice_id}"', source)
 
+    def test_workflow_and_sms_schema_regressions(self):
+        workflow = (ROOT / ".github/workflows/disposable-site-acceptance.yml").read_text(encoding="utf-8")
+        for line in workflow.splitlines():
+            if "${APACHE_LOG_DIR}" in line:
+                prefix = line.split("${APACHE_LOG_DIR}", 1)[0]
+                self.assertTrue(prefix.endswith("\\"), line)
+                self.assertFalse(prefix.endswith("\\\\"), line)
+        verify = (TOOL / "wp-cli/verify.php").read_text(encoding="utf-8")
+        self.assertNotIn("provider, consumed_at FROM", verify)
+        self.assertIn("consumed_at IS NULL", (TOOL / "wp-cli/otp.php").read_text(encoding="utf-8"))
+
     def test_all_tooling_is_outside_installable_plugin(self):
         self.assertFalse(TOOL.is_relative_to(ROOT / "clinic-practice-management"))
         production = ROOT / "clinic-practice-management"
