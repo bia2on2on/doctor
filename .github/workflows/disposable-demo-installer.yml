@@ -1,0 +1,281 @@
+name: Disposable Demo Installer (browser-only companion)
+
+# Acceptance for tools/disposable-demo-installer: static gates + the real
+# WordPress run (clean WP + MySQL 8 + production CPMS ZIP → activate companion →
+# preflight → provision → six logins → public booking → real OTP → teardown).
+#
+# The production plugin's own workflows are untouched; this lane never modifies
+# clinic-practice-management/**.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  WP_VERSION: '7.1.3'
+  PHP_VERSION: '8.2'
+  WP_DIR: /home/runner/cpdd-wp
+  WP_URL: http://localhost:8080
+  DB_NAME: cpdd_demo
+  ADMIN_USER: cpdd_admin
+  COMPANION_DIR: tools/disposable-demo-installer
+
+concurrency:
+  group: cpdd-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  static:
+    name: Static gates + reproducible installer ZIP
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          coverage: none
+
+      - name: PHP syntax (every shipped and test file)
+        run: |
+          set -Eeuo pipefail
+          FILES="$(git ls-files "$COMPANION_DIR" | grep -E '\.php$')"
+          test -n "$FILES"
+          for FILE in $FILES; do
+            php -l "$FILE" >/dev/null
+            echo "LINT_OK $FILE"
+          done
+
+      - name: Automated tests (authorization, preflight, ownership, OTP, credentials)
+        run: php "$COMPANION_DIR/tests/run-tests.php" | tee /tmp/cpdd-tests.log
+
+      - name: Build installer ZIP twice and prove reproducibility + content
+        run: |
+          set -Eeuo pipefail
+          OUT_DIR=/tmp/cpdd-build-1 bash bin/build-demo-installer.sh | tee /tmp/cpdd-build-1.log
+          OUT_DIR=/tmp/cpdd-build-2 bash bin/build-demo-installer.sh >/tmp/cpdd-build-2.log
+          ZIP1=/tmp/cpdd-build-1/cpms-disposable-demo-1.0.0.zip
+          ZIP2=/tmp/cpdd-build-2/cpms-disposable-demo-1.0.0.zip
+          test "$(sha256sum "$ZIP1" | cut -d' ' -f1)" = "$(sha256sum "$ZIP2" | cut -d' ' -f1)"
+          # Exactly one top-level plugin directory, no repository/test/doc paths.
+          test "$(unzip -Z1 "$ZIP1" | cut -d/ -f1 | sort -u)" = 'cpms-disposable-demo'
+          if unzip -Z1 "$ZIP1" | grep -Eq '^(clinic-practice-management/|tests/|docs/|\.github/|bin/)'; then
+            echo 'FAIL: installer ZIP contains repository paths' >&2; exit 1
+          fi
+          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | head -20 | grep -q 'Plugin Name:'
+          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:  clinic-practice-management'
+          # The companion must never carry the production plugin's sources.
+          if unzip -Z1 "$ZIP1" | grep -q 'ClinicCore'; then echo 'FAIL: production sources packaged' >&2; exit 1; fi
+          python3 - "$ZIP1" <<'PY'
+          import hashlib, json, sys, zipfile
+          path = sys.argv[1]
+          data = open(path, 'rb').read()
+          with zipfile.ZipFile(path) as archive:
+              names = archive.namelist()
+              bad = archive.testzip()
+          proof = {
+              "file": path.rsplit('/', 1)[-1],
+              "bytes": len(data),
+              "sha256": hashlib.sha256(data).hexdigest(),
+              "entries": len(names),
+              "zip_integrity": "ok" if bad is None else f"corrupt:{bad}",
+          }
+          json.dump(proof, open('/tmp/cpdd-installer-proof.json', 'w'), indent=2)
+          print(json.dumps(proof))
+          PY
+          cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
+
+      - name: Upload the genuine installer ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: cpms-disposable-demo-installer
+          path: /tmp/cpms-disposable-demo-1.0.0.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpdd-static-evidence
+          path: |
+            /tmp/cpdd-installer-proof.json
+            /tmp/cpdd-tests.log
+            /tmp/cpdd-build-1.log
+          if-no-files-found: error
+          retention-days: 30
+
+  real-wordpress:
+    name: Real WordPress acceptance (clean WP → CPMS → companion → teardown)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
+          coverage: none
+
+      - name: Tooling (checksum-verified WP-CLI + mysql client)
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: 'mysql-client'
+          apt-log-dir: /tmp/cpdd-ci
+
+      - name: Production subtree unchanged by this lane
+        run: |
+          set -Eeuo pipefail
+          BASE="$(git rev-parse "${{ github.event.pull_request.base.sha || 'origin/main' }}")"
+          if git diff --quiet "$BASE" HEAD -- clinic-practice-management; then
+            echo 'PASS: clinic-practice-management/** unchanged'
+          else
+            echo 'FAIL: production subtree modified' >&2; exit 1
+          fi
+
+      - name: Build production CPMS ZIP (unmodified main-line build script)
+        run: |
+          set -Eeuo pipefail
+          composer install --no-interaction --no-progress --working-dir=clinic-practice-management --no-dev >/tmp/cpdd-ci/composer.log 2>&1
+          bash clinic-practice-management/bin/build-release.sh | tee /tmp/cpdd-ci/release-build.log
+          ZIP="$(find clinic-practice-management/dist -maxdepth 1 -name 'clinic-practice-management-*.zip' -print -quit)"
+          test -n "$ZIP"
+          echo "CPMS_ZIP=$ZIP" >> "$GITHUB_ENV"
+
+      - name: Clean WordPress + CSPRNG Administrator password
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpdd-ci
+          curl -fsS "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp
+          mv /tmp/wordpress "$WP_DIR"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(30))')"
+          wp core install --url="$WP_URL" --title="CPDD Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpdd.invalid --skip-email --allow-root
+          echo "WP_ADMIN_CREATED=1"
+
+      - name: Activate production CPMS, then install and activate the companion ZIP
+        run: |
+          set -Eeuo pipefail
+          wp plugin install "$GITHUB_WORKSPACE/$CPMS_ZIP" --activate --path="$WP_DIR" --allow-root
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
+          test "$SCHEMA" = '2026_10_18_0029'
+          echo "SCHEMA=$SCHEMA"
+          OUT_DIR=/tmp/cpdd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpdd-ci/companion-build.log
+          wp plugin install /tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
+
+      - name: Companion surface is read-only by construction (no REST/AJAX/frontend)
+        run: |
+          set -Eeuo pipefail
+          SRC="$WP_DIR/wp-content/plugins/cpms-disposable-demo"
+          test -d "$SRC"
+          for PATTERN in 'register_rest_route' 'wp_ajax_' 'add_shortcode' 'wp_schedule_event' 'admin_post_nopriv'; do
+            if grep -rq "$PATTERN" "$SRC" --include='*.php'; then
+              echo "FAIL: companion registers $PATTERN" >&2; exit 1
+            fi
+          done
+          echo 'PASS: no REST route, AJAX action, shortcode, cron event or public POST surface in the companion'
+          wp eval '
+            echo "SHORTCODE_TAG=" . ( shortcode_exists( "cpms_public_booking" ) ? "yes" : "no" ) . PHP_EOL;
+            echo "COMPANION_ACTIVE=" . ( is_plugin_active( "cpms-disposable-demo/cpms-disposable-demo.php" ) ? "yes" : "no" ) . PHP_EOL;
+            echo "USERS=" . count( get_users( array( "fields" => "ID" ) ) ) . PHP_EOL;
+          ' --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/cpdd-ci/surface.log
+
+      - name: Integration acceptance (provision → logins → booking → OTP → teardown)
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/integration-wp.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            2>&1 | tee /tmp/cpdd-ci/integration.log
+          grep -q '^CPDD_INTEGRATION=PASS' /tmp/cpdd-ci/integration.log
+
+      - name: Post-teardown site state (default data intact, no demo artefacts)
+        run: |
+          set -Eeuo pipefail
+          wp eval '
+            global $wpdb;
+            echo "USERS=" . count( get_users( array( "fields" => "ID" ) ) ) . PHP_EOL;
+            echo "MANIFEST=" . ( get_option( "cpdd_manifest", false ) ? "present" : "absent" ) . PHP_EOL;
+            echo "CLINICS=" . (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_clinics" ) . PHP_EOL;
+            echo "PATIENTS=" . (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_patients" ) . PHP_EOL;
+            echo "APPOINTMENTS=" . (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_appointments" ) . PHP_EOL;
+            echo "INVOICES=" . (int) $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_invoices" ) . PHP_EOL;
+          ' --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/cpdd-ci/post-teardown.log
+          grep -q '^USERS=1$' /tmp/cpdd-ci/post-teardown.log
+          grep -q '^MANIFEST=absent$' /tmp/cpdd-ci/post-teardown.log
+          grep -q '^CLINICS=1$' /tmp/cpdd-ci/post-teardown.log
+          grep -q '^PATIENTS=0$' /tmp/cpdd-ci/post-teardown.log
+
+      - name: No credentials or OTP codes leaked into logs
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          if grep -rEiq '(password|passwd|cpdd-[a-z_]+-[a-f0-9]{16}[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|OTP_CODE=)' /tmp/cpdd-ci/integration.log; then
+            echo 'FAIL: possible credential material in evidence' >&2; exit 1
+          fi
+          echo 'PASS: integration evidence contains no credential material'
+
+      - name: Publish sanitized acceptance detail to the PR (no credentials)
+        if: always() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpdd-ci
+          {
+            echo '### CPMS disposable demo — real-WordPress acceptance detail'
+            echo
+            echo "Commit: \`${{ github.sha }}\`"
+            echo "Workflow run & artifact download: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            echo '--- companion zip proof ---'
+            cat /tmp/cpdd-ci/companion-build.log 2>/dev/null || true
+            echo '--- surface ---'
+            sed -E 's/([A-Za-z0-9_-]{24,})/<redacted>/g' /tmp/cpdd-ci/surface.log 2>/dev/null | tail -20 || true
+            echo '--- integration ---'
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -80 || true
+            echo '--- post-teardown ---'
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
+            echo '```'
+          } > /tmp/cpdd-ci/pr-comment.md
+          if [ -s /tmp/cpdd-ci/pr-comment.md ]; then
+            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/cpdd-ci/pr-comment.md
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpdd-real-wordpress-evidence
+          path: /tmp/cpdd-ci/
+          if-no-files-found: warn
+          retention-days: 30
