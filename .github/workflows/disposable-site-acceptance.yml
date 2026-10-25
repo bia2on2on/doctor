@@ -107,10 +107,31 @@ jobs:
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set DISALLOW_FILE_EDIT true --raw --allow-root
-          # Keep the disposable run bounded: no background cron may generate
-          # additional slots or deliver queued notifications during acceptance.
+          # Disable only the WP-Cron fallback in this disposable installation;
+          # production fast-wake/job behavior remains unmodified. Inactive
+          # bounded schedule templates prevent future slot generation.
           wp config set DISABLE_WP_CRON true --raw --allow-root
-          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(30))')"
+          PRIVATE_DIR="/tmp/cpms-disposable-private-${{ matrix.prefix }}"
+          install -d -m 700 "$PRIVATE_DIR"
+          echo "CPMS_DISPOSABLE_STATE=$PRIVATE_DIR/credentials.json" >> "$GITHUB_ENV"
+          echo "CPMS_DISPOSABLE_OTP_FILE=$PRIVATE_DIR/otp.json" >> "$GITHUB_ENV"
+          echo "CPMS_DISPOSABLE_GENERATED_SECRETS=$PRIVATE_DIR/generated-secrets.json" >> "$GITHUB_ENV"
+          ADMIN_PASS="$(python3 - "$PRIVATE_DIR/generated-secrets.json" <<'PY'
+          import json
+          import os
+          import secrets
+          import sys
+
+          path = sys.argv[1]
+          value = secrets.token_urlsafe(30)
+          fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+          with os.fdopen(fd, "w", encoding="utf-8") as handle:
+              os.fchmod(handle.fileno(), 0o600)
+              json.dump({"admin_password": value}, handle)
+              handle.write("\n")
+          print(value, end="")
+          PY
+          )"
           wp core install --url="$WP_URL" --title="CPMS Disposable Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@disposable.invalid --skip-email --allow-root
           unset ADMIN_PASS
 
@@ -202,6 +223,7 @@ jobs:
           python3 tests/disposable-site/assert-package.py \
             --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
             --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
+            --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" \
             --output /tmp/acc/package-proof-with-secrets.json | tee /tmp/acc/logs/package-secret-exclusion.log
 
       - name: Idempotent repeat and non-empty second-fixture refusal
@@ -239,7 +261,14 @@ jobs:
         run: |
           set -Eeuo pipefail
           CPMS_DISPOSABLE_EXPECT=browser-complete wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/verify-browser-complete.log
-          python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" --output /tmp/acc/evidence-scan.json | tee /tmp/acc/logs/evidence-scan.log
+          python3 tests/disposable-site/assert-package.py \
+            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
+            --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" \
+            --output /tmp/acc/package-proof-full.json | tee /tmp/acc/logs/package-full-secret-exclusion.log
+          python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" \
+            --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" --source-ref "$HEAD_SHA" \
+            --require-secret-count 14 --output /tmp/acc/evidence-scan.json | tee /tmp/acc/logs/evidence-scan.log
           FATALS=0
           for LOG in "$WP_DIR/wp-content/debug.log" /var/log/apache2/disposable-error.log; do
             if [ -f "$LOG" ]; then
@@ -270,6 +299,7 @@ jobs:
             /tmp/acc/disposable-browser.log
             /tmp/acc/package-proof.json
             /tmp/acc/package-proof-with-secrets.json
+            /tmp/acc/package-proof-full.json
             /tmp/acc/evidence-scan.json
           if-no-files-found: warn
           retention-days: 14
@@ -285,9 +315,13 @@ jobs:
             echo
             echo "- candidate head: \`$HEAD_SHA\`; live main retrieved by this job: \`$BASE_SHA\`"
             echo '- production tree vs live main: byte-identical (the job fails otherwise)'
-            echo '- packaging/provenance:'
+            echo '- packaging/provenance (initial build):'
             echo '```'
             cat /tmp/acc/package-proof.json 2>/dev/null || echo '(not reached)'
+            echo '```'
+            echo '- final generated-secret ZIP exclusion proof:'
+            echo '```'
+            cat /tmp/acc/package-proof-full.json 2>/dev/null || echo '(not reached)'
             echo '```'
             echo '- non-secret stage/check diagnostics:'
             echo '```'
@@ -301,10 +335,21 @@ jobs:
               fi
             done
             echo '```'
+            echo '- committed-source/public-evidence exclusion proof:'
+            echo '```'
+            cat /tmp/acc/evidence-scan.json 2>/dev/null || echo '(not reached)'
+            echo '```'
             echo '- verification/teardown:'
             echo '```'
             tail -3 /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-browser-complete.log /tmp/acc/logs/teardown.log 2>/dev/null || echo '(not reached)'
             echo '```'
             echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
+            echo 'On a successful job, this exact comment is scanned against all 14 generated credentials immediately before publication; a match prevents publication.'
           } > /tmp/acc/evidence-comment.md
+          if [ -f /tmp/acc/evidence-scan.json ] && [ -f /tmp/acc/package-proof-full.json ]; then
+            python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" \
+              --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" --source-ref "$HEAD_SHA" \
+              --require-secret-count 14 --output /tmp/cpms-public-comment-proof.json \
+              > /tmp/cpms-public-comment-proof.log
+          fi
           gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'

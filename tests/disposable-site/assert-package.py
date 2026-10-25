@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import sys
 import zipfile
@@ -82,11 +83,25 @@ def protected_secrets(path):
             value = str(account.get(key, ""))
             if value:
                 secrets.append(value.encode())
-    if isinstance(data.get("code"), str) and data["code"]:
-        secrets.append(data["code"].encode())
-    if len(secrets) < 2 and "accounts" in data:
-        raise RuntimeError("secret proof input does not contain its expected credentials")
+    for key in ("admin_password", "code"):
+        value = data.get(key)
+        if isinstance(value, str) and value:
+            secrets.append(value.encode())
+    if "accounts" in data and len(secrets) < 12:
+        raise RuntimeError("secret proof input does not contain all six account credentials")
+    if not secrets:
+        raise RuntimeError("secret proof input contains no generated credentials")
     return secrets
+
+
+def contains_secret(data, secret):
+    # A six-digit OTP is a credential, but an arbitrary substring match in a
+    # compressed/binary container is not meaningful evidence. Use digit
+    # boundaries for short numeric codes; long random credentials remain exact
+    # byte matches in both member content and raw ZIP bytes.
+    if secret.isdigit() and len(secret) <= 8:
+        return re.search(rb"(?<!\d)" + re.escape(secret) + rb"(?!\d)", data) is not None
+    return secret in data
 
 
 def main():
@@ -132,7 +147,7 @@ def main():
                     if marker in data:
                         raise RuntimeError("external demo/test marker found in production ZIP: " + marker.decode())
                 for secret in secrets:
-                    if secret in data:
+                    if contains_secret(data, secret):
                         raise RuntimeError("generated credential material found in production ZIP")
         for name, baseline_path in expected.items():
             shipped = archive.read(name)
@@ -141,7 +156,7 @@ def main():
                 raise RuntimeError("shipped production file differs from live main: " + name)
         raw_zip = zip_path.read_bytes()
         for secret in secrets:
-            if secret in raw_zip:
+            if contains_secret(raw_zip, secret):
                 raise RuntimeError("generated credential material found in raw ZIP bytes")
 
     proof = {
@@ -155,6 +170,8 @@ def main():
         "external_tool_markers_absent": len(TOOL_MARKERS),
         "generated_secrets_absent": bool(secrets),
         "secret_values_checked": len(secrets),
+        "unique_secret_values_checked": len(set(secrets)),
+        "secret_scan_scope": "all ZIP members and raw ZIP bytes",
         "credential_files_in_zip": False,
         "official_release_download": False,
         "reproducible_zip_bytes_claimed": False,

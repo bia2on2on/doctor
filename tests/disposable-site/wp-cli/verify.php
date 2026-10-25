@@ -191,7 +191,19 @@ try {
         }
     }
     if ($counts['cpms_schedule_slots'] < 2 || $counts['cpms_schedule_slots'] > 3) {
-        cpms_ds_fail('BOUNDED_FIXTURE', 'slot count must remain between two and three');
+        cpms_ds_fail('BOUNDED_FIXTURE', 'slot count must remain between two and three; actual=' . $counts['cpms_schedule_slots']);
+    }
+    $active_templates = (int) $db->fetchValue(
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_schedule') . ' WHERE clinic_id = %d AND is_active = 1',
+        [$clinic_id]
+    );
+    $foreign_slots = (int) $db->fetchValue(
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_schedule_slots')
+        . ' WHERE clinic_id <> %d OR location_id <> %d OR clinician_id <> %d',
+        [$clinic_id, (int) $state['location_id'], (int) $state['clinician_id']]
+    );
+    if ($active_templates !== 0 || $foreign_slots !== 0) {
+        cpms_ds_fail('BOUNDED_FIXTURE', 'inactive bounded templates or exact synthetic slot scope was violated');
     }
     if (!$after_browser) {
         $initial = [

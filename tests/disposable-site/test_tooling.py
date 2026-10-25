@@ -5,6 +5,8 @@ import ast
 import json
 import os
 from pathlib import Path
+import secrets
+import struct
 import subprocess
 import sys
 import tempfile
@@ -14,6 +16,7 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 TOOL = ROOT / "tests/disposable-site"
 PACKAGE_CHECKER = TOOL / "assert-package.py"
+EVIDENCE_CHECKER = TOOL / "scan-evidence.py"
 BASELINE_SHA = "28435d28febb6a7da67afceacc58350ffd75c5c0"
 
 
@@ -80,6 +83,54 @@ class PackageProofTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
 
 
+class EvidenceProofTest(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp.name)
+        self.evidence = self.root / "evidence"
+        self.evidence.mkdir()
+        self.state = self.root / "state.json"
+        self.manifest = self.root / "manifest.json"
+        names = ("organization_manager", "clinic_manager", "doctor", "receptionist", "accountant", "patient")
+        accounts = {name: {"username": "u-" + secrets.token_hex(12), "password": secrets.token_hex(24)} for name in names}
+        self.admin_password = secrets.token_urlsafe(30)
+        self.state.write_text(json.dumps({"accounts": accounts}), encoding="utf-8")
+        self.manifest.write_text(json.dumps({"admin_password": self.admin_password, "code": f"{secrets.randbelow(1000000):06d}"}), encoding="utf-8")
+        os.chmod(self.state, 0o600)
+        os.chmod(self.manifest, 0o600)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def run_checker(self, *extra):
+        return subprocess.run([
+            sys.executable, str(EVIDENCE_CHECKER), "--root", str(self.evidence),
+            "--state", str(self.state), "--secret-file", str(self.manifest),
+            "--require-secret-count", "14", "--output", str(self.root / "report.json"), *extra,
+        ], capture_output=True, text=True, timeout=60)
+
+    def add_screenshots(self):
+        directory = self.evidence / "screenshots"
+        directory.mkdir()
+        for name, width in (("disposable-booking-receipt.png", 390), ("disposable-patient-mobile.png", 390), ("disposable-management-mobile.png", 390), ("disposable-doctor-complete.png", 1280), ("disposable-finance-diagnostics.png", 1280)):
+            (directory / name).write_bytes(b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", width, 900))
+
+    def test_commit_and_evidence_exclusion_passes(self):
+        self.add_screenshots()
+        result = self.run_checker("--source-ref", "HEAD")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads((self.root / "report.json").read_text())
+        self.assertEqual(report["secret_values_checked"], 14)
+        self.assertEqual(report["source_scan"], "PASS")
+        self.assertEqual(report["credential_leaks"], 0)
+
+    def test_evidence_leak_fails_without_echoing_secret(self):
+        (self.evidence / "leak.txt").write_text(self.admin_password, encoding="utf-8")
+        result = self.run_checker()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn(self.admin_password, result.stderr)
+
+
 class StaticBoundaryTest(unittest.TestCase):
     def test_no_wordpress_auto_registration(self):
         for path in (TOOL / "wp-cli").glob("*.php"):
@@ -126,6 +177,10 @@ class StaticBoundaryTest(unittest.TestCase):
         self.assertIn("consumed_at IS NULL", otp)
         self.assertIn("$updated = $db->execute(", otp)
         self.assertNotIn("$updated = $db->query(", otp)
+        self.assertIn('CPMS_DISPOSABLE_GENERATED_SECRETS', workflow)
+        self.assertIn('--source-ref "$HEAD_SHA"', workflow)
+        self.assertIn('--require-secret-count 14', workflow)
+        self.assertIn('package-proof-full.json', workflow)
 
     def test_all_tooling_is_outside_installable_plugin(self):
         self.assertFalse(TOOL.is_relative_to(ROOT / "clinic-practice-management"))

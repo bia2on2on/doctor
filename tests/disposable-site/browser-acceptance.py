@@ -25,6 +25,7 @@ WP_DIR = os.environ.get("WP_DIR", "")
 OUT = os.environ.get("OUT", "/tmp/acc")
 STATE_FILE = os.environ.get("CPMS_DISPOSABLE_STATE", "")
 OTP_FILE = os.environ.get("CPMS_DISPOSABLE_OTP_FILE", "")
+GENERATED_SECRETS_FILE = os.environ.get("CPMS_DISPOSABLE_GENERATED_SECRETS", "")
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
 REPO = Path(__file__).resolve().parents[2]
 OTP_TOOL = REPO / "tests/disposable-site/wp-cli/otp.php"
@@ -122,6 +123,29 @@ def wp_eval(code, env=None):
     return (proc.stdout or "").strip()
 
 
+def preserve_otp_for_exclusion_proof(code):
+    if not GENERATED_SECRETS_FILE:
+        return
+    # Retain the consumed OTP only in the protected manifest until the final
+    # ZIP/source/evidence scans. The original newest-token fixture is still
+    # unlinked immediately; no secret is written below OUT or printed.
+    manifest = protected_json(GENERATED_SECRETS_FILE)
+    if not re.fullmatch(r"[A-Za-z0-9_-]{20,200}", str(manifest.get("admin_password", ""))):
+        raise RuntimeError("generated-secret manifest is incomplete")
+    manifest["code"] = code
+    flags = os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(GENERATED_SECRETS_FILE, flags)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = None
+            json.dump(manifest, handle, ensure_ascii=False)
+            handle.write("\n")
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def make_otp_fixture():
     if not ADMIN_USER:
         raise RuntimeError("ADMIN_USER is required for the explicit WP-CLI fixture")
@@ -141,6 +165,7 @@ def make_otp_fixture():
     code = str(fixture.get("code", ""))
     if not re.fullmatch(r"\d{6}", code) or int(fixture.get("token_id", 0)) <= 0:
         raise RuntimeError("external OTP fixture is invalid")
+    preserve_otp_for_exclusion_proof(code)
     os.unlink(OTP_FILE)
     return code
 
@@ -201,6 +226,19 @@ def finance_safe_text(value):
     text = re.sub(r"(?i)(password|passwd|otp|token|secret|authorization|cookie|nonce)(\s*[:=]\s*)[^\s,;]+", r"\1\2[REDACTED]", text)
     text = re.sub(r"https?://[^\s]+", "[URL]", text)
     return text[:240]
+
+
+def finance_page_error(error):
+    # Keep the stack bounded and sanitized; it can identify the actual async
+    # failing script without exposing URLs, cookies, nonces, or credentials.
+    try:
+        stack = getattr(error, "stack", "")
+    except Exception:
+        stack = ""
+    return {
+        "message": finance_safe_text(error),
+        "stack": finance_safe_text(stack)[:600],
+    }
 
 
 def attach_finance_diagnostics(page):

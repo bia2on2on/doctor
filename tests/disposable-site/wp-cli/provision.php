@@ -190,6 +190,11 @@ try {
         $cpms_ds_stage = 'schedules';
         // ScheduleService::create() enqueues the existing global slots.generate
         // handler. Do not invoke that unbounded side effect on shared hosts.
+        // Keep the weekly templates inactive: the normal production queue is
+        // intentionally left enabled, and active future templates would
+        // legitimately generate slots beyond this bounded fixture. The three
+        // manually persisted open slots below are the production read model
+        // used by this journey; no scheduler or production behavior is disabled.
         // These seven fixed rows and at most three slots belong only to this
         // exact synthetic Clinician/Location; all other tenants remain untouched.
         for ($day = 0; $day <= 6; $day++) {
@@ -204,7 +209,7 @@ try {
                 'break_end' => null,
                 'appointment_duration_min' => 20,
                 'slot_capacity' => 1,
-                'is_active' => 1,
+                'is_active' => 0,
                 'created_at' => $now,
                 'updated_at' => $now,
             ])) {

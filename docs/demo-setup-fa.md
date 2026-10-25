@@ -10,7 +10,7 @@
 - WordPress تمیز، PHP و MySQL پشتیبانی‌شده، WP-CLI، و ZIP ساخته‌شده از همان سورس Production لازم است. برای اجرای مرورگر، Chromium و Playwright نسخهٔ پین‌شدهٔ Workflow لازم است.
 - Schema مورد انتظار این نسخه `2026_10_18_0029` است. ابزار روی Schema ناسازگار Fail-Closed می‌شود.
 - قبل از Provisioning، سه ردیف ساختاریِ دست‌نخوردهٔ bootstrap یعنی Organization/Clinic/Location پیش‌فرض مجاز است؛ همهٔ جداول عملیاتیِ بیمار، نوبت، بالینی، مالی، OTP و ارتباطات باید خالی باشند. شکل دیگری از داده، یا Fixture قبلی، پذیرفته نمی‌شود.
-- برای جلوگیری از تولید اسلات اضافه و پردازش Job در طول آزمون، `DISABLE_WP_CRON` را در **همان نصب یک‌بارمصرف** فعال کنید. این تغییر در `wp-config.php` محیط آزمون است، نه تغییر رفتار افزونه.
+- برای محدود نگه‌داشتن Cron در **همان نصب یک‌بارمصرف**، `DISABLE_WP_CRON` را فعال کنید؛ این تغییر در `wp-config.php` محیط آزمون است، نه تغییر رفتار افزونه. Templateهای هفت‌روزهٔ Fixture عمداً غیرفعال‌اند تا Job عادیِ `slots.generate` دادهٔ آیندهٔ نامحدود نسازد؛ سه اسلات دستیِ باز، همان Read Model واقعیِ رزرو را از مسیر Production تمرین می‌کنند.
 - اجرای Provisioning باید دست‌کم ۵۰ دقیقه پیش از نیمه‌شب به وقت `Asia/Tehran` آغاز شود تا دو اسلات همان روز برای مسیر عمومی و پذیرش باقی بماند. نزدیک نیمه‌شب اجرا نکنید.
 - ادمینِ فنیِ موجود فقط برای بوتstrapping سازمان و اجرای WP-CLI به کار می‌رود. به حساب Administrator هیچ عضویت یا اختیار بالینی/مالی CPMS داده نمی‌شود.
 
@@ -26,8 +26,9 @@ bash clinic-practice-management/bin/build-release.sh
 
 1. فایل‌های غیر Vendor داخل ZIP را بایت‌به‌بایت با همان فایل‌های Production مبنا مقایسه می‌کند.
 2. مسیرهای توسعه/تست/اسناد/محرمانه و Markerهای Demo و ابزار بیرونی را رد می‌کند.
-3. در اجرای دوم، رمزها و نام‌های کاربریِ تولیدشده را نیز در محتوای ZIP و بایت‌های خام آن جست‌وجو می‌کند.
-4. SHA-256 و اندازهٔ ZIP واقعی را در `package-proof.json` ثبت می‌کند.
+3. در اجرای دوم، رمزها و نام‌های کاربریِ تولیدشده را نیز در محتوای ZIP و بایت‌های خام آن جست‌وجو می‌کند. در CI، رمز CSPRNGِ Administrator و OTP مصرف‌شده نیز در Manifest محرمانه ثبت و در اثبات نهایی لحاظ می‌شوند.
+4. SHA-256 و اندازهٔ ZIP واقعی را در `package-proof.json` ثبت می‌کند؛ اثبات کاملِ نهایی در `package-proof-full.json` است.
+5. اسکن مستقلِ Evidence، همین مقادیر را در Blobهای Commit دقیق و فایل‌های عمومیِ Evidence بررسی می‌کند و هیچ مقدار محرمانه‌ای را چاپ نمی‌کند.
 
 این اثبات به معنای Release رسمی، لینک دانلود عمومی یا Reproducible بودن بایت‌های ZIP نیست. ZIP محلی/CI تا بارگذاری و بررسی مستقل، یک Artifact محلی/CI است.
 
@@ -39,6 +40,8 @@ bash clinic-practice-management/bin/build-release.sh
 export WP_DIR=/path/to/disposable-wordpress
 export CPMS_DISPOSABLE_STATE=/secure/cpms-disposable/credentials.json
 export CPMS_DISPOSABLE_OTP_FILE=/secure/cpms-disposable/otp.json
+# در CI این مسیر با رمز CSPRNGِ Administrator ساخته و تا Teardown محفوظ می‌ماند:
+# export CPMS_DISPOSABLE_GENERATED_SECRETS=/secure/cpms-disposable/generated-secrets.json
 install -d -m 700 "$(dirname "$CPMS_DISPOSABLE_STATE")"
 wp config set DISABLE_WP_CRON true --raw --path="$WP_DIR"
 ```
@@ -79,6 +82,8 @@ less -- "$CPMS_DISPOSABLE_STATE"
 ```
 
 برای دیدن فقط شناسه‌ها بدون رمز، می‌توانید روی همان ترمینال محلی از JSON استفاده کنید؛ حتی این خروجی را نیز عمومی نکنید. ابزار در stdout فقط شناسه‌های غیرمحرمانه، تعداد حساب‌ها، پیوندها و Shortcode را گزارش می‌کند.
+
+`generated-secrets.json` در Workflow با رمز واقعیِ CSPRNGِ Administrator ساخته می‌شود و Runner فقط OTP مصرف‌شده را پیش از حذف فایل OTP به همان Manifest `0600` اضافه می‌کند. این فایل را دستی با مقدار ساختگی نسازید و هرگز وارد Evidence کنید؛ در اجرای دستیِ بدون Manifest، اثبات کامل ۱۴ مقداریِ CI ادعا نمی‌شود.
 
 ## ۴) Shortcode و پیوندهای واقعی
 
@@ -152,14 +157,15 @@ CPMS_DISPOSABLE_EXPECT=browser-complete \
 python3 tests/disposable-site/scan-evidence.py \
   --root /tmp/cpms-disposable-evidence \
   --state "$CPMS_DISPOSABLE_STATE" \
+  --source-ref HEAD \
   --output /tmp/cpms-disposable-evidence/evidence-scan.json
 ```
 
-اسکن اسناد فقط نشت رمزها و ابعاد Screenshot را بررسی می‌کند؛ این به معنای بازبینی بصری Pixel-by-Pixel نیست. رمزها، OTP، Cookie و HTML صفحه در نتایج ذخیره نمی‌شوند.
+اسکن اسناد نشت رمزها، Blobهای Commit دقیق و ابعاد Screenshot را بررسی می‌کند؛ این به معنای بازبینی بصری Pixel-by-Pixel نیست. رمزها، OTP، Cookie و HTML صفحه در نتایج ذخیره نمی‌شوند. Workflow علاوه بر State، Manifest محرمانه را با `--require-secret-count 14` و ZIP نهایی را دوباره بررسی می‌کند؛ خروجی عمومی فقط تعداد مقادیر و PASS/FAIL است.
 
 ## ۷) Teardown — ترجیحاً نابودی کل محیط
 
-بهترین Teardown حذف کل Container/VM و دیتابیس یک‌بارمصرف است. ابزار موجود برای همان سایتِ دارای Marker، پس از تأیید صریح، کل Database را Reset می‌کند و سپس State/OTP/Lock محرمانه را حذف می‌کند؛ هیچ حذف انتخابی بیمار یا Tenant انجام نمی‌دهد:
+بهترین Teardown حذف کل Container/VM و دیتابیس یک‌بارمصرف است. ابزار موجود برای همان سایتِ دارای Marker، پس از تأیید صریح، کل Database را Reset می‌کند و سپس State/OTP/Manifest/Lock محرمانه را حذف می‌کند؛ هیچ حذف انتخابی بیمار یا Tenant انجام نمی‌دهد:
 
 ```bash
 CPMS_DISPOSABLE_CONFIRM=DESTROY_DISPOSABLE_SITE_AND_DATABASE \
