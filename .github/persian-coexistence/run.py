@@ -112,6 +112,21 @@ GROUPS = {
             "CPMS coexistence": "NOT RUN — CPMS is absent by design in this diagnostic; no CPMS compatibility claim is possible",
         },
     },
+    # Positive-path CPMS coexistence acceptance: same 10.0.7 baseline as the
+    # CPMS-free diagnosis, but Stage B is mandatory and independently evidenced.
+    "persian-woocommerce-acceptance": {
+        "pins": {
+            "woocommerce": "11.2.0",
+            "persian-woocommerce": "10.0.7",
+        },
+        "subject": "persian-woocommerce",
+        "root": "coexistence-persian-woocommerce-acceptance",
+        "artifact": "persian-coexistence-persian-woocommerce-acceptance",
+        "title": "Persian WooCommerce 10.0.7 + CPMS coexistence acceptance",
+        "not_run": {
+            "Persian WooCommerce commerce workflows": "NOT RUN — this acceptance measures installation, activation, shared runtime and existing CPMS browser acceptance; it does not submit orders or exercise payment-provider workflows",
+        },
+    },
     "persian-woocommerce-sms": {
         # Official WordPress.org Plugins API verified 2026-10-20: stable moved
         # 7.3.1 -> 7.3.2 (last_updated 2026-10-20, WordPressBugBounty mirror
@@ -1849,7 +1864,10 @@ class Slice:
             save(self.root / "A/result.json", result)
             if result["status"] != "PASS":
                 probe.annotate("warning", "CPMS-free diagnosis recorded Stage A FAIL or warning; this is measured evidence, not a CPMS classification. Stage B is disabled by design.")
-            return 0 if measurement_complete else 1
+            # A completed measurement is not a positive compatibility result.
+            # Keep a successful diagnosis green only when every material check
+            # actually passed; recorded material failures must fail the check.
+            return 0 if result["status"] == "PASS" else 1
 
         result["classification"] = ("MATERIALLY HEALTHY GROUP" if result["status"] == "PASS"
                                     else "PRE-CPMS GROUP/ENVIRONMENT FAILURE — no CPMS attribution")
@@ -2258,7 +2276,10 @@ class Slice:
             with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as handle:
                 handle.write(text)
         if not STAGE_B_ENABLED:
-            return 0 if summary["stage_a"].get("measurement_complete") is True else 1
+            # Deliberate Stage-A-only diagnosis can succeed only as a healthy
+            # measurement. Completeness alone must never mask material failures.
+            return 0 if (summary["stage_a"].get("status") == "PASS"
+                         and summary["stage_a"].get("measurement_complete") is True) else 1
         if d3_status == "FAIL":
             return 1
         return 0 if all(summary[s]["status"] == "PASS" for s in ("stage_a", "stage_b")) else 1

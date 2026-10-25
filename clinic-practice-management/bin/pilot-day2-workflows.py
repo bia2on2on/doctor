@@ -214,6 +214,34 @@ def login(page, username, password, tag):
         raise RuntimeError(f"{tag}: wp-login.php did not complete authentication")
 
 
+def finance_refresh_ready(selected_location, selector_disabled, awaiting_rows, paid_rows, expected_location):
+    """The finance portal refresh is complete only after both required panels resolve."""
+    loading = "در حال بارگذاری"
+    return (str(selected_location or "") == str(expected_location)
+            and not selector_disabled
+            and loading not in str(awaiting_rows or "")
+            and loading not in str(paid_rows or ""))
+
+
+def wait_for_finance_refresh(page, location_id):
+    """Wait on the rendered result of the sequential location-scoped refresh, not elapsed time."""
+    page.wait_for_function(
+        """(expectedLocation) => {
+            const selector = document.querySelector('[data-role="finance-location"]');
+            const awaiting = document.querySelector('[data-role="finance-rows"]');
+            const paid = document.querySelector('[data-role="finance-paid-rows"]');
+            const loading = 'در حال بارگذاری';
+            return !!selector && !!awaiting && !!paid
+                && String(selector.value || '') === String(expectedLocation)
+                && !selector.disabled
+                && !String(awaiting.innerText || '').includes(loading)
+                && !String(paid.innerText || '').includes(loading);
+        }""",
+        arg=str(location_id),
+        timeout=25000,
+    )
+
+
 def run_selftest():
     u1 = build_rest_url("http://localhost:8080/wp-json/clinic/v1", "staff/portal/finance/reconciliation", {"from": "2026-10-24"})
     assert u1 == "http://localhost:8080/wp-json/clinic/v1/staff/portal/finance/reconciliation?from=2026-10-24"
@@ -221,6 +249,14 @@ def run_selftest():
     assert u2 == "http://localhost:8080/?rest_route=/clinic/v1/appointments/9/reschedule-options"
     assert wp_route(u1) == "/clinic/v1/staff/portal/finance/reconciliation"
     assert wp_route(u2) == "/clinic/v1/appointments/9/reschedule-options"
+
+    # The location-switch regression is a state predicate, not an arbitrary delay:
+    # wrong scope, an active request, or either unresolved panel must remain false.
+    assert not finance_refresh_ready("12", False, "rows", "paid rows", "13")
+    assert not finance_refresh_ready("13", True, "rows", "paid rows", "13")
+    assert not finance_refresh_ready("13", False, "در حال بارگذاری…", "paid rows", "13")
+    assert not finance_refresh_ready("13", False, "rows", "در حال بارگذاری…", "13")
+    assert finance_refresh_ready("13", False, "rows rendered", "paid rows rendered", "13")
 
     # Reception board envelope (RestBase::success => {"data": {...}}).
     good = parse_board_envelope(
@@ -253,7 +289,7 @@ def run_selftest():
             continue
         raise AssertionError(f"malformed reception board payload was accepted: {label}")
 
-    print("PASS day2-selftest — deterministic URL/route + REST envelope self-test passed")
+    print("PASS day2-selftest — URL/route + REST envelopes + observable finance refresh readiness passed")
     return 0
 
 
@@ -987,7 +1023,7 @@ def run_journey_d_accountant(browser, cfg):
         loc_sel = page_acc.locator('[data-role="finance-location"]')
         loc_sel.wait_for(state="visible", timeout=20000)
         loc_sel.select_option(str(cfg["loc_a1"]))
-        page_acc.wait_for_timeout(400)
+        wait_for_finance_refresh(page_acc, cfg["loc_a1"])
 
         with page_acc.expect_response(
             lambda r: "/staff/portal/finance/reconciliation" in r.url, timeout=25000
@@ -1025,7 +1061,7 @@ def run_journey_d_accountant(browser, cfg):
 
         # Switch to Loc A2 -> verify strict Location isolation
         loc_sel.select_option(str(cfg["loc_a2"]))
-        page_acc.wait_for_timeout(400)
+        wait_for_finance_refresh(page_acc, cfg["loc_a2"])
         with page_acc.expect_response(
             lambda r: "/staff/portal/finance/reconciliation" in r.url, timeout=25000
         ) as rec_a2_info:
