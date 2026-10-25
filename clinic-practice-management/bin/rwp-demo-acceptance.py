@@ -53,7 +53,8 @@ def dump_results(fixture=None):
     safe_fixture = None
     if fixture:
         safe_fixture = {k: fixture.get(k) for k in (
-            "demo_id", "clinic_id", "active_visit_id", "completed_visit_id", "booking_page_id"
+            "demo_id", "clinic_id", "location_id", "organization_id",
+            "active_visit_id", "completed_visit_id", "booking_page_id"
         )}
     payload = {
         "fixture": safe_fixture,
@@ -102,6 +103,8 @@ echo "DEMO_FIXTURE=" . wp_json_encode([
     "demo_id" => (string) ($s["demo_id"] ?? ""),
     "status" => (string) ($s["status"] ?? ""),
     "clinic_id" => (int) ($s["clinic_id"] ?? 0),
+    "location_id" => (int) ($s["location_id"] ?? 0),
+    "organization_id" => (int) ($s["organization_id"] ?? 0),
     "active_visit_id" => (int) ($s["active_visit_id"] ?? 0),
     "completed_visit_id" => (int) ($s["completed_visit_id"] ?? 0),
     "booking_page_id" => (int) ($s["booking_page_id"] ?? 0),
@@ -140,6 +143,10 @@ def click_form_action(page, action):
     form = page.locator(f'form:has(input[name="demo_action"][value="{action}"])')
     form.locator('input[type="submit"], button[type="submit"]').click()
     page.wait_for_load_state("domcontentloaded")
+
+
+def with_query(url, **params):
+    return url + ("&" if "?" in url else "?") + urlencode(params)
 
 
 def assert_no_horizontal_overflow(page, name):
@@ -218,7 +225,7 @@ def public_booking(browser, admin_page, links, credentials):
     return context, page, reference
 
 
-def reception_arrival(browser, credentials, staff_url, clinic_id, reference):
+def reception_arrival(browser, credentials, staff_url, clinic_id, location_id, reference):
     stage("reception check-in and enqueue of the public booking")
     output = wp_eval(r'''
 $db = \ClinicCore\Bootstrap\App::db();
@@ -232,7 +239,17 @@ echo "DEMO_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
         raise RuntimeError("Booked appointment was not found in the demo Clinic")
 
     context, page = open_account(browser, credentials, "receptionist")
-    page.goto(staff_url + ("&" if "?" in staff_url else "?") + urlencode({"cpms-module": "reception"}), wait_until="domcontentloaded")
+    page.goto(with_query(staff_url, **{"cpms-module": "reception"}), wait_until="domcontentloaded")
+    clinic_select = page.locator('[data-role="sr-clinic-select"]')
+    clinic_select.wait_for(state="visible")
+    page.locator(f'[data-role="sr-clinic-select"] option[value="{clinic_id}"]').wait_for(state="attached")
+    if clinic_select.input_value() != str(clinic_id):
+        clinic_select.select_option(str(clinic_id))
+    location_select = page.locator('[data-role="sr-location-select"]')
+    page.locator(f'[data-role="sr-location-select"] option[value="{location_id}"]').wait_for(state="attached", timeout=30000)
+    location_select.select_option(str(location_id))
+    check("reception exact demo Clinic and Location selected",
+          clinic_select.input_value() == str(clinic_id) and location_select.input_value() == str(location_id))
     arrive = page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
     arrive.wait_for(state="visible", timeout=35000)
     arrive.click()
@@ -251,10 +268,20 @@ echo "DEMO_ARRIVAL=" . wp_json_encode(["id" => (int) ($row["id"] ?? 0), "status"
     return context, page, int(arrival["id"])
 
 
-def doctor_journey(browser, credentials, staff_url, visit_id):
+def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visit_id):
     stage("doctor call start notes prescription complete")
     context, page = open_account(browser, credentials, "doctor")
-    page.goto(staff_url + ("&" if "?" in staff_url else "?") + urlencode({"cpms-module": "doctor"}), wait_until="domcontentloaded")
+    page.goto(with_query(staff_url, **{"cpms-module": "doctor"}), wait_until="domcontentloaded")
+    clinic_select = page.locator('[data-role="clinic-select"]')
+    clinic_select.wait_for(state="visible")
+    page.locator(f'[data-role="clinic-select"] option[value="{clinic_id}"]').wait_for(state="attached")
+    if clinic_select.input_value() != str(clinic_id):
+        clinic_select.select_option(str(clinic_id))
+    location_select = page.locator('[data-role="location-select"]')
+    page.locator(f'[data-role="location-select"] option[value="{location_id}"]').wait_for(state="attached", timeout=30000)
+    location_select.select_option(str(location_id))
+    check("doctor exact demo Clinic and Location selected",
+          clinic_select.input_value() == str(clinic_id) and location_select.input_value() == str(location_id))
     row_selector = f'[data-role="queue-item"][data-visit-id="{visit_id}"]'
     page.locator(row_selector).wait_for(state="visible", timeout=35000)
     page.locator(f'{row_selector} [data-action="call"]').click()
@@ -293,7 +320,7 @@ def doctor_journey(browser, credentials, staff_url, visit_id):
 def finance_journey(browser, credentials, staff_url, visit_id):
     stage("accountant invoice payment and reception checkout")
     accountant_context, accountant = open_account(browser, credentials, "accountant")
-    finance_url = staff_url + ("&" if "?" in staff_url else "?") + urlencode({"cpms-module": "finance"})
+    finance_url = with_query(staff_url, **{"cpms-module": "finance"})
     accountant.goto(finance_url, wait_until="domcontentloaded")
     issue = accountant.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
     issue.wait_for(state="visible", timeout=35000)
@@ -425,12 +452,14 @@ def main():
             check("one-time credentials not redisplayed", admin.locator("[data-demo-credentials]").count() == 0)
 
             stage("six logins and scoped portal rendering")
+            organization_url = with_query(links["management"], **{"cpms-org": fixture["organization_id"]})
+            clinic_management_url = with_query(links["management"], **{"cpms-clinic": fixture["clinic_id"]})
             portal_targets = {
-                "organization_manager": links["management"],
-                "clinic_manager": links["management"],
-                "doctor": links["staff"],
-                "receptionist": links["staff"] + ("&" if "?" in links["staff"] else "?") + "cpms-module=reception",
-                "accountant": links["staff"] + ("&" if "?" in links["staff"] else "?") + "cpms-module=finance",
+                "organization_manager": organization_url,
+                "clinic_manager": clinic_management_url,
+                "doctor": with_query(links["staff"], **{"cpms-module": "doctor"}),
+                "receptionist": with_query(links["staff"], **{"cpms-module": "reception"}),
+                "accountant": with_query(links["staff"], **{"cpms-module": "finance"}),
                 "patient": links["patient"],
             }
             for key in ACCOUNTS:
@@ -443,15 +472,25 @@ def main():
                     check("reception module delivered", page.locator('[data-role="reception-app"]').count() == 1)
                 if key == "accountant":
                     check("accountant finance module delivered", page.locator('[data-role="finance-root"]').count() == 1)
+                if key == "organization_manager":
+                    check("organization management scope delivered",
+                          page.locator(f'[data-cpms-org="{fixture["organization_id"]}"]').count() == 1)
+                if key == "clinic_manager":
+                    check("clinic management scope delivered",
+                          page.locator(f'[data-cpms-clinic="{fixture["clinic_id"]}"]').count() >= 1)
                 if key != "patient":
                     context.close()
                     contexts.remove(context)
 
             patient_context, patient_page, booking_reference = public_booking(browser, admin, links, credentials)
             contexts.append(patient_context)
-            arrival_context, arrival_page, live_visit_id = reception_arrival(browser, credentials, links["staff"], fixture["clinic_id"], booking_reference)
+            arrival_context, arrival_page, live_visit_id = reception_arrival(
+                browser, credentials, links["staff"], fixture["clinic_id"], fixture["location_id"], booking_reference
+            )
             contexts.append(arrival_context)
-            doctor_context, doctor_page = doctor_journey(browser, credentials, links["staff"], live_visit_id)
+            doctor_context, doctor_page = doctor_journey(
+                browser, credentials, links["staff"], fixture["clinic_id"], fixture["location_id"], live_visit_id
+            )
             contexts.append(doctor_context)
             reception_context, reception_page = finance_journey(browser, credentials, links["staff"], live_visit_id)
             contexts.append(reception_context)
@@ -459,9 +498,11 @@ def main():
 
             stage("management review and rotation")
             manager_context, manager = open_account(browser, credentials, "organization_manager")
-            manager.goto(links["management"], wait_until="domcontentloaded")
+            manager.goto(organization_url, wait_until="domcontentloaded")
             manager.wait_for_timeout(1000)
-            check("organization management review renders", "wp-login.php" not in manager.url and manager.locator("body").count() == 1)
+            check("organization management review renders exact demo scope",
+                  "wp-login.php" not in manager.url
+                  and manager.locator(f'[data-cpms-org="{fixture["organization_id"]}"]').count() == 1)
             assert_no_horizontal_overflow(manager, "management RTL desktop has no horizontal overflow")
             manager.set_viewport_size({"width": 390, "height": 844})
             assert_no_horizontal_overflow(manager, "management RTL mobile has no horizontal overflow")
