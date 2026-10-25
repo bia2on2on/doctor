@@ -22,7 +22,15 @@
 bash clinic-practice-management/bin/build-release.sh
 ```
 
-سپس ابزار `tests/disposable-site/assert-package.py` را با خروجی ZIP، سورسِ بایگانی‌شدهٔ `main` زنده و SHA مبنا اجرا کنید. این بررسی:
+ZIP حاصل را روی همان WordPress یک‌بارمصرف نصب و فعال کنید (پس از تنظیم `WP_DIR` در بخش ۳؛ مسیر ZIP را با مسیر واقعی جایگزین کنید):
+
+```bash
+wp plugin install /absolute/path/to/clinic-practice-management-1.0.0.zip \
+  --activate --path="$WP_DIR"
+wp plugin is-active clinic-practice-management --path="$WP_DIR"
+```
+
+این ZIP ساخته‌شده از سورس Production است، نه Demo یا لینک Release رسمی. سپس ابزار `tests/disposable-site/assert-package.py` را با خروجی ZIP، سورسِ بایگانی‌شدهٔ `main` زنده و SHA مبنا اجرا کنید. این بررسی:
 
 1. فایل‌های غیر Vendor داخل ZIP را بایت‌به‌بایت با همان فایل‌های Production مبنا مقایسه می‌کند.
 2. مسیرهای توسعه/تست/اسناد/محرمانه و Markerهای Demo و ابزار بیرونی را رد می‌کند.
@@ -93,6 +101,8 @@ Shortcode Production برای فهرست پزشکان و رزرو عمومی:
 [cpms_public_booking clinic_id="N"]
 ```
 
+در CPMS Classic فعلی Shortcode مستقلی با نام `[cpms_doctor_list]` ثبت نشده است؛ فهرست پزشکان، بخش Server-rendered همان `[cpms_public_booking]` است. بنابراین کد ناشناختهٔ `[cpms_doctor_list]` را به برگه اضافه نکنید. Runner روی همان فهرست واقعی، `data-role="clinicians"`، شناسه و نام دقیق پزشک ساختگی و تغییر `aria-pressed` پس از انتخاب را بررسی می‌کند.
+
 به‌جای `N` فقط `clinic_id` واقعیِ گزارش‌شده توسط Provisioner را بگذارید؛ آن را حدس نزنید. Provisioner یک برگهٔ عمومی با همین Shortcode واقعی می‌سازد. شناسهٔ Clinic پیش‌فرض bootstrap جایگزین Clinic ساختگی نمی‌شود.
 
 پیوندهای واقعی در State ثبت می‌شوند:
@@ -142,7 +152,7 @@ CPMS_DISPOSABLE_OTP_FILE="$CPMS_DISPOSABLE_OTP_FILE" \
 Runner برای هر Persona یک BrowserContext و Cookie Jar مستقل می‌سازد و این مسیرها را از UI/REST واقعی اجرا می‌کند:
 
 1. ورود شش حساب، نمایش محدوده‌ها و Denial بیمار/کارکنان غیرمجاز.
-2. Shortcode عمومی، Quote، درخواست و Verify عادی OTP، Hold، Confirm و Receipt.
+2. فهرست پزشکانِ Server-rendered همان Shortcode عمومی (شناسه/نام دقیق پزشک و انتخاب واقعی)، Quote، درخواست و Verify عادی OTP، Hold، Confirm و Receipt.
 3. انتخاب دقیق Clinic/Location در Reception، حضوریافت و ورود به صف.
 4. Call/Start پزشک، یادداشت، شکایت اصلی، نسخهٔ غیرواقعی، Finalize و تأیید واقعی Complete.
 5. صدور صورتحساب توسط Accountant با `invoice_id` واقعی، پرداخت آفلاین و Checkout توسط Reception.

@@ -341,13 +341,25 @@ def public_booking(browser, links, fixture):
     check("public shortcode rendered", root.count() == 1)
     check("public booking RTL", root.evaluate("el => getComputedStyle(el).direction") == "rtl")
 
-    clinician = root.locator(".cpms-public-booking__clinician")
+    # PublicBookingShortcode::renderBrowse() server-renders the actual doctor
+    # listing; there is no standalone cpms_doctor_list shortcode in this
+    # production tree. Assert the delivered list, exact clinician identity and
+    # accessible button behavior before continuing the existing booking flow.
+    doctor_list = root.locator('.cpms-public-booking__clinician-list[data-role="clinicians"]')
+    check("public doctor list rendered with actual list contract",
+          root.get_attribute("data-state") == "bookable"
+          and doctor_list.count() == 1
+          and doctor_list.get_attribute("role") == "list")
+    clinician = doctor_list.locator('button.cpms-public-booking__clinician[data-clinician-id]')
     clinician.wait_for()
-    if clinician.evaluate("el => el.tagName") == "SELECT":
-        if clinician.locator("option").count() > 1:
-            clinician.select_option(index=1)
-    else:
-        clinician.first.click()
+    check("public doctor list contains exact active synthetic doctor",
+          clinician.count() == 1
+          and clinician.first.get_attribute("data-clinician-id") == str(fixture["clinician_id"])
+          and clinician.first.locator(".cpms-public-booking__clinician-name").inner_text().strip() == fixture["clinician_name"]
+          and clinician.first.is_enabled())
+    clinician.first.click()
+    check("public doctor list selection updates aria-pressed",
+          clinician.first.get_attribute("aria-pressed") == "true")
     slot = root.locator(".cpms-public-booking__slot:not([disabled])").first
     slot.wait_for(state="visible", timeout=30000)
     slot.click()

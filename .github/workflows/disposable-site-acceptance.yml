@@ -11,9 +11,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
+# Checkout and source/provenance checks need read-only repository access. The
+# only write is a PR conversation comment containing pre-sanitized evidence;
+# main pushes and unmatched manual runs use the step summary instead.
 permissions:
-  contents: write
-  actions: read
+  contents: read
+  pull-requests: write
 
 env:
   WP_VERSION: '7.1.3'
@@ -347,6 +350,7 @@ jobs:
         if: always()
         env:
           GH_TOKEN: ${{ github.token }}
+          CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -u
           {
@@ -392,4 +396,4 @@ jobs:
             echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
             echo 'The post-browser scan covers generated-source and public evidence; teardown emits only fixed non-secret status lines and then removes protected inputs.'
           } > /tmp/acc/evidence-comment.md
-          gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'
+          bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md

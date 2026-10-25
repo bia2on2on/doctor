@@ -169,9 +169,10 @@ try {
     );
     try {
         $cpms_ds_stage = 'clinician';
+        $clinician_name = 'دکتر کاملاً آزمایشی CPMS';
         $clinician_id = App::clinicianRepository()->create((int) $state['clinic_id'], [
             'wp_user_id' => (int) $state['accounts']['doctor']['id'],
-            'full_name' => 'دکتر کاملاً آزمایشی CPMS',
+            'full_name' => $clinician_name,
             'specialty' => 'پزشک عمومی — داده فرضی',
             'room' => 'SYNTHETIC',
             'is_active' => 1,
@@ -180,6 +181,7 @@ try {
             cpms_ds_fail('CLINICIAN_CREATE', 'synthetic Clinician insert failed');
         }
         $state['clinician_id'] = $clinician_id;
+        $state['clinician_name'] = $clinician_name;
         App::membership_service()->assign_clinician_locations(
             $clinician_id,
             [(int) $state['location_id']],

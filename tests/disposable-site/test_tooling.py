@@ -182,6 +182,26 @@ class StaticBoundaryTest(unittest.TestCase):
         self.assertIn('--require-secret-count 14', workflow)
         self.assertIn('package-proof-full.json', workflow)
 
+    def test_doctor_list_and_workflow_permission_contracts(self):
+        workflow = (ROOT / ".github/workflows/disposable-site-acceptance.yml").read_text(encoding="utf-8")
+        permissions = workflow.split("permissions:", 1)[1].split("\nenv:", 1)[0]
+        self.assertIn("contents: read", permissions)
+        self.assertIn("pull-requests: write", permissions)
+        self.assertNotIn("contents: write", permissions)
+        self.assertNotIn("actions: read", permissions)
+        self.assertNotIn("pull_request_target", workflow)
+        self.assertIn("CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}", workflow)
+        self.assertIn("bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md", workflow)
+        self.assertNotIn("/commits/$HEAD_SHA/comments", workflow)
+
+        browser = (TOOL / "browser-acceptance.py").read_text(encoding="utf-8")
+        self.assertIn('data-role="clinicians"', browser)
+        self.assertIn('data-clinician-id', browser)
+        self.assertIn('aria-pressed', browser)
+        self.assertIn('fixture["clinician_name"]', browser)
+        provision = (TOOL / "wp-cli/provision.php").read_text(encoding="utf-8")
+        self.assertIn("$state['clinician_name'] = $clinician_name;", provision)
+
     def test_all_tooling_is_outside_installable_plugin(self):
         self.assertFalse(TOOL.is_relative_to(ROOT / "clinic-practice-management"))
         production = ROOT / "clinic-practice-management"
