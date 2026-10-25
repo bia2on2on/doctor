@@ -257,6 +257,22 @@
 		}
 	}
 
+	/**
+	 * خواندنِ انتخابِ persistشده با اعتبارسنجیِ Clinicِ همین سطح — چند
+	 * shortcode روی یک صفحه هرگز انتخابِ Clinicِ دیگر را ادامه نمی‌دهند.
+	 * انتخابِ قدیمیِ بدون clinic_id (قرارداد BC) پذیرفته می‌شود؛ فقط
+	 * clinic_idِ متفاوتِ صریح رد می‌شود.
+	 */
+	function readStoredSelectionForClinic(clinicId) {
+		var selection = readStoredSelection();
+		if (selection && toInt(selection.clinic_id) > 0 && toInt(clinicId) > 0
+			&& toInt(selection.clinician_id) > 0
+			&& toInt(selection.clinic_id) !== toInt(clinicId)) {
+			return null;
+		}
+		return selection;
+	}
+
 	function storeSelection(selection) {
 		try {
 			if (validSelection(selection)) {
@@ -679,6 +695,174 @@
 			return true;
 		}
 
+		/* ============ تقویم هفتگی — scaffold سمت سرور ============
+		 *
+		 * مرز هفته و ستون‌ها از دادهٔ سرور می‌آیند: jalali روزها از پاسخ A1،
+		 * نام روزهای فارسی از weekday_names در config، متنِ «هفتهٔ خالی» و
+		 * دکمه‌ها از markup سمت سرور. تنها محاسبهٔ اینجا «bucketingِ تقویمی»
+		 * روز↔شمارهٔ روز روی نیمه‌شب UTC برای ۷ ستون هفته است — نه timezone،
+		 * نه wall-clock، نه ظرفیت/ظرفیت/سیاست (bookability فقط سرور).
+		 */
+		var weekNav = root.querySelector('[data-role="week-nav"]');
+		var weekPrevBtn = weekNav ? weekNav.querySelector('[data-role="week-prev"]') : null;
+		var weekNextBtn = weekNav ? weekNav.querySelector('[data-role="week-next"]') : null;
+		var weekFirstBtn = weekNav ? weekNav.querySelector('[data-role="week-first"]') : null;
+		var weekLabelEl = weekNav ? weekNav.querySelector('[data-role="week-label"]') : null;
+		var weekEmptyEl = weekNav ? weekNav.querySelector('[data-role="week-empty"]') : null;
+		var weekdayNames = Array.isArray(config.weekday_names) ? config.weekday_names : [];
+		var weekStarts = [];
+		var weekIndex = 0;
+		var weekRenderDays = [];
+
+		function dayNumFromYmd(dateStr) {
+			var parts = /^(\d{4})-(\d{2})-(\d{2})$/.exec(isNonEmptyString(dateStr) ? dateStr : '');
+			if (!parts) { return -1; }
+			return Math.floor(Date.UTC(Number(parts[1]), Number(parts[2]) - 1, Number(parts[3])) / 86400000);
+		}
+
+		function weekStartDayNum(dayNum) {
+			// Anchor: 1970-01-01 had weekday-index 4 ⇒ (dayNum + 5) mod 7 === 0
+			// lands exactly on the first day of the Persian week.
+			var offset = ((dayNum + 5) % 7 + 7) % 7;
+			return dayNum - offset;
+		}
+
+		function ymdFromDayNum(dayNum) {
+			var d = new Date(dayNum * 86400000);
+			var month = String(d.getUTCMonth() + 1);
+			var day = String(d.getUTCDate());
+			return d.getUTCFullYear() + '-' + (month.length < 2 ? '0' + month : month)
+				+ '-' + (day.length < 2 ? '0' + day : day);
+		}
+
+		function rebuildWeeks(days) {
+			weekRenderDays = days;
+			weekStarts = [];
+			var seen = Object.create(null);
+			for (var i = 0; i < days.length; i++) {
+				var dayNum = dayNumFromYmd(days[i] && days[i].date);
+				if (dayNum < 0) { continue; }
+				var start = weekStartDayNum(dayNum);
+				if (!seen[start]) { seen[start] = 1; weekStarts.push(start); }
+			}
+			weekStarts.sort(function (a, b) { return a - b; });
+			// بازهٔ پیوسته از اولین تا آخرین هفتهٔ دارای نوبت — هفته‌های خالیِ
+			// میانی هم ناوبری و پیامِ خالیِ server-rendered دارند؛ مرز بیرونی
+			// هرگز از دادهٔ تبلیغ‌شدهٔ خود A1 فراتر نمی‌رود.
+			var contiguous = [];
+			if (weekStarts.length > 0) {
+				for (var w = weekStarts[0]; w <= weekStarts[weekStarts.length - 1]; w += 7) {
+					contiguous.push(w);
+				}
+			}
+			weekStarts = contiguous;
+			weekIndex = 0;
+		}
+
+		function paintCurrentWeek() {
+			if (!weekNav || weekStarts.length === 0) { return 0; }
+			var start = weekStarts[weekIndex];
+			var inWeek = [];
+			for (var i = 0; i < weekRenderDays.length; i++) {
+				var dayNum = dayNumFromYmd(weekRenderDays[i] && weekRenderDays[i].date);
+				if (dayNum >= start && dayNum < start + 7) { inWeek.push(weekRenderDays[i]); }
+			}
+			inWeek.sort(function (a, b) {
+				var left = isNonEmptyString(a.date) ? a.date : '';
+				var right = isNonEmptyString(b.date) ? b.date : '';
+				return left < right ? -1 : (left > right ? 1 : 0);
+			});
+			if (weekPrevBtn) { weekPrevBtn.disabled = weekIndex <= 0; }
+			if (weekNextBtn) { weekNextBtn.disabled = weekIndex >= weekStarts.length - 1; }
+			if (weekFirstBtn) { weekFirstBtn.hidden = weekStarts.length <= 1; }
+			setText(daysHost, '');
+			var byDate = Object.create(null);
+			for (var j = 0; j < inWeek.length; j++) {
+				if (isNonEmptyString(inWeek[j].date)) { byDate[inWeek[j].date] = inWeek[j]; }
+			}
+			var slotCount = 0;
+			for (var col = 0; col < 7; col++) {
+				var dateStr = ymdFromDayNum(start + col);
+				var day = byDate[dateStr] || null;
+				var node = day ? buildDay(day) : null;
+				if (node) {
+					fill(node, 'dow', weekdayNames.length === 7 ? weekdayNames[col] : '');
+					daysHost.appendChild(node);
+					slotCount += node.querySelectorAll(SLOT_SELECTOR).length;
+				} else {
+					var emptyNode = templateNode(root, 'day-empty');
+					if (emptyNode) {
+						fill(emptyNode, 'dow', weekdayNames.length === 7 ? weekdayNames[col] : '');
+						daysHost.appendChild(emptyNode);
+					}
+				}
+			}
+			if (weekEmptyEl) { weekEmptyEl.hidden = inWeek.length !== 0; }
+			if (weekLabelEl) {
+				if (inWeek.length === 0) {
+					setText(weekLabelEl, '');
+				} else {
+					// jalali همان‌طور که سرور برای همان روز فرستاده — بدون تبدیل.
+					var first = inWeek[0];
+					var last = inWeek[inWeek.length - 1];
+					var firstLabel = isNonEmptyString(first.jalali) ? first.jalali : (isNonEmptyString(first.date) ? first.date : '');
+					var lastLabel = isNonEmptyString(last.jalali) ? last.jalali : (isNonEmptyString(last.date) ? last.date : '');
+					setText(weekLabelEl, firstLabel === lastLabel ? firstLabel : firstLabel + ' — ' + lastLabel);
+				}
+			}
+			return slotCount;
+		}
+
+		function changeWeek(delta) {
+			if (busy || holdToken !== '') { return; }
+			var next = weekIndex + delta;
+			if (next < 0 || next >= weekStarts.length) { return; }
+			weekIndex = next;
+			if (lastSelection) {
+				lastSelection = null;
+				clearStoredSelection();
+			}
+			clearDetail();
+			var count = paintCurrentWeek();
+			panelState(count > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+		}
+
+		function jumpToFirstWeek() {
+			if (busy || holdToken !== '' || weekIndex === 0 || weekStarts.length === 0) { return; }
+			weekIndex = 0;
+			if (lastSelection) {
+				lastSelection = null;
+				clearStoredSelection();
+			}
+			clearDetail();
+			var count = paintCurrentWeek();
+			panelState(count > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+		}
+
+		function ensureWeekForDate(dateStr) {
+			if (!weekNav || weekStarts.length === 0) { return; }
+			var dayNum = dayNumFromYmd(dateStr);
+			if (dayNum < 0) { return; }
+			var start = weekStartDayNum(dayNum);
+			var position = -1;
+			for (var i = 0; i < weekStarts.length; i++) {
+				if (weekStarts[i] === start) { position = i; break; }
+			}
+			if (position < 0 || position === weekIndex) { return; }
+			weekIndex = position;
+			paintCurrentWeek();
+			// repaint گرهٔ فشردهٔ قبلی را از بین برد — انتخابِ جاری را دوباره علامت بزن.
+			if (lastSelection && toInt(lastSelection.slot_id) > 0) {
+				var buttons = slotButtons();
+				for (var j = 0; j < buttons.length; j++) {
+					if (toInt(buttons[j].getAttribute('data-slot-id')) === toInt(lastSelection.slot_id)) {
+						setPressed(buttons, buttons[j]);
+						break;
+					}
+				}
+			}
+		}
+
 		/* ---------------- A1: مرورِ نوبت‌های آزاد (مسیرِ موجود) ---------------- */
 
 		function buildDay(day) {
@@ -749,6 +933,18 @@
 		function renderDays(days) {
 			setText(daysHost, '');
 
+			// تقویم هفتگی — وقتی سطح، ناوبری هفتگی سرور را منتشر کرده باشد
+			// (فقط در همان حالت؛ markup قدیمی/تست‌ها همان مسیر تخت را دارند).
+			if (weekNav) {
+				rebuildWeeks(days);
+				if (weekStarts.length === 0) {
+					weekNav.hidden = true;
+					return 0;
+				}
+				weekNav.hidden = false;
+				return paintCurrentWeek();
+			}
+
 			var slotCount = 0;
 			for (var i = 0; i < days.length; i++) {
 				var dayNode = buildDay(days[i]);
@@ -764,6 +960,7 @@
 		function loadAvailability(clinicianId, restoreSelection) {
 			clearDetail();
 			setText(daysHost, '');
+			if (weekNav) { weekNav.hidden = true; }
 			availableDays = [];
 			availableLocations = [];
 			selectedLocationId = 0;
@@ -784,6 +981,7 @@
 			var url = apiUrl(
 				config.rest_root,
 				config.availability_path + '?clinician_id=' + encodeURIComponent(String(clinicianId))
+					+ '&clinic_id=' + encodeURIComponent(String(toInt(config.clinic_id)))
 			);
 
 			requestJson(url, {
@@ -940,6 +1138,7 @@
 
 			var payload = {
 				clinician_id: selectedClinicianId,
+				clinic_id: toInt(config.clinic_id),
 				slot_date: slotDate,
 				slot_time: slotTime
 			};
@@ -953,6 +1152,7 @@
 			// Phase 8 Slice 2 — انتخابِ جاری (غیر-PHI) برای ادامهٔ احراز/رزرو.
 			lastSelection = {
 				clinician_id: selectedClinicianId,
+				clinic_id: toInt(config.clinic_id),
 				slot_id: slotId > 0 ? slotId : 0,
 				location_id: selectedLocationId,
 				slot_date: slotDate,
@@ -1037,9 +1237,10 @@
 			// سرور tuple را فقط وقتی کامل می‌پذیرد (پزشک+اسلات+تاریخ+ساعت).
 			// در نصب با بیش از یک Clinic بدون همین انتخاب، A2 با
 			// CLINIC_SCOPE_REQUIRED مسدود می‌شود (class A — یافتهٔ مرورگر واقعی).
-			var a2Selection = validSelection(lastSelection) || readStoredSelection();
+			var a2Selection = validSelection(lastSelection) || readStoredSelectionForClinic(config.clinic_id);
 			if (a2Selection && toInt(a2Selection.slot_id) > 0) {
 				payload.clinician_id = toInt(a2Selection.clinician_id);
+				payload.clinic_id = toInt(config.clinic_id);
 				payload.slot_id = toInt(a2Selection.slot_id);
 				payload.slot_date = a2Selection.slot_date;
 				payload.slot_time = a2Selection.slot_time;
@@ -1230,6 +1431,9 @@
 				body.slot_id = toInt(selection.slot_id);
 			}
 			body.location_id = toInt(selection.location_id);
+			// Shared-Clinic — B1 هم clinic_idِ سطحِ انتخابشده را می‌فرستد؛ سرور
+			// مشارکت پزشک و slot.clinic_id را دوباره الزام می‌کند.
+			body.clinic_id = toInt(config.clinic_id);
 			// Phase 8 Slice 3 — B1 only: strict send gate. patient_id may be sent ONLY IF N>1 chooser exists,
 			// has options, and id is exactly among current rendered data-patient-id values. Otherwise clear stale and send nothing.
 			var pidToSend = getPatientIdForB1();
@@ -1414,6 +1618,7 @@
 
 			lastSelection = {
 				clinician_id: clinicianId,
+				clinic_id: toInt(config.clinic_id),
 				slot_id: toInt(selection.slot_id),
 				location_id: locationId,
 				slot_date: selection.slot_date,
@@ -1422,6 +1627,7 @@
 
 			var payload = {
 				clinician_id: clinicianId,
+				clinic_id: toInt(config.clinic_id),
 				slot_date: selection.slot_date,
 				slot_time: selection.slot_time,
 				location_id: locationId
@@ -1442,6 +1648,7 @@
 				var p = result.body && result.body.data ? result.body.data : null;
 				if (result.ok && p && p.available === true && toInt(p.location_id) === locationId) {
 					panelState(STATE_BOOKABLE);
+					ensureWeekForDate(selection.slot_date);
 					showDetail('detail-capacity', { capacity: toInt(p.capacity_left) });
 					storeSelection(lastSelection);
 					if (autoHold) { beginHold(lastSelection); }
@@ -1459,7 +1666,7 @@
 		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
 
 		if (authMode === 'patient') {
-			var restored = readStoredSelection();
+			var restored = readStoredSelectionForClinic(config.clinic_id);
 			if (restored && toInt(restored.clinician_id) > 0) {
 				selectedClinicianId = toInt(restored.clinician_id);
 				for (var restoreIndex = 0; restoreIndex < clinicianButtons.length; restoreIndex++) {
@@ -1569,6 +1776,83 @@
 				}, true);
 			}
 		});
+
+		/* -------- ناوبری تقویم هفتگی (دکمه‌ها و متن‌ها از markup سرور) -------- */
+		if (weekPrevBtn) { weekPrevBtn.addEventListener('click', function () { changeWeek(-1); }); }
+		if (weekNextBtn) { weekNextBtn.addEventListener('click', function () { changeWeek(1); }); }
+		if (weekFirstBtn) { weekFirstBtn.addEventListener('click', jumpToFirstWeek); }
+
+		/* -------- فیلترهای فهرست پزشکان (server-rendered؛ فقط نمایش/پنهان) -------- */
+		var doctorSearchInput = root.querySelector('[data-role="doctor-search"]');
+		var specialtyFilter = root.querySelector('[data-role="specialty-filter"]');
+		var doctorFilterReset = root.querySelector('[data-role="doctor-filter-reset"]');
+		var doctorDirectoryEmpty = root.querySelector('[data-role="directory-empty"]');
+
+		function normalizeDoctorQuery(value) {
+			// آینهٔ دقیقِ normalizeDoctorSearch سمت سرور (ی/ي، ك/ک، أ إ آ→ا، ة→ه،
+			// حذف اعراب و کشیده، کوچک‌سازی لاتین، فاصله‌های چندگانه).
+			return String(value || '')
+				.replace(/[\u064A\u0649\u0626]/g, '\u06CC')
+				.replace(/[\u0643\u06AA]/g, '\u06A9')
+				.replace(/[\u0623\u0625\u0622\u0671]/g, '\u0627')
+				.replace(/\u0629/g, '\u0647')
+				.replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+				.toLowerCase()
+				.replace(/\s+/g, ' ')
+				.replace(/^\s+|\s+$/g, '');
+		}
+
+		function applyDoctorFilters() {
+			if (!doctorSearchInput && !specialtyFilter) { return; }
+			var query = normalizeDoctorQuery(doctorSearchInput ? doctorSearchInput.value : '');
+			var specialty = specialtyFilter ? specialtyFilter.value : '';
+			var list = root.querySelector('[data-role="clinicians"]');
+			if (!list) { return; }
+			var items = list.children;
+			var visible = 0;
+			for (var i = 0; i < items.length; i++) {
+				var button = items[i].querySelector('button[data-clinician-id]');
+				if (!button) { continue; }
+				var haystack = button.getAttribute('data-search') || '';
+				var buttonSpecialty = button.getAttribute('data-specialty') || '';
+				var matches = (query === '' || haystack.indexOf(query) !== -1)
+					&& (specialty === '' || buttonSpecialty === specialty);
+				items[i].hidden = !matches;
+				if (matches) { visible++; }
+			}
+			if (doctorDirectoryEmpty) { doctorDirectoryEmpty.hidden = visible !== 0; }
+			if (doctorFilterReset) { doctorFilterReset.hidden = query === '' && specialty === ''; }
+			// پزشکِ انتخابشده که زیر فیلتر رفت → انتخابِ دیگر معتبر نیست: رها می‌شود.
+			if (selectedClinicianId > 0) {
+				var selected = root.querySelector('[data-clinician-id="' + String(selectedClinicianId) + '"]');
+				var selectedLi = selected ? selected.parentElement : null;
+				if (selected && selectedLi && selectedLi.hidden) {
+					for (var j = 0; j < clinicianButtons.length; j++) {
+						clinicianButtons[j].setAttribute('aria-pressed', 'false');
+					}
+					selectedClinicianId = 0;
+					selectedLocationId = 0;
+					lastSelection = null;
+					clearStoredSelection();
+					setText(daysHost, '');
+					clearDetail();
+					if (weekNav) { weekNav.hidden = true; }
+					if (locationPicker) { locationPicker.hidden = true; }
+					panelState('idle');
+				}
+			}
+		}
+
+		if (doctorSearchInput) { doctorSearchInput.addEventListener('input', applyDoctorFilters); }
+		if (specialtyFilter) { specialtyFilter.addEventListener('change', applyDoctorFilters); }
+		if (doctorFilterReset) {
+			doctorFilterReset.addEventListener('click', function () {
+				if (doctorSearchInput) { doctorSearchInput.value = ''; }
+				if (specialtyFilter) { specialtyFilter.value = ''; }
+				applyDoctorFilters();
+				if (doctorSearchInput) { doctorSearchInput.focus(); }
+			});
+		}
 	}
 
 	/* ====================== راه‌اندازی ====================== */

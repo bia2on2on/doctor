@@ -44,6 +44,10 @@ final class BookingController extends RestBase
                     // (BookingService::availability با from/to = null).
                     'from' => ['required' => false, 'type' => 'string'],
                     'to' => ['required' => false, 'type' => 'string'],
+                    // Shared-Clinic discovery: OPTIONAL selected-clinic selector.
+                    // Absent → historical home-clinic derivation (BC). Present →
+                    // participation-verified clinic only (fail-closed 404).
+                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -59,6 +63,8 @@ final class BookingController extends RestBase
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
+                    // Shared-Clinic discovery — optional selected clinic (BC when absent).
+                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -76,6 +82,8 @@ final class BookingController extends RestBase
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'patient_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
+                    // Shared-Clinic discovery — optional selected clinic (BC when absent).
+                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -212,11 +220,13 @@ final class BookingController extends RestBase
     {
         $from = $request->get_param('from');
         $to = $request->get_param('to');
+        $clinicId = $request->get_param('clinic_id');
 
         return $this->wrap(fn () => $this->booking->availability(
             (int) $request->get_param('clinician_id'),
             is_string($from) && $from !== '' ? $from : null,
-            is_string($to) && $to !== '' ? $to : null
+            is_string($to) && $to !== '' ? $to : null,
+            $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
 
@@ -224,13 +234,15 @@ final class BookingController extends RestBase
     {
         $slotId = $request->get_param('slot_id');
         $location_id = $request->get_param( 'location_id' );
+        $clinicId = $request->get_param('clinic_id');
         return $this->wrap(fn () => $this->booking->quote(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
             (string) $request->get_param('slot_time'),
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
-            $location_id !== null && $location_id !== '' ? (int) $location_id : null
+            $location_id !== null && $location_id !== '' ? (int) $location_id : null,
+            $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
 
@@ -245,6 +257,7 @@ final class BookingController extends RestBase
         $slotId = $request->get_param('slot_id');
         $patientId = $request->get_param('patient_id');
         $location_id = $request->get_param( 'location_id' );
+        $clinicId = $request->get_param('clinic_id');
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
             (int) $request->get_param('clinician_id'),
@@ -253,7 +266,8 @@ final class BookingController extends RestBase
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $patientId !== null && $patientId !== '' ? (int) $patientId : null,
-            $location_id !== null && $location_id !== '' ? (int) $location_id : null
+            $location_id !== null && $location_id !== '' ? (int) $location_id : null,
+            $clinicId !== null && $clinicId !== '' ? (int) $clinicId : null
         ));
     }
 

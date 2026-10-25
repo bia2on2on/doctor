@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Settings\Settings;
 
 /**
  * صفحه «CPMS (فنی و لاگ)» در wp-admin — فقط برای cpms_config (فنی).
@@ -119,6 +120,28 @@ final class SettingsAdmin
                 <tr><th>SMS Quiet Hours</th><td><?php echo esc_html((string) $settings->get('notif.quiet_hours_start') . ' – ' . (string) $settings->get('notif.quiet_hours_end')); ?></td></tr>
                 <tr><th>سقف بازه گزارش (روز)</th><td><?php echo esc_html((string) $settings->get('reports.max_range_days')); ?></td></tr>
             </table>
+
+            <?php
+            // نمایش عمومی (فهرست discovery) — رضختمصریِ per-Clinic؛ پیش‌فرض
+            // fail-closed (false) و فقط همین‌جا (با scope انتخابشده و nonce
+            // موجودِ cpms_save_settings) قابل تغییر است. بدون consent، هیچ
+            // Clinicی در `[cpms_public_booking clinic_id="all"]` فهرست نمی‌شود.
+            ?>
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-cpms-public-listing-form>
+                <input type="hidden" name="action" value="cpms_save_settings" />
+                <?php wp_nonce_field('cpms_save_settings'); ?>
+                <input type="hidden" name="cpms_public_listing_form" value="1" />
+                <input type="hidden" name="clinic_id" value="<?php echo (int) $selected_clinic_id; ?>" />
+                <h3>نمایش در فهرست عمومی نوبت‌دهی</h3>
+                <p>
+                    <label>
+                        <input type="checkbox" name="public_listing_enabled" value="1" <?php checked((bool) $settings->get('public.listing_enabled', false)); ?> />
+                        این Clinic در فهرست عمومی <code>[cpms_public_booking clinic_id="all"]</code> نمایش داده شود
+                    </label>
+                </p>
+                <p class="description">پیش‌فرض «خاموش» است؛ بدون رضختمصریِ صریح این‌جا، هیچ فهرست‌گذاری عمومی وجود ندارد. شرایط هم‌زمان: Organization فعال، Clinic فعال (تعلیق‌نشده) و دست‌کم یک Location فعال.</p>
+                <p><button type="submit" class="button button-primary">ذخیرهٔ نمایش عمومی</button></p>
+            </form>
             <?php endif; ?>
             <p class="description">
                 یادآوری: این بخش صرفاً فنی است. دسترسی به PHI/Audit نیازمند Capability صریح
@@ -133,6 +156,27 @@ final class SettingsAdmin
         if (!current_user_can('cpms_config') || !isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'cpms_save_settings')) {
             wp_die('اعتبارسنجی ناموفق');
         }
+
+        // نمایش عمومی (فهرست discovery) — تنها نوشتنِ consent از این hook.
+        // فقط وقتی فرمِ اختصاصی همین بخش ارسال شده، با scopeِ دوباره
+        // استقراریافتهٔ CONFIG (همان AdminClinicSelector::establish صفحهٔ
+        // render) و همان nonce — در غیر این صورت هیچ نوشتنی رخ نمی‌دهد.
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified on the line above
+        $posted_clinic_id = isset($_POST['clinic_id']) ? absint(wp_unslash((string) $_POST['clinic_id'])) : 0;
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified on the line above
+        if (isset($_POST['cpms_public_listing_form']) && $posted_clinic_id > 0) {
+            $actor_user_id = (int) get_current_user_id();
+            try {
+                $clinic_scope = AdminClinicSelector::establish($actor_user_id, $posted_clinic_id, RolesAndCapabilities::CONFIG);
+            } catch (\Throwable) {
+                $clinic_scope = null;
+            }
+            if (null !== $clinic_scope) {
+                (new Settings(App::db(), (int) $clinic_scope->clinicId, App::audit())) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+                    ->set('public.listing_enabled', isset($_POST['public_listing_enabled']), $actor_user_id);
+            }
+        }
+
         // فرم ویدیویی در F2+ — در اینجا فقط Hook آماده است.
         wp_safe_redirect(wp_get_referer() ?: admin_url('admin.php?page=cpms-settings'));
         exit;

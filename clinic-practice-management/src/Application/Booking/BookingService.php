@@ -112,9 +112,12 @@ final class BookingService
      *
      * @return array{days: list<array<string, mixed>>}
      */
-    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null): array
+    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $requestedClinicId = null): array
     {
-        $clinicId = $this->requireClinician($clinicianId);
+        // Shared-Clinic (optional clinic_id): absent → home clinic (BC);
+        // present → participation-verified clinic (resolveClinicForRequest).
+        $homeClinicId = $this->requireClinician($clinicianId);
+        $clinicId     = $this->resolveClinicForRequest($clinicianId, $homeClinicId, $requestedClinicId);
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended
         // Clinic publishes no bookable slots. Returns the established public
@@ -400,9 +403,12 @@ final class BookingService
      * @return array{available: bool, capacity_left: int, slot_id?: int, location_id?: int}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
+    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null, ?int $requestedClinicId = null): array
     {
-        $clinicId = $this->requireClinician($clinicianId);
+        // Shared-Clinic (optional clinic_id): BC when absent; participation-
+        // verified clinic when present — slot resolution below is scoped to it.
+        $homeClinicId = $this->requireClinician($clinicianId);
+        $clinicId     = $this->resolveClinicForRequest($clinicianId, $homeClinicId, $requestedClinicId);
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
         // never reports bookable capacity, so the public flow cannot advance to
@@ -460,7 +466,7 @@ final class BookingService
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null, ?int $requestedClinicId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
@@ -481,7 +487,13 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $clinic_id = $this->requireClinician( $clinician_id );
+        // Shared-Clinic (optional clinic_id): BC when absent; participation-
+        // verified clinic when present. resolve_slot_for_booking below then
+        // enforces slot.clinic_id == that clinic (findByIdAndClinic / scoped
+        // tuple lookup), so a forged cross-clinic slot keeps the established
+        // CLINIC_NOT_FOUND/404 parity.
+        $home_clinic_id = $this->requireClinician( $clinician_id );
+        $clinic_id      = $this->resolveClinicForRequest( $clinician_id, $home_clinic_id, $requestedClinicId );
         if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
@@ -2412,6 +2424,40 @@ final class BookingService
         }
 
         return (int) $row['clinic_id'];
+    }
+
+    /**
+     * Shared-Clinic authority for public booking reads/writes (optional
+     * browser-supplied `clinic_id` on A1/A4/B1).
+     *
+     *  - Absent / <= 0 / equal to the home clinic → home clinic. This is the
+     *    exact historical behavior, so requests WITHOUT clinic_id are
+     *    fully backward compatible.
+     *  - Otherwise the requested clinic must pass
+     *    MembershipRepository::clinician_participates_in() — an ACTIVE
+     *    durable membership (or the home-clinic compatibility path). The
+     *    clinician was already required active by requireClinician().
+     *
+     * Fail-closed: any non-participating (unknown, foreign, suspended-
+     * membership) clinic id raises the SAME CLINIC_NOT_FOUND/404 envelope as
+     * an unknown clinician — non-enumerating, no permission oracle, no
+     * weakened authorization.
+     *
+     * Once resolved, every downstream check (lifecycle, settings, window,
+     * slot resolution, location, capacity, holds) is scoped to this clinic,
+     * which enforces `slot.clinic_id == selected clinic`.
+     */
+    private function resolveClinicForRequest(int $clinicianId, int $homeClinicId, ?int $requestedClinicId): int
+    {
+        if ($requestedClinicId === null || $requestedClinicId <= 0 || $requestedClinicId === $homeClinicId) {
+            return $homeClinicId;
+        }
+
+        if (!$this->memberships->clinician_participates_in($clinicianId, $requestedClinicId)) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404);
+        }
+
+        return $requestedClinicId;
     }
 
     /**

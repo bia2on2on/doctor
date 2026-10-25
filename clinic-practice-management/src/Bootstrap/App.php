@@ -805,6 +805,21 @@ final class App
     }
 
     /**
+     * Repository عضویت — همان primitive سیاستِ مشارکت
+     * (MembershipRepository::clinician_participates_in) برای مسیرهایی که
+     * باید بدون واسطهٔ سرویس بپرسند (مثلاً A2 در OtpController).
+     */
+    public static function membershipRepository(): MembershipRepository
+    {
+        static $repo = null;
+        if ( $repo === null ) {
+            $repo = new MembershipRepository( self::db() );
+        }
+
+        return $repo;
+    }
+
+    /**
      * سرویس مجوز کلینیک‌محور (Phase 3 Slice 1 — AuthorizationService foundation).
      * Reusable, typed, fail-closed, بدون وابستگی به Scope محیطی.
      */

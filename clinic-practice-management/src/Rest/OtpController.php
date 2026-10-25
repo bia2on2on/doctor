@@ -43,6 +43,10 @@ final class OtpController extends RestBase
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'slot_date' => ['required' => false, 'type' => 'string'],
                     'slot_time' => ['required' => false, 'type' => 'string'],
+                    // Shared-Clinic discovery — OPTIONAL selected-clinic selector.
+                    // Absent → historical home-clinic derivation (BC). Present →
+                    // participation-verified clinic only (same fail-closed 404).
+                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -190,6 +194,16 @@ final class OtpController extends RestBase
             );
         }
 
+        // Shared-Clinic discovery — OPTIONAL browser-selected clinic. BC:
+        // absent → the historical home-clinic derivation below is untouched.
+        // Present → it must be the home clinic or pass the canonical
+        // participation primitive (active durable membership); anything else
+        // fails with the SAME CLINIC_NOT_FOUND/404 envelope as a cross-clinic
+        // slot (non-enumerating). The slot lookup then runs against the
+        // verified clinic, so slot.clinic_id == selected clinic is enforced
+        // BEFORE any challenge or SMS.
+        $requestedClinicId = $request->get_param('clinic_id');
+
         // ۱+۲) clinicianِ فعالِ persisted — Clinic فقط از ردیفِ persisted.
         $clinician = App::db()->fetchRow(
             'SELECT clinic_id, is_active FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
@@ -199,6 +213,22 @@ final class OtpController extends RestBase
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک انتخابی یافت نشد', 404);
         }
         $clinicId = (int) $clinician['clinic_id'];
+
+        if (self::hasValue($requestedClinicId)) {
+            $requestedClinicId = (int) $requestedClinicId;
+            if ($requestedClinicId <= 0) {
+                throw BookingException::of(
+                    'CLINIC_VALIDATION_FAILED',
+                    'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
+                    422
+                );
+            }
+            if ($requestedClinicId !== $clinicId
+                && !App::membershipRepository()->clinician_participates_in($clinicianId, $requestedClinicId)) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+            }
+            $clinicId = $requestedClinicId;
+        }
 
         // ۳) slot باید داخل همان Clinic persisted باشد.
         $slot = App::db()->fetchRow(
