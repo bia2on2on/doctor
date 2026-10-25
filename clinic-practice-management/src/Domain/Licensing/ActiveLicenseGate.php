@@ -9,7 +9,7 @@ namespace ClinicCore\Domain\Licensing;
  *
  * این کلاس خالص (Pure) است: بدون WP، بدون DB، بدون شبکه.
  * در F10 با Gate واقعی (خواندن وضعیت لایسنس همگام‌شده‌ی local) جایگزین می‌شود —
- * فقط `App::licenseGate()` تغییر می‌کند، نه Business Services.
+ * فقط `App::license_gate()` تغییر می‌کند، نه Business Services.
  */
 final class ActiveLicenseGate implements LicenseGate
 {

@@ -54,7 +54,7 @@ final class HandwritingService
     }
 
     private function assert_licensed_new_use(): void {
-        $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::licenseGate();
+        $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::license_gate();
         if ( ! $gate->assert( \ClinicCore\Domain\Licensing\LicenseGate::OP_HANDWRITING_NEW )->allowed ) {
             throw HandwritingException::of( 'CLINIC_LICENSE_BLOCKED', 'استفاده جدید از دست‌خط نیازمند تمدید مجوز است', 503 );
         }

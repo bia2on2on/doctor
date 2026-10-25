@@ -415,6 +415,7 @@ final class BookingController extends RestBase
         }
 
         $slotId = $request->get_param('slot_id');
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- established closure-call shape; no security sniff suppressed.
         return $this->wrap(fn () => $this->booking->create_by_staff(
             (int) $user->ID,
             (int) $request->get_param('patient_id'),
@@ -456,8 +457,10 @@ final class BookingController extends RestBase
         }
 
         return $this->wrap(fn () => $isStaff
-            ? $this->booking->cancelByStaff((int) $user->ID, $appointmentId, $reason)
-            : $this->booking->cancel_by_patient((int) $user->ID, $appointmentId, $reason));
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local (PHP 8 named-argument contract on the callee); no security sniff suppressed.
+            ? $this->booking->cancelByStaff( (int) $user->ID, $appointmentId, $reason )
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            : $this->booking->cancel_by_patient( (int) $user->ID, $appointmentId, $reason ) );
     }
 
     // ---------- Permission / error helpers ----------
@@ -588,8 +591,9 @@ final class BookingController extends RestBase
     private function wrap( callable $fn ): WP_REST_Response|WP_Error {
         try {
             return $this->success( $fn(), 200 );
-        } catch (BookingException $e) {
-            return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch ( BookingException $e ) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established legacy property name; renaming is a class-wide API change. No security sniff suppressed.
+            return $this->error( $e->errorCode, $e->httpStatus, $e->getMessage(), $e->data );
         } catch ( \Throwable $e ) {
             // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational boundary log without leaking raw exception details to client.
             error_log( '[CPMS][BookingController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );

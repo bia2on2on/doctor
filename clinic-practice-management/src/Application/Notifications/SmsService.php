@@ -93,7 +93,7 @@ final class SmsService
         if ( $event === SmsEvents::OTP ) {
             return true;
         }
-        $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::licenseGate();
+        $gate = $this->license_gate ?? \ClinicCore\Bootstrap\App::license_gate();
         return $gate->assert( \ClinicCore\Domain\Licensing\LicenseGate::OP_SMS_COMMERCIAL )->allowed;
     }
 

@@ -830,7 +830,7 @@ final class BookingService
                 // با کلید متفاوت تکرار → پاسخ همان Appointment
                 $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
                 if ($appt !== null) {
-                    return $this->appointment_view($appt);
+                    return $this->appointment_view( $appt );
                 }
             }
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422);
@@ -844,7 +844,7 @@ final class BookingService
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
         }
 
-        $this->assert_license(LicenseGate::OP_APPOINTMENT_BOOK);
+        $this->assert_license( LicenseGate::OP_APPOINTMENT_BOOK );
 
         // Phase 8 Slice 3 — B2 subject resolution: frozen vs historical NULL compat.
         // Ownership and status proven before any Patient/link resolution — preserves 403 parity.
@@ -3030,7 +3030,7 @@ final class BookingService
             $vars = [
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
                 'patient_name'     => $patientName,
-                'doctor_name'      =>   (string) ( $doctor['full_name'] ?? 'پزشک' ),
+                'doctor_name'      => (string) ( $doctor['full_name'] ?? 'پزشک' ),
                 'appointment_date' => Jalali::formatYmd( (string) $appt['slot_date'] ),
                 'appointment_time' => substr( (string) $appt['slot_time'], 0, 5 ),
                 'clinic_name'      => $clinic !== '' ? $clinic : 'مطب',
@@ -3148,7 +3148,7 @@ final class BookingService
             'jalali'         => Jalali::formatYmd( $date ),
             'jalali_time'    => substr( (string) $slot['slot_time'], 0, 5 ),
             'duration_min'   => (int) $slot['duration_min'],
-            'capacity_left'  => max( 0,  (int) $slot['capacity'] -   (int) $slot['booked_count'] -   (int) $slot['held_count'] ),
+            'capacity_left'  => max( 0, (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count'] ),
         ];
     }
 
@@ -3166,7 +3166,7 @@ final class BookingService
         return is_array( $response ) ? $response : [];
     }
 
-    private function to_booking_exception(Throwable $e): BookingException
+    private function to_booking_exception( Throwable $e ): BookingException
     {
         if ($e instanceof BookingException) {
             return $e;

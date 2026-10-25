@@ -60,7 +60,7 @@
  * operational Location for one Location-local operational date (ONE bounded
  * read per selection change, persisted rows only — a template without generated
  * slots offers nothing), and `POST /staff/portal/reception/appointments`
- * delegates the booking to the ESTABLISHED BookingService::createByStaff()
+ * delegates the booking to the ESTABLISHED BookingService::create_by_staff()
  * (the same service behind `POST /clinic/v1/appointments`) after re-verifying
  * the concrete persisted slot_id against the trusted Clinic + Location + the
  * selected eligible doctor + open state. slot_id is the only booking authority:
@@ -1188,7 +1188,7 @@ final class ReceptionPortalController extends RestBase {
 		// Clinic lifecycle policy: a suspended Clinic advertises no bookable Slot on the
 		// reception surface either. Same bounded empty read as the 0-eligible-Location and
 		// unusable-timezone branches (HTTP 200, empty day, no reason leaked). Advertisement
-		// filtering only - createByStaff()/rescheduleByStaff() re-check the status under the
+		// filtering only - create_by_staff()/reschedule_by_staff() re-check the status under the
 		// Clinic row lock, so a suspension racing this read cannot produce an appointment.
 		$clinic_status = (string) App::db()->fetchValue(
 			'SELECT status FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
@@ -1274,7 +1274,7 @@ final class ReceptionPortalController extends RestBase {
 	 * already-generated slot.
 	 *
 	 * Delegation, never duplication: the booking itself runs through the
-	 * EXISTING BookingService::createByStaff() — the same service behind
+	 * EXISTING BookingService::create_by_staff() — the same service behind
 	 * POST /clinic/v1/appointments — with its established license gate, trusted
 	 * Clinic resolution, participation check, slot re-resolution, Location
 	 * timezone window (staff minimum lead 0 + the Clinic booking horizon), the
@@ -1351,7 +1351,7 @@ final class ReceptionPortalController extends RestBase {
 		$slot_time = substr( (string) $slot['slot_time'], 0, 8 );
 
 		try {
-			$view = App::bookingService()->createByStaff(
+			$view = App::bookingService()->create_by_staff(
 				$user_id,
 				$patient_id,
 				$clinician_id,

@@ -279,7 +279,8 @@ final class PublicBookingShortcode
                 return self::render_discovery();
             }
 
-            $clinicId = self::parse_clinic_id($atts, $tag);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            $clinicId = self::parse_clinic_id( $atts, $tag );
             if ($clinicId === null) {
                 return self::renderClosed();
             }
@@ -290,11 +291,13 @@ final class PublicBookingShortcode
             }
 
             $clinicians = self::activeClinicians($clinicId);
-            if ($clinicians === []) {
-                return self::render_empty((int) $clinicId, self::clinic_name($clinic));
+            if ( $clinicians === [] ) {
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+                return self::render_empty( (int) $clinicId, self::clinic_name( $clinic ) );
             }
 
-            return self::render_browse((int) $clinicId, self::clinic_name($clinic), $clinicians);
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            return self::render_browse( (int) $clinicId, self::clinic_name( $clinic ), $clinicians );
         } catch (Throwable $e) {
             // fail-closed مطلق: جزئیات خطا هرگز به بازدیدکنندهٔ آنونیم نشان
             // داده نمی‌شود (نه در markup، نه در پیام)؛ فقط در Log عملیاتی.
@@ -348,7 +351,7 @@ final class PublicBookingShortcode
         $parsed = is_array($atts) ? $atts : [];
 
         /** @var array<string, mixed> $normalized */
-        $normalized = shortcode_atts([self::CLINIC_ATTR => ''], $parsed, $tag);
+        $normalized = shortcode_atts( [self::CLINIC_ATTR => ''], $parsed, $tag );
 
         $raw = $normalized[ self::CLINIC_ATTR ] ?? '';
         if ( ! is_string( $raw ) && ! is_int( $raw ) ) {
@@ -682,7 +685,7 @@ final class PublicBookingShortcode
                 continue;
             }
 
-            $id =  (int) ( $row['id'] ?? 0 );
+            $id = (int) ( $row['id'] ?? 0 );
             if ( $id <= 0 ) {
                 continue;
             }
@@ -992,7 +995,7 @@ final class PublicBookingShortcode
 
         $lines[] = sprintf(
             '<div class="%1$s" dir="rtl" lang="fa" data-clinic-id="%2$d" data-state="%3$s" id="%4$s">',
-            esc_attr(self::ROOT_CLASS),
+            esc_attr( self::ROOT_CLASS ),
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local; no security sniff suppressed.
             $clinicId,
             esc_attr( self::STATE_BOOKABLE ),
@@ -1047,8 +1050,8 @@ final class PublicBookingShortcode
                 esc_attr( trim( (string) ( $clinician['specialty'] ?? '' ) ) ),
                 esc_attr( self::ROOT_CLASS . '__clinician-name' ),
                 esc_html( (string) $clinician['name'] ),
-                esc_attr(self::ROOT_CLASS . '__clinician-hint'),
-                esc_html(self::CLINICIAN_HINT)
+                esc_attr( self::ROOT_CLASS . '__clinician-hint' ),
+                esc_html( self::CLINICIAN_HINT )
             );
             $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
             if ( $specialty !== '' ) {
@@ -1173,7 +1176,7 @@ final class PublicBookingShortcode
 
         // ---- Phase 8 Slice 2: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
         $continuation = self::continuationState();
-        if ($continuation === self::CONTINUATION_ANONYMOUS) {
+        if ( $continuation === self::CONTINUATION_ANONYMOUS ) {
             // فقط چرخهٔ ورود با OTP؛ بدون nonce، بدون B1/B2، بدون PHI.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local; no security sniff suppressed.
             $lines[] = self::render_auth_continuation( $surfaceId );
@@ -1238,7 +1241,7 @@ final class PublicBookingShortcode
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-role="continue-auth">%2$s</button>',
             esc_attr($b . '__continue-btn'),
-            esc_html('ادامهٔ رزرو با کد تأیید پیامکی')
+            esc_html( 'ادامهٔ رزرو با کد تأیید پیامکی' )
         );
 
         $lines[] = sprintf( '<div class="%1$s" data-auth-step="otp-mobile" hidden>', esc_attr( $b . '__auth-step' ) );
@@ -1496,7 +1499,7 @@ final class PublicBookingShortcode
 
         $lines[] = '</div>';
 
-        return implode('', $lines);
+        return implode( '', $lines );
     }
 
     /**
@@ -1627,7 +1630,7 @@ final class PublicBookingShortcode
             '<template data-template="detail-server">'
             . '<span class="%1$s__detail-text" data-fill="message"></span>'
             . '</template>',
-            esc_attr($b)
+            esc_attr( $b )
         );
 
         $lines[] = sprintf(
@@ -1668,9 +1671,10 @@ final class PublicBookingShortcode
             'rest_root' => rtrim(rest_url(self::REST_NAMESPACE), '/'),
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
-            'clinic_id' => $clinicId,
-            'state_vocabulary' => self::STATE_VOCABULARY,
-            'initial_state' => 'idle',
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase parameter/local of this method (PHP 8 named-argument contract); no security sniff suppressed.
+            'clinic_id'         => $clinicId,
+            'state_vocabulary'  => self::STATE_VOCABULARY,
+            'initial_state'     => 'idle',
             // نام روزهای هفتهٔ فارسی (شنبه..جمعه) — ارائهٔ سمت سرور برای
             // ستون‌های تقویم هفتگی؛ JS هیچ رشتهٔ فارسی نمی‌سازد.
             'weekday_names'     => self::WEEKDAY_NAMES,
