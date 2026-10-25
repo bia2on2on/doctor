@@ -53,6 +53,8 @@ CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE \
 
 اجرای بدون عبارت تأیید، مسیر داخل Web root/Git، Schema نامعتبر، یا سایت غیرخالی باید شکست بخورد. اجرای دوباره با همان State فقط همان Fixture را گزارش می‌کند و داده‌ای نمی‌سازد؛ ساخت Fixture دوم روی همان سایت رد می‌شود.
 
+فعال‌سازی طبیعی CPMS ممکن است heartbeat سیستمیِ `jobs.last_tick_at` را برای Clinic پیش‌فرض بسازد. Verifier فقط همین مقدارِ مثبتِ System-written را به‌عنوان وضعیت پایه می‌پذیرد؛ هر Setting دیگر و هر ردیف بیمار/نوبت/بالینی/مالی همچنان باعث رد Provisioning می‌شود.
+
 ### شش حساب و محدودهٔ دسترسی
 
 | حساب | نقش WordPress | اختیار CPMS |

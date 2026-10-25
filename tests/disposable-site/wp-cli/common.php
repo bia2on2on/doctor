@@ -227,7 +227,7 @@ function cpms_ds_assert_empty_site(): void
         // A fresh CPMS installation necessarily contains its three structural
         // bootstrap rows. They are validated below; every operational table
         // must still be empty before any synthetic account or fixture write.
-        if (in_array($table, ['cpms_organizations', 'cpms_clinics', 'cpms_locations'], true)) {
+        if (in_array($table, ['cpms_organizations', 'cpms_clinics', 'cpms_locations', 'cpms_settings'], true)) {
             continue;
         }
         if ($count !== 0) {
@@ -236,6 +236,23 @@ function cpms_ds_assert_empty_site(): void
     }
 
     $db = cpms_ds_db();
+    // Activation can run the production queue wake/tick path. Its only
+    // acceptable pre-provisioning setting is the inert system heartbeat;
+    // FirstPracticeSetupService uses the same contract. Any setup, SMS,
+    // storage, or other setting is still a non-empty-site refusal.
+    $settings = $db->fetchAll(
+        'SELECT clinic_id, `key`, value_json, updated_by_wp_user_id FROM ' . $db->table('cpms_settings') . ' ORDER BY id'
+    );
+    foreach ($settings as $setting) {
+        $heartbeat = json_decode((string) ($setting['value_json'] ?? ''), true);
+        $is_inert_heartbeat = (int) ($setting['clinic_id'] ?? 0) === 1
+            && (string) ($setting['key'] ?? '') === 'jobs.last_tick_at'
+            && in_array($setting['updated_by_wp_user_id'] ?? null, [null, 0, '0'], true)
+            && is_int($heartbeat) && $heartbeat > 0;
+        if (!$is_inert_heartbeat) {
+            cpms_ds_fail('NONEMPTY_SITE', 'refusing provisioning because a non-heartbeat CPMS setting exists');
+        }
+    }
     $organizations = $db->fetchAll('SELECT id, slug, status FROM ' . $db->table('cpms_organizations') . ' ORDER BY id');
     $clinics = $db->fetchAll('SELECT id, organization_id, slug, status FROM ' . $db->table('cpms_clinics') . ' ORDER BY id');
     $locations = $db->fetchAll('SELECT id, clinic_id, slug, is_primary, is_active FROM ' . $db->table('cpms_locations') . ' ORDER BY id');
