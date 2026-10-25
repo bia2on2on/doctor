@@ -8,8 +8,11 @@ use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Demo\DemoAccessGuard;
 use ClinicCore\Application\Demo\DemoService;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Otp\OtpPolicy;
 use RuntimeException;
 use WP_Error;
 use WP_UnitTestCase;
@@ -187,6 +190,23 @@ final class DemoFacilityTest extends WP_UnitTestCase
             self::assertSame('CLINIC_OTP_INVALID', $exception->errorCode);
         }
 
+        // Post-provisioning jobs are tracked by exact trusted scope, never by
+        // payload guessing. An unrelated Clinic's job must survive Demo cleanup.
+        $previous_scope = ScopeContext::tryGet();
+        try {
+            ScopeContext::set(ClinicScope::forClinic($clinic_id, (int) $state['location_id']));
+            $demo_job_id = App::jobs()->enqueue('demo.owned_probe', ['private_payload' => 'not-copied-to-marker']);
+            ScopeContext::set(ClinicScope::forClinic((int) $sentinel['id']));
+            $unrelated_job_id = App::jobs()->enqueue('demo.unrelated_probe', ['private_payload' => 'sentinel']);
+        } finally {
+            App::replaceExplicitScope($previous_scope);
+        }
+        $demo_marker = DemoService::JOB_OPTION_PREFIX . $state['demo_id'] . '_' . $demo_job_id;
+        $unrelated_marker = DemoService::JOB_OPTION_PREFIX . $state['demo_id'] . '_' . $unrelated_job_id;
+        self::assertSame((string) $clinic_id, (string) get_option($demo_marker, ''));
+        self::assertFalse(str_contains((string) get_option($demo_marker, ''), 'not-copied-to-marker'));
+        self::assertFalse(get_option($unrelated_marker, false));
+
         // Rotation is per-account, CSPRNG, and destroys existing sessions.
         $tokens = \WP_Session_Tokens::get_instance($doctor_id);
         $old_token = $tokens->create(time() + 3600);
@@ -198,9 +218,22 @@ final class DemoFacilityTest extends WP_UnitTestCase
         self::assertTrue(wp_check_password($rotated['password'], $doctor->user_pass, $doctor_id));
         self::assertFalse(wp_check_password($credentials['doctor']['password'], $doctor->user_pass, $doctor_id));
 
-        // Keep one valid, unverified challenge; End must block its session seam.
-        App::otpService()->request('09000000000', OtpService::PURPOSE_LOGIN, null, '127.0.0.1', $clinic_id);
-        $pre_end_code = $service->latest_otp($this->admin);
+        // Keep one valid, unverified challenge without disabling the normal
+        // request cooldown. Only this synthetic token fixture is direct; the
+        // production verify path must still enforce End before session issue.
+        $pre_end_code = OtpPolicy::generateCode(6);
+        $pepper_method = new \ReflectionMethod(OtpService::class, 'pepper');
+        $pepper_method->setAccessible(true);
+        $pepper = (string) $pepper_method->invoke(App::otpService());
+        App::db()->insert('cpms_otp_tokens', [
+            'clinic_id' => $clinic_id,
+            'mobile' => '09000000000',
+            'purpose' => OtpService::PURPOSE_LOGIN,
+            'code_hash' => OtpPolicy::hashCode($pre_end_code, $pepper),
+            'expires_at' => gmdate('Y-m-d H:i:s', time() + 300),
+            'attempts' => 0,
+            'created_at' => App::db()->nowUtcSql(),
+        ]);
         $service->end($this->admin);
         self::assertSame('ended', $service->state()['status']);
         self::assertSame('suspended', App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$clinic_id]));
@@ -225,6 +258,10 @@ final class DemoFacilityTest extends WP_UnitTestCase
             self::assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table($table) . ' WHERE clinic_id = %d', [$clinic_id]));
         }
         self::assertNull(get_post((int) $state['booking_page_id']));
+        self::assertFalse(get_option($demo_marker, false));
+        self::assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d', [$demo_job_id]));
+        self::assertSame(1, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d', [$unrelated_job_id]));
+        App::db()->execute('DELETE FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d', [$unrelated_job_id]);
         self::assertSame($sentinel['name'], App::db()->fetchValue('SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [(int) $sentinel['id']]));
         self::assertSame('suspended', App::db()->fetchValue('SELECT status FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$clinic_id]));
         self::assertTrue(App::audit()->verifyChain(10000)['ok']);

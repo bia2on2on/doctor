@@ -18,6 +18,11 @@ final class DemoAccessGuard {
         add_filter( 'allow_password_reset', [self::class, 'allow_password_reset'], PHP_INT_MAX, 2 );
         add_filter( 'rest_authentication_errors', [self::class, 'rest_authentication_errors'], PHP_INT_MAX, 1 );
         add_filter( 'cpms_otp_session_authorized', [self::class, 'otp_session_authorized'], PHP_INT_MAX, 2 );
+        add_action( 'cpms_job_enqueued', [self::class, 'track_scoped_job'], 10, 2 );
+    }
+
+    public static function track_scoped_job( int $job_id, string $type ): void {
+        App::demo_service()->track_scoped_job( $job_id, $type );
     }
 
     public static function expire_if_due(): void {

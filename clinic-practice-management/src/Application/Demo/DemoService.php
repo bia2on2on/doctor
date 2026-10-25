@@ -24,10 +24,11 @@ use Throwable;
  */
 final class DemoService {
 
-    public const STATE_OPTION     = 'cpms_demo_state';
-    public const OUTBOX_OPTION    = 'cpms_demo_otp_outbox';
-    public const PROVIDER_ID      = 'cpms_demo';
-    public const LIFETIME_SECONDS = 2592000; // 30 days.
+    public const STATE_OPTION      = 'cpms_demo_state';
+    public const OUTBOX_OPTION     = 'cpms_demo_otp_outbox';
+    public const JOB_OPTION_PREFIX = 'cpms_demo_job_';
+    public const PROVIDER_ID       = 'cpms_demo';
+    public const LIFETIME_SECONDS  = 2592000; // 30 days.
 
     private const PATIENT_MOBILE = '09000000000';
     private const STAFF_KEYS     = ['organization_manager', 'clinic_manager', 'doctor', 'receptionist', 'accountant'];
@@ -52,6 +53,41 @@ final class DemoService {
 
     public function is_demo_clinic( int $clinic_id ): bool {
         return $this->is_active() && $clinic_id > 0 && $clinic_id === (int) ( $this->state()['clinic_id'] ?? 0 );
+    }
+
+    /**
+     * Track only jobs persisted inside this exact demo's trusted Clinic scope.
+     * One atomic option per job avoids lost state updates under concurrency.
+     * Values contain only the Clinic ID; payloads and secrets stay in the queue.
+     */
+    public function track_scoped_job( int $job_id, string $type ): void {
+        unset( $type );
+        if ( $job_id <= 0 ) {
+            return;
+        }
+        $scope = ScopeContext::tryGet();
+        if ( $scope === null ) {
+            return;
+        }
+        $state           = $this->state();
+        $status          = (string) ( $state['status'] ?? '' );
+        $demo_id         = (string) ( $state['demo_id'] ?? '' );
+        $clinic_id       = (int) ( $state['clinic_id'] ?? 0 );
+        $scope_clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Established ClinicScope public property contract.
+        if ( ! in_array( $status, ['provisioning', 'active'], true )
+            || ( $status === 'active' && (int) ( $state['expires_at'] ?? 0 ) <= time() )
+            || $clinic_id <= 0
+            || $scope_clinic_id !== $clinic_id
+            || preg_match( '/^[a-f0-9]{16}$/', $demo_id ) !== 1
+        ) {
+            return;
+        }
+        $option = self::JOB_OPTION_PREFIX . $demo_id . '_' . $job_id;
+        if ( ! add_option( $option, (string) $clinic_id, '', false )
+            && (string) get_option( $option, '' ) !== (string) $clinic_id
+        ) {
+            throw new RuntimeException( 'Demo job ownership marker persistence failed.' );
+        }
     }
 
     public function is_blocked_user( int $user_id ): bool {
@@ -681,14 +717,12 @@ final class DemoService {
         } else {
             // A failed claim may predate Clinic creation. Only tracked users,
             // jobs and the fresh Organization membership can then exist.
-            foreach ( (array) ( $state['job_ids'] ?? [] ) as $job_id ) {
-                $this->execute_cleanup( 'DELETE FROM ' . $this->db->table( 'cpms_jobs' ) . ' WHERE id = %d', [ (int) $job_id] );
-            }
             $organization_id = (int) ( $state['organization_id'] ?? 0 );
             if ( $organization_id > 0 ) {
                 $this->execute_cleanup( 'DELETE FROM ' . $this->db->table( 'cpms_organization_memberships' ) . ' WHERE organization_id = %d', [$organization_id] );
             }
         }
+        $this->purge_demo_jobs( $state );
         foreach ( (array) ( $state['users'] ?? [] ) as $entry ) {
             $user_id = is_array( $entry ) ? (int) ( $entry['id'] ?? 0 ) : 0;
             if ( $user_id > 0 && get_userdata( $user_id ) !== false ) {
@@ -710,6 +744,53 @@ final class DemoService {
         }
         delete_option( self::OUTBOX_OPTION );
         delete_option( self::STATE_OPTION );
+    }
+
+    /** @param array<string, mixed> $state */
+    private function purge_demo_jobs( array $state ): void {
+        $markers = $this->tracked_job_markers( $state );
+        $job_ids = array_map( 'intval', (array) ( $state['job_ids'] ?? [] ) );
+        foreach ( $markers as $job_id ) {
+            $job_ids[] = $job_id;
+        }
+        foreach ( array_unique( $job_ids ) as $job_id ) {
+            if ( $job_id > 0 ) {
+                $this->execute_cleanup( 'DELETE FROM ' . $this->db->table( 'cpms_jobs' ) . ' WHERE id = %d', [$job_id] );
+            }
+        }
+        foreach ( array_keys( $markers ) as $option ) {
+            if ( ! delete_option( $option ) && get_option( $option, false ) !== false ) {
+                throw new RuntimeException( 'Demo job marker cleanup failed.' );
+            }
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return array<string, int> Exact option name => exact job ID.
+     */
+    private function tracked_job_markers( array $state ): array {
+        $demo_id   = (string) ( $state['demo_id'] ?? '' );
+        $clinic_id = (int) ( $state['clinic_id'] ?? 0 );
+        if ( $clinic_id <= 0 || preg_match( '/^[a-f0-9]{16}$/', $demo_id ) !== 1 ) {
+            return [];
+        }
+        $prefix  = self::JOB_OPTION_PREFIX . $demo_id . '_';
+        $rows    = $this->db->fetchAll(
+            'SELECT option_name, option_value FROM ' . $this->db->wpdb()->options . ' WHERE option_name LIKE %s',
+            [$this->db->wpdb()->esc_like( $prefix ) . '%']
+        );
+        $markers = [];
+        foreach ( $rows as $row ) {
+            $option = (string) ( $row['option_name'] ?? '' );
+            if ( preg_match( '/^' . preg_quote( $prefix, '/' ) . '(\d+)$/', $option, $matches ) !== 1
+                || (string) ( $row['option_value'] ?? '' ) !== (string) $clinic_id
+            ) {
+                throw new RuntimeException( 'Demo job marker ownership proof failed; cleanup refused.' );
+            }
+            $markers[ $option ] = (int) $matches[1];
+        }
+        return $markers;
     }
 
     /** @param array<string, mixed> $state */
@@ -789,9 +870,6 @@ final class DemoService {
             if ( $remaining !== 0 ) {
                 throw new RuntimeException( 'Demo cleanup verification failed for ' . $table . '.' );
             }
-        }
-        foreach ( (array) ( $state['job_ids'] ?? [] ) as $job_id ) {
-            $this->execute_cleanup( 'DELETE FROM ' . $this->db->table( 'cpms_jobs' ) . ' WHERE id = %d', [ (int) $job_id] );
         }
         $organization_id = (int) $state['organization_id'];
         foreach ( ['cpms_patient_identity_links', 'cpms_patient_identities', 'cpms_organization_memberships'] as $table ) {

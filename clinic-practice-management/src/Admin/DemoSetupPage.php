@@ -158,7 +158,7 @@ final class DemoSetupPage {
                 echo '<li>' . esc_html( $label ) . ': page unavailable</li>';
             }
         }
-        echo '</ul><p>جزئیات کپی‌پیست و ترتیب سناریوها در <code>docs/demo-setup-fa.md</code> آمده است. نوبت آینده برای مسیر public booking است؛ ویزیت walk-in در انتظار، مسیر عملیاتی همان‌روز را بدون تغییر قواعد زمانی ممکن می‌کند.</p>';
+        echo '</ul><p>جزئیات کپی‌پیست و ترتیب سناریوها در <code>docs/demo-setup-fa.md</code> آمده است. اسلات اولِ همان روز برای public booking و اسلات دوم برای Fixture است؛ حداقل فاصلهٔ رزرو صفر فقط روی Clinic ساختگی تنظیم می‌شود.</p>';
     }
 
     /** @param array<string, mixed> $state */

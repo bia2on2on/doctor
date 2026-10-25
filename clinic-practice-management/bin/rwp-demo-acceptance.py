@@ -316,6 +316,43 @@ def finance_journey(browser, credentials, staff_url, visit_id):
     return reception_context, reception
 
 
+def tracked_demo_job_ids(fixture):
+    output = wp_eval(r'''
+$demoId = (string) getenv("DEMO_ID");
+$clinicId = (int) getenv("DEMO_CLINIC_ID");
+$state = \ClinicCore\Bootstrap\App::demo_service()->state();
+if ((string) ($state["demo_id"] ?? "") !== $demoId || (int) ($state["clinic_id"] ?? 0) !== $clinicId) {
+  throw new \RuntimeException("Demo fixture ownership mismatch");
+}
+$previousScope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+try {
+  \ClinicCore\Application\Scope\ScopeContext::set(\ClinicCore\Application\Scope\ClinicScope::forClinic($clinicId, (int) $state["location_id"]));
+  $ownedJobId = \ClinicCore\Bootstrap\App::jobs()->enqueue("demo.browser_owned_probe", ["private_payload" => "not-copied-to-marker"]);
+} finally {
+  \ClinicCore\Bootstrap\App::replaceExplicitScope($previousScope);
+}
+$prefix = \ClinicCore\Application\Demo\DemoService::JOB_OPTION_PREFIX . $demoId . "_";
+$db = \ClinicCore\Bootstrap\App::db();
+$rows = $db->fetchAll("SELECT option_name, option_value FROM " . $db->wpdb()->options . " WHERE option_name LIKE %s", [$db->wpdb()->esc_like($prefix) . "%"]);
+$ids = [];
+foreach ($rows as $row) {
+  $name = (string) $row["option_name"];
+  if ((string) $row["option_value"] !== (string) $clinicId || !preg_match("/^" . preg_quote($prefix, "/") . "(\\d+)$/", $name, $matches)) {
+    throw new \RuntimeException("Invalid demo job marker ownership");
+  }
+  $ids[] = (int) $matches[1];
+}
+if (!in_array($ownedJobId, $ids, true)) {
+  throw new \RuntimeException("Owned post-provisioning job marker missing");
+}
+echo "DEMO_JOB_IDS=" . wp_json_encode($ids) . PHP_EOL;
+''', {"DEMO_ID": fixture["demo_id"], "DEMO_CLINIC_ID": str(fixture["clinic_id"])})
+    marker = next((line for line in output.splitlines() if line.startswith("DEMO_JOB_IDS=")), "")
+    ids = json.loads(marker.split("=", 1)[1]) if marker else []
+    check("owned post-provisioning job markers present", len(ids) > 0)
+    return ids
+
+
 def verify_operational_db(visit_id):
     output = wp_eval(r'''
 $id = (int) getenv("DEMO_VISIT_ID");
@@ -440,6 +477,7 @@ def main():
             check("rotated doctor password logs in", "wp-login.php" not in rotated_page.url)
             rotated_context.close()
 
+            tracked_job_ids = tracked_demo_job_ids(fixture)
             stage("end revocation and owned cleanup")
             # Move the Admin away from the one-time rotation response before any evidence.
             admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded")
@@ -466,19 +504,29 @@ $remaining = 0;
 foreach ($ids as $id) { if (get_userdata($id)) { $remaining++; } }
 $db = \ClinicCore\Bootstrap\App::db();
 $clinic = (int) getenv("DEMO_CLINIC_ID");
+$jobIds = array_values(array_filter(array_map("intval", explode(",", (string) getenv("DEMO_JOB_IDS")))));
+$jobsRemaining = 0;
+if ($jobIds) {
+  $jobsRemaining = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_jobs") . " WHERE id IN (" . implode(",", array_fill(0, count($jobIds), "%d")) . ")", $jobIds);
+}
+$prefix = \ClinicCore\Application\Demo\DemoService::JOB_OPTION_PREFIX . (string) getenv("DEMO_ID") . "_";
+$jobMarkers = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->wpdb()->options . " WHERE option_name LIKE %s", [$db->wpdb()->esc_like($prefix) . "%"]);
 echo "DEMO_CLEANUP=" . wp_json_encode([
   "state_empty" => $s === [],
   "users_remaining" => $remaining,
   "patients" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patients") . " WHERE clinic_id = %d", [$clinic]),
   "visits" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_visits") . " WHERE clinic_id = %d", [$clinic]),
+  "jobs_remaining" => $jobsRemaining,
+  "job_markers" => $jobMarkers,
   "clinic_status" => $db->fetchValue("SELECT status FROM " . $db->table("cpms_clinics") . " WHERE id = %d", [$clinic]),
   "audit_ok" => \ClinicCore\Bootstrap\App::audit()->verifyChain(10000)["ok"],
 ]) . PHP_EOL;
-''', {"DEMO_USER_IDS": ",".join(str(i) for i in fixture["user_ids"]), "DEMO_CLINIC_ID": str(fixture["clinic_id"])})
+''', {"DEMO_USER_IDS": ",".join(str(i) for i in fixture["user_ids"]), "DEMO_CLINIC_ID": str(fixture["clinic_id"]), "DEMO_ID": fixture["demo_id"], "DEMO_JOB_IDS": ",".join(str(i) for i in tracked_job_ids)})
             marker = next((line for line in output.splitlines() if line.startswith("DEMO_CLEANUP=")), "")
             cleaned = json.loads(marker.split("=", 1)[1])
             check("demo-only cleanup verified", cleaned["state_empty"] and cleaned["users_remaining"] == 0
                   and cleaned["patients"] == 0 and cleaned["visits"] == 0
+                  and cleaned["jobs_remaining"] == 0 and cleaned["job_markers"] == 0
                   and cleaned["clinic_status"] == "suspended" and cleaned["audit_ok"], json.dumps(cleaned))
             stage("complete")
         finally:
