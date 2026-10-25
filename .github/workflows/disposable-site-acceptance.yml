@@ -153,6 +153,16 @@ jobs:
               exit 1
             fi
           done
+          # Provenance source = the exact tree the ZIP is built from (the candidate
+          # working tree, minus build output and installed dependencies). It is
+          # materialised at the SAME path shape the checker expects:
+          #   /tmp/cpms-candidate/clinic-practice-management/<product files>
+          mkdir -p /tmp/cpms-candidate/clinic-practice-management
+          tar -C clinic-practice-management \
+            --exclude=./dist --exclude=./node_modules --exclude=./vendor \
+            -cf - . | tar -x -C /tmp/cpms-candidate/clinic-practice-management
+          test -f /tmp/cpms-candidate/clinic-practice-management/clinic-practice-management.php
+          test -d /tmp/cpms-candidate/clinic-practice-management/src
           echo "PASS: product-tree changes are product source only; packaging proven against the candidate tree"
 
       - name: Clean WordPress with arbitrary DB prefix and CSPRNG Administrator password
