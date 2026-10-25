@@ -283,7 +283,7 @@ try {
         cpms_ds_fail('EXTERNAL_DELIVERY', 'a non-log SMS or non-synthetic payment method was recorded');
     }
     $otp_rows = $db->fetchAll(
-        'SELECT message, vars_json, provider, consumed_at FROM ' . $db->table('cpms_sms_messages')
+        'SELECT message, vars_json, provider FROM ' . $db->table('cpms_sms_messages')
         . ' WHERE clinic_id = %d AND event = %s',
         [$clinic_id, 'otp']
     );
