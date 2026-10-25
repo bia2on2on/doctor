@@ -364,11 +364,55 @@ def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visi
     return context, page
 
 
-def finance_journey(browser, credentials, staff_url, visit_id):
+def finance_journey(browser, credentials, staff_url, visit_id, clinic_id, location_id):
     stage("accountant invoice payment and reception checkout")
     accountant_context, accountant = open_account(browser, credentials, "accountant")
     finance_url = with_query(staff_url, **{"cpms-module": "finance"})
     accountant.goto(finance_url, wait_until="domcontentloaded")
+    accountant.locator('[data-role="finance-root"]').wait_for(state="visible")
+    # Probe only non-secret scope/authority/selector metadata. This mirrors the
+    # production board's own REST requests and makes a blank eligible list
+    # distinguishable from a browser rendering/timing failure.
+    probe = accountant.evaluate("""async () => {
+        const configNode = document.getElementById('cpms-finance-board-config');
+        const config = configNode ? JSON.parse(configNode.textContent || '{}') : {};
+        const root = String(config.rest_root || '').replace(/\\/$/, '');
+        const baseHeaders = {'X-WP-Nonce': String(config.nonce || ''), 'Accept': 'application/json'};
+        const read = async (path, headers) => {
+            const response = await fetch(root + path, {method: 'GET', headers, credentials: 'same-origin', cache: 'no-store'});
+            const body = await response.json().catch(() => ({}));
+            return {status: response.status, body};
+        };
+        const contextResult = await read('/staff/portal/finance/context', baseHeaders);
+        const context = contextResult.body && contextResult.body.data ? contextResult.body.data : {};
+        const scopedHeaders = Object.assign({}, baseHeaders, {
+            'X-CPMS-Clinic-Id': String(context.clinic_id || ''),
+            'X-CPMS-Location-Id': String(context.location_id || '')
+        });
+        const eligibleResult = await read('/staff/portal/finance/invoice-eligible', scopedHeaders);
+        const eligible = eligibleResult.body && eligibleResult.body.data ? eligibleResult.body.data : {};
+        return {
+            context_status: contextResult.status,
+            context_code: String(contextResult.body && contextResult.body.code || ''),
+            clinic_id: Number(context.clinic_id || 0),
+            location_id: Number(context.location_id || 0),
+            can_issue_invoice: context.can_issue_invoice === true,
+            eligible_status: eligibleResult.status,
+            eligible_code: String(eligibleResult.body && eligibleResult.body.code || ''),
+            eligible_visit_ids: Array.isArray(eligible.visits) ? eligible.visits.map((row) => Number(row.visit_id || 0)).filter((id) => id > 0) : []
+        };
+    }""")
+    check(
+        "accountant exact synthetic Clinic and Location plus invoice authority",
+        probe["context_status"] == 200 and probe["clinic_id"] == clinic_id
+        and probe["location_id"] == location_id and probe["can_issue_invoice"],
+        json.dumps(probe, ensure_ascii=False),
+    )
+    check(
+        "accountant live visit is invoice eligible",
+        probe["eligible_status"] == 200 and visit_id in probe["eligible_visit_ids"],
+        json.dumps(probe, ensure_ascii=False),
+    )
     issue = accountant.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
     issue.wait_for(state="visible", timeout=35000)
     issue.click()
@@ -505,7 +549,9 @@ def main():
                 browser, credentials, links["staff"], fixture["clinic_id"], fixture["location_id"], live_visit_id
             )
             contexts.append(doctor_context)
-            reception_context, reception_page = finance_journey(browser, credentials, links["staff"], live_visit_id)
+            reception_context, reception_page = finance_journey(
+                browser, credentials, links["staff"], live_visit_id, fixture["clinic_id"], fixture["location_id"]
+            )
             contexts.append(reception_context)
             verify_operational_db(live_visit_id)
 
