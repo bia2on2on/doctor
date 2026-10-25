@@ -58,13 +58,13 @@ results = []
 failures = []
 
 def ok(key, title, detail=""):
-    results.append({"key": key, "status": "PASS", "detail": detail})
-    print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
+    results.append({"key": key, "status": "PASS"})
+    print(f"PASS {key}")
 
 def fail(key, title, err):
     failures.append(key)
-    results.append({"key": key, "status": "FAIL", "detail": str(err)})
-    print(f"FAIL {key} — {title} — {err}")
+    results.append({"key": key, "status": "FAIL"})
+    print(f"FAIL {key}")
 
 def db(sql):
     out = subprocess.run(
@@ -460,7 +460,7 @@ def main():
                 continue
         browser.close()
     summary = {"ok": not failures, "runs": len(RUNS), "failed": failures}
-    with open("pilot-slice3-results.json", "w", encoding="utf-8") as f:
+    with open("/tmp/pilot-slice3-results.json", "w", encoding="utf-8") as f:
         json.dump({"summary": summary, "results": results}, f, ensure_ascii=False, indent=1)
     print(json.dumps(summary, ensure_ascii=False))
     sys.exit(1 if failures else 0)

@@ -23,8 +23,8 @@ $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
 
 function profile_fail(string $msg): void
 {
-    $safe = preg_replace('/\d{10,}/', '[redacted]', $msg) ?? $msg;
-    echo 'PROFILE_FIXTURE_ERROR: ' . $safe . "\n";
+    // DB errors may echo seeded record values; expose only a fixed category.
+    echo "PROFILE_FIXTURE_ERROR: fixture setup failed\n";
     exit(1);
 }
 
@@ -287,7 +287,7 @@ foreach ([[$clinicA, $patientA, 'A'], [$clinicB, $patientB, 'B'], [$clinicOne, $
     }
     $visits[] = $visit;
 }
-echo 'PROFILE_PUBLIC=visits_fixture_ok visits=3 notes=6' . "\n";
+echo 'PROFILE_FIXTURE_STAGE=visits_ready records=3 notes=6' . "\n";
 
 // Slice 6 TEST-ONLY RED: seed durable prescriptions on the visits above.
 $prescriptions = [];
@@ -375,7 +375,7 @@ foreach ([[$clinicA, $patientA, 'A', $visits[0]], [$clinicB, $patientB, 'B', $vi
     ]);
     $prescriptions[] = $rx;
 }
-echo 'PROFILE_PUBLIC=prescriptions_fixture_ok prescriptions=3 items=3' . "\n";
+echo 'PROFILE_FIXTURE_STAGE=prescriptions_ready records=3 items=3' . "\n";
 
 // Slice 7 TEST-ONLY RED: durable medical files on the same linked records,
 // reusing the existing protected storage stack (no parallel storage system).
@@ -469,7 +469,7 @@ if ($filesUtc === false) {
 }
 $filesLocal = $filesUtc->setTimezone(new \DateTimeZone('Asia/Tehran'));
 $filesJalali = \ClinicCore\Domain\Time\Jalali::formatYmd($filesLocal->format('Y-m-d'));
-echo 'PROFILE_PUBLIC=files_fixture_ok files=12 storage=' . $filesStorage . "\n";
+echo 'PROFILE_FIXTURE_STAGE=files_ready records=12' . "\n";
 
 $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
     . 'VISITS_DATE=' . $visitDate . "\n"
@@ -483,22 +483,10 @@ $env = 'VISITS_PAIR=' . implode('|', array_slice($visits, 0, 2)) . "\n"
     . 'FILES_ONE=' . $fileOne . '|' . $fileOneUp . '|' . $filesJalali . '|' . $filesLocal->format('Y-m-d') . "\n"
     . 'PROFILE_ONE=' . $loginOne . '|' . $passOne . '|' . $userOne . '|' . $patientOne . '|' . $linkOne . '|' . $clinicOne . "\n"
     . 'PROFILE_MULTI=' . $loginMulti . '|' . $passMulti . '|' . $userMulti . '|' . $linkA . '|' . $linkB . '|' . $patientA . '|' . $patientB . '|' . $clinicA . '|' . $clinicB . '|' . $linkForeign . '|' . $linkInactive . "\n"
-    . 'PROFILE_OBJECT_PAIR=' . implode('|', [$loginMulti, $passMulti, $userMulti, $linkA, $patientA, $clinicA, $loginForeign, $passForeign, $userForeign, $linkForeign, $patientForeign, $clinicA]) . "\n"
-    . 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_patient=' . $patientOne . ' one_link=' . $linkOne . ' one_clinic=' . $clinicOne
-    . ' multi_user=' . $userMulti . ' link_a=' . $linkA . ' link_b=' . $linkB
-    . ' patient_a=' . $patientA . ' patient_b=' . $patientB
-    . ' clinic_a=' . $clinicA . ' clinic_b=' . $clinicB
-    . ' foreign_user=' . $userForeign . ' foreign_patient=' . $patientForeign
-    . ' foreign_link=' . $linkForeign . ' inactive_link=' . $linkInactive
-    . ' object_pair_users_distinct=' . ($userMulti !== $userForeign ? 'True' : 'False')
-    . ' object_pair_clinic_same=' . ($clinicA === $objectPairForeignClinicId ? 'True' : 'False') . "\n";
+    . 'PROFILE_OBJECT_PAIR=' . implode('|', [$loginMulti, $passMulti, $userMulti, $linkA, $patientA, $clinicA, $loginForeign, $passForeign, $userForeign, $linkForeign, $patientForeign, $clinicA]) . "\n";
+
 if (file_put_contents('/tmp/portal-profile.env', $env) === false) {
     profile_fail('could not write env file');
 }
 
 echo 'PROFILE_FIXTURE_OK clinics=3 links_one=1 links_multi=2 decoys=2' . "\n";
-echo 'PROFILE_PUBLIC=one_user=' . $userOne . ' one_link=' . $linkOne . ' link_a=' . $linkA . ' link_b=' . $linkB
-    . ' object_pair_users_distinct=' . ($userMulti !== $userForeign ? 'True' : 'False')
-    . ' object_pair_clinic_same=' . ($clinicA === $objectPairForeignClinicId ? 'True' : 'False')
-    . ' foreign_user=' . $userForeign . ' foreign_patient=' . $patientForeign
-    . ' foreign_link=' . $linkForeign . ' inactive_link=' . $linkInactive . "\n";

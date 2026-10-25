@@ -16,8 +16,10 @@ name: Closure Gate (GO-LIVE evidence closure)
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
-    branches: [main, 'arena/**']
+    branches: [main]
 
 concurrency:
   # PR runs are keyed by PR number; non-PR runs by their full ref. Event names
@@ -38,6 +40,7 @@ defaults:
 
 env:
   GH_TOKEN: ${{ github.token }}
+  CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}
 
 jobs:
   # ============================================================
@@ -160,7 +163,10 @@ jobs:
           $roleDoctor = get_role('cpms_doctor');
           ok('roles-registered', $roleDoctor !== null && get_role('cpms_secretary') !== null && get_role('cpms_patient') !== null);
           $meta = App::licenseService()->statusMeta();
-          ok('license-fresh', ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh', json_encode($meta));
+          $installIdValid = isset($meta['install_id']) && preg_match('/^[0-9a-f]{32}$/', (string) $meta['install_id']) === 1;
+          $licenseFresh = ($meta['status'] ?? '') === 'activation_pending' && ($meta['activation_window_type'] ?? '') === 'fresh';
+          unset($meta['install_id'], $meta['install_id_masked']); // never publish even a partial installation identifier
+          ok('license-fresh', $licenseFresh && $installIdValid, json_encode($meta));
           if (!function_exists('rest_get_server')) { require_once ABSPATH . 'wp-includes/rest-api.php'; }
           if (!did_action('rest_api_init')) { do_action('rest_api_init'); }
           $routes = rest_get_server()->get_routes();
@@ -299,10 +305,7 @@ jobs:
             if [ -f "$EVIDF" ]; then tail -n 100 "$EVIDF"; else echo '(job failed before evidence)'; fi
             echo '```'
           } > /tmp/closure-comment.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -544,10 +547,7 @@ jobs:
             done
             echo '```'
           } > /tmp/closure-comment.md
-          PR=$(gh pr list --head "${{ github.ref_name }}" --state open --json number --jq '.[0].number' 2>/dev/null || true)
-          if [ -n "$PR" ]; then
-            gh pr comment "$PR" --body-file /tmp/closure-comment.md || true
-          fi
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -101,7 +101,7 @@ foreach ($forbiddenAccountantCaps as $forbiddenCap) {
         exit(1);
     }
 }
-echo 'FINANCE_BOARD_ACCOUNTANT_PUBLIC=user_id=' . $accountantId . ' role=cpms_accountant membership_role=cpms_accountant membership_active=True membership_capability_overrides=0 finance_read=True invoice_read=True queue_read=False patient_read=False clinical_read=False' . "\n";
+echo 'FINANCE_BOARD_ACCOUNTANT_FIXTURE_OK role=cpms_accountant membership_active=True finance_read=True invoice_read=True queue_read=False patient_read=False clinical_read=False' . "\n";
 
 $patients = array(
     array('Synthetic Invoice ' . $nonce, 'invoice'),
@@ -410,4 +410,4 @@ foreach ($env as $key => $value) {
     $lines[] = $key . '=' . $value;
 }
 file_put_contents('/tmp/finance-board.env', implode("\n", $lines) . "\n");
-echo 'fixture: finance-board clinic=' . $clinicId . ' location=' . $locationId . ' synthetic_rows=4 invoice_rows=3 open_capture_invoice=1 paid_checkout_visit=1 receipt_ready_visits=1 eligible_rows=1 eligible_visit=' . $eligibleVisitId . ' timezone=Asia/Tehran' . "\n";
+echo 'FINANCE_BOARD_FIXTURE_OK synthetic_rows=4 invoice_rows=3 open_capture_invoice=1 paid_checkout_visit=1 receipt_ready_visits=1 eligible_rows=1 timezone=Asia/Tehran' . "\n";

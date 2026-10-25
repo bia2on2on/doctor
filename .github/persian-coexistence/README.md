@@ -7,29 +7,32 @@ expectation is applied. The historical Phase 18 sections below remain as a recor
 the additive final scenarios in this current-scope section define the expanded
 workflow behavior.
 
-## Current scope — three additive, independent scenarios (2026-10-08)
+## Current scope — additive, independent scenarios (2026-10-25)
 
-`.github/workflows/persian-coexistence.yml` now calls the existing reusable
-`real-wp-acceptance.yml` for six independently scoped jobs. The accepted five-,
+`.github/workflows/persian-coexistence.yml` calls the existing reusable
+`real-wp-acceptance.yml` for seven independently scoped jobs. The accepted five-,
 two-, and ten-plugin groups, their pins and their evidence roots are unchanged;
-these three jobs are additive. Each call receives its own runner, clean WordPress
+the four later scenarios below are additive. Each call receives its own runner, clean WordPress
 tree, MySQL service/database, logs, Stage A/B gate and artifact. Unique group keys
 prevent cancellation or evidence mixing. They may run concurrently; no scenario
 is a union, substitute or prerequisite for another.
 
 | New job / group | Exact CPMS-free Stage A subject set | Stage B boundary |
 | --- | --- | --- |
-| `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.7 | Explicitly disabled; this scenario never installs CPMS |
+| `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.7 | Explicitly disabled; this Stage-A-only diagnosis never installs CPMS and is not an acceptance lane |
+| `coexistence-persian-woocommerce-acceptance` / `persian-woocommerce-acceptance` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.7 | Mandatory Stage B after healthy complete A; official CPMS ZIP installation and existing browser acceptance required |
 | `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.2 | Reused Stage B is eligible only after materially healthy, complete A |
 | `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.7 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
 
 The original five-plugin lane remains `persian-five`; its selection and pins are
 unchanged. The two-plugin security/authentication lane remains
 `security-authentication`; the accepted ten-plugin lane remains `combined-ten`.
-The diagnosis job passes `coexistence_stage_b: false` explicitly, and `run.py`
-also rejects `begin_b()` for this group even if a healthy-looking A result were
-forged. For the other new groups the caller explicitly enables the existing
-fail-closed Stage A/B interlock.
+The diagnosis job has an unmistakable Stage-A-only check name, passes
+`coexistence_stage_b: false` explicitly, and `run.py` rejects `begin_b()` for
+this group even if a healthy-looking A result were forged. A complete measurement
+with any material Stage A failure exits nonzero; measurement completeness is not
+a positive result. The separate acceptance group explicitly enables mandatory
+Stage B, and Stage B records skipped/missing CPMS installation as FAIL.
 
 ### Persian WooCommerce activation and permission diagnosis (CPMS absent)
 
@@ -186,6 +189,7 @@ causes remain unassigned; no automatic D classification is made.
 
 Artifacts use unique names
 `persian-coexistence-persian-woocommerce-diagnosis-wp_`,
+`persian-coexistence-persian-woocommerce-acceptance-wp_`,
 `persian-coexistence-persian-woocommerce-sms-wp_` and
 `persian-coexistence-combined-nineteen-wp_`. Each root contains the scenario's
 `summary.json`/`summary.md`, `A/` evidence and, only when reached, `B/` evidence.
@@ -338,10 +342,10 @@ code checked once and then removed the path unchecked.
 (`coexistence verdict | group=… | Stage A=… | Stage B=… | NOT RUN scope limits=… |
 FEATURE UNAVAILABLE=… | D3 broken-migration probe=…`), plus a greppable
 `coexistence_verdict group=… stage_a=… stage_b=… d3=…` line at the top of each lane's
-`summary.md` and job step summary. Six lanes therefore surface as six lines in the same
+`summary.md` and job step summary. Seven lanes therefore surface as seven lines in the same
 annotation list on the PR/check interface — one aggregated view, built without
-cross-runner coordination, without a seventh PR check (the 26-check PR architecture is
-unchanged) and without six separate commit comments. Annotation level is `error` when a
+cross-runner coordination or a separate workflow-level gate, and without per-lane PR
+comments. Annotation level is `error` when a
 stage is FAIL, `warning` when Stage A is NOT RUN or a verdict is unknown, otherwise
 `notice`; annotation levels never change a job conclusion, and only allowlisted scalars
 are emitted — free-text `detail`/`reason` (which can carry raw output, URLs,

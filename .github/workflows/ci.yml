@@ -42,6 +42,14 @@ jobs:
         run: python3 bin/tenant-tripwire.py --test
         working-directory: ${{ github.workspace }}
 
+      - name: Workflow evidence and acceptance contract tests
+        run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
+        working-directory: ${{ github.workspace }}
+
+      - name: Pilot benchmark report safety self-tests
+        run: python3 bin/pilot-bench-report.py --test
+        working-directory: ${{ github.workspace }}/clinic-practice-management
+
       - name: Scan production for tenant hardcodes
         working-directory: ${{ github.workspace }}
         run: |

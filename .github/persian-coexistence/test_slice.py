@@ -11,6 +11,7 @@ import re
 import shutil
 import tempfile
 import subprocess
+import sys
 import threading
 import unittest
 from unittest.mock import patch
@@ -274,6 +275,44 @@ class SliceTests(unittest.TestCase):
         self.assertEqual(result["stage_a"]["status"], "NOT RUN")
         self.assertEqual(result["stage_b"]["status"], "NOT RUN")
 
+    def test_required_stage_b_is_invoked_for_persian_wc_acceptance_group(self):
+        module = load_group("persian-woocommerce-acceptance")
+        self.assertTrue(module.STAGE_B_ENABLED)
+        lane_slice = module.Slice(self.root / "required-b", str(self.root / "wp"),
+                                  "http://example.test", "fixture")
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("healthy-complete-a", True, module.probe.PRODUCT)
+        store.save()
+        module.save(lane_slice.root / "A/result.json", module.verdict(store, True))
+        with patch.object(lane_slice, "log_bytes", return_value={"debug": b""}):
+            lane_slice.begin_b()
+        with patch.object(lane_slice, "stage_b", return_value={"status": "PASS"}) as stage_b, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(lane_slice.finalize({}), 0)
+        stage_b.assert_called_once_with({})
+        result = module.load(lane_slice.root / "summary.json")
+        self.assertEqual(result["stage_b"]["status"], "PASS")
+
+    def test_skipped_mandatory_cpms_install_cannot_pass_positive_coexistence(self):
+        self.healthy_a()
+        with patch.object(self.slice, "log_bytes", return_value={"debug": b""}):
+            self.slice.begin_b()
+        steps = {name: {"outcome": "success"} for name in
+                 ("cpms_install", "migrations", "roles", "booking", "browser_acceptance")}
+        steps["cpms_install"] = {"outcome": "skipped"}
+        html = {"status": 200, "body": '<html lang="fa-IR" dir="rtl"></html>'}
+        with patch.object(lane.probe, "http_request", side_effect=[
+                    {"status": 200, "body": '{"data":{"ok":true}}'}, html, html]), \
+                patch.object(self.slice, "browser"), patch.object(self.slice, "identity"), \
+                patch.object(self.slice, "capture_logs"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(self.slice.finalize(steps), 1)
+        result = lane.load(self.slice.root / "summary.json")
+        self.assertEqual(result["stage_b"]["status"], "FAIL")
+        skipped = next(check for check in result["stage_b"]["blocking_checks"]
+                       if check["name"] == "existing_harness::cpms_install")
+        self.assertEqual(skipped["detail"], "skipped")
+
     def test_missing_acceptance_cannot_pass_stage_b(self):
         self.healthy_a()
         with patch.object(self.slice, "log_bytes", return_value={"debug": b""}):
@@ -499,21 +538,33 @@ class GroupSelectionTests(unittest.TestCase):
         self.assertIn("CPMS coexistence", diagnosis.NOT_RUN)
         self.assertNotIn("permission experiment", diagnosis.NOT_RUN)
 
+        acceptance = load_group("persian-woocommerce-acceptance")
+        self.assertEqual(acceptance.PINS, {"woocommerce": "11.2.0", "persian-woocommerce": "10.0.7"})
+        self.assertEqual(acceptance.SUBJECT, "persian-woocommerce")
+        self.assertTrue(acceptance.STAGE_B_ENABLED)
+        self.assertNotIn("diagnostic", acceptance.GROUPS["persian-woocommerce-acceptance"])
+        self.assertIn("Persian WooCommerce commerce workflows", acceptance.NOT_RUN)
+
         roots = {module.GROUPS[group]["root"] for module, group in (
             (sms, "persian-woocommerce-sms"), (diagnosis, "persian-woocommerce-diagnosis"),
+            (acceptance, "persian-woocommerce-acceptance"),
             (load_group("combined-nineteen"), "combined-nineteen"))}
         artifacts = {module.GROUPS[group]["artifact"] for module, group in (
             (sms, "persian-woocommerce-sms"), (diagnosis, "persian-woocommerce-diagnosis"),
+            (acceptance, "persian-woocommerce-acceptance"),
             (load_group("combined-nineteen"), "combined-nineteen"))}
-        self.assertEqual(len(roots), 3)
-        self.assertEqual(len(artifacts), 3)
+        self.assertEqual(len(roots), 4)
+        self.assertEqual(len(artifacts), 4)
 
     def test_new_workflow_jobs_use_independent_groups_and_diagnostic_disables_stage_b(self):
         workflow = (Path(__file__).parents[1] / "workflows/persian-coexistence.yml").read_text()
         for job in ("coexistence-persian-woocommerce-diagnosis",
+                    "coexistence-persian-woocommerce-acceptance",
                     "coexistence-persian-woocommerce-sms", "coexistence-combined-nineteen"):
             self.assertIn(f"  {job}:\n", workflow)
+        self.assertIn("Stage-A-only diagnosis (CPMS intentionally absent)", workflow)
         self.assertIn("coexistence_group: persian-woocommerce-diagnosis\n      coexistence_stage_b: false", workflow)
+        self.assertIn("coexistence_group: persian-woocommerce-acceptance\n      coexistence_stage_b: true", workflow)
         self.assertIn("coexistence_group: persian-woocommerce-sms\n      coexistence_stage_b: true", workflow)
         self.assertIn("coexistence_group: combined-nineteen\n      coexistence_stage_b: true", workflow)
 
@@ -1042,13 +1093,50 @@ class PermissionDiagnosisTests(unittest.TestCase):
         store.save()
         with patch.object(self.slice, "log_bytes", return_value={"debug": b"", "apache": b""}), \
                 contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(self.slice.end_a(True), 0)
+            self.assertEqual(self.slice.end_a(True), 1, "complete measurement with material FAIL is not green")
         result = self.module.load(self.slice.root / "A/result.json")
         self.assertEqual(result["status"], "FAIL")
         self.assertTrue(result["measurement_complete"])
         self.assertIsNone(result["failure_category"])
         summary = self.module.load(self.slice.root / "summary.json")
         self.assertIn("Permission diagnosis only", summary["claim"])
+
+    def test_stage_a_material_failure_exit_code_is_nonzero_even_when_complete(self):
+        module = load_group("persian-woocommerce-diagnosis")
+        lane_slice = module.Slice(self.root / "diagnosis-material-fail", str(self.root / "wp"),
+                                  "http://example.test", "fixture")
+        lane_slice.init()
+        store = lane_slice.store("A")
+        store.check("redirect_loop", False, module.probe.PRODUCT, "observed loop", material=True)
+        store.save()
+        with patch.object(lane_slice, "log_bytes", return_value={"debug": b"", "apache": b""}), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(lane_slice.end_a(True), 1)
+            self.assertEqual(lane_slice.finalize({}), 1)
+        result = module.load(lane_slice.root / "A/result.json")
+        self.assertTrue(result["measurement_complete"])
+        self.assertEqual(result["status"], "FAIL")
+        # Prove the run.py command entry point propagates this completed material
+        # failure through the same integer consumed by `sys.exit(main())`.
+        def material_failure_exit():
+            store = lane_slice.store("A")
+            store.check("redirect_loop", False, module.probe.PRODUCT, "observed loop", material=True)
+            store.save()
+            with patch.object(lane_slice, "log_bytes", return_value={"debug": b"", "apache": b""}):
+                return lane_slice.end_a(True)
+
+        with patch.object(module.argparse.ArgumentParser, "parse_args",
+                          return_value=argparse.Namespace(command="stage-a")), \
+                patch.object(module, "Slice", return_value=lane_slice), \
+                patch.dict(os.environ, {"WP_DIR": str(self.root / "wp"),
+                                        "WP_URL": "http://example.test", "DB_NAME": "fixture"}), \
+                patch.object(lane_slice, "stage_a", side_effect=material_failure_exit), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(SystemExit) as raised:
+                sys.exit(module.main())
+        self.assertEqual(raised.exception.code, 1)
+        summary = module.load(lane_slice.root / "summary.json")
+        self.assertEqual(summary["stage_b"]["status"], "NOT RUN")
 
     def test_stage_b_is_prohibited_even_after_a_forged_healthy_stage_a(self):
         store = self.slice.store("A")
