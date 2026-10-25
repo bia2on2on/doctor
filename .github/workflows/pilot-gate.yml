@@ -122,6 +122,15 @@ jobs:
           path: clinic-practice-management/dist/
           retention-days: 14
 
+      # Owner delivery: the REAL installable plugin ZIP under an explicit name.
+      # NOT a disposable-site evidence artifact — this artifact contains exactly
+      # one file: the direct bin/build-release.sh output ZIP.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cpms-classic-installable-plugin
+          path: clinic-practice-management/dist/clinic-practice-management-1.0.0.zip
+          retention-days: 14
+
   # ============================================================
   # 2) Staging Gate — fresh install → smoke → perf → backup → restore
   # ============================================================
