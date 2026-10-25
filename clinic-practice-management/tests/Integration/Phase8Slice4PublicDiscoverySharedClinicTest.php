@@ -428,7 +428,11 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
             'clinic_id' => $this->clinicA, // hostile claim, never authority
         ], $this->patientUserId, true);
 
-        $this->assertClinicError($response, 'CLINIC_NOT_FOUND', 404, 'A cross-Clinic slot of another clinician must fail closed on B1 with the pinned 404 parity.');
+        // The slot lives in the requested clinician's OWN Clinic but belongs to a
+        // different clinician: that is the pre-existing same-Clinic envelope
+        // (CLINIC_VALIDATION_FAILED/422), not the cross-Clinic 404 parity. Both
+        // refuse the hold; the assertion pins the exact established vocabulary.
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED', 422, 'A slot of another clinician must fail closed on B1.');
         self::assertSame($before, $this->heldCount($this->sharedSlotB['slot_id']), 'A refused hold must not consume capacity.');
     }
 
