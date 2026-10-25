@@ -1,0 +1,302 @@
+name: External Disposable Site Acceptance (ZIP → clean WP → six personas)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: write
+  actions: read
+
+env:
+  WP_VERSION: '7.1.3'
+  PHP_VERSION: '8.2'
+  WP_DIR: /home/runner/cpms-disposable-wp
+  WP_URL: http://localhost:8080
+  DB_NAME: cpms_disposable
+  ADMIN_USER: disposable_admin
+
+jobs:
+  acceptance:
+    name: "Disposable external tool (prefix ${{ matrix.prefix }})"
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        prefix: ['wp_', 'clinic_']
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
+          coverage: none
+
+      - name: Tooling (Apache + checksum-verified WP-CLI)
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: >-
+            mysql-client apache2
+            libapache2-mod-php
+            php-mysql
+            php-mbstring
+            php-xml
+            php-curl
+            php-zip
+            php-gd
+          apt-log-dir: /tmp/acc
+
+      - name: Playwright Chromium (pinned)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
+
+      - name: Offline gates and live-main production-tree comparison
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/acc/logs /tmp/acc/screenshots
+          for file in tests/disposable-site/wp-cli/*.php; do php -l "$file"; done
+          python3 -m py_compile tests/disposable-site/browser-acceptance.py tests/disposable-site/assert-package.py tests/disposable-site/scan-evidence.py tests/disposable-site/test_tooling.py
+          python3 -m unittest discover -s tests/disposable-site -p 'test_*.py' -v
+          bash -n tests/disposable-site/teardown.sh
+          git diff --check
+          git fetch --no-tags --depth=1 origin main
+          BASE_SHA="$(git rev-parse FETCH_HEAD)"
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+          echo "live_main=$BASE_SHA candidate_head=$HEAD_SHA"
+          git diff --exit-code "$BASE_SHA" -- clinic-practice-management
+          mkdir -p /tmp/cpms-live-main
+          git archive "$BASE_SHA" clinic-practice-management | tar -x -C /tmp/cpms-live-main
+          echo 'PASS: installable production tree is byte-identical to live main; all task code is external'
+
+      - name: Clean WordPress with arbitrary DB prefix and CSPRNG Administrator password
+        run: |
+          set -Eeuo pipefail
+          curl -sS "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp-disposable.tar.gz
+          tar -xzf /tmp/wp-disposable.tar.gz -C /tmp
+          mv /tmp/wordpress "$WP_DIR"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='${{ matrix.prefix }}' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set DISALLOW_FILE_EDIT true --raw --allow-root
+          # Keep the disposable run bounded: no background cron may generate
+          # additional slots or deliver queued notifications during acceptance.
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(30))')"
+          wp core install --url="$WP_URL" --title="CPMS Disposable Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@disposable.invalid --skip-email --allow-root
+          unset ADMIN_PASS
+
+      - name: Apache + mod_php real web origin
+        run: |
+          set -Eeuo pipefail
+          sudo tee /etc/apache2/sites-available/disposable.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog \\${APACHE_LOG_DIR}/disposable-error.log
+            CustomLog \\${APACHE_LOG_DIR}/disposable-access.log combined
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default >/dev/null
+          sudo a2ensite disposable >/dev/null
+          sudo a2enmod rewrite >/dev/null
+          for INI in /etc/php/*/apache2/php.ini; do sudo sed -i 's/^display_errors = .*/display_errors = Off/' "$INI"; done
+          sudo chmod a+rx /home/runner
+          sudo chmod -R a+rX "$WP_DIR"
+          sudo apache2ctl configtest
+          sudo service apache2 start
+          curl -fsS -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/"
+          curl -fsS -o /dev/null -w 'rest HTTP %{http_code}\n' "$WP_URL/?rest_route=/"
+
+      - name: Build production ZIP and prove live-main/external-tool exclusion
+        run: |
+          set -Eeuo pipefail
+          bash clinic-practice-management/bin/build-release.sh | tee /tmp/acc/logs/release-build.log
+          ZIP="$(find clinic-practice-management/dist -maxdepth 1 -type f -name 'clinic-practice-management-*.zip' -print -quit)"
+          test -n "$ZIP"
+          echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
+          python3 tests/disposable-site/assert-package.py \
+            --zip "$ZIP" \
+            --baseline-source /tmp/cpms-live-main/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" \
+            --output /tmp/acc/package-proof.json | tee /tmp/acc/logs/package-proof.log
+
+      - name: Install/reactivate/reapply activation — no fixture auto-runs
+        run: |
+          set -Eeuo pipefail
+          wp plugin install "$GITHUB_WORKSPACE/$ZIP_PATH" --activate --path="$WP_DIR" --allow-root > /tmp/acc/logs/plugin-install.log 2>&1
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          export CPMS_DISPOSABLE_EXPECT=empty
+          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/activation-empty-1.log
+          wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          wp eval '\ClinicCore\Bootstrap\App::activate(false);' --path="$WP_DIR" --allow-root --user="$ADMIN_USER"
+          wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/activation-empty-2.log
+          PREFIX='${{ matrix.prefix }}'
+          ACTUAL="$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME' AND table_name LIKE '${PREFIX}cpms_%';")"
+          test "$ACTUAL" -ge 30
+          SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
+          test "$SCHEMA" = '2026_10_18_0029'
+          echo "PASS: actual_cpms_tables=$ACTUAL schema=$SCHEMA prefix=$PREFIX; repeated activation created no fixture"
+
+      - name: Explicit confirmation and protected-path refusals
+        run: |
+          set -Eeuo pipefail
+          PRIVATE_DIR="/tmp/cpms-disposable-private-${{ matrix.prefix }}"
+          install -d -m 700 "$PRIVATE_DIR"
+          echo "CPMS_DISPOSABLE_STATE=$PRIVATE_DIR/credentials.json" >> "$GITHUB_ENV"
+          echo "CPMS_DISPOSABLE_OTP_FILE=$PRIVATE_DIR/otp.json" >> "$GITHUB_ENV"
+          if CPMS_DISPOSABLE_STATE="$PRIVATE_DIR/credentials.json" wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/no-confirmation.log 2>&1; then
+            echo '::error::provisioning without confirmation unexpectedly succeeded'
+            exit 1
+          fi
+          grep -q 'CONFIRMATION_REQUIRED' /tmp/acc/logs/no-confirmation.log
+          if CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE CPMS_DISPOSABLE_STATE="$WP_DIR/wp-content/credentials.json" wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/webroot-refusal.log 2>&1; then
+            echo '::error::web-root credential path unexpectedly succeeded'
+            exit 1
+          fi
+          grep -q 'SECRET_PATH' /tmp/acc/logs/webroot-refusal.log
+          CPMS_DISPOSABLE_EXPECT=empty wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/refusals-left-empty.log
+          echo 'PASS: missing confirmation and web-root credential path both failed closed without fixture writes'
+
+      - name: Provision six scoped accounts and bounded synthetic operations
+        run: |
+          set -Eeuo pipefail
+          export CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE
+          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/provision.log
+          test "$(stat -c '%a' "$CPMS_DISPOSABLE_STATE")" = '600'
+          test "$(stat -c '%a' "$(dirname "$CPMS_DISPOSABLE_STATE")")" = '700'
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/verify-active-before.log
+          python3 tests/disposable-site/assert-package.py \
+            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
+            --output /tmp/acc/package-proof-with-secrets.json | tee /tmp/acc/logs/package-secret-exclusion.log
+
+      - name: Idempotent repeat and non-empty second-fixture refusal
+        run: |
+          set -Eeuo pipefail
+          export CPMS_DISPOSABLE_CONFIRM=I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE
+          wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/idempotent-repeat.log
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after.log
+          cmp /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-active-after.log
+          SECOND_STATE="$(dirname "$CPMS_DISPOSABLE_STATE")/second-fixture.json"
+          if CPMS_DISPOSABLE_STATE="$SECOND_STATE" wp eval-file tests/disposable-site/wp-cli/provision.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/nonempty-refusal.log 2>&1; then
+            echo '::error::second fixture on a non-empty site unexpectedly succeeded'
+            exit 1
+          fi
+          grep -q 'NONEMPTY_SITE' /tmp/acc/logs/nonempty-refusal.log
+          CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" > /tmp/acc/logs/verify-active-after-denial.log
+          cmp /tmp/acc/logs/verify-active-after.log /tmp/acc/logs/verify-active-after-denial.log
+          echo 'PASS: repeat made no changes; a second fixture was refused without changing existing data'
+
+      - name: Real Chromium — booking/OTP/Hold/Confirm + six portals + denial + RTL/mobile
+        run: |
+          set -o pipefail
+          BASE="$WP_URL" WP_DIR="$WP_DIR" OUT=/tmp/acc ADMIN_USER="$ADMIN_USER" \
+            CPMS_DISPOSABLE_STATE="$CPMS_DISPOSABLE_STATE" CPMS_DISPOSABLE_OTP_FILE="$CPMS_DISPOSABLE_OTP_FILE" \
+            python3 tests/disposable-site/browser-acceptance.py > /tmp/acc/disposable-browser.log 2>&1
+          RC=$?
+          cat /tmp/acc/disposable-browser.log
+          if [ "$RC" -ne 0 ]; then
+            ANNOT="$(grep -E '^(FAIL |ERROR:|DISPOSABLE_DIAG=)' /tmp/acc/disposable-browser.log | head -n 10 || true)"
+            printf '%s\n' "$ANNOT" | sed -e 's/%/%25/g' -e 's/^/::error::/' || true
+            exit "$RC"
+          fi
+
+      - name: Post-browser security, OTP, operational and evidence checks
+        run: |
+          set -Eeuo pipefail
+          CPMS_DISPOSABLE_EXPECT=browser-complete wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" | tee /tmp/acc/logs/verify-browser-complete.log
+          python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" --output /tmp/acc/evidence-scan.json | tee /tmp/acc/logs/evidence-scan.log
+          FATALS=0
+          for LOG in "$WP_DIR/wp-content/debug.log" /var/log/apache2/disposable-error.log; do
+            if [ -f "$LOG" ]; then
+              COUNT="$(grep -cE 'PHP Fatal error|PHP Parse error|Uncaught|There has been a critical error' "$LOG" || true)"
+              FATALS=$((FATALS + COUNT))
+            fi
+          done
+          echo "fatal_error_markers=$FATALS" | tee /tmp/acc/logs/log-gate-summary.txt
+          test "$FATALS" -eq 0
+
+      - name: Destroy the entire disposable database and protected local secrets
+        if: success()
+        run: |
+          set -Eeuo pipefail
+          CPMS_DISPOSABLE_CONFIRM=DESTROY_DISPOSABLE_SITE_AND_DATABASE \
+            CPMS_DISPOSABLE_STATE="$CPMS_DISPOSABLE_STATE" CPMS_DISPOSABLE_OTP_FILE="$CPMS_DISPOSABLE_OTP_FILE" \
+            WP_DIR="$WP_DIR" ADMIN_USER="$ADMIN_USER" \
+            bash tests/disposable-site/teardown.sh | tee /tmp/acc/logs/teardown.log
+
+      - name: Upload strictly non-secret evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disposable-site-${{ matrix.prefix }}-${{ github.run_id }}
+          path: |
+            /tmp/acc/screenshots/
+            /tmp/acc/logs/
+            /tmp/acc/disposable-browser.log
+            /tmp/acc/package-proof.json
+            /tmp/acc/package-proof-with-secrets.json
+            /tmp/acc/evidence-scan.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Publish non-secret exact-head evidence
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          {
+            echo "### External Disposable Site — prefix \`${{ matrix.prefix }}\` (job: ${{ job.status }})"
+            echo
+            echo "- candidate head: \`$HEAD_SHA\`; live main retrieved by this job: \`$BASE_SHA\`"
+            echo '- production tree vs live main: byte-identical (the job fails otherwise)'
+            echo '- packaging/provenance:'
+            echo '```'
+            cat /tmp/acc/package-proof.json 2>/dev/null || echo '(not reached)'
+            echo '```'
+            echo '- non-secret stage/check diagnostics:'
+            echo '```'
+            grep -E '^(STAGE|PASS |FAIL |ERROR:|DISPOSABLE_DIAG=|DISPOSABLE_RESULTS=|RESULT:|CPMS_DISPOSABLE_ERROR)' /tmp/acc/disposable-browser.log /tmp/acc/logs/*.log 2>/dev/null | tail -140 || echo '(not reached)'
+            echo '```'
+            echo '- verification/teardown:'
+            echo '```'
+            tail -3 /tmp/acc/logs/verify-active-before.log /tmp/acc/logs/verify-browser-complete.log /tmp/acc/logs/teardown.log 2>/dev/null || echo '(not reached)'
+            echo '```'
+            echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
+          } > /tmp/acc/evidence-comment.md
+          gh api "repos/{owner}/{repo}/commits/$HEAD_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'

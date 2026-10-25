@@ -364,11 +364,6 @@ final class SmsService
         $opts = [
             'sender' => (string) $settings->get('sms.sender', ''),
             'timeout_sec' => (int) (($settings->get('sms.advanced', [])['timeout_sec'] ?? 5)),
-            // Non-secret ownership metadata for explicitly scoped providers.
-            // Existing providers ignore these optional keys; no raw OTP is added.
-            'clinic_id'   => (int) $row['clinic_id'],
-            'event'       => (string) $row['event'],
-            'message_id'  => $message_id,
         ];
 
         $this->updateMessage(

@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
-"""Real-Chromium acceptance for the optional CPMS temporary demonstration.
+"""Real-Chromium acceptance for the external CPMS disposable-site fixture.
 
-The script uses the Administrator UI, delivered Classic shortcodes/portals and
-production REST calls made by those pages. Generated passwords and OTP values
-are kept only in process memory: they are never printed, written to results, or
-captured in screenshots. WP-CLI is used only for non-secret fixture identifiers
-and final database assertions, never to bypass the browser journey under test.
+Passwords and the OTP code are read only from protected local 0600 files. They
+are never printed, written to results, or captured in screenshots. WP-CLI is
+used only for the explicit OTP hash fixture and non-secret database assertions;
+all user journeys execute the delivered shortcode, portals, and production REST
+routes in fresh per-persona BrowserContexts.
 """
 
 import json
 import os
+from pathlib import Path
+import re
+import stat
 import subprocess
 import sys
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
@@ -20,9 +23,11 @@ from playwright.sync_api import sync_playwright
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 WP_DIR = os.environ.get("WP_DIR", "")
 OUT = os.environ.get("OUT", "/tmp/acc")
+STATE_FILE = os.environ.get("CPMS_DISPOSABLE_STATE", "")
+OTP_FILE = os.environ.get("CPMS_DISPOSABLE_OTP_FILE", "")
 ADMIN_USER = os.environ.get("ADMIN_USER", "")
-ADMIN_PASS = os.environ.get("ADMIN_PASS", "")
-MOBILE = "09000000000"
+REPO = Path(__file__).resolve().parents[2]
+OTP_TOOL = REPO / "tests/disposable-site/wp-cli/otp.php"
 ACCOUNTS = (
     "organization_manager",
     "clinic_manager",
@@ -47,36 +52,57 @@ def check(name, ok, detail=""):
     print(("PASS " if ok else "FAIL ") + name + (" — " + str(detail)[:400] if detail else ""), flush=True)
 
 
+def protected_json(path):
+    if not path or not os.path.isabs(path):
+        raise RuntimeError("protected JSON path must be absolute")
+    if os.path.islink(path) or not os.path.isfile(path):
+        raise RuntimeError("protected JSON must be a regular non-symlink file")
+    mode = stat.S_IMODE(os.stat(path).st_mode)
+    if mode & 0o077:
+        raise RuntimeError("protected JSON mode must be 0600 or stricter")
+    web_root = os.path.realpath(WP_DIR) if WP_DIR else ""
+    parent = os.path.realpath(os.path.dirname(path))
+    if web_root and (parent == web_root or parent.startswith(web_root + os.sep)):
+        raise RuntimeError("protected JSON must be outside the web root")
+    if parent == str(REPO) or parent.startswith(str(REPO) + os.sep):
+        raise RuntimeError("protected JSON must be outside the Git worktree")
+    with open(path, encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise RuntimeError("protected JSON root must be an object")
+    return data
+
+
 def dump_results(fixture=None):
     fixture = fixture or LAST_FIXTURE
     os.makedirs(f"{OUT}/logs", exist_ok=True)
     safe_fixture = None
     if fixture:
         safe_fixture = {k: fixture.get(k) for k in (
-            "demo_id", "clinic_id", "location_id", "organization_id",
-            "active_visit_id", "completed_visit_id", "booking_page_id"
+            "fixture_id", "clinic_id", "location_id", "organization_id",
+            "completed_visit_id", "booking_page_id"
         )}
     payload = {
         "fixture": safe_fixture,
         "checks": RESULTS,
         "stage": STATE["stage"],
-        "secrets_persisted": False,
+        "secrets_in_results": False,
     }
-    with open(f"{OUT}/logs/demo-results.json", "w", encoding="utf-8") as handle:
+    with open(f"{OUT}/logs/disposable-results.json", "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False, indent=2)
-    print("DEMO_RESULTS=" + json.dumps({
+    print("DISPOSABLE_RESULTS=" + json.dumps({
         "stage": STATE["stage"],
         "checks": len(RESULTS),
         "failed": [row["check"] for row in RESULTS if not row["ok"]],
     }, ensure_ascii=False), flush=True)
 
 
-def wp(*args, stdin_text=None):
+def wp(*args):
     if not WP_DIR:
         raise RuntimeError("WP_DIR is required")
     proc = subprocess.run(
         ["wp", *args, f"--path={WP_DIR}", "--allow-root"],
-        capture_output=True, text=True, timeout=180, input=stdin_text,
+        capture_output=True, text=True, timeout=180,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"WP-CLI {args[0]} failed rc={proc.returncode}: {(proc.stderr or proc.stdout)[:300]}")
@@ -96,25 +122,27 @@ def wp_eval(code, env=None):
     return (proc.stdout or "").strip()
 
 
-def fixture_from_db():
-    output = wp_eval(r'''
-$s = get_option(\ClinicCore\Application\Demo\DemoService::STATE_OPTION, []);
-echo "DEMO_FIXTURE=" . wp_json_encode([
-    "demo_id" => (string) ($s["demo_id"] ?? ""),
-    "status" => (string) ($s["status"] ?? ""),
-    "clinic_id" => (int) ($s["clinic_id"] ?? 0),
-    "location_id" => (int) ($s["location_id"] ?? 0),
-    "organization_id" => (int) ($s["organization_id"] ?? 0),
-    "active_visit_id" => (int) ($s["active_visit_id"] ?? 0),
-    "completed_visit_id" => (int) ($s["completed_visit_id"] ?? 0),
-    "booking_page_id" => (int) ($s["booking_page_id"] ?? 0),
-    "user_ids" => array_map(static fn($row) => (int) $row["id"], array_values($s["users"] ?? [])),
-]) . PHP_EOL;
-''')
-    marker = next((line for line in output.splitlines() if line.startswith("DEMO_FIXTURE=")), "")
-    if not marker:
-        raise RuntimeError("Non-secret demo fixture marker missing")
-    return json.loads(marker.split("=", 1)[1])
+def make_otp_fixture():
+    if not ADMIN_USER:
+        raise RuntimeError("ADMIN_USER is required for the explicit WP-CLI fixture")
+    env = os.environ.copy()
+    env.update({
+        "CPMS_DISPOSABLE_STATE": STATE_FILE,
+        "CPMS_DISPOSABLE_OTP_FILE": OTP_FILE,
+    })
+    proc = subprocess.run([
+        "wp", "eval-file", str(OTP_TOOL), "--use-include",
+        f"--path={WP_DIR}", "--allow-root", f"--user={ADMIN_USER}",
+    ], capture_output=True, text=True, timeout=60, env=env)
+    if proc.returncode != 0:
+        raise RuntimeError(f"external OTP fixture failed rc={proc.returncode}: {(proc.stderr or proc.stdout)[:300]}")
+    # The tool's stdout is safe by contract; do not echo it or the OTP file.
+    fixture = protected_json(OTP_FILE)
+    code = str(fixture.get("code", ""))
+    if not re.fullmatch(r"\d{6}", code) or int(fixture.get("token_id", 0)) <= 0:
+        raise RuntimeError("external OTP fixture is invalid")
+    os.unlink(OTP_FILE)
+    return code
 
 
 def login(page, username, password):
@@ -131,18 +159,13 @@ def login(page, username, password):
 
 def open_account(browser, credentials, key):
     context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fa-IR")
+    check(f"fresh cookie jar: {key}", len(context.cookies()) == 0)
     page = context.new_page()
     page.set_default_timeout(20000)
     if not login(page, credentials[key]["username"], credentials[key]["password"]):
         context.close()
         raise RuntimeError(f"Generated {key} login failed")
     return context, page
-
-
-def click_form_action(page, action):
-    form = page.locator(f'form:has(input[name="demo_action"][value="{action}"])')
-    form.locator('input[type="submit"], button[type="submit"]').click()
-    page.wait_for_load_state("domcontentloaded")
 
 
 def with_query(url, **params):
@@ -157,11 +180,22 @@ def assert_no_horizontal_overflow(page, name):
     check(name, dimensions["scroll"] <= dimensions["width"] + 2, json.dumps(dimensions))
 
 
-def public_booking(browser, admin_page, links, credentials):
-    stage("public booking OTP hold confirm")
+def rest_response(responses, path):
+    for response in reversed(responses):
+        parsed = urlparse(response.url)
+        route = parse_qs(parsed.query).get("rest_route", [""])[0]
+        if parsed.path.endswith("/wp-json/clinic/v1" + path) or route == "/clinic/v1" + path:
+            return response
+    return None
+
+
+def public_booking(browser, links, fixture):
+    stage("public booking normal OTP hold confirm")
     context = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
     page = context.new_page()
     page.set_default_timeout(25000)
+    responses = []
+    page.on("response", lambda response: responses.append(response))
     page.goto(links["booking"], wait_until="domcontentloaded")
     root = page.locator(".cpms-public-booking")
     root.wait_for()
@@ -171,17 +205,13 @@ def public_booking(browser, admin_page, links, credentials):
     clinician = root.locator(".cpms-public-booking__clinician")
     clinician.wait_for()
     if clinician.evaluate("el => el.tagName") == "SELECT":
-        options = clinician.locator("option")
-        if options.count() > 1:
+        if clinician.locator("option").count() > 1:
             clinician.select_option(index=1)
     else:
         clinician.first.click()
     slot = root.locator(".cpms-public-booking__slot:not([disabled])").first
     slot.wait_for(state="visible", timeout=30000)
     slot.click()
-    # Slot selection starts an asynchronous A4 quote. The delegated click
-    # handler intentionally ignores continuation clicks while that quote is
-    # busy, so wait for its actual terminal bookable/not-busy contract.
     quoted = root.locator('[data-role="panel"][data-state="bookable"][aria-busy="false"]')
     quoted.wait_for(state="visible", timeout=30000)
     check("public quote completed before OTP", quoted.count() == 1)
@@ -190,17 +220,14 @@ def public_booking(browser, admin_page, links, credentials):
     continue_button.click()
     mobile_input = root.locator('[data-role="otp-mobile"]')
     mobile_input.wait_for(state="visible")
-    mobile_input.fill(MOBILE)
+    mobile_input.fill(str(fixture["patient_mobile"]))
     root.locator('[data-auth-action="otp-request"]').click()
     root.locator('[data-role="otp-code"]').wait_for(state="visible")
+    otp_response = rest_response(responses, "/otp/request")
+    check("normal OTP request route succeeded", otp_response is not None and otp_response.status == 200)
 
-    # The OTP is retrieved through the nonce-protected Administrator UI only.
-    click_form_action(admin_page, "otp")
-    otp_node = admin_page.locator("[data-demo-otp]")
-    otp_node.wait_for(state="visible")
-    otp = otp_node.inner_text().strip()
-    if len(otp) != 6 or not otp.isdigit():
-        raise RuntimeError("Administrator OTP response was invalid")
+    otp = make_otp_fixture()
+    check("protected OTP fixture retrieved without output", not os.path.exists(OTP_FILE) and len(otp) == 6)
     root.locator('[data-role="otp-code"]').fill(otp)
     otp = ""
     root.locator('[data-auth-action="otp-verify"]').click()
@@ -208,20 +235,27 @@ def public_booking(browser, admin_page, links, credentials):
     root = page.locator(".cpms-public-booking")
     confirm = root.locator('[data-role="confirm-btn"]')
     confirm.wait_for(state="visible", timeout=35000)
-    check("OTP restored quote and automatic hold", root.locator('[data-role="hold-countdown"]').is_visible())
+    verify_response = rest_response(responses, "/otp/verify")
+    hold_response = rest_response(responses, "/booking/hold")
+    check("normal OTP verify route succeeded", verify_response is not None and verify_response.status == 200)
+    check("OTP restored quote and automatic hold",
+          root.locator('[data-role="hold-countdown"]').is_visible()
+          and hold_response is not None and hold_response.status == 200)
     confirm.click()
     receipt = root.locator('[data-role="receipt"]')
     receipt.wait_for(state="visible", timeout=30000)
     reference = receipt.locator('[data-role="reference-code"]').inner_text().strip()
-    check("public booking confirmed with receipt", bool(reference))
+    confirm_response = rest_response(responses, "/booking/confirm")
+    check("public booking confirmed with receipt",
+          bool(reference) and confirm_response is not None and confirm_response.status == 200)
     assert_no_horizontal_overflow(page, "public booking mobile has no horizontal overflow")
-    page.screenshot(path=f"{OUT}/screenshots/demo-booking-receipt.png", full_page=True)
+    page.screenshot(path=f"{OUT}/screenshots/disposable-booking-receipt.png", full_page=True)
 
     page.goto(links["patient"], wait_until="domcontentloaded")
     page.wait_for_timeout(1200)
     check("patient dashboard after OTP", page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "patient")
     assert_no_horizontal_overflow(page, "patient portal mobile has no horizontal overflow")
-    page.screenshot(path=f"{OUT}/screenshots/demo-patient-mobile.png", full_page=True)
+    page.screenshot(path=f"{OUT}/screenshots/disposable-patient-mobile.png", full_page=True)
     return context, page, reference
 
 
@@ -229,14 +263,14 @@ def reception_arrival(browser, credentials, staff_url, clinic_id, location_id, r
     stage("reception check-in and enqueue of the public booking")
     output = wp_eval(r'''
 $db = \ClinicCore\Bootstrap\App::db();
-$row = $db->fetchRow("SELECT id FROM " . $db->table("cpms_appointments") . " WHERE clinic_id = %d AND reference_code = %s LIMIT 1", [(int) getenv("DEMO_CLINIC_ID"), (string) getenv("DEMO_REFERENCE")]);
-echo "DEMO_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
-''', {"DEMO_CLINIC_ID": str(clinic_id), "DEMO_REFERENCE": reference})
-    marker = next((line for line in output.splitlines() if line.startswith("DEMO_APPOINTMENT=")), "")
+$row = $db->fetchRow("SELECT id FROM " . $db->table("cpms_appointments") . " WHERE clinic_id = %d AND reference_code = %s LIMIT 1", [(int) getenv("FIXTURE_CLINIC_ID"), (string) getenv("FIXTURE_REFERENCE")]);
+echo "FIXTURE_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
+''', {"FIXTURE_CLINIC_ID": str(clinic_id), "FIXTURE_REFERENCE": reference})
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_APPOINTMENT=")), "")
     appointment_id = int(marker.split("=", 1)[1]) if marker else 0
-    check("receipt resolves to exact demo appointment", appointment_id > 0)
+    check("receipt resolves to exact synthetic appointment", appointment_id > 0)
     if appointment_id <= 0:
-        raise RuntimeError("Booked appointment was not found in the demo Clinic")
+        raise RuntimeError("Booked appointment was not found in the synthetic Clinic")
 
     context, page = open_account(browser, credentials, "receptionist")
     page.goto(with_query(staff_url, **{"cpms-module": "reception"}), wait_until="domcontentloaded")
@@ -248,7 +282,7 @@ echo "DEMO_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
     location_select = page.locator('[data-role="sr-location-select"]')
     page.locator(f'[data-role="sr-location-select"] option[value="{location_id}"]').wait_for(state="attached", timeout=30000)
     location_select.select_option(str(location_id))
-    check("reception exact demo Clinic and Location selected",
+    check("reception exact synthetic Clinic and Location selected",
           clinic_select.input_value() == str(clinic_id) and location_select.input_value() == str(location_id))
     arrive = page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
     arrive.wait_for(state="visible", timeout=35000)
@@ -257,10 +291,10 @@ echo "DEMO_APPOINTMENT=" . (int) ($row["id"] ?? 0) . PHP_EOL;
 
     output = wp_eval(r'''
 $db = \ClinicCore\Bootstrap\App::db();
-$row = $db->fetchRow("SELECT id, status FROM " . $db->table("cpms_visits") . " WHERE clinic_id = %d AND appointment_id = %d AND active = 1 ORDER BY id DESC LIMIT 1", [(int) getenv("DEMO_CLINIC_ID"), (int) getenv("DEMO_APPOINTMENT_ID")]);
-echo "DEMO_ARRIVAL=" . wp_json_encode(["id" => (int) ($row["id"] ?? 0), "status" => (string) ($row["status"] ?? "")]) . PHP_EOL;
-''', {"DEMO_CLINIC_ID": str(clinic_id), "DEMO_APPOINTMENT_ID": str(appointment_id)})
-    marker = next((line for line in output.splitlines() if line.startswith("DEMO_ARRIVAL=")), "")
+$row = $db->fetchRow("SELECT id, status FROM " . $db->table("cpms_visits") . " WHERE clinic_id = %d AND appointment_id = %d AND active = 1 ORDER BY id DESC LIMIT 1", [(int) getenv("FIXTURE_CLINIC_ID"), (int) getenv("FIXTURE_APPOINTMENT_ID")]);
+echo "FIXTURE_ARRIVAL=" . wp_json_encode(["id" => (int) ($row["id"] ?? 0), "status" => (string) ($row["status"] ?? "")]) . PHP_EOL;
+''', {"FIXTURE_CLINIC_ID": str(clinic_id), "FIXTURE_APPOINTMENT_ID": str(appointment_id)})
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_ARRIVAL=")), "")
     arrival = json.loads(marker.split("=", 1)[1]) if marker else {}
     check("reception checked in and enqueued booked appointment", arrival.get("id", 0) > 0 and arrival.get("status") == "waiting", json.dumps(arrival))
     if arrival.get("id", 0) <= 0 or arrival.get("status") != "waiting":
@@ -271,6 +305,18 @@ echo "DEMO_ARRIVAL=" . wp_json_encode(["id" => (int) ($row["id"] ?? 0), "status"
 def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visit_id):
     stage("doctor call start notes prescription complete")
     context, page = open_account(browser, credentials, "doctor")
+    dialogs = []
+
+    def handle_dialog(dialog):
+        # Doctor Complete deliberately uses the production confirmation. Do
+        # not let Playwright's default dismissal silently cancel the journey.
+        dialogs.append(dialog.type)
+        if dialog.type == "confirm":
+            dialog.accept()
+        else:
+            dialog.dismiss()
+
+    page.on("dialog", handle_dialog)
     page.goto(with_query(staff_url, **{"cpms-module": "doctor"}), wait_until="domcontentloaded")
     clinic_select = page.locator('[data-role="clinic-select"]')
     clinic_select.wait_for(state="visible")
@@ -280,7 +326,7 @@ def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visi
     location_select = page.locator('[data-role="location-select"]')
     page.locator(f'[data-role="location-select"] option[value="{location_id}"]').wait_for(state="attached", timeout=30000)
     location_select.select_option(str(location_id))
-    check("doctor exact demo Clinic and Location selected",
+    check("doctor exact synthetic Clinic and Location selected",
           clinic_select.input_value() == str(clinic_id) and location_select.input_value() == str(location_id))
     row_selector = f'[data-role="queue-item"][data-visit-id="{visit_id}"]'
     page.locator(row_selector).wait_for(state="visible", timeout=35000)
@@ -291,7 +337,7 @@ def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visi
     page.locator(row_selector).click()
     page.locator('[data-role="workspace-body"]').wait_for(state="visible", timeout=30000)
 
-    page.fill('[data-role="workspace-content"]', "یادداشت بالینی کاملاً ساختگی برای پذیرش Demo")
+    page.fill('[data-role="workspace-content"]', "یادداشت بالینی کاملاً ساختگی برای پذیرش خارجی")
     page.locator('[data-role="workspace-note-form"]').evaluate("form => form.requestSubmit()")
     page.locator('[data-role="workspace-form-success"]').wait_for(state="visible")
     page.fill('[data-role="workspace-cc-text"]', "شکایت اصلی ساختگی؛ هیچ داده پزشکی واقعی نیست")
@@ -312,8 +358,9 @@ def doctor_journey(browser, credentials, staff_url, clinic_id, location_id, visi
     complete.wait_for(state="visible")
     complete.click()
     page.locator('[data-role="workspace-consult-complete-success"]').wait_for(state="visible", timeout=30000)
+    check("doctor completion confirmation accepted", dialogs == ["confirm"])
     check("doctor live clinical journey completed", True)
-    page.screenshot(path=f"{OUT}/screenshots/demo-doctor-complete.png", full_page=True)
+    page.screenshot(path=f"{OUT}/screenshots/disposable-doctor-complete.png", full_page=True)
     return context, page
 
 
@@ -329,7 +376,20 @@ def finance_journey(browser, credentials, staff_url, visit_id):
     accountant.fill('[data-role="finance-issue-quantity"]', "1")
     accountant.fill('[data-role="finance-issue-unit-price"]', "1000")
     accountant.locator('[data-role="finance-issue-form"]').evaluate("form => form.requestSubmit()")
-    pay = accountant.locator(f'[data-role="finance-pay-open"][data-visit-id="{visit_id}"]')
+    # Finance renders its capture action with data-invoice-id (not the Visit
+    # id). Wait for the real board refresh, then resolve that exact invoice.
+    accountant.locator('[data-role="finance-pay-open"]').first.wait_for(state="visible", timeout=35000)
+    output = wp_eval(r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$id = (int) $db->fetchValue("SELECT id FROM " . $db->table("cpms_invoices") . " WHERE visit_id = %d ORDER BY id DESC LIMIT 1", [(int) getenv("FIXTURE_VISIT_ID")]);
+echo "FIXTURE_INVOICE=" . $id . PHP_EOL;
+''', {"FIXTURE_VISIT_ID": str(visit_id)})
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_INVOICE=")), "")
+    invoice_id = int(marker.split("=", 1)[1]) if marker else 0
+    check("finance resolves exact synthetic invoice", invoice_id > 0)
+    if invoice_id <= 0:
+        raise RuntimeError("Issued browser invoice was not found")
+    pay = accountant.locator(f'[data-role="finance-pay-open"][data-invoice-id="{invoice_id}"]')
     pay.wait_for(state="visible", timeout=35000)
     pay.click()
     accountant.fill('[data-role="finance-pay-amount"]', "1000")
@@ -351,56 +411,19 @@ def finance_journey(browser, credentials, staff_url, visit_id):
     return reception_context, reception
 
 
-def tracked_demo_job_ids(fixture):
-    output = wp_eval(r'''
-$demoId = (string) getenv("DEMO_ID");
-$clinicId = (int) getenv("DEMO_CLINIC_ID");
-$state = \ClinicCore\Bootstrap\App::demo_service()->state();
-if ((string) ($state["demo_id"] ?? "") !== $demoId || (int) ($state["clinic_id"] ?? 0) !== $clinicId) {
-  throw new \RuntimeException("Demo fixture ownership mismatch");
-}
-$previousScope = \ClinicCore\Application\Scope\ScopeContext::tryGet();
-try {
-  \ClinicCore\Application\Scope\ScopeContext::set(\ClinicCore\Application\Scope\ClinicScope::forClinic($clinicId, (int) $state["location_id"]));
-  $ownedJobId = \ClinicCore\Bootstrap\App::jobs()->enqueue("demo.browser_owned_probe", ["private_payload" => "not-copied-to-marker"]);
-} finally {
-  \ClinicCore\Bootstrap\App::replaceExplicitScope($previousScope);
-}
-$prefix = \ClinicCore\Application\Demo\DemoService::JOB_OPTION_PREFIX . $demoId . "_";
-$db = \ClinicCore\Bootstrap\App::db();
-$rows = $db->fetchAll("SELECT option_name, option_value FROM " . $db->wpdb()->options . " WHERE option_name LIKE %s", [$db->wpdb()->esc_like($prefix) . "%"]);
-$ids = [];
-foreach ($rows as $row) {
-  $name = (string) $row["option_name"];
-  if ((string) $row["option_value"] !== (string) $clinicId || !preg_match("/^" . preg_quote($prefix, "/") . "(\\d+)$/", $name, $matches)) {
-    throw new \RuntimeException("Invalid demo job marker ownership");
-  }
-  $ids[] = (int) $matches[1];
-}
-if (!in_array($ownedJobId, $ids, true)) {
-  throw new \RuntimeException("Owned post-provisioning job marker missing");
-}
-echo "DEMO_JOB_IDS=" . wp_json_encode($ids) . PHP_EOL;
-''', {"DEMO_ID": fixture["demo_id"], "DEMO_CLINIC_ID": str(fixture["clinic_id"])})
-    marker = next((line for line in output.splitlines() if line.startswith("DEMO_JOB_IDS=")), "")
-    ids = json.loads(marker.split("=", 1)[1]) if marker else []
-    check("owned post-provisioning job markers present", len(ids) > 0)
-    return ids
-
-
 def verify_operational_db(visit_id):
     output = wp_eval(r'''
-$id = (int) getenv("DEMO_VISIT_ID");
+$id = (int) getenv("FIXTURE_VISIT_ID");
 $db = \ClinicCore\Bootstrap\App::db();
-echo "DEMO_OPERATION=" . wp_json_encode([
+echo "FIXTURE_OPERATION=" . wp_json_encode([
   "visit" => $db->fetchValue("SELECT status FROM " . $db->table("cpms_visits") . " WHERE id = %d", [$id]),
   "notes" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinical_notes") . " WHERE visit_id = %d", [$id]),
   "rx" => $db->fetchValue("SELECT status FROM " . $db->table("cpms_prescriptions") . " WHERE visit_id = %d ORDER BY id DESC LIMIT 1", [$id]),
   "invoice" => $db->fetchValue("SELECT status FROM " . $db->table("cpms_invoices") . " WHERE visit_id = %d ORDER BY id DESC LIMIT 1", [$id]),
   "payments" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_payments") . " p INNER JOIN " . $db->table("cpms_invoices") . " i ON i.id = p.invoice_id WHERE i.visit_id = %d", [$id]),
 ]) . PHP_EOL;
-''', {"DEMO_VISIT_ID": str(visit_id)})
-    marker = next((line for line in output.splitlines() if line.startswith("DEMO_OPERATION=")), "")
+''', {"FIXTURE_VISIT_ID": str(visit_id)})
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_OPERATION=")), "")
     data = json.loads(marker.split("=", 1)[1])
     check("database confirms clinical finance checkout journey",
           data["visit"] == "checked_out" and data["notes"] >= 2 and data["rx"] == "finalized"
@@ -409,55 +432,32 @@ echo "DEMO_OPERATION=" . wp_json_encode([
 
 def main():
     global LAST_FIXTURE
-    if not ADMIN_USER or not ADMIN_PASS:
-        raise RuntimeError("ADMIN_USER and ADMIN_PASS are required")
+    fixture = protected_json(STATE_FILE)
+    LAST_FIXTURE = fixture
+    credentials = fixture.get("accounts", {})
+    if tuple(credentials.keys()) != ACCOUNTS or fixture.get("status") != "active":
+        raise RuntimeError("protected fixture must contain exactly six active accounts")
+    passwords = [str(credentials[key]["password"]) for key in ACCOUNTS]
+    check("six generated identities", len(credentials) == 6)
+    check("six unique CSPRNG passwords", len(set(passwords)) == 6 and all(re.fullmatch(r"[a-f0-9]{48}", p) for p in passwords))
+    check("exact executing clinic shortcode", fixture["shortcode"] == f'[cpms_public_booking clinic_id="{fixture["clinic_id"]}"]')
+    links = fixture["links"]
+    check("five actual portal links", all(links.get(key) for key in ("booking", "patient", "staff", "doctor", "management")))
     os.makedirs(f"{OUT}/screenshots", exist_ok=True)
     os.makedirs(f"{OUT}/logs", exist_ok=True)
-    fixture = None
     contexts = []
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(headless=True, args=["--no-sandbox"])
         try:
-            stage("administrator provisioning")
-            admin_context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fa-IR")
-            contexts.append(admin_context)
-            admin = admin_context.new_page()
-            admin.set_default_timeout(25000)
-            if not login(admin, ADMIN_USER, ADMIN_PASS):
-                raise RuntimeError("Administrator login failed")
-            admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded")
-            admin.check('input[name="ack"]')
-            click_form_action(admin, "provision")
-            rows = admin.locator("[data-demo-account]")
-            if rows.count() != 6:
-                raise RuntimeError(f"Expected six one-time credential rows, got {rows.count()}")
-            credentials = {}
-            for key in ACCOUNTS:
-                row = admin.locator(f'[data-demo-account="{key}"]')
-                credentials[key] = {
-                    "username": row.locator(".demo-username").inner_text().strip(),
-                    "password": row.locator(".demo-password").inner_text().strip(),
-                }
-            check("six generated identities", len(credentials) == 6)
-            check("six unique CSPRNG passwords", len({row["password"] for row in credentials.values()}) == 6)
-            shortcode = admin.locator("[data-demo-shortcode]").input_value()
-            fixture = fixture_from_db()
-            LAST_FIXTURE = fixture
-            check("exact executing clinic shortcode", shortcode == f'[cpms_public_booking clinic_id="{fixture["clinic_id"]}"]')
-            links = {key: admin.locator(f'[data-demo-link="{key}"]').get_attribute("href") for key in ("booking", "patient", "staff", "management")}
-            check("four delivered portal links", all(links.values()))
-
-            # Do not screenshot or dump the credential response. Navigate away first.
-            admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded")
-            check("one-time credentials not redisplayed", admin.locator("[data-demo-credentials]").count() == 0)
-
-            stage("six logins and scoped portal rendering")
+            stage("six logins scoped portals and denials")
             organization_url = with_query(links["management"], **{"cpms-org": fixture["organization_id"]})
             clinic_management_url = with_query(links["management"], **{"cpms-clinic": fixture["clinic_id"]})
             portal_targets = {
                 "organization_manager": organization_url,
                 "clinic_manager": clinic_management_url,
-                "doctor": with_query(links["staff"], **{"cpms-module": "doctor"}),
+                # The legacy Doctor URL is a real delivered entry; eligible
+                # doctors are redirected once to the canonical Staff Portal.
+                "doctor": links["doctor"],
                 "receptionist": with_query(links["staff"], **{"cpms-module": "reception"}),
                 "accountant": with_query(links["staff"], **{"cpms-module": "finance"}),
                 "patient": links["patient"],
@@ -468,6 +468,8 @@ def main():
                 page.goto(portal_targets[key], wait_until="domcontentloaded")
                 page.wait_for_timeout(600)
                 check(f"login and portal: {key}", "wp-login.php" not in page.url and page.locator("body").count() == 1)
+                if key == "doctor":
+                    check("doctor module delivered", page.locator('[data-role="queue-list"]').count() == 1)
                 if key == "receptionist":
                     check("reception module delivered", page.locator('[data-role="reception-app"]').count() == 1)
                 if key == "accountant":
@@ -478,11 +480,22 @@ def main():
                 if key == "clinic_manager":
                     check("clinic management scope delivered",
                           page.locator(f'[data-cpms-clinic="{fixture["clinic_id"]}"]').count() >= 1)
-                if key != "patient":
-                    context.close()
-                    contexts.remove(context)
+                if key == "patient":
+                    check("patient portal delivered", page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 1)
+                    page.goto(with_query(links["staff"], **{"cpms-module": "reception"}), wait_until="domcontentloaded")
+                    check("patient denied staff portal", page.locator('[data-role="portal-access-denied"]').count() == 1
+                          and page.locator('[data-role="reception-app"]').count() == 0)
+                if key in ("receptionist", "accountant"):
+                    # The canonical Staff Portal intentionally falls back to
+                    # an eligible module for an ineligible selector. Use the
+                    # real legacy Doctor entry for its explicit denial contract.
+                    page.goto(links["doctor"], wait_until="domcontentloaded")
+                    check(f"doctor module denied: {key}", page.locator('[data-role="portal-access-denied"]').count() == 1
+                          and page.locator('[data-role="queue-list"]').count() == 0)
+                context.close()
+                contexts.remove(context)
 
-            patient_context, patient_page, booking_reference = public_booking(browser, admin, links, credentials)
+            patient_context, patient_page, booking_reference = public_booking(browser, links, fixture)
             contexts.append(patient_context)
             arrival_context, arrival_page, live_visit_id = reception_arrival(
                 browser, credentials, links["staff"], fixture["clinic_id"], fixture["location_id"], booking_reference
@@ -496,87 +509,19 @@ def main():
             contexts.append(reception_context)
             verify_operational_db(live_visit_id)
 
-            stage("management review and rotation")
+            stage("management review RTL and mobile")
             manager_context, manager = open_account(browser, credentials, "organization_manager")
             manager.goto(organization_url, wait_until="domcontentloaded")
             manager.wait_for_timeout(1000)
-            check("organization management review renders exact demo scope",
+            check("organization management review renders exact synthetic scope",
                   "wp-login.php" not in manager.url
                   and manager.locator(f'[data-cpms-org="{fixture["organization_id"]}"]').count() == 1)
+            check("management document RTL", manager.locator("html").get_attribute("dir") == "rtl")
             assert_no_horizontal_overflow(manager, "management RTL desktop has no horizontal overflow")
             manager.set_viewport_size({"width": 390, "height": 844})
             assert_no_horizontal_overflow(manager, "management RTL mobile has no horizontal overflow")
-            manager.screenshot(path=f"{OUT}/screenshots/demo-management-mobile.png", full_page=True)
+            manager.screenshot(path=f"{OUT}/screenshots/disposable-management-mobile.png", full_page=True)
             manager_context.close()
-
-            admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded")
-            admin.select_option('select[name="account"]', "doctor")
-            click_form_action(admin, "rotate")
-            rotated_row = admin.locator('[data-demo-account="doctor"]')
-            rotated = {
-                "username": rotated_row.locator(".demo-username").inner_text().strip(),
-                "password": rotated_row.locator(".demo-password").inner_text().strip(),
-            }
-            check("rotation returns only selected account", admin.locator("[data-demo-account]").count() == 1)
-            doctor_page.goto(links["staff"], wait_until="domcontentloaded")
-            doctor_page.wait_for_timeout(500)
-            check("rotation revokes existing doctor cookie", "wp-login.php" in doctor_page.url or doctor_page.locator('[data-role="portal-login"], [data-role="portal-access-denied"]').count() > 0)
-            credentials["doctor"] = rotated
-            rotated_context, rotated_page = open_account(browser, credentials, "doctor")
-            check("rotated doctor password logs in", "wp-login.php" not in rotated_page.url)
-            rotated_context.close()
-
-            tracked_job_ids = tracked_demo_job_ids(fixture)
-            stage("end revocation and owned cleanup")
-            # Move the Admin away from the one-time rotation response before any evidence.
-            admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded")
-            click_form_action(admin, "end")
-            check("end acknowledgement without secrets", admin.locator(".notice-success").count() >= 1 and admin.locator("[data-demo-credentials]").count() == 0)
-            patient_page.goto(links["patient"], wait_until="domcontentloaded")
-            patient_page.wait_for_timeout(500)
-            check("end revokes existing patient OTP/WP cookie", patient_page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "anonymous")
-            old_doctor = browser.new_context()
-            old_page = old_doctor.new_page()
-            check("ended account cannot newly authenticate", not login(old_page, credentials["doctor"]["username"], credentials["doctor"]["password"]))
-            old_doctor.close()
-
-            before_cleanup = wp_eval(r'''
-echo "DEMO_CLEANUP=" . wp_json_encode(["users" => count(get_users(["fields" => "ID"]))]) . PHP_EOL;
-''')
-            admin.check('input[name="cleanup_ack"]')
-            click_form_action(admin, "cleanup")
-            check("cleanup returns to explicit OFF state", admin.locator('input[name="ack"]').count() == 1)
-            output = wp_eval(r'''
-$s = get_option(\ClinicCore\Application\Demo\DemoService::STATE_OPTION, []);
-$ids = array_map("intval", explode(",", (string) getenv("DEMO_USER_IDS")));
-$remaining = 0;
-foreach ($ids as $id) { if (get_userdata($id)) { $remaining++; } }
-$db = \ClinicCore\Bootstrap\App::db();
-$clinic = (int) getenv("DEMO_CLINIC_ID");
-$jobIds = array_values(array_filter(array_map("intval", explode(",", (string) getenv("DEMO_JOB_IDS")))));
-$jobsRemaining = 0;
-if ($jobIds) {
-  $jobsRemaining = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_jobs") . " WHERE id IN (" . implode(",", array_fill(0, count($jobIds), "%d")) . ")", $jobIds);
-}
-$prefix = \ClinicCore\Application\Demo\DemoService::JOB_OPTION_PREFIX . (string) getenv("DEMO_ID") . "_";
-$jobMarkers = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->wpdb()->options . " WHERE option_name LIKE %s", [$db->wpdb()->esc_like($prefix) . "%"]);
-echo "DEMO_CLEANUP=" . wp_json_encode([
-  "state_empty" => $s === [],
-  "users_remaining" => $remaining,
-  "patients" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patients") . " WHERE clinic_id = %d", [$clinic]),
-  "visits" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_visits") . " WHERE clinic_id = %d", [$clinic]),
-  "jobs_remaining" => $jobsRemaining,
-  "job_markers" => $jobMarkers,
-  "clinic_status" => $db->fetchValue("SELECT status FROM " . $db->table("cpms_clinics") . " WHERE id = %d", [$clinic]),
-  "audit_ok" => \ClinicCore\Bootstrap\App::audit()->verifyChain(10000)["ok"],
-]) . PHP_EOL;
-''', {"DEMO_USER_IDS": ",".join(str(i) for i in fixture["user_ids"]), "DEMO_CLINIC_ID": str(fixture["clinic_id"]), "DEMO_ID": fixture["demo_id"], "DEMO_JOB_IDS": ",".join(str(i) for i in tracked_job_ids)})
-            marker = next((line for line in output.splitlines() if line.startswith("DEMO_CLEANUP=")), "")
-            cleaned = json.loads(marker.split("=", 1)[1])
-            check("demo-only cleanup verified", cleaned["state_empty"] and cleaned["users_remaining"] == 0
-                  and cleaned["patients"] == 0 and cleaned["visits"] == 0
-                  and cleaned["jobs_remaining"] == 0 and cleaned["job_markers"] == 0
-                  and cleaned["clinic_status"] == "suspended" and cleaned["audit_ok"], json.dumps(cleaned))
             stage("complete")
         finally:
             for context in contexts:
@@ -599,7 +544,7 @@ if __name__ == "__main__":
     except Exception as exc:
         # Never include page HTML, credentials, cookies or OTP in diagnostics.
         print(f"ERROR: {type(exc).__name__}: {str(exc)[:500]}", flush=True)
-        print("DEMO_DIAG=" + json.dumps(STATE, ensure_ascii=False), flush=True)
+        print("DISPOSABLE_DIAG=" + json.dumps(STATE, ensure_ascii=False), flush=True)
         try:
             dump_results()
         except Exception:
