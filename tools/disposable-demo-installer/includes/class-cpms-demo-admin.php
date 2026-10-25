@@ -457,10 +457,20 @@ class Admin {
 			} elseif ( 'clinic_manager' === $persona ) {
 				$url = (string) ( $links['management'] ?? '' );
 				$url = $url . ( str_contains( $url, '?' ) ? '&' : '?' ) . 'cpms-org=' . $org . '&cpms-clinic=' . $clinic;
-			} elseif ( in_array( $persona, array( 'doctor', 'receptionist', 'accountant' ), true ) ) {
-				$url = (string) ( $links[ $persona ] ?? '' );
+			} elseif ( 'receptionist' === $persona ) {
+				$url = (string) ( $links['receptionist'] ?? $links['reception'] ?? '' );
+			} elseif ( 'accountant' === $persona ) {
+				$url = (string) ( $links['accountant'] ?? $links['finance'] ?? '' );
+			} elseif ( 'doctor' === $persona ) {
+				$url = (string) ( $links['doctor'] ?? '' );
 			}
-			echo '<tr><td>' . esc_html( Credentials::personas()[ $persona ]['label'] ) . '</td><td>' . esc_html( $page ) . '</td><td>' . ( $url !== '' ? '<a href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">باز کردن</a>' : '—' ) . '</td><td dir="ltr">' . esc_html( 'cpdd-' . $persona . '-' . $fixture ) . '</td></tr>';
+			echo '<tr><td>' . esc_html( Credentials::personas()[ $persona ]['label'] ) . '</td><td>' . esc_html( $page ) . '</td><td>';
+			if ( '' !== $url ) {
+				echo '<a href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">باز کردن</a> <code dir="ltr">' . esc_html( $url ) . '</code>';
+			} else {
+				echo '—';
+			}
+			echo '</td><td dir="ltr">' . esc_html( 'cpdd-' . $persona . '-' . $fixture ) . '</td></tr>';
 		}
 		echo '</tbody></table>';
 		echo '<p><strong>رزرو عمومی:</strong> <a href="' . esc_url( (string) ( $links['booking'] ?? '' ) ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( (string) ( $links['booking'] ?? '' ) ) . '</a></p>';

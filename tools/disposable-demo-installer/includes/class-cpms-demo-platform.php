@@ -762,10 +762,12 @@ class Platform {
 			'staff'      => StaffPortalShell::portal_url(),
 			'management' => ManagementPortalShell::portal_url(),
 		);
-		$links['reception'] = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_RECEPTION, $links['staff'] );
-		$links['finance']   = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_FINANCE, $links['staff'] );
-		$links['doctor']    = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_DOCTOR, $links['staff'] );
-		$links['reports']   = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_REPORTS, $links['staff'] );
+		$links['reception']    = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_RECEPTION, $links['staff'] );
+		$links['receptionist'] = $links['reception'];
+		$links['finance']      = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_FINANCE, $links['staff'] );
+		$links['accountant']   = $links['finance'];
+		$links['doctor']       = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_DOCTOR, $links['staff'] );
+		$links['reports']      = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_REPORTS, $links['staff'] );
 
 		return $links;
 	}
