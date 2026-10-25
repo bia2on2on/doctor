@@ -66,7 +66,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Frontend;
 
+use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Bootstrap\App;
 use Throwable;
 use WP_Post;
@@ -165,6 +167,37 @@ final class PublicBookingShortcode
         'error' => 'دریافت وضعیت نوبت ممکن نشد. کمی بعد دوباره تلاش کنید.',
     ];
 
+    /**
+     * Phase 8 Slice 4 — مقدارِ ویژهٔ attribute برای «حالتِ کشف» (Discovery).
+     *
+     * `[cpms_public_booking clinic_id="all"]` تنها مقدارِ غیرعددیِ مجاز است؛ هر
+     * مقدارِ غیرعددیِ دیگر همان وضعیت بستهٔ قبلی را می‌دهد (fail-closed).
+     */
+    private const CLINIC_ALL = 'all';
+
+    private const MODE_SINGLE = 'single';
+
+    /** سقفِ سختِ پزشکانِ رندرشده در یک سطحِ عمومی (bounded rendering). */
+    private const MAX_PUBLIC_DOCTORS = 200;
+    private const MODE_DISCOVERY = 'discovery';
+
+    /** برچسب‌های حالت کشف (همه server-side و escape‌شده). */
+    private const DISCOVERY_TITLE = 'رزرو نوبت — انتخاب مرکز';
+    private const STEP_CLINIC = '۱. انتخاب مرکز درمانی';
+    private const DISCOVERY_NO_CLINIC_NOTICE = 'در حال حاضر مرکز درمانی برای رزرو عمومی نوبت معرفی نشده است.';
+    private const SEARCH_LABEL = 'جست‌وجوی نام پزشک';
+    private const SPECIALTY_LABEL = 'فیلتر تخصص';
+    private const SPECIALTY_ALL = 'همهٔ تخصص‌ها';
+    private const RESET_LABEL = 'حذف فیلترها';
+    private const NO_MATCH_NOTICE = 'پزشکی با این نام یا تخصص در این مرکز پیدا نشد.';
+    private const WEEK_PREV = 'هفتهٔ قبل';
+    private const WEEK_NEXT = 'هفتهٔ بعد';
+    private const WEEK_FIRST_AVAILABLE = 'نزدیک‌ترین هفتهٔ دارای نوبت';
+    private const WEEK_EMPTY_NOTICE = 'در این هفته نوبت آزادی برای این پزشک ثبت نشده است.';
+    private const TIMEZONE_PREFIX = 'منطقهٔ زمانی مرکز:';
+    private const WORKING_DAYS_PREFIX = 'روزهای کاری:';
+    private const NO_WORKING_DAYS = 'بدون برنامهٔ هفتگی فعال';
+
     /** متنِ وضعیتِ بسته — عمداً بدون هیچ جزئیاتی (enumeration parity، AD-13). */
     private const CLOSED_NOTICE = 'این بخش برای نمایش نوبت‌ها در دسترس نیست.';
 
@@ -223,11 +256,16 @@ final class PublicBookingShortcode
     public static function render(mixed $atts = null, mixed $content = null, string $tag = self::TAG): string
     {
         try {
-            $clinicId = self::parseClinicId($atts, $tag);
-            if ($clinicId === null) {
+            $request = self::parseRequest($atts, $tag);
+            if ($request === null) {
                 return self::renderClosed();
             }
 
+            if ($request['mode'] === self::MODE_DISCOVERY) {
+                return self::renderDiscovery();
+            }
+
+            $clinicId = (int) $request['clinic_id'];
             $clinic = self::findClinic($clinicId);
             if ($clinic === null) {
                 return self::renderClosed();
@@ -290,6 +328,40 @@ final class PublicBookingShortcode
     }
 
     /**
+     * Phase 8 Slice 4 — تجزیهٔ درخواستِ سطح به «حالت».
+     *
+     * دو حالتِ ممکن و هیچ حالتِ سوم:
+     *  - `single`    → `clinic_id` عددیِ مثبت (رفتارِ تثبیت‌شدهٔ Phase 8 Slice 1)؛
+     *  - `discovery` → تنها مقدارِ متنیِ مجاز `all` (حالتِ کشفِ جدید).
+     *
+     * هر چیزِ دیگر (نبودِ attribute، رشتهٔ خالی، عددِ صفر/منفی، مقدارِ غیرعددیِ
+     * غیر از `all`، مقدارِ مخلوط مانند «all 5») `null` می‌دهد ⇒ وضعیت بسته.
+     * مقایسه case-insensitive است تا «ALL» هم همان حالت باشد، ولی هیچ الگوی
+     * دیگری پذیرفته نمی‌شود.
+     *
+     * @param mixed $atts
+     * @return array{mode: string, clinic_id?: int}|null
+     */
+    private static function parseRequest(mixed $atts, string $tag): ?array
+    {
+        $parsed = is_array($atts) ? $atts : [];
+        /** @var array<string, mixed> $normalized */
+        $normalized = shortcode_atts([self::CLINIC_ATTR => ''], $parsed, $tag);
+        $raw = $normalized[self::CLINIC_ATTR] ?? '';
+
+        if (is_string($raw) && strtolower(trim($raw)) === self::CLINIC_ALL) {
+            return ['mode' => self::MODE_DISCOVERY];
+        }
+
+        $clinicId = self::parseClinicId($atts, $tag);
+        if ($clinicId === null) {
+            return null;
+        }
+
+        return ['mode' => self::MODE_SINGLE, 'clinic_id' => $clinicId];
+    }
+
+    /**
      * واکشی ردیفِ پایدارِ Clinic — fail-closed اگر وجود نداشته باشد.
      *
      * `cpms_clinics` ستون `is_active` ندارد، پس «Clinic معتبر» = «ردیفِ واقعیِ
@@ -345,7 +417,13 @@ final class PublicBookingShortcode
     private static function activeClinicians(int $clinicId): array
     {
         try {
-            $rows = App::clinicianRepository()->listAll($clinicId, false);
+            // Phase 8 Slice 4 — participation-aware: an ACTIVE clinician whose
+            // HOME Clinic differs but who holds an ACTIVE durable membership in
+            // THIS Clinic is bookable here (the same rule ScheduleService and
+            // MembershipRepository::clinician_participates_in enforce). Home
+            // Clinic rows are included by the same query; inactivation, empty
+            // names and foreign-only clinicians are excluded inside it.
+            $rows = (new PublicClinicDirectory())->clinicians_for_clinic($clinicId);
         } catch (Throwable $e) {
             self::logFailure($e);
 
@@ -354,29 +432,23 @@ final class PublicBookingShortcode
 
         $clinicians = [];
         foreach ($rows as $row) {
-            if (!is_array($row)) {
-                continue;
-            }
-
             $id = (int) ($row['id'] ?? 0);
-            if ($id <= 0) {
-                continue;
-            }
-            if ((int) ($row['clinic_id'] ?? 0) !== $clinicId) {
-                continue;
-            }
-            if ((int) ($row['is_active'] ?? 0) !== 1) {
-                continue;
-            }
-
-            $name = trim((string) ($row['full_name'] ?? ''));
-            if ($name === '') {
+            $name = trim((string) ($row['name'] ?? ''));
+            if ($id <= 0 || $name === '') {
                 // پزشکِ بدون نامِ قابل‌نمایش روی سطح عمومی قابل ارائه نیست
                 // (دکمهٔ بی‌نام، UI غیرقابل‌استفاده می‌سازد).
                 continue;
             }
-
-            $clinicians[] = ['id' => $id, 'name' => $name];
+            $weekdays = [];
+            foreach ((array) ($row['weekdays'] ?? []) as $day) {
+                $weekdays[] = (int) $day;
+            }
+            $clinicians[] = [
+                'id' => $id,
+                'name' => $name,
+                'specialty' => trim((string) ($row['specialty'] ?? '')),
+                'weekdays' => $weekdays,
+            ];
         }
 
         return $clinicians;
@@ -464,83 +536,165 @@ final class PublicBookingShortcode
      */
     private static function renderBrowse(int $clinicId, string $clinicName, array $clinicians): string
     {
+        return self::render_surface($clinicId, $clinicName, $clinicians, null);
+    }
+
+    /**
+     * Phase 8 Slice 4 — سطحِ کشف: یک لیستِ server-rendered و bounded از
+     * Clinicهایی که **صریحاً** برای نمایش عمومی opt-in کرده‌اند، همراه با
+     * پزشکانِ واجدِ شرایطِ هر Clinic.
+     *
+     * اگر هیچ Clinicِ واجدی وجود نداشته باشد، سطح به وضعیت «خالی» می‌رسد —
+     * نه خطا: پیکربندی معتبر است، چیزی برای معرفی نیست. هیچ‌گاه «همهٔ
+     * Clinicهای فعال» به‌طور پیش‌فرض منتشر نمی‌شود.
+     */
+    private static function renderDiscovery(): string
+    {
+        $directory = new PublicClinicDirectory();
+        $listing = $directory->listed_clinics();
+
+        if ($listing['clinics'] === []) {
+            return self::render_discovery_empty();
+        }
+
+        $primary = $listing['clinics'][0];
+
+        return self::render_surface(
+            (int) $primary['id'],
+            '',
+            $primary['clinicians'],
+            [
+                'clinics' => $listing['clinics'],
+                'specialties' => $listing['specialties'],
+                'timezones' => array_column($listing['clinics'], 'timezone', 'id'),
+            ]
+        );
+    }
+
+    /**
+     * وضعیتِ «خالی» حالتِ کشف — Clinicهای opt-in‌شده‌ای برای معرفی نیست.
+     */
+    private static function render_discovery_empty(): string
+    {
         PublicBookingAssets::enqueue();
 
         $surfaceId = self::surfaceId();
-        $lines = [];
 
-        $lines[] = sprintf(
-            '<div class="%1$s" dir="rtl" lang="fa" data-clinic-id="%2$d" data-state="%3$s" id="%4$s">',
+        return sprintf(
+            '<div class="%1$s %1$s--discovery %1$s--empty" dir="rtl" lang="fa" data-mode="%2$s" data-state="%3$s" id="%4$s">'
+            . '<p class="%5$s" role="status">%6$s</p>'
+            . '</div>',
             esc_attr(self::ROOT_CLASS),
-            $clinicId,
-            esc_attr(self::STATE_BOOKABLE),
-            esc_attr($surfaceId)
+            esc_attr(self::MODE_DISCOVERY),
+            esc_attr(self::STATE_EMPTY),
+            esc_attr($surfaceId),
+            esc_attr(self::ROOT_CLASS . '__notice'),
+            esc_html(self::DISCOVERY_NO_CLINIC_NOTICE)
         );
-        $lines[] = self::renderHead($clinicName, $surfaceId);
+    }
+
+    /**
+     * رندرِ مشترکِ سطح (حالت تک‌Clinic و حالت کشف) — یک موتورِ رزرو، دو
+     * پیکربندی. مسیرهای A1/A2/A3/A4/B1/B2 هر دو حالت یکی است؛ تفاوت فقط در
+     * «چگونه Clinic و پزشک انتخاب می‌شوند» است.
+     *
+     * @param list<array{id:int,name:string,specialty?:string,weekdays?:list<int>}> $clinicians
+     * @param array{clinics: list<array<string,mixed>>, specialties: list<string>, timezones: array<int,string>}|null $discovery
+     */
+    // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase, Squiz.Commenting.FunctionComment.IncorrectParamVarName -- established compact render kernel.
+    private static function render_surface( int $clinic_id, string $clinic_name, array $clinicians, ?array $discovery ): string {
+        PublicBookingAssets::enqueue();
+
+        $surface_id = self::surfaceId();
+        $is_discovery = $discovery !== null;
+        $clinic_ids = [];
+        if ($is_discovery) {
+            foreach ($discovery['clinics'] as $row) {
+                $clinic_ids[] = (int) $row['id'];
+            }
+        } else {
+            $clinic_ids[] = $clinic_id;
+        }
+
+        $lines = [];
+        $lines[] = sprintf(
+            '<div class="%1$s%2$s" dir="rtl" lang="fa" data-clinic-id="%3$d" data-mode="%4$s" data-state="%5$s" id="%6$s">',
+            esc_attr(self::ROOT_CLASS),
+            $is_discovery ? ' ' . esc_attr(self::ROOT_CLASS . '--discovery') : '',
+            $is_discovery ? 0 : $clinic_id,
+            esc_attr($is_discovery ? self::MODE_DISCOVERY : self::MODE_SINGLE),
+            esc_attr(self::STATE_BOOKABLE),
+            esc_attr($surface_id)
+        );
+
+        if ($is_discovery) {
+            $lines[] = self::render_discovery_head($discovery['clinics'], $surface_id);
+        } else {
+            $lines[] = self::renderHead($clinic_name, $surface_id);
+        }
 
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__body'));
 
         // ---- گام ۱: پزشکان (server-rendered؛ هیچ endpoint عمومیِ لیست پزشک) ----
-        $legendId = $surfaceId . '-clinicians';
+        $legend_id = $surface_id . '-clinicians';
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__clinicians'));
         $lines[] = sprintf(
             '<p class="%1$s" id="%2$s">%3$s</p>',
             esc_attr(self::ROOT_CLASS . '__legend'),
-            esc_attr($legendId),
+            esc_attr($legend_id),
             esc_html(self::STEP_CLINICIAN)
         );
+        $lines[] = self::render_filters($surface_id, $discovery['specialties'] ?? []);
         $lines[] = sprintf(
             '<ul class="%1$s" role="list" aria-labelledby="%2$s" data-role="clinicians">',
             esc_attr(self::ROOT_CLASS . '__clinician-list'),
-            esc_attr($legendId)
+            esc_attr($legend_id)
         );
-        foreach ($clinicians as $clinician) {
-            $lines[] = sprintf('<li class="%s">', esc_attr(self::ROOT_CLASS . '__clinician-item'));
-            $lines[] = sprintf(
-                '<button type="button" class="%1$s" data-clinician-id="%2$d" aria-pressed="false">'
-                . '<span class="%3$s">%4$s</span>'
-                . '<span class="%5$s">%6$s</span>'
-                . '</button>',
-                esc_attr(self::CLINICIAN_CLASS),
-                (int) $clinician['id'],
-                esc_attr(self::ROOT_CLASS . '__clinician-name'),
-                esc_html((string) $clinician['name']),
-                esc_attr(self::ROOT_CLASS . '__clinician-hint'),
-                esc_html(self::CLINICIAN_HINT)
-            );
-            $lines[] = '</li>';
+        $rendered_doctors = 0;
+        foreach (self::doctor_rows($clinicians, $discovery, $clinic_id) as $row) {
+            if ($rendered_doctors >= self::MAX_PUBLIC_DOCTORS) {
+                // Bounded page: the public directory never renders an unbounded list.
+                break;
+            }
+            $lines[] = self::render_clinician_item($row, (int) $row['clinic_id']);
+            $rendered_doctors++;
         }
         $lines[] = '</ul>';
+        $lines[] = sprintf(
+            '<p class="%s" data-role="filter-empty" role="status" hidden>%s</p>',
+            esc_attr(self::ROOT_CLASS . '__notice'),
+            esc_html(self::NO_MATCH_NOTICE)
+        );
         $lines[] = '</div>';
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $lines[] = self::render_location_picker( (string) $surfaceId );
 
-        // ---- گام ۳: مرورِ نوبت‌ها (با A1 موجود) ----
-        $panelLegendId = $surfaceId . '-calendar';
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $lines[] = self::render_location_picker( (string) $surface_id );
+
+        // ---- گام ۳: تقویم هفتگی Jalali (منبعِ حقیقت: A1 موجود) ----
+        $panel_legend_id = $surface_id . '-calendar';
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__calendar'));
         $lines[] = sprintf(
             '<p class="%1$s" id="%2$s">%3$s</p>',
             esc_attr(self::ROOT_CLASS . '__legend'),
-            esc_attr($panelLegendId),
+            esc_attr($panel_legend_id),
             esc_html(self::STEP_SLOT)
         );
         $lines[] = sprintf(
+            '<p class="%1$s" data-role="clinic-timezone" data-label="%2$s" dir="auto" hidden></p>',
+            esc_attr(self::ROOT_CLASS . '__meta'),
+            esc_attr(self::TIMEZONE_PREFIX)
+        );
+        $lines[] = self::render_week_chrome($panel_legend_id);
+        $lines[] = sprintf(
             '<div class="%1$s" data-role="panel" data-state="idle" role="group" aria-labelledby="%2$s" aria-busy="false">',
             esc_attr(self::ROOT_CLASS . '__panel'),
-            esc_attr($panelLegendId)
+            esc_attr($panel_legend_id)
         );
 
-        // ناحیهٔ اعلامِ وضعیت (role="status" ⇒ aria-live=polite + atomic).
-        // عمداً **فقط** پیام‌ها و جزئیات داخل این ناحیه‌اند و فهرست روزها
-        // بیرونِ آن است: با این تفکیک، صفحه‌خوان فقط «وضعیت» را اعلام می‌کند
-        // و نه کلِ ده‌ها نوبتِ تازه‌رندرشده را.
         $lines[] = sprintf(
             '<div class="%s" role="status" aria-live="polite">',
             esc_attr(self::ROOT_CLASS . '__status')
         );
-
-        // پیام‌های هر وضعیت — CSS بر پایهٔ `data-state` فقط یکی را نشان می‌دهد،
-        // پس JS هیچ رشتهٔ فارسی ندارد.
         foreach (self::PANEL_MESSAGES as $state => $message) {
             $lines[] = sprintf(
                 '<p class="%1$s" data-message="%2$s">%3$s</p>',
@@ -549,7 +703,6 @@ final class PublicBookingShortcode
                 esc_html((string) $message)
             );
         }
-
         $lines[] = sprintf(
             '<p class="%s" data-role="detail" hidden></p>',
             esc_attr(self::ROOT_CLASS . '__detail')
@@ -564,20 +717,347 @@ final class PublicBookingShortcode
         $lines[] = self::renderTemplates();
         $lines[] = '</div>'; // calendar
 
-        // ---- Phase 8 Slice 2: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
+        // ---- Phase 8 Slice 2/3: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
         $continuation = self::continuationState();
         if ($continuation === self::CONTINUATION_ANONYMOUS) {
-            // فقط چرخهٔ ورود با OTP؛ بدون nonce، بدون B1/B2، بدون PHI.
-            $lines[] = self::renderAuthContinuation($surfaceId);
+            $lines[] = self::renderAuthContinuation($surface_id);
         } elseif ($continuation === self::CONTINUATION_PATIENT) {
-            // بیمارِ واردشده: ادامهٔ Hold→Confirm با nonce مسیرهای موجود.
-            $lines[] = self::renderPatientContinuation($surfaceId, $clinicId);
+            $lines[] = self::renderPatientContinuation($surface_id, $clinic_ids);
         }
 
         $lines[] = '</div>'; // body
 
-        $lines[] = self::renderConfig($clinicId, $surfaceId);
+        $lines[] = self::renderConfig(
+            $is_discovery ? 0 : $clinic_id,
+            $surface_id,
+            $is_discovery ? $discovery : null
+        );
         $lines[] = '</div>'; // root
+
+        return implode('', $lines);
+    }
+
+    /**
+     * ردیف‌های پزشک با Clinicِ صاحبِ هر ردیف.
+     *
+     * در حالت کشف، پزشکانِ همهٔ Clinicهای opt-in‌شده رندر می‌شوند و JS فقط
+     * گروهِ Clinicِ انتخاب‌شده را نشان می‌دهد؛ در حالت تک‌Clinic همه به همان
+     * Clinic تعلق دارند.
+     *
+     * @param list<array<string, mixed>> $clinicians
+     * @param array{clinics: list<array<string,mixed>>, specialties: list<string>}|null $discovery
+     * @return list<array<string, mixed>>
+     */
+    private static function doctor_rows(array $clinicians, ?array $discovery, int $clinic_id): array
+    {
+        $rows = [];
+        if ($discovery === null) {
+            foreach ($clinicians as $clinician) {
+                $rows[] = ['clinic_id' => $clinic_id] + $clinician;
+            }
+
+            return $rows;
+        }
+
+        foreach ($discovery['clinics'] as $clinic) {
+            $owner = (int) ($clinic['id'] ?? 0);
+            if ($owner <= 0) {
+                continue;
+            }
+            foreach ((array) ($clinic['clinicians'] ?? []) as $clinician) {
+                $rows[] = ['clinic_id' => $owner] + (array) $clinician;
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * یک آیتمِ پزشک — با تمام فیلدهای لازم برای فیلترِ سمت مرورگر.
+     *
+     * `data-search` شامل نامِ **نرمال‌شده** (PHP-side) است، پس مرورگر فقط
+     * عبارتِ کاربر را نرمال می‌کند و روی دادهٔ خودِ سرور تطبیق می‌دهد؛ هیچ
+     * محتوایی در JS تولید نمی‌شود.
+     *
+     * @param array{id:int,name:string,specialty?:string,weekdays?:list<int>} $clinician
+     */
+    private static function render_clinician_item(array $clinician, int $clinic_id): string
+    {
+        $id = (int) ($clinician['id'] ?? 0);
+        $name = trim((string) ($clinician['name'] ?? ''));
+        $specialty = trim((string) ($clinician['specialty'] ?? ''));
+        $weekdays = array_map('intval', (array) ($clinician['weekdays'] ?? []));
+
+        $lines = [];
+        $lines[] = sprintf(
+            '<li class="%1$s %2$s" data-clinic-id="%3$d" data-clinician-id="%4$d" data-specialty="%5$s" data-search="%6$s">',
+            esc_attr(self::ROOT_CLASS . '__clinician-item'),
+            esc_attr(self::ROOT_CLASS . '__doctor'),
+            $clinic_id,
+            $id,
+            esc_attr($specialty),
+            esc_attr(self::normalize_search_text($name))
+        );
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-clinician-id="%2$d" data-clinic-id="%3$d" aria-pressed="false">'
+            . '<span class="%4$s">%5$s</span>%6$s%7$s'
+            . '</button>',
+            esc_attr(self::CLINICIAN_CLASS),
+            $id,
+            $clinic_id,
+            esc_attr(self::ROOT_CLASS . '__clinician-name'),
+            esc_html($name),
+            $specialty === '' ? '' : sprintf(
+                '<span class="%1$s">%2$s</span>',
+                esc_attr(self::ROOT_CLASS . '__clinician-specialty'),
+                esc_html($specialty)
+            ),
+            sprintf(
+                '<span class="%1$s" data-role="clinician-days">%2$s</span>',
+                esc_attr(self::ROOT_CLASS . '__clinician-days'),
+                esc_html(self::weekday_summary($weekdays))
+            )
+        );
+        $lines[] = '</li>';
+
+        return implode('', $lines);
+    }
+
+    /**
+     * خلاصهٔ روزهای کاری هفتگی (برچسبِ فارسی، بدون هیچ دلیلی از استثناها).
+     *
+     * @param list<int> $weekdays ISO-8601 weekday numbers (0..6 as stored)
+     */
+    private static function weekday_summary(array $weekdays): string
+    {
+        $labels = [];
+        foreach ($weekdays as $day) {
+            // cpms_schedule.day_of_week is 0..6 (0 = Sunday) — map to a stable
+            // Persian label without assuming where the week starts.
+            $label = self::weekday_label_from_db((int) $day);
+            if ($label !== '') {
+                $labels[$label] = $label;
+            }
+        }
+
+        if ($labels === []) {
+            return self::WORKING_DAYS_PREFIX . ' ' . self::NO_WORKING_DAYS;
+        }
+
+        return self::WORKING_DAYS_PREFIX . ' ' . implode('، ', array_values($labels));
+    }
+
+    /**
+     * Persian label for the `day_of_week` encoding used by `cpms_schedule`.
+     *
+     * The schema stores a TINYINT weekday and the admin UI presents the Persian
+     * week starting at Saturday; the exact ordinal convention is legacy. To stay
+     * truthful on a public surface we never guess: the set is published as the
+     * ordered list of *persisted* days and only the label of a day index is
+     * resolved through this single table.
+     */
+    private static function weekday_label_from_db(int $day_of_week): string
+    {
+        $map = [
+            0 => 'یک‌شنبه',
+            1 => 'دوشنبه',
+            2 => 'سه‌شنبه',
+            3 => 'چهارشنبه',
+            4 => 'پنجشنبه',
+            5 => 'جمعه',
+            6 => 'شنبه',
+        ];
+
+        return $map[$day_of_week] ?? '';
+    }
+
+    /**
+     * نرمال‌سازی متنِ جست‌وجو (فارسی/عربی) — یک تابع، دو مصرف‌کننده.
+     *
+     * چرا server-side هم لازم است: مقدارِ `data-search` که به مرورگر می‌رود
+     * باید همان شکلِ نرمال‌شده‌ای باشد که JS روی عبارتِ کاربر اعمال می‌کند؛
+     * در غیر این صورت «ي/ك»، نیم‌فاصله، اعراب و ارقامِ فارسی/عربی باعث
+     * نتیجهٔ نادرست می‌شوند. JS فقط عبارتِ کاربر را نرمال می‌کند، نه داده را.
+     */
+    public static function normalize_search_text(string $value): string
+    {
+        $value = trim($value);
+        if ($value === '') {
+            return '';
+        }
+
+        // Arabic/Persian letter unification.
+        $value = str_replace(
+            ['ي', 'ى', 'ئ', 'ك', 'ة', 'أ', 'إ', 'آ', 'ؤ', 'ٱ'],
+            ['ی', 'ی', 'ی', 'ک', 'ه', 'ا', 'ا', 'ا', 'و', 'ا'],
+            $value
+        );
+        // Arabic-Indic and Persian digits -> ASCII digits.
+        $value = str_replace(
+            ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩', '۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'],
+            ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'],
+            $value
+        );
+        // Drop diacritics (harakat), tatweel and zero-width joiners (ZWNJ/ZWJ).
+        $value = (string) preg_replace('/[\x{064B}-\x{065F}\x{0670}\x{0640}\x{200B}-\x{200F}]/u', '', $value);
+
+        return function_exists('mb_strtolower') ? mb_strtolower($value, 'UTF-8') : strtolower($value);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $clinics
+     */
+    private static function render_discovery_head(array $clinics, string $surface_id): string
+    {
+        $title_id = $surface_id . '-title';
+        $select_id = $surface_id . '-clinic';
+        $base = self::ROOT_CLASS;
+
+        $lines = [];
+        $lines[] = sprintf('<div class="%s">', esc_attr($base . '__head'));
+        $lines[] = sprintf(
+            '<p class="%1$s" id="%2$s">%3$s</p>',
+            esc_attr($base . '__title'),
+            esc_attr($title_id),
+            esc_html(self::DISCOVERY_TITLE)
+        );
+        $lines[] = sprintf(
+            '<div class="%1$s">',
+            esc_attr($base . '__clinic-picker')
+        );
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($base . '__label'),
+            esc_attr($select_id),
+            esc_html(self::STEP_CLINIC)
+        );
+        $lines[] = sprintf(
+            '<select class="%1$s" id="%2$s" data-role="clinic-select">',
+            esc_attr($base . '__select'),
+            esc_attr($select_id)
+        );
+        foreach ($clinics as $clinic) {
+            $lines[] = sprintf(
+                '<option value="%1$d" data-timezone="%2$s">%3$s</option>',
+                (int) $clinic['id'],
+                esc_attr((string) ($clinic['timezone'] ?? '')),
+                esc_html((string) $clinic['name'])
+            );
+        }
+        $lines[] = '</select>';
+        $lines[] = '</div>';
+        $lines[] = '</div>';
+
+        return implode('', $lines);
+    }
+
+    /**
+     * کنترل‌های فیلتر (نامِ پزشک + تخصص) — server-rendered، accessible، و
+     * بدون هیچ منطقِ bookability.
+     *
+     * @param list<string> $specialties
+     */
+    private static function render_filters(string $surface_id, array $specialties): string
+    {
+        $base = self::ROOT_CLASS;
+        $search_id = $surface_id . '-doctor-search';
+        $specialty_id = $surface_id . '-specialty';
+
+        $lines = [];
+        $lines[] = sprintf('<div class="%s">', esc_attr($base . '__filters'));
+        $lines[] = sprintf(
+            '<label class="%1$s" for="%2$s">%3$s</label>',
+            esc_attr($base . '__label'),
+            esc_attr($search_id),
+            esc_html(self::SEARCH_LABEL)
+        );
+        $lines[] = sprintf(
+            '<input type="search" class="%1$s" id="%2$s" data-role="doctor-search" autocomplete="off" spellcheck="false">',
+            esc_attr($base . '__input'),
+            esc_attr($search_id)
+        );
+
+        if ($specialties !== []) {
+            $lines[] = sprintf(
+                '<label class="%1$s" for="%2$s">%3$s</label>',
+                esc_attr($base . '__label'),
+                esc_attr($specialty_id),
+                esc_html(self::SPECIALTY_LABEL)
+            );
+            $lines[] = sprintf(
+                '<select class="%1$s" id="%2$s" data-role="specialty-filter">',
+                esc_attr($base . '__select'),
+                esc_attr($specialty_id)
+            );
+            $lines[] = sprintf('<option value="">%s</option>', esc_html(self::SPECIALTY_ALL));
+            foreach ($specialties as $specialty) {
+                $lines[] = sprintf(
+                    '<option value="%1$s">%2$s</option>',
+                    esc_attr((string) $specialty),
+                    esc_html((string) $specialty)
+                );
+            }
+            $lines[] = '</select>';
+        }
+
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="doctor-reset">%2$s</button>',
+            esc_attr($base . '__link-btn'),
+            esc_html(self::RESET_LABEL)
+        );
+        $lines[] = '</div>';
+
+        return implode('', $lines);
+    }
+
+    /**
+     * کنترل‌های ناوبری هفته — اسکلتِ server-rendered؛ دادهٔ روزها از A1 و
+     * تقویمِ منتشرشدهٔ سرور می‌آید (هیچ محاسبهٔ bookability در JS).
+     */
+    private static function render_week_chrome(string $legend_id): string
+    {
+        $base = self::ROOT_CLASS;
+        $label_id = $legend_id . '-week';
+
+        $lines = [];
+        $lines[] = sprintf(
+            '<div class="%1$s" data-role="week" role="group" aria-labelledby="%2$s">',
+            esc_attr($base . '__week'),
+            esc_attr($label_id)
+        );
+        $lines[] = sprintf(
+            '<div class="%1$s">',
+            esc_attr($base . '__week-toolbar')
+        );
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="prev-week" aria-label="%2$s">%3$s</button>',
+            esc_attr($base . '__week-btn'),
+            esc_attr(self::WEEK_PREV),
+            esc_html(self::WEEK_PREV)
+        );
+        $lines[] = sprintf(
+            '<p class="%1$s" id="%2$s" data-role="week-label" aria-live="polite"></p>',
+            esc_attr($base . '__week-label'),
+            esc_attr($label_id)
+        );
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="next-week" aria-label="%2$s">%3$s</button>',
+            esc_attr($base . '__week-btn'),
+            esc_attr(self::WEEK_NEXT),
+            esc_html(self::WEEK_NEXT)
+        );
+        $lines[] = '</div>';
+        $lines[] = sprintf(
+            '<button type="button" class="%1$s" data-role="first-available-week" hidden>%2$s</button>',
+            esc_attr($base . '__link-btn'),
+            esc_html(self::WEEK_FIRST_AVAILABLE)
+        );
+        $lines[] = sprintf(
+            '<p class="%1$s" data-role="week-empty" role="status" hidden>%2$s</p>',
+            esc_attr($base . '__notice'),
+            esc_html(self::WEEK_EMPTY_NOTICE)
+        );
+        $lines[] = '</div>';
 
         return implode('', $lines);
     }
@@ -691,8 +1171,14 @@ final class PublicBookingShortcode
      * (کد رهگیری + تاریخ جلالی). انتخابِ قبلیِ غیر-PHI توسط JS باز-نشانی و
      * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
      */
-    private static function renderPatientContinuation(string $surfaceId, int $clinicId): string
+    private static function renderPatientContinuation(string $surfaceId, int|array $clinicId): string
     {
+        // Phase 8 Slice 4 — discovery mode passes every listed Clinic so the
+        // N>1 linked-patient chooser stays available per Clinic; single mode
+        // keeps the established one-Clinic behaviour.
+        $clinic_ids = is_array($clinicId) ? array_map('intval', $clinicId) : [(int) $clinicId];
+        $primary_clinic_id = $clinic_ids[0] ?? (int) $clinicId;
+
         $b = self::ROOT_CLASS;
         $firstNameId = $surfaceId . '-first-name';
         $lastNameId = $surfaceId . '-last-name';
@@ -704,17 +1190,35 @@ final class PublicBookingShortcode
         $is_first_patient = false;
         try {
             $uid = get_current_user_id();
-            if ( $uid > 0 && $clinicId > 0 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method signature.
-                $db_chooser      = \ClinicCore\Bootstrap\App::db();
-                $linked_patients = $db_chooser->fetchAll(
-                    'SELECT p.id, p.first_name, p.last_name FROM ' . $db_chooser->table( 'cpms_patient_user_links' ) . ' l JOIN ' . $db_chooser->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
-                    [ $uid, $clinicId, 'active', $clinicId ] // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method signature.
-                );
-                if ( is_array( $linked_patients ) && count( $linked_patients ) === 0 ) {
-                    $is_first_patient = true;
-                } elseif ( is_array( $linked_patients ) && count( $linked_patients ) > 1 ) {
+            if ( $uid > 0 ) {
+                $db_chooser = \ClinicCore\Bootstrap\App::db();
+                foreach ( $clinic_ids as $choice_clinic_id ) {
+                    if ( $choice_clinic_id <= 0 ) {
+                        continue;
+                    }
+                    $linked_patients = $db_chooser->fetchAll(
+                        'SELECT p.id, p.first_name, p.last_name FROM ' . $db_chooser->table( 'cpms_patient_user_links' ) . ' l JOIN ' . $db_chooser->table( 'cpms_patients' ) . ' p ON p.id = l.patient_id WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s AND p.clinic_id = %d ORDER BY l.is_primary DESC, l.id ASC',
+                        [ $uid, $choice_clinic_id, 'active', $choice_clinic_id ]
+                    );
+                    if ( ! is_array( $linked_patients ) ) {
+                        continue;
+                    }
+                    if ( count( $linked_patients ) === 0 ) {
+                        if ( $choice_clinic_id === $primary_clinic_id ) {
+                            $is_first_patient = true;
+                        }
+                        continue;
+                    }
+                    if ( count( $linked_patients ) <= 1 ) {
+                        continue;
+                    }
                     $chooser_parts   = [];
-                    $chooser_parts[] = sprintf( '<div class="%s" data-role="patient-chooser">', esc_attr( $b . '__chooser' ) );
+                    $chooser_parts[] = sprintf(
+                        '<div class="%s" data-role="patient-chooser" data-clinic-id="%d"%s>',
+                        esc_attr( $b . '__chooser' ),
+                        $choice_clinic_id,
+                        count( $clinic_ids ) > 1 ? ' hidden' : ''
+                    );
                     $chooser_parts[] = sprintf( '<p class="%s">%s</p>', esc_attr( $b . '__chooser-hint' ), esc_html( 'لطفاً بیمار مورد نظر برای رزرو را انتخاب کنید:' ) );
                     foreach ( $linked_patients as $lp ) {
                         if ( ! is_array( $lp ) ) {
@@ -738,7 +1242,7 @@ final class PublicBookingShortcode
                         );
                     }
                     $chooser_parts[] = '</div>';
-                    $chooser_html    = implode( '', $chooser_parts );
+                    $chooser_html   .= implode( '', $chooser_parts );
                 }
             }
         } catch ( \Throwable $e ) {
@@ -965,6 +1469,19 @@ final class PublicBookingShortcode
             esc_attr($b)
         );
 
+        // Phase 8 Slice 4 — روزِ تقویم هفتگی: سرتیتر (روزِ هفته + تاریخ جلالی)
+        // + میزبانِ نوبت‌ها. وقتی هفتهٔ جاری نوبتی ندارد، همین قالب با
+        // `data-empty="true"` رندر می‌شود تا روزِ خالی هم دیده و اعلام شود.
+        $lines[] = sprintf(
+            '<template data-template="week-day">'
+            . '<div class="%1$s__day" data-role="week-day">'
+            . '<p class="%1$s__day-label"><span data-fill="weekday"></span> <span data-fill="jalali"></span></p>'
+            . '<div class="%1$s__slots" data-host="slots"></div>'
+            . '</div>'
+            . '</template>',
+            esc_attr($b)
+        );
+
         $lines[] = sprintf(
             '<template data-template="slot">'
             . '<button type="button" class="%1$s__slot">'
@@ -1027,10 +1544,16 @@ final class PublicBookingShortcode
      * markup ظاهر نمی‌شود — گاردهای «نبودِ affordance» (pilot/Slice 1) و
      * منتشرشدهٔ decoded (Slice 2) همزمان معنادار می‌مانند.
      */
-    private static function renderConfig(int $clinicId, string $surfaceId): string
+    private static function renderConfig(int $clinicId, string $surfaceId, ?array $discovery = null): string
     {
         $config = [
             'surface_id' => $surfaceId,
+            'mode' => $discovery === null ? self::MODE_SINGLE : self::MODE_DISCOVERY,
+            // Phase 8 Slice 4 — presentation-only Jalali week scaffold. The
+            // server computes every label (same Jalali implementation as A1);
+            // JS only selects a seven-day window and never decides bookability.
+            'calendar' => self::calendar_scaffold($clinicId, $discovery),
+            'week_length' => 7,
             'rest_root' => rtrim(rest_url(self::REST_NAMESPACE), '/'),
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
@@ -1068,6 +1591,80 @@ final class PublicBookingShortcode
     }
 
     // ================= ابزارها =================
+
+    /**
+     * Phase 8 Slice 4 — اسکلتِ تقویمِ هفتگی (منتقد: فقط Presentation).
+     *
+     * هر ردیف `{date, jalali, weekday}` است و **سرور** آن را با همان پیاده‌سازیِ
+     * Jalali می‌سازد که A1 استفاده می‌کند. JS هیچ تاریخ‌شمسی‌ای محاسبه نمی‌کند و
+     * هیچ bookabilityای نمی‌سازد؛ فقط پنجرهٔ هفت‌روزه را روی همین فهرست
+     * جابه‌جا می‌کند و نوبت‌های A1 را با `date` تطبیق می‌دهد.
+     *
+     * بازه: از «امروزِ محلیِ زودترین Clinic» تا افقِ بیشترین
+     * `booking.max_future_days` (کران‌دار ۷..۶۲ روز) — bounded و قطعی.
+     *
+     * @param array{clinics?: list<array<string,mixed>>}|null $discovery
+     * @return list<array{date:string,jalali:string,weekday:string}>
+     */
+    private static function calendar_scaffold(int $clinicId, ?array $discovery): array
+    {
+        $timezones = [];
+        $clinic_ids = [];
+        if ($discovery !== null) {
+            foreach ((array) ($discovery['clinics'] ?? []) as $clinic) {
+                $id = (int) ($clinic['id'] ?? 0);
+                if ($id > 0) {
+                    $clinic_ids[] = $id;
+                    $timezones[] = (string) ($clinic['timezone'] ?? '');
+                }
+            }
+        } elseif ($clinicId > 0) {
+            $clinic_ids[] = $clinicId;
+        }
+
+        $start = null;
+        $horizon = 7;
+        foreach ($clinic_ids as $index => $id) {
+            try {
+                $timezone = ($timezones[$index] ?? '') !== '' ? (string) $timezones[$index] : 'Asia/Tehran';
+                $today = new \DateTimeImmutable('now', new \DateTimeZone($timezone));
+                if ($start === null || $today->format('Y-m-d') < $start) {
+                    $start = $today->format('Y-m-d');
+                }
+            } catch (Throwable) {
+                $start = $start ?? gmdate('Y-m-d');
+            }
+            try {
+                $days = (int) App::settingsFactory()->forClinic($id)->get('booking.max_future_days', 60);
+                $horizon = max($horizon, $days + 2);
+            } catch (Throwable) {
+                // Unreadable policy never widens the scaffold.
+            }
+        }
+        if ($start === null) {
+            $start = gmdate('Y-m-d');
+        }
+        $horizon = max(7, min(62, $horizon));
+
+        $calendar = [];
+        try {
+            $cursor = new \DateTimeImmutable($start, new \DateTimeZone('UTC'));
+        } catch (Throwable) {
+            return [];
+        }
+
+        for ($i = 0; $i < $horizon; $i++) {
+            $date = $cursor->format('Y-m-d');
+            $calendar[] = [
+                'date' => $date,
+                'jalali' => Jalali::formatYmd($date),
+                'weekday' => self::weekday_label_from_db((int) $cursor->format('w')),
+            ];
+            $cursor = $cursor->modify('+1 day');
+        }
+
+        return $calendar;
+    }
 
     /** id یکتا برای هر نمونهٔ سطح روی یک صفحه (ARIA/`aria-labelledby`). */
     private static function surfaceId(): string

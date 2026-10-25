@@ -853,3 +853,93 @@
 		inline-size: 100%;
 	}
 }
+
+/* ==========================================================================
+   Phase 8 Slice 4 — Public discovery, filters and the weekly Jalali calendar.
+   Additive only: every rule is scoped to this surface's own BEM root, and the
+   layout stays fluid so no horizontal overflow is introduced at 320/390/768/1366.
+   ========================================================================== */
+
+.cpms-public-booking__filters,
+.cpms-public-booking__clinic-picker {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	margin-block: 8px 12px;
+}
+
+.cpms-public-booking__filters .cpms-public-booking__label,
+.cpms-public-booking__clinic-picker .cpms-public-booking__label {
+	flex: 0 0 auto;
+	margin: 0;
+}
+
+.cpms-public-booking__filters .cpms-public-booking__input,
+.cpms-public-booking__filters .cpms-public-booking__select,
+.cpms-public-booking__clinic-picker .cpms-public-booking__select {
+	flex: 1 1 12rem;
+	min-width: 0;
+	max-width: 100%;
+}
+
+.cpms-public-booking__clinician-specialty,
+.cpms-public-booking__clinician-days {
+	display: block;
+	font-size: 0.85em;
+	opacity: 0.85;
+}
+
+.cpms-public-booking__week {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-block: 8px;
+}
+
+.cpms-public-booking__week-toolbar {
+	display: flex;
+	flex-wrap: wrap;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+}
+
+.cpms-public-booking__week-label {
+	margin: 0;
+	font-weight: 600;
+	flex: 1 1 auto;
+	text-align: center;
+}
+
+.cpms-public-booking__week-btn:disabled {
+	opacity: 0.5;
+	cursor: not-allowed;
+}
+
+/* Seven-day grid: collapses to one column on small screens. */
+.cpms-public-booking__days {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+	gap: 10px;
+	min-width: 0;
+}
+
+.cpms-public-booking__days > .cpms-public-booking__day {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.cpms-public-booking__day[data-empty="true"] {
+	opacity: 0.7;
+}
+
+@media (max-width: 480px) {
+	.cpms-public-booking__days {
+		grid-template-columns: 1fr;
+	}
+	.cpms-public-booking__week-toolbar {
+		flex-direction: column;
+		align-items: stretch;
+	}
+}
