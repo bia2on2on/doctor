@@ -256,16 +256,18 @@ final class PublicBookingShortcode
     public static function render(mixed $atts = null, mixed $content = null, string $tag = self::TAG): string
     {
         try {
-            $request = self::parseRequest($atts, $tag);
+            $request = self::parse_request($atts, $tag);
             if ($request === null) {
                 return self::renderClosed();
             }
 
             if ($request['mode'] === self::MODE_DISCOVERY) {
-                return self::renderDiscovery();
+                return self::render_discovery();
             }
 
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local of this method.
             $clinicId = (int) $request['clinic_id'];
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local of this method.
             $clinic = self::findClinic($clinicId);
             if ($clinic === null) {
                 return self::renderClosed();
@@ -342,8 +344,9 @@ final class PublicBookingShortcode
      * @param mixed $atts
      * @return array{mode: string, clinic_id?: int}|null
      */
-    private static function parseRequest(mixed $atts, string $tag): ?array
+    private static function parse_request(mixed $atts, string $tag): ?array
     {
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established parameter style of this file's Clinic parsing helpers.
         $parsed = is_array($atts) ? $atts : [];
         /** @var array<string, mixed> $normalized */
         $normalized = shortcode_atts([self::CLINIC_ATTR => ''], $parsed, $tag);
@@ -358,6 +361,7 @@ final class PublicBookingShortcode
             return null;
         }
 
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         return ['mode' => self::MODE_SINGLE, 'clinic_id' => $clinicId];
     }
 
@@ -548,7 +552,7 @@ final class PublicBookingShortcode
      * نه خطا: پیکربندی معتبر است، چیزی برای معرفی نیست. هیچ‌گاه «همهٔ
      * Clinicهای فعال» به‌طور پیش‌فرض منتشر نمی‌شود.
      */
-    private static function renderDiscovery(): string
+    private static function render_discovery(): string
     {
         $directory = new PublicClinicDirectory();
         $listing = $directory->listed_clinics();
@@ -1546,6 +1550,7 @@ final class PublicBookingShortcode
      */
     private static function renderConfig(int $clinicId, string $surfaceId, ?array $discovery = null): string
     {
+        // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
         $config = [
             'surface_id' => $surfaceId,
             'mode' => $discovery === null ? self::MODE_SINGLE : self::MODE_DISCOVERY,
@@ -1588,6 +1593,7 @@ final class PublicBookingShortcode
             esc_attr(self::CONFIG_CLASS),
             $json
         );
+        // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     }
 
     // ================= ابزارها =================

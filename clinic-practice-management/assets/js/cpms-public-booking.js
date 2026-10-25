@@ -250,27 +250,40 @@
 		return value;
 	}
 
-	function readStoredSelection() {
+	/**
+	 * Phase 8 Slice 4 — per-surface storage key.
+	 *
+	 * Two booking widgets on one page must never share a preserved selection
+	 * (that would let one widget's Clinic/slot leak into another widget's OTP or
+	 * hold). The key is therefore derived from the surface id the SERVER minted
+	 * (`wp_unique_id`), falling back to the Clinic id for older markup.
+	 */
+	function selectionKeyFor(surfaceId, clinicId) {
+		var suffix = isNonEmptyString(surfaceId) ? surfaceId : ('clinic-' + String(toInt(clinicId)));
+		return SELECT_KEY + ':' + suffix;
+	}
+
+	function readStoredSelectionFor(key) {
 		try {
-			return validSelection(JSON.parse(window.sessionStorage.getItem(SELECT_KEY) || 'null'));
+			return validSelection(JSON.parse(window.sessionStorage.getItem(key || SELECT_KEY) || 'null'));
 		} catch (e) {
 			return null;
 		}
 	}
 
-	function storeSelection(selection) {
+	function storeSelectionFor(selection, key) {
 		try {
 			if (validSelection(selection)) {
-				window.sessionStorage.setItem(SELECT_KEY, JSON.stringify(selection));
+				window.sessionStorage.setItem(key || SELECT_KEY, JSON.stringify(selection));
 			}
 		} catch (e) {
 			// بدون storage هم جریان ادامه می‌یابد — کاربر دوباره انتخاب می‌کند.
 		}
 	}
 
-	function clearStoredSelection() {
+	function clearStoredSelectionFor(key) {
 		try {
-			window.sessionStorage.removeItem(SELECT_KEY);
+			window.sessionStorage.removeItem(key || SELECT_KEY);
 		} catch (e) {
 			// بی‌اثر.
 		}
@@ -330,6 +343,11 @@
 		var busy = false;
 		var selectedClinicianId = 0;
 		var selectedLocationId = 0;
+		var selectKey = selectionKeyFor(config.surface_id, config.clinic_id);
+		function readSel() { return readStoredSelectionFor(selectKey); }
+		function storeSel(selection) { storeSelectionFor(selection, selectKey); }
+		function clearSel() { clearStoredSelectionFor(selectKey); }
+
 		var availableDays = [];
 		var weekOffset = 0;
 		var calendarScaffold = Array.isArray(config.calendar) ? config.calendar : [];
@@ -390,7 +408,7 @@
 		var selectedPatientId = 0;
 		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
-		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + String(config.clinic_id);
+		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + String(config.surface_id || config.clinic_id);
 		function getStoredPatientId() {
 			try {
 				var v = window.sessionStorage.getItem(PATIENT_STORAGE_KEY);
@@ -692,7 +710,7 @@
 
 			if (invalidateSelection !== false) {
 				lastSelection = null;
-				clearStoredSelection();
+				clearSel();
 				holdToken = '';
 				stopCountdown();
 				if (continueBox) { continueBox.hidden = true; }
@@ -919,7 +937,7 @@
 			if (locationHint) { locationHint.hidden = true; }
 			if (!restoreSelection) {
 				lastSelection = null;
-				clearStoredSelection();
+				clearSel();
 			}
 			panelState(STATE_LOADING);
 			setBusy(true);
@@ -973,18 +991,18 @@
 						}
 					}
 					if (matches.length !== 1) {
-						clearStoredSelection();
+						clearSel();
 						panelState(STATE_EMPTY);
 						return;
 					}
 					var restoredLocationId = toInt(matches[0].location_id);
 					if (toInt(restoreSelection.location_id) > 0 && toInt(restoreSelection.location_id) !== restoredLocationId) {
-						clearStoredSelection();
+						clearSel();
 						panelState(STATE_ERROR);
 						return;
 					}
 					if (!setLocationChoice(restoredLocationId, false)) {
-						clearStoredSelection();
+						clearSel();
 						panelState(STATE_ERROR);
 						return;
 					}
@@ -999,7 +1017,7 @@
 							return;
 						}
 					}
-					clearStoredSelection();
+					clearSel();
 					panelState(STATE_EMPTY);
 					return;
 				}
@@ -1042,7 +1060,7 @@
 				showDetail('detail-capacity', { capacity: toInt(payload.capacity_left) });
 				// Phase 8 Slice 2 — انتخابِ غیر-PHI برای عبور از مرز login.
 				if (lastSelection) {
-					storeSelection(lastSelection);
+					storeSel(lastSelection);
 					if (authMode === 'patient') {
 						// بیمارِ واردشده: ادامه با B1 موجود — Hold فقط اینجاست.
 						beginHold(lastSelection);
@@ -1184,12 +1202,20 @@
 			// سرور tuple را فقط وقتی کامل می‌پذیرد (پزشک+اسلات+تاریخ+ساعت).
 			// در نصب با بیش از یک Clinic بدون همین انتخاب، A2 با
 			// CLINIC_SCOPE_REQUIRED مسدود می‌شود (class A — یافتهٔ مرورگر واقعی).
-			var a2Selection = validSelection(lastSelection) || readStoredSelection();
+			var a2Selection = validSelection(lastSelection) || readSel();
 			if (a2Selection && toInt(a2Selection.slot_id) > 0) {
 				payload.clinician_id = toInt(a2Selection.clinician_id);
 				payload.slot_id = toInt(a2Selection.slot_id);
 				payload.slot_date = a2Selection.slot_date;
 				payload.slot_time = a2Selection.slot_time;
+				// Phase 8 Slice 4 — the challenge must be bound to the Clinic the
+				// visitor actually selected; the server only accepts it when the
+				// persisted slot and an active participation agree.
+				if (toInt(a2Selection.clinic_id) > 0) {
+					payload.clinic_id = toInt(a2Selection.clinic_id);
+				} else {
+					withClinic(payload);
+				}
 			}
 
 			setBusy(true);
@@ -1248,7 +1274,7 @@
 					// session کوکی هم‌مبدأ است؛ رندرِ تازه نقش/nonce/B1/B2 را
 					// منتشر می‌کند و انتخابِ حفظ‌شده باز-می‌نشیند.
 					if (lastSelection) {
-						storeSelection(lastSelection);
+						storeSel(lastSelection);
 					}
 					window.location.reload();
 					return;
@@ -1426,7 +1452,7 @@
 			if (code === 'CLINIC_SLOT_TAKEN') {
 				var payload = result.body && result.body.data ? result.body.data : null;
 				renderNearby(payload && Array.isArray(payload.nearby_slots) ? payload.nearby_slots : null);
-				clearStoredSelection();
+				clearSel();
 			}
 			setContinueMessage(serverMessage(result));
 		}
@@ -1503,7 +1529,7 @@
 					if (receipt) {
 						receipt.hidden = false;
 					}
-					clearStoredSelection();
+					clearSel();
 					clearStoredPatientId();
 					return;
 				}
@@ -1560,6 +1586,7 @@
 			selectedClinicianId = clinicianId;
 
 			lastSelection = {
+				clinic_id: currentClinicId(),
 				clinician_id: clinicianId,
 				slot_id: toInt(selection.slot_id),
 				location_id: locationId,
@@ -1590,23 +1617,23 @@
 				if (result.ok && p && p.available === true && toInt(p.location_id) === locationId) {
 					panelState(STATE_BOOKABLE);
 					showDetail('detail-capacity', { capacity: toInt(p.capacity_left) });
-					storeSelection(lastSelection);
+					storeSel(lastSelection);
 					if (autoHold) { beginHold(lastSelection); }
 					return;
 				}
 				applyVerdict(result);
-				clearStoredSelection();
+				clearSel();
 			}, function () {
 				setBusy(false);
 				unfreeze();
-				clearStoredSelection();
+				clearSel();
 			});
 		}
 
 		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
 
 		if (authMode === 'patient') {
-			var restored = readStoredSelection();
+			var restored = readSel();
 			if (restored && toInt(restored.clinician_id) > 0) {
 				selectedClinicianId = toInt(restored.clinician_id);
 				for (var restoreIndex = 0; restoreIndex < clinicianButtons.length; restoreIndex++) {
@@ -1761,7 +1788,7 @@
 				lastSelection = null;
 				weekOffset = 0;
 				availableDays = [];
-				clearStoredSelection();
+				clearSel();
 				setText(daysHost, '');
 				setPressed(clinicianButtons, null);
 				panelState(STATE_IDLE);

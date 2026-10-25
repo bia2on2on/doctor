@@ -112,9 +112,10 @@ final class BookingService
      *
      * @return array{days: list<array<string, mixed>>}
      */
-    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null): array
+    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $clinicId = null): array
     {
-        $clinicId = $this->requireClinician($clinicianId);
+        // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
+        $clinicId = $this->resolve_booking_clinic($clinicianId, $clinicId);
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended
         // Clinic publishes no bookable slots. Returns the established public
@@ -400,9 +401,10 @@ final class BookingService
      * @return array{available: bool, capacity_left: int, slot_id?: int, location_id?: int}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
+    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null, ?int $clinicId = null): array
     {
-        $clinicId = $this->requireClinician($clinicianId);
+        // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
+        $clinicId = $this->resolve_booking_clinic($clinicianId, $clinicId);
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
         // never reports bookable capacity, so the public flow cannot advance to
@@ -460,14 +462,15 @@ final class BookingService
      * @return array{hold_token: string, expires_at: string, slot: array<string, mixed>}
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null, ?int $clinicId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
         // The published parameter names are part of the PHP 8 named-argument
         // contract and must not change. Read them through compact() string keys
-        // so the body works with snake_case locals only.
-        $hold_args    = compact( 'wpUserId', 'clinicianId', 'slotDate', 'slotTime', 'slotId', 'patientId', 'locationId' );
+        // so the body works with snake_case locals only. Phase 8 Slice 4 adds
+        // the optional Clinic selector as the final parameter (BC-safe).
+        $hold_args    = compact( 'wpUserId', 'clinicianId', 'slotDate', 'slotTime', 'slotId', 'patientId', 'locationId', 'clinicId' );
         $wp_user_id   = (int) $hold_args['wpUserId'];
         $clinician_id = (int) $hold_args['clinicianId'];
         $slot_date    = (string) $hold_args['slotDate'];
@@ -481,7 +484,7 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $clinic_id = $this->requireClinician( $clinician_id );
+        $clinic_id = $this->resolve_booking_clinic( $clinician_id, null === $hold_args['clinicId'] ? null : (int) $hold_args['clinicId'] );
         if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
@@ -2399,6 +2402,43 @@ final class BookingService
         if ( $status !== null && (string) $status === 'suspended' ) {
             throw BookingException::of( 'CLINIC_SUSPENDED', 'این مرکز موقتاً غیرفعال است و نوبت جدید پذیرفته نمی‌شود؛ برای نوبت‌های موجود با پذیرش تماس بگیرید', 409 );
         }
+    }
+
+    /**
+     * Phase 8 Slice 4 — authoritative Clinic for a PUBLIC booking request.
+     *
+     * A clinician can legitimately practice in a Clinic other than their home
+     * Clinic (`cpms_clinicians.clinic_id`) when they hold an ACTIVE durable
+     * membership there — the participation rule `clinician_participates_in()`
+     * (same rule ScheduleService/BookingService staff paths already enforce).
+     *
+     * Contract:
+     *  - selector omitted / non-positive ⇒ EXACT legacy behaviour: the home
+     *    Clinic of the (active) clinician. Every existing caller is unchanged.
+     *  - selector equals the home Clinic ⇒ accepted.
+     *  - selector is another Clinic ⇒ accepted ONLY with proven active
+     *    participation; the selector is never trusted on its own.
+     *  - otherwise ⇒ the SAME non-enumerating 404 envelope as an unknown
+     *    clinician, so a forged Clinic id cannot be distinguished from a
+     *    clinician that does not exist.
+     *
+     * The returned Clinic is only ever *validated*, never inferred from client
+     * data: every downstream lookup (slot, Location, settings, hold) is scoped
+     * by this value, and the persisted slot must belong to it.
+     */
+    private function resolve_booking_clinic( int $clinician_id, ?int $requested_clinic_id ): int
+    {
+        $home_clinic_id = $this->requireClinician( $clinician_id );
+
+        if ( null === $requested_clinic_id || $requested_clinic_id <= 0 || $requested_clinic_id === $home_clinic_id ) {
+            return $home_clinic_id;
+        }
+
+        if ( ! $this->memberships->clinician_participates_in( $clinician_id, $requested_clinic_id ) ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'پزشک یافت نشد', 404 );
+        }
+
+        return $requested_clinic_id;
     }
 
     private function requireClinician(int $clinicianId): int
