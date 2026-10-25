@@ -76,11 +76,13 @@ jobs:
           test -f "$zip"
           bytes=$(wc -c < "$zip" | tr -d ' ')
           sha=$(sha256sum "$zip" | cut -d' ' -f1)
+          files=$(unzip -Z1 "$zip" | grep -vE '/$' | wc -l | tr -d ' ')
           echo "INNER_INSTALLABLE_ZIP_BYTES=$bytes"
           echo "INNER_INSTALLABLE_ZIP_SHA256=$sha"
+          echo "INNER_INSTALLABLE_ZIP_FILES=$files"
           {
             echo "### Inner installable ZIP — run ${{ github.run_id }}, head ${{ github.sha }}"
-            echo "Exact ZIP bytes: $bytes; SHA-256: $sha"
+            echo "Exact ZIP bytes: $bytes; SHA-256: $sha; regular file entries: $files"
             echo 'This is the direct `bin/build-release.sh` output, not the compressed Actions artifact.'
             if [ "$bytes" -gt 33554432 ]; then
               echo 'WARNING: inner ZIP exceeds the provisional 32 MiB PHP upload policy.'
