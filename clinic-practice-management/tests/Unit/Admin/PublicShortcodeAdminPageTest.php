@@ -37,6 +37,26 @@ final class PublicShortcodeAdminPageTest extends TestCase {
 		self::assertStringContainsString( 'document.execCommand(\'copy\')', $this->source );
 	}
 
+	/**
+	 * The real-WordPress acceptance script treats `[data-cpms-shortcode]` and
+	 * `[data-cpms-copy]` as SINGLE targets (strict locator + count == 1). The
+	 * discovery example added for Phase 8 Slice 4 must therefore keep its own
+	 * distinct attributes, and each copy button must resolve its own field.
+	 */
+	public function testDiscoveryExampleKeepsTheSingleShortcodeFieldContract(): void {
+		self::assertStringContainsString( 'data-cpms-shortcode-discovery', $this->source );
+		self::assertStringContainsString( 'data-cpms-copy-discovery', $this->source );
+		self::assertStringContainsString( "hasAttribute('data-cpms-copy-discovery')", $this->source );
+		self::assertStringContainsString( "'[data-cpms-shortcode' + suffix + ']'", $this->source );
+		// Exactly one <label> may point at the single-Clinic textarea, otherwise the
+		// control has two accessible names.
+		self::assertSame(
+			1,
+			preg_match_all( '/for="cpms-shortcode-<\\?php echo esc_attr\\( \\$tag \\); \\?>"/', $this->source ),
+			'one label must reference the single-Clinic shortcode field'
+		);
+	}
+
 	public function testClinicMustBeSelectedExplicitlyEvenForSingleMembership(): void {
 		self::assertStringContainsString( '<option value="">انتخاب Clinic</option>', $this->source );
 		self::assertStringContainsString( 'Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.', $this->source );

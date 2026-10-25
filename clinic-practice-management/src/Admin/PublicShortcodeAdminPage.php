@@ -86,7 +86,6 @@ final class PublicShortcodeAdminPage {
 					<section class="card" style="max-width: 760px; padding: 16px;">
 						<h3><?php echo esc_html( $tag ); ?></h3>
 						<p>این نمونه فقط Clinic انتخاب‌شده را به سطح عمومی رزرو پیوند می‌دهد؛ برای Clinic دیگری، از فهرست بالا انتخاب کنید.</p>
-						<label for="cpms-shortcode-<?php echo esc_attr( $tag ); ?>">کد کوتاه</label>
 						<label for="cpms-shortcode-<?php echo esc_attr( $tag ); ?>">کد کوتاه یک مرکز (تک‌مرکزی)</label>
 						<textarea id="cpms-shortcode-<?php echo esc_attr( $tag ); ?>" class="large-text code" rows="2" readonly dir="ltr" data-cpms-shortcode><?php echo esc_textarea( sprintf( '[%s clinic_id="%d"]', $tag, $clinic_id ) ); ?></textarea>
 						<p><button type="button" class="button button-primary" data-cpms-copy>کپی کد</button> <span role="status" aria-live="polite" data-cpms-copy-status></span></p>
@@ -94,8 +93,8 @@ final class PublicShortcodeAdminPage {
 
 						<hr>
 						<label for="cpms-shortcode-discovery-<?php echo esc_attr( $tag ); ?>">کد کوتاه «انتخاب مرکز» (چند‌مرکزی)</label>
-						<textarea id="cpms-shortcode-discovery-<?php echo esc_attr( $tag ); ?>" class="large-text code" rows="2" readonly dir="ltr" data-cpms-shortcode><?php echo esc_textarea( sprintf( '[%s clinic_id="all"]', $tag ) ); ?></textarea>
-						<p><button type="button" class="button button-primary" data-cpms-copy>کپی کد</button> <span role="status" aria-live="polite" data-cpms-copy-status></span></p>
+						<textarea id="cpms-shortcode-discovery-<?php echo esc_attr( $tag ); ?>" class="large-text code" rows="2" readonly dir="ltr" data-cpms-shortcode-discovery><?php echo esc_textarea( sprintf( '[%s clinic_id="all"]', $tag ) ); ?></textarea>
+						<p><button type="button" class="button button-primary" data-cpms-copy-discovery>کپی کد</button> <span role="status" aria-live="polite" data-cpms-copy-status-discovery></span></p>
 						<p class="description">با این کد، بازدیدکننده ابتدا مرکز درمانی را انتخاب می‌کند، سپس با جست‌وجوی نام پزشک و فیلتر تخصص، پزشک و نوبت هفتگی (تقویم جلالی) را می‌بیند. <strong>هیچ مرکزی به‌صورت پیش‌فرض در این فهرست نمایش داده نمی‌شود</strong>؛ هر مرکز باید ابتدا در تنظیمات خود کلید <code>public.listing_opt_in</code> را روی مقدار true بگذارد (پیش‌فرض: false). مرکز غیرفعال، سازمان غیرفعال، یا مرکز بدون محل فعالِ دارای پزشک واجد شرایط هرگز در این فهرست دیده نمی‌شود.</p>
 					</section>
 				<?php endforeach; ?>
@@ -105,12 +104,14 @@ final class PublicShortcodeAdminPage {
 		</div>
 		<script>
 		(function () {
-			var buttons = document.querySelectorAll('[data-cpms-copy]');
+			var buttons = document.querySelectorAll('[data-cpms-copy], [data-cpms-copy-discovery]');
 			for (var i = 0; i < buttons.length; i++) {
 				buttons[i].addEventListener('click', function () {
 					var card = this.closest('.card');
-					var field = card ? card.querySelector('[data-cpms-shortcode]') : null;
-					var status = card ? card.querySelector('[data-cpms-copy-status]') : null;
+					// هر دکمه فقط فیلدِ خودش را کپی می‌کند (تک‌مرکزی یا «انتخاب مرکز»).
+					var suffix = this.hasAttribute('data-cpms-copy-discovery') ? '-discovery' : '';
+					var field = card ? card.querySelector('[data-cpms-shortcode' + suffix + ']') : null;
+					var status = card ? card.querySelector('[data-cpms-copy-status' + suffix + ']') : null;
 					if (!field || !status) { return; }
 					field.focus();
 					field.select();
