@@ -263,12 +263,24 @@ class Env {
 	}
 
 	/**
+	 * Comments that are NOT part of the stock WordPress starter content.
+	 *
+	 * A fresh install ships exactly one sample comment on the "Hello world!"
+	 * post by "A WordPress Commenter"; anything else means the site is in use.
+	 *
 	 * @return int
 	 */
 	public function comment_count(): int {
 		global $wpdb;
 
-		return (int) $wpdb->get_var( 'SELECT COUNT(*) FROM ' . $wpdb->comments ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table name.
+		return (int) $wpdb->get_var(
+			$wpdb->prepare(
+				'SELECT COUNT(*) FROM ' . $wpdb->comments . ' WHERE NOT ( comment_post_ID = %d AND ( comment_author_email = %s OR comment_author = %s ) )', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- table name is core, values prepared.
+				1,
+				'wapuu@wordpress.example',
+				'A WordPress Commenter'
+			)
+		);
 	}
 
 	/**

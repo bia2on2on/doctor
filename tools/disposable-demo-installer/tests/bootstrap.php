@@ -234,6 +234,10 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 		return $this->comments;
 	}
 
+	public function unexpected_comment_count(): int {
+		return $this->comments;
+	}
+
 	public function insert_page( array $args ): int {
 		$id              = $this->next_post++;
 		$this->posts[ $id ] = array(

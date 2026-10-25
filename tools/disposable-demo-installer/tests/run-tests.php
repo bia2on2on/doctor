@@ -163,6 +163,13 @@ $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->r
 Cpdd_Test::ok( in_array( 'single_site', $state['blocking'], true ), 'preflight: multisite blocks provisioning' );
 
 $ctx = cpdd_fixture();
+$ctx['env']->comments = 2;
+Cpdd_Test::ok(
+	in_array( 'content', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'preflight: foreign comments block provisioning'
+);
+
+$ctx = cpdd_fixture();
 $ctx['platform']->tables_data['cpms_patients'][] = array(
 	'id'        => 9,
 	'clinic_id' => 1,

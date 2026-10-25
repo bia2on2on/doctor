@@ -434,7 +434,7 @@ class Preflight {
 			$unexpected[] = $post['type'] . ':' . $post['slug'];
 		}
 		if ( $this->env->comment_count() > 0 ) {
-			return $this->result( $id, $label, 'fail', 'دیدگاه (Comment) در سایت وجود دارد.' );
+			return $this->result( $id, $label, 'fail', 'دیدگاه (Comment) خارج از محتوای نمونهٔ وردپرس در سایت وجود دارد.' );
 		}
 		if ( array() !== $unexpected ) {
 			return $this->result( $id, $label, 'fail', 'محتوای غیرپیش‌فرض: ' . implode( ', ', $unexpected ) );
