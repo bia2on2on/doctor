@@ -296,12 +296,16 @@ class Preflight {
 	private function check_plugins(): array {
 		$id      = 'plugins';
 		$label   = 'بدون افزونهٔ فعال دیگر (Side effect)';
-		$allowed = array( CPDD_CPMS_PLUGIN, plugin_basename( CPDD_FILE ), 'clinic-practice-management/clinic-practice-management.php' );
+		$self    = plugin_basename( CPDD_FILE );
 		$foreign = array();
 		foreach ( $this->env->active_plugins() as $plugin ) {
-			if ( ! in_array( $plugin, $allowed, true ) ) {
-				$foreign[] = $plugin;
+			// Allowed: the production plugin and this companion itself (matched by
+			// its own computed basename, so a renamed install directory still
+			// recognises itself instead of blocking on its own presence).
+			if ( CPDD_CPMS_PLUGIN === $plugin || $self === $plugin || basename( CPDD_FILE ) === basename( $plugin ) ) {
+				continue;
 			}
+			$foreign[] = $plugin;
 		}
 		if ( array() !== $foreign ) {
 			return $this->result( $id, $label, 'fail', 'افزونهٔ فعال دیگر: ' . implode( ', ', $foreign ) );

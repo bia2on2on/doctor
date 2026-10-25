@@ -1,0 +1,196 @@
+<?php
+/**
+ * Real-WordPress integration acceptance for the demo installer.
+ *
+ * Executed in CI on a clean WordPress + active CPMS Classic:
+ *   wp eval-file tools/disposable-demo-installer/tests/integration-wp.php \
+ *     --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER"
+ *
+ * It exercises the *shipping* code paths end to end: preflight, provisioning
+ * through production services, six persona logins, the public booking page and
+ * shortcode, the real OTP request/verify cycle with the demo code, and the
+ * ownership-proofed teardown. It prints evidence only — never credentials,
+ * codes, peppers or session data.
+ *
+ * @package CpmsDisposableDemo
+ */
+
+declare(strict_types=1);
+
+use CpmsDemo\Credentials;
+use CpmsDemo\Env;
+use CpmsDemo\Exception as DemoException;
+use CpmsDemo\Manifest;
+use CpmsDemo\Otp;
+use CpmsDemo\Platform;
+use CpmsDemo\Preflight;
+use CpmsDemo\Provisioner;
+use CpmsDemo\Teardown;
+use ClinicCore\Application\Scope\ClinicScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Bootstrap\App;
+
+$cpdd_fail = 0;
+
+/**
+ * @param bool   $ok Pass/fail.
+ * @param string $label Evidence line.
+ */
+function cpdd_assert( bool $ok, string $label ): void {
+	global $cpdd_fail;
+	if ( ! $ok ) {
+		++$cpdd_fail;
+	}
+	echo ( $ok ? 'PASS ' : 'FAIL ' ) . $label . PHP_EOL;
+}
+
+$env      = new Env();
+$platform = new Platform();
+$manifest = new Manifest( $env );
+$admin_id = get_current_user_id();
+
+cpdd_assert( $admin_id > 0 && user_can( $admin_id, 'manage_options' ), 'administrator session with manage_options' );
+cpdd_assert( class_exists( App::class ), 'CPMS Classic is active in the same request' );
+cpdd_assert( '2026_10_18_0029' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
+
+// --- 1. Preflight ----------------------------------------------------------
+$preflight = new Preflight( $env, $platform, $manifest );
+$state     = $preflight->run();
+if ( ! $state['ok'] ) {
+	foreach ( $state['checks'] as $check ) {
+		if ( 'pass' !== $check['status'] ) {
+			echo 'PREFLIGHT_DETAIL ' . $check['id'] . ' :: ' . $check['detail'] . PHP_EOL;
+		}
+	}
+}
+cpdd_assert( true === $state['ok'], 'preflight passes on a clean disposable site' );
+
+// --- 2. Provisioning -------------------------------------------------------
+$provisioner = new Provisioner( $env, $platform, $manifest, $preflight, new Credentials( $env ) );
+$result      = $provisioner->provision( $admin_id );
+$fixture     = $result['manifest'];
+$passwords   = $result['credentials'];
+
+cpdd_assert( 'active' === $fixture['status'], 'fixture sealed as active' );
+cpdd_assert( 6 === count( $fixture['ids']['user_ids'] ), 'six persona accounts created' );
+cpdd_assert( 2 === count( $fixture['ids']['location_ids'] ), 'two locations created' );
+cpdd_assert( count( $fixture['ids']['slot_ids'] ) >= 6, 'at least six future public-booking slots' );
+cpdd_assert( isset( $fixture['ids']['visit_id'], $fixture['ids']['invoice_id'], $fixture['ids']['payment_id'], $fixture['ids']['follow_up_id'], $fixture['ids']['prescription_id'] ), 'visit, invoice, payment, prescription and follow-up recorded' );
+
+$clinic_id = (int) $fixture['ids']['clinic_id'];
+$doctor_id = (int) $fixture['ids']['clinician_id'];
+$mobile    = (string) $fixture['patient_mobile'];
+
+// --- 3. Six independent logins -------------------------------------------
+foreach ( $passwords as $persona => $password ) {
+	$login = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
+	$user  = wp_authenticate( $login, $password );
+	cpdd_assert( $user instanceof WP_User, 'login works for persona ' . $persona );
+	$id = $user instanceof WP_User ? (int) $user->ID : 0;
+	cpdd_assert( $id > 0 && ! user_can( $id, 'manage_options' ), 'persona ' . $persona . ' has no site-administrator authority' );
+}
+$patient_wp_id = (int) $fixture['ids']['user_ids']['patient'];
+$patient_user  = get_userdata( $patient_wp_id );
+cpdd_assert( $patient_user instanceof WP_User && in_array( 'cpms_patient', (array) $patient_user->roles, true ), 'patient persona holds the cpms_patient role' );
+
+// --- 4. Public booking page + real shortcode ------------------------------
+$page_id  = (int) $fixture['ids']['booking_page_id'];
+$page     = get_post( $page_id );
+$expected = '[cpms_public_booking clinic_id="' . $clinic_id . '"]';
+cpdd_assert( $page instanceof WP_Post && 'publish' === $page->post_status, 'booking page is published' );
+cpdd_assert( $page instanceof WP_Post && str_contains( (string) $page->post_content, $expected ), 'booking page carries the real shortcode ' . $expected );
+cpdd_assert( shortcode_exists( 'cpms_public_booking' ), 'production shortcode tag is registered' );
+$rendered = do_shortcode( $expected );
+cpdd_assert( '' !== trim( (string) $rendered ), 'public booking shortcode renders server-side output (bytes=' . strlen( (string) $rendered ) . ')' );
+
+$db    = App::db();
+$slots = (int) $db->fetchValue(
+	'SELECT COUNT(*) FROM ' . $db->table( 'cpms_schedule_slots' )
+	. ' WHERE clinic_id = %d AND clinician_id = %d AND is_open = 1 AND booked_count = 0 AND slot_date >= %s',
+	array( $clinic_id, $doctor_id, gmdate( 'Y-m-d' ) )
+);
+cpdd_assert( $slots >= 6, 'open future slots available for a NEW public booking (count=' . $slots . ')' );
+
+// --- 5. Real OTP request → demo code → real verify ------------------------
+$previous = ScopeContext::tryGet();
+ScopeContext::set( ClinicScope::forClinic( $clinic_id, (int) $fixture['ids']['location_ids'][0] )->withOrganization( (int) $fixture['ids']['organization_id'] ) );
+try {
+	App::otpService()->request( $mobile, 'login', null, '127.0.0.1', $clinic_id );
+	cpdd_assert( true, 'real OTP request accepted for the synthetic patient' );
+
+	$otp    = new Otp( $env, $platform );
+	$issued = $otp->issue( $fixture );
+	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $issued['code'] ), 'demo OTP code is six digits' );
+
+	$token_row = $db->fetchRow(
+		'SELECT code_hash, attempts, consumed_at, expires_at FROM ' . $db->table( 'cpms_otp_tokens' ) . ' WHERE id = %d',
+		array( (int) $issued['token_id'] )
+	);
+	cpdd_assert( null !== $token_row && ! str_contains( (string) $token_row['code_hash'], (string) $issued['code'] ), 'only the hash is stored; the code is never persisted' );
+	cpdd_assert( 0 === (int) $token_row['attempts'] && null === $token_row['consumed_at'], 'attempt counter and consumption state are untouched before verify' );
+
+	try {
+		$verified = App::otpService()->verify( $mobile, (string) $issued['code'], 'login', '127.0.0.1' );
+		cpdd_assert( isset( $verified['user_id'] ) || isset( $verified['wp_user_id'] ), 'real verify route accepts the demo code' );
+	} catch ( Throwable $e ) {
+		cpdd_assert( false, 'real verify route accepts the demo code (' . get_class( $e ) . ')' );
+	}
+
+	$consumed = $db->fetchValue( 'SELECT consumed_at FROM ' . $db->table( 'cpms_otp_tokens' ) . ' WHERE id = %d', array( (int) $issued['token_id'] ) );
+	cpdd_assert( null !== $consumed, 'OTP is consumed exactly once by the real route' );
+
+	try {
+		App::otpService()->verify( $mobile, (string) $issued['code'], 'login', '127.0.0.1' );
+		cpdd_assert( false, 'a consumed code is refused on replay' );
+	} catch ( Throwable $e ) {
+		cpdd_assert( true, 'a consumed code is refused on replay (' . get_class( $e ) . ')' );
+	}
+
+	try {
+		$otp->issue( $fixture );
+		cpdd_assert( false, 'the demo code cannot be re-minted for a consumed challenge' );
+	} catch ( DemoException $e ) {
+		cpdd_assert( true, 'the demo code cannot be re-minted for a consumed/expired challenge (' . $e->demo_code() . ')' );
+	}
+
+	// Scoping: the demo tool must not expose codes for any other mobile.
+	try {
+		App::otpService()->request( '09121234567', 'login', null, '127.0.0.1', $clinic_id );
+		$otp->issue( $fixture );
+		cpdd_assert( false, 'a foreign mobile never receives a demo code' );
+	} catch ( DemoException $e ) {
+		cpdd_assert( in_array( $e->demo_code(), array( 'OTP_CHALLENGE', 'OTP_SCOPE' ), true ), 'a foreign mobile never receives a demo code (' . $e->demo_code() . ')' );
+	}
+} finally {
+	App::replaceExplicitScope( $previous );
+}
+
+// --- 6. Ownership-proofed teardown ---------------------------------------
+$teardown = new Teardown( $env, $platform, $manifest );
+$plan     = $teardown->verify( $fixture, $admin_id );
+if ( ! $plan['ok'] ) {
+	foreach ( $plan['problems'] as $problem ) {
+		echo 'TEARDOWN_PROBLEM ' . $problem . PHP_EOL;
+	}
+}
+cpdd_assert( true === $plan['ok'], 'ownership proof passes before deletion (tables with fixture rows=' . count( $plan['plan'] ) . ')' );
+
+$cleanup = $teardown->execute( $fixture, $admin_id );
+cpdd_assert( true === $cleanup['ok'], 'teardown verifies a clean result (deleted tables=' . count( $cleanup['deleted'] ) . ', remaining=' . count( $cleanup['remaining'] ) . ')' );
+foreach ( $cleanup['remaining'] as $item ) {
+	echo 'REMAINING ' . $item . PHP_EOL;
+}
+
+cpdd_assert( false === get_option( 'cpdd_manifest', false ), 'manifest option removed after verified cleanup' );
+cpdd_assert( null === get_userdata( $patient_wp_id ), 'demo personas removed' );
+$owner = get_userdata( $admin_id );
+cpdd_assert( $owner instanceof WP_User && user_can( $admin_id, 'manage_options' ), 'Owner Administrator account and session authority preserved' );
+$default_clinic = $db->fetchRow( 'SELECT id, slug FROM ' . $db->table( 'cpms_clinics' ) . ' WHERE id = 1' );
+cpdd_assert( null !== $default_clinic && 'default' === (string) $default_clinic['slug'], 'default CPMS bootstrap clinic untouched' );
+$leftover = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', array( $clinic_id ) );
+cpdd_assert( 0 === $leftover, 'no synthetic patients remain in the fixture clinic scope' );
+
+echo 'CPDD_INTEGRATION=' . ( 0 === $cpdd_fail ? 'PASS' : 'FAIL' ) . ' failures=' . $cpdd_fail . PHP_EOL;
+if ( $cpdd_fail > 0 ) {
+	exit( 1 );
+}
