@@ -158,6 +158,51 @@ if (typeof D.selectionKeyFor === 'function') {
   failures.push('selectionKeyFor must be exported for the standalone isolation spec');
 }
 
+// ---- Phase 8 Slice 3 patient-selection storage contract. ----
+// The pinned single-widget key is EXACTLY 'cpms-patient-selection:<clinic_id>';
+// the Phase 8 Slice 4 change temporarily keyed it by surface_id, which made an
+// already-stored Patient B unreachable and broke the Slice-3 chooser browser
+// acceptance (slice3-*-select-B). These assertions pin the restored contract
+// plus the isolation properties that motivated the original change.
+if (typeof D.patientKeySuffix === 'function') {
+  var S = D.patientKeySuffix;
+
+  // (B) sessionStorage compatibility: single-widget shape is the historical one.
+  if (S('cpms-public-booking-7', 3, 1) !== '3') {
+    failures.push('single-widget patient suffix must be the Clinic id, got ' + S('cpms-public-booking-7', 3, 1));
+  }
+  if (S('cpms-public-booking-7', 3, 0) !== '3') {
+    failures.push('patient suffix must stay Clinic-scoped when no root was counted, got ' + S('cpms-public-booking-7', 3, 0));
+  }
+
+  // (D) multi-widget isolation: two widgets on one page never share a key.
+  var w1 = S('cpms-public-booking-7', 3, 2);
+  var w2 = S('cpms-public-booking-8', 3, 2);
+  if (w1 === w2) {
+    failures.push('two widgets on one page must not share a patient key, both were ' + w1);
+  }
+  if (w1 !== 'cpms-public-booking-7:3') {
+    failures.push('multi-widget patient suffix must namespace by surface and keep the Clinic, got ' + w1);
+  }
+  if (S('', 3, 2) !== 'clinic-3:3') {
+    failures.push('multi-widget suffix without a surface id must fall back to the Clinic scope, got ' + S('', 3, 2));
+  }
+
+  // (C)/(F) Clinic switching can never restore another Clinic's patient.
+  if (S('cpms-public-booking-7', 3, 1) === S('cpms-public-booking-7', 4, 1)) {
+    failures.push('a Clinic change must change the single-widget patient key');
+  }
+  if (S('cpms-public-booking-7', 3, 2) === S('cpms-public-booking-7', 4, 2)) {
+    failures.push('a Clinic change must change the multi-widget patient key');
+  }
+  // (A)/(E) switching patient only changes the stored VALUE, never the key.
+  if (S('cpms-public-booking-7', 3, 1) !== S('cpms-public-booking-7', 3, 1)) {
+    failures.push('patient key must be deterministic so Patient A -> B switching keeps one slot');
+  }
+} else {
+  failures.push('patientKeySuffix must be exported for the standalone storage spec');
+}
+
 // ===================== Result =====================
 
 if (failures.length > 0) {

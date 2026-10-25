@@ -271,6 +271,30 @@
 		return SELECT_KEY + ':' + suffix;
 	}
 
+	/**
+	 * Phase 8 Slice 3/4 — patient-selection storage suffix.
+	 *
+	 * The ESTABLISHED single-widget contract is exactly
+	 * `cpms-patient-selection:<clinic_id>` (pinned by
+	 * tests/Unit/Frontend/PublicBookingJsSendGateTest and exercised by the
+	 * Slice-3 chooser browser acceptance). A page with ONE widget must keep it
+	 * byte-for-byte, otherwise an already-stored selection becomes unreachable
+	 * and the acceptance journey cannot restore Patient B.
+	 *
+	 * A page with SEVERAL widgets namespaces the key per surface so one widget's
+	 * patient can never be used by another. The Clinic id stays in the suffix in
+	 * BOTH shapes, so switching Clinic (discovery mode) can never restore a
+	 * patient selected under a different Clinic.
+	 */
+	function patientKeySuffix(surfaceId, clinicId, rootCount) {
+		var clinicPart = String(toInt(clinicId));
+		if (typeof rootCount !== 'number' || rootCount <= 1) {
+			return clinicPart;
+		}
+		var scope = isNonEmptyString(surfaceId) ? surfaceId : ('clinic-' + clinicPart);
+		return scope + ':' + clinicPart;
+	}
+
 	function readStoredSelectionFor(key) {
 		try {
 			return validSelection(JSON.parse(window.sessionStorage.getItem(key || SELECT_KEY) || 'null'));
@@ -422,7 +446,11 @@
 		var selectedPatientId = 0;
 		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
-		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + String(config.surface_id || config.clinic_id);
+		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + patientKeySuffix(
+			config.surface_id,
+			config.clinic_id,
+			document.querySelectorAll(ROOT_SELECTOR).length
+		);
 		function getStoredPatientId() {
 			try {
 				var v = window.sessionStorage.getItem(PATIENT_STORAGE_KEY);
@@ -1907,6 +1935,7 @@
 		weekStartIndex: weekStartIndex,
 		weekOffsetInBounds: weekOffsetInBounds,
 		firstAvailableIndex: firstAvailableIndex,
+		patientKeySuffix: patientKeySuffix,
 		// صرفاً برای specِ مستقلِ Node (multi-widget isolation) صادر می‌شود:
 		// تنها یک تابعِ خالص است و هیچ state یا side effect ندارد.
 		selectionKeyFor: selectionKeyFor
