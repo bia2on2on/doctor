@@ -61,6 +61,7 @@ jobs:
       coexistence_group: combined-ten
 
   coexistence-persian-woocommerce-diagnosis:
+    name: Persian WooCommerce 10.0.7 Stage-A-only diagnosis (CPMS intentionally absent)
     # CPMS is prohibited for this standalone activation/permission diagnosis.
     # The canonical environment is preserved; any permission contrast runs only
     # in a separately cloned disposable WordPress/database.
@@ -72,6 +73,20 @@ jobs:
       persian_coexistence: true
       coexistence_group: persian-woocommerce-diagnosis
       coexistence_stage_b: false
+
+  coexistence-persian-woocommerce-acceptance:
+    name: Persian WooCommerce 10.0.7 + CPMS Stage A/B acceptance
+    # Independent positive-path lane: Stage A runs with CPMS absent, then the
+    # mandatory boundary builds, installs and activates the official CPMS ZIP
+    # before the existing migrations, persona, authorization and browser suite.
+    uses: ./.github/workflows/real-wp-acceptance.yml
+    permissions:
+      contents: write
+      actions: read
+    with:
+      persian_coexistence: true
+      coexistence_group: persian-woocommerce-acceptance
+      coexistence_stage_b: true
 
   coexistence-persian-woocommerce-sms:
     # Clean pair baseline first. The existing Stage A/B interlock allows CPMS

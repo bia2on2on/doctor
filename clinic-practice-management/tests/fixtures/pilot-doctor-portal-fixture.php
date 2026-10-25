@@ -21,8 +21,8 @@ $today = (new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran')))->format
 
 function dp_fail(string $msg): void
 {
-    $safe = preg_replace('/\d{10,}/', '[redacted]', $msg) ?? $msg;
-    echo 'DOCTOR_PORTAL_FIXTURE_ERROR: ' . $safe . "\n";
+    // DB error strings may include seeded record values; expose only a category.
+    echo "DOCTOR_PORTAL_FIXTURE_ERROR: fixture setup failed\n";
     exit(1);
 }
 
@@ -445,19 +445,11 @@ $loosenStorageTree = static function (string $dir) use (&$loosenStorageTree): vo
 };
 $loosenStorageTree($filesStorage);
 
-$public = implode('|', [
-    $url,
-    (string) $oneClinic,
-    (string) $oneLoc,
-    (string) $visitOwn,
-    (string) $visitOther,
-    (string) $multiClinic,
-    (string) $locA,
-    (string) $locB,
-    (string) $visitA,
-    (string) $visitB,
-    $today,
-]);
+
+
+// Finance fixture consumes only the public portal URL plus trusted fixture
+// clinic/location context. Keep this handoff local to GITHUB_ENV; never stdout.
+$financeContext = implode('|', [$url, (string) $oneClinic, (string) $oneLoc]);
 
 file_put_contents(
     '/tmp/doctor-portal.env',
@@ -467,10 +459,7 @@ file_put_contents(
     . 'DOCTOR_ONE=' . $oneLine . "\n"
     . 'DOCTOR_OTHER=' . $otherLine . "\n"
     . 'DOCTOR_MULTI=' . $multiLine . "\n"
-    . 'DOCTOR_PORTAL_PUBLIC=' . $public . "\n"
+    . 'DOCTOR_PORTAL_PUBLIC=' . $financeContext . "\n"
 );
 
-echo 'fixture: doctor-portal clinic_one=' . $oneClinic . ' loc=' . $oneLoc
-    . ' visits=' . $visitOwn . ',' . $visitOther
-    . ' clinic_multi=' . $multiClinic . ' locA=' . $locA . ' locB=' . $locB
-    . ' inactive=' . $inactiveLoc . ' today=' . $today . "\n";
+echo 'DOCTOR_PORTAL_FIXTURE_OK scenarios=one-location,multi-location,visit-isolation' . "\n";
