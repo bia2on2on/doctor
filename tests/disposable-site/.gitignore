@@ -1,0 +1,5 @@
+# Local disposable-site evidence/secrets must never be committed.
+artifacts/
+*.credentials.json
+*.otp.json
+*.lock
