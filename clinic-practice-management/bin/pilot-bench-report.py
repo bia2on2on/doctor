@@ -1164,7 +1164,7 @@ SAFE_ENDPOINT_LABELS: Dict[str, str] = {
     "wp-json-root": "GET /wp-json/",
 }
 SAFE_PHASES: Tuple[str, ...] = ("cold", "warm")
-SAFE_EVENTS: Tuple[str, ...] = ("push", "schedule", "workflow_dispatch")
+SAFE_EVENTS: Tuple[str, ...] = ("pull_request", "push", "schedule", "workflow_dispatch")
 
 # Exact field sets — equality is required, so an unexpected/extra field is a
 # refusal rather than a silent pass-through.
@@ -3043,7 +3043,14 @@ def _selftests() -> int:
     check("evidence-accepts-real-event-set",
           [build_safe_evidence(_report([_measurement(1, "cold", "health", 1, 200)],
                                        run=_run_meta(event_name=event)))["binding"]["event_name"]
-           for event in ("push", "schedule", "workflow_dispatch")] == ["push", "schedule", "workflow_dispatch"])
+           for event in ("pull_request", "push", "schedule", "workflow_dispatch")] == ["pull_request", "push", "schedule", "workflow_dispatch"])
+    pr_binding = build_safe_evidence(_report(
+        [_measurement(1, "cold", "health", 1, 200)],
+        run=_run_meta(event_name="pull_request", ref="269/merge"),
+    ))["binding"]
+    check("evidence-accepts-pull-request-merge-ref",
+          pr_binding["event_name"] == "pull_request" and pr_binding["ref"] == "269/merge",
+          str(pr_binding))
 
     # 8f) raw dump / banner / header / body / free-form / environment metadata cannot enter
     polluted = _report(

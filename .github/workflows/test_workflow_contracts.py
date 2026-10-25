@@ -60,6 +60,15 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("id: cpms_install", reusable)
         self.assertIn("run.py finalize", reusable)
 
+    def test_workflow_contract_suite_is_run_by_ci(self):
+        text = workflow("ci.yml")
+        self.assertIn("Workflow evidence and acceptance contract tests", text)
+        self.assertIn("python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v", text)
+        self.assertIn("working-directory: ${{ github.workspace }}", text)
+        self.assertIn("name: Pilot benchmark report safety self-tests", text)
+        self.assertIn("python3 bin/pilot-bench-report.py --test", text)
+        self.assertIn("working-directory: ${{ github.workspace }}/clinic-practice-management", text)
+
     def test_all_fifteen_evidence_publishers_use_shared_fail_loud_router(self):
         for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 13)):
             with self.subTest(filename=filename):
