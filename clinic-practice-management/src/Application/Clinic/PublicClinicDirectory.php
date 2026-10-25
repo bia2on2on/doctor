@@ -72,8 +72,18 @@ final class PublicClinicDirectory
 	public const MAX_CLINICIANS_PER_CLINIC = 100;
 
 	/**
-	 * INTERIM SAFETY GATE — shared (non-home-Clinic) clinicians are NOT
-	 * advertised in the public DIRECTORY yet.
+	 * SHARED-CLINICIAN LISTING GATE (now ENABLED).
+	 *
+	 * Originally added as a fail-closed interim gate while the public booking
+	 * contracts still derived the Clinic from the clinician's HOME Clinic. Those
+	 * contracts now derive the Clinic from the PERSISTED SLOT for A4/B1 and A2
+	 * (with an ACTIVE durable participation check before any cross-Clinic use),
+	 * and A1 accepts a participation-checked Clinic selector. Advertising a
+	 * shared clinician is therefore truthful: quoting and holding their Clinic B
+	 * slot really does book in Clinic B.
+	 *
+	 * Set back to false to stop advertising shared clinicians without touching
+	 * any other behaviour (home-Clinic clinicians keep being listed).
 	 *
 	 * The directory is only truthful if the public booking contracts can book a
 	 * clinician in the SELECTED Clinic. Today A1/A4/B1 derive the Clinic from
@@ -83,18 +93,8 @@ final class PublicClinicDirectory
 	 * while quoting/holding against Clinic A — a misleading and unsafe
 	 * affordance.
 	 *
-	 * Until that scoping lands (see the PR report's "Remaining risks"), the
-	 * directory deliberately falls back to home-Clinic clinicians only. The
-	 * participation rule itself is already implemented and used by the
-	 * explicitly bound single-Clinic surface, which is safe because the
-	 * shortcode's Clinic attribute and the clinician's home Clinic can only
-	 * differ for a shared clinician — and such a clinician is not published
-	 * there either until this flag is turned on.
-	 *
-	 * Flip to true in the SAME change that adds server-side `clinic_id` scoping
-	 * to A1/A4/A2/B1, together with the cross-Clinic tests.
 	 */
-	public const PUBLIC_SHARED_CLINICIAN_LISTING = false;
+	public const PUBLIC_SHARED_CLINICIAN_LISTING = true;
 
 	/** Persian weekday names, indexed by ISO-8601 weekday number (1 = Monday). */
 	public const WEEKDAY_LABELS = [

@@ -258,7 +258,15 @@
 	 * hold). The key is therefore derived from the surface id the SERVER minted
 	 * (`wp_unique_id`), falling back to the Clinic id for older markup.
 	 */
-	function selectionKeyFor(surfaceId, clinicId) {
+	function selectionKeyFor(surfaceId, clinicId, rootCount) {
+		// A page with ONE booking widget keeps the established key exactly, so the
+		// preserved-selection contract (and the specs that pin it) is unchanged.
+		// Only a page with SEVERAL widgets namespaces the key per surface, which is
+		// what prevents one widget's Clinic/slot from leaking into another's OTP
+		// or Hold.
+		if (typeof rootCount !== 'number' || rootCount <= 1) {
+			return SELECT_KEY;
+		}
 		var suffix = isNonEmptyString(surfaceId) ? surfaceId : ('clinic-' + String(toInt(clinicId)));
 		return SELECT_KEY + ':' + suffix;
 	}
@@ -345,7 +353,11 @@
 		var selectedLocationId = 0;
 		// Per-surface (not module-global) selection storage: the key embeds the
 		// server-minted surface id, so two widgets on one page never share state.
-		var selectKey = selectionKeyFor(config.surface_id, config.clinic_id);
+		var selectKey = selectionKeyFor(
+			config.surface_id,
+			config.clinic_id,
+			document.querySelectorAll(ROOT_SELECTOR).length
+		);
 		function readStoredSelection() { return readStoredSelectionFor(selectKey); }
 		function storeSelection(selection) { storeSelectionFor(selection, selectKey); }
 		function clearStoredSelection() { clearStoredSelectionFor(selectKey); }

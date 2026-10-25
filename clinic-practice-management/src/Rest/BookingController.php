@@ -64,8 +64,6 @@ final class BookingController extends RestBase
                     'slot_time' => ['required' => true, 'type' => 'string'],
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
-                    // Phase 8 Slice 4 — optional Clinic selector (see A1).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -83,8 +81,6 @@ final class BookingController extends RestBase
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'patient_id' => ['required' => false, 'type' => 'integer'],
                     'location_id'  => ['required' => false, 'type' => 'integer'],
-                    // Phase 8 Slice 4 — optional Clinic selector (see A1).
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -237,16 +233,13 @@ final class BookingController extends RestBase
     {
         $slotId = $request->get_param('slot_id');
         $location_id = $request->get_param( 'location_id' );
-        $clinic_id = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->quote(
             (int) $request->get_param('clinician_id'),
             (string) $request->get_param('slot_date'),
             (string) $request->get_param('slot_time'),
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
-            $location_id !== null && $location_id !== '' ? (int) $location_id : null,
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $clinic_id !== null && $clinic_id !== '' ? (int) $clinic_id : null
+            $location_id !== null && $location_id !== '' ? (int) $location_id : null
         ));
     }
 
@@ -261,7 +254,6 @@ final class BookingController extends RestBase
         $slotId = $request->get_param('slot_id');
         $patientId = $request->get_param('patient_id');
         $location_id = $request->get_param( 'location_id' );
-        $clinic_id = $request->get_param( 'clinic_id' );
         return $this->wrap(fn () => $this->booking->hold(
             (int) $user->ID,
             (int) $request->get_param('clinician_id'),
@@ -270,9 +262,7 @@ final class BookingController extends RestBase
             $slotId !== null && $slotId !== '' ? (int) $slotId : null,
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
             $patientId !== null && $patientId !== '' ? (int) $patientId : null,
-            $location_id !== null && $location_id !== '' ? (int) $location_id : null,
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $clinic_id !== null && $clinic_id !== '' ? (int) $clinic_id : null
+            $location_id !== null && $location_id !== '' ? (int) $location_id : null
         ));
     }
 

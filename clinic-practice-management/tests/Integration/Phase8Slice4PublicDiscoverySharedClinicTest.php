@@ -109,6 +109,7 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         // Fixture consent is removed again: an eligible but NON-consenting
         // Clinic must never appear, even though every lifecycle gate passes.
         $this->deleteSetting($this->clinicA, 'public.listing_opt_in');
+        $this->deleteSetting($this->clinicB, 'public.listing_opt_in');
         Settings::flushCache();
 
         $html = $this->render('all');
@@ -245,7 +246,8 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
             (int) preg_match_all('#class="cpms-public-booking(?: [^"]*)?"#', $html),
             'Both shortcode instances must render their own root.'
         );
-        preg_match_all('/id="(cpms-public-booking-[^"]+)"/', $html, $matches);
+        // Root ids only: child widgets also carry ids with the same prefix.
+        preg_match_all('#<div class="cpms-public-booking[^"]*"[^>]*id="(cpms-public-booking-[^"]+)"#', $html, $matches);
         $ids = $matches[1] ?? [];
         self::assertCount(2, $ids, 'Each root must carry its own unique id.');
         self::assertSame($ids, array_values(array_unique($ids)), 'Two roots must never share a DOM id.');
@@ -330,7 +332,6 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
             'slot_date' => $this->sharedSlotB['date'],
             'slot_time' => $this->sharedSlotB['time'],
             'location_id' => $this->locationB,
-            'clinic_id' => $this->clinicB,
         ]);
 
         self::assertSame(200, $response->get_status(), 'A4 for a participating Clinic must succeed.');
@@ -341,13 +342,13 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
 
     public function testQuoteWithSlotFromAnotherClinicFailsClosed(): void
     {
+        // clinicianB has no participation in Clinic A, and the slot belongs to A.
         $response = $this->post(self::NS . '/booking/quote', [
-            'clinician_id' => $this->sharedClinician,
+            'clinician_id' => $this->clinicianB,
             'slot_id' => $this->sharedSlotA['slot_id'],
             'slot_date' => $this->sharedSlotA['date'],
             'slot_time' => $this->sharedSlotA['time'],
             'location_id' => $this->locationA,
-            'clinic_id' => $this->clinicB,
         ]);
 
         $this->assertClinicError(
@@ -358,15 +359,16 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         );
     }
 
-    public function testOtpRequestBindsChallengeToSelectedSharedClinic(): void
+    public function testOtpRequestBindsChallengeToPersistedSlotClinicForSharedClinician(): void
     {
+        // A shared clinician's Clinic B slot binds the challenge to Clinic B with
+        // NO client Clinic value at all: the persisted slot is the authority.
         $response = $this->post(self::NS . '/otp/request', [
             'mobile' => '09121234001',
             'clinician_id' => $this->sharedClinician,
             'slot_id' => $this->sharedSlotB['slot_id'],
             'slot_date' => $this->sharedSlotB['date'],
             'slot_time' => $this->sharedSlotB['time'],
-            'clinic_id' => $this->clinicB,
         ]);
 
         self::assertSame(200, $response->get_status(), 'A2 must accept a selection in the participating Clinic.');
@@ -377,32 +379,32 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         );
     }
 
-    public function testOtpRequestWithForgedClinicTupleCreatesNoChallenge(): void
+    public function testOtpRequestWithSlotOfAnotherClinicianCreatesNoChallenge(): void
     {
         $before = $this->challengeCount('09121234002');
+        // The slot belongs to the shared clinician's Clinic B row, but the
+        // request names the OTHER clinician: the pair must fail closed.
         $response = $this->post(self::NS . '/otp/request', [
             'mobile' => '09121234002',
-            'clinician_id' => $this->sharedClinician,
-            // Slot belongs to Clinic B, selector claims Clinic A.
+            'clinician_id' => $this->clinicianB,
             'slot_id' => $this->sharedSlotB['slot_id'],
             'slot_date' => $this->sharedSlotB['date'],
             'slot_time' => $this->sharedSlotB['time'],
-            'clinic_id' => $this->clinicA,
         ]);
 
-        $this->assertClinicError($response, 'CLINIC_NOT_FOUND', 404, 'A slot outside the resolved Clinic must fail closed.');
+        $this->assertClinicError($response, 'CLINIC_NOT_FOUND', 404, 'A slot of another clinician must fail closed.');
         self::assertSame($before, $this->challengeCount('09121234002'), 'A forged A2 selection must create no challenge.');
     }
 
-    public function testHoldInSelectedSharedClinicPersistsSelectedClinic(): void
+    public function testHoldForSharedClinicianPersistsTheSlotClinic(): void
     {
+        // No client Clinic value: the PERSISTED slot must decide Clinic B.
         $response = $this->post(self::NS . '/booking/hold', [
             'clinician_id' => $this->sharedClinician,
             'slot_id' => $this->sharedSlotB['slot_id'],
             'slot_date' => $this->sharedSlotB['date'],
             'slot_time' => $this->sharedSlotB['time'],
             'location_id' => $this->locationB,
-            'clinic_id' => $this->clinicB,
         ], $this->patientUserId, true);
 
         self::assertSame(200, $response->get_status(), 'B1 must hold a slot in the participating Clinic.');
@@ -415,19 +417,37 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         );
     }
 
-    public function testHoldWithForgedClinicIsRefusedWithoutCapacityEffect(): void
+    public function testHoldWithSlotOfAnotherClinicianIsRefusedWithoutCapacityEffect(): void
     {
         $before = $this->heldCount($this->sharedSlotB['slot_id']);
+        $response = $this->post(self::NS . '/booking/hold', [
+            'clinician_id' => $this->clinicianB,
+            'slot_id' => $this->sharedSlotB['slot_id'],
+            'slot_date' => $this->sharedSlotB['date'],
+            'slot_time' => $this->sharedSlotB['time'],
+            'clinic_id' => $this->clinicA, // hostile claim, never authority
+        ], $this->patientUserId, true);
+
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED', 422, 'A slot of another clinician must fail closed on B1.');
+        self::assertSame($before, $this->heldCount($this->sharedSlotB['slot_id']), 'A refused hold must not consume capacity.');
+    }
+
+    public function testHoldIgnoresHostileClinicClaimLikeThePinnedSlice2Contract(): void
+    {
+        // Pinned Phase 8 Slice 2 (T13): a raw clinic_id body claim has no
+        // authority — the persisted slot's Clinic wins.
         $response = $this->post(self::NS . '/booking/hold', [
             'clinician_id' => $this->sharedClinician,
             'slot_id' => $this->sharedSlotB['slot_id'],
             'slot_date' => $this->sharedSlotB['date'],
             'slot_time' => $this->sharedSlotB['time'],
+            'location_id' => $this->locationB,
             'clinic_id' => $this->clinicA,
         ], $this->patientUserId, true);
 
-        $this->assertClinicError($response, 'CLINIC_NOT_FOUND', 404, 'A forged Clinic selector must fail closed on B1.');
-        self::assertSame($before, $this->heldCount($this->sharedSlotB['slot_id']), 'A refused hold must not consume capacity.');
+        self::assertSame(200, $response->get_status(), 'A hostile clinic_id claim must not block a legitimate hold.');
+        $token = (string) ($this->data($response)['hold_token'] ?? '');
+        self::assertSame($this->clinicB, $this->holdClinic($token), 'The hold must follow the persisted slot Clinic.');
     }
 
     /**
@@ -435,11 +455,31 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
      * above are the source of truth — this asserts the interim gate explicitly so
      * flipping it is a deliberate, reviewable change.
      */
-    public function testSharedClinicianPublicListingGateIsClosed(): void
+    public function testSharedClinicianIsListedOnlyInClinicsWithActiveParticipation(): void
     {
-        self::assertFalse(
-            \ClinicCore\Application\Clinic\PublicClinicDirectory::PUBLIC_SHARED_CLINICIAN_LISTING,
-            'Shared-clinician public listing must stay closed unless the PR explicitly enables it.'
+        $listing = (new \ClinicCore\Application\Clinic\PublicClinicDirectory())->listed_clinics();
+
+        $clinics = [];
+        foreach ($listing['clinics'] as $clinic) {
+            $ids = array_map(static fn (array $c): int => (int) $c['id'], $clinic['clinicians']);
+            $clinics[(int) $clinic['id']] = $ids;
+        }
+
+        self::assertArrayHasKey($this->clinicA, $clinics, 'Home Clinic of the shared clinician must list them.');
+        self::assertContains(
+            $this->sharedClinician,
+            $clinics[$this->clinicA],
+            'The clinician is listed in their home Clinic.'
+        );
+        self::assertContains(
+            $this->sharedClinician,
+            $clinics[$this->clinicB],
+            'The clinician is listed in the Clinic where participation is ACTIVE.'
+        );
+        self::assertNotContains(
+            $this->sharedClinician,
+            $clinics[$this->clinicNoLocation] ?? [],
+            'A Clinic without an active Location must never list the clinician.'
         );
     }
 
@@ -597,7 +637,10 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         $this->sharedSlotB = $this->insertSlot($this->clinicB, $this->locationB, $this->sharedClinician, $future, '11:00:00', $now);
 
         // Consent + permissive OTP policy for the two clinics under test.
+        // Clinic B is consented so the shared-clinician participation case is
+        // observable in the directory; exclusion tests remove consent again.
         $this->setConsent($this->clinicA);
+        $this->setConsent($this->clinicB);
         foreach ([$this->clinicA, $this->clinicB] as $clinicId) {
             $this->setSetting($clinicId, 'otp.cooldown_sec', 0);
             $this->setSetting($clinicId, 'otp.daily_max', 50);

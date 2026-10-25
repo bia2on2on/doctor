@@ -404,10 +404,15 @@ final class BookingService
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
-    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null, ?int $clinicId = null): array
+    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
     {
-        // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
-        $clinicId = $this->resolve_booking_clinic($clinicianId, $clinicId);
+        // Phase 8 Slice 4 — the PERSISTED slot decides the Clinic when an exact
+        // slot id is supplied (shared-clinician support). No client-supplied
+        // Clinic value participates in this decision.
+        $clinicId = $this->requireClinician($clinicianId);
+        if ($slotId !== null && $slotId > 0) {
+            $clinicId = $this->clinic_for_persisted_slot($clinicId, $clinicianId, $slotId);
+        }
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
         // never reports bookable capacity, so the public flow cannot advance to
@@ -466,7 +471,7 @@ final class BookingService
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null, ?int $clinicId = null): array
+    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
@@ -474,7 +479,7 @@ final class BookingService
         // contract and must not change. Read them through compact() string keys
         // so the body works with snake_case locals only. Phase 8 Slice 4 adds
         // the optional Clinic selector as the final parameter (BC-safe).
-        $hold_args    = compact( 'wpUserId', 'clinicianId', 'slotDate', 'slotTime', 'slotId', 'patientId', 'locationId', 'clinicId' );
+        $hold_args    = compact( 'wpUserId', 'clinicianId', 'slotDate', 'slotTime', 'slotId', 'patientId', 'locationId' );
         $wp_user_id   = (int) $hold_args['wpUserId'];
         $clinician_id = (int) $hold_args['clinicianId'];
         $slot_date    = (string) $hold_args['slotDate'];
@@ -488,7 +493,14 @@ final class BookingService
             throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
         }
 
-        $clinic_id = $this->resolve_booking_clinic( $clinician_id, null === $hold_args['clinicId'] ? null : (int) $hold_args['clinicId'] );
+        // Phase 8 Slice 4 — the PERSISTED slot is the Clinic authority. A raw
+        // clinic_id claim in the request body is NOT read here at all (the
+        // pinned Phase 8 Slice 2 contract: the slot->Clinic relationship governs
+        // and hostile client claims are ignored).
+        $clinic_id = $this->requireClinician( $clinician_id );
+        if ( $slot_id !== null && $slot_id > 0 ) {
+            $clinic_id = $this->clinic_for_persisted_slot( $clinic_id, $clinician_id, $slot_id );
+        }
         if ( ! $this->clinic_organization_is_active( $clinic_id ) ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
         }
@@ -2430,6 +2442,44 @@ final class BookingService
      * data: every downstream lookup (slot, Location, settings, hold) is scoped
      * by this value, and the persisted slot must belong to it.
      */
+    /**
+     * Phase 8 Slice 4 — Clinic of a PERSISTED slot for this clinician.
+     *
+     * Used by the slot-identity booking paths (A4 quote, B1 hold). The slot row
+     * is the authority: a clinician may legitimately work in a Clinic other than
+     * their home Clinic only when an ACTIVE durable participation exists there.
+     * Every refusal is the same non-enumerating 404 envelope as a missing slot,
+     * except the pre-existing "slot belongs to another clinician" 422 which is
+     * kept byte-identical (its message and code are pinned by earlier phases).
+     *
+     * @param int $home_clinic_id Already-resolved home Clinic of an ACTIVE clinician.
+     */
+    private function clinic_for_persisted_slot( int $home_clinic_id, int $clinician_id, int $slot_id ): int
+    {
+        $slot = $this->db->fetchRow(
+            'SELECT id, clinic_id, clinician_id FROM ' . $this->db->table( 'cpms_schedule_slots' ) . ' WHERE id = %d LIMIT 1',
+            [ $slot_id ]
+        );
+        if ( $slot === null ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404 );
+        }
+
+        if ( (int) $slot['clinician_id'] !== $clinician_id ) {
+            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'اسلات به پزشک دیگری تعلق دارد', 422 );
+        }
+
+        $slot_clinic_id = (int) $slot['clinic_id'];
+        if ( $slot_clinic_id === $home_clinic_id ) {
+            return $home_clinic_id;
+        }
+
+        if ( $slot_clinic_id <= 0 || ! $this->memberships->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404 );
+        }
+
+        return $slot_clinic_id;
+    }
+
     private function resolve_booking_clinic( int $clinician_id, ?int $requested_clinic_id ): int
     {
         $home_clinic_id = $this->requireClinician( $clinician_id );

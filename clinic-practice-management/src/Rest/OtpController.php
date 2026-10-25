@@ -44,12 +44,6 @@ final class OtpController extends RestBase
                     'slot_id' => ['required' => false, 'type' => 'integer'],
                     'slot_date' => ['required' => false, 'type' => 'string'],
                     'slot_time' => ['required' => false, 'type' => 'string'],
-                    // Phase 8 Slice 4 — optional Clinic selector for the
-                    // preserved selection. It is NEVER authority by itself: it
-                    // must match the persisted slot's Clinic and only shifts
-                    // the expected Clinic for a clinician who legitimately
-                    // participates in more than one Clinic.
-                    'clinic_id' => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -207,35 +201,29 @@ final class OtpController extends RestBase
         }
         $clinicId = (int) $clinician['clinic_id'];
 
-        // Phase 8 Slice 4 — the preserved selector may name ANOTHER Clinic, but
-        // only when this clinician holds an ACTIVE durable participation there.
-        // Without that proof the request collapses to the same non-enumerating
-        // 404 as an unknown clinician (never a silent switch to the home Clinic,
-        // which would bind the challenge to the wrong tenant).
-        $requested_clinic_id = $request->get_param('clinic_id');
-        if (self::hasValue($requested_clinic_id)) {
-            $requested_clinic_id = (int) $requested_clinic_id;
-            if ($requested_clinic_id <= 0) {
-                throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک انتخابی یافت نشد', 404);
-            }
-            if ($requested_clinic_id !== $clinicId) {
-                $participates = (new MembershipRepository(App::db()))
-                    ->clinician_participates_in($clinicianId, $requested_clinic_id);
-                if (!$participates) {
-                    throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک انتخابی یافت نشد', 404);
-                }
-                $clinicId = $requested_clinic_id;
-            }
-        }
-
-        // ۳) slot باید داخل همان Clinic persisted باشد (و همان پزشک).
+        // Phase 8 Slice 4 — the PERSISTED slot owns the Clinic. A clinician who
+        // legitimately participates in more than one Clinic therefore binds the
+        // challenge to the slot's Clinic, while any client-supplied clinic_id is
+        // ignored entirely (never authority, never a selector).
         $slot = App::db()->fetchRow(
-            'SELECT clinician_id, slot_date, slot_time FROM ' . App::db()->table('cpms_schedule_slots') .
-            ' WHERE id = %d AND clinic_id = %d AND clinician_id = %d LIMIT 1',
-            [$slotId, $clinicId, $clinicianId]
+            'SELECT clinic_id, clinician_id, slot_date, slot_time FROM ' . App::db()->table('cpms_schedule_slots') .
+            ' WHERE id = %d AND clinician_id = %d LIMIT 1',
+            [$slotId, $clinicianId]
         );
         if ($slot === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+        }
+        $slot_clinic_id = (int) $slot['clinic_id'];
+        if ($slot_clinic_id <= 0) {
+            throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+        }
+        if ($slot_clinic_id !== $clinicId) {
+            // A slot persisted in ANOTHER Clinic is only usable when the
+            // clinician holds an ACTIVE durable participation there.
+            if (!(new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $slot_clinic_id)) {
+                throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+            }
+            $clinicId = $slot_clinic_id;
         }
 
         // ۴) اثباتِ رابطهٔ slot/clinician/date/time (نرمال‌سازی H:i ↔ H:i:s —
