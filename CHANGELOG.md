@@ -4,6 +4,11 @@
 
 ## [Unreleased] — CPMS Classic admin UX & operations hardening (2026-10-26, Draft)
 
+### Changed (remediation pass 5)
+- **CI `WPCS (changed code)` is reproducible again.** The step resolved PHP_CodeSniffer freshly on every run and silently moved to the 4.x major; identical diffs went from clean to 168 findings without a code change. `phpcsstandards/php_codesniffer:^3.13` is now pinned next to `wp-coding-standards/wpcs:^3.1` (major pinned, patch free). No sniff was disabled, no path excluded and the added-line filter is unchanged — this restores the reviewed standard rather than relaxing it. Evidence: `docs/drift-register.md` §۸-۱-۲.
+- **`App::system_health_service()`** — the per-Clinic health accessor added in this pass is snake_case per the WordPress standard, with every call site updated. Its previous name was published only on this branch.
+- **Restored two main contracts this pass had broken:** the recurring `cpms_jobs_tick` minute event is registered from `App::boot()` again (the write stays conditional on the event being absent, and the throttled `admin_init` observability path is unchanged), and `cpms-organization-managers`/`cpms-organization-manager-bootstrap` are out of the `CpmsAssets` allowlist again. See `docs/drift-register.md` §۱۱.
+
 ### Fixed (remediation pass 2)
 - **D — one database-engine gate instead of two.** `src/Infrastructure/Db/DatabaseCompatibilityGate.php` is now the single authority for the accepted server set (`MySQL 8.x`, `MariaDB 10.11.x`, `MariaDB 11.4.13`) and for engine detection from `VERSION()`/`@@version_comment` evidence. Migration `0027` and `SystemHealthService` both delegate to it, so the health verdict and the fail-closed activation gate can no longer disagree (a duplicated regular expression was removed from the migration). The accepted set is unchanged: no version was added or widened.
 - **D — health never reports an unverified MariaDB as merely "warning".** A parseable-but-unaccepted version is `FAIL` (`mariadb:unverified`), unreadable evidence is `FAIL` (`mariadb:unknown_version`), and the earlier MariaDB exemption in host classification was removed — unknown evidence now lands in `issues` and yields `HOST_UNSUPPORTED`. Rows keep their key/label/status/detail shape and `group_checks()` maps them 1:1 (a failing row can no longer be rendered as "optional configuration").

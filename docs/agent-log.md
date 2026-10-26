@@ -2338,8 +2338,9 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   `PrivateStorageInitializationTest` (fresh install, idempotency with existing clinical bytes preserved,
   inside-webroot rejection, symlink rejection, unwritable parent, failure not cached, installation-level
   without scope, required-row-not-optional), `CronScheduleRepairTest` (schedule/present/unsupported, the
-  throttle only on good outcomes, no repair on public requests, and a source-level contract that `boot()`
-  no longer inspects cron per request), and the storage/MariaDB render and `guide()` assertions in
+  throttle only on good outcomes, no repair on public requests, and a source-level contract that the
+  recurring tick is registered through exactly one path and that `boot()` never calls
+  `wp_schedule_event()` directly), and the storage/MariaDB render and `guide()` assertions in
   `SystemAdminUxTest` (including that the handler is registered only as `admin_post_`, and that a missing
   or capability-less request is rejected by `wp_die` with no row created).
 - **G re-verified:** `/clinic/v1/health` was not touched in this pass; its public key set remains exactly
@@ -2354,3 +2355,31 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
 - **Deliberately not done:** no schema migration, no dependency, no change to the accepted database
   versions, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no public-path fallback, and no
   merge or release (PR #275 stays Draft).
+
+### Pass 5 — all required checks green on the branch head
+
+- **The gate that kept failing was a toolchain, not a style, problem.** The `WPCS (changed code)` step
+  resolved PHP_CodeSniffer freshly on every run. The same baseline (`2263ed67…`), the same 170-file scope
+  and the same 55,570 added lines produced no finding at 12:26Z and 168 findings at 13:41Z; the sniff
+  labels in the findings are 4.x-only. The step now pins `phpcsstandards/php_codesniffer:^3.13` next to
+  `wp-coding-standards/wpcs:^3.1` (major pinned, patch free, no sniff disabled, no path excluded, the
+  added-line filter untouched, fail-closed preserved). Recorded as drift-register §۸-۱-۲; the 4.x
+  migration is its own future PR.
+- **Counts after the pin:** 168 → 24 (pin applied) → 1 (own-code style) → 0. The single remaining finding
+  in the middle step was a pre-existing main line whose brace moved into the diff, so it was fixed rather
+  than excluded, and the accessor it belongs to was renamed to `App::system_health_service()` with every
+  call site updated (its body is branch-authored, so the declaration line is an added line).
+- **Two main contracts were broken and restored, not argued with:** the recurring minute tick is back in
+  `boot()` and the two organization screens are back out of the `CpmsAssets` allowlist. Both are in
+  drift-register §۱۱ with the exact failing assertion, plus the tests that now pin the surviving
+  guarantee.
+- **Exact-head evidence:** PR #275 head `44d96cf` — 33/33 checks pass, including `WPCS (changed code)`,
+  `Unit Tests (PHP 8.1–8.5)`, `Integration (WP 7.1 + MySQL 8)`, `Static Analysis (PHPStan)`,
+  `Real WP Acceptance`, `First-practice browser (mariadb|mysql)`, `Responsive smoke (Chromium ×4)`,
+  `Staging Gate (fresh install → restore drill)`, `Upgrade path`, `Closure — PHP 8.1/8.3/8.4` and
+  `Tenant Tripwire`. Local gates on the same head: tokenizer parse gate 0 failures, workflow contract
+  suite 19/19.
+- **Unchanged boundaries:** no migration, no dependency change beyond the phpcs major pin, no accepted
+  database version added or widened, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no
+  public-path fallback, `/clinic/v1/health` key set untouched, PR #275 stays **Draft** — merging is the
+  owner's call.
