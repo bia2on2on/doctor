@@ -233,7 +233,7 @@ final class OtpController extends RestBase
             || (string) $slot['slot_date'] !== $slot_date
             || ! $time_matches ) {
             $norm_requested = substr( $slot_date . ' ' . $slot_time, 0, 19 );
-            $norm_slot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
+            $norm_slot      = (string) $slot['slot_date'] . ' ' . substr( (string) $slot['slot_time'], 0, 8 );
             if ( (int) $slot['clinician_id'] !== $clinician_id
                 || substr( $norm_requested, 0, 16 ) !== substr( $norm_slot, 0, 16 ) ) {
                 throw BookingException::of(
