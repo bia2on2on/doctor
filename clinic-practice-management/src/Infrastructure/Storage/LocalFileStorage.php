@@ -91,7 +91,7 @@ final class LocalFileStorage
      */
     public function store(string $content, int $clinicId, string $extension): string
     {
-        $this->ensureGuards();
+        $this->ensure_ready();
 
         $storedName = bin2hex(random_bytes(16)) . '.' . $extension;
         $relative = $clinicId . '/' . substr($storedName, 0, 2) . '/' . $storedName;
@@ -211,18 +211,19 @@ final class LocalFileStorage
      *
      * @throws StorageConfigurationException
      */
-    public function ensureReady(): array
-    {
-        // Fail-Closed حتی اگر شیء بدون سازنده‌ی این کلاس ساخته شده باشد.
-        PrivateStorageLocation::assertOutsideWebRoot($this->basePath, 'ذخیره‌سازی فایل بالینی');
+    public function ensure_ready(): array {
+        $base = $this->basePath();
+
+        // Fail-Closed حتی اگر شیء بدون سازندهٔ این کلاس ساخته شده باشد.
+        PrivateStorageLocation::assertOutsideWebRoot( $base, 'ذخیره‌سازی فایل بالینی' );
 
         $created = false;
-        if (!is_dir($this->basePath)) {
-            if ( ! @mkdir( $this->basePath, 0750, true ) && ! is_dir( $this->basePath ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- failure is turned into a typed configuration error below.
+        if ( ! is_dir( $base ) ) {
+            if ( ! @mkdir( $base, 0750, true ) && ! is_dir( $base ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- failure is turned into a typed configuration error below.
                 throw new StorageConfigurationException(
                     'CLINIC_STORAGE_NOT_WRITABLE',
-                    'ساخت پوشهٔ ذخیره‌سازی بالینی ممکن نشد (والدِ پوشه برای وب‌سرور قابل‌نوشتن نیست): ' . $this->basePath,
-                    $this->basePath
+                    'ساخت پوشهٔ ذخیره‌سازی بالینی ممکن نشد (والدِ پوشه برای وب‌سرور قابل‌نوشتن نیست): ' . $base,
+                    $base
                 );
             }
             $created = true;
@@ -230,7 +231,7 @@ final class LocalFileStorage
 
         $written = [];
         foreach ( $this->guard_files() as $name => $contents ) {
-            $path = $this->basePath . '/' . $name;
+            $path = $base . '/' . $name;
             if ( is_file( $path ) ) {
                 continue;
             }
@@ -246,7 +247,7 @@ final class LocalFileStorage
 
         // تأییدِ نوشتن — «فایل ساخته شد» بدونِ خواندنِ دوباره ادعا نمی‌شود.
         foreach ( array_keys( $this->guard_files() ) as $name ) {
-            $path = $this->basePath . '/' . $name;
+            $path = $base . '/' . $name;
             if ( ! is_file( $path ) || ! is_readable( $path ) ) {
                 throw new StorageConfigurationException(
                     'CLINIC_STORAGE_GUARD_NOT_WRITTEN',
@@ -268,23 +269,17 @@ final class LocalFileStorage
      *
      * @return array<string, string>
      */
-    public function guard_files(): array
-    {
+    public function guard_files(): array {
         // Phase 1A: تکیه بر .htaccess به تنهایی کافی نیست — nginx آن را
         // نمی‌خواند. گارد IIS و یادداشت راه‌اندازی nginx هم نوشته می‌شود.
         // این‌ها جایگزین پیکربندی وب‌سرور نیستند؛ ریسک باقی‌مانده در
         // گزارش امنیتی Phase 1 ثبت شده است.
         return [
-            '.htaccess'          => self::GUARD_HTACCESS,
-            'index.php'          => "<?php\n// silence is golden\n",
-            'web.config'         => self::GUARD_WEBCONFIG,
+            '.htaccess'           => self::GUARD_HTACCESS,
+            'index.php'           => "<?php\n// silence is golden\n",
+            'web.config'          => self::GUARD_WEBCONFIG,
             'README-SECURITY.txt' => self::GUARD_README,
         ];
-    }
-
-    private function ensureGuards(): void
-    {
-        $this->ensureReady();
     }
 
     /**

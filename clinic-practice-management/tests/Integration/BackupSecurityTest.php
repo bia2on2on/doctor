@@ -84,7 +84,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
 
     public function testServerGuardsIncludeNonApacheWebServers(): void
     {
-        $this->store()->ensureGuards();
+        $this->store()->ensure_guards();
         $base = $this->store()->basePath();
 
         self::assertFileExists($base . '/.htaccess');

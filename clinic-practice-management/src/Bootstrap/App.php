@@ -638,7 +638,7 @@ final class App
         $now = time();
 
         try {
-            self::installationSettings()->setJobsLastTickAt( $now );
+            self::installationSettings()->set_jobs_last_tick_at( $now );
         } catch ( \Throwable $e ) {
             // بدون وردپرس/درایورِ Option، heartbeat سطح نصب ممکن نیست.
             unset( $e );
@@ -668,7 +668,7 @@ final class App
      */
     public static function queue_evidence(): array
     {
-        $last_tick = self::installationSettings()->getJobsLastTickAt();
+        $last_tick = self::installationSettings()->get_jobs_last_tick_at();
         $source    = 'installation';
 
         if ( $last_tick <= 0 ) {
@@ -693,9 +693,7 @@ final class App
         $failed   = 0;
         $activity = false;
         try {
-            $counts = self::db()->fetchAll(
-                'SELECT status, COUNT(*) AS c FROM ' . self::db()->table( 'cpms_jobs' ) . ' GROUP BY status'
-            );
+            $counts = self::db()->fetchAll( 'SELECT status, COUNT(*) AS c FROM ' . self::db()->table( 'cpms_jobs' ) . ' GROUP BY status' );
             foreach ( $counts as $row ) {
                 $status = (string) $row['status'];
                 $count  = (int) $row['c'];

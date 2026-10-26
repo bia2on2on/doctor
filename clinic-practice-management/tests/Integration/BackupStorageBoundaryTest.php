@@ -308,7 +308,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
 
         // نوشتن/حذف ممنوع است — مبدأ legacy هرگز ذخیره‌سازی فعال نمی‌شود
         try {
-            $source->ensureGuards();
+            $source->ensure_guards();
             self::fail('ensureGuards روی مبدأ legacy باید رد می‌شد.');
         } catch (StorageConfigurationException $e) {
             self::assertSame('CLINIC_BACKUP_STORAGE_INSIDE_WEBROOT', $e->errorCode);

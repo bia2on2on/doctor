@@ -157,10 +157,10 @@ final class CronScheduleRepairTest extends WP_UnitTestCase
         App::resetScope();
         \ClinicCore\Application\Scope\ScopeContext::clear();
 
-        $before = App::installationSettings()->getJobsLastTickAt();
+        $before = App::installationSettings()->get_jobs_last_tick_at();
         App::recordTick();
         \ClinicCore\Settings\Settings::flushCache();
-        $after = App::installationSettings()->getJobsLastTickAt();
+        $after = App::installationSettings()->get_jobs_last_tick_at();
 
         self::assertTrue( $after > 0, 'heartbeat باید ثبت شود: ' . $before );
         self::assertGreaterThanOrEqual( $before, $after );

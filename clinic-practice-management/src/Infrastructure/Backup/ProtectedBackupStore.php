@@ -112,21 +112,29 @@ final class ProtectedBackupStore
         return $this->readonly;
     }
 
-    public function ensureGuards(): void
-    {
-        $this->assertWritable('ensureGuards');
-        if (!is_dir($this->basePath)) {
-            if ( ! @mkdir( $this->basePath, 0750, true ) && ! is_dir( $this->basePath ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- Handle failure as typed backup error; no warning reaches redirect.
-                throw BackupException::of('CLINIC_BACKUP_IO', 'backup dir mkdir failed: ' . $this->basePath);
+    public function ensure_guards(): void {
+        $this->assertWritable( 'ensure_guards' );
+        $base = $this->basePath();
+        if ( ! is_dir( $base ) ) {
+            if ( ! @mkdir( $base, 0750, true ) && ! is_dir( $base ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- failure becomes a typed backup error.
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup dir mkdir failed: ' . $base );
             }
         }
         foreach ( $this->guard_files() as $name => $contents ) {
-            $path = $this->basePath . '/' . $name;
+            $path = $base . '/' . $name;
             if ( is_file( $path ) ) {
                 continue;
             }
-            if ( false === @file_put_contents( $path, $contents ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- Typed failure is checked; warnings must not leak into redirects.
+            if ( false === @file_put_contents( $path, $contents ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- typed failure is checked below.
                 throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard write failed: ' . $name );
+            }
+        }
+
+        // اثباتِ پس از نوشتن: «فایل نوشته شد» بدونِ خواندنِ دوباره ادعا نمی‌شود.
+        foreach ( array_keys( $this->guard_files() ) as $name ) {
+            $path = $base . '/' . $name;
+            if ( ! is_file( $path ) || ! is_readable( $path ) ) {
+                throw BackupException::of( 'CLINIC_BACKUP_IO', 'backup guard unreadable after write: ' . $name );
             }
         }
     }
@@ -135,17 +143,16 @@ final class ProtectedBackupStore
      * مجموعهٔ گاردهای لازم برای این ریشه.
      *
      * عمومی است تا راه‌اندازِ سطحِ نصب (`PrivateStorageInitializer`) بتواند
-     * پس از `ensureGuards()` **دقیقاً همان مجموعه** را دوباره بررسی کند؛
+     * پس از `ensure_guards()` **دقیقاً همان مجموعه** را دوباره بررسی کند؛
      * «فایل نوشته شد» بدونِ اثبات، ادعا نمی‌شود.
      *
      * @return array<string, string>
      */
-    public function guard_files(): array
-    {
+    public function guard_files(): array {
         return [
-            '.htaccess'          => self::GUARD_HTACCESS,
-            'index.php'          => "<?php\n// silence\n",
-            'web.config'         => self::GUARD_WEBCONFIG,
+            '.htaccess'           => self::GUARD_HTACCESS,
+            'index.php'           => "<?php\n// silence\n",
+            'web.config'          => self::GUARD_WEBCONFIG,
             'README-SECURITY.txt' => self::GUARD_README,
         ];
     }
@@ -165,7 +172,7 @@ final class ProtectedBackupStore
     {
         $this->assertWritable('createDir');
         $this->assertSafeId($backupId);
-        $this->ensureGuards();
+        $this->ensure_guards();
         $dir = $this->basePath . '/' . $backupId;
         if (is_dir($dir)) {
             throw BackupException::of('CLINIC_BACKUP_EXISTS', 'backup already exists: ' . $backupId);

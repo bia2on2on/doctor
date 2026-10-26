@@ -70,17 +70,17 @@ final class QueueHealthHeartbeatTest extends TestCase
     {
         $settings = new InstallationSettings();
 
-        self::assertSame( 0, $settings->getJobsLastTickAt(), 'بدونِ Option، heartbeat «هرگز» (0) است.' );
+        self::assertSame( 0, $settings->get_jobs_last_tick_at(), 'بدونِ Option، heartbeat «هرگز» (0) است.' );
     }
 
     public function testInstallationHeartbeatRoundTripsInANonAutoloadedOption(): void
     {
         $settings = $this->installation_settings();
-        $settings->setJobsLastTickAt( 1_700_000_000 );
+        $settings->set_jobs_last_tick_at( 1_700_000_000 );
 
         self::assertArrayHasKey( InstallationSettings::OPTION_JOBS_LAST_TICK_AT, $this->store );
         self::assertSame( 1_700_000_000, $this->store[ InstallationSettings::OPTION_JOBS_LAST_TICK_AT ] );
-        self::assertSame( 1_700_000_000, $settings->getJobsLastTickAt() );
+        self::assertSame( 1_700_000_000, $settings->get_jobs_last_tick_at() );
     }
 
     public function testCorruptOrNegativeHeartbeatFallsBackToNever(): void
@@ -88,13 +88,13 @@ final class QueueHealthHeartbeatTest extends TestCase
         $settings = $this->installation_settings();
 
         $this->store[ InstallationSettings::OPTION_JOBS_LAST_TICK_AT ] = 'not-a-number';
-        self::assertSame( 0, $settings->getJobsLastTickAt() );
+        self::assertSame( 0, $settings->get_jobs_last_tick_at() );
 
         $this->store[ InstallationSettings::OPTION_JOBS_LAST_TICK_AT ] = -5;
-        self::assertSame( 0, $settings->getJobsLastTickAt(), 'مقدارِ منفی نباید heartbeat معتبر تلقی شود.' );
+        self::assertSame( 0, $settings->get_jobs_last_tick_at(), 'مقدارِ منفی نباید heartbeat معتبر تلقی شود.' );
 
         $this->expectException( InvalidArgumentException::class );
-        $settings->setJobsLastTickAt( -1 );
+        $settings->set_jobs_last_tick_at( -1 );
     }
 
     // ============ ۲. تشخیصِ صف ============

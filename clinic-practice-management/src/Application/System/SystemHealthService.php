@@ -240,12 +240,12 @@ final class SystemHealthService
         $add( 'cron.jobs', 'Cron/Queue', (string) $cron['status'], (string) $cron['label'] . ' | ' . (string) $cron['detail'] );
 
         // ---------- Storage (spec §22/§23) ----------
-        $files_storage = $this->storageStatus( $this->filesBase() );
+        $files_storage = $this->storage_status( $this->filesBase() );
         $add( 'storage.files', 'Storage فایل‌های پزشکی', $files_storage['status'], $files_storage['detail'] );
         // OD-9 — ریشهٔ بکاپ داخل DocumentRoot دیگر WARNING نیست: یک dump کامل
         // پایگاه داده داخل webroot یک پیکربندی **رد‌شده** است (نوشتن Fail-Closed
         // می‌شود) و سلامت سیستم باید صادقانه FAIL گزارش دهد.
-        $backups_storage = $this->storageStatus( $this->backups->store()->basePath() );
+        $backups_storage = $this->storage_status( $this->backups->store()->basePath() );
         $add( 'storage.backups', 'Storage بکاپ', $backups_storage['status'], $backups_storage['detail'] );
 
         // ---------- License (ADR-0023) ----------
@@ -453,6 +453,7 @@ final class SystemHealthService
         $parsed = self::database_version_number( $raw, $engine );
         $label  = self::database_version_label( $engine );
 
+
         if ( self::DB_ENGINE_UNKNOWN === $engine ) {
             // مدرکِ ناخوانا/ناتجزیه‌پذیر: هیچ قضاوتی روی کفِ MySQL انجام نمی‌شود
             // (fail-closed). استخراجِ یک عددِ تصادفی از رشتهٔ نامعتبر، نسخهٔ
@@ -509,14 +510,15 @@ final class SystemHealthService
      * @return array{key:string,label:string,status:string,detail:string}
      */
     private static function mariadb_version_row( string $raw, string $parsed ): array {
-        $label       = self::database_version_label( self::DB_ENGINE_MARIADB );
-        $boundary    = self::MARIADB_COMPAT_BOUNDARY;
-        $tested      = self::MARIADB_TESTED_VERSION;
-        $patch       = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
+        $label    = self::database_version_label( self::DB_ENGINE_MARIADB );
+        $boundary = self::MARIADB_COMPAT_BOUNDARY;
+        $tested   = self::MARIADB_TESTED_VERSION;
+        $patch    = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
+
         // تصمیمِ PASS/FAIL از **همان دروازه‌ای** می‌آید که مهاجرت استفاده می‌کند؛
         // مقایسهٔ نسخه‌ای در این کلاس دیگر مرجع نیست (فقط برای متنِ توضیح).
         $gate_accepts = DatabaseCompatibilityGate::accepts_mariadb_version( $raw );
-        $engine_note = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
+        $engine_note  = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
 
         if ( version_compare( $parsed, $boundary, '<' ) ) {
             return [
@@ -780,7 +782,7 @@ final class SystemHealthService
             // را (اگر متنش MariaDB را ذکر می‌کرد) به «هشدار» می‌برد؛ یعنی همان
             // ادعای «مدرکِ نامشخص = قابل‌قبول» که در `classifyHost()` هم حذف شد.
             // نکتهٔ مهم: `NOT_CONFIGURED` هرگز برای ریشهٔ **الزامیِ** ذخیره‌سازی
-            // صادر نمی‌شود (`storageStatus()` نبودِ پوشه را FAIL می‌دهد) و برای
+            // صادر نمی‌شود (`storage_status()` نبودِ پوشه را FAIL می‌دهد) و برای
             // ردیف‌های واقعاً اختیاری (مثل سرور مجوز یا بکاپِ غیرفعال) می‌ماند.
             $group = match ( $status ) {
                 self::PASS           => 'healthy',
@@ -962,8 +964,7 @@ final class SystemHealthService
      *
      * @return array{status:string,detail:string}
      */
-    private function storageStatus(string $path): array
-    {
+    private function storage_status( string $path ): array {
         if ( $path === '' ) {
             return [
                 'status' => self::FAIL,
@@ -978,7 +979,7 @@ final class SystemHealthService
                     . ' اگر میزبان اجازهٔ ساخت پوشه را نداد، والدِ پوشه را برای وب‌سرور قابل‌نوشتن کنید',
             ];
         }
-        if ( ! is_writable( $path ) ) {
+        if ( ! wp_is_writable( $path ) ) {
             return [
                 'status' => self::FAIL,
                 'detail' => 'ریشهٔ ذخیره‌سازی برای وب‌سرور قابل‌نوشتن نیست: ' . $path,

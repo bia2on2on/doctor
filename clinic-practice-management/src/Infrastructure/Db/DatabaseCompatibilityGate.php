@@ -23,8 +23,8 @@ namespace ClinicCore\Infrastructure\Db;
  * هم‌خوانیِ آن‌ها ساختاری است، نه ادعایی. مجموعهٔ مجاز عمداً گسترده نشده است:
  * هیچ نسخهٔ آزموده‌نشده‌ای برای «سبزکردنِ هشدار» پذیرفته نمی‌شود.
  */
-final class DatabaseCompatibilityGate
-{
+final class DatabaseCompatibilityGate {
+
     /**
      * نسخه‌های MariaDB که واقعاً پشتیبانی می‌شوند:
      * سریِ `10.11.x` (مرزِ مستند و آزمودهٔ هفتگی) و `11.4.13` (نسخهٔ آزمودهٔ CI).
@@ -44,15 +44,14 @@ final class DatabaseCompatibilityGate
      * ترتیب مهم است: MariaDB اول سنجیده می‌شود، چون رشتهٔ نسخهٔ آن می‌تواند
      * شبیه به MySQL باشد.
      */
-    public static function engine( string $version, string $comment ): ?string
-    {
+    public static function engine( string $version, string $comment ): ?string {
         $version       = self::normalize( $version );
-        $is_maria_hint = stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false;
+        $is_maria_hint = false !== stripos( $version, 'MariaDB' ) || false !== stripos( $comment, 'MariaDB' );
         if ( $is_maria_hint && 1 === preg_match( self::MARIADB_VERIFIED_PATTERN, $version ) ) {
             return self::ENGINE_MARIADB;
         }
 
-        if ( stripos( $comment, 'MySQL' ) !== false && 1 === preg_match( self::MYSQL_VERIFIED_PATTERN, $version ) ) {
+        if ( false !== stripos( $comment, 'MySQL' ) && 1 === preg_match( self::MYSQL_VERIFIED_PATTERN, $version ) ) {
             return self::ENGINE_MYSQL;
         }
 
@@ -62,22 +61,20 @@ final class DatabaseCompatibilityGate
     /**
      * آیا این رشتهٔ نسخهٔ MariaDB در مجموعهٔ **آزموده/مجاز** است؟
      */
-    public static function accepts_mariadb_version( string $version ): bool
-    {
+    public static function accepts_mariadb_version( string $version ): bool {
         return 1 === preg_match( self::MARIADB_VERIFIED_PATTERN, self::normalize( $version ) );
     }
 
     /**
      * حذفِ پیشوندِ سازگاریِ کلاینت.
      *
-     * MaryDB (و libmysqlclientِ قدیمی) گاهی `5.5.5-` را پیش از نسخهٔ واقعیِ سرور
-     * برمی‌گرداند؛ بدونِ این نرمال‌سازی، یک سرورِ سالمِ `10.11.2` به شکلِ
+     * MariaDB (و libmysqlclientِ قدیمی) گاهی `5.5.5-` را پیش از نسخهٔ واقعیِ
+     * سرور برمی‌گرداند؛ بدونِ این نرمال‌سازی، یک سرورِ سالمِ `10.11.2` به شکلِ
      * `5.5.5-10.11.2-MariaDB-log` گزارش می‌شود و دروازه آن را (به‌اشتباه)
      * fail-closed رد می‌کند — یعنی فعال‌سازی روی سرورِ مجاز شکست می‌خورد، در
      * حالی که گزارشِ سلامت همان نسخه را درست تفسیر می‌کرد.
      */
-    private static function normalize( string $version ): string
-    {
+    private static function normalize( string $version ): string {
         $version = trim( $version );
 
         if ( 1 === preg_match( '/\A5\.5\.5-(.+)\z/', $version, $matches ) ) {

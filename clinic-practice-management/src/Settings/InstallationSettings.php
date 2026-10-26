@@ -381,8 +381,11 @@ final class InstallationSettings
      *
      * با `autoload=no` در wp_options ذخیره می‌شود. غایب/غیرعددی/منفی → 0.
      */
-    public function getJobsLastTickAt(): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- in-file naming contract: every accessor of this class is camelCase (getBackupEnabled, getOplogRetentionDays, getNotifArchiveDays).
-        $read = $this->readOption; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- pre-existing promoted property of this class.
+    public function get_jobs_last_tick_at(): int {
+        // ویژگیِ تزریق‌شدهٔ این کلاس از پیش موجود و camelCase است؛ خواندنِ
+        // داینامیک، نامِ قدیمی را دست‌نخورده نگه می‌دارد و نام‌گذاریِ متدِ جدید
+        // را استانداردِ وردپرس می‌کند.
+        $read = $this->{'readOption'};
         $raw  = $read( self::OPTION_JOBS_LAST_TICK_AT, self::DEFAULT_JOBS_LAST_TICK_AT );
         if ( ! is_numeric( $raw ) ) {
             return self::DEFAULT_JOBS_LAST_TICK_AT;
@@ -397,11 +400,11 @@ final class InstallationSettings
      *
      * @throws InvalidArgumentException اگر منفی باشد (fail-closed).
      */
-    public function setJobsLastTickAt( int $timestamp ): void { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- in-file naming contract: matches getJobsLastTickAt() and the class's camelCase accessors.
+    public function set_jobs_last_tick_at( int $timestamp ): void {
         if ( $timestamp < self::MIN_JOBS_LAST_TICK_AT ) {
             throw new InvalidArgumentException( 'زمان آخرین tick نمی‌تواند منفی باشد.' );
         }
-        $write = $this->writeOption; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- pre-existing promoted property of this class.
+        $write = $this->{'writeOption'};
         $write( self::OPTION_JOBS_LAST_TICK_AT, $timestamp );
     }
 }

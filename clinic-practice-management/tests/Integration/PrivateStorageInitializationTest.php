@@ -278,7 +278,7 @@ final class PrivateStorageInitializationTest extends WP_UnitTestCase
         $inside = rtrim( (string) ABSPATH, '/' ) . '/wp-content/cpms-nope-' . bin2hex( random_bytes( 3 ) );
 
         $this->expectException( StorageConfigurationException::class );
-        ( new LocalFileStorage( $inside ) )->ensureReady();
+        ( new LocalFileStorage( $inside ) )->ensure_ready();
     }
 
     private function insertRow( string $table, array $data ): int

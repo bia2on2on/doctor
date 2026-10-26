@@ -282,7 +282,7 @@ final class MedicalFileAuditAtomicityTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
 
     /**
-     * The exact guard set LocalFileStorage::ensureGuards() writes once, on the
+     * The exact guard set LocalFileStorage::ensure_guards() writes once, on the
      * first store() against a fresh storage root. Kept in sync with the
      * production constants intentionally: a change to server hardening must be
      * a deliberate, reviewed change to this contract as well.

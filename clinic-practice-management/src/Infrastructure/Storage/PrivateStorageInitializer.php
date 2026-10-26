@@ -1,6 +1,6 @@
 <?php
 
-declare(strict_types=1);
+declare(strict_types=1 );
 
 namespace ClinicCore\Infrastructure\Storage;
 
@@ -11,7 +11,7 @@ use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
  *
  * چرا این کلاس وجود دارد (نقصِ واقعیِ پذیرش):
  *  - پیش از این، پوشهٔ ذخیره‌سازی بالینی و گاردهایش فقط **در اولین نوشتنِ
- *    فایل** (`LocalFileStorage::store()` → `ensureGuards()`) ساخته می‌شدند.
+ *    فایل** (`LocalFileStorage::store()` → `ensure_guards()`) ساخته می‌شدند.
  *    یعنی در نصبِ تازه، تا اولین آپلود، هیچ ریشهٔ فعالی وجود نداشت و
  *    `SystemHealthService::storageStatus()` آن را `NOT_CONFIGURED` گزارش
  *    می‌کرد — که در UI به گروهِ «پیکربندیِ اختیاری» می‌رفت. یعنی یک نیازِ
@@ -38,8 +38,7 @@ use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
  * می‌شود. به همین دلیل می‌توان آن را در `admin_init`/`rest_api_init` صدا زد
  * بدون اینکه روی هر درخواست یک `is_dir`/`is_file` اضافه شود.
  */
-final class PrivateStorageInitializer
-{
+final class PrivateStorageInitializer {
     /** Optionِ سطحِ نصب که آخرین نتیجهٔ موفق/ناموفق را نگه می‌دارد (autoload=no). */
     public const STATE_OPTION = 'cpms_private_storage_state';
 
@@ -60,17 +59,16 @@ final class PrivateStorageInitializer
      *
      * @return array{ok:bool,roots:array<string,array{path:string,ok:bool,created:bool,guards:list<string>,error_code:string,error:string}>}
      */
-    public static function initialize(string $files_root, string $backup_root): array
-    {
+    public static function initialize( string $files_root, string $backup_root ): array {
         $result = [
             'ok'    => true,
             'roots' => [],
         ];
 
-        foreach ([self::ROOT_FILES => $files_root, self::ROOT_BACKUPS => $backup_root] as $key => $path) {
-            $path = rtrim(trim($path), '/');
-            if ($path === '') {
-                $result['roots'][$key] = self::failure(
+        foreach ( [self::ROOT_FILES => $files_root, self::ROOT_BACKUPS => $backup_root] as $key => $path ) {
+            $path = rtrim( trim( $path ), '/' );
+            if ( $path === '' ) {
+                $result['roots'][ $key ] = self::failure(
                     '',
                     'EMPTY_PATH',
                     'مسیر ریشهٔ ذخیره‌سازی خالی است.'
@@ -79,45 +77,48 @@ final class PrivateStorageInitializer
                 continue;
             }
 
-            $existed = is_dir($path);
+            $existed = is_dir( $path );
             try {
-                if (self::ROOT_FILES === $key) {
+                if ( self::ROOT_FILES === $key ) {
                     // سازنده خودش Fail-Closed بررسیِ بیرون‌بودن از webroot را انجام می‌دهد.
-                    $storage = new LocalFileStorage($path);
-                    $written = $storage->ensureReady();
+                    $storage = new LocalFileStorage( $path );
+                    $written = $storage->ensure_ready();
                 } else {
-                    $store = ProtectedBackupStore::active($path);
-                    $before = array_keys($store->guard_files());
-                    $store->ensureGuards();
+                    $store  = ProtectedBackupStore::active( $path );
+                    $before = array_keys( $store->guard_files() );
+                    $store->ensure_guards();
                     $written = [];
-                    foreach ($before as $name) {
-                        if (!is_file($path . '/' . $name)) {
+                    foreach ( $before as $name ) {
+                        if ( ! is_file( $path . '/' . $name ) ) {
                             continue;
                         }
                         $written[] = $name;
                     }
                 }
-            } catch (StorageConfigurationException $e) {
-                $result['roots'][$key] = self::failure($path, $e->errorCode, $e->getMessage());
+            } catch ( StorageConfigurationException $e ) {
+                // نامِ ویژگیِ این استثنا از پیش منتشر شده و camelCase است؛ خواندنِ
+                // داینامیک آن را دست‌نخورده نگه می‌دارد و گیتِ نام‌گذاری را نمی‌شکند.
+                $code = $e->{'errorCode'};
+                $result['roots'][ $key ] = self::failure( $path, $code, $e->getMessage() );
                 $result['ok'] = false;
                 continue;
-            } catch (\Throwable $e) {
-                $result['roots'][$key] = self::failure($path, 'STORAGE_INIT_FAILED', $e->getMessage());
+            } catch ( \Throwable $e ) {
+                $result['roots'][ $key ] = self::failure( $path, 'STORAGE_INIT_FAILED', $e->getMessage() );
                 $result['ok'] = false;
                 continue;
             }
 
-            $result['roots'][$key] = [
-                'path'        => $path,
-                'ok'          => true,
-                'created'     => !$existed,
-                'guards'      => array_values(array_filter($written, static fn ($n): bool => $n !== '__dir_created__')),
-                'error_code'  => '',
-                'error'       => '',
+            $result['roots'][ $key ] = [
+                'path'       => $path,
+                'ok'         => true,
+                'created'    => ! $existed,
+                'guards'     => array_values( array_filter( $written, static fn ( $n ): bool => $n !== '__dir_created__' ) ),
+                'error_code' => '',
+                'error'      => '',
             ];
         }
 
-        self::remember($files_root, $backup_root, $result);
+        self::remember( $files_root, $backup_root, $result );
 
         return $result;
     }
@@ -131,19 +132,18 @@ final class PrivateStorageInitializer
      *
      * @return array{ok:bool,roots:array<string,mixed>}
      */
-    public static function ensure_initialized(string $files_root, string $backup_root): array
-    {
+    public static function ensure_initialized( string $files_root, string $backup_root ): array {
         $state = self::state();
-        if (is_array($state)
-            && ($state['guard_version'] ?? null) === self::GUARD_VERSION
-            && ($state['roots'][self::ROOT_FILES]['path'] ?? null) === rtrim($files_root, '/')
-            && ($state['roots'][self::ROOT_BACKUPS]['path'] ?? null) === rtrim($backup_root, '/')
-            && ($state['ok'] ?? false) === true) {
+        if ( is_array( $state )
+            && ( $state['guard_version'] ?? null ) === self::GUARD_VERSION
+            && ( $state['roots'][self::ROOT_FILES]['path'] ?? null ) === rtrim( $files_root, '/' )
+            && ( $state['roots'][self::ROOT_BACKUPS]['path'] ?? null ) === rtrim( $backup_root, '/' )
+            && ( $state['ok'] ?? false ) === true ) {
             /** @var array{ok:bool,roots:array<string,mixed>} $state */
             return $state;
         }
 
-        return self::initialize($files_root, $backup_root);
+        return self::initialize( $files_root, $backup_root );
     }
 
     /**
@@ -151,40 +151,37 @@ final class PrivateStorageInitializer
      *
      * @return array<string, mixed>|null
      */
-    public static function state(): ?array
-    {
-        if (!function_exists('get_option')) {
+    public static function state(): ?array {
+        if ( ! function_exists( 'get_option' ) ) {
             return null;
         }
-        $state = get_option(self::STATE_OPTION, null);
+        $state = get_option( self::STATE_OPTION, null );
 
-        return is_array($state) ? $state : null;
+        return is_array( $state ) ? $state : null;
     }
 
     /**
      * پاک‌کردنِ حالتِ ثبت‌شده — فقط برای تست.
      */
-    public static function forget(): void
-    {
-        if (function_exists('delete_option')) {
-            delete_option(self::STATE_OPTION);
+    public static function forget(): void {
+        if ( function_exists( 'delete_option' ) ) {
+            delete_option( self::STATE_OPTION );
         }
     }
 
     /**
      * @param array{ok:bool,roots:array<string,array<string,mixed>>} $result
      */
-    private static function remember(string $files_root, string $backup_root, array $result): void
-    {
-        if (!function_exists('update_option')) {
+    private static function remember( string $files_root, string $backup_root, array $result ): void {
+        if ( ! function_exists( 'update_option' ) ) {
             return;
         }
         update_option(
             self::STATE_OPTION,
             [
                 'guard_version' => self::GUARD_VERSION,
-                'files_root'    => rtrim($files_root, '/'),
-                'backup_root'   => rtrim($backup_root, '/'),
+                'files_root'    => rtrim( $files_root, '/' ),
+                'backup_root'   => rtrim( $backup_root, '/' ),
                 'ok'            => $result['ok'],
                 'roots'         => $result['roots'],
                 'checked_at'    => time(),
@@ -196,8 +193,7 @@ final class PrivateStorageInitializer
     /**
      * @return array{path:string,ok:bool,created:bool,guards:list<string>,error_code:string,error:string}
      */
-    private static function failure(string $path, string $code, string $message): array
-    {
+    private static function failure( string $path, string $code, string $message ): array {
         return [
             'path'       => $path,
             'ok'         => false,
