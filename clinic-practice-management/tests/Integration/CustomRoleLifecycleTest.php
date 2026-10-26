@@ -1044,9 +1044,15 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
         // `read` (never `cpms_config`), so a Clinic-scoped manager still reaches it.
         \ClinicCore\Admin\CpmsAdminMenu::menu();
         CustomRoleDefinitionsPage::menu();
+        $container_capability = null;
+        foreach ( (array) $GLOBALS['menu'] as $item ) {
+            if ( is_array( $item ) && ( $item[2] ?? '' ) === \ClinicCore\Admin\CpmsAdminMenu::parent_slug() ) {
+                $container_capability = $item[1] ?? null;
+            }
+        }
         self::assertSame(
             'read',
-            $GLOBALS['menu'][0][1] ?? null,
+            $container_capability,
             'the container entry must only be gated by ordinary wp-admin read access'
         );
         self::assertSame(

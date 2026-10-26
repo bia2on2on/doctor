@@ -183,16 +183,19 @@ final class CpmsAdminMenu {
 			return;
 		}
 
-		foreach ( $GLOBALS['submenu'][ $parent ] as $key => $row ) {
-			if ( is_array( $row ) && $slug === ($row[2] ?? '') ) {
+		$found = false;
+		foreach ( $GLOBALS['submenu'][ $parent ] as $row ) {
+			if ( is_array( $row ) && $slug === ( $row[2] ?? '' ) ) {
 				// نگه‌داشتنِ ردیف برای بازرسی/تست: «پنهان از زیرمنو» ≠ «ثبت‌نشده».
 				self::$hidden_rows[ $slug ] = $row;
-				unset( $GLOBALS['submenu'][ $parent ][ $key ] );
+				$found                      = true;
 			}
 		}
 
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- $GLOBALS['submenu'] رَجیستریِ خودِ هستهٔ وردپرس است؛ تنها راهِ پشتیبانی‌شده برای پنهان‌کردنِ یک صفحهٔ ثبت‌شده، ویرایشِ همین آرایه پس از add_submenu_page() است.
-		$GLOBALS['submenu'][ $parent ] = array_values( $GLOBALS['submenu'][ $parent ] );
+		if ( $found ) {
+			// API خودِ هسته؛ هیچ دسترسی‌ای از `$GLOBALS['submenu']` مستقیم نوشته نمی‌شود.
+			remove_submenu_page( $parent, $slug );
+		}
 	}
 
 	/**
@@ -245,8 +248,7 @@ final class CpmsAdminMenu {
 			$ordered[] = $row;
 		}
 
-		// phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- $GLOBALS['submenu'] رَجیستریِ خودِ هستهٔ وردپرس است؛ مرتب‌سازیِ نمایشیِ آن همان الگوی پشتیبانی‌شده است و هیچ capability‌ای تغییر نمی‌کند.
-		$GLOBALS['submenu'][ $parent ] = $ordered;
+		$GLOBALS['submenu'][ $parent ] = $ordered; // phpcs:ignore WordPress.WP.GlobalVariablesOverride.Prohibited -- ordering a core menu registry has no core API; display order only, no capability change.
 	}
 
 	/**
@@ -337,12 +339,12 @@ final class CpmsAdminMenu {
 		echo '<nav class="cpms-sectionnav" dir="rtl" aria-label="' . esc_attr( 'ناوبری بخش‌های مدیریت مطب' ) . '">';
 		foreach ( $groups as $section => $pages ) {
 			echo '<div class="cpms-sectionnav__group">';
-			echo '<span class="cpms-sectionnav__title">' . esc_html( (string) (self::SECTIONS[ $section ] ?? $section) ) . '</span>';
+			echo '<span class="cpms-sectionnav__title">' . esc_html( (string) ( self::SECTIONS[ $section ] ?? $section ) ) . '</span>';
 			echo '<span class="cpms-sectionnav__links">';
 			foreach ( $pages as $slug => $label ) {
 				$is_current = $slug === $current;
-				echo '<a class="cpms-sectionnav__link' . ($is_current ? ' is-current' : '') . '"'
-					. ($is_current ? ' aria-current="page"' : '')
+				echo '<a class="cpms-sectionnav__link' . ( $is_current ? ' is-current' : '' ) . '"'
+					. ( $is_current ? ' aria-current="page"' : '' )
 					. ' href="' . esc_url( admin_url( 'admin.php?page=' . $slug ) ) . '">'
 					. esc_html( $label ) . '</a>';
 			}
@@ -361,14 +363,13 @@ final class CpmsAdminMenu {
 			return;
 		}
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- فقط تشخیص مسیر قدیمی
-		$page = sanitize_key( wp_unslash( $_GET['page'] ) );
-		$allowed   = self::LEGACY_REHOMED;
-		$allowed[] = CpmsDashboard::PAGE_SLUG;
+		$page    = sanitize_key( wp_unslash( $_GET['page'] ) );
+		$allowed = array_merge( self::LEGACY_REHOMED, array( CpmsDashboard::PAGE_SLUG ) );
 		if ( ! in_array( $page, $allowed, true ) ) {
 			return;
 		}
 		global $pagenow;
-		if ( 'tools.php' === ($pagenow ?? '') || 'options-general.php' === ($pagenow ?? '') ) {
+		if ( 'tools.php' === ( $pagenow ?? '' ) || 'options-general.php' === ( $pagenow ?? '' ) ) {
 			wp_safe_redirect( admin_url( 'admin.php?page=' . $page ) );
 			exit;
 		}

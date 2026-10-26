@@ -101,7 +101,7 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
             'صفحهٔ واگذاری مالی باید زیرِ والدِ read-gated ثبت شود.'
         );
         self::assertArrayHasKey(
-            'cpms-dashboard_page_' . FinanceDelegationPage::PAGE_SLUG,
+            get_plugin_page_hookname( FinanceDelegationPage::PAGE_SLUG, CpmsAdminMenu::parent_slug() ),
             $GLOBALS['_registered_pages'],
             'ثبتِ صفحه باید واقعاً رخ داده باشد (نه فقط ادعا).'
         );

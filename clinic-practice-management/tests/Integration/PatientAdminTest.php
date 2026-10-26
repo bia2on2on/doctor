@@ -73,11 +73,15 @@ final class PatientAdminTest extends WP_UnitTestCase
      */
     public function testPatientMenuRegisteredUnderUnifiedMenuWithPatientReadCap(): void
     {
-        wp_set_current_user($this->adminId);
+        // منشی هم `read` (برای ظرف) و هم `cpms_patient_read` (برای خودِ صفحه) دارد؛
+        // WordPress برای زیرمنو capability همان آیتم را می‌سنجد و در صورت نبودِ آن،
+        // هیچ ردیفی ثبت نمی‌کند — پس کاربرِ واقعیِ صفحه لازم است.
+        wp_set_current_user($this->secretaryId);
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
         $GLOBALS['_parent_pages'] = [];
         $GLOBALS['_registered_pages'] = [];
+        CpmsAdminMenu::reset_hidden_rows();
 
         CpmsAdminMenu::menu();
         PatientAdminPage::menu();
@@ -98,6 +102,12 @@ final class PatientAdminTest extends WP_UnitTestCase
         foreach ($GLOBALS['submenu'][CpmsAdminMenu::parent_slug()] ?? [] as $candidate) {
             if (( $candidate[2] ?? '' ) === PatientAdminPage::PAGE_SLUG) {
                 $row = $candidate;
+                break;
+            }
+        }
+        foreach (CpmsAdminMenu::hidden_submenu_rows() as $hidden_slug => $hidden_row) {
+            if ($hidden_slug === PatientAdminPage::PAGE_SLUG) {
+                $row = $hidden_row;
                 break;
             }
         }

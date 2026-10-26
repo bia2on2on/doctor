@@ -85,13 +85,37 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         parent::tearDown();
     }
 
-    /** ثبت همهٔ صفحات CPMS — همان مجموعه‌ای که App::boot() ثبت می‌کند. */
+    /**
+     * کاربری که **همهٔ** capabilityهای رَجیستری را دارد.
+     *
+     * WordPress برای هر زیرمنو capability همان آیتم را می‌سنجد و اگر کاربر آن را
+     * نداشته باشد هیچ ردیفی ثبت نمی‌کند (`$_wp_submenu_nopriv`). پس برای سنجشِ
+     * کاملِ ثبت‌ها، کاربرِ جامع لازم است — نه Administratorِ خالی (که عمداً
+     * `cpms_patient_read` و مانند آن را ندارد).
+     */
+    private function signInWithAllCapabilities(): int
+    {
+        $capabilities = ['read' => true];
+        foreach (CpmsAdminMenu::PAGES as $page) {
+            $capabilities[(string) $page[2]] = true;
+        }
+        $role = 'cpms_all_pages_' . substr(md5((string) wp_rand()), 0, 8);
+        add_role($role, 'CPMS all pages', $capabilities);
+        $user = (int) self::factory()->user->create(['role' => $role]);
+        wp_set_current_user($user);
+
+        return $user;
+    }
+
     private function registerEveryCpmsPage(): void
     {
+        $this->signInWithAllCapabilities();
+
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
         $GLOBALS['_parent_pages'] = [];
         $GLOBALS['_registered_pages'] = [];
+        CpmsAdminMenu::reset_hidden_rows();
 
         CpmsAdminMenu::menu();
         CpmsSetupWizard::menu();
@@ -209,7 +233,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
                 "صفحهٔ {$slug} باید زیر «مدیریت مطب» ثبت شود"
             );
             self::assertArrayHasKey(
-                'cpms-dashboard_page_' . $slug,
+                get_plugin_page_hookname( $slug, $parent ),
                 $GLOBALS['_registered_pages'],
                 "صفحهٔ {$slug} باید واقعاً ثبت شده باشد (دسترسی از URL مستقیم حفظ می‌شود)"
             );
@@ -233,7 +257,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         foreach (['cpms-handwriting', 'cpms-prescription-print', 'cpms-first-practice-setup', 'cpms-finance-delegation', 'cpms-custom-roles', 'cpms-shortcodes', 'cpms-organization-manager-bootstrap', 'cpms-organization-managers', 'cpms-facility-setup', 'cpms-clinic-management'] as $hidden) {
             self::assertNotContains($hidden, $visible, "صفحهٔ جزئی {$hidden} نباید زیرمنوی تخت بسازد");
             self::assertArrayHasKey(
-                'cpms-dashboard_page_' . $hidden,
+                get_plugin_page_hookname( $hidden, CpmsAdminMenu::parent_slug() ),
                 $GLOBALS['_registered_pages'],
                 "صفحهٔ {$hidden} باید ثبت‌شده و از URL مستقیم در دسترس بماند"
             );
@@ -252,41 +276,83 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
 
     public function testContainerCapabilityNeverSubstitutesForAChildPagesCapability(): void
     {
+        // کاربری که فقط `read` دارد (بدونِ هیچ capability اختصاصیِ CPMS).
         $role = 'cpms_container_only_' . substr(md5((string) wp_rand()), 0, 6);
         add_role($role, 'container only', ['read' => true]);
-        $user = (int) self::factory()->user->create(['role' => $role]);
-        wp_set_current_user($user);
+        wp_set_current_user((int) self::factory()->user->create(['role' => $role]));
 
         self::assertTrue((bool) current_user_can(CpmsAdminMenu::CONTAINER_CAPABILITY));
-        self::assertFalse(
-            CpmsAdminMenu::has_any_accessible_page(),
-            'داشتنِ capability ظرف به‌تنهایی نباید هیچ صفحهٔ CPMS را در دسترس کند'
-        );
 
-        foreach (['cpms-patients', 'cpms-finance', 'cpms-system', 'cpms-staff', 'cpms-sms', 'cpms-queue', 'cpms-doctor', 'cpms-roles'] as $slug) {
-            $capability = (string) CpmsAdminMenu::PAGES[$slug][2];
-            self::assertNotSame(CpmsAdminMenu::CONTAINER_CAPABILITY, $capability, "capability صفحهٔ {$slug} نباید همان capability ظرف باشد");
-            self::assertFalse((bool) current_user_can($capability), "{$slug} نباید با capability ظرف باز شود");
+        // دقیقاً همان صفحاتی باز می‌شوند که capability خودشان `read` است؛ هیچ صفحهٔ
+        // دیگری با capability ظرف باز نمی‌شود.
+        $read_gated = [];
+        foreach (CpmsAdminMenu::PAGES as $slug => $page) {
+            if ('read' === (string) $page[2]) {
+                $read_gated[] = $slug;
+                continue;
+            }
+            self::assertFalse(
+                (bool) current_user_can((string) $page[2]),
+                "صفحهٔ {$slug} با capability ظرف باز شد — والد نباید مجوز بدهد"
+            );
         }
+
+        self::assertContains('cpms-finance-delegation', $read_gated);
+        self::assertContains('cpms-organizations', $read_gated);
+        self::assertNotContains('cpms-patients', $read_gated);
+        self::assertNotContains('cpms-finance', $read_gated);
+        self::assertNotContains('cpms-system', $read_gated);
+        self::assertNotContains('cpms-staff', $read_gated);
+
+        // کنترلِ مثبت: همان ظرف برای این کاربر «دسترسی‌پذیر» است چون خودِ این
+        // صفحات `read`-gated هستند — یعنی منو دیده می‌شود اما فقط تا همین حد.
+        self::assertTrue(CpmsAdminMenu::has_any_accessible_page());
+        $sections = CpmsAdminMenu::accessible_sections();
+        $reachable = [];
+        foreach ($sections as $pages) {
+            foreach (array_keys($pages) as $slug) {
+                $reachable[] = $slug;
+            }
+        }
+        sort($reachable);
+        sort($read_gated);
+        self::assertSame($read_gated, $reachable, 'مجموعهٔ صفحاتِ قابلِ‌دسترس باید دقیقاً همان صفحاتِ read-gated باشد');
     }
 
-    public function testRoleScopedVisibilityIsUnchangedByTheUnifiedMenu(): void
+    public function testRoleScopedVisibilityFollowsTheRegistryCapabilities(): void
     {
-        $doctor = (int) self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_DOCTOR]);
-        wp_set_current_user($doctor);
-        self::assertTrue(CpmsAdminMenu::has_any_accessible_page());
-        self::assertTrue((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-patients'][2]), 'پزشک patients را می‌بیند');
-        self::assertFalse((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-system'][2]), 'پزشک سیستم را نمی‌بیند');
-        self::assertFalse((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-sms'][2]), 'پزشک پیامک را نمی‌بیند');
+        foreach (
+            [
+                RolesAndCapabilities::ROLE_DOCTOR,
+                RolesAndCapabilities::ROLE_SECRETARY,
+                RolesAndCapabilities::ROLE_ACCOUNTANT,
+                RolesAndCapabilities::ROLE_MANAGER,
+            ] as $role_key
+        ) {
+            wp_set_current_user((int) self::factory()->user->create(['role' => $role_key]));
 
-        $accountant = (int) self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_ACCOUNTANT]);
-        wp_set_current_user($accountant);
-        self::assertTrue((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-finance'][2]), 'حسابدار مالی را می‌بیند');
-        self::assertFalse((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-patients'][2]), 'حسابدار بیماران را نمی‌بیند');
+            $expected = [];
+            foreach (CpmsAdminMenu::PAGES as $slug => $page) {
+                if (current_user_can((string) $page[2])) {
+                    $expected[] = $slug;
+                }
+            }
+            sort($expected);
+
+            $observed = [];
+            foreach (CpmsAdminMenu::accessible_sections() as $pages) {
+                foreach (array_keys($pages) as $slug) {
+                    $observed[] = $slug;
+                }
+            }
+            sort($observed);
+
+            self::assertSame($expected, $observed, "ناوبریِ بخش‌ها برای نقش {$role_key} باید دقیقاً از capabilityها پیروی کند");
+            self::assertSame([] !== $expected, CpmsAdminMenu::has_any_accessible_page(), "نقش {$role_key}");
+        }
 
         // کاربرِ بدونِ هیچ صفحهٔ CPMS: ظرف منو باید حذف شود.
-        $subscriber = (int) self::factory()->user->create(['role' => 'subscriber']);
-        wp_set_current_user($subscriber);
+        wp_set_current_user((int) self::factory()->user->create(['role' => 'subscriber']));
         self::assertFalse(CpmsAdminMenu::has_any_accessible_page());
         $GLOBALS['menu'] = [];
         CpmsAdminMenu::menu();
@@ -465,6 +531,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
 
     public function testSectionNavigationLinksEveryAccessiblePageInRtlOnce(): void
     {
+        $this->signInWithAllCapabilities();
         $_GET['page'] = 'cpms-dashboard';
         ob_start();
         CpmsAdminMenu::render_section_nav();

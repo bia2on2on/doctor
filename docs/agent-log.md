@@ -2521,3 +2521,32 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   `py_compile bin/pilot-admin-narrow.py` → OK؛ `yaml.safe_load` روی هر دو workflow → OK. اجرای کاملِ
   PHPUnit/PHPStan/WPCS و پذیرشِ Chromium **فقط در GitHub Actions** ممکن است (این sandbox نه PHP/Composer/
   MySQL دارد نه Chromium)؛ نتیجهٔ واقعیِ runها در گزارشِ پایانی ثبت می‌شود.
+
+### Pass 9 — اصلاحِ سه ریشهٔ شکستِ CI (head بعدی)
+
+- **WPCS (۱۳ نقص روی خطوطِ افزوده):** ریشهٔ واقعی از گزارشِ ماشینیِ همان run استخراج شد، نه حدس:
+  `Generic.WhiteSpace.ArbitraryParenthesesSpacing` در `CpmsAdminMenu.php` (پرانتزهای `( $x ?? '' )`،
+  `( $is_current ? … : … )`) و یک `Generic.Formatting.MultipleStatementAlignment`.
+  - **حذفِ نیاز به ignore:** پنهان‌سازیِ زیرمنو دیگر `$GLOBALS['submenu']` را مستقیم نمی‌نویسد؛ از API خودِ
+    هسته `remove_submenu_page()` استفاده می‌شود (ردیف پیش از حذف در `hidden_submenu_rows()` نگه داشته
+    می‌شود تا «ثبت‌شده اما نامرئی» قابلِ بازرسی بماند).
+  - تنها یک نوشتنِ `$GLOBALS['submenu']` باقی می‌ماند (مرتب‌سازیِ نمایشیِ `order_submenu()`) و آن **یک**
+    ignoreِ درون‌خطیِ مستند دارد؛ هیچ `<exclude>`/`phpcs:disable`/سرکوبِ sniff اضافه نشد.
+- **شکست‌های Integration (۱۰ failure + ۳ error) و ریشه‌هایشان:**
+  1. `OrgManagerResponsiveAssetsTest` متدِ `body_class()` را صدا می‌زد؛ APIِ واقعی snake_case است → تست
+     با APIِ واقعی هم‌راست شد (هیچ assertionی حذف نشد).
+  2. hooknameِ ساختگیِ `cpms-dashboard_page_<slug>` در `AdminUnifiedMenuTest`/`AdminNavigationAccessibilityTest`
+     غلط بود؛ WordPress برای صفحهٔ هم‌اسلاگ با والد `toplevel_page_<slug>` می‌سازد → تست‌ها از
+     `get_plugin_page_hookname()` خودِ هسته استفاده می‌کنند (منبعِ حقیقت، نه رشتهٔ دستی).
+  3. ثبتِ منو در WordPress برای کاربری که capability آیتم را ندارد ردیفی نمی‌سازد؛ تست‌ها با Administrator
+     خالی اجرا می‌شدند (بدون `cpms_patient_read` و…) → کاربرِ «همهٔ capabilityهای رَجیستری» ساخته می‌شود.
+  4. `WooCommerceAdminAccess::is_registered_page()` صفحاتِ «ثبت‌شده اما پنهان» را نمی‌دید (مثلاً
+     `cpms-handwriting`) → اسکنِ ردیف‌های `hidden_submenu_rows()` اضافه شد؛ **هیچ capability‌ای گسترش نیافت**
+     (همان capability صفحه + اثباتِ ثبت در همین ریکوئست شرط است).
+  5. `CustomRoleLifecycleTest` ردیفِ ظرف را با ایندکس `$GLOBALS['menu'][0]` می‌گرفت → با جست‌وجوی slug.
+- **تصمیمِ صریح (بدونِ گسترشِ مجوز):** allowlistِ همرزیستیِ WooCommerce **گسترش داده نشد**. آن رَجیستری
+  عمداً فقط صفحاتی را می‌پذیرد که capabilityشان یک capability اختصاصیِ CPMS یا `manage_options` است؛
+  افزودنِ صفحاتِ `read`-gated قراردادِ «هیچ‌گاه بر capabilityهای عمومی تکیه نکن» را می‌شکست (و
+  `tests/Unit/WooCommerceAdminAccessTest::testRegistryIsClosedToCpmsOwnedPagesOnly` آن را رد می‌کند).
+  به‌جای گسترش، assertionِ driftِ دوطرفه به رَجیستریِ واقعیِ منو (`CpmsAdminMenu::PAGES`) گره خورد.
+- **آلودگیِ بین‌تستی:** `reset_hidden_rows()` به helperِ `resetMenuGlobals()` اضافه شد.
