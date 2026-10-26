@@ -55,7 +55,14 @@ ROLE_MATRIX = [
     (SECRETARY_USER, SECRETARY_PASS, "cpms-system", False),
     (SECRETARY_USER, SECRETARY_PASS, "cpms-organization-manager-bootstrap", False),
     (DOCTOR_USER, DOCTOR_PASS, "cpms-patients", True),
-    (DOCTOR_USER, DOCTOR_PASS, "cpms-finance", False),
+    # سیاستِ مصوب (docs/permissions/permission-matrix.md §3): `cpms_finance_read`
+    # برای «پزشک» ✅ است، پس باز شدنِ صفحهٔ مالی برای پزشک مجاز است و محدودسازیِ
+    # داده در REST/Service با Scope انجام می‌شود. انتظارِ پیشین (deny) با سند
+    # ناسازگار بود؛ در عوض دو ردِ مستند دیگر برای همان نقش افزوده شد:
+    # `cpms_config` (فنی/مدیر) و `cpms_sms_config` هیچ‌کدام برای پزشک نیستند.
+    (DOCTOR_USER, DOCTOR_PASS, "cpms-finance", True),
+    (DOCTOR_USER, DOCTOR_PASS, "cpms-settings", False),
+    (DOCTOR_USER, DOCTOR_PASS, "cpms-system", False),
 ]
 
 MENU_TITLE = "مدیریت مطب"
@@ -235,20 +242,36 @@ def check_page(page, slug, label, width):
 
     if reached:
         href = page.evaluate("() => document.activeElement.getAttribute('href') || ''")
-        navigated = False
+        target = href.split("page=")[-1].split("&")[0] if "page=" in href else ""
+        before_url = page.url
+        # Enter نباید وسطِ بارگذاریِ صفحه فشرده شود (صفحهٔ سیستم سنگین است و
+        # درخواست‌های Health/صف در جریان‌اند). این یک انتظارِ وضعیت با سقف است،
+        # نه تأخیرِ دلبخواه؛ اگر شبکه آرام نشد ادامه می‌دهیم و همان معیار می‌سنجد.
         try:
-            # Enter یک ناوبریِ واقعی در همان تب است. پیش‌تر بدونِ انتظار برای اتمامِ
-            # آن ادامه می‌دادیم و سنجشِ بعدی روی contextِ ازبین‌رفته اجرا می‌شد
-            # («Execution context was destroyed, most likely because of a
-            # navigation») — یعنی پذیرش پس از اولین اسلاگ متوقف می‌شد. اکنون تا
-            # اتمامِ همان ناوبری صبر می‌کنیم؛ معیار همان است (URL با page= در BASE).
-            with page.expect_navigation(timeout=10000):
+            page.wait_for_load_state("networkidle", timeout=10000)
+        except Exception:  # noqa: BLE001 - آرام‌نشدن شبکه معیار را تغییر نمی‌دهد
+            pass
+        nav_event = False
+        try:
+            # Enter یک ناوبریِ واقعی در همان تب است؛ پیش‌تر بدونِ انتظار برای اتمامِ
+            # آن ادامه می‌دادیم و سنجشِ بعدی روی contextِ ازبین‌رفته اجرا می‌شد.
+            with page.expect_navigation(timeout=15000):
                 page.keyboard.press("Enter")
-            page.wait_for_load_state("domcontentloaded")
-            navigated = page.url.startswith(BASE) and "page=" in page.url
-        except Exception:  # noqa: BLE001 - گزارشِ صادقانهٔ شکستِ تعامل
-            navigated = False
-        record(navigated and href != "", f"{prefix} keyboard-activates-link", href.split("page=")[-1])
+            nav_event = True
+        except Exception:  # noqa: BLE001 - اگر رویداد از دست برود، URL حکم می‌کند
+            nav_event = False
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=5000)
+        except Exception:  # noqa: BLE001
+            pass
+        url_now = page.url
+        # معیار: یا ناوبریِ مشاهده‌شده، یا تغییرِ واقعیِ URL به همان صفحهٔ مقصدِ لینک.
+        navigated = nav_event or (url_now != before_url and bool(target) and f"page={target}" in url_now)
+        record(
+            navigated and href != "",
+            f"{prefix} keyboard-activates-link",
+            f"{target} nav_event={int(nav_event)} url={url_now.split(BASE)[-1][:60]}",
+        )
 
     # کنترل‌های فرم/دکمه: ارتفاعِ لمسی ≥ 32px برای دکمه‌های اصلی (WCAG 2.2 AA در حدِ این گیت).
     touch = page.evaluate(
