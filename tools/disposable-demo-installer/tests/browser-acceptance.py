@@ -311,6 +311,7 @@ def main() -> None:
                     $db = \ClinicCore\Bootstrap\App::db();
                     $doc = $db->fetchRow('SELECT full_name FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', [(int) $m['ids']['clinician_id']]);
                     echo wp_json_encode([
+                        'fixture_id' => (string) $m['fixture_id'],
                         'organization_id' => (int) $m['ids']['organization_id'],
                         'clinic_id' => (int) $m['ids']['clinic_id'],
                         'location_id' => (int) $m['ids']['location_ids'][0],

@@ -1023,14 +1023,16 @@ $td_second = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )
 Cpdd_Test::ok( true === $td_second['ok'], 'reg-14c: second teardown completes cleanly' );
 Cpdd_Test::equals( 3, count( $ctx['platform']->tables_data['cpms_rate_limits'] ), 'reg-14c: shared-IP rate-limit counters remain preserved after second teardown' );
 
-// 14d. Unscoped OTP audit records (clinic_id IS NULL, resource_type = 'otp').
+// 14d. OTP audit ownership & adversarial 4-digit suffix collision fail-closed checks.
+// Clinic-scoped OTP challenge and audit row for synthetic 0900 mobile without suffix collision is attributed and removed.
 $ctx  = cpdd_fixture();
 $post = cpdd_provision( $ctx );
+$cid  = (int) $post['manifest']['ids']['clinic_id'];
 $mob  = (string) $post['manifest']['patient_mobile'];
 $mask = '***' . substr( $mob, -4 );
 $ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
 	'id'          => 80,
-	'clinic_id'   => null,
+	'clinic_id'   => $cid,
 	'mobile'      => $mob,
 	'purpose'     => 'login',
 	'consumed_at' => null,
@@ -1040,7 +1042,7 @@ $ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
 );
 $ctx['platform']->tables_data['cpms_audit_logs'][] = array(
 	'id'               => 800,
-	'clinic_id'        => null,
+	'clinic_id'        => $cid,
 	'actor_wp_user_id' => null,
 	'action'           => 'OTP_REQUEST',
 	'resource_type'    => 'otp',
@@ -1048,8 +1050,8 @@ $ctx['platform']->tables_data['cpms_audit_logs'][] = array(
 	'after_json'       => (string) json_encode( array( 'mobile' => $mask ) ),
 );
 $td_14d = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
-Cpdd_Test::ok( true === $td_14d['ok'], 'reg-14d: unambiguous unscoped OTP audit row for synthetic 0900 mobile is attributed and removed' );
-Cpdd_Test::equals( 0, count( $ctx['platform']->tables_data['cpms_audit_logs'] ), 'reg-14d: unscoped synthetic OTP audit row deleted' );
+Cpdd_Test::ok( true === $td_14d['ok'], 'reg-14d: clinic-scoped OTP audit row for synthetic 0900 mobile without suffix collision is attributed and removed' );
+Cpdd_Test::equals( 0, count( $ctx['platform']->tables_data['cpms_audit_logs'] ), 'reg-14d: clinic-scoped synthetic OTP audit row deleted' );
 
 // Unscoped OTP audit row for a foreign mobile blocks teardown.
 $ctx  = cpdd_fixture();
@@ -1068,16 +1070,17 @@ Cpdd_Test::refuses(
 	'TEARDOWN_BLOCKED',
 	'reg-14d: unscoped OTP audit row for foreign mobile blocks teardown'
 );
+Cpdd_Test::equals( 2, count( $ctx['platform']->tables_data['cpms_audit_logs'] ), 'reg-14d: foreign unscoped OTP audit row is never deleted' );
 
-// Unscoped OTP audit row when a foreign mobile collides on the 4-digit suffix is treated as ambiguous and blocks teardown.
+// Adversarial unscoped OTP audit row with COLLIDING 4-digit suffix (matching ***XXXX of synthetic 0900 mobile) must fail closed and block teardown.
 $ctx  = cpdd_fixture();
 $post = cpdd_provision( $ctx );
+$cid  = (int) $post['manifest']['ids']['clinic_id'];
 $mob  = (string) $post['manifest']['patient_mobile'];
 $mask = '***' . substr( $mob, -4 );
-$colliding_foreign_mobile = '0912000' . substr( $mob, -4 );
 $ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
 	'id'          => 81,
-	'clinic_id'   => null,
+	'clinic_id'   => $cid,
 	'mobile'      => $mob,
 	'purpose'     => 'login',
 	'consumed_at' => null,
@@ -1085,21 +1088,11 @@ $ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
 	'expires_at'  => gmdate( 'Y-m-d H:i:s', $ctx['env']->now + 60 ),
 	'code_hash'   => 'x',
 );
-$ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
-	'id'          => 82,
-	'clinic_id'   => null,
-	'mobile'      => $colliding_foreign_mobile,
-	'purpose'     => 'login',
-	'consumed_at' => null,
-	'attempts'    => 0,
-	'expires_at'  => gmdate( 'Y-m-d H:i:s', $ctx['env']->now + 60 ),
-	'code_hash'   => 'y',
-);
 $ctx['platform']->tables_data['cpms_audit_logs'][] = array(
 	'id'               => 802,
 	'clinic_id'        => null,
 	'actor_wp_user_id' => null,
-	'action'           => 'OTP_REQUEST',
+	'action'           => 'OTP_VERIFY_FAIL',
 	'resource_type'    => 'otp',
 	'resource_id'      => null,
 	'after_json'       => (string) json_encode( array( 'mobile' => $mask ) ),
@@ -1107,7 +1100,47 @@ $ctx['platform']->tables_data['cpms_audit_logs'][] = array(
 Cpdd_Test::refuses(
 	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
 	'TEARDOWN_BLOCKED',
-	'reg-14d: 4-digit suffix collision with foreign mobile prevents unscoped OTP attribution and blocks teardown'
+	'reg-14d: adversarial unscoped OTP audit row with colliding 4-digit suffix fails closed and blocks teardown'
+);
+Cpdd_Test::equals( 2, count( $ctx['platform']->tables_data['cpms_audit_logs'] ), 'reg-14d: colliding unscoped OTP audit row is never deleted' );
+
+// Adversarial clinic-scoped OTP audit row when a foreign mobile collides on the 4-digit suffix in cpms_patients fails closed and blocks teardown.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$cid  = (int) $post['manifest']['ids']['clinic_id'];
+$mob  = (string) $post['manifest']['patient_mobile'];
+$mask = '***' . substr( $mob, -4 );
+$colliding_foreign_mobile = '0912000' . substr( $mob, -4 );
+$ctx['platform']->tables_data['cpms_patients'][] = array(
+	'id'        => 99,
+	'clinic_id' => 1,
+	'mobile'    => $colliding_foreign_mobile,
+	'name'      => 'Foreign Colliding Patient',
+);
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'               => 803,
+	'clinic_id'        => $cid,
+	'actor_wp_user_id' => null,
+	'action'           => 'OTP_REQUEST',
+	'resource_type'    => 'otp',
+	'resource_id'      => null,
+	'after_json'       => (string) json_encode( array( 'mobile' => $mask ) ),
+);
+Cpdd_Test::ok(
+	false === $ctx['platform']->otp_suffix_unambiguous( $cid, $mob ),
+	'reg-14d: otp_suffix_unambiguous returns false when foreign mobile shares 4-digit suffix'
+);
+$verify_colliding = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->verify( $post['manifest'] );
+Cpdd_Test::ok( false === $verify_colliding['ok'], 'reg-14d: 4-digit suffix collision with foreign mobile blocks teardown' );
+$audit_plan_entry = null;
+foreach ( $verify_colliding['plan'] as $entry ) {
+	if ( 'cpms_audit_logs' === $entry['table'] ) {
+		$audit_plan_entry = $entry;
+	}
+}
+Cpdd_Test::ok(
+	is_array( $audit_plan_entry ) && (int) ( $audit_plan_entry['foreign_rows'] ?? 0 ) >= 1,
+	'reg-14d: suffix collision causes clinic-scoped OTP audit row to be flagged as ambiguous/foreign rather than owned'
 );
 
 exit( Cpdd_Test::summary() );

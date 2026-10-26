@@ -602,6 +602,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		$fixture_id     = (string) ( $scope['fixture_id'] ?? '' );
 		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
 		$masked_mobile  = 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ? '***' . substr( $patient_mobile, -4 ) : '';
+		$otp_unambig    = ! array_key_exists( 'otp_suffix_unambiguous', $scope ) || ! empty( $scope['otp_suffix_unambiguous'] );
 		$identity_ids   = array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) );
 		$user_ids       = array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) );
 
@@ -612,7 +613,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 
 		if ( null !== $row_clinic && $clinic_id > 1 && (int) $row_clinic === $clinic_id ) {
 			if ( 'otp' === $rtype ) {
-				return '' !== $masked_mobile && $after_mob === $masked_mobile;
+				return '' !== $masked_mobile && $otp_unambig && $after_mob === $masked_mobile;
 			}
 
 			return true;
@@ -626,17 +627,12 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			if ( 'patient_identity' === $rtype && in_array( $rid, $identity_ids, true ) ) {
 				return true;
 			}
-			if ( $actor > 0 && in_array( $actor, $user_ids, true ) ) {
+			if ( 'otp' !== $rtype && $actor > 0 && in_array( $actor, $user_ids, true ) ) {
 				return true;
 			}
 			if ( 'cpdd_fixture' === $rtype && '' !== $fixture_id ) {
 				$meta = json_decode( (string) ( $row['meta_json'] ?? '{}' ), true );
 				if ( is_array( $meta ) && (string) ( $meta['fixture_id'] ?? '' ) === $fixture_id ) {
-					return true;
-				}
-			}
-			if ( 'otp' === $rtype && 0 === $actor && '' !== $masked_mobile && ! empty( $scope['unscoped_otp_suffix_unambiguous'] ) ) {
-				if ( $after_mob === $masked_mobile ) {
 					return true;
 				}
 			}
@@ -799,16 +795,9 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				}
 			}
 			if ( 'cpms_otp_tokens' === $short ) {
-				if ( '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)' === $where ) {
+				if ( 'clinic_id = %d AND mobile = %s' === $where ) {
 					$rc = $row['clinic_id'] ?? null;
-					if ( ( null === $rc || (int) $rc === (int) $params[0] ) && (string) ( $row['mobile'] ?? '' ) === (string) $params[1] ) {
-						$out[ $index ] = $row;
-					}
-					continue;
-				}
-				if ( '(clinic_id IS NULL AND mobile = %s)' === $where || 'clinic_id IS NULL AND mobile = %s' === $where ) {
-					$rc = $row['clinic_id'] ?? null;
-					if ( null === $rc && (string) ( $row['mobile'] ?? '' ) === (string) $params[0] ) {
+					if ( null !== $rc && (int) $rc === (int) $params[0] && (string) ( $row['mobile'] ?? '' ) === (string) $params[1] ) {
 						$out[ $index ] = $row;
 					}
 					continue;
@@ -927,11 +916,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function fetch_all( string $sql, array $params = array() ): array {
-		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s' ) ) {
-			return $this->matches( 'cpms_otp_tokens', '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)', $params );
-		}
-		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id IS NULL AND mobile = %s' ) ) {
-			return $this->matches( 'cpms_otp_tokens', '(clinic_id IS NULL AND mobile = %s)', $params );
+		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id = %d AND mobile = %s' ) ) {
+			return $this->matches( 'cpms_otp_tokens', 'clinic_id = %d AND mobile = %s', $params );
 		}
 		if ( str_contains( $sql, "FROM wp_cpms_patients WHERE clinic_id = %d AND mobile LIKE '0900%%'" ) ) {
 			return $this->matches( 'cpms_patients', "clinic_id = %d AND mobile LIKE '0900%%'", $params );
@@ -1309,13 +1295,13 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public function latest_live_challenge( int $clinic_id, string $mobile, string $purpose ): ?array {
 		foreach ( $this->tables_data['cpms_otp_tokens'] as $row ) {
 			$rc = $row['clinic_id'] ?? null;
-			if ( $row['mobile'] === $mobile && null !== $rc && (int) $rc !== $clinic_id ) {
+			if ( $row['mobile'] === $mobile && ( null === $rc || (int) $rc !== $clinic_id ) ) {
 				return null;
 			}
 		}
 		foreach ( array_reverse( $this->tables_data['cpms_otp_tokens'] ) as $row ) {
 			$rc = $row['clinic_id'] ?? null;
-			if ( ( null === $rc || (int) $rc === $clinic_id ) && $row['mobile'] === $mobile && $row['purpose'] === $purpose && null === $row['consumed_at'] ) {
+			if ( null !== $rc && (int) $rc === $clinic_id && $row['mobile'] === $mobile && $row['purpose'] === $purpose && null === $row['consumed_at'] ) {
 				return $row;
 			}
 		}

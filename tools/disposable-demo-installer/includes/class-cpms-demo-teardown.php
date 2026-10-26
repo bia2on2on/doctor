@@ -200,25 +200,14 @@ class Teardown {
 		$login_user_hashes = $merge_strs( $login_user_hashes, (array) ( $snapshot['login_user_hashes'] ?? array() ) );
 		$login_user_keys   = $merge_strs( $login_user_keys, (array) ( $snapshot['login_user_keys'] ?? array() ) );
 
-		$otp_token_ids          = array();
-		$has_unscoped_otp_token = ! empty( $snapshot['has_unscoped_otp_token'] );
-		if ( $this->platform->table_exists( 'cpms_otp_tokens' ) && 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
-			if ( $clinic_id > 1 ) {
-				$rows = $this->platform->fetch_all(
-					'SELECT id, clinic_id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s',
-					array( $clinic_id, $mobile )
-				);
-			} else {
-				$rows = $this->platform->fetch_all(
-					'SELECT id, clinic_id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE clinic_id IS NULL AND mobile = %s',
-					array( $mobile )
-				);
-			}
+		$otp_token_ids = array();
+		if ( $clinic_id > 1 && $this->platform->table_exists( 'cpms_otp_tokens' ) && 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
+			$rows = $this->platform->fetch_all(
+				'SELECT id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE clinic_id = %d AND mobile = %s',
+				array( $clinic_id, $mobile )
+			);
 			foreach ( $rows as $row ) {
 				$otp_token_ids[] = (int) ( $row['id'] ?? 0 );
-				if ( null === ( $row['clinic_id'] ?? null ) ) {
-					$has_unscoped_otp_token = true;
-				}
 			}
 		}
 		$otp_token_ids = $merge_ints( $otp_token_ids, (array) ( $snapshot['otp_token_ids'] ?? array() ) );
@@ -246,15 +235,14 @@ class Teardown {
 		}
 
 		$scope = array(
-			'fixture_id'                      => $fixture,
-			'clinic_id'                       => $clinic_id,
-			'organization_id'                 => $org_id,
-			'patient_mobile'                  => $mobile,
-			'user_ids'                        => $user_ids,
-			'login_user_hashes'               => $login_user_hashes,
-			'login_user_keys'                 => $login_user_keys,
-			'has_unscoped_otp_token'          => $has_unscoped_otp_token,
-			'unscoped_otp_suffix_unambiguous' => $this->platform->unscoped_otp_suffix_unambiguous( $mobile, $has_unscoped_otp_token ),
+			'fixture_id'             => $fixture,
+			'clinic_id'              => $clinic_id,
+			'organization_id'        => $org_id,
+			'patient_mobile'         => $mobile,
+			'user_ids'               => $user_ids,
+			'login_user_hashes'      => $login_user_hashes,
+			'login_user_keys'        => $login_user_keys,
+			'otp_suffix_unambiguous' => $this->platform->otp_suffix_unambiguous( $clinic_id, $mobile ),
 			'invoice_ids'                     => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_invoices', $clinic_id ) : array(),
 				isset( $m_ids['invoice_id'] ) ? array( (int) $m_ids['invoice_id'] ) : array(),
@@ -464,10 +452,7 @@ class Teardown {
 				return '1 = 0' === $pred[0] ? null : $pred;
 			case 'cpms_otp_tokens':
 				if ( $clinic_id > 1 && 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
-					return array( '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)', array( $clinic_id, $mobile ) );
-				}
-				if ( 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
-					return array( '(clinic_id IS NULL AND mobile = %s)', array( $mobile ) );
+					return array( 'clinic_id = %d AND mobile = %s', array( $clinic_id, $mobile ) );
 				}
 				return null;
 			case 'cpms_sms_messages':

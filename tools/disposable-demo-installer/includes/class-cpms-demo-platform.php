@@ -408,38 +408,27 @@ class Platform {
 	}
 
 	/**
-	 * Check whether an unscoped (`clinic_id IS NULL`) OTP audit event for the
-	 * synthetic `0900` patient mobile can be unambiguously attributed to the
-	 * demo fixture.
+	 * Check whether clinic-scoped (`clinic_id = <demo>`) OTP audit events for
+	 * the synthetic `0900` patient mobile are free of 4-digit suffix collisions
+	 * with any non-fixture mobile.
 	 *
-	 * Requires:
-	 *  1. `$patient_mobile` is a synthetic `0900` mobile.
-	 *  2. At least one unscoped `cpms_otp_tokens` row exists (or was snapshotted)
-	 *     for `$patient_mobile`.
-	 *  3. Zero foreign mobiles in `cpms_otp_tokens`, `cpms_patients`, or
-	 *     `cpms_sms_messages` share the same 4-digit suffix.
+	 * Unscoped (`clinic_id IS NULL`) OTP audit records carry only a masked
+	 * 4-digit suffix (`***XXXX`) and cannot be proven to belong exclusively to
+	 * the synthetic fixture; they always fail closed and are never matched by
+	 * `owned_audit_logs_predicate()`. Even for clinic-scoped OTP audit records,
+	 * any foreign mobile sharing the same 4-digit suffix in `cpms_otp_tokens`,
+	 * `cpms_patients`, or `cpms_sms_messages` causes this check to return
+	 * `false` so teardown fails closed rather than deleting ambiguous records.
 	 *
-	 * @param string $patient_mobile     Synthetic patient mobile.
-	 * @param bool   $had_unscoped_token Whether an unscoped token was already snapshotted.
+	 * @param int    $clinic_id      Synthetic demo clinic ID.
+	 * @param string $patient_mobile Synthetic patient mobile.
 	 * @return bool
 	 */
-	public function unscoped_otp_suffix_unambiguous( string $patient_mobile, bool $had_unscoped_token = false ): bool {
-		if ( 1 !== preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
+	public function otp_suffix_unambiguous( int $clinic_id, string $patient_mobile ): bool {
+		if ( $clinic_id <= 1 || 1 !== preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
 			return false;
 		}
 		$suffix = substr( $patient_mobile, -4 );
-
-		$has_unscoped = $had_unscoped_token;
-		if ( ! $has_unscoped && $this->table_exists( 'cpms_otp_tokens' ) ) {
-			$has_unscoped = $this->count_where(
-				$this->table( 'cpms_otp_tokens' ),
-				'clinic_id IS NULL AND mobile = %s',
-				array( $patient_mobile )
-			) > 0;
-		}
-		if ( ! $has_unscoped ) {
-			return false;
-		}
 
 		if ( $this->table_exists( 'cpms_otp_tokens' ) ) {
 			$colliding_tokens = $this->count_where(
@@ -480,11 +469,11 @@ class Platform {
 	/**
 	 * Build durable ownership predicate for `cpms_audit_logs` (S-3).
 	 *
-	 * Never uses `id > baseline_max_id`. Rows must be linked to the synthetic
-	 * clinic (excluding OTP events for non-fixture mobiles), synthetic
-	 * organization, synthetic patient identities, synthetic persona user IDs,
-	 * the synthetic fixture identifier, or an unambiguous unscoped OTP event for
-	 * the synthetic `0900` patient mobile.
+	 * Never uses `id > baseline_max_id` and never authorizes deletion of
+	 * unscoped (`clinic_id IS NULL`) `otp` audit records by masked mobile
+	 * suffix (`***XXXX`), because a 4-digit suffix cannot establish ownership
+	 * against foreign or adversarial suffix collisions. Even clinic-scoped
+	 * `otp` audit records require `$scope['otp_suffix_unambiguous'] === true`.
 	 *
 	 * @param array<string,mixed> $scope Collected fixture scope.
 	 * @return array{0:string,1:list<mixed>}
@@ -495,6 +484,7 @@ class Platform {
 		$fixture_id     = (string) ( $scope['fixture_id'] ?? '' );
 		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
 		$masked_mobile  = 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ? '***' . substr( $patient_mobile, -4 ) : '';
+		$otp_unambig    = ! array_key_exists( 'otp_suffix_unambiguous', $scope ) || ! empty( $scope['otp_suffix_unambiguous'] );
 		$identity_ids   = array_values( array_filter( array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
 		$user_ids       = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
 
@@ -502,7 +492,7 @@ class Platform {
 		$params  = array();
 
 		if ( $clinic_id > 1 ) {
-			if ( '' !== $masked_mobile ) {
+			if ( '' !== $masked_mobile && $otp_unambig ) {
 				$clauses[] = "(clinic_id = %d AND (resource_type <> %s OR JSON_UNQUOTE(JSON_EXTRACT(after_json, '$.mobile')) = %s))";
 				$params[]  = $clinic_id;
 				$params[]  = 'otp';
@@ -528,7 +518,8 @@ class Platform {
 		}
 		if ( array() !== $user_ids ) {
 			$ph        = implode( ',', array_fill( 0, count( $user_ids ), '%d' ) );
-			$clauses[] = '(clinic_id IS NULL AND actor_wp_user_id IN (' . $ph . '))';
+			$clauses[] = '(clinic_id IS NULL AND resource_type <> %s AND actor_wp_user_id IN (' . $ph . '))';
+			$params[]  = 'otp';
 			foreach ( $user_ids as $id ) {
 				$params[] = $id;
 			}
@@ -537,11 +528,6 @@ class Platform {
 			$clauses[] = "(clinic_id IS NULL AND resource_type = %s AND JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.fixture_id')) = %s)";
 			$params[]  = 'cpdd_fixture';
 			$params[]  = $fixture_id;
-		}
-		if ( '' !== $masked_mobile && ! empty( $scope['unscoped_otp_suffix_unambiguous'] ) ) {
-			$clauses[] = "(clinic_id IS NULL AND actor_wp_user_id IS NULL AND resource_type = %s AND JSON_UNQUOTE(JSON_EXTRACT(after_json, '$.mobile')) = %s)";
-			$params[]  = 'otp';
-			$params[]  = $masked_mobile;
 		}
 
 		if ( array() === $clauses ) {
@@ -1205,7 +1191,7 @@ class Platform {
 	 */
 	public function latest_live_challenge( int $clinic_id, string $mobile, string $purpose ): ?array {
 		$foreign_tokens = (int) $this->db()->fetchValue(
-			'SELECT COUNT(*) FROM ' . $this->db()->table( 'cpms_otp_tokens' ) . ' WHERE mobile = %s AND clinic_id IS NOT NULL AND clinic_id <> %d',
+			'SELECT COUNT(*) FROM ' . $this->db()->table( 'cpms_otp_tokens' ) . ' WHERE mobile = %s AND (clinic_id IS NULL OR clinic_id <> %d)',
 			array( $mobile, $clinic_id )
 		);
 		if ( $foreign_tokens > 0 ) {
@@ -1214,7 +1200,7 @@ class Platform {
 
 		return $this->db()->fetchRow(
 			'SELECT id, clinic_id, expires_at, attempts, consumed_at FROM ' . $this->db()->table( 'cpms_otp_tokens' )
-			. ' WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s AND purpose = %s AND consumed_at IS NULL'
+			. ' WHERE clinic_id = %d AND mobile = %s AND purpose = %s AND consumed_at IS NULL'
 			. ' ORDER BY id DESC LIMIT 1',
 			array( $clinic_id, $mobile, $purpose )
 		);

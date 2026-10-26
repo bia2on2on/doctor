@@ -204,23 +204,23 @@ try {
 	try {
 		$db->transactional(
 			static function () use ( $db, $fixture, $env, $platform, $manifest ): void {
-				$db->insert(
-					'cpms_audit_logs',
-					array(
-						'clinic_id'        => null,
-						'actor_wp_user_id' => null,
-						'actor_role'       => null,
-						'action'           => 'OTP_REQUEST',
-						'resource_type'    => 'otp',
-						'resource_id'      => null,
-						'before_json'      => null,
-						'after_json'       => '{"mobile":"***9876"}',
-						'meta_json'        => '{"purpose":"login"}',
-						'request_id'       => 'foreign-otp-req',
-						'ip_hash'          => null,
-						'user_agent_hash'  => null,
-						'created_at'       => current_time( 'mysql', true ),
-					)
+				$audit_before_foreign = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) );
+				$foreign_audit_id     = App::audit()->log(
+					'OTP_REQUEST',
+					array( 'wp_user_id' => null, 'role' => 'anonymous' ),
+					'otp',
+					null,
+					null,
+					null,
+					array( 'mobile' => '***9876' ),
+					array( 'purpose' => 'login' ),
+					null,
+					true
+				);
+				$audit_after_foreign  = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) );
+				cpdd_assert(
+					$foreign_audit_id > 0 && $audit_after_foreign === $audit_before_foreign + 1,
+					's3: negative test actually inserted foreign unscoped OTP audit row (id=' . $foreign_audit_id . ')'
 				);
 				$blocked_foreign_otp_audit = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
 				cpdd_assert( false === $blocked_foreign_otp_audit['ok'], 's3: unscoped OTP audit row for foreign mobile blocks teardown' );
@@ -229,6 +229,83 @@ try {
 		);
 	} catch ( RuntimeException $rb ) {
 		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative unscoped foreign OTP audit check rolled back cleanly' );
+	}
+
+	// Negative check: adversarial unscoped OTP audit row with COLLIDING 4-digit suffix blocks teardown.
+	try {
+		$db->transactional(
+			static function () use ( $db, $fixture, $mobile, $env, $platform, $manifest ): void {
+				$audit_before_collide = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) );
+				$colliding_mask       = '***' . substr( $mobile, -4 );
+				$collide_audit_id     = App::audit()->log(
+					'OTP_VERIFY_FAIL',
+					array( 'wp_user_id' => null, 'role' => 'anonymous' ),
+					'otp',
+					null,
+					null,
+					null,
+					array( 'mobile' => $colliding_mask ),
+					array( 'reason' => 'not_found_or_consumed' ),
+					null,
+					true
+				);
+				$audit_after_collide  = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_audit_logs' ) );
+				cpdd_assert(
+					$collide_audit_id > 0 && $audit_after_collide === $audit_before_collide + 1,
+					's3: negative test actually inserted colliding-suffix unscoped OTP audit row (id=' . $collide_audit_id . ')'
+				);
+				$blocked_collide_unscoped = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
+				cpdd_assert(
+					false === $blocked_collide_unscoped['ok'],
+					's3: adversarial unscoped OTP audit row with colliding 4-digit suffix fails closed and blocks teardown'
+				);
+				throw new RuntimeException( 'CPDD_ROLLBACK_NEGATIVE_TEST' );
+			}
+		);
+	} catch ( RuntimeException $rb ) {
+		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative colliding unscoped OTP audit check rolled back cleanly' );
+	}
+
+	// Negative check: adversarial foreign mobile sharing the same 4-digit suffix causes clinic OTP audit ownership to fail closed.
+	try {
+		$db->transactional(
+			static function () use ( $db, $fixture, $clinic_id, $mobile, $env, $platform, $manifest ): void {
+				$tokens_before = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_otp_tokens' ) );
+				$colliding_mob = '0912000' . substr( $mobile, -4 );
+				$db->insert(
+					'cpms_otp_tokens',
+					array(
+						'clinic_id'   => 1,
+						'mobile'      => $colliding_mob,
+						'purpose'     => 'login',
+						'code_hash'   => str_repeat( 'a', 64 ),
+						'expires_at'  => gmdate( 'Y-m-d H:i:s', time() + 120 ),
+						'attempts'    => 0,
+						'consumed_at' => null,
+						'created_at'  => current_time( 'mysql', true ),
+					)
+				);
+				$tokens_after  = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_otp_tokens' ) );
+				cpdd_assert(
+					$tokens_after === $tokens_before + 1 && false === $platform->otp_suffix_unambiguous( $clinic_id, $mobile ),
+					's3: adversarial 4-digit suffix collision inserted and detected by otp_suffix_unambiguous'
+				);
+				$blocked_suffix_collision = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
+				$audit_foreign_rows       = 0;
+				foreach ( $blocked_suffix_collision['plan'] as $plan_row ) {
+					if ( 'cpms_audit_logs' === $plan_row['table'] ) {
+						$audit_foreign_rows = (int) $plan_row['foreign_rows'];
+					}
+				}
+				cpdd_assert(
+					false === $blocked_suffix_collision['ok'] && $audit_foreign_rows >= 1,
+					's3: 4-digit suffix collision causes clinic OTP audit rows to fail closed (foreign_rows=' . $audit_foreign_rows . ')'
+				);
+				throw new RuntimeException( 'CPDD_ROLLBACK_NEGATIVE_TEST' );
+			}
+		);
+	} catch ( RuntimeException $rb ) {
+		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative 4-digit suffix collision check rolled back cleanly' );
 	}
 } finally {
 	App::replaceExplicitScope( $previous );
@@ -336,7 +413,7 @@ cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'globally shared IP 
 $post_state = ( new Preflight( $env, $platform, $manifest ) )->run();
 cpdd_assert( true === $post_state['ok'], 'preflight passes again after verified teardown' );
 
-// --- 6b. Full reprovisioning, unscoped OTP challenge, and second teardown -
+// --- 6b. Full reprovisioning, second OTP challenge, and second teardown ---
 $manifest->clear_tombstone();
 $reprovisioned = $provisioner->provision( $admin_id );
 $fixture_two   = $reprovisioned['manifest'];
@@ -347,18 +424,24 @@ cpdd_assert(
 $prev_two = App::replaceExplicitScope(
 	ClinicScope::forClinic(
 		(int) $fixture_two['ids']['clinic_id'],
-		(int) $fixture_two['ids']['location_ids']['main']
+		(int) $fixture_two['ids']['location_ids'][0]
 	)->withOrganization( (int) $fixture_two['ids']['organization_id'] )
 );
 try {
-	$unscoped_req = App::otpService()->request( (string) $fixture_two['patient_mobile'], 'login', null, '127.0.0.1', null );
-	cpdd_assert( true === ( $unscoped_req['sms_sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
-	$unscoped_issued = ( new Otp( $env, $platform ) )->issue( $fixture_two );
-	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
+	$reprov_req = App::otpService()->request(
+		(string) $fixture_two['patient_mobile'],
+		'login',
+		null,
+		'127.0.0.1',
+		(int) $fixture_two['ids']['clinic_id']
+	);
+	cpdd_assert( true === ( $reprov_req['sms_sent'] ?? false ), 'reprovisioned clinic OTP request succeeds for synthetic 0900 patient' );
+	$reprov_issued = ( new Otp( $env, $platform ) )->issue( $fixture_two );
+	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $reprov_issued['code'] ), 'demo OTP helper issues code for reprovisioned synthetic patient login challenge' );
 	add_filter( 'send_auth_cookies', '__return_false' );
 	try {
-		$unscoped_verified = App::otpService()->verify( (string) $fixture_two['patient_mobile'], (string) $unscoped_issued['code'], 'login', '127.0.0.1' );
-		cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
+		$reprov_verified = App::otpService()->verify( (string) $fixture_two['patient_mobile'], (string) $reprov_issued['code'], 'login', '127.0.0.1' );
+		cpdd_assert( isset( $reprov_verified['user_id'] ) || isset( $reprov_verified['wp_user_id'] ), 'reprovisioned patient verify accepts demo code' );
 	} finally {
 		remove_filter( 'send_auth_cookies', '__return_false' );
 	}
@@ -367,7 +450,7 @@ try {
 	App::replaceExplicitScope( $prev_two );
 }
 $second_cleanup = $teardown->execute( $fixture_two, $admin_id );
-cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly including unscoped synthetic OTP records' );
+cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly including reprovisioned OTP records' );
 cpdd_assert( 0 === $platform->non_shared_ip_rate_limits_count(), 'zero entity rate-limit rows remain after second teardown' );
 cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'shared-IP rate-limit rows remain preserved after second teardown' );
 cpdd_assert( true === ( new Preflight( $env, $platform, $manifest ) )->run()['ok'], 'preflight passes after second teardown' );
