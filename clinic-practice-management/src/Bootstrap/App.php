@@ -337,10 +337,11 @@ final class App
         add_action( 'admin_init', static function (): void {
             if ( CronScheduleRepair::self_heal_in_admin() ) {
                 // فقط یک رخدادِ observability — بدونِ هیچ اجرای Job.
-                self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', [
-                    'hook' => CronScheduleRepair::HOOK,
+                $context = [
+                    'hook'       => CronScheduleRepair::HOOK,
                     'recurrence' => CronScheduleRepair::RECURRENCE,
-                ] );
+                ];
+                self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
             }
         }, 20 );
 
@@ -559,15 +560,17 @@ final class App
 
         try {
             self::installationSettings()->setJobsLastTickAt( $now );
-        } catch (\Throwable) {
+        } catch ( \Throwable $e ) {
             // بدون وردپرس/درایورِ Option، heartbeat سطح نصب ممکن نیست.
+            unset( $e );
         }
 
         // سازگاریِ عقب‌رو: heartbeat قدیمیِ Clinic حفظ می‌شود (بدون Scope ⇒ رد).
         try {
             self::settings()->set( 'jobs.last_tick_at', $now );
-        } catch ( \Throwable ) {
+        } catch ( \Throwable $e ) {
             // قبل از Migration / در نصبِ چند-Clinic بدون Scope — بی‌اثر
+            unset( $e );
         }
     }
 
@@ -607,8 +610,8 @@ final class App
             }
         }
 
-        $queued = 0;
-        $failed = 0;
+        $queued   = 0;
+        $failed   = 0;
         $activity = false;
         try {
             $counts = self::db()->fetchAll(
@@ -632,13 +635,13 @@ final class App
         }
 
         return [
-            'last_tick_at'        => $last_tick,
-            'heartbeat_source'    => $source,
-            'queued'              => $queued,
-            'failed'              => $failed,
-            'has_activity'        => $activity || $queued > 0 || $failed > 0,
-            'schedule_scheduled'  => CronScheduleRepair::is_scheduled(),
-            'next_scheduled_at'   => CronScheduleRepair::next_scheduled_at(),
+            'last_tick_at'       => $last_tick,
+            'heartbeat_source'   => $source,
+            'queued'             => $queued,
+            'failed'             => $failed,
+            'has_activity'       => $activity || $queued > 0 || $failed > 0,
+            'schedule_scheduled' => CronScheduleRepair::is_scheduled(),
+            'next_scheduled_at'  => CronScheduleRepair::next_scheduled_at(),
         ];
     }
 
@@ -647,15 +650,15 @@ final class App
      *
      * @return array{state:string,severity:string,status:string,label:string,detail:string,guidance:string,repairable:bool}
      */
-    public static function queue_diagnosis( int $staleAfterSec = 300): array
-    {
+    public static function queue_diagnosis( int $stale_after_sec = 300 ): array {
         $evidence = self::queue_evidence();
-
-        return QueueDiagnosis::classify( array_merge( $evidence, [
-            'now'             => time(),
-            'stale_after_sec' => $staleAfterSec,
+        $extra    = [
+            'now'              => time(),
+            'stale_after_sec'  => $stale_after_sec,
             'wp_cron_disabled' => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
-        ] ) );
+        ];
+
+        return QueueDiagnosis::classify( array_merge( $evidence, $extra ) );
     }
 
     /**
@@ -667,16 +670,15 @@ final class App
      *
      * @return array<string, mixed>
      */
-    public static function queueHealth( int $staleAfterSec = 300): array
-    {
+    public static function queueHealth( int $staleAfterSec = 300 ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing published API name/parameter (consumed by Rest/HealthController and existing tests); renaming would break the public contract.
         $evidence  = self::queue_evidence();
         $last_tick = (int) $evidence['last_tick_at'];
-        $stale     = $last_tick > 0 && ( time() - $last_tick ) > $staleAfterSec;
+        $stale     = $last_tick > 0 && ( time() - $last_tick ) > $staleAfterSec; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter of queueHealth().
 
         return [
             'last_tick_at' => $last_tick,
-            'stale' => $last_tick === 0 ? true : $stale,
-            'stale_after_sec' => $staleAfterSec,
+            'stale'        => $last_tick === 0 ? true : $stale,
+            'stale_after_sec' => $staleAfterSec, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter of queueHealth().
             'queued' => (int) $evidence['queued'],
             'failed' => (int) $evidence['failed'],
         ];
@@ -1507,8 +1509,7 @@ final class App
      * (بدونِ ساخت/حدسِ Clinic). مصرف‌کننده باید `null` را «پیکربندیِ
      * Clinic-local در این بافت خوانده نمی‌شود» تفسیر کند، نه «پیش‌فرض».
      */
-    public static function clinicSettingsOrNull(): ?Settings
-    {
+    public static function clinic_settings_or_null(): ?Settings {
         try {
             return self::settings();
         } catch ( ScopeRequiredException ) {
@@ -1656,7 +1657,7 @@ final class App
     {
         // Installation-wide update operation must not require an ambient
         // ClinicScope: in a multi-Clinic install no Clinic is inferred.
-        $settings = self::clinicSettingsOrNull();
+        $settings = self::clinic_settings_or_null();
 
         // CPMS Classic Admin UX (B) — نمونهٔ بدونِ Scope هیچ‌گاه memo نمی‌شود؛
         // وگرنه اولین فراخوانیِ سطحِ نصب، نمونهٔ Clinic-محورِ بعدی را می‌گیرد و
@@ -1717,7 +1718,7 @@ final class App
                 // ever inferred for the report.
                 $health = new SystemHealthService(
                     self::db(),
-                    self::clinicSettingsOrNull(),
+                    self::clinic_settings_or_null(),
                     self::installationSettings(),
                     self::licenseService(),
                     self::backupService(),

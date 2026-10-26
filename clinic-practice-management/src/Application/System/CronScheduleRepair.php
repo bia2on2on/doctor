@@ -17,8 +17,7 @@ namespace ClinicCore\Application\System;
  *  - idempotent: اگر رویداد ثبت شده باشد هیچ کاری انجام نمی‌شود.
  *  - بدونِ Scope/Clinic: صف سطح نصب است و کارگرِ سیستم Clinic محیطی ندارد.
  */
-final class CronScheduleRepair
-{
+final class CronScheduleRepair {
     /** هوکِ تکرارشوندهٔ صف — همان رشته‌ای که App::boot/activate ثبت می‌کنند. */
     public const HOOK = 'cpms_jobs_tick';
 

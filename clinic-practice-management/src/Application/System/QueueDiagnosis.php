@@ -24,8 +24,7 @@ namespace ClinicCore\Application\System;
  * واقعیِ میزبان است، نه نقصِ پیکربندی. بنابراین وضعیتِ سالم با توضیحِ صریحِ این
  * وابستگی گزارش می‌شود و به‌عنوانِ خطا برچسب نمی‌خورد.
  */
-final class QueueDiagnosis
-{
+final class QueueDiagnosis {
     /** سالم — heartbeat تازه و رویداد زمان‌بندی موجود است. */
     public const STATE_HEALTHY = 'healthy';
 
@@ -44,8 +43,8 @@ final class QueueDiagnosis
     /** شواهدِ کافی برای هیچ‌یک از حالت‌ها وجود ندارد. */
     public const STATE_UNKNOWN = 'unknown';
 
-    public const SEVERITY_OK = 'ok';
-    public const SEVERITY_INFO = 'info';
+    public const SEVERITY_OK      = 'ok';
+    public const SEVERITY_INFO    = 'info';
     public const SEVERITY_WARNING = 'warning';
     public const SEVERITY_PROBLEM = 'problem';
 
@@ -77,18 +76,18 @@ final class QueueDiagnosis
      * }
      */
     public static function classify( array $evidence ): array {
-        $last_tick_at   = (int) ( $evidence['last_tick_at'] ?? 0 );
-        $now            = (int) ( $evidence['now'] ?? 0 );
-        $stale_after    = (int) ( $evidence['stale_after_sec'] ?? 300 );
-        $failed         = (int) ( $evidence['failed'] ?? 0 );
-        $queued         = (int) ( $evidence['queued'] ?? 0 );
-        $has_activity   = (bool) ( $evidence['has_activity'] ?? false );
-        $scheduled      = $evidence['schedule_scheduled'] ?? null;
-        $next_run       = $evidence['next_scheduled_at'] ?? null;
-        $wp_cron_off    = (bool) ( $evidence['wp_cron_disabled'] ?? false );
-        $source         = (string) ( $evidence['heartbeat_source'] ?? 'none' );
+        $last_tick_at = (int) ( $evidence['last_tick_at'] ?? 0 );
+        $now          = (int) ( $evidence['now'] ?? 0 );
+        $stale_after  = (int) ( $evidence['stale_after_sec'] ?? 300 );
+        $failed       = (int) ( $evidence['failed'] ?? 0 );
+        $queued       = (int) ( $evidence['queued'] ?? 0 );
+        $has_activity = (bool) ( $evidence['has_activity'] ?? false );
+        $scheduled    = $evidence['schedule_scheduled'] ?? null;
+        $next_run     = $evidence['next_scheduled_at'] ?? null;
+        $wp_cron_off  = (bool) ( $evidence['wp_cron_disabled'] ?? false );
+        $source       = (string) ( $evidence['heartbeat_source'] ?? 'none' );
 
-        $age = $last_tick_at > 0 && $now > 0 ? max( 0, $now - $last_tick_at ) : null;
+        $age      = $last_tick_at > 0 && $now > 0 ? max( 0, $now - $last_tick_at ) : null;
         $is_stale = null !== $age && $stale_after > 0 && $age > $stale_after;
 
         $scheduler_note = self::scheduler_note( $wp_cron_off, $scheduled, $next_run );

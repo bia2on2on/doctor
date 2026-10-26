@@ -445,10 +445,23 @@ final class SystemHealthService
      * @return array{key:string,label:string,status:string,detail:string}
      */
     public static function database_server_version_check( ?string $version ): array {
-        $raw      = trim( (string) $version );
-        $engine   = self::database_engine( $raw );
-        $parsed   = self::database_version_number( $raw, $engine );
-        $label    = self::database_version_label( $engine );
+        $raw    = trim( (string) $version );
+        $engine = self::database_engine( $raw );
+        $parsed = self::database_version_number( $raw, $engine );
+        $label  = self::database_version_label( $engine );
+
+        if ( self::DB_ENGINE_UNKNOWN === $engine ) {
+            // مدرکِ ناخوانا/ناتجزیه‌پذیر: هیچ قضاوتی روی کفِ MySQL انجام نمی‌شود
+            // (fail-closed). استخراجِ یک عددِ تصادفی از رشتهٔ نامعتبر، نسخهٔ
+            // ساختگی می‌سازد و می‌تواند FAIL کاذب تولید کند.
+            return [
+                'key'    => 'db.mysql_version',
+                'label'  => 'نسخهٔ سرور دیتابیس',
+                'status' => self::UNKNOWN,
+                'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL '
+                    . self::MIN_MYSQL_VERSION . ' تأییدپذیر نیست',
+            ];
+        }
 
         if ( self::DB_ENGINE_MARIADB === $engine ) {
             if ( null === $parsed ) {
@@ -490,12 +503,12 @@ final class SystemHealthService
      * @return array{key:string,label:string,status:string,detail:string}
      */
     private static function mariadb_version_row( string $raw, string $parsed ): array {
-        $label      = self::database_version_label( self::DB_ENGINE_MARIADB );
-        $boundary   = self::MARIADB_COMPAT_BOUNDARY;
-        $tested     = self::MARIADB_TESTED_VERSION;
-        $patch      = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
-        $in_series  = str_starts_with( $parsed . '.', $boundary . '.' );
-        $fixed_note = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
+        $label       = self::database_version_label( self::DB_ENGINE_MARIADB );
+        $boundary    = self::MARIADB_COMPAT_BOUNDARY;
+        $tested      = self::MARIADB_TESTED_VERSION;
+        $patch       = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
+        $in_series   = str_starts_with( $parsed . '.', $boundary . '.' );
+        $engine_note = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
 
         if ( version_compare( $parsed, $boundary, '<' ) ) {
             return [
@@ -505,7 +518,7 @@ final class SystemHealthService
                 'detail' => 'mariadb:below_boundary | ' . $raw
                     . ' — کهنه‌تر از مرزِ سازگاریِ مستند: MariaDB ' . $boundary
                     . ' (آزموده‌شده: ' . $patch . ') یا نسخهٔ آزموده‌شدهٔ MariaDB ' . $tested
-                    . $fixed_note,
+                    . $engine_note,
             ];
         }
 
@@ -516,7 +529,7 @@ final class SystemHealthService
                 'status' => self::PASS,
                 'detail' => 'mariadb:compatibility_boundary | ' . $raw
                     . ' — سریِ ' . $boundary . ' مرزِ سازگاریِ مستند و آزمودهٔ این افزونه است (وصلهٔ آزموده‌شده: '
-                    . $patch . ')' . $fixed_note,
+                    . $patch . ')' . $engine_note,
             ];
         }
 
@@ -526,7 +539,7 @@ final class SystemHealthService
                 'label'  => $label,
                 'status' => self::PASS,
                 'detail' => 'mariadb:tested | ' . $raw
-                    . ' — نسخهٔ MariaDB آزموده‌شده در CI این افزونه: ' . $tested . $fixed_note,
+                    . ' — نسخهٔ MariaDB آزموده‌شده در CI این افزونه: ' . $tested . $engine_note,
             ];
         }
 
@@ -538,7 +551,7 @@ final class SystemHealthService
                 . ' — این نسخهٔ MariaDB در CI این افزونه آزموده نشده است؛ نسخه‌های آزموده‌شده: MariaDB '
                 . $tested . ' و سریِ ' . $boundary . ' (وصلهٔ آزموده‌شده: ' . $patch . ')'
                 . ' — پشتیبانی برای این نسخه ادعا نمی‌شود و دروازهٔ مهاجرت/فعال‌سازی، نسخه‌های خارج از این مجموعه را'
-                . ' به‌صورت fail-closed رد می‌کند (migration 0027)' . $fixed_note,
+                . ' به‌صورت fail-closed رد می‌کند (migration 0027)' . $engine_note,
         ];
     }
 
@@ -734,8 +747,7 @@ final class SystemHealthService
      *     healthy:list<array{key:string,label:string,status:string,detail:string}>
      * }
      */
-    public static function group_checks( array $checks ): array
-    {
+    public static function group_checks( array $checks ): array {
         $groups = [
             'blockers' => [],
             'warnings' => [],
@@ -883,16 +895,15 @@ final class SystemHealthService
      * حدس‌زده‌شده. این تنها نقطهٔ مجازِ خواندنِ پیکربندیِ Clinic-local در این
      * سرویس است.
      */
-    private function clinic_setting( string $key, mixed $default = null ): mixed
-    {
+    private function clinic_setting( string $key, mixed $fallback = null ): mixed {
         if ( null === $this->settings ) {
-            return $default;
+            return $fallback;
         }
 
         try {
-            return $this->settings->get( $key, $default );
+            return $this->settings->get( $key, $fallback );
         } catch ( \Throwable ) {
-            return $default;
+            return $fallback;
         }
     }
 

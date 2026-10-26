@@ -120,12 +120,19 @@ final class SystemHealthDatabaseEngineTest extends TestCase
 
     public function testTestedMariaDbReleaseIsSupported(): void
     {
-        foreach ( [ '11.4.13-MariaDB', '11.4.13', '10.11.19-MariaDB-log' ] as $version ) {
+        // فقط رشته‌هایی که خودِ سرور مدرکِ «MariaDB» می‌دهد. یک رشتهٔ عددیِ
+        // تنها (مثل `11.4.13`) مدرکِ موتور نیست و نباید MariaDB خوانده شود.
+        foreach ( [ '11.4.13-MariaDB', '11.4.13-MariaDB-log', '10.11.19-MariaDB-log' ] as $version ) {
             $row = SystemHealthService::database_server_version_check( $version );
 
             self::assertSame( SystemHealthService::PASS, $row['status'], 'نسخهٔ آزموده‌شده باید PASS باشد: ' . $version );
             self::assertStringContainsString( 'MariaDB', $row['label'] );
         }
+
+        // مدرکِ بدونِ نشانگرِ MariaDB به MySQL تفسیر می‌شود (fail-closed برای ادعای MariaDB).
+        $bare = SystemHealthService::database_server_version_check( '11.4.13' );
+        self::assertSame( SystemHealthService::DB_ENGINE_MYSQL, SystemHealthService::database_engine( '11.4.13' ) );
+        self::assertStringContainsString( '(MySQL)', $bare['label'] );
 
         $tested = SystemHealthService::database_server_version_check( '11.4.13-MariaDB' );
         self::assertStringStartsWith( 'mariadb:tested', $tested['detail'] );

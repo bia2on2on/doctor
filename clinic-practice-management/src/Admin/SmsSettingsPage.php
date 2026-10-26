@@ -84,7 +84,7 @@ final class SmsSettingsPage
         ?>
 <div class="wrap" dir="rtl" id="cpms-sms-wrap">
     <h1>تنظیمات پیامک</h1>
-    <?php AdminClinicSelector::render_selector( 'cpms-sms', 'cpms_sms_clinic', $clinic_choices, $selected_clinic_id, 'درمانگاه' ); ?>
+        <?php AdminClinicSelector::render_selector( 'cpms-sms', 'cpms_sms_clinic', $clinic_choices, $selected_clinic_id, 'درمانگاه' ); ?>
 
     <div class="notice notice-info" id="cpms-sms-state-banner" style="display:none"></div>
 

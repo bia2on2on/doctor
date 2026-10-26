@@ -45,7 +45,7 @@ final class SystemPage
         add_action('admin_post_cpms_update_check', [self::class, 'updateCheck']);
         add_action('admin_post_cpms_update_settings', [self::class, 'updateSettings']);
         // CPMS Classic Admin UX (E) — ترمیمِ مجاز و Nonceدارِ زمان‌بندیِ صف.
-        add_action( 'admin_post_cpms_cron_repair', [self::class, 'cronRepair'] );
+        add_action('admin_post_cpms_cron_repair', [self::class, 'cron_repair']);
     }
 
     public static function menu(): void
@@ -128,6 +128,35 @@ final class SystemPage
         if ($notice !== false) {
             delete_transient(self::NOTICE_KEY);
         }
+
+        // CPMS Classic Admin UX (G) — چهار گروهِ متمایز: مسدودکننده، هشدارِ
+        // قابل‌اقدام، پیکربندیِ اختیاری، سالم. هیچ ردیفی حذف نمی‌شود.
+        $health_groups   = is_array( $health ) ? SystemHealthService::group_checks( $health['checks'] ) : [];
+        $health_sections = [
+            'blockers' => [
+                'title'   => '⛔ مسدودکننده‌ها',
+                'notice'  => 'notice-error',
+                'explain' => 'این موارد باید پیش از استفادهٔ عملیاتی رفع شوند.',
+            ],
+            'warnings' => [
+                'title'   => '⚠️ هشدارهای قابل‌اقدام',
+                'notice'  => 'notice-warning',
+                'explain' => 'افزونه کار می‌کند، اما این موارد باید بررسی شوند.',
+            ],
+            'optional' => [
+                'title'   => '➖ پیکربندی اختیاری',
+                'notice'  => 'notice-info',
+                'explain' => 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.',
+            ],
+        ];
+
+        // CPMS Classic Admin UX (E) — کلاسِ اعلانِ وضعیتِ صف بر پایهٔ شدت.
+        $queue_notice_class = match ( is_array( $queue_diagnosis ) ? (string) $queue_diagnosis['severity'] : '' ) {
+            QueueDiagnosis::SEVERITY_OK      => 'notice-success',
+            QueueDiagnosis::SEVERITY_INFO    => 'notice-info',
+            QueueDiagnosis::SEVERITY_WARNING => 'notice-warning',
+            default                          => 'notice-error',
+        };
         ?>
         <div class="wrap" dir="rtl">
             <h1>CPMS — سیستم، مجوز، بکاپ و به‌روزرسانی</h1>
@@ -156,30 +185,19 @@ final class SystemPage
                     <br><code><?php echo esc_html(implode(' | ', $health['host']['issues'])); ?></code>
                 <?php endif; ?>
             </p>
-            <?php
-            // CPMS Classic Admin UX (G) — چهار گروهِ متمایز: مسدودکننده،
-            // هشدارِ قابل‌اقدام، پیکربندیِ اختیاری، سالم. هیچ ردیفی حذف نمی‌شود.
-            $groups = SystemHealthService::group_checks( $health['checks'] );
-            $sections = [
-                'blockers' => [ '⛔ مسدودکننده‌ها', 'notice-error', 'این موارد باید پیش از استفادهٔ عملیاتی رفع شوند.' ],
-                'warnings' => [ '⚠️ هشدارهای قابل‌اقدام', 'notice-warning', 'افزونه کار می‌کند، اما این موارد باید بررسی شوند.' ],
-                'optional' => [ '➖ پیکربندی اختیاری', 'notice-info', 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.' ],
-            ];
-            ?>
-
-            <?php foreach ( $sections as $group_key => $meta ) : ?>
-                <?php if ( [] === $groups[ $group_key ] ) : ?>
+            <?php foreach ( $health_sections as $group_key => $section ) : ?>
+                <?php if ( [] === $health_groups[ $group_key ] ) : ?>
                     <?php continue; ?>
                 <?php endif; ?>
-                <h3><?php echo esc_html( $meta[0] ); ?> (<?php echo (int) count( $groups[ $group_key ] ); ?>)</h3>
-                <p class="description"><?php echo esc_html( $meta[2] ); ?></p>
-                <?php foreach ( $groups[ $group_key ] as $c ) : ?>
+                <h3><?php echo esc_html( $section['title'] ); ?> (<?php echo (int) count( $health_groups[ $group_key ] ); ?>)</h3>
+                <p class="description"><?php echo esc_html( $section['explain'] ); ?></p>
+                <?php foreach ( $health_groups[ $group_key ] as $c ) : ?>
                     <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
-                    <div class="notice <?php echo esc_attr( $meta[1] ); ?> inline cpms-health-item" style="max-width:100%">
+                    <div class="notice <?php echo esc_attr( $section['notice'] ); ?> inline cpms-health-item" style="max-width:100%">
                         <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
-                        <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
-                        <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
-                        <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
+                        <p>🔎 <strong>چی:</strong> <?php echo esc_html( $g['what'] ); ?></p>
+                        <p>⚡ <strong>اثر:</strong> <?php echo esc_html( $g['impact'] ); ?></p>
+                        <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html( $g['action'] ); ?></p>
                         <details><summary style="cursor:pointer">جزئیات فنی</summary>
                             <pre class="cpms-diag" dir="ltr"><?php echo esc_html( (string) $c['detail'] ); ?></pre>
                         </details>
@@ -187,22 +205,22 @@ final class SystemPage
                 <?php endforeach; ?>
             <?php endforeach; ?>
 
-            <?php if ( [] === $groups['blockers'] && [] === $groups['warnings'] ) : ?>
+            <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
                 <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
             <?php endif; ?>
 
-            <h3>✅ بررسی‌های سالم (<?php echo (int) count( $groups['healthy'] ); ?>)</h3>
+            <h3>✅ بررسی‌های سالم (<?php echo (int) count( $health_groups['healthy'] ); ?>)</h3>
             <table class="widefat striped cpms-health-table">
                 <thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>
                 <tbody>
-                <?php foreach ( $groups['healthy'] as $c) : ?>
+                <?php foreach ( $health_groups['healthy'] as $c ) : ?>
                     <tr>
-                        <td><?php echo esc_html($c['label']); ?></td>
+                        <td><?php echo esc_html( $c['label'] ); ?></td>
                         <td><?php echo esc_html( self::statusBadge( $c['status'], $c['key'], $c['detail'] ) ); ?></td>
                         <td class="cpms-wrap-cell"><?php echo esc_html( $c['detail'] ); ?></td>
                     </tr>
                 <?php endforeach; ?>
-                <?php if ( $groups['healthy'] === []) : ?>
+                <?php if ( [] === $health_groups['healthy'] ) : ?>
                     <tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>
                 <?php endif; ?>
                 </tbody>
@@ -213,15 +231,7 @@ final class SystemPage
             <?php if ( null === $queue_diagnosis ) : ?>
                 <div class="notice notice-error inline"><p>⛔ وضعیت صف خوانده نشد؛ بقیهٔ صفحه مستقل از این بخش کار می‌کند.</p></div>
             <?php else : ?>
-                <?php
-                $severity_class = match ( (string) $queue_diagnosis['severity'] ) {
-                    QueueDiagnosis::SEVERITY_OK      => 'notice-success',
-                    QueueDiagnosis::SEVERITY_INFO    => 'notice-info',
-                    QueueDiagnosis::SEVERITY_WARNING => 'notice-warning',
-                    default                                                          => 'notice-error',
-                };
-                ?>
-                <div class="notice <?php echo esc_attr( $severity_class ); ?> inline cpms-queue-state" style="max-width:100%" data-cpms-queue-state="<?php echo esc_attr( (string) $queue_diagnosis['state'] ); ?>">
+                <div class="notice <?php echo esc_attr( $queue_notice_class ); ?> inline cpms-queue-state" style="max-width:100%" data-cpms-queue-state="<?php echo esc_attr( (string) $queue_diagnosis['state'] ); ?>">
                     <p><strong><?php echo esc_html( (string) $queue_diagnosis['label'] ); ?></strong></p>
                     <p><?php echo esc_html( (string) $queue_diagnosis['detail'] ); ?></p>
                     <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html( (string) $queue_diagnosis['guidance'] ); ?></p>
@@ -504,7 +514,7 @@ final class SystemPage
      * فقط رویدادِ تکرارشوندهٔ WP-Cron در صورتِ نبود بازساخته می‌شود. هیچ فایل یا
      * زمان‌بندِ میزبان تغییر نمی‌کند.
      */
-    public static function cronRepair(): void
+    public static function cron_repair(): void
     {
         self::guard( 'cpms_cron_repair' );
 
@@ -512,10 +522,11 @@ final class SystemPage
         $repaired      = CronScheduleRepair::ensure_scheduled();
 
         if ( $repaired ) {
-            App::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', [
+            $context = [
                 'hook'   => CronScheduleRepair::HOOK,
                 'source' => 'manual-admin',
-            ] );
+            ];
+            App::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
             self::notify( 'زمان‌بندی صف بازسازی شد. هیچ Jobی همین حالا اجرا نشد؛ اولین اجرا با اولین ترافیک/WP-Cron انجام می‌شود.', true );
 
             return;
@@ -697,7 +708,7 @@ final class SystemPage
                 'action' => 'راه‌اندازی (Wizard) را کامل کنید یا Migration را از سطح افزونه اجرا کنید.',
             ],
             'cron.jobs' => [
-                'what' => 'اجرای صف/WP-Cron نیازمند توجه است (رویدادِ زمان‌بندیِ غایب، اجرای کهنه یا Jobهای شکست‌خورده).',
+                'what'   => 'اجرای صف/WP-Cron نیازمند توجه است (رویدادِ زمان‌بندیِ غایب، اجرای کهنه یا Jobهای شکست‌خورده).',
                 'impact' => 'یادآوری‌ها، تولید برنامه‌ها و رویدادهای زمان‌بندی‌شده ممکن است به تأخیر بیفتند یا اجرا نشوند. تاریخچهٔ داده حذف نمی‌شود.',
                 'action' => 'در بخش «Queue و WP-Cron» همین صفحه وضعیت دقیق را ببینید؛ اگر رویدادِ زمان‌بندی غایب است دکمهٔ «ترمیم زمان‌بندی صف» را بزنید (هیچ Jobی فوراً اجرا نمی‌شود). برای اجرای قطعی و مستقل از ترافیک، System Cron را با DISABLE_WP_CRON تنظیم کنید (ADR-0016).',
             ],

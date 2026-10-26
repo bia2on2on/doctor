@@ -63,8 +63,7 @@ final class UpdateService
      * بازهٔ بررسیِ به‌روزرسانی (ساعت) — پیش‌فرضِ امن ۲۴ وقتی ClinicScope موجود
      * نیست یا مقدار قابل‌خواندن نیست. هیچ Clinic‌ای حدس زده نمی‌شود.
      */
-    private function check_interval_hours(): int
-    {
+    private function check_interval_hours(): int {
         if ( $this->settings === null ) {
             return 24;
         }
