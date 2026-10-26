@@ -48,14 +48,14 @@ final class FirstPracticeSetupPage {
         // stays registered under an empty parent (hidden page) so legacy
         // direct URLs keep resolving safely without a second visible menu.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             __( 'راه‌اندازی مطب من', 'cpms' ),
             __( 'راه‌اندازی مطب من', 'cpms' ),
             'manage_options',
             self::PAGE_SLUG,
             [self::class, 'render']
         );
-        CpmsAdminMenu::hideFromSubmenu( self::PAGE_SLUG );
+        CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
     }
 
     public static function render(): void {

@@ -78,7 +78,7 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
      * وگرنه مدیرِ Clinic-scoped (بدون capability وردپرسیِ CONFIG) نه منو را
      * می‌بیند و نه با URL مستقیم رد نمی‌شود. الزام «Top-Level بودنِ والد» با
      * «دقیقاً یک منوی CPMS» ناسازگار بود؛ اکنون **والدِ واحد** همان
-     * `CpmsAdminMenu::parentSlug()` است و capability آن `read` است (نه CONFIG).
+     * `CpmsAdminMenu::parent_slug()` است و capability آن `read` است (نه CONFIG).
      */
     public function testFinanceDelegationIsReachableFromAReadGatedParent(): void
     {
@@ -91,12 +91,12 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
         CustomRoleDefinitionsPage::menu();
         FinanceDelegationPage::menu();
 
-        $parent = $this->findTopLevel( CpmsAdminMenu::parentSlug() );
+        $parent = $this->findTopLevel( CpmsAdminMenu::parent_slug() );
         self::assertNotNull( $parent, 'والدِ واحد «مدیریت مطب» باید ثبت شود.' );
         self::assertSame( 'read', $parent[1], 'والد نباید به cpms_config وابسته باشد.' );
 
         self::assertSame(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             $GLOBALS['_parent_pages'][ FinanceDelegationPage::PAGE_SLUG ] ?? null,
             'صفحهٔ واگذاری مالی باید زیرِ والدِ read-gated ثبت شود.'
         );
@@ -136,12 +136,12 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
 
         // کنترلِ مثبت: ثبت واقعاً رخ داده و والدِ آن همان منوی واحد است.
         self::assertSame(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             $GLOBALS['_parent_pages'][ FinanceDelegationPage::PAGE_SLUG ] ?? null,
             'صفحهٔ واگذاری مالی باید زیرِ منوی واحدِ read-gated ثبت شود.'
         );
         self::assertSame(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             $GLOBALS['_parent_pages'][ CustomRoleDefinitionsPage::PAGE_SLUG ] ?? null,
             'صفحهٔ نقش‌های سفارشی هم باید زیرِ همان منوی واحد ثبت شود (نه Top-Level).'
         );

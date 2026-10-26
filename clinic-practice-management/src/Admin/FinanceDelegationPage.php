@@ -52,7 +52,7 @@ final class FinanceDelegationPage {
 		// B-1: والدِ مشترکِ «مدیریت مطب» (همان `read`) — دیگر Top-Level جداگانه
 		// یا فرزندِ صفحهٔ نقش‌های سفارشی نیست.
 		add_submenu_page(
-			CpmsAdminMenu::parentSlug(),
+			CpmsAdminMenu::parent_slug(),
 			'واگذاری مالی حساس',
 			'واگذاری مالی حساس',
 			'read',
@@ -60,7 +60,7 @@ final class FinanceDelegationPage {
 			[ self::class, 'render' ]
 		);
 		// صفحهٔ حساسِ مالی در زیرمنوی عمومی شلوغی نمی‌سازد.
-		CpmsAdminMenu::hideFromSubmenu( self::PAGE_SLUG );
+		CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
 	}
 
 	public static function render(): void {

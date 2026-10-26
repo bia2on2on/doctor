@@ -1050,7 +1050,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             'the container entry must only be gated by ordinary wp-admin read access'
         );
         self::assertSame(
-            \ClinicCore\Admin\CpmsAdminMenu::parentSlug(),
+            \ClinicCore\Admin\CpmsAdminMenu::parent_slug(),
             $GLOBALS['_parent_pages'][ CustomRoleDefinitionsPage::PAGE_SLUG ] ?? null,
             'an authorized Clinic-local manager must have a reachable management-page entry'
         );

@@ -31,7 +31,7 @@ final class DoctorDashboardPage
         // B-1: یک منوی واحد. «امروز پزشک» زیر «مدیریت مطب» می‌نشیند؛ capability
         // خودِ صفحه (QUEUE_READ) دست‌نخورده می‌ماند و والد هیچ مجوزی نمی‌دهد.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'امروز پزشک',
             'امروز پزشک',
             RolesAndCapabilities::QUEUE_READ,

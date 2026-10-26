@@ -28,7 +28,7 @@ final class OrganizationManagerPage {
 
         // B-1: «سازمان‌ها» زیر «مدیریت مطب» (capability صفحه: read).
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'سازمان‌ها و درمانگاه‌ها',
             'سازمان‌ها',
             'read',

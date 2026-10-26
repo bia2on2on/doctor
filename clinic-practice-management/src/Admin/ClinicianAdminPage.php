@@ -74,7 +74,7 @@ final class ClinicianAdminPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'پزشکان و برنامه کاری',
             'پزشکان و برنامه کاری',
             RolesAndCapabilities::CONFIG,

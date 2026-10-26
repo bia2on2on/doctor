@@ -31,7 +31,7 @@ final class SettingsAdmin
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'فنی و لاگ',
             'فنی و لاگ',
             'cpms_config',

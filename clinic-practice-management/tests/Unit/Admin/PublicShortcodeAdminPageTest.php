@@ -19,7 +19,11 @@ final class PublicShortcodeAdminPageTest extends TestCase {
 	}
 
 	public function testPageIsManageOptionsOnlyAndListsOnlyAuthorizedClinicChoices(): void {
-		self::assertStringContainsString( 'add_management_page(', $this->source );
+		// B-1: this helper is no longer a global Tools entry; it is registered
+		// beneath the single CPMS menu and keeps its own manage_options gate.
+		self::assertStringNotContainsString( 'add_management_page(', $this->source );
+		self::assertStringContainsString( 'add_submenu_page(', $this->source );
+		self::assertStringContainsString( 'CpmsAdminMenu::parent_slug()', $this->source );
 		self::assertStringContainsString( "'manage_options'", $this->source );
 		self::assertStringContainsString( 'active_memberships_for_user', $this->source );
 		self::assertStringContainsString( 'RolesAndCapabilities::CONFIG', $this->source );

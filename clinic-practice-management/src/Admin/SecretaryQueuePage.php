@@ -27,7 +27,7 @@ final class SecretaryQueuePage
     {
         // B-1: زیر «مدیریت مطب» (capability صفحه، نه والد).
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'صف امروز',
             'صف امروز',
             RolesAndCapabilities::QUEUE_READ,

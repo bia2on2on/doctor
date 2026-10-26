@@ -21,9 +21,9 @@ use WP_UnitTestCase;
  *
  * Scoping to $pagenow === 'plugins.php' is deliberately covered here: an
  * earlier revision fired on ANY admin page and was reverted after real
- * browser CI caught it silently suppressing CpmsAdminMenu::onboardingNotice()
+ * browser CI caught it silently suppressing CpmsAdminMenu::onboarding_notice()
  * on the dashboard landing (admin_init runs before admin_notices). The
- * plugins.php scope is safe precisely because onboardingNotice() already
+ * plugins.php scope is safe precisely because onboarding_notice() already
  * never renders on that screen (`$screen->id === 'plugins'` guard in
  * CpmsAdminMenu), so the two features can never compete for the same page.
  */
@@ -150,7 +150,7 @@ final class CpmsActivationRedirectTest extends WP_UnitTestCase
     {
         // This is the regression test for the reverted broad implementation:
         // a dashboard (or any other) admin page load must NEVER be
-        // intercepted, so CpmsAdminMenu::onboardingNotice() keeps rendering
+        // intercepted, so CpmsAdminMenu::onboarding_notice() keeps rendering
         // there exactly as before. The one-shot flag must survive this
         // non-plugins.php observation untouched, since this scoped
         // implementation only ever inspects the flag on plugins.php.
@@ -303,9 +303,9 @@ final class CpmsActivationRedirectTest extends WP_UnitTestCase
      * Regression proof for the exact defect real browser CI caught when this
      * redirect was first attempted: landing ON the wizard page (where this
      * redirect sends the admin) must never silently burn the SEPARATE
-     * `cpms_onboarding_seen` one-shot flag that CpmsAdminMenu::onboardingNotice()
+     * `cpms_onboarding_seen` one-shot flag that CpmsAdminMenu::onboarding_notice()
      * uses — otherwise the notice would never render again on the dashboard
-     * the admin actually sees afterward. CpmsAdminMenu::onboardingNotice()
+     * the admin actually sees afterward. CpmsAdminMenu::onboarding_notice()
      * must explicitly skip (and not consume anything) while $_GET['page']
      * is the wizard's own slug.
      */
@@ -317,14 +317,14 @@ final class CpmsActivationRedirectTest extends WP_UnitTestCase
         try {
             $_GET['page'] = CpmsSetupWizard::PAGE_SLUG;
             ob_start();
-            CpmsAdminMenu::onboardingNotice();
+            CpmsAdminMenu::onboarding_notice();
             $onWizardOutput = (string) ob_get_clean();
             self::assertSame('', $onWizardOutput, 'the install notice must not render ON the wizard page itself');
             self::assertFalse(get_transient('cpms_onboarding_seen'), 'landing on the wizard page must never consume the onboarding-notice one-shot flag');
 
             unset($_GET['page']);
             ob_start();
-            CpmsAdminMenu::onboardingNotice();
+            CpmsAdminMenu::onboarding_notice();
             $dashboardOutput = (string) ob_get_clean();
             self::assertStringContainsString('CPMS نصب شد', $dashboardOutput, 'the real dashboard landing must still show the notice afterward');
             self::assertNotFalse(get_transient('cpms_onboarding_seen'), 'the real dashboard landing is what consumes the flag, not the wizard redirect target');

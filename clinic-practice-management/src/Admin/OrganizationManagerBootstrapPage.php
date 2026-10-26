@@ -19,14 +19,14 @@ final class OrganizationManagerBootstrapPage {
         // اصلی نمایش داده نمی‌شود (کشف از ناوبری بخش‌ها/URL مستقیم) اما ثبت‌شده و
         // قابل دسترسی برای دارندهٔ manage_options باقی می‌ماند.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'فعال‌سازی مدیر اولیهٔ سازمان',
             'فعال‌سازی مدیر اولیهٔ سازمان',
             'manage_options',
             self::PAGE,
             [self::class, 'render']
         );
-        CpmsAdminMenu::hideFromSubmenu( self::PAGE );
+        CpmsAdminMenu::hide_from_submenu( self::PAGE );
     }
 
     public static function render(): void {

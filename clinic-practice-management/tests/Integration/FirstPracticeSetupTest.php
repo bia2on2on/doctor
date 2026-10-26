@@ -583,7 +583,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         App::settings()->set('setup.completed', false);
 
         // 3a. Plugin action links point to cpms-first-practice-setup, not cpms-wizard.
-        $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $links = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
         $joinedLinks = implode(' ', $links);
         self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $joinedLinks);
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $joinedLinks);
@@ -591,7 +591,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         // 3b. Initial onboarding notice points to cpms-first-practice-setup, not cpms-wizard.
         delete_transient('cpms_onboarding_seen');
         $noticeHtml = $this->renderOutput(static function (): void {
-            CpmsAdminMenu::onboardingNotice();
+            CpmsAdminMenu::onboarding_notice();
         });
         self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $noticeHtml);
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $noticeHtml);
@@ -771,13 +771,13 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         self::assertFalse(App::authorization_service()->can($actor, $clinicId, RolesAndCapabilities::RX_CREATE));
 
         // After bootstrap, normal onboarding discovery routes to the established generic wizard.
-        $linksAfter = implode(' ', CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']));
+        $linksAfter = implode(' ', CpmsAdminMenu::action_links(['<a href="#">Activate</a>']));
         self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $linksAfter);
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $linksAfter);
 
         delete_transient('cpms_onboarding_seen');
         $noticeAfter = $this->renderOutput(static function (): void {
-            CpmsAdminMenu::onboardingNotice();
+            CpmsAdminMenu::onboarding_notice();
         });
         self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $noticeAfter);
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $noticeAfter);
@@ -937,7 +937,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $memId = App::membership_service()->create_membership($clinicId, $staffUser, RolesAndCapabilities::ROLE_MANAGER);
         App::membership_service()->suspend_membership($memId);
 
-        $linksWithSuspended = implode(' ', CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']));
+        $linksWithSuspended = implode(' ', CpmsAdminMenu::action_links(['<a href="#">Activate</a>']));
         self::assertStringContainsString('page=' . CpmsSetupWizard::PAGE_SLUG, $linksWithSuspended);
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $linksWithSuspended);
 
@@ -958,7 +958,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $this->resetMarkerAndMemberships($clinicId);
         $secondClinicId = $this->makeSecondClinicUnderSuspendedOrg('fp-susp-org');
         self::assertNull(App::first_practice_setup_service()->first_setup_candidate());
-        $linksMulti = implode(' ', CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']));
+        $linksMulti = implode(' ', CpmsAdminMenu::action_links(['<a href="#">Activate</a>']));
         self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $linksMulti);
 
         foreach ([$clinicId, $secondClinicId] as $targetId) {
@@ -995,7 +995,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             wp_set_current_user($actorId);
             self::assertFalse(current_user_can('manage_options'));
 
-            $links = implode(' ', CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']));
+            $links = implode(' ', CpmsAdminMenu::action_links(['<a href="#">Activate</a>']));
             self::assertStringNotContainsString('page=' . FirstPracticeSetupPage::PAGE_SLUG, $links);
 
             $dieRender = $this->captureWpDie(static function (): void {
@@ -1211,16 +1211,16 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         App::resetScope();
 
         $noticeHtml = $this->renderAdminSurface(
-            $scenario . '.onboardingNotice',
+            $scenario . '.onboarding_notice',
             static function (): void {
-                CpmsAdminMenu::onboardingNotice();
+                CpmsAdminMenu::onboarding_notice();
             }
         );
         $links = null;
         try {
-            $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+            $links = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
         } catch (\Throwable $e) {
-            self::fail($scenario . '.actionLinks threw ' . $e::class . ': ' . $e->getMessage());
+            self::fail($scenario . '.action_links threw ' . $e::class . ': ' . $e->getMessage());
         }
         self::assertIsArray($links);
         $joinedLinks = implode(' ', $links);

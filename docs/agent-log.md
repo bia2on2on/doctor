@@ -2484,12 +2484,12 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
 - **مبنای شروع:** شاخهٔ `arena/b80ae892-doctor` روی `dadeb4a` (Draft PR #275)؛ درخت کار پاک بود.
 - **B-1 (منوی واحد):** `CpmsAdminMenu` به رَجیستریِ واحدِ صفحات (بخش/برچسب/capability/نمایش) مجهز شد؛
   تنها Top-Level «مدیریت مطب» است و capability آن `read` (نه `cpms_config`) تا مدیرِ Clinic-scoped هم آن را
-  ببیند؛ `hideWhenUnreachable()` منو را از کاربرِ بی‌دسترسی پنهان می‌کند. صفحاتی که قبلاً Top-Level بودند
+  ببیند؛ `hide_when_unreachable()` منو را از کاربرِ بی‌دسترسی پنهان می‌کند. صفحاتی که قبلاً Top-Level بودند
   (`cpms-doctor`, `cpms-queue`, `cpms-finance`, `cpms-patients`, `cpms-organizations`, `cpms-custom-roles`) و
   صفحاتی که در «تنظیمات»/«ابزارها» بودند (bootstrap، shortcodes) همه زیرِ همان والد ثبت می‌شوند؛ slug،
   callback، nonce و capability هر صفحه دست‌نخورده ماند. زیرمنو بخش‌محور و کوتاه است (۱۴ آیتم)؛ صفحاتِ جزئی
-  ثبت‌شده‌اند اما با `hideFromSubmenu()` از فهرستِ تخت بیرون می‌مانند و از «ناوبری بخش‌ها» (هوکِ
-  `in_admin_header`) و URL مستقیم در دسترس‌اند. `redirectLegacy()` برای مسیرهای قدیمیِ Tools/Settings حفظ شد.
+  ثبت‌شده‌اند اما با `hide_from_submenu()` از فهرستِ تخت بیرون می‌مانند و از «ناوبری بخش‌ها» (هوکِ
+  `in_admin_header`) و URL مستقیم در دسترس‌اند. `redirect_legacy()` برای مسیرهای قدیمیِ Tools/Settings حفظ شد.
 - **تصمیمِ قراردادی (صریح، نه بی‌صدا):** دو assertionِ «Top-Level بودن» در `PatientAdminTest` و
   `AdminNavigationAccessibilityTest` (و بازرسیِ `$GLOBALS['menu']` در `CustomRoleLifecycleTest`) با الزامِ
   «دقیقاً یک منوی CPMS» ناسازگار بود. آن‌ها بازنویسی شدند، **نه حذف**: نیتِ امنیتی‌شان (capability خودِ صفحه

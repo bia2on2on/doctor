@@ -90,7 +90,7 @@ final class CpmsSetupWizard
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'راه‌اندازی',
             'راه‌اندازی',
             RolesAndCapabilities::CONFIG,

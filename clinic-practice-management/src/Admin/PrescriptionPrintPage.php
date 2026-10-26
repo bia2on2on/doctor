@@ -28,14 +28,14 @@ final class PrescriptionPrintPage
     {
         // B-1: زیر «مدیریت مطب» ثبت می‌شود اما در زیرمنو نمایش داده نمی‌شود.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'چاپ نسخه',
             'چاپ نسخه',
             RolesAndCapabilities::RX_READ,
             'cpms-prescription-print',
             [self::class, 'render']
         );
-        CpmsAdminMenu::hideFromSubmenu('cpms-prescription-print');
+        CpmsAdminMenu::hide_from_submenu( 'cpms-prescription-print' );
     }
 
     public static function render(): void

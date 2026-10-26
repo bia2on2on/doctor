@@ -117,7 +117,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         DoctorHandwritingPage::menu();
         PatientAdminPage::menu();
         PublicShortcodeAdminPage::menu();
-        CpmsAdminMenu::orderSubmenu();
+        CpmsAdminMenu::order_submenu();
     }
 
     /** @return list<string> */
@@ -154,14 +154,14 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         $this->registerEveryCpmsPage();
 
         self::assertSame(
-            [CpmsAdminMenu::parentSlug()],
+            [CpmsAdminMenu::parent_slug()],
             $this->cpmsTopLevelSlugs(),
             'تنها یک منوی Top-Level مجاز است: «مدیریت مطب»'
         );
 
         $container = null;
         foreach ((array) $GLOBALS['menu'] as $item) {
-            if (is_array($item) && ($item[2] ?? '') === CpmsAdminMenu::parentSlug()) {
+            if (is_array($item) && ($item[2] ?? '') === CpmsAdminMenu::parent_slug()) {
                 $container = $item;
             }
         }
@@ -200,7 +200,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     public function testEveryRegisteredCpmsPageSitsBeneathTheUnifiedMenu(): void
     {
         $this->registerEveryCpmsPage();
-        $parent = CpmsAdminMenu::parentSlug();
+        $parent = CpmsAdminMenu::parent_slug();
 
         foreach (array_keys(CpmsAdminMenu::PAGES) as $slug) {
             self::assertSame(
@@ -219,10 +219,10 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     public function testHiddenPagesAreRegisteredButNotCrowdingTheSubmenu(): void
     {
         $this->registerEveryCpmsPage();
-        $visible = $this->submenuSlugs(CpmsAdminMenu::parentSlug());
+        $visible = $this->submenuSlugs(CpmsAdminMenu::parent_slug());
 
         self::assertSame(
-            CpmsAdminMenu::visibleSlugs(),
+            CpmsAdminMenu::visible_slugs(),
             array_values(array_filter(
                 $visible,
                 static fn (string $slug): bool => isset(CpmsAdminMenu::PAGES[$slug])
@@ -259,7 +259,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
 
         self::assertTrue((bool) current_user_can(CpmsAdminMenu::CONTAINER_CAPABILITY));
         self::assertFalse(
-            CpmsAdminMenu::hasAnyAccessiblePage(),
+            CpmsAdminMenu::has_any_accessible_page(),
             'داشتنِ capability ظرف به‌تنهایی نباید هیچ صفحهٔ CPMS را در دسترس کند'
         );
 
@@ -274,7 +274,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     {
         $doctor = (int) self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_DOCTOR]);
         wp_set_current_user($doctor);
-        self::assertTrue(CpmsAdminMenu::hasAnyAccessiblePage());
+        self::assertTrue(CpmsAdminMenu::has_any_accessible_page());
         self::assertTrue((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-patients'][2]), 'پزشک patients را می‌بیند');
         self::assertFalse((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-system'][2]), 'پزشک سیستم را نمی‌بیند');
         self::assertFalse((bool) current_user_can((string) CpmsAdminMenu::PAGES['cpms-sms'][2]), 'پزشک پیامک را نمی‌بیند');
@@ -287,10 +287,10 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         // کاربرِ بدونِ هیچ صفحهٔ CPMS: ظرف منو باید حذف شود.
         $subscriber = (int) self::factory()->user->create(['role' => 'subscriber']);
         wp_set_current_user($subscriber);
-        self::assertFalse(CpmsAdminMenu::hasAnyAccessiblePage());
+        self::assertFalse(CpmsAdminMenu::has_any_accessible_page());
         $GLOBALS['menu'] = [];
         CpmsAdminMenu::menu();
-        CpmsAdminMenu::hideWhenUnreachable();
+        CpmsAdminMenu::hide_when_unreachable();
         self::assertSame([], $this->cpmsTopLevelSlugs(), 'کاربر بی‌دسترسی نباید منوی «مدیریت مطب» را ببیند');
     }
 
@@ -467,7 +467,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     {
         $_GET['page'] = 'cpms-dashboard';
         ob_start();
-        CpmsAdminMenu::renderSectionNav();
+        CpmsAdminMenu::render_section_nav();
         $html = (string) ob_get_clean();
         unset($_GET['page']);
 
@@ -491,7 +491,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
 
         $_GET['page'] = 'cpms-queue';
         ob_start();
-        CpmsAdminMenu::renderSectionNav();
+        CpmsAdminMenu::render_section_nav();
         $html = (string) ob_get_clean();
         unset($_GET['page']);
 

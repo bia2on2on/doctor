@@ -27,7 +27,7 @@ final class PublicShortcodeAdminPage {
 	public static function menu(): void {
 		// B-1: از «ابزارها» به «مدیریت مطب» (capability صفحه: manage_options).
 		add_submenu_page(
-			CpmsAdminMenu::parentSlug(),
+			CpmsAdminMenu::parent_slug(),
 			'کدهای کوتاه و نمایش در سایت',
 			'کدهای کوتاه CPMS',
 			'manage_options',
@@ -35,7 +35,7 @@ final class PublicShortcodeAdminPage {
 			array( self::class, 'render' )
 		);
 		// صفحهٔ کمکی (read-only) در زیرمنو شلوغی نمی‌سازد؛ از ناوبری بخش‌ها و URL مستقیم در دسترس است.
-		CpmsAdminMenu::hideFromSubmenu( self::PAGE_SLUG );
+		CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
 	}
 
 	public static function render(): void {

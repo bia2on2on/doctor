@@ -50,7 +50,7 @@ final class PatientAdminPage
         // B-1: «بیماران» زیر «مدیریت مطب» ثبت می‌شود. capability صفحه
         // (`cpms_patient_read`) تغییر نکرده و منوی والد هیچ مجوزی منتقل نمی‌کند.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'بیماران',
             'بیماران',
             RolesAndCapabilities::PATIENT_READ,

@@ -58,7 +58,7 @@ final class CustomRoleDefinitionsPage {
 		// (بدونِ cpms_config) به آن برسد؛ اما دیگر یک Top-Level مستقل نمی‌سازد.
 		// مجوز واقعی همان `render()` + سرویس‌های Clinic-scoped است.
 		add_submenu_page(
-			CpmsAdminMenu::parentSlug(),
+			CpmsAdminMenu::parent_slug(),
 			__( 'نقش‌های سفارشی', 'cpms' ),
 			__( 'نقش‌های سفارشی', 'cpms' ),
 			'read',
@@ -66,7 +66,7 @@ final class CustomRoleDefinitionsPage {
 			[ self::class, 'render' ]
 		);
 		// صفحهٔ مدیریتیِ پیشرفته: از ناوبری بخش‌ها و URL مستقیم در دسترس است.
-		CpmsAdminMenu::hideFromSubmenu( self::PAGE_SLUG );
+		CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
 	}
 
 	public static function render(): void {

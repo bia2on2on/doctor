@@ -55,7 +55,7 @@ final class SystemPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'سلامت سیستم',
             'سلامت سیستم',
             'cpms_config',

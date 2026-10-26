@@ -47,7 +47,7 @@ final class OrgManagerResponsiveAssetsTest extends WP_UnitTestCase
         wp_set_current_user((int) self::factory()->user->create(['role' => 'administrator']));
         $_GET['page'] = $slug;
 
-        self::assertTrue(OrgManagerAssets::isOrgManagerPage(), "{$slug} باید صفحهٔ مدیریت سازمان شناخته شود");
+        self::assertTrue(OrgManagerAssets::is_org_manager_page(), "{$slug} باید صفحهٔ مدیریت سازمان شناخته شود");
         self::assertStringContainsString(
             OrgManagerAssets::BODY_CLASS,
             OrgManagerAssets::bodyClass('wp-admin'),
@@ -68,7 +68,7 @@ final class OrgManagerResponsiveAssetsTest extends WP_UnitTestCase
 
         foreach (['cpms-dashboard', 'cpms-organizations', 'cpms-finance-delegation', 'cpms-not-a-page'] as $slug) {
             $_GET['page'] = $slug;
-            self::assertFalse(OrgManagerAssets::isOrgManagerPage(), "{$slug} نباید assets مدیریت سازمان بگیرد");
+            self::assertFalse(OrgManagerAssets::is_org_manager_page(), "{$slug} نباید assets مدیریت سازمان بگیرد");
             self::assertSame('wp-admin', OrgManagerAssets::bodyClass('wp-admin'));
         }
     }

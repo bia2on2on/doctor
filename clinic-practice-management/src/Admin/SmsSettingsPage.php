@@ -23,7 +23,7 @@ final class SmsSettingsPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'پیامک و اعلان‌ها',
             'پیامک و اعلان‌ها',
             RolesAndCapabilities::SMS_CONFIG,

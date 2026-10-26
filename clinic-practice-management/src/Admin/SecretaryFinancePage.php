@@ -33,7 +33,7 @@ final class SecretaryFinancePage
         // B-1: زیر «مدیریت مطب». دلیلِ مستقل‌بودنِ ثبت (capability `cpms_finance_read`
         // و نه `cpms_queue_read`) همچنان برجاست: حسابدار صف را نمی‌بیند اما مالی را می‌بیند.
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'مالی و تسویه',
             'مالی و تسویه',
             RolesAndCapabilities::FINANCE_READ,

@@ -137,7 +137,7 @@ final class AdminMenuTest extends WP_UnitTestCase
         // ویزارد واحد راه‌اندازی (cpms-wizard) اشاره می‌کند؛ بوت‌استرپ اولین مطب داخل همان ویزارد است.
         App::settings()->set('setup.completed', false);
 
-        $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $links = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
         $joined = implode(' ', $links);
 
         $this->assertStringContainsString('راه‌اندازی', $joined, 'قبل از تکمیل راه‌اندازی، لینک اصلی باید «راه‌اندازی» باشد');
@@ -149,7 +149,7 @@ final class AdminMenuTest extends WP_UnitTestCase
         $this->assertIsArray($candidate);
         App::first_practice_setup_service()->claim($this->admin, (int) $candidate['clinic_id'], 'مطب تست منو');
 
-        $linksAfterClaim = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $linksAfterClaim = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
         $joinedAfterClaim = implode(' ', $linksAfterClaim);
         $this->assertStringContainsString('page=cpms-wizard', $joinedAfterClaim, 'پس از بوت‌استرپ اولین مطب، لینک راه‌اندازی باید به ویزارد استاندارد برود');
     }
@@ -159,7 +159,7 @@ final class AdminMenuTest extends WP_UnitTestCase
         wp_set_current_user($this->admin);
         App::settings()->set('setup.completed', true);
 
-        $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $links = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
         $joined = implode(' ', $links);
 
         $this->assertStringContainsString('داشبورد CPMS', $joined, 'پس از تکمیل راه‌اندازی، لینک اصلی باید «داشبورد CPMS» باشد');
@@ -170,7 +170,7 @@ final class AdminMenuTest extends WP_UnitTestCase
         $user = self::factory()->user->create(['role' => 'subscriber']);
         wp_set_current_user($user);
         // subscriber هیچ cpms_* capability ندارد → لینک نباید ظاهر شود (بدون توان ارتقاء).
-        $links = CpmsAdminMenu::actionLinks(['<a href="#">Activate</a>']);
+        $links = CpmsAdminMenu::action_links(['<a href="#">Activate</a>']);
 
         $this->assertSame(['<a href="#">Activate</a>'], $links, 'کاربر بدون مجوز نباید لینک‌های مدیر را ببیند');
     }

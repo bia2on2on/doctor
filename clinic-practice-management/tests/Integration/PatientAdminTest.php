@@ -89,13 +89,13 @@ final class PatientAdminTest extends WP_UnitTestCase
             }
         }
         $this->assertSame(
-            [CpmsAdminMenu::parentSlug()],
+            [CpmsAdminMenu::parent_slug()],
             $topLevels,
             'تنها منوی Top-Level مجاز برای CPMS همان «مدیریت مطب» است'
         );
 
         $row = null;
-        foreach ($GLOBALS['submenu'][CpmsAdminMenu::parentSlug()] ?? [] as $candidate) {
+        foreach ($GLOBALS['submenu'][CpmsAdminMenu::parent_slug()] ?? [] as $candidate) {
             if (( $candidate[2] ?? '' ) === PatientAdminPage::PAGE_SLUG) {
                 $row = $candidate;
                 break;
