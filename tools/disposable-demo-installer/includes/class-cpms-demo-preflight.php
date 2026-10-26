@@ -511,8 +511,7 @@ class Preflight {
 			return $this->result( $id, $label, 'fail', 'cpms_rate_limits شامل ' . $unexpected_rate_limits . ' ردیف است؛ سایت یک‌بارمصرف خالی نیست.' );
 		}
 		$shared_ip_rate_limits = $this->platform->shared_ip_rate_limits_count();
-		$had_clean_teardown    = '1' === (string) $this->env->option_get( 'cpdd_had_clean_teardown', '' ) || null !== $this->manifest->tombstone();
-		if ( $shared_ip_rate_limits > 0 && ! $had_clean_teardown ) {
+		if ( $shared_ip_rate_limits > 0 && ! $this->manifest->had_clean_teardown() ) {
 			return $this->result( $id, $label, 'fail', 'cpms_rate_limits شامل ' . $shared_ip_rate_limits . ' ردیف است؛ سایت یک‌بارمصرف خالی نیست.' );
 		}
 

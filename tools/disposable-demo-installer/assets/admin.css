@@ -17,9 +17,9 @@
 .cpdd .cpdd-steps { padding-inline-start: 22px; }
 .cpdd .cpdd-steps li { margin-bottom: 6px; line-height: 1.9; }
 @media (max-width: 782px) {
-  #wpbody-content, .wrap.cpdd { max-width: 100%; overflow-x: hidden; margin-inline: 0; padding-inline: 8px; }
+  html, body, #wpwrap, #wpcontent, #wpbody, #wpbody-content, .wrap.cpdd { max-width: 100%; overflow-x: hidden; margin-inline: 0; padding-inline: 8px; box-sizing: border-box; }
   .cpdd table.widefat { display: block; overflow-x: auto; max-width: 100%; }
-  .cpdd input.regular-text, .cpdd input[name="cpdd_confirm"] { width: 100%; max-width: 100%; box-sizing: border-box; }
+  .cpdd input.regular-text, .cpdd input[name="cpdd_confirm"], .cpdd .button { width: 100%; max-width: 100%; box-sizing: border-box; white-space: normal; height: auto; }
 }
 @media (max-width: 420px) {
   .cpdd .cpdd-card { padding: 10px; }

@@ -22,9 +22,10 @@ defined( 'ABSPATH' ) || exit;
  */
 class Manifest {
 
-	public const OPTION    = 'cpdd_manifest';
-	public const TOMBSTONE = 'cpdd_tombstone';
-	public const FORMAT    = 1;
+	public const OPTION         = 'cpdd_manifest';
+	public const TOMBSTONE      = 'cpdd_tombstone';
+	public const CLEAN_TEARDOWN = 'cpdd_had_clean_teardown';
+	public const FORMAT         = 1;
 
 	/**
 	 * @var Env
@@ -194,13 +195,20 @@ class Manifest {
 	 * @return void
 	 */
 	public function write_tombstone( array $summary ): void {
-		$summary['at']     = $this->env->now_sql();
-		$summary['site']   = $this->site_fingerprint();
-		$summary['mac']    = $this->mac( $summary );
+		unset( $summary['mac'] );
+		$summary['at']   = $this->env->now_sql();
+		$summary['site'] = $this->site_fingerprint();
+		$summary['mac']  = $this->mac( $summary );
 		$this->env->option_set( self::TOMBSTONE, $summary );
 	}
 
 	/**
+	 * Load and verify the post-teardown tombstone record.
+	 *
+	 * Verifies both the HMAC seal and the current site fingerprint before
+	 * trusting the tombstone. Returns null when absent, tampered, or belonging
+	 * to another site/database/table prefix.
+	 *
 	 * @return array<string,mixed>|null
 	 */
 	public function tombstone(): ?array {
@@ -208,15 +216,65 @@ class Manifest {
 		if ( ! is_array( $raw ) ) {
 			return null;
 		}
+		if ( ! $this->verify( $raw ) ) {
+			return null;
+		}
+		if ( (string) ( $raw['site'] ?? '' ) !== $this->site_fingerprint() ) {
+			return null;
+		}
 
 		return $raw;
 	}
 
 	/**
+	 * Dismiss the visible tombstone card. When the dismissed tombstone was a
+	 * verified clean teardown for this exact site, preserve a sealed,
+	 * site-fingerprinted clean-teardown marker so reprovisioning on the same
+	 * disposable site remains possible after shared-IP rate-limit preservation.
+	 *
 	 * @return void
 	 */
 	public function clear_tombstone(): void {
+		$valid = $this->tombstone();
+		if ( is_array( $valid ) && true === ( $valid['clean'] ?? $valid['ok'] ?? false ) ) {
+			$marker        = array(
+				'clean'      => true,
+				'fixture_id' => (string) ( $valid['fixture_id'] ?? '' ),
+				'at'         => (string) ( $valid['at'] ?? $this->env->now_sql() ),
+				'site'       => $this->site_fingerprint(),
+			);
+			$marker['mac'] = $this->mac( $marker );
+			$this->env->option_set( self::CLEAN_TEARDOWN, $marker );
+		}
 		$this->env->option_delete( self::TOMBSTONE );
+	}
+
+	/**
+	 * Whether this exact site has a verified, untampered clean-teardown record.
+	 *
+	 * If a raw `cpdd_tombstone` option is present, it must pass HMAC and
+	 * site-fingerprint verification (`tombstone() !== null`) and report clean
+	 * completion; an invalid or cross-site tombstone always fails closed.
+	 *
+	 * @return bool
+	 */
+	public function had_clean_teardown(): bool {
+		$raw_tombstone = $this->env->option_get( self::TOMBSTONE, false );
+		if ( false !== $raw_tombstone && null !== $raw_tombstone ) {
+			$verified = $this->tombstone();
+
+			return is_array( $verified ) && true === ( $verified['clean'] ?? $verified['ok'] ?? false );
+		}
+
+		$marker = $this->env->option_get( self::CLEAN_TEARDOWN, false );
+		if ( ! is_array( $marker ) || ! $this->verify( $marker ) ) {
+			return false;
+		}
+		if ( (string) ( $marker['site'] ?? '' ) !== $this->site_fingerprint() ) {
+			return false;
+		}
+
+		return true === ( $marker['clean'] ?? false );
 	}
 
 	/**

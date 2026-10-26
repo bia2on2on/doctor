@@ -413,6 +413,22 @@ cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'globally shared IP 
 $post_state = ( new Preflight( $env, $platform, $manifest ) )->run();
 cpdd_assert( true === $post_state['ok'], 'preflight passes again after verified teardown' );
 
+// Verify tombstone HMAC and site-fingerprint checks on real WordPress before reprovisioning.
+$real_tombstone = get_option( Manifest::TOMBSTONE );
+$bad_mac_ts     = $real_tombstone;
+$bad_mac_ts['mac'] = str_repeat( '0', 64 );
+update_option( Manifest::TOMBSTONE, $bad_mac_ts, false );
+cpdd_assert( null === $manifest->tombstone(), 's3: tampered tombstone HMAC rejected by Manifest::tombstone()' );
+cpdd_assert( false === ( new Preflight( $env, $platform, $manifest ) )->run()['ok'], 's3: tampered tombstone cannot relax disposable-site preflight' );
+
+$cross_site_ts         = $real_tombstone;
+$cross_site_ts['site'] = str_repeat( 'a', 32 );
+update_option( Manifest::TOMBSTONE, $cross_site_ts, false );
+cpdd_assert( null === $manifest->tombstone(), 's3: cross-site tombstone rejected by Manifest::tombstone()' );
+cpdd_assert( false === ( new Preflight( $env, $platform, $manifest ) )->run()['ok'], 's3: cross-site tombstone cannot relax disposable-site preflight' );
+update_option( Manifest::TOMBSTONE, $real_tombstone, false );
+cpdd_assert( is_array( $manifest->tombstone() ), 's3: valid tombstone restored and verified' );
+
 // --- 6b. Full reprovisioning, second OTP challenge, and second teardown ---
 $manifest->clear_tombstone();
 $reprovisioned = $provisioner->provision( $admin_id );

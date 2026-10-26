@@ -1042,6 +1042,49 @@ $td_second = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )
 Cpdd_Test::ok( true === $td_second['ok'], 'reg-14c: second teardown completes cleanly' );
 Cpdd_Test::equals( 3, count( $ctx['platform']->tables_data['cpms_rate_limits'] ), 'reg-14c: shared-IP rate-limit counters remain preserved after second teardown' );
 
+// Verify tombstone HMAC and site-fingerprint enforcement before trusting tombstone in preflight.
+$valid_tombstone = $ctx['env']->option_get( Manifest::TOMBSTONE );
+Cpdd_Test::ok( is_array( $ctx['manifest']->tombstone() ), 'tombstone: valid sealed tombstone verified by Manifest::tombstone()' );
+
+$tampered_tombstone        = $valid_tombstone;
+$tampered_tombstone['mac'] = str_repeat( '0', 64 );
+$ctx['env']->option_set( Manifest::TOMBSTONE, $tampered_tombstone );
+Cpdd_Test::equals( null, $ctx['manifest']->tombstone(), 'tombstone: invalid HMAC rejected by Manifest::tombstone()' );
+Cpdd_Test::ok(
+	in_array( 'cpms_data', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'tombstone: invalid HMAC tombstone cannot relax disposable-site preflight when shared-IP rate limits exist'
+);
+
+$unsealed_tombstone = $valid_tombstone;
+unset( $unsealed_tombstone['mac'] );
+$ctx['env']->option_set( Manifest::TOMBSTONE, $unsealed_tombstone );
+Cpdd_Test::equals( null, $ctx['manifest']->tombstone(), 'tombstone: missing HMAC rejected by Manifest::tombstone()' );
+Cpdd_Test::ok(
+	in_array( 'cpms_data', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'tombstone: unsealed tombstone cannot relax disposable-site preflight'
+);
+
+$ctx['env']->option_set( Manifest::TOMBSTONE, $valid_tombstone );
+$orig_home        = $ctx['env']->home;
+$ctx['env']->home = 'https://other-site.example.test/';
+Cpdd_Test::equals( null, $ctx['manifest']->tombstone(), 'tombstone: cross-site tombstone rejected by Manifest::tombstone()' );
+Cpdd_Test::ok(
+	in_array( 'cpms_data', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'tombstone: cross-site tombstone cannot relax disposable-site preflight'
+);
+$ctx['env']->home = $orig_home;
+Cpdd_Test::ok(
+	true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'tombstone: restoring matching site identity restores verified tombstone preflight pass'
+);
+$ctx['manifest']->clear_tombstone();
+$ctx['env']->home = 'https://other-site.example.test/';
+Cpdd_Test::ok(
+	in_array( 'cpms_data', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'tombstone: cross-site dismissed tombstone marker cannot relax disposable-site preflight'
+);
+$ctx['env']->home = $orig_home;
+
 // 14d. OTP audit ownership & adversarial 4-digit suffix collision fail-closed checks.
 // Clinic-scoped OTP challenge and audit row for synthetic 0900 mobile without suffix collision is attributed and removed.
 $ctx  = cpdd_fixture();

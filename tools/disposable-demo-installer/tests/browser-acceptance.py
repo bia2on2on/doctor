@@ -124,7 +124,7 @@ def assert_rtl_and_no_overflow(page, label: str, widths=(320, 390)) -> None:
         page.wait_for_timeout(200)
         metrics = page.evaluate(
             """() => {
-                const root = document.querySelector('.cpdd, .cpms-public-booking, #cpms-patient-portal-shell, [data-cpms-org], body');
+                const root = document.querySelector('.cpdd, .cpms-public-booking, #cpms-patient-portal-shell, .cpms-portal-shell, [data-cpms-org]') || document.body;
                 const dir = root ? getComputedStyle(root).direction : getComputedStyle(document.documentElement).direction;
                 return {
                     dir,
@@ -134,8 +134,13 @@ def assert_rtl_and_no_overflow(page, label: str, widths=(320, 390)) -> None:
             }"""
         )
         check(
-            f"{label} RTL + no horizontal overflow at {width}px",
-            metrics["dir"] == "rtl" and metrics["scrollWidth"] <= metrics["clientWidth"] + 2,
+            f"{label} RTL direction at {width}px",
+            metrics["dir"] == "rtl",
+            json.dumps(metrics),
+        )
+        check(
+            f"{label} no horizontal overflow at {width}px",
+            metrics["scrollWidth"] <= metrics["clientWidth"] + 2,
             json.dumps(metrics),
         )
 
@@ -471,6 +476,7 @@ def main() -> None:
             arrive_btn.wait_for(state="visible", timeout=35000)
             arrive_btn.click()
             arrive_btn.wait_for(state="detached", timeout=35000)
+            assert_rtl_and_no_overflow(rec_page, "Staff portal")
             rec_ctx.close()
             contexts.remove(rec_ctx)
 

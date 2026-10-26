@@ -91,13 +91,14 @@ identifiers (`clinic_id`, `organization_id`, `patient_id`, `wp_user_id`,
   logins). Shared PHP-process `request_id` (`cpms_request_id()`) correlation is
   **never** used.
 - **`cpms_audit_logs`:** Clinic-scoped rows (`clinic_id = N`) are matched only when
-  `resource_type <> 'otp'` or `after_json.mobile` matches the masked synthetic
-  `0900` patient mobile (`***XXXX`). Unscoped public OTP audit rows
-  (`clinic_id IS NULL AND resource_type = 'otp'`) are matched only when an unscoped
-  `cpms_otp_tokens` row exists for the synthetic `0900` patient mobile and zero
-  foreign mobiles in `cpms_otp_tokens`, `cpms_patients`, or `cpms_sms_messages`
-  share the same 4-digit suffix. Any foreign or suffix-colliding OTP audit row
-  blocks teardown.
+  `resource_type <> 'otp'` or (`after_json.mobile` matches the masked synthetic
+  `0900` patient mobile `***XXXX` **and** `Platform::otp_suffix_unambiguous()`
+  confirms zero foreign mobiles in `cpms_otp_tokens`, `cpms_patients`, or
+  `cpms_sms_messages` share the same 4-digit suffix). Unscoped OTP audit rows
+  (`clinic_id IS NULL AND resource_type = 'otp'`) carry only a 4-digit masked
+  mobile suffix and **always fail closed** during teardown (they are never matched
+  or deleted). Any unscoped, foreign, or suffix-colliding OTP audit row blocks
+  teardown.
 - **`cpms_rate_limits`:** Only entity-scoped keys exclusively owned by the fixture
   (`otp-day:<0900-mobile>`, `otp-hour:<0900-mobile>`, `login-user:<32-hex-persona>`,
   and per-fixture-user keys such as `booking-<uid>`) are deleted during teardown.
@@ -105,8 +106,10 @@ identifiers (`clinic_id`, `organization_id`, `patient_id`, `wp_user_id`,
   `login-ip:<ip>`) cannot be proven to belong exclusively to the demo from an IP
   match alone and are **preserved** across teardown (left for production CPMS's
   `cleanup.rate_limits` recurring job) and permitted on subsequent reprovisioning
-  after a verified teardown tombstone (`cpdd_had_clean_teardown`). Any foreign
-  entity rate-limit row blocks both preflight and teardown.
+  only when `Manifest::had_clean_teardown()` verifies an HMAC-sealed,
+  site-fingerprinted teardown tombstone (`cpdd_tombstone` / `cpdd_had_clean_teardown`).
+  Any foreign entity rate-limit row or invalid/cross-site tombstone blocks preflight
+  and teardown.
 
 Tables whose ownership cannot be proven **block** the whole teardown (nothing is
 deleted). Deletion is scoped to those proven predicates, then re-verified; the
@@ -118,13 +121,14 @@ container.
 ## Verification & test suites
 
 - **Unit & security negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
-  (197 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
-  enforcement, manifest HMAC tamper & site-transplant detection, CSPRNG credential generation
-  & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider guardrails,
-  concurrency lock contention, partial provisioning and interrupted teardown fault-injection recovery,
-  safe uninstall preservation when a fixture is active, shared `request_id` isolation, shared-IP
-  rate-limit preservation, unambiguous unscoped OTP audit attribution, repeated provisioning and
-  second teardown, and durable ownership-proofed teardown across all 43 `cpms_*` tables).
+  (213 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
+  enforcement, manifest & tombstone HMAC tamper and site-transplant detection, CSPRNG credential
+  generation & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider
+  guardrails, concurrency lock contention, partial provisioning and interrupted teardown
+  fault-injection recovery, safe uninstall preservation when a fixture is active, shared `request_id`
+  isolation, shared-IP rate-limit preservation, fail-closed unscoped OTP audit handling and
+  clinic-scoped 4-digit suffix collision rejection, repeated provisioning and second teardown,
+  and durable ownership-proofed teardown across all 43 `cpms_*` tables).
 - **Real-WordPress integration acceptance:** `tools/disposable-demo-installer/tests/integration-wp.php`
   (executed in `.github/workflows/disposable-demo-installer.yml` on a clean WordPress 7.1.3 +
   MySQL 8 + production CPMS 1.0.0 ZIP + companion `cpms-disposable-demo-1.0.0.zip`, including

@@ -862,7 +862,7 @@ class Teardown {
 			'ok'                              => true,
 		);
 		$this->env->option_delete( 'cpdd_uninstall_blocked' );
-		$this->env->option_set( 'cpdd_had_clean_teardown', '1' );
+		$this->env->option_delete( Manifest::CLEAN_TEARDOWN );
 		$this->manifest->write_tombstone( $tombstone );
 		$this->manifest->delete();
 
