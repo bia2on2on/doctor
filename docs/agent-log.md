@@ -2312,14 +2312,26 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
 - **E — cron repair contract:** `CronScheduleRepair::repair()` now returns `scheduled|present|failed|
   unsupported`, and `self_heal_in_admin_result()` sets the throttle **only** for the two good outcomes.
   Previously the marker was written before the attempt (a failure was suppressed for an hour) and the log
-  line was emitted only on the success path. Auto-repair stays on `admin_init`, so no anonymous
-  front-end request reads or rewrites the `cron` option.
+  line was emitted only on the success path. Auto-repair stays on `admin_init`.
+  **Correction (pass 5):** the first version of this mission also removed the idempotent registration from
+  `App::boot()`. That broke a merged main contract
+  (`JobFastWakeContractRedTest::testRecurringMinuteTickRemainsRegisteredAndUnchanged` errors with
+  "Attempt to read property \"schedule\" on bool"), so registration is back in `boot()` — unchanged from
+  main — and only the *write* is conditional: `ensure_scheduled()` reads the autoloaded `cron` option and
+  schedules only when the event is absent, so a healthy anonymous request performs no cron write. The
+  branch's own contract test was rewritten to pin exactly that (single registration path, no direct
+  `wp_schedule_event()` in `boot()`).
 - **B — per-Clinic accessors:** `App::system_health_service()` and `App::updateService()` were single
   process-wide instances, so a request that legitimately switched Clinic scope reused the first Clinic's
   `Settings` object (license gateway, storage paths, health rows). Both are now keyed
   (`installation` / `clinic:{id}`), matching the scope-free path, which was already un-memoized.
-- **F — assets:** `cpms-organization-managers` and `cpms-organization-manager-bootstrap` were registered
-  management screens and were missing from `CpmsAssets::PAGES`; both are now in the allowlist.
+- **F — assets:** `cpms-custom-roles`, `cpms-finance-delegation`, `cpms-facility-setup` and
+  `cpms-shortcodes` were registered management screens with no scoped assets and are now in
+  `CpmsAssets::PAGES`. The two organization screens were **reverted** out of the allowlist in pass 5: the
+  merged main contract `IranGeographyAddressFormsTest` defines
+  `cpms-organization-managers`/`cpms-organization-manager-bootstrap` as pages *without* geography/admin-JS
+  controls and asserts they are not recognized by `CpmsAssets`; their small-width layout must be fixed in
+  their own markup instead of by widening the allowlist.
 - **Tests written/updated this pass:** `DatabaseCompatibilityGateParityTest` (bidirectional parity matrix
   plus a source assertion that the migration delegates and carries no local regex),
   `ServiceScopeMemoizationTest` (A→B→A identity, and a `license.gateway` row that differs per Clinic),

@@ -12,10 +12,11 @@ use WP_UnitTestCase;
  * E — زمان‌بندیِ صف: ترمیمِ مقید، ثبتِ واقعی، و بدونِ کارِ بی‌مورد روی درخواستِ عمومی.
  *
  * نقص‌های تأییدشده که این تست پوشش می‌دهد:
- *  - E1: `ensure_scheduled()` بی‌قید در `App::boot()` صدا زده می‌شد، یعنی روی
- *    **هر** درخواست — از جمله بازدیدِ آنونیمِ فرانت‌اند — یک بررسیِ
- *    `wp_next_scheduled()` (خواندنِ Optionِ `cron`) و در بدترین حالت یک
- *    `wp_schedule_event()` انجام می‌شد.
+ *  - E1: ترمیمِ خودکارِ سمتِ مدیریت نشانگرِ throttle را **قبل** از تلاش ست
+ *    می‌کرد و لاگ فقط در مسیرِ موفق نوشته می‌شد (پوشش: `self_heal_in_admin_*`).
+ *    ثبتِ رویداد در `boot()` حفظ شده است، چون قراردادِ fast-wake
+ *    (`JobFastWakeContractRedTest`) ثابت می‌کند پس از بارگذاریِ افزونه رویدادِ
+ *    دقیقه‌ای ثبت است؛ تنها **نوشتن** مشروط است، نه خواندن.
  *  - E3: `self_heal_in_admin()` نشانگرِ throttle را **قبل** از تلاش ست می‌کرد،
  *    پس یک شکست هم یک ساعت سرکوب می‌شد؛ و لاگ فقط در مسیرِ موفق نوشته می‌شد
  *    در حالی که ترمیمِ خاموشِ قبلی می‌توانست آن را بی‌صدا پاک کند.
@@ -115,12 +116,14 @@ final class CronScheduleRepairTest extends WP_UnitTestCase
     }
 
     /**
-     * E1 (سطحِ کد) — `boot()` نباید `ensure_scheduled()` را بی‌قید صدا بزند.
+     * E1 (سطحِ کد) — ثبتِ رویداد در `boot()` یک‌جا و از مسیرِ واحد است.
      *
-     * این یک تستِ قراردادِ منبع است: اگر کسی دوباره آن فراخوانی را به boot
-     * برگرداند، همان درخواستِ آنونیمِ فرانت‌اند دوباره cron را بررسی می‌کند.
+     * قراردادِ fast-wake (تستِ main) می‌گوید پس از بارگذاریِ افزونه رویدادِ
+     * دقیقه‌ایِ `cpms_jobs_tick` ثبت است؛ پس boot باید ثبت کند. این تست جلوی
+     * بازگشتِ **ثبتِ موازی** را می‌گیرد: هیچ `wp_schedule_event()` مستقیمی در
+     * boot نباشد و ترمیمِ ثبت‌شده از `CronScheduleRepair` بیاید.
      */
-    public function testBootDoesNotInspectCronOnEveryRequest(): void
+    public function testBootRegistersTheRecurringTickThroughOnePath(): void
     {
         $source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/src/Bootstrap/App.php' );
 
@@ -132,10 +135,15 @@ final class CronScheduleRepairTest extends WP_UnitTestCase
         // بدنهٔ boot تا پایانِ همان متد (تقریبی و کافی: تا شروعِ activate()).
         $bootBody = substr( $source, $bootStart, $activateStart - $bootStart );
 
-        self::assertStringNotContainsString(
-            'CronScheduleRepair::ensure_scheduled()',
+        self::assertStringContainsString(
+            'CronScheduleRepair::ensure_scheduled();',
             $bootBody,
-            'boot() روی هر درخواست (از جمله فرانت‌اندِ آنونیم) نباید زمان‌بندی را بررسی/ترمیم کند.'
+            'boot() باید رویدادِ دقیقه‌ای را (به‌صورتِ idempotent) ثبت کند؛ قراردادِ fast-wake به آن تکیه دارد.'
+        );
+        self::assertStringNotContainsString(
+            'wp_schedule_event(',
+            $bootBody,
+            'ثبتِ مستقیم در boot ممنوع است؛ تنها مسیرِ مجاز CronScheduleRepair است.'
         );
         self::assertStringContainsString(
             "add_action( 'admin_init', \$cron_self_heal, 20 )",

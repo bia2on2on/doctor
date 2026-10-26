@@ -619,3 +619,27 @@ Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی باز�
 > **صریح‌سازی:** این ردیف یک **نقصِ مستنداتی (cross-reference)** است، نه نقصِ محصول: کدِ واقعیِ Export
 > همان‌طور که در `api-contract.md` G5 و تست‌های موجود ثبت است async است و این ثبت آن رفتار را تغییر نمی‌دهد.
 > **هیچ** ادعایی دربارهٔ «بهینه‌سازیِ عملکردِ لازم بودن» از این ردیف استخراج نشود.
+
+---
+
+## بخش ۱۱ — اصلاحاتِ pass 5 (تعارض با قراردادهای موجودِ main)
+
+دو تغییرِ این PR با **قراردادهای تست‌شدهٔ main** تعارض داشتند. چون اصلِ کار «بدونِ تضعیفِ
+گیت‌ها» است، هر دو به نفعِ قراردادِ main اصلاح شدند (نه به نفعِ تست‌های این برنچ).
+
+### ۱۱-A — بازگرداندنِ ثبتِ رویدادِ دقیقه‌ای به `App::boot()`
+
+| | |
+|---|---|
+| **علامت** | `Integration (WP 7.1 + MySQL 8)` → `JobFastWakeContractRedTest::testRecurringMinuteTickRemainsRegisteredAndUnchanged` با خطای `Attempt to read property "schedule" on bool` |
+| **علت** | مأموریت E ثبتِ idempotent را کاملاً از `boot()` به `admin_init` منتقل کرده بود؛ در محیطِ تست `admin_init` اجرا نمی‌شود، پس `wp_get_scheduled_event('cpms_jobs_tick')` مقدار `false` برمی‌گرداند |
+| **اقدام** | `CronScheduleRepair::ensure_scheduled()` به `boot()` برگشت (رفتارِ main). تضمینِ باقی‌مانده: خواندنِ Optionِ autoload‌شدهٔ `cron` + **نوشتن فقط وقتی رویداد غایب است**؛ مسیرِ `admin_init` (throttle + لاگِ `CPMS_CRON_SCHEDULE_REPAIRED`/`..._FAILED`) دست‌نخورده ماند |
+| **تستِ برنچ** | `CronScheduleRepairTest::testBootRegistersTheRecurringTickThroughOnePath` — مسیرِ ثبت یکتاست و `wp_schedule_event(` مستقیم در `boot()` ممنوع است |
+
+### ۱۱-B — بازگرداندنِ دو صفحهٔ سازمان از allowlistِ `CpmsAssets`
+
+| | |
+|---|---|
+| **علامت** | `IranGeographyAddressFormsTest::testCpmsAssetsRecognizesAndEnqueuesOnOrganizationClinicAndLocationPages` — «Page cpms-organization-manager-bootstrap must not be in CpmsAssets allowlist» |
+| **علت** | مأموریت F دو صفحهٔ `cpms-organization-managers` و `cpms-organization-manager-bootstrap` را به `CpmsAssets::PAGES` افزوده بود؛ قراردادِ main صریحاً این دو را «بدونِ کنترلِ جغرافیایی/JSِ عمومی» تعریف می‌کند |
+| **اقدام** | هر دو از allowlist حذف شدند؛ چهار صفحهٔ دیگر (`cpms-custom-roles`، `cpms-finance-delegation`، `cpms-facility-setup`، `cpms-shortcodes`) می‌مانند. رفعِ overflow در عرضِ کوچک باید در مارک‌آپِ خودِ همان صفحه‌ها انجام شود |
