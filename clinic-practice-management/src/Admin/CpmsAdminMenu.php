@@ -421,7 +421,20 @@ final class CpmsAdminMenu {
 		}
 		global $pagenow;
 		if ( 'tools.php' === ( $pagenow ?? '' ) || 'options-general.php' === ( $pagenow ?? '' ) ) {
-			wp_safe_redirect( admin_url( 'admin.php?page=' . $page ) );
+			// کوئریِ باقی‌مانده باید حفظ شود: فرمِ صفحهٔ کدهای کوتاه با GET ارسال
+			// می‌شود و `clinic_id` را در URL می‌آورد؛ حذفِ آن کاربر را به صفحهٔ
+			// خالی برمی‌گرداند (رگرسیونِ observable در Real WP Acceptance:
+			// `admin.cpms-shortcodes.generated_registered_tag`).
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- انتقالِ شفافِ همان درخواست؛ هیچ مقداری اعتبارسنجی/ذخیره نمی‌شود
+			$forward = is_array( $_GET ) ? wp_unslash( $_GET ) : array();
+			unset( $forward['page'] );
+			$args = array();
+			foreach ( $forward as $key => $value ) {
+				if ( is_string( $key ) && is_scalar( $value ) ) {
+					$args[ sanitize_key( $key ) ] = sanitize_text_field( (string) $value );
+				}
+			}
+			wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=' . $page ) ) );
 			exit;
 		}
 	}

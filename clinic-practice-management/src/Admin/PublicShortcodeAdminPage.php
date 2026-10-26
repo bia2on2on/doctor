@@ -64,7 +64,7 @@ final class PublicShortcodeAdminPage {
 			<p class="description">کد کوتاه را در محتوای برگه یا نوشتهٔ وردپرس، یا در بلوک «کد کوتاه»، قرار دهید. این ابزار برگه‌ای به‌صورت خودکار ایجاد نمی‌کند؛ محل نمایش را خودتان انتخاب کنید.</p>
 
 			<?php if ( $clinic_choices !== array() ) : ?>
-				<form method="get" action="<?php echo esc_url( admin_url( 'tools.php' ) ); ?>">
+				<form method="get" action="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>">
 					<input type="hidden" name="page" value="<?php echo esc_attr( self::PAGE_SLUG ); ?>">
 					<label for="cpms_shortcode_clinic">Clinic مجاز</label>
 					<select id="cpms_shortcode_clinic" name="clinic_id" required>

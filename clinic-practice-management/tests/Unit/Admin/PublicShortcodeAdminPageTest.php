@@ -32,6 +32,21 @@ final class PublicShortcodeAdminPageTest extends TestCase {
 		self::assertStringNotContainsString( 'register_rest_route(', $this->source );
 	}
 
+	/**
+	 * رگرسیونِ واقعیِ Real WP Acceptance: فرم با GET ارسال می‌شود و اگر action به
+	 * مسیرِ legacy (`tools.php`) اشاره کند، redirectِ سازگاری باید `clinic_id` را
+	 * حفظ کند — وگرنه صفحه با انتخابِ خالی برمی‌گردد و کد کوتاه تولید نمی‌شود.
+	 */
+	public function testFormPostsBackToTheCanonicalPageAndKeepsTheClinicSelector(): void {
+		self::assertStringContainsString(
+			"admin_url( 'admin.php?page=' . self::PAGE_SLUG )",
+			$this->source,
+			'form action must be the canonical CPMS page URL'
+		);
+		self::assertStringNotContainsString( "admin_url( 'tools.php' )", $this->source );
+		self::assertStringContainsString( 'type="hidden" name="page"', $this->source );
+	}
+
 	public function testGeneratedValueIsClinicScopedAndPageDoesNotCreateContent(): void {
 		self::assertStringContainsString( 'sprintf( \'[%s clinic_id="%d"]\', $tag, $clinic_id )', $this->source );
 		self::assertStringContainsString( 'if ( (int) $choice[\'clinic_id\'] === $requested_clinic_id )', $this->source );

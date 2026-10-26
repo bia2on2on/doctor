@@ -2550,3 +2550,28 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   `tests/Unit/WooCommerceAdminAccessTest::testRegistryIsClosedToCpmsOwnedPagesOnly` آن را رد می‌کند).
   به‌جای گسترش، assertionِ driftِ دوطرفه به رَجیستریِ واقعیِ منو (`CpmsAdminMenu::PAGES`) گره خورد.
 - **آلودگیِ بین‌تستی:** `reset_hidden_rows()` به helperِ `resetMenuGlobals()` اضافه شد.
+
+### Pass 9 — ریشه‌یابیِ شکست‌های Runtime (Real WP Acceptance + Disposable Site)
+
+- **B-1 / redirect قدیمی (باگِ واقعی، کشف‌شده از شواهدِ Runtime):** `redirect_legacy()` کوئریِ
+  باقی‌مانده را دور می‌ریخت. صفحهٔ «کدهای کوتاه» یک فرمِ `GET` دارد که `clinic_id` را در URL می‌آورد؛
+  پس از redirect به `admin.php?page=cpms-shortcodes` انتخاب پاک می‌شد و دو checkِ
+  `admin.cpms-shortcodes.generated_registered_tag` و `admin.cpms-shortcodes.copy_fallback_available`
+  قرمز می‌شدند (هر دو prefix). رفع: انتقالِ شفافِ همان کوئری با `add_query_arg()` (کلیدها/مقادیر
+  sanitize می‌شوند، `page` حذف می‌شود) + تغییرِ `action` فرمِ همان صفحه به URLِ canonical.
+  تستِ رگرسیون: `PublicShortcodeAdminPageTest::testFormPostsBackToTheCanonicalPageAndKeepsTheClinicSelector`
+  و `AdminUnifiedMenuTest::testLegacyRedirectKeepsTheRemainingQueryArguments`.
+- **پنهان‌سازیِ زیرمنو باید پس از بررسیِ دسترسیِ هسته باشد:** حذفِ ردیف در `admin_menu` باعث می‌شد
+  `user_can_access_admin_page()` والد را پیدا نکند و URL مستقیم `403` شود (شاهد: First-practice browser،
+  `admin.cpms-first-practice-setup.http200`). اکنون ردیف در لحظهٔ ثبت فقط **ضبط** می‌شود و حذفِ نمایشی
+  روی `admin_head` با `remove_submenu_page()` انجام می‌شود.
+- **شواهدِ گم‌شده را قابلِ‌خواندن کردیم (بدون تغییرِ معیار):** خطِ verdictِ هم‌زیستی اکنون نامِ checkهای
+  قرمزِ Stage B را هم می‌آورد؛ گامِ پذیرشِ 320/390 لاگِ خودش را در مسیرِ قابلِ‌انتشار می‌نویسد و همان
+  summary در کامنتِ شواهدِ Responsive چاپ می‌شود. با همین‌ها علتِ قرمزیِ laneهای باقی‌مانده مشخص شد:
+  `existing_harness::browser_acceptance` + `existing_acceptance_complete` (که خودشان از همین دو
+  checkِ لوکال مشتق می‌شوند) — و در موردِ Disposable Site، امتناعِ زمان‌محورِ fixture
+  (`SLOT_TIME: provision at least 50 minutes before Tehran midnight`)، نه نقصِ محصول.
+- **اصلاحِ معیارِ تستِ خودمان (نه محصول):** گیتِ `lang-fa` در `pilot-admin-narrow.py` در واقع locale
+  نصب (en_US) را می‌سنجید؛ جای آن، RTL بودنِ سند و حضورِ متنِ فارسیِ رابط سنجیده می‌شود. تاگلِ سایدبار
+  نیز به‌جای خواندنِ فوریِ ۱۲۰ms با انتظارِ کران‌دار + تاییدِ «منو قابلِ مشاهده است» سنجیده می‌شود.
+

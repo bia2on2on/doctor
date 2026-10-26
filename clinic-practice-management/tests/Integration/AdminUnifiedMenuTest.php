@@ -430,6 +430,34 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         self::assertSame([], $this->cpmsTopLevelSlugs(), 'کاربر بی‌دسترسی نباید منوی «مدیریت مطب» را ببیند');
     }
 
+    /**
+     * مسیرهای قدیمیِ Tools/Settings همچنان باید کار کنند و **کوئریِ باقی‌مانده** را
+     * از دست ندهند: فرمِ «کدهای کوتاه» با GET ارسال می‌شود و `clinic_id` را در URL
+     * می‌آورد. حذفِ آن، کاربر را به صفحهٔ خالی برمی‌گرداند (رگرسیونِ observable در
+     * Real WP Acceptance: admin.cpms-shortcodes.generated_registered_tag).
+     */
+    public function testLegacyRedirectKeepsTheRemainingQueryArguments(): void {
+        $source = (string) file_get_contents(dirname(__DIR__, 2) . '/src/Admin/CpmsAdminMenu.php');
+
+        self::assertStringContainsString(
+            "add_query_arg( \$args, admin_url( 'admin.php?page=' . \$page ) )",
+            $source,
+            'legacy redirect must forward the remaining query arguments'
+        );
+        self::assertStringContainsString(
+            'unset( $forward[\'page\'] )',
+            $source,
+            'the page selector itself must not be duplicated'
+        );
+        foreach (['cpms-system', 'cpms-settings', 'cpms-shortcodes', 'cpms-clinicians', 'cpms-roles'] as $legacy) {
+            self::assertContains(
+                $legacy,
+                \ClinicCore\Admin\CpmsAdminMenu::PAGES,
+                "{$legacy} must stay registered after the legacy re-home"
+            );
+        }
+    }
+
     // ------------------------------------------------------------------
     // 4) رَجیستری ↔ ثبت واقعی (بدون drift)
     // ------------------------------------------------------------------
