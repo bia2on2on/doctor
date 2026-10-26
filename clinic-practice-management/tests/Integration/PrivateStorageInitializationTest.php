@@ -256,7 +256,7 @@ final class PrivateStorageInitializationTest extends WP_UnitTestCase
      */
     public function testHealthRowForMissingStorageRootIsAFailureNotOptional(): void
     {
-        $health = App::systemHealthService()->run();
+        $health = App::system_health_service()->run();
         $row    = null;
         foreach ( $health['checks'] as $check ) {
             if ( 'storage.files' === $check['key'] ) {

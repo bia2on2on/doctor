@@ -45,7 +45,7 @@ final class Phase18Slice1RuntimeCompatibilityTest extends WP_UnitTestCase
 
     public function testHealthReportContainsExplicitWordPressAndDatabaseServerChecks(): void
     {
-        $report = App::systemHealthService()->run();
+        $report = App::system_health_service()->run();
 
         self::assertArrayHasKey('checks', $report);
         /** @var list<array{key:string,label:string,status:string,detail:string}> $checks */

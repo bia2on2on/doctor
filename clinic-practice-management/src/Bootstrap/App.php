@@ -1796,7 +1796,7 @@ final class App
     /**
      * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
      */
-    public static function systemHealthService(): SystemHealthService {
+    public static function system_health_service(): SystemHealthService {
         // Installation-wide health must be readable on a multi-Clinic install
         // with no ambient ClinicScope. Clinic-local settings are passed only
         // when a trusted scope already exists; no Clinic is ever inferred.

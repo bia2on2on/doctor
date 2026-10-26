@@ -643,7 +643,7 @@ final class CpmsSetupWizard
 
     private static function renderHealth(): void
     {
-        $result = App::systemHealthService()->run();
+        $result = App::system_health_service()->run();
         $checks = $result['checks'] ?? [];
         ?>
         <div class="card">

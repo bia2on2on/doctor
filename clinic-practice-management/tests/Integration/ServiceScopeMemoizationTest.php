@@ -15,7 +15,7 @@ use WP_UnitTestCase;
  *
  * ریشهٔ نقص (واقعی، در کدِ قبل از این تغییر):
  *  - `App::updateService()` یک `static $updates` تک‌متغیره داشت و
- *  - `App::systemHealthService()` یک `static $health` تک‌متغیره داشت.
+ *  - `App::system_health_service()` یک `static $health` تک‌متغیره داشت.
  *
  * هر دو، `Settings`ِ Clinicِ **اولین** فراخوانی را برای تمامِ عمرِ فرآیندِ PHP
  * نگه می‌داشتند. در یک فرآیند با چند Clinic (WP-CLI، PHPUnit، یا هر جریانِ
@@ -106,9 +106,9 @@ final class ServiceScopeMemoizationTest extends WP_UnitTestCase
 
     public function testHealthServiceInstanceDiffersPerClinicAndIsStablePerClinic(): void
     {
-        $a1 = $this->withScope( $this->clinicA, static fn () => App::systemHealthService() );
-        $b1 = $this->withScope( $this->clinicB, static fn () => App::systemHealthService() );
-        $a2 = $this->withScope( $this->clinicA, static fn () => App::systemHealthService() );
+        $a1 = $this->withScope( $this->clinicA, static fn () => App::system_health_service() );
+        $b1 = $this->withScope( $this->clinicB, static fn () => App::system_health_service() );
+        $a2 = $this->withScope( $this->clinicA, static fn () => App::system_health_service() );
 
         self::assertNotSame( $a1, $b1, 'دو Clinic نباید یک نمونهٔ سرویس را به اشتراک بگذارند.' );
         self::assertSame( $a1, $a2, 'همان Clinic باید همان نمونه را بگیرد (کشِ per-Clinic).' );
@@ -131,7 +131,7 @@ final class ServiceScopeMemoizationTest extends WP_UnitTestCase
     {
         $this->withScope( $this->clinicB, static function (): void {
             App::updateService();
-            App::systemHealthService();
+            App::system_health_service();
         });
 
         App::resetScope();
@@ -149,7 +149,7 @@ final class ServiceScopeMemoizationTest extends WP_UnitTestCase
         return $this->withScope(
             $clinicId,
             static function () use ( $clinicId ): array {
-                foreach ( App::systemHealthService()->run()['checks'] as $check ) {
+                foreach ( App::system_health_service()->run()['checks'] as $check ) {
                     if ( 'license.gateway' === $check['key'] ) {
                         return $check;
                     }

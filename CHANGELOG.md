@@ -12,7 +12,7 @@
 - **F — the last two Organization Manager screens receive scoped assets.** `cpms-organization-managers` and `cpms-organization-manager-bootstrap` were registered management screens missing from `CpmsAssets::PAGES`.
 
 ### Changed (remediation pass 2)
-- `App::systemHealthService()` and `App::updateService()` memoize **per Clinic** (`installation` / `clinic:{id}`) instead of a single process-wide instance, so a request that legitimately switches Clinic scope can never read the previous Clinic's settings, license gateway or health rows. Covered by `ServiceScopeMemoizationTest`.
+- `App::system_health_service()` (renamed from the camelCase accessor, pre-existing call sites updated) and `App::updateService()` memoize **per Clinic** (`installation` / `clinic:{id}`) instead of a single process-wide instance, so a request that legitimately switches Clinic scope can never read the previous Clinic's settings, license gateway or health rows. Covered by `ServiceScopeMemoizationTest`.
 - `docs/settings-reference.md` describes the new outside-DocumentRoot default for `files.storage_path`, the rejection rule and the documented remedy.
 
 

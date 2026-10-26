@@ -42,7 +42,7 @@ final class CpmsDashboard
         $setup_complete = $setup_flag === true;
         $scope_required = $setup_flag === null;
 
-        $health = self::safe(fn () => App::systemHealthService()->run());
+        $health = self::safe(fn () => App::system_health_service()->run());
         $queue = self::safe(fn () => App::queueHealth());
         $license = self::safe(fn () => App::licenseService()->statusMeta());
         $backups = self::safe(fn () => App::backupService()->listBackups());

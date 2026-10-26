@@ -94,7 +94,7 @@ final class SystemPage
             $health = $health_override;
         } else {
             try {
-                $health = App::systemHealthService()->run();
+                $health = App::system_health_service()->run();
             } catch ( ScopeRequiredException ) {
                 // Multi-Clinic install: some health probes read Clinic configuration.
                 // No Clinic is inferred; the rest of the page stays available.

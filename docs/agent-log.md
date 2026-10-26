@@ -2314,7 +2314,7 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   Previously the marker was written before the attempt (a failure was suppressed for an hour) and the log
   line was emitted only on the success path. Auto-repair stays on `admin_init`, so no anonymous
   front-end request reads or rewrites the `cron` option.
-- **B — per-Clinic accessors:** `App::systemHealthService()` and `App::updateService()` were single
+- **B — per-Clinic accessors:** `App::system_health_service()` and `App::updateService()` were single
   process-wide instances, so a request that legitimately switched Clinic scope reused the first Clinic's
   `Settings` object (license gateway, storage paths, health rows). Both are now keyed
   (`installation` / `clinic:{id}`), matching the scope-free path, which was already un-memoized.
