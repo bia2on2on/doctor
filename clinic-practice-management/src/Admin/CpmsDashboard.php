@@ -42,14 +42,14 @@ final class CpmsDashboard
         $setup_complete = $setup_flag === true;
         $scope_required = $setup_flag === null;
 
-        $health = self::safe(fn () => App::system_health_service()->run());
-        $queue = self::safe(fn () => App::queueHealth());
-        $license = self::safe(fn () => App::licenseService()->statusMeta());
-        $backups = self::safe(fn () => App::backupService()->listBackups());
-        $sms = self::safe(fn () => App::smsService()->status());
-        $todayAppointments = self::safe(fn () => self::todayAppointments());
-        $activeDoctors = self::safe(fn () => self::activeDoctors());
-        $schemaVersion = self::safe(fn () => App::migrations()->currentVersion());
+        $health            = self::safe( fn () => App::system_health_service()->run() );
+        $queue             = self::safe( fn () => App::queueHealth() );
+        $license           = self::safe( fn () => App::licenseService()->statusMeta() );
+        $backups           = self::safe( fn () => App::backupService()->listBackups() );
+        $sms               = self::safe( fn () => App::smsService()->status() );
+        $todayAppointments = self::safe( fn () => self::todayAppointments() );
+        $activeDoctors     = self::safe( fn () => self::activeDoctors() );
+        $schemaVersion     = self::safe( fn () => App::migrations()->currentVersion() );
         ?>
         <div class="wrap" dir="rtl">
             <h1>مدیریت مطب</h1>
