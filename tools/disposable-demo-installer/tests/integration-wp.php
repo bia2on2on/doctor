@@ -344,18 +344,28 @@ cpdd_assert(
 	(string) $fixture_two['fixture_id'] !== (string) $fixture['fixture_id'],
 	'reprovisioning creates a distinct second fixture_id'
 );
-$unscoped_req = App::otpService()->request( (string) $fixture_two['patient_mobile'], 'login', null, '127.0.0.1', null );
-cpdd_assert( true === ( $unscoped_req['sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
-$unscoped_issued = ( new Otp( $env, $platform ) )->issue( $fixture_two );
-cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
-add_filter( 'send_auth_cookies', '__return_false' );
+$prev_two = App::replaceExplicitScope(
+	ClinicScope::forClinic(
+		(int) $fixture_two['ids']['clinic_id'],
+		(int) $fixture_two['ids']['location_ids']['main']
+	)->withOrganization( (int) $fixture_two['ids']['organization_id'] )
+);
 try {
-	$unscoped_verified = App::otpService()->verify( (string) $fixture_two['patient_mobile'], (string) $unscoped_issued['code'], 'login', '127.0.0.1', null );
-	cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
+	$unscoped_req = App::otpService()->request( (string) $fixture_two['patient_mobile'], 'login', null, '127.0.0.1', null );
+	cpdd_assert( true === ( $unscoped_req['sms_sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
+	$unscoped_issued = ( new Otp( $env, $platform ) )->issue( $fixture_two );
+	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
+	add_filter( 'send_auth_cookies', '__return_false' );
+	try {
+		$unscoped_verified = App::otpService()->verify( (string) $fixture_two['patient_mobile'], (string) $unscoped_issued['code'], 'login', '127.0.0.1' );
+		cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
+	} finally {
+		remove_filter( 'send_auth_cookies', '__return_false' );
+	}
+	wp_set_current_user( $admin_id );
 } finally {
-	remove_filter( 'send_auth_cookies', '__return_false' );
+	App::replaceExplicitScope( $prev_two );
 }
-wp_set_current_user( $admin_id );
 $second_cleanup = $teardown->execute( $fixture_two, $admin_id );
 cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly including unscoped synthetic OTP records' );
 cpdd_assert( 0 === $platform->non_shared_ip_rate_limits_count(), 'zero entity rate-limit rows remain after second teardown' );

@@ -731,9 +731,9 @@ $ctx['platform']->tables_data['cpms_jobs'][] = array(
 	'payload_json' => '[]',
 );
 $ctx['platform']->tables_data['cpms_sms_messages'][] = array(
-	'id'               => 42,
-	'clinic_id'        => $cid,
-	'recipient_mobile' => $post['manifest']['patient_mobile'],
+	'id'        => 42,
+	'clinic_id' => $cid,
+	'recipient' => $post['manifest']['patient_mobile'],
 );
 $ctx['platform']->tables_data['cpms_jobs'][] = array(
 	'id'           => 501,

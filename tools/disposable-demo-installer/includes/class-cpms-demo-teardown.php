@@ -237,7 +237,7 @@ class Teardown {
 		$synthetic_sms = array();
 		if ( $clinic_id > 1 && $this->platform->table_exists( 'cpms_sms_messages' ) ) {
 			$rows = $this->platform->fetch_all(
-				'SELECT id FROM ' . $this->platform->table( 'cpms_sms_messages' ) . " WHERE clinic_id = %d AND recipient_mobile LIKE '0900%%'",
+				'SELECT id FROM ' . $this->platform->table( 'cpms_sms_messages' ) . " WHERE clinic_id = %d AND recipient LIKE '0900%%'",
 				array( $clinic_id )
 			);
 			foreach ( $rows as $row ) {
@@ -471,7 +471,7 @@ class Teardown {
 				}
 				return null;
 			case 'cpms_sms_messages':
-				return $clinic_id > 1 ? array( "clinic_id = %d AND recipient_mobile LIKE '0900%%'", array( $clinic_id ) ) : null;
+				return $clinic_id > 1 ? array( "clinic_id = %d AND recipient LIKE '0900%%'", array( $clinic_id ) ) : null;
 			case 'cpms_patients':
 				return $clinic_id > 1 ? array( "clinic_id = %d AND mobile LIKE '0900%%'", array( $clinic_id ) ) : null;
 			default:

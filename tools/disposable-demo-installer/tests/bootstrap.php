@@ -838,15 +838,15 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				}
 			}
 			if ( 'cpms_sms_messages' === $short ) {
-				if ( "clinic_id = %d AND recipient_mobile LIKE '0900%%'" === $where ) {
-					$mob = (string) ( $row['recipient_mobile'] ?? '' );
+				if ( "clinic_id = %d AND recipient LIKE '0900%%'" === $where ) {
+					$mob = (string) ( $row['recipient'] ?? '' );
 					if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && str_starts_with( $mob, '0900' ) ) {
 						$out[ $index ] = $row;
 					}
 					continue;
 				}
-				if ( 'recipient_mobile <> %s AND RIGHT(recipient_mobile, 4) = %s' === $where ) {
-					$mob = (string) ( $row['recipient_mobile'] ?? '' );
+				if ( 'recipient <> %s AND RIGHT(recipient, 4) = %s' === $where ) {
+					$mob = (string) ( $row['recipient'] ?? '' );
 					if ( $mob !== (string) $params[0] && substr( $mob, -4 ) === (string) $params[1] ) {
 						$out[ $index ] = $row;
 					}
@@ -936,8 +936,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		if ( str_contains( $sql, "FROM wp_cpms_patients WHERE clinic_id = %d AND mobile LIKE '0900%%'" ) ) {
 			return $this->matches( 'cpms_patients', "clinic_id = %d AND mobile LIKE '0900%%'", $params );
 		}
-		if ( str_contains( $sql, "FROM wp_cpms_sms_messages WHERE clinic_id = %d AND recipient_mobile LIKE '0900%%'" ) ) {
-			return $this->matches( 'cpms_sms_messages', "clinic_id = %d AND recipient_mobile LIKE '0900%%'", $params );
+		if ( str_contains( $sql, "FROM wp_cpms_sms_messages WHERE clinic_id = %d AND recipient LIKE '0900%%'" ) ) {
+			return $this->matches( 'cpms_sms_messages', "clinic_id = %d AND recipient LIKE '0900%%'", $params );
 		}
 		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $sql, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );

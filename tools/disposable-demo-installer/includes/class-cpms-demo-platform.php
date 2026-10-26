@@ -466,7 +466,7 @@ class Platform {
 		if ( $this->table_exists( 'cpms_sms_messages' ) ) {
 			$colliding_sms = $this->count_where(
 				$this->table( 'cpms_sms_messages' ),
-				'recipient_mobile <> %s AND RIGHT(recipient_mobile, 4) = %s',
+				'recipient <> %s AND RIGHT(recipient, 4) = %s',
 				array( $patient_mobile, $suffix )
 			);
 			if ( $colliding_sms > 0 ) {
