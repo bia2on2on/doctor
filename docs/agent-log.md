@@ -2425,3 +2425,24 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   `NOT-APPLICABLE` and the acceptance run continues against **this PR's** production code — the combination
   that would actually ship. For a companion-only PR the guard is unchanged and still fail-closed.
   `test_workflow_contracts.py` gained one test pinning the scope (20 tests, OK).
+
+### Pass 7 — the disposable lane's clean-site invariant, and a WPCS warning
+
+- **Diagnosis (from the lane's own PR evidence, not guesswork):** the real-Chromium acceptance failed at
+  `admin preflight status is PASS` with *«cpms_operational_logs شامل ۱ رخداد عملیاتی غیرپیش‌فرض است»* — a
+  pristine site must have no non-baseline operational log rows.
+- **Root cause:** `admin_init` fires **before** `App::activate()` in the plugin-activation request, so the
+  auto self-heal scheduled the minute event first and logged `CPMS_CRON_SCHEDULE_REPAIRED`. Every fresh
+  install therefore produced one "repair" row for an event that had simply not been created yet.
+- **Two fixes:** the auto path now logs **failures only** (`CPMS_CRON_SCHEDULE_REPAIR_FAILED`); the success
+  line stays only on the explicit, user-initiated `admin_post_cpms_cron_repair` path. And the recurrence is
+  registered before activation schedules it (`register_cron_schedules()` from both `boot()` and
+  `activate()`), so `wp_schedule_event(..., 'cpms_minute', ...)` no longer fails against an unknown
+  recurrence.
+- **Lane provisioning:** the workflow now creates `CPMS_PRIVATE_STORAGE_DIR` outside the document root,
+  writable by the web server (`www-data:runner 0775`) — the same one-time action a real host performs. The
+  earlier `--raw` flag wrote the string unquoted (a PHP syntax error); it is now `--type=constant`.
+- **WPCS:** the single remaining finding on the new code is `WordPress.WP.CronInterval.CronSchedulesInterval`
+  (60 s cadence). It is inherited behaviour (ADR-0016) that only became an "added line" because the
+  registration moved out of `boot()`'s inline filter, so the line carries a **narrow** `phpcs:ignore` for
+  that one sniff with its reason — no sniff, path or severity was relaxed.

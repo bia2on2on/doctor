@@ -351,19 +351,22 @@ final class App
         CronScheduleRepair::ensure_scheduled();
 
         // ترمیمِ خودکارِ سمتِ مدیریت (throttle‌شده، حداکثر یک‌بار در ساعت):
-        // این مسیر برای **مشاهده‌پذیری** است — رخدادِ واقعی و شکستِ ترمیم هر دو
-        // ثبت می‌شوند تا یک ترمیمِ خاموشِ قبلی لاگ را پنهان نکند.
+        // فقط **شکست** لاگ می‌شود. ثبتِ یک «ترمیمِ موفق» در این مسیرِ خودکار
+        // نویز است: روی نصبِ تازه، `admin_init` پیش از کدِ فعال‌سازی اجرا
+        // می‌شود، رویداد را می‌سازد و هر سایتِ تازه یک ردیفِ عملیاتیِ
+        // «غیرپیش‌فرض» می‌گرفت (که مثلاً پیش‌پروازِ سایتِ یک‌بارمصرف را نقض
+        // می‌کند). مشاهده‌پذیریِ حالتِ عادی از صفحهٔ سلامت/صف می‌آید و ثبتِ
+        // موفقیت فقط در مسیرِ صریح و کاربر-آغازشدهٔ `admin_post_cpms_cron_repair`
+        // انجام می‌شود.
         $cron_self_heal = static function (): void {
             $result = CronScheduleRepair::self_heal_in_admin_result();
 
-            $context = [
-                'hook'       => CronScheduleRepair::HOOK,
-                'recurrence' => CronScheduleRepair::RECURRENCE,
-                'result'     => $result,
-            ];
-            if ( CronScheduleRepair::RESULT_SCHEDULED === $result ) {
-                self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
-            } elseif ( CronScheduleRepair::RESULT_FAILED === $result ) {
+            if ( CronScheduleRepair::RESULT_FAILED === $result ) {
+                $context = [
+                    'hook'       => CronScheduleRepair::HOOK,
+                    'recurrence' => CronScheduleRepair::RECURRENCE,
+                    'result'     => $result,
+                ];
                 self::op()->warning( 'CPMS_CRON_SCHEDULE_REPAIR_FAILED', $context );
             }
         };
@@ -477,6 +480,7 @@ final class App
      */
     public static function filter_cron_schedules( array $schedules ): array {
         if ( ! isset( $schedules['cpms_minute'] ) ) {
+            // phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval -- ADR-0016: minute cadence is intentional.
             $schedules['cpms_minute'] = array(
                 'interval' => 60,
                 'display'  => 'هر دقیقه (CPMS)',

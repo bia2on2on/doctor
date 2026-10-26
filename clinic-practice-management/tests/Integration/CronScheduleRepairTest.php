@@ -150,10 +150,15 @@ final class CronScheduleRepairTest extends WP_UnitTestCase
             $bootBody,
             'ترمیمِ خودکار باید به admin_init مقید بماند.'
         );
-        self::assertStringContainsString(
+        self::assertStringNotContainsString(
             'CPMS_CRON_SCHEDULE_REPAIRED',
             $bootBody,
-            'ترمیمِ واقعی باید ثبت شود.'
+            'مسیرِ خودکار نباید ترمیمِ موفق را لاگ کند؛ نصبِ تازه نباید ردیفِ عملیاتی بسازد.'
+        );
+        self::assertStringContainsString(
+            'CPMS_CRON_SCHEDULE_REPAIR_FAILED',
+            $bootBody,
+            'شکستِ ترمیم باید دیده شود.'
         );
     }
 
