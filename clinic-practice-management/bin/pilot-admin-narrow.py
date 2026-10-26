@@ -130,7 +130,18 @@ def check_page(page, slug, label, width):
         }"""
     )
     record(rtl["dir"] == "rtl", f"{prefix} rtl", f"dir={rtl['dir'] or '(none)'}")
-    record(rtl["lang"].startswith("fa") or rtl["lang"] == "", f"{prefix} lang-fa", f"lang={rtl['lang'] or '(none)'}")
+    # فارسی‌بودن را از محتوای واقعیِ صفحه می‌سنجیم، نه از locale نصب: fixtureِ این
+    # lane با en_US نصب می‌شود (عمداً، تا واژه‌های هسته انگلیسی بمانند) و
+    # `lang` صفتِ سند است، نه قراردادِ محصول. آنچه محصول تضمین می‌کند RTL بودن و
+    # متنِ فارسیِ رابط است.
+    persian = page.evaluate(
+        """() => {
+            const text = (document.querySelector('.wrap') || document.body).innerText || '';
+            const matches = text.match(/[\u0600-\u06FF]/g);
+            return matches ? matches.length : 0;
+        }"""
+    )
+    record(persian >= 20, f"{prefix} persian-ui", f"persian_chars={persian} doc_lang={rtl['lang'] or '(none)'}")
 
     metrics = overflow_metrics(page)
     record(
@@ -186,13 +197,27 @@ def check_page(page, slug, label, width):
     record(sidebar["menu"], f"{prefix} adminmenu-present")
     record(sidebar["unified"] == 1, f"{prefix} single-unified-menu-item", f"count={sidebar['unified']}")
     if sidebar["toggle"]:
+        # تعاملِ واقعی + انتظارِ کوتاه: کلاسِ `wp-responsive-open` با JS هسته و پس از
+        # کلیک اضافه می‌شود؛ خواندنِ فوریِ ۱۲۰ms یک نژادِ زمانی بود، نه سنجشِ محصول.
+        opened = False
         try:
-            page.click("#wp-admin-bar-menu-toggle a", timeout=4000)
-            page.wait_for_timeout(120)
-            opened = page.evaluate("() => document.body.classList.contains('wp-responsive-open')")
+            page.locator("#wp-admin-bar-menu-toggle a").first.click(timeout=5000)
+            for _ in range(20):
+                if page.evaluate("() => document.body.classList.contains('wp-responsive-open')"):
+                    opened = True
+                    break
+                page.wait_for_timeout(100)
+            if not opened:
+                # تاییدِ مکمل: منو واقعاً برای کاربر باز و قابلِ مشاهده شده باشد.
+                opened = bool(
+                    page.evaluate(
+                        "() => { const m = document.querySelector('#adminmenu'); if (!m) return false;"
+                        " const r = m.getBoundingClientRect(); return r.width > 0 && r.left > -1; }"
+                    )
+                )
         except Exception:  # noqa: BLE001 - گزارشِ صادقانهٔ شکستِ تعامل
             opened = False
-        record(opened, f"{prefix} sidebar-toggle-opens", "wp-responsive-open")
+        record(opened, f"{prefix} sidebar-toggle-opens", "wp-responsive-open|menu-visible")
     else:
         record(True, f"{prefix} sidebar-toggle-opens", "no toggle needed")
 

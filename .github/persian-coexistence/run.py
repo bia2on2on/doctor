@@ -904,6 +904,19 @@ def coexistence_verdict_annotation(summary, d3=None, group=None):
             + f" | FEATURE UNAVAILABLE={len(unavailable)}")
     if first_name:
         text += f" | first_causal_check={first_name}"
+    # Stage B (CPMS active) failures were previously invisible in this annotation:
+    # only Stage A blockers were named, so a red lane could not be attributed from
+    # the PR without the unreachable job log. Names go through the same allowlist
+    # as any other check name; no detail/reason text is emitted.
+    stage_b_failed = stage_b.get("blocking_checks") if isinstance(stage_b, dict) else None
+    stage_b_names = []
+    if isinstance(stage_b_failed, list):
+        for check in stage_b_failed[:8]:
+            name = _visible_check_name(check)
+            if name:
+                stage_b_names.append(name)
+    if stage_b_names:
+        text += f" | stage_b_failing_checks=[{', '.join(stage_b_names)}]"
     if isinstance(d3, dict) and d3.get("status") in allowed:
         text += f" | D3 broken-migration probe={d3['status']}"
         if d3.get("status") == "PASS" and d3.get("isolation_proof") is not True:
