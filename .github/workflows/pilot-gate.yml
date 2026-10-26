@@ -1955,7 +1955,7 @@ jobs:
           {
             echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
             echo '```'
-            grep -E '^(INFO |PASS admin narrow|FAIL admin narrow|FAIL |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
+            grep -E '^(INFO |PASS |FAIL |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -2258,8 +2258,14 @@ jobs:
               fi
             done
             echo '--- admin narrow RTL acceptance (320/390 × 10 slugs; B-3) ---'
-            grep -E '^(INFO admin_narrow_checks=|PASS admin narrow|FAIL admin narrow|FAIL |MISSING )' /tmp/admin-narrow.log 2>/dev/null || echo '(admin-narrow.log missing — narrow acceptance NOT exercised)'
-            python3 -c "import json;d=json.load(open('pilot-admin-narrow-results.json'));print(json.dumps(d['summary'],ensure_ascii=False))" 2>/dev/null || true
+            # هر سطرِ سنجش (PASS/FAIL/INFO) از خودِ اسکریپت منتشر می‌شود؛ پیش‌تر
+            # grep فقط سطرِ جمع‌بندی را می‌گرفت و پذیرشِ موفق در PR دیده نمی‌شد.
+            if [ -s /tmp/admin-narrow.log ]; then
+              grep -E '^(INFO |PASS |FAIL |MISSING )' /tmp/admin-narrow.log | head -80
+            else
+              echo '(admin-narrow.log نه تولید شد: این گام در همین job اجرا نشده است — Re-run failed jobs روی runner تازه آغاز می‌شود و فایل‌های /tmp گام‌های قبلی وجود ندارند)'
+            fi
+            python3 -c "import json;d=json.load(open('pilot-admin-narrow-results.json'));print('INFO admin_narrow_json=' + json.dumps(d['summary'],ensure_ascii=False))" 2>/dev/null || echo '(pilot-admin-narrow-results.json موجود نیست: اسکریپت به جمع‌بندی نرسیده است)'
             echo '```'
           } > /tmp/resp-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md

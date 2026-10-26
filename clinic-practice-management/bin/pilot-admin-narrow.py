@@ -284,35 +284,46 @@ def check_roles(browser):
 
 
 def main():
-    with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
-        try:
-            context = browser.new_context(viewport={"width": 320, "height": 800})
-            page = None
-            for name, width, height in VIEWPORTS:
-                if page is not None:
-                    page.close()
+    fatal = ""
+    try:
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch()
+            try:
+                context = browser.new_context(viewport={"width": 320, "height": 800})
+                page = None
+                for name, width, height in VIEWPORTS:
+                    if page is not None:
+                        page.close()
+                    context.close()
+                    context = browser.new_context(viewport={"width": width, "height": height})
+                    page = login(context, ADMIN_USER, ADMIN_PASS)
+                    record(page.url.find("wp-admin") >= 0, f"login@{name}")
+                    for slug, label in SLUGS:
+                        page = check_page(page, slug, label, width)
                 context.close()
-                context = browser.new_context(viewport={"width": width, "height": height})
-                page = login(context, ADMIN_USER, ADMIN_PASS)
-                record(page.url.find("wp-admin") >= 0, f"login@{name}")
-                for slug, label in SLUGS:
-                    page = check_page(page, slug, label, width)
-            context.close()
-            check_roles(browser)
-        finally:
-            browser.close()
+                check_roles(browser)
+            finally:
+                browser.close()
+    except Exception as exc:  # noqa: BLE001 - abort must still produce evidence
+        # پیش‌تر یک استثنا (مثلاً گزینشگرِ ناموجود) پیش از نوشتنِ JSON و خطِ
+        # جمع‌بندی متوقف می‌شد و شواهدِ PR هیچ سطرِ PASS/FAIL نداشت. اکنون
+        # جمع‌بندی همیشه نوشته می‌شود و شکست همچنان fail-closed است (exit 1).
+        fatal = f"{type(exc).__name__}: {str(exc).splitlines()[0][:200] if str(exc) else ''}".strip()
 
     summary = {
         "viewports": [f"{w}" for _, w, _ in VIEWPORTS],
         "slugs": [slug for slug, _ in SLUGS],
         "total": len(results),
         "failures": len(failures),
+        "fatal": fatal,
     }
     with open("pilot-admin-narrow-results.json", "w", encoding="utf-8") as handle:
         json.dump({"summary": summary, "results": results}, handle, ensure_ascii=False, indent=2)
 
-    print(f"INFO admin_narrow_checks={len(results)} failures={len(failures)}")
+    print(f"INFO admin_narrow_checks={len(results)} failures={len(failures)} fatal={fatal or 'none'}")
+    if fatal:
+        print(f"FAIL admin narrow RTL acceptance — aborted: {fatal}")
+        return 1
     print(
         "PASS admin narrow RTL acceptance (320/390, 10 slugs, keyboard, role denial)"
         if not failures
