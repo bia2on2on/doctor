@@ -230,22 +230,6 @@ try {
 	} catch ( RuntimeException $rb ) {
 		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative unscoped foreign OTP audit check rolled back cleanly' );
 	}
-
-	// Unscoped OTP request for the synthetic 0900 patient (clinic_id = null) + synthetic persona failed login.
-	$unscoped_req = App::otpService()->request( $mobile, 'login', null, '127.0.0.1', null );
-	cpdd_assert( true === ( $unscoped_req['sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
-	$unscoped_issued = $otp->issue( $fixture, 'login' );
-	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
-	add_filter( 'send_auth_cookies', '__return_false' );
-	try {
-		$unscoped_verified = App::otpService()->verify( $mobile, (string) $unscoped_issued['code'], 'login', '127.0.0.1', null );
-		cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
-	} finally {
-		remove_filter( 'send_auth_cookies', '__return_false' );
-	}
-	wp_set_current_user( $admin_id );
-
-	\Cpms\Infrastructure\Security\LoginRateLimiter::recordFailure( 'cpdd-doctor-' . $fixture['fixture_id'], '127.0.0.1' );
 } finally {
 	App::replaceExplicitScope( $previous );
 }
@@ -352,7 +336,7 @@ cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'globally shared IP 
 $post_state = ( new Preflight( $env, $platform, $manifest ) )->run();
 cpdd_assert( true === $post_state['ok'], 'preflight passes again after verified teardown' );
 
-// --- 6b. Full reprovisioning and second teardown -------------------------
+// --- 6b. Full reprovisioning, unscoped OTP challenge, and second teardown -
 $manifest->clear_tombstone();
 $reprovisioned = $provisioner->provision( $admin_id );
 $fixture_two   = $reprovisioned['manifest'];
@@ -360,8 +344,20 @@ cpdd_assert(
 	(string) $fixture_two['fixture_id'] !== (string) $fixture['fixture_id'],
 	'reprovisioning creates a distinct second fixture_id'
 );
+$unscoped_req = App::otpService()->request( (string) $fixture_two['patient_mobile'], 'login', null, '127.0.0.1', null );
+cpdd_assert( true === ( $unscoped_req['sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
+$unscoped_issued = ( new Otp( $env, $platform ) )->issue( $fixture_two );
+cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
+add_filter( 'send_auth_cookies', '__return_false' );
+try {
+	$unscoped_verified = App::otpService()->verify( (string) $fixture_two['patient_mobile'], (string) $unscoped_issued['code'], 'login', '127.0.0.1', null );
+	cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
+} finally {
+	remove_filter( 'send_auth_cookies', '__return_false' );
+}
+wp_set_current_user( $admin_id );
 $second_cleanup = $teardown->execute( $fixture_two, $admin_id );
-cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly' );
+cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly including unscoped synthetic OTP records' );
 cpdd_assert( 0 === $platform->non_shared_ip_rate_limits_count(), 'zero entity rate-limit rows remain after second teardown' );
 cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'shared-IP rate-limit rows remain preserved after second teardown' );
 cpdd_assert( true === ( new Preflight( $env, $platform, $manifest ) )->run()['ok'], 'preflight passes after second teardown' );
