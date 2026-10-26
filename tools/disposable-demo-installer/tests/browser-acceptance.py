@@ -523,6 +523,9 @@ def main() -> None:
             contexts.append(acc_ctx)
             acc_page.goto(links["accountant"], wait_until="domcontentloaded")
             acc_page.locator('[data-role="finance-root"]').wait_for(state="visible")
+            acc_loc = acc_page.locator('[data-role="finance-location"]')
+            acc_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
+            acc_loc.select_option(str(fixture_meta["location_id"]))
             issue_btn = acc_page.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
             issue_btn.wait_for(state="visible", timeout=35000)
             issue_btn.click()
@@ -556,6 +559,10 @@ def main() -> None:
             rec2_ctx, rec2_page = open_persona_context(browser, rotated_creds, "receptionist")
             contexts.append(rec2_ctx)
             rec2_page.goto(links["accountant"], wait_until="domcontentloaded")
+            rec2_page.locator('[data-role="finance-root"]').wait_for(state="visible")
+            rec2_loc = rec2_page.locator('[data-role="finance-location"]')
+            rec2_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
+            rec2_loc.select_option(str(fixture_meta["location_id"]))
             checkout_btn = rec2_page.locator(f'[data-role="finance-checkout-open"][data-visit-id="{visit_id}"]')
             checkout_btn.wait_for(state="visible", timeout=35000)
             checkout_btn.click()
@@ -640,7 +647,8 @@ def main() -> None:
                         'invoices' => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_invoices')),
                         'payments' => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_payments')),
                         'audit_logs' => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_audit_logs')),
-                        'rate_limits' => (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_rate_limits')),
+                        'entity_rate_limits' => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table('cpms_rate_limits') . " WHERE NOT (window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%' OR window_key LIKE 'login-ip:%')"),
+                        'shared_ip_rate_limits' => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table('cpms_rate_limits') . " WHERE (window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%' OR window_key LIKE 'login-ip:%')"),
                         'users' => count(get_users()),
                         'manifest' => get_option('cpdd_manifest', null) !== null,
                         'tombstone' => get_option('cpdd_tombstone', null) !== null,
@@ -649,22 +657,54 @@ def main() -> None:
                 )
             )
             check(
-                "post-teardown DB verification confirms zero residual demo data and intact baseline",
-                post_td_db == {
-                    "orgs": 1,
-                    "clinics": 1,
-                    "patients": 0,
-                    "visits": 0,
-                    "invoices": 0,
-                    "payments": 0,
-                    "audit_logs": 0,
-                    "rate_limits": 0,
-                    "users": 1,
-                    "manifest": False,
-                    "tombstone": False,
-                },
+                "post-teardown DB verification confirms zero residual demo entity data, preserved shared-IP counters, and intact baseline",
+                post_td_db["orgs"] == 1
+                and post_td_db["clinics"] == 1
+                and post_td_db["patients"] == 0
+                and post_td_db["visits"] == 0
+                and post_td_db["invoices"] == 0
+                and post_td_db["payments"] == 0
+                and post_td_db["audit_logs"] == 0
+                and post_td_db["entity_rate_limits"] == 0
+                and post_td_db["shared_ip_rate_limits"] >= 1
+                and post_td_db["users"] == 1
+                and post_td_db["manifest"] is False
+                and post_td_db["tombstone"] is False,
                 json.dumps(post_td_db),
             )
+
+            # 19b. Browser-triggered reprovisioning and second teardown
+            stage("19b. Browser-triggered reprovisioning and second teardown")
+            prov_form_2 = admin_page.locator('form[data-cpdd-form="provision"]')
+            prov_form_2.locator('input[name="cpdd_confirm"]').fill("I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE")
+            prov_form_2.locator('button[type="submit"]').click()
+            admin_page.wait_for_load_state("domcontentloaded", timeout=60000)
+            check("browser-triggered reprovisioning renders new one-time credentials block", admin_page.locator('[data-cpdd-secret="credentials"]').count() == 1)
+
+            second_fixture_id = wp_eval(
+                r"""
+                $m = get_option('cpdd_manifest', []);
+                echo (string) ($m['fixture_id'] ?? '');
+                """
+            )
+            check(
+                "reprovisioned demo has a fresh fixture_id distinct from the first run",
+                len(second_fixture_id) == 16 and second_fixture_id != str(fixture_meta["fixture_id"]),
+                f"{second_fixture_id} vs {fixture_meta['fixture_id']}",
+            )
+
+            td_form_2 = admin_page.locator('form[data-cpdd-form="teardown"]')
+            td_form_2.locator('input[name="cpdd_confirm"]').fill("DESTROY_DEMO_DATA_ONLY")
+            td_form_2.locator('button[type="submit"]').click()
+            admin_page.wait_for_load_state("domcontentloaded", timeout=60000)
+            check("second browser-triggered teardown succeeded cleanly", admin_page.locator('[data-cpdd-teardown="clean"]').count() == 1)
+            check("preflight is PASS again after second browser teardown", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1)
+
+            dismiss_form_2 = admin_page.locator('form[data-cpdd-form="dismiss_tombstone"]')
+            dismiss_form_2.locator('input[name="cpdd_confirm"]').fill("CLEAR_TEARDOWN_RECORD")
+            dismiss_form_2.locator('button[type="submit"]').click()
+            admin_page.wait_for_load_state("domcontentloaded")
+            check("second tombstone record dismissed via browser", admin_page.locator('[data-cpdd-tombstone]').count() == 0)
 
             # 20. Safe plugin removal through wp-admin
             stage("20. Safe plugin deactivation and removal through wp-admin")

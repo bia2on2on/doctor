@@ -454,18 +454,31 @@ class Env {
 	}
 
 	/**
-	 * Compute the hash used by AuditLogger::hashIp() for correlation with audit rows.
+	 * Compute the HMAC-SHA256 IP hash matching AuditLogger::ipHash().
+	 *
+	 * Note: matching an IP hash is never sufficient proof that a global
+	 * shared-IP rate-limit row belongs exclusively to the demo.
 	 *
 	 * @param string $ip Client IP address.
 	 * @return string
 	 */
 	public function ip_hash( string $ip ): string {
-		$salt = function_exists( 'wp_salt' ) ? (string) wp_salt( 'auth' ) : '';
-		if ( '' === $salt ) {
-			$salt = $this->mac_key();
+		$pepper = defined( 'CPMS_PEPPER' ) ? (string) CPMS_PEPPER : '';
+		if ( '' === $pepper ) {
+			$pepper = 'cpms-dev-pepper-change-me';
 		}
 
-		return hash_hmac( 'sha256', $ip, $salt );
+		return hash_hmac( 'sha256', $ip, $pepper );
+	}
+
+	/**
+	 * Compute the 32-char SHA-256 username hash matching LoginRateLimiter::userKey().
+	 *
+	 * @param string $username WordPress login name.
+	 * @return string
+	 */
+	public function username_hash( string $username ): string {
+		return substr( hash( 'sha256', strtolower( trim( $username ) ) ), 0, 32 );
 	}
 
 	/**

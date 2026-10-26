@@ -61,14 +61,13 @@ class Preflight {
 		'cpms_payment_adjustments',
 		'cpms_sms_messages',
 		'cpms_otp_tokens',
-		'cpms_rate_limits',
 		'cpms_idempotency_keys',
 		'cpms_notifications',
 		'cpms_audit_logs',
 		'cpms_drug_reference',
 	);
 
-	/** Tables whose rows may legitimately exist on a freshly activated install. */
+	/** Tables whose rows may legitimately exist on a freshly activated install or after verified teardown. */
 	public const SYSTEM_TABLES = array(
 		'cpms_organizations',
 		'cpms_clinics',
@@ -77,6 +76,7 @@ class Preflight {
 		'cpms_schema_migrations',
 		'cpms_jobs',
 		'cpms_operational_logs',
+		'cpms_rate_limits',
 		'cpms_license_install',
 		'cpms_license_state',
 	);
@@ -499,6 +499,18 @@ class Preflight {
 		$unexpected_oplogs = $this->platform->non_baseline_oplogs_count();
 		if ( $unexpected_oplogs > 0 ) {
 			return $this->result( $id, $label, 'fail', 'cpms_operational_logs شامل ' . $unexpected_oplogs . ' رخداد عملیاتی غیرپیش‌فرض است؛ سایت یک‌بارمصرف خالی نیست.' );
+		}
+		if ( ! $this->platform->table_exists( 'cpms_rate_limits' ) ) {
+			return $this->result( $id, $label, 'fail', 'جدول cpms_rate_limits وجود ندارد؛ Migration کامل نیست.' );
+		}
+		$unexpected_rate_limits = $this->platform->non_shared_ip_rate_limits_count();
+		if ( $unexpected_rate_limits > 0 ) {
+			return $this->result( $id, $label, 'fail', 'cpms_rate_limits شامل ' . $unexpected_rate_limits . ' ردیف است؛ سایت یک‌بارمصرف خالی نیست.' );
+		}
+		$shared_ip_rate_limits = $this->platform->shared_ip_rate_limits_count();
+		$had_clean_teardown    = '1' === (string) $this->env->option_get( 'cpdd_had_clean_teardown', '' ) || null !== $this->manifest->tombstone();
+		if ( $shared_ip_rate_limits > 0 && ! $had_clean_teardown ) {
+			return $this->result( $id, $label, 'fail', 'cpms_rate_limits شامل ' . $shared_ip_rate_limits . ' ردیف است؛ سایت یک‌بارمصرف خالی نیست.' );
 		}
 
 		$bootstrap = $this->platform->bootstrap_state();

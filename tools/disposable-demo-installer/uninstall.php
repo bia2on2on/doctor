@@ -55,5 +55,6 @@ if ( ( null !== $cpms_demo_manifest && false !== $cpms_demo_manifest )
 }
 
 delete_option( 'cpdd_tombstone' );
+delete_option( 'cpdd_had_clean_teardown' );
 delete_option( 'cpdd_uninstall_blocked' );
 delete_option( 'cpdd_lock_state' );

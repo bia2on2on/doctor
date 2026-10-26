@@ -597,18 +597,27 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	private function is_owned_audit_row( array $row, array $scope ): bool {
-		$clinic_id    = (int) ( $scope['clinic_id'] ?? 0 );
-		$org_id       = (int) ( $scope['organization_id'] ?? 0 );
-		$fixture_id   = (string) ( $scope['fixture_id'] ?? '' );
-		$identity_ids = array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) );
-		$user_ids     = array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) );
+		$clinic_id      = (int) ( $scope['clinic_id'] ?? 0 );
+		$org_id         = (int) ( $scope['organization_id'] ?? 0 );
+		$fixture_id     = (string) ( $scope['fixture_id'] ?? '' );
+		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
+		$masked_mobile  = 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ? '***' . substr( $patient_mobile, -4 ) : '';
+		$identity_ids   = array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) );
+		$user_ids       = array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) );
 
 		$row_clinic = $row['clinic_id'] ?? null;
+		$rtype      = (string) ( $row['resource_type'] ?? '' );
+		$after      = json_decode( (string) ( $row['after_json'] ?? '{}' ), true );
+		$after_mob  = is_array( $after ) ? (string) ( $after['mobile'] ?? '' ) : '';
+
 		if ( null !== $row_clinic && $clinic_id > 1 && (int) $row_clinic === $clinic_id ) {
+			if ( 'otp' === $rtype ) {
+				return '' !== $masked_mobile && $after_mob === $masked_mobile;
+			}
+
 			return true;
 		}
 		if ( null === $row_clinic ) {
-			$rtype = (string) ( $row['resource_type'] ?? '' );
 			$rid   = (int) ( $row['resource_id'] ?? 0 );
 			$actor = (int) ( $row['actor_wp_user_id'] ?? 0 );
 			if ( $org_id > 1 && 'organization' === $rtype && $rid === $org_id ) {
@@ -623,6 +632,11 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			if ( 'cpdd_fixture' === $rtype && '' !== $fixture_id ) {
 				$meta = json_decode( (string) ( $row['meta_json'] ?? '{}' ), true );
 				if ( is_array( $meta ) && (string) ( $meta['fixture_id'] ?? '' ) === $fixture_id ) {
+					return true;
+				}
+			}
+			if ( 'otp' === $rtype && 0 === $actor && '' !== $masked_mobile && ! empty( $scope['unscoped_otp_suffix_unambiguous'] ) ) {
+				if ( $after_mob === $masked_mobile ) {
 					return true;
 				}
 			}
@@ -665,14 +679,17 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			return true;
 		}
 		$id_fields = array(
-			'patient_ids'     => array( 'patient_id' ),
-			'appointment_ids' => array( 'appointment_id', 'old' ),
-			'slot_ids'        => array( 'slot_id' ),
-			'clinician_ids'   => array( 'clinician_id' ),
-			'follow_up_ids'   => array( 'follow_up_id' ),
-			'sms_message_ids' => array( 'message_id' ),
-			'otp_token_ids'   => array( 'token_id' ),
-			'user_ids'        => array( 'wp_user_id', 'actor', 'by' ),
+			'patient_ids'            => array( 'patient_id' ),
+			'appointment_ids'        => array( 'appointment_id', 'old', 'new' ),
+			'slot_ids'               => array( 'slot_id' ),
+			'hold_ids'               => array( 'hold_id' ),
+			'schedule_ids'           => array( 'schedule_id' ),
+			'schedule_exception_ids' => array( 'exception_id' ),
+			'clinician_ids'          => array( 'clinician_id' ),
+			'follow_up_ids'          => array( 'follow_up_id' ),
+			'sms_message_ids'        => array( 'message_id' ),
+			'otp_token_ids'          => array( 'token_id' ),
+			'user_ids'               => array( 'wp_user_id', 'actor', 'by' ),
 		);
 		foreach ( $id_fields as $scope_key => $ctx_keys ) {
 			$ids = array_map( 'intval', (array) ( $scope[ $scope_key ] ?? array() ) );
@@ -683,18 +700,13 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			}
 		}
 		$msg = (string) ( $row['message'] ?? '' );
-		if ( '' !== $patient_mobile && 'SMS_LOG_SENT' === $msg && (string) ( $ctx['to'] ?? '' ) === $patient_mobile ) {
+		if ( 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) && 'SMS_LOG_SENT' === $msg && (string) ( $ctx['to'] ?? '' ) === $patient_mobile ) {
 			return true;
 		}
-		$login_keys = array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) );
-		if ( in_array( $msg, array( 'LOGIN_FAILED', 'LOGIN_LOCKED_USER', 'LOGIN_LOCKED_IP' ), true )
-			&& in_array( (string) ( $ctx['username_hash'] ?? '' ), $login_keys, true )
+		$login_hashes = array_map( 'strval', (array) ( $scope['login_user_hashes'] ?? array() ) );
+		if ( in_array( $msg, array( 'LOGIN_FAILED', 'LOGIN_THROTTLED' ), true )
+			&& in_array( (string) ( $ctx['username_hash'] ?? '' ), $login_hashes, true )
 		) {
-			return true;
-		}
-		$req_ids = array_map( 'strval', (array) ( $scope['audit_request_ids'] ?? array() ) );
-		$req     = trim( (string) ( $row['request_id'] ?? '' ) );
-		if ( '' !== $req && in_array( $req, $req_ids, true ) ) {
 			return true;
 		}
 
@@ -764,41 +776,82 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 					}
 					continue;
 				}
-				if ( str_starts_with( $where, "message IN ('LOGIN_FAILED'" ) ) {
-					$msg = (string) ( $row['message'] ?? '' );
-					$ctx = json_decode( (string) ( $row['context_json'] ?? '{}' ), true );
-					$uh  = is_array( $ctx ) ? (string) ( $ctx['username_hash'] ?? '' ) : '';
-					if ( in_array( $msg, array( 'LOGIN_FAILED', 'LOGIN_LOCKED_USER', 'LOGIN_LOCKED_IP' ), true ) && ! in_array( $uh, $params, true ) ) {
-						$out[ $index ] = $row;
-					}
-					continue;
-				}
 			}
 			if ( 'cpms_audit_logs' === $short ) {
-				if ( '(clinic_id IS NULL OR clinic_id <> %d) AND action = %s' === $where ) {
-					$rc = $row['clinic_id'] ?? null;
-					if ( ( null === $rc || (int) $rc !== (int) $params[0] ) && (string) ( $row['action'] ?? '' ) === (string) $params[1] ) {
-						$out[ $index ] = $row;
-					}
-					continue;
-				}
 				if ( $this->is_owned_audit_row( $row, $this->last_scope ) ) {
 					$out[ $index ] = $row;
 				}
 				continue;
 			}
-			if ( 'cpms_rate_limits' === $short && preg_match( '/^window_key IN \((.*)\)$/', $where ) === 1 ) {
-				if ( in_array( (string) ( $row['window_key'] ?? '' ), array_map( 'strval', $params ), true ) ) {
-					$out[ $index ] = $row;
+			if ( 'cpms_rate_limits' === $short ) {
+				if ( "(window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%' OR window_key LIKE 'login-ip:%')" === $where ) {
+					$wk = (string) ( $row['window_key'] ?? '' );
+					if ( str_starts_with( $wk, 'otp-ip:' ) || str_starts_with( $wk, 'otp-verify-ip:' ) || str_starts_with( $wk, 'login-ip:' ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
 				}
-				continue;
+				if ( preg_match( '/^window_key IN \((.*)\)$/', $where ) === 1 ) {
+					if ( in_array( (string) ( $row['window_key'] ?? '' ), array_map( 'strval', $params ), true ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
 			}
-			if ( 'cpms_otp_tokens' === $short && '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))' === $where ) {
-				$rc = $row['clinic_id'] ?? null;
-				if ( ( null !== $rc && (int) $rc === (int) $params[0] ) || ( null === $rc && (string) ( $row['mobile'] ?? '' ) === (string) $params[1] ) ) {
-					$out[ $index ] = $row;
+			if ( 'cpms_otp_tokens' === $short ) {
+				if ( '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)' === $where ) {
+					$rc = $row['clinic_id'] ?? null;
+					if ( ( null === $rc || (int) $rc === (int) $params[0] ) && (string) ( $row['mobile'] ?? '' ) === (string) $params[1] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
 				}
-				continue;
+				if ( '(clinic_id IS NULL AND mobile = %s)' === $where || 'clinic_id IS NULL AND mobile = %s' === $where ) {
+					$rc = $row['clinic_id'] ?? null;
+					if ( null === $rc && (string) ( $row['mobile'] ?? '' ) === (string) $params[0] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( 'mobile <> %s AND RIGHT(mobile, 4) = %s' === $where ) {
+					$mob = (string) ( $row['mobile'] ?? '' );
+					if ( $mob !== (string) $params[0] && substr( $mob, -4 ) === (string) $params[1] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+			}
+			if ( 'cpms_patients' === $short ) {
+				if ( "clinic_id = %d AND mobile LIKE '0900%%'" === $where ) {
+					$mob = (string) ( $row['mobile'] ?? '' );
+					if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && str_starts_with( $mob, '0900' ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( 'mobile <> %s AND RIGHT(mobile, 4) = %s' === $where ) {
+					$mob = (string) ( $row['mobile'] ?? '' );
+					if ( $mob !== (string) $params[0] && substr( $mob, -4 ) === (string) $params[1] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+			}
+			if ( 'cpms_sms_messages' === $short ) {
+				if ( "clinic_id = %d AND recipient_mobile LIKE '0900%%'" === $where ) {
+					$mob = (string) ( $row['recipient_mobile'] ?? '' );
+					if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && str_starts_with( $mob, '0900' ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( 'recipient_mobile <> %s AND RIGHT(recipient_mobile, 4) = %s' === $where ) {
+					$mob = (string) ( $row['recipient_mobile'] ?? '' );
+					if ( $mob !== (string) $params[0] && substr( $mob, -4 ) === (string) $params[1] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
 			}
 			if ( 'id = %d AND slug = %s' === $where ) {
 				if ( (int) ( $row['id'] ?? 0 ) === (int) $params[0] && (string) ( $row['slug'] ?? '' ) === (string) $params[1] ) {
@@ -874,46 +927,17 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function fetch_all( string $sql, array $params = array() ): array {
-		if ( str_contains( $sql, 'SELECT DISTINCT request_id FROM wp_cpms_audit_logs' ) ) {
-			$out = array();
-			foreach ( $this->tables_data['cpms_audit_logs'] ?? array() as $row ) {
-				if ( $this->is_owned_audit_row( $row, $this->last_scope ) && ! empty( $row['request_id'] ) ) {
-					$out[] = array( 'request_id' => $row['request_id'] );
-				}
-			}
-			return $out;
+		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s' ) ) {
+			return $this->matches( 'cpms_otp_tokens', '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)', $params );
 		}
-		if ( str_contains( $sql, 'SELECT DISTINCT ip_hash FROM wp_cpms_audit_logs' ) ) {
-			$out = array();
-			foreach ( $this->tables_data['cpms_audit_logs'] ?? array() as $row ) {
-				if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && (string) ( $row['action'] ?? '' ) === (string) $params[1] && ! empty( $row['ip_hash'] ) ) {
-					$out[] = array( 'ip_hash' => $row['ip_hash'] );
-				}
-			}
-			return $out;
+		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id IS NULL AND mobile = %s' ) ) {
+			return $this->matches( 'cpms_otp_tokens', '(clinic_id IS NULL AND mobile = %s)', $params );
 		}
-		if ( str_contains( $sql, 'FROM wp_cpms_operational_logs WHERE message IN' ) ) {
-			$out = array();
-			foreach ( $this->tables_data['cpms_operational_logs'] ?? array() as $row ) {
-				$ctx = json_decode( (string) ( $row['context_json'] ?? '{}' ), true );
-				if ( is_array( $ctx ) && in_array( (string) ( $ctx['username_hash'] ?? '' ), $params, true ) && ! empty( $ctx['ip'] ) ) {
-					$out[] = array( 'ip' => $ctx['ip'] );
-				}
-			}
-			return $out;
+		if ( str_contains( $sql, "FROM wp_cpms_patients WHERE clinic_id = %d AND mobile LIKE '0900%%'" ) ) {
+			return $this->matches( 'cpms_patients', "clinic_id = %d AND mobile LIKE '0900%%'", $params );
 		}
-		if ( str_contains( $sql, 'SELECT DISTINCT window_key FROM wp_cpms_rate_limits' ) ) {
-			$out = array();
-			foreach ( $this->tables_data['cpms_rate_limits'] ?? array() as $row ) {
-				$wk = (string) ( $row['window_key'] ?? '' );
-				if ( str_starts_with( $wk, 'otp-ip:' ) || str_starts_with( $wk, 'otp-verify-ip:' ) ) {
-					$out[] = array( 'window_key' => $wk );
-				}
-			}
-			return $out;
-		}
-		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id = %d OR (clinic_id IS NULL AND mobile = %s)' ) ) {
-			return $this->matches( 'cpms_otp_tokens', '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))', $params );
+		if ( str_contains( $sql, "FROM wp_cpms_sms_messages WHERE clinic_id = %d AND recipient_mobile LIKE '0900%%'" ) ) {
+			return $this->matches( 'cpms_sms_messages', "clinic_id = %d AND recipient_mobile LIKE '0900%%'", $params );
 		}
 		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $sql, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );
@@ -1283,8 +1307,15 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function latest_live_challenge( int $clinic_id, string $mobile, string $purpose ): ?array {
+		foreach ( $this->tables_data['cpms_otp_tokens'] as $row ) {
+			$rc = $row['clinic_id'] ?? null;
+			if ( $row['mobile'] === $mobile && null !== $rc && (int) $rc !== $clinic_id ) {
+				return null;
+			}
+		}
 		foreach ( array_reverse( $this->tables_data['cpms_otp_tokens'] ) as $row ) {
-			if ( (int) $row['clinic_id'] === $clinic_id && $row['mobile'] === $mobile && $row['purpose'] === $purpose && null === $row['consumed_at'] ) {
+			$rc = $row['clinic_id'] ?? null;
+			if ( ( null === $rc || (int) $rc === $clinic_id ) && $row['mobile'] === $mobile && $row['purpose'] === $purpose && null === $row['consumed_at'] ) {
 				return $row;
 			}
 		}

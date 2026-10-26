@@ -187,122 +187,159 @@ class Teardown {
 		}
 		$user_ids = $merge_ints( $user_ids, (array) ( $snapshot['user_ids'] ?? array() ) );
 
-		$login_user_keys = array();
+		$login_user_hashes = array();
+		$login_user_keys   = array();
 		if ( 1 === preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
 			foreach ( Credentials::PERSONA_ORDER as $persona ) {
-				$login             = 'cpdd-' . $persona . '-' . $fixture;
-				$login_user_keys[] = 'login-user:' . substr( hash( 'sha256', strtolower( $login ) ), 0, 32 );
+				$login               = 'cpdd-' . $persona . '-' . $fixture;
+				$hash                = $this->env->username_hash( $login );
+				$login_user_hashes[] = $hash;
+				$login_user_keys[]   = 'login-user:' . $hash;
 			}
 		}
+		$login_user_hashes = $merge_strs( $login_user_hashes, (array) ( $snapshot['login_user_hashes'] ?? array() ) );
+		$login_user_keys   = $merge_strs( $login_user_keys, (array) ( $snapshot['login_user_keys'] ?? array() ) );
 
-		$otp_token_ids = array();
-		if ( $this->platform->table_exists( 'cpms_otp_tokens' ) ) {
-			if ( $clinic_id > 1 && '' !== $mobile ) {
+		$otp_token_ids          = array();
+		$has_unscoped_otp_token = ! empty( $snapshot['has_unscoped_otp_token'] );
+		if ( $this->platform->table_exists( 'cpms_otp_tokens' ) && 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
+			if ( $clinic_id > 1 ) {
 				$rows = $this->platform->fetch_all(
-					'SELECT id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE clinic_id = %d OR (clinic_id IS NULL AND mobile = %s)',
+					'SELECT id, clinic_id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s',
 					array( $clinic_id, $mobile )
 				);
-				foreach ( $rows as $row ) {
-					$otp_token_ids[] = (int) ( $row['id'] ?? 0 );
+			} else {
+				$rows = $this->platform->fetch_all(
+					'SELECT id, clinic_id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE clinic_id IS NULL AND mobile = %s',
+					array( $mobile )
+				);
+			}
+			foreach ( $rows as $row ) {
+				$otp_token_ids[] = (int) ( $row['id'] ?? 0 );
+				if ( null === ( $row['clinic_id'] ?? null ) ) {
+					$has_unscoped_otp_token = true;
 				}
-			} elseif ( $clinic_id > 1 ) {
-				$otp_token_ids = $this->ids_by_clinic( 'cpms_otp_tokens', $clinic_id );
 			}
 		}
 		$otp_token_ids = $merge_ints( $otp_token_ids, (array) ( $snapshot['otp_token_ids'] ?? array() ) );
 
+		$synthetic_patients = array();
+		if ( $clinic_id > 1 && $this->platform->table_exists( 'cpms_patients' ) ) {
+			$rows = $this->platform->fetch_all(
+				'SELECT id FROM ' . $this->platform->table( 'cpms_patients' ) . " WHERE clinic_id = %d AND mobile LIKE '0900%%'",
+				array( $clinic_id )
+			);
+			foreach ( $rows as $row ) {
+				$synthetic_patients[] = (int) ( $row['id'] ?? 0 );
+			}
+		}
+
+		$synthetic_sms = array();
+		if ( $clinic_id > 1 && $this->platform->table_exists( 'cpms_sms_messages' ) ) {
+			$rows = $this->platform->fetch_all(
+				'SELECT id FROM ' . $this->platform->table( 'cpms_sms_messages' ) . " WHERE clinic_id = %d AND recipient_mobile LIKE '0900%%'",
+				array( $clinic_id )
+			);
+			foreach ( $rows as $row ) {
+				$synthetic_sms[] = (int) ( $row['id'] ?? 0 );
+			}
+		}
+
 		$scope = array(
-			'fixture_id'            => $fixture,
-			'clinic_id'             => $clinic_id,
-			'organization_id'       => $org_id,
-			'patient_mobile'        => $mobile,
-			'user_ids'              => $user_ids,
-			'login_user_keys'       => $login_user_keys,
-			'invoice_ids'           => $merge_ints(
+			'fixture_id'                      => $fixture,
+			'clinic_id'                       => $clinic_id,
+			'organization_id'                 => $org_id,
+			'patient_mobile'                  => $mobile,
+			'user_ids'                        => $user_ids,
+			'login_user_hashes'               => $login_user_hashes,
+			'login_user_keys'                 => $login_user_keys,
+			'has_unscoped_otp_token'          => $has_unscoped_otp_token,
+			'unscoped_otp_suffix_unambiguous' => $this->platform->unscoped_otp_suffix_unambiguous( $mobile, $has_unscoped_otp_token ),
+			'invoice_ids'                     => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_invoices', $clinic_id ) : array(),
 				isset( $m_ids['invoice_id'] ) ? array( (int) $m_ids['invoice_id'] ) : array(),
 				(array) ( $snapshot['invoice_ids'] ?? array() )
 			),
-			'prescription_ids'      => $merge_ints(
+			'prescription_ids'                => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_prescriptions', $clinic_id ) : array(),
 				isset( $m_ids['prescription_id'] ) ? array( (int) $m_ids['prescription_id'] ) : array(),
 				(array) ( $snapshot['prescription_ids'] ?? array() )
 			),
-			'visit_ids'             => $merge_ints(
+			'visit_ids'                       => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_visits', $clinic_id ) : array(),
 				isset( $m_ids['visit_id'] ) ? array( (int) $m_ids['visit_id'] ) : array(),
 				(array) ( $snapshot['visit_ids'] ?? array() )
 			),
-			'note_ids'              => $merge_ints(
+			'note_ids'                        => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinical_notes', $clinic_id ) : array(),
 				(array) ( $m_ids['note_ids'] ?? array() ),
 				(array) ( $snapshot['note_ids'] ?? array() )
 			),
-			'hw_doc_ids'            => $hw_docs,
-			'hw_page_ids'           => $merge_ints(
+			'hw_doc_ids'                      => $hw_docs,
+			'hw_page_ids'                     => $merge_ints(
 				$this->ids_by_parent( 'cpms_handwriting_pages', 'document_id', $hw_docs ),
 				(array) ( $snapshot['hw_page_ids'] ?? array() )
 			),
-			'clinician_ids'         => $merge_ints(
+			'clinician_ids'                   => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinicians', $clinic_id ) : array(),
 				isset( $m_ids['clinician_id'] ) ? array( (int) $m_ids['clinician_id'] ) : array(),
 				(array) ( $snapshot['clinician_ids'] ?? array() )
 			),
-			'clinic_membership_ids' => $merge_ints(
+			'clinic_membership_ids'           => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinic_memberships', $clinic_id ) : array(),
 				(array) ( $snapshot['clinic_membership_ids'] ?? array() )
 			),
-			'custom_role_def_ids'   => $merge_ints(
+			'custom_role_def_ids'             => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_custom_role_defs', $clinic_id ) : array(),
 				(array) ( $snapshot['custom_role_def_ids'] ?? array() )
 			),
-			'org_membership_ids'    => $merge_ints(
+			'org_membership_ids'              => $merge_ints(
 				$org_id > 1 ? $this->ids_by_org( 'cpms_organization_memberships', $org_id ) : array(),
 				(array) ( $snapshot['org_membership_ids'] ?? array() )
 			),
-			'patient_ids'           => $merge_ints(
-				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_patients', $clinic_id ) : array(),
+			'patient_ids'                     => $merge_ints(
+				$synthetic_patients,
 				isset( $m_ids['patient_id'] ) ? array( (int) $m_ids['patient_id'] ) : array(),
 				(array) ( $snapshot['patient_ids'] ?? array() )
 			),
-			'identity_ids'          => $merge_ints(
+			'identity_ids'                    => $merge_ints(
 				$org_id > 1 ? $this->ids_by_org( 'cpms_patient_identities', $org_id ) : array(),
 				isset( $m_ids['identity_id'] ) ? array( (int) $m_ids['identity_id'] ) : array(),
 				(array) ( $snapshot['identity_ids'] ?? array() )
 			),
-			'appointment_ids'       => $merge_ints(
+			'appointment_ids'                 => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_appointments', $clinic_id ) : array(),
 				isset( $m_ids['appointment_id'] ) ? array( (int) $m_ids['appointment_id'] ) : array(),
 				(array) ( $snapshot['appointment_ids'] ?? array() )
 			),
-			'slot_ids'              => $merge_ints(
+			'slot_ids'                        => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_schedule_slots', $clinic_id ) : array(),
 				(array) ( $m_ids['slot_ids'] ?? array() ),
 				(array) ( $snapshot['slot_ids'] ?? array() )
 			),
-			'follow_up_ids'         => $merge_ints(
+			'hold_ids'                        => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_slot_holds', $clinic_id ) : array(),
+				(array) ( $snapshot['hold_ids'] ?? array() )
+			),
+			'schedule_ids'                    => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_schedule', $clinic_id ) : array(),
+				isset( $m_ids['schedule_id'] ) ? array( (int) $m_ids['schedule_id'] ) : array(),
+				(array) ( $snapshot['schedule_ids'] ?? array() )
+			),
+			'schedule_exception_ids'          => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_schedule_exceptions', $clinic_id ) : array(),
+				(array) ( $snapshot['schedule_exception_ids'] ?? array() )
+			),
+			'follow_up_ids'                   => $merge_ints(
 				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_follow_ups', $clinic_id ) : array(),
 				isset( $m_ids['follow_up_id'] ) ? array( (int) $m_ids['follow_up_id'] ) : array(),
 				(array) ( $snapshot['follow_up_ids'] ?? array() )
 			),
-			'sms_message_ids'       => $merge_ints(
-				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_sms_messages', $clinic_id ) : array(),
+			'sms_message_ids'                 => $merge_ints(
+				$synthetic_sms,
 				(array) ( $snapshot['sms_message_ids'] ?? array() )
 			),
-			'otp_token_ids'         => $otp_token_ids,
-		);
-
-		$scope['audit_request_ids'] = $merge_strs(
-			$this->platform->audit_request_ids_for_scope( $scope ),
-			(array) ( $snapshot['audit_request_ids'] ?? array() )
-		);
-		$scope['otp_ip_hashes']     = $merge_strs(
-			$this->platform->audit_otp_ip_hashes_for_scope( $scope ),
-			(array) ( $snapshot['otp_ip_hashes'] ?? array() )
-		);
-		$scope['login_failed_ips']  = $merge_strs(
-			$this->platform->login_failed_ips_for_scope( $scope ),
-			(array) ( $snapshot['login_failed_ips'] ?? array() )
+			'otp_token_ids'                   => $otp_token_ids,
 		);
 
 		return $scope;
@@ -426,16 +463,17 @@ class Teardown {
 				$pred = $this->platform->owned_rate_limits_predicate( $scope );
 				return '1 = 0' === $pred[0] ? null : $pred;
 			case 'cpms_otp_tokens':
-				if ( $clinic_id > 1 && '' !== $mobile ) {
-					return array( '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))', array( $clinic_id, $mobile ) );
+				if ( $clinic_id > 1 && 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
+					return array( '((clinic_id = %d OR clinic_id IS NULL) AND mobile = %s)', array( $clinic_id, $mobile ) );
 				}
-				if ( $clinic_id > 1 ) {
-					return array( 'clinic_id = %d', array( $clinic_id ) );
-				}
-				if ( '' !== $mobile ) {
+				if ( 1 === preg_match( '/^0900\d{7}$/', $mobile ) ) {
 					return array( '(clinic_id IS NULL AND mobile = %s)', array( $mobile ) );
 				}
 				return null;
+			case 'cpms_sms_messages':
+				return $clinic_id > 1 ? array( "clinic_id = %d AND recipient_mobile LIKE '0900%%'", array( $clinic_id ) ) : null;
+			case 'cpms_patients':
+				return $clinic_id > 1 ? array( "clinic_id = %d AND mobile LIKE '0900%%'", array( $clinic_id ) ) : null;
 			default:
 				$full = $this->platform->table( $short );
 				$cols = $this->platform->columns( $full );
@@ -679,6 +717,8 @@ class Teardown {
 				return $this->platform->baseline_jobs_count();
 			case 'cpms_operational_logs':
 				return $this->platform->baseline_oplogs_count();
+			case 'cpms_rate_limits':
+				return $this->platform->shared_ip_rate_limits_count();
 			default:
 				return 0;
 		}
@@ -826,16 +866,18 @@ class Teardown {
 		// and remove cpdd_manifest (S-2).
 		$removed_at = $this->env->now_sql();
 		$tombstone  = array(
-			'fixture_id' => (string) $manifest['fixture_id'],
-			'removed_at' => $removed_at,
-			'at'         => $removed_at,
-			'actor_id'   => $actor_id,
-			'deleted'    => $deleted,
-			'remaining'  => array(),
-			'clean'      => true,
-			'ok'         => true,
+			'fixture_id'                      => (string) $manifest['fixture_id'],
+			'removed_at'                      => $removed_at,
+			'at'                              => $removed_at,
+			'actor_id'                        => $actor_id,
+			'deleted'                         => $deleted,
+			'preserved_shared_ip_rate_limits' => $this->platform->shared_ip_rate_limits_count(),
+			'remaining'                       => array(),
+			'clean'                           => true,
+			'ok'                              => true,
 		);
 		$this->env->option_delete( 'cpdd_uninstall_blocked' );
+		$this->env->option_set( 'cpdd_had_clean_teardown', '1' );
 		$this->manifest->write_tombstone( $tombstone );
 		$this->manifest->delete();
 

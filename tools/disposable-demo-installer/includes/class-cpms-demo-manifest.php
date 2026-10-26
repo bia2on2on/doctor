@@ -213,6 +213,13 @@ class Manifest {
 	}
 
 	/**
+	 * @return void
+	 */
+	public function clear_tombstone(): void {
+		$this->env->option_delete( self::TOMBSTONE );
+	}
+
+	/**
 	 * @return string Human-readable fixture prefix used in slugs/logins.
 	 */
 	public function fixture_prefix(): string {

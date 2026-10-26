@@ -71,32 +71,60 @@ clinic/mobile. The patient still submits the code to the normal verify route,
 which enforces TTL, attempt limit, lockout, one-time consumption and the
 patient-capability gate. `CPMS_DEV_OTP_ECHO` is never defined.
 
-## Teardown
+## Teardown & Conservative Record Lifecycle
 
 Ownership is proven from **live rows**, never from the manifest alone: clinic
 slug/organization binding, every persona login prefix + fixture id, no persona may
 hold `administrator`/`manage_options`, booking page slug + shortcode, and every
-`cpms_*` table's rows must be attributable via `clinic_id` / `organization_id` /
-`patient_id` / `wp_user_id` / `clinician_id`. Tables whose ownership cannot be
-proven **block** the whole teardown (nothing is deleted). Deletion is scoped to
-those proven predicates, then re-verified; the Owner's Administrator account, the
-default bootstrap rows and unrelated users/posts/options/files are out of scope.
-Demo activity created after provisioning (extra appointments, patients, invoices)
-is covered because the entire fixture clinic is synthetic.
+`cpms_*` table's rows must be attributable via explicit immutable fixture entity
+identifiers (`clinic_id`, `organization_id`, `patient_id`, `wp_user_id`,
+`clinician_id`, `appointment_id`, `slot_id`, `follow_up_id`, `message_id`,
+`token_id`, synthetic `0900` patient mobile, or 32-char SHA-256 persona
+`username_hash`).
 
-If selective cleanup cannot be proven safe, the documented fallback is to destroy
-the whole disposable site/database container.
+- **`cpms_operational_logs`:** Matched strictly by explicit entity keys in
+  `context_json` (`$.clinic_id`, `$.patient_id`, `$.appointment_id`/`$.old`/`$.new`,
+  `$.slot_id`, `$.hold_id`, `$.schedule_id`, `$.exception_id`, `$.clinician_id`,
+  `$.follow_up_id`, `$.message_id`, `$.token_id`, `$.wp_user_id`/`$.actor`/`$.by`,
+  `SMS_LOG_SENT` `$.to` for the synthetic `0900` mobile, and
+  `LOGIN_FAILED`/`LOGIN_THROTTLED` `$.username_hash` for the 6 synthetic persona
+  logins). Shared PHP-process `request_id` (`cpms_request_id()`) correlation is
+  **never** used.
+- **`cpms_audit_logs`:** Clinic-scoped rows (`clinic_id = N`) are matched only when
+  `resource_type <> 'otp'` or `after_json.mobile` matches the masked synthetic
+  `0900` patient mobile (`***XXXX`). Unscoped public OTP audit rows
+  (`clinic_id IS NULL AND resource_type = 'otp'`) are matched only when an unscoped
+  `cpms_otp_tokens` row exists for the synthetic `0900` patient mobile and zero
+  foreign mobiles in `cpms_otp_tokens`, `cpms_patients`, or `cpms_sms_messages`
+  share the same 4-digit suffix. Any foreign or suffix-colliding OTP audit row
+  blocks teardown.
+- **`cpms_rate_limits`:** Only entity-scoped keys exclusively owned by the fixture
+  (`otp-day:<0900-mobile>`, `otp-hour:<0900-mobile>`, `login-user:<32-hex-persona>`,
+  and per-fixture-user keys such as `booking-<uid>`) are deleted during teardown.
+  Globally shared per-IP counters (`otp-ip:<ip>`, `otp-verify-ip:<ip>`,
+  `login-ip:<ip>`) cannot be proven to belong exclusively to the demo from an IP
+  match alone and are **preserved** across teardown (left for production CPMS's
+  `cleanup.rate_limits` recurring job) and permitted on subsequent reprovisioning
+  after a verified teardown tombstone (`cpdd_had_clean_teardown`). Any foreign
+  entity rate-limit row blocks both preflight and teardown.
+
+Tables whose ownership cannot be proven **block** the whole teardown (nothing is
+deleted). Deletion is scoped to those proven predicates, then re-verified; the
+Owner's Administrator account, the default bootstrap rows and unrelated
+users/posts/options/files are out of scope. If selective cleanup cannot be proven
+safe, the documented fallback is to destroy the whole disposable site/database
+container.
 
 ## Verification & test suites
 
 - **Unit & security negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
-  (179 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
+  (197 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
   enforcement, manifest HMAC tamper & site-transplant detection, CSPRNG credential generation
   & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider guardrails,
   concurrency lock contention, partial provisioning and interrupted teardown fault-injection recovery,
-  safe uninstall preservation when a fixture is active, and durable ownership-proofed teardown across
-  all 53 `cpms_*` tables including `cpms_audit_logs`, `cpms_jobs`, `cpms_operational_logs`,
-  `cpms_rate_limits`, and `cpms_drug_reference`).
+  safe uninstall preservation when a fixture is active, shared `request_id` isolation, shared-IP
+  rate-limit preservation, unambiguous unscoped OTP audit attribution, repeated provisioning and
+  second teardown, and durable ownership-proofed teardown across all 43 `cpms_*` tables).
 - **Real-WordPress integration acceptance:** `tools/disposable-demo-installer/tests/integration-wp.php`
   (executed in `.github/workflows/disposable-demo-installer.yml` on a clean WordPress 7.1.3 +
   MySQL 8 + production CPMS 1.0.0 ZIP + companion `cpms-disposable-demo-1.0.0.zip`, including

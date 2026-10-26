@@ -156,30 +156,96 @@ try {
 		cpdd_assert( true, 'the demo code cannot be re-minted for a consumed/expired challenge (' . $e->demo_code() . ')' );
 	}
 
-	// Scoping: the demo tool must not expose codes for any other mobile.
+	// Negative security checks run inside rolled-back transactions so zero untracked
+	// foreign fixtures persist and zero manual DELETE statements are executed.
 	try {
-		App::otpService()->request( '09121234567', 'login', null, '127.0.0.1', $clinic_id );
-		$otp->issue( $fixture );
-		cpdd_assert( false, 'a foreign mobile never receives a demo code' );
-	} catch ( DemoException $e ) {
-		cpdd_assert( in_array( $e->demo_code(), array( 'OTP_CHALLENGE', 'OTP_SCOPE' ), true ), 'a foreign mobile never receives a demo code (' . $e->demo_code() . ')' );
+		$db->transactional(
+			static function () use ( $clinic_id, $otp, $fixture, $env, $platform, $manifest ): void {
+				App::otpService()->request( '09121234567', 'login', null, '127.0.0.1', $clinic_id );
+				try {
+					$otp->issue( $fixture );
+					cpdd_assert( false, 'a foreign mobile never receives a demo code' );
+				} catch ( DemoException $e ) {
+					cpdd_assert( in_array( $e->demo_code(), array( 'OTP_CHALLENGE', 'OTP_SCOPE' ), true ), 'a foreign mobile never receives a demo code (' . $e->demo_code() . ')' );
+				}
+				$blocked_by_foreign = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
+				cpdd_assert( false === $blocked_by_foreign['ok'], 's3: foreign mobile OTP/SMS/audit/rate-limit rows block teardown' );
+				throw new RuntimeException( 'CPDD_ROLLBACK_NEGATIVE_TEST' );
+			}
+		);
+	} catch ( RuntimeException $rb ) {
+		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative foreign-mobile check rolled back cleanly without manual DELETE' );
 	}
 
-	// S-3: Foreign rate-limit and operational-log rows from 09121234567 must block teardown!
-	$blocked_by_foreign = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
-	cpdd_assert( false === $blocked_by_foreign['ok'], 's3: foreign mobile rate-limit and oplog rows block teardown' );
-
-	// Remove the foreign 09121234567 test rows so only fixture-owned rows remain.
-	$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_rate_limits' ) . ' WHERE window_key IN (%s, %s)', array( 'otp-day:09121234567', 'otp-hour:09121234567' ) ) );
-	$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_operational_logs' ) . " WHERE JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.to')) = %s", array( '09121234567' ) ) );
-	$foreign_sms_ids = $db->fetchAll( $db->prepare( 'SELECT id FROM ' . $db->table( 'cpms_sms_messages' ) . ' WHERE recipient_mobile = %s', array( '09121234567' ) ) );
-	foreach ( $foreign_sms_ids as $fsms ) {
-		$fid = (int) $fsms['id'];
-		$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_jobs' ) . " WHERE CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.message_id')) AS UNSIGNED) = %d", array( $fid ) ) );
-		$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_operational_logs' ) . " WHERE CAST(JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.message_id')) AS UNSIGNED) = %d", array( $fid ) ) );
+	// Negative check: foreign operational log sharing the same PHP request_id blocks teardown.
+	try {
+		$db->transactional(
+			static function () use ( $db, $fixture, $env, $platform, $manifest ): void {
+				$db->insert(
+					'cpms_operational_logs',
+					array(
+						'level'        => 'info',
+						'message'      => 'PATIENT_CREATED',
+						'context_json' => (string) wp_json_encode( array( 'clinic_id' => 1, 'patient_id' => 99999 ) ),
+						'request_id'   => function_exists( 'cpms_request_id' ) ? cpms_request_id() : 'shared-req',
+						'created_at'   => current_time( 'mysql', true ),
+					)
+				);
+				$blocked_shared_req = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
+				cpdd_assert( false === $blocked_shared_req['ok'], 's3: foreign operational_log row sharing request_id blocks teardown' );
+				throw new RuntimeException( 'CPDD_ROLLBACK_NEGATIVE_TEST' );
+			}
+		);
+	} catch ( RuntimeException $rb ) {
+		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative shared-request_id check rolled back cleanly' );
 	}
-	$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_sms_messages' ) . ' WHERE recipient_mobile = %s', array( '09121234567' ) ) );
-	$db->execute( $db->prepare( 'DELETE FROM ' . $db->table( 'cpms_otp_tokens' ) . ' WHERE mobile = %s', array( '09121234567' ) ) );
+
+	// Negative check: unscoped OTP audit row for a foreign mobile blocks teardown.
+	try {
+		$db->transactional(
+			static function () use ( $db, $fixture, $env, $platform, $manifest ): void {
+				$db->insert(
+					'cpms_audit_logs',
+					array(
+						'clinic_id'        => null,
+						'actor_wp_user_id' => null,
+						'actor_role'       => null,
+						'action'           => 'OTP_REQUEST',
+						'resource_type'    => 'otp',
+						'resource_id'      => null,
+						'before_json'      => null,
+						'after_json'       => '{"mobile":"***9876"}',
+						'meta_json'        => '{"purpose":"login"}',
+						'request_id'       => 'foreign-otp-req',
+						'ip_hash'          => null,
+						'user_agent_hash'  => null,
+						'created_at'       => current_time( 'mysql', true ),
+					)
+				);
+				$blocked_foreign_otp_audit = ( new Teardown( $env, $platform, $manifest ) )->verify( $fixture );
+				cpdd_assert( false === $blocked_foreign_otp_audit['ok'], 's3: unscoped OTP audit row for foreign mobile blocks teardown' );
+				throw new RuntimeException( 'CPDD_ROLLBACK_NEGATIVE_TEST' );
+			}
+		);
+	} catch ( RuntimeException $rb ) {
+		cpdd_assert( 'CPDD_ROLLBACK_NEGATIVE_TEST' === $rb->getMessage(), 'negative unscoped foreign OTP audit check rolled back cleanly' );
+	}
+
+	// Unscoped OTP request for the synthetic 0900 patient (clinic_id = null) + synthetic persona failed login.
+	$unscoped_req = App::otpService()->request( $mobile, 'login', null, '127.0.0.1', null );
+	cpdd_assert( true === ( $unscoped_req['sent'] ?? false ), 'unscoped patient portal OTP request succeeds for synthetic 0900 patient' );
+	$unscoped_issued = $otp->issue( $fixture, 'login' );
+	cpdd_assert( 1 === preg_match( '/^\d{6}$/', (string) $unscoped_issued['code'] ), 'demo OTP helper issues code for unscoped synthetic patient login challenge' );
+	add_filter( 'send_auth_cookies', '__return_false' );
+	try {
+		$unscoped_verified = App::otpService()->verify( $mobile, (string) $unscoped_issued['code'], 'login', '127.0.0.1', null );
+		cpdd_assert( isset( $unscoped_verified['user_id'] ) || isset( $unscoped_verified['wp_user_id'] ), 'unscoped patient portal verify accepts demo code' );
+	} finally {
+		remove_filter( 'send_auth_cookies', '__return_false' );
+	}
+	wp_set_current_user( $admin_id );
+
+	\Cpms\Infrastructure\Security\LoginRateLimiter::recordFailure( 'cpdd-doctor-' . $fixture['fixture_id'], '127.0.0.1' );
 } finally {
 	App::replaceExplicitScope( $previous );
 }
@@ -281,8 +347,24 @@ $default_clinic = $db->fetchRow( 'SELECT id, slug FROM ' . $db->table( 'cpms_cli
 cpdd_assert( null !== $default_clinic && 'default' === (string) $default_clinic['slug'], 'default CPMS bootstrap clinic untouched' );
 $leftover = (int) $db->fetchValue( 'SELECT COUNT(*) FROM ' . $db->table( 'cpms_patients' ) . ' WHERE clinic_id = %d', array( $clinic_id ) );
 cpdd_assert( 0 === $leftover, 'no synthetic patients remain in the fixture clinic scope' );
+cpdd_assert( 0 === $platform->non_shared_ip_rate_limits_count(), 'all entity rate-limit rows removed by teardown' );
+cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'globally shared IP rate-limit rows (otp-ip:*, otp-verify-ip:*, login-ip:*) preserved across teardown' );
 $post_state = ( new Preflight( $env, $platform, $manifest ) )->run();
 cpdd_assert( true === $post_state['ok'], 'preflight passes again after verified teardown' );
+
+// --- 6b. Full reprovisioning and second teardown -------------------------
+$manifest->clear_tombstone();
+$reprovisioned = $provisioner->provision( $admin_id );
+$fixture_two   = $reprovisioned['manifest'];
+cpdd_assert(
+	(string) $fixture_two['fixture_id'] !== (string) $fixture['fixture_id'],
+	'reprovisioning creates a distinct second fixture_id'
+);
+$second_cleanup = $teardown->execute( $fixture_two, $admin_id );
+cpdd_assert( true === $second_cleanup['ok'], 'second teardown completes cleanly' );
+cpdd_assert( 0 === $platform->non_shared_ip_rate_limits_count(), 'zero entity rate-limit rows remain after second teardown' );
+cpdd_assert( $platform->shared_ip_rate_limits_count() >= 3, 'shared-IP rate-limit rows remain preserved after second teardown' );
+cpdd_assert( true === ( new Preflight( $env, $platform, $manifest ) )->run()['ok'], 'preflight passes after second teardown' );
 
 // --- 7. S-4 Partial provisioning recovery on real WordPress + MySQL ------
 $env->set_fault_injector(

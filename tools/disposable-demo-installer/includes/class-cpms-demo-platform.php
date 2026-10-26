@@ -408,28 +408,110 @@ class Platform {
 	}
 
 	/**
+	 * Check whether an unscoped (`clinic_id IS NULL`) OTP audit event for the
+	 * synthetic `0900` patient mobile can be unambiguously attributed to the
+	 * demo fixture.
+	 *
+	 * Requires:
+	 *  1. `$patient_mobile` is a synthetic `0900` mobile.
+	 *  2. At least one unscoped `cpms_otp_tokens` row exists (or was snapshotted)
+	 *     for `$patient_mobile`.
+	 *  3. Zero foreign mobiles in `cpms_otp_tokens`, `cpms_patients`, or
+	 *     `cpms_sms_messages` share the same 4-digit suffix.
+	 *
+	 * @param string $patient_mobile     Synthetic patient mobile.
+	 * @param bool   $had_unscoped_token Whether an unscoped token was already snapshotted.
+	 * @return bool
+	 */
+	public function unscoped_otp_suffix_unambiguous( string $patient_mobile, bool $had_unscoped_token = false ): bool {
+		if ( 1 !== preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
+			return false;
+		}
+		$suffix = substr( $patient_mobile, -4 );
+
+		$has_unscoped = $had_unscoped_token;
+		if ( ! $has_unscoped && $this->table_exists( 'cpms_otp_tokens' ) ) {
+			$has_unscoped = $this->count_where(
+				$this->table( 'cpms_otp_tokens' ),
+				'clinic_id IS NULL AND mobile = %s',
+				array( $patient_mobile )
+			) > 0;
+		}
+		if ( ! $has_unscoped ) {
+			return false;
+		}
+
+		if ( $this->table_exists( 'cpms_otp_tokens' ) ) {
+			$colliding_tokens = $this->count_where(
+				$this->table( 'cpms_otp_tokens' ),
+				'mobile <> %s AND RIGHT(mobile, 4) = %s',
+				array( $patient_mobile, $suffix )
+			);
+			if ( $colliding_tokens > 0 ) {
+				return false;
+			}
+		}
+
+		if ( $this->table_exists( 'cpms_patients' ) ) {
+			$colliding_patients = $this->count_where(
+				$this->table( 'cpms_patients' ),
+				'mobile <> %s AND RIGHT(mobile, 4) = %s',
+				array( $patient_mobile, $suffix )
+			);
+			if ( $colliding_patients > 0 ) {
+				return false;
+			}
+		}
+
+		if ( $this->table_exists( 'cpms_sms_messages' ) ) {
+			$colliding_sms = $this->count_where(
+				$this->table( 'cpms_sms_messages' ),
+				'recipient_mobile <> %s AND RIGHT(recipient_mobile, 4) = %s',
+				array( $patient_mobile, $suffix )
+			);
+			if ( $colliding_sms > 0 ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	/**
 	 * Build durable ownership predicate for `cpms_audit_logs` (S-3).
 	 *
 	 * Never uses `id > baseline_max_id`. Rows must be linked to the synthetic
-	 * clinic, synthetic organization, synthetic patient identities, synthetic
-	 * persona user IDs, or the synthetic fixture identifier.
+	 * clinic (excluding OTP events for non-fixture mobiles), synthetic
+	 * organization, synthetic patient identities, synthetic persona user IDs,
+	 * the synthetic fixture identifier, or an unambiguous unscoped OTP event for
+	 * the synthetic `0900` patient mobile.
 	 *
 	 * @param array<string,mixed> $scope Collected fixture scope.
 	 * @return array{0:string,1:list<mixed>}
 	 */
 	public function owned_audit_logs_predicate( array $scope ): array {
-		$clinic_id    = (int) ( $scope['clinic_id'] ?? 0 );
-		$org_id       = (int) ( $scope['organization_id'] ?? 0 );
-		$fixture_id   = (string) ( $scope['fixture_id'] ?? '' );
-		$identity_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
-		$user_ids     = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+		$clinic_id      = (int) ( $scope['clinic_id'] ?? 0 );
+		$org_id         = (int) ( $scope['organization_id'] ?? 0 );
+		$fixture_id     = (string) ( $scope['fixture_id'] ?? '' );
+		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
+		$masked_mobile  = 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ? '***' . substr( $patient_mobile, -4 ) : '';
+		$identity_ids   = array_values( array_filter( array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+		$user_ids       = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
 
 		$clauses = array();
 		$params  = array();
 
 		if ( $clinic_id > 1 ) {
-			$clauses[] = '(clinic_id = %d)';
-			$params[]  = $clinic_id;
+			if ( '' !== $masked_mobile ) {
+				$clauses[] = "(clinic_id = %d AND (resource_type <> %s OR JSON_UNQUOTE(JSON_EXTRACT(after_json, '$.mobile')) = %s))";
+				$params[]  = $clinic_id;
+				$params[]  = 'otp';
+				$params[]  = $masked_mobile;
+			} else {
+				$clauses[] = '(clinic_id = %d AND resource_type <> %s)';
+				$params[]  = $clinic_id;
+				$params[]  = 'otp';
+			}
 		}
 		if ( $org_id > 1 ) {
 			$clauses[] = '(clinic_id IS NULL AND resource_type = %s AND resource_id = %d)';
@@ -456,116 +538,17 @@ class Platform {
 			$params[]  = 'cpdd_fixture';
 			$params[]  = $fixture_id;
 		}
+		if ( '' !== $masked_mobile && ! empty( $scope['unscoped_otp_suffix_unambiguous'] ) ) {
+			$clauses[] = "(clinic_id IS NULL AND actor_wp_user_id IS NULL AND resource_type = %s AND JSON_UNQUOTE(JSON_EXTRACT(after_json, '$.mobile')) = %s)";
+			$params[]  = 'otp';
+			$params[]  = $masked_mobile;
+		}
 
 		if ( array() === $clauses ) {
 			return array( '1 = 0', array() );
 		}
 
 		return array( '(' . implode( ' OR ', $clauses ) . ')', $params );
-	}
-
-	/**
-	 * Collect distinct non-empty `request_id` values from proven-owned `cpms_audit_logs` rows.
-	 *
-	 * @param array<string,mixed> $scope Collected fixture scope.
-	 * @return list<string>
-	 */
-	public function audit_request_ids_for_scope( array $scope ): array {
-		if ( ! $this->table_exists( 'cpms_audit_logs' ) ) {
-			return array();
-		}
-		list( $where, $params ) = $this->owned_audit_logs_predicate( $scope );
-		if ( '1 = 0' === $where ) {
-			return array();
-		}
-		$total = $this->count_all( 'cpms_audit_logs' );
-		$owned = $this->count_where( $this->table( 'cpms_audit_logs' ), $where, $params );
-		if ( $total !== $owned ) {
-			// Do not trust request_id correlation if any foreign audit row exists.
-			return array();
-		}
-		$rows = $this->fetch_all(
-			'SELECT DISTINCT request_id FROM ' . $this->table( 'cpms_audit_logs' ) . ' WHERE ' . $where . " AND request_id IS NOT NULL AND request_id <> ''",
-			$params
-		);
-		$out  = array();
-		foreach ( $rows as $row ) {
-			$req = trim( (string) ( $row['request_id'] ?? '' ) );
-			if ( '' !== $req ) {
-				$out[] = $req;
-			}
-		}
-
-		return array_values( array_unique( $out ) );
-	}
-
-	/**
-	 * Collect distinct `ip_hash` values from proven fixture `OTP_REQUEST` audit rows.
-	 *
-	 * @param array<string,mixed> $scope Collected fixture scope.
-	 * @return list<string>
-	 */
-	public function audit_otp_ip_hashes_for_scope( array $scope ): array {
-		$clinic_id = (int) ( $scope['clinic_id'] ?? 0 );
-		if ( $clinic_id <= 1 || ! $this->table_exists( 'cpms_audit_logs' ) ) {
-			return array();
-		}
-		$foreign_otp = $this->count_where(
-			$this->table( 'cpms_audit_logs' ),
-			'(clinic_id IS NULL OR clinic_id <> %d) AND action = %s',
-			array( $clinic_id, 'OTP_REQUEST' )
-		);
-		if ( $foreign_otp > 0 ) {
-			return array();
-		}
-		$rows = $this->fetch_all(
-			'SELECT DISTINCT ip_hash FROM ' . $this->table( 'cpms_audit_logs' ) . " WHERE clinic_id = %d AND action = %s AND ip_hash IS NOT NULL AND ip_hash <> ''",
-			array( $clinic_id, 'OTP_REQUEST' )
-		);
-		$out  = array();
-		foreach ( $rows as $row ) {
-			$hash = trim( (string) ( $row['ip_hash'] ?? '' ) );
-			if ( '' !== $hash ) {
-				$out[] = $hash;
-			}
-		}
-
-		return array_values( array_unique( $out ) );
-	}
-
-	/**
-	 * Collect distinct client IPs from proven fixture `LOGIN_FAILED` operational log rows.
-	 *
-	 * @param array<string,mixed> $scope Collected fixture scope.
-	 * @return list<string>
-	 */
-	public function login_failed_ips_for_scope( array $scope ): array {
-		$login_keys = array_values( array_filter( array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) ) ) );
-		if ( array() === $login_keys || ! $this->table_exists( 'cpms_operational_logs' ) ) {
-			return array();
-		}
-		$ph      = implode( ',', array_fill( 0, count( $login_keys ), '%s' ) );
-		$foreign = $this->count_where(
-			$this->table( 'cpms_operational_logs' ),
-			"message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND (JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) NOT IN (" . $ph . '))',
-			$login_keys
-		);
-		if ( $foreign > 0 ) {
-			return array();
-		}
-		$rows = $this->fetch_all(
-			"SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.ip')) AS ip FROM " . $this->table( 'cpms_operational_logs' ) . " WHERE message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IN (" . $ph . ')',
-			$login_keys
-		);
-		$out  = array();
-		foreach ( $rows as $row ) {
-			$ip = trim( (string) ( $row['ip'] ?? '' ) );
-			if ( '' !== $ip ) {
-				$out[] = $ip;
-			}
-		}
-
-		return array_values( array_unique( $out ) );
 	}
 
 	/**
@@ -612,8 +595,10 @@ class Platform {
 	/**
 	 * Build durable ownership predicate for `cpms_operational_logs` (S-3).
 	 *
-	 * Never uses `id > baseline_max_id`. Every matched row must carry a durable
-	 * foreign key / identifier in `context_json` or a proven fixture `request_id`.
+	 * Never uses `id > baseline_max_id` or shared `request_id` correlation.
+	 * Every matched row must carry an explicit immutable fixture entity ID,
+	 * synthetic `0900` patient mobile, or synthetic persona `username_hash`
+	 * in `context_json`.
 	 *
 	 * @param array<string,mixed> $scope Collected fixture scope.
 	 * @return array{0:string,1:list<mixed>}
@@ -631,14 +616,17 @@ class Platform {
 		}
 
 		$id_fields = array(
-			'patient_ids'     => array( '$.patient_id' ),
-			'appointment_ids' => array( '$.appointment_id', '$.old' ),
-			'slot_ids'        => array( '$.slot_id' ),
-			'clinician_ids'   => array( '$.clinician_id' ),
-			'follow_up_ids'   => array( '$.follow_up_id' ),
-			'sms_message_ids' => array( '$.message_id' ),
-			'otp_token_ids'   => array( '$.token_id' ),
-			'user_ids'        => array( '$.wp_user_id', '$.actor', '$.by' ),
+			'patient_ids'            => array( '$.patient_id' ),
+			'appointment_ids'        => array( '$.appointment_id', '$.old', '$.new' ),
+			'slot_ids'               => array( '$.slot_id' ),
+			'hold_ids'               => array( '$.hold_id' ),
+			'schedule_ids'           => array( '$.schedule_id' ),
+			'schedule_exception_ids' => array( '$.exception_id' ),
+			'clinician_ids'          => array( '$.clinician_id' ),
+			'follow_up_ids'          => array( '$.follow_up_id' ),
+			'sms_message_ids'        => array( '$.message_id' ),
+			'otp_token_ids'          => array( '$.token_id' ),
+			'user_ids'               => array( '$.wp_user_id', '$.actor', '$.by' ),
 		);
 
 		foreach ( $id_fields as $scope_key => $json_paths ) {
@@ -655,27 +643,18 @@ class Platform {
 			}
 		}
 
-		if ( '' !== $patient_mobile ) {
+		if ( 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
 			$clauses[] = "(message = %s AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.to')) = %s)";
 			$params[]  = 'SMS_LOG_SENT';
 			$params[]  = $patient_mobile;
 		}
 
-		$login_keys = array_values( array_filter( array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) ) ) );
-		if ( array() !== $login_keys ) {
-			$ph        = implode( ',', array_fill( 0, count( $login_keys ), '%s' ) );
-			$clauses[] = "(message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IN (" . $ph . '))';
-			foreach ( $login_keys as $k ) {
-				$params[] = $k;
-			}
-		}
-
-		$req_ids = array_values( array_filter( array_map( 'strval', (array) ( $scope['audit_request_ids'] ?? array() ) ) ) );
-		if ( array() !== $req_ids ) {
-			$ph        = implode( ',', array_fill( 0, count( $req_ids ), '%s' ) );
-			$clauses[] = "(request_id IS NOT NULL AND request_id <> '' AND request_id IN (" . $ph . '))';
-			foreach ( $req_ids as $req ) {
-				$params[] = $req;
+		$login_hashes = array_values( array_filter( array_map( 'strval', (array) ( $scope['login_user_hashes'] ?? array() ) ) ) );
+		if ( array() !== $login_hashes ) {
+			$ph        = implode( ',', array_fill( 0, count( $login_hashes ), '%s' ) );
+			$clauses[] = "(message IN ('LOGIN_FAILED','LOGIN_THROTTLED') AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IN (" . $ph . '))';
+			foreach ( $login_hashes as $h ) {
+				$params[] = $h;
 			}
 		}
 
@@ -692,11 +671,57 @@ class Platform {
 	}
 
 	/**
-	 * Compute the exact list of `window_key` values owned by the fixture (S-3).
+	 * SQL predicate matching globally shared IP rate-limit rows in `cpms_rate_limits`.
 	 *
-	 * Never uses `window_id >= 0`. Every allowed key is derived from the fixture's
-	 * patient mobile, synthetic persona user IDs, synthetic login hashes, or
-	 * proven fixture OTP/login audit correlations.
+	 * Because `otp-ip:*`, `otp-verify-ip:*`, and `login-ip:*` counters are keyed
+	 * only by IP address and shared across the entire WordPress installation,
+	 * matching an IP is never sufficient proof that a row belongs exclusively to
+	 * the demo. These rows are preserved during teardown rather than deleted.
+	 *
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function shared_ip_rate_limits_where(): array {
+		return array(
+			"(window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%' OR window_key LIKE 'login-ip:%')",
+			array(),
+		);
+	}
+
+	/**
+	 * Count globally shared IP rate-limit rows in `cpms_rate_limits`.
+	 *
+	 * @return int
+	 */
+	public function shared_ip_rate_limits_count(): int {
+		if ( ! $this->table_exists( 'cpms_rate_limits' ) ) {
+			return 0;
+		}
+		list( $where, $params ) = $this->shared_ip_rate_limits_where();
+
+		return $this->count_where( $this->table( 'cpms_rate_limits' ), $where, $params );
+	}
+
+	/**
+	 * Count entity-scoped (non-shared-IP) rate-limit rows in `cpms_rate_limits`.
+	 *
+	 * @return int
+	 */
+	public function non_shared_ip_rate_limits_count(): int {
+		if ( ! $this->table_exists( 'cpms_rate_limits' ) ) {
+			return 0;
+		}
+
+		return max( 0, $this->count_all( 'cpms_rate_limits' ) - $this->shared_ip_rate_limits_count() );
+	}
+
+	/**
+	 * Compute the exact list of entity-scoped `window_key` values exclusively
+	 * owned by the fixture (S-3).
+	 *
+	 * Never uses `window_id >= 0` and never includes shared-IP counters
+	 * (`otp-ip:*`, `otp-verify-ip:*`, `login-ip:*`). Every allowed key is derived
+	 * from the fixture's synthetic `0900` patient mobile, synthetic persona user
+	 * IDs, or synthetic persona login username hashes.
 	 *
 	 * @param array<string,mixed> $scope Collected fixture scope.
 	 * @return list<string>
@@ -704,7 +729,7 @@ class Platform {
 	public function allowed_rate_limit_keys_for_scope( array $scope ): array {
 		$keys           = array();
 		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
-		if ( '' !== $patient_mobile ) {
+		if ( 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
 			$keys[] = 'otp-day:' . $patient_mobile;
 			$keys[] = 'otp-hour:' . $patient_mobile;
 		}
@@ -725,31 +750,6 @@ class Platform {
 			$login_key = (string) $login_key;
 			if ( '' !== $login_key ) {
 				$keys[] = $login_key;
-			}
-		}
-
-		foreach ( (array) ( $scope['login_failed_ips'] ?? array() ) as $ip ) {
-			$ip = (string) $ip;
-			if ( '' !== $ip ) {
-				$keys[] = 'login-ip:' . $ip;
-			}
-		}
-
-		$otp_token_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['otp_token_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
-		$otp_ip_hashes = array_values( array_filter( array_map( 'strval', (array) ( $scope['otp_ip_hashes'] ?? array() ) ) ) );
-		if ( array() !== $otp_token_ids && array() !== $otp_ip_hashes && null !== $this->env && $this->table_exists( 'cpms_rate_limits' ) ) {
-			$rows = $this->fetch_all( 'SELECT DISTINCT window_key FROM ' . $this->table( 'cpms_rate_limits' ) . " WHERE window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%'" );
-			foreach ( $rows as $row ) {
-				$wk = (string) ( $row['window_key'] ?? '' );
-				$ip = '';
-				if ( str_starts_with( $wk, 'otp-ip:' ) ) {
-					$ip = substr( $wk, 7 );
-				} elseif ( str_starts_with( $wk, 'otp-verify-ip:' ) ) {
-					$ip = substr( $wk, 14 );
-				}
-				if ( '' !== $ip && in_array( $this->env->ip_hash( $ip ), $otp_ip_hashes, true ) ) {
-					$keys[] = $wk;
-				}
 			}
 		}
 
@@ -1204,9 +1204,17 @@ class Platform {
 	 * @return array<string,mixed>|null Latest live, unconsumed challenge.
 	 */
 	public function latest_live_challenge( int $clinic_id, string $mobile, string $purpose ): ?array {
+		$foreign_tokens = (int) $this->db()->fetchValue(
+			'SELECT COUNT(*) FROM ' . $this->db()->table( 'cpms_otp_tokens' ) . ' WHERE mobile = %s AND clinic_id IS NOT NULL AND clinic_id <> %d',
+			array( $mobile, $clinic_id )
+		);
+		if ( $foreign_tokens > 0 ) {
+			return null;
+		}
+
 		return $this->db()->fetchRow(
-			'SELECT id, expires_at, attempts, consumed_at FROM ' . $this->db()->table( 'cpms_otp_tokens' )
-			. ' WHERE clinic_id = %d AND mobile = %s AND purpose = %s AND consumed_at IS NULL'
+			'SELECT id, clinic_id, expires_at, attempts, consumed_at FROM ' . $this->db()->table( 'cpms_otp_tokens' )
+			. ' WHERE (clinic_id = %d OR clinic_id IS NULL) AND mobile = %s AND purpose = %s AND consumed_at IS NULL'
 			. ' ORDER BY id DESC LIMIT 1',
 			array( $clinic_id, $mobile, $purpose )
 		);

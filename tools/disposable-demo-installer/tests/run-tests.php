@@ -731,8 +731,9 @@ $ctx['platform']->tables_data['cpms_jobs'][] = array(
 	'payload_json' => '[]',
 );
 $ctx['platform']->tables_data['cpms_sms_messages'][] = array(
-	'id'        => 42,
-	'clinic_id' => $cid,
+	'id'               => 42,
+	'clinic_id'        => $cid,
+	'recipient_mobile' => $post['manifest']['patient_mobile'],
 );
 $ctx['platform']->tables_data['cpms_jobs'][] = array(
 	'id'           => 501,
@@ -897,5 +898,216 @@ foreach ( $ctx['env']->passwords as $stored_pass ) {
 	Cpdd_Test::ok( ! str_contains( $html_get, (string) $stored_pass ), 's6: subsequent GET reload contains zero password values' );
 }
 Admin::set_test_services( null, null );
+
+// ---------------------------------------------------------------------------
+// 14. Regression: request_id isolation, shared-IP rate-limits, unscoped OTP, & reprovisioning
+// ---------------------------------------------------------------------------
+
+// 14a. Mixed demo/foreign activity sharing the same PHP request_id in cpms_operational_logs must block teardown.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$cid  = (int) $post['manifest']['ids']['clinic_id'];
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'         => 700,
+	'clinic_id'  => $cid,
+	'action'     => 'DEMO_ACTION',
+	'request_id' => 'shared-req-id-001',
+);
+$ctx['platform']->tables_data['cpms_operational_logs'][] = array(
+	'id'           => 701,
+	'level'        => 'info',
+	'message'      => 'PATIENT_CREATED',
+	'request_id'   => 'shared-req-id-001',
+	'context_json' => '{"clinic_id":1,"patient_id":9999}',
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	'reg-14a: foreign operational_log row sharing request_id with demo audit row blocks teardown'
+);
+Cpdd_Test::equals( 4, count( $ctx['platform']->tables_data['cpms_operational_logs'] ), 'reg-14a: foreign operational_log row sharing request_id is never deleted' );
+
+// 14b. Correct ip_hash / username_hash and LOGIN_FAILED / LOGIN_THROTTLED attribution.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$fx   = (string) $post['manifest']['fixture_id'];
+$doc_login = 'cpdd-doctor-' . $fx;
+$doc_hash  = $ctx['env']->username_hash( $doc_login );
+Cpdd_Test::equals( 32, strlen( $doc_hash ), 'reg-14b: username_hash is 32-char SHA-256 hex without login-user: prefix' );
+Cpdd_Test::equals(
+	hash_hmac( 'sha256', '127.0.0.1', 'cpms-dev-pepper-change-me' ),
+	$ctx['env']->ip_hash( '127.0.0.1' ),
+	'reg-14b: ip_hash matches AuditLogger::ipHash() pepper'
+);
+$ctx['platform']->tables_data['cpms_operational_logs'][] = array(
+	'id'           => 710,
+	'level'        => 'warning',
+	'message'      => 'LOGIN_FAILED',
+	'context_json' => (string) json_encode( array( 'username_hash' => $doc_hash, 'ip' => '127.0.0.1' ) ),
+);
+$ctx['platform']->tables_data['cpms_operational_logs'][] = array(
+	'id'           => 711,
+	'level'        => 'warning',
+	'message'      => 'LOGIN_THROTTLED',
+	'context_json' => (string) json_encode( array( 'username_hash' => $doc_hash, 'ip' => '127.0.0.1' ) ),
+);
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'login-user:' . $doc_hash,
+	'window_id'  => 20000,
+	'hits'       => 2,
+);
+$res_14b = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
+Cpdd_Test::ok( true === $res_14b['ok'], 'reg-14b: synthetic persona LOGIN_FAILED/LOGIN_THROTTLED oplogs and login-user rate_limit are attributed and removed' );
+
+// Foreign username_hash in LOGIN_FAILED blocks teardown.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_operational_logs'][] = array(
+	'id'           => 712,
+	'level'        => 'warning',
+	'message'      => 'LOGIN_FAILED',
+	'context_json' => (string) json_encode( array( 'username_hash' => $ctx['env']->username_hash( 'real-doctor' ), 'ip' => '127.0.0.1' ) ),
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	'reg-14b: foreign username_hash in LOGIN_FAILED operational_log blocks teardown'
+);
+
+// 14c. Shared-IP rate-limit rows (otp-ip:*, otp-verify-ip:*, login-ip:*) are preserved across teardown and allowed on reprovisioning.
+$ctx = cpdd_fixture();
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'otp-ip:127.0.0.1',
+	'window_id'  => 20000,
+	'hits'       => 1,
+);
+Cpdd_Test::ok(
+	false === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'reg-14c: shared-IP rate-limit row on a brand-new site before any demo teardown blocks initial preflight'
+);
+
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'otp-ip:127.0.0.1',
+	'window_id'  => 20000,
+	'hits'       => 3,
+);
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'otp-verify-ip:127.0.0.1',
+	'window_id'  => 20000,
+	'hits'       => 2,
+);
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'login-ip:127.0.0.1',
+	'window_id'  => 20000,
+	'hits'       => 1,
+);
+$td_14c = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
+Cpdd_Test::ok( true === $td_14c['ok'], 'reg-14c: teardown succeeds while preserving globally shared IP rate-limit counters' );
+Cpdd_Test::equals( 3, count( $ctx['platform']->tables_data['cpms_rate_limits'] ), 'reg-14c: all 3 shared-IP rate-limit counters are preserved and entity counters removed' );
+Cpdd_Test::equals( 3, $td_14c['tombstone']['preserved_shared_ip_rate_limits'] ?? -1, 'reg-14c: tombstone records preserved_shared_ip_rate_limits count' );
+
+// Dismiss tombstone and reprovision on the same disposable site, then run second teardown.
+$ctx['manifest']->clear_tombstone();
+Cpdd_Test::ok(
+	true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'reg-14c: preflight passes for reprovisioning after verified teardown even when shared-IP rate-limit counters are preserved'
+);
+$post_second = cpdd_provision( $ctx );
+Cpdd_Test::ok(
+	(string) $post_second['manifest']['fixture_id'] !== (string) $post['manifest']['fixture_id'],
+	'reg-14c: reprovisioning generates a distinct fixture_id'
+);
+$td_second = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post_second['manifest'], 1 );
+Cpdd_Test::ok( true === $td_second['ok'], 'reg-14c: second teardown completes cleanly' );
+Cpdd_Test::equals( 3, count( $ctx['platform']->tables_data['cpms_rate_limits'] ), 'reg-14c: shared-IP rate-limit counters remain preserved after second teardown' );
+
+// 14d. Unscoped OTP audit records (clinic_id IS NULL, resource_type = 'otp').
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$mob  = (string) $post['manifest']['patient_mobile'];
+$mask = '***' . substr( $mob, -4 );
+$ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
+	'id'          => 80,
+	'clinic_id'   => null,
+	'mobile'      => $mob,
+	'purpose'     => 'login',
+	'consumed_at' => null,
+	'attempts'    => 0,
+	'expires_at'  => gmdate( 'Y-m-d H:i:s', $ctx['env']->now + 60 ),
+	'code_hash'   => 'x',
+);
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'               => 800,
+	'clinic_id'        => null,
+	'actor_wp_user_id' => null,
+	'action'           => 'OTP_REQUEST',
+	'resource_type'    => 'otp',
+	'resource_id'      => null,
+	'after_json'       => (string) json_encode( array( 'mobile' => $mask ) ),
+);
+$td_14d = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
+Cpdd_Test::ok( true === $td_14d['ok'], 'reg-14d: unambiguous unscoped OTP audit row for synthetic 0900 mobile is attributed and removed' );
+Cpdd_Test::equals( 0, count( $ctx['platform']->tables_data['cpms_audit_logs'] ), 'reg-14d: unscoped synthetic OTP audit row deleted' );
+
+// Unscoped OTP audit row for a foreign mobile blocks teardown.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'               => 801,
+	'clinic_id'        => null,
+	'actor_wp_user_id' => null,
+	'action'           => 'OTP_REQUEST',
+	'resource_type'    => 'otp',
+	'resource_id'      => null,
+	'after_json'       => '{"mobile":"***9876"}',
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	'reg-14d: unscoped OTP audit row for foreign mobile blocks teardown'
+);
+
+// Unscoped OTP audit row when a foreign mobile collides on the 4-digit suffix is treated as ambiguous and blocks teardown.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$mob  = (string) $post['manifest']['patient_mobile'];
+$mask = '***' . substr( $mob, -4 );
+$colliding_foreign_mobile = '0912000' . substr( $mob, -4 );
+$ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
+	'id'          => 81,
+	'clinic_id'   => null,
+	'mobile'      => $mob,
+	'purpose'     => 'login',
+	'consumed_at' => null,
+	'attempts'    => 0,
+	'expires_at'  => gmdate( 'Y-m-d H:i:s', $ctx['env']->now + 60 ),
+	'code_hash'   => 'x',
+);
+$ctx['platform']->tables_data['cpms_otp_tokens'][] = array(
+	'id'          => 82,
+	'clinic_id'   => null,
+	'mobile'      => $colliding_foreign_mobile,
+	'purpose'     => 'login',
+	'consumed_at' => null,
+	'attempts'    => 0,
+	'expires_at'  => gmdate( 'Y-m-d H:i:s', $ctx['env']->now + 60 ),
+	'code_hash'   => 'y',
+);
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'               => 802,
+	'clinic_id'        => null,
+	'actor_wp_user_id' => null,
+	'action'           => 'OTP_REQUEST',
+	'resource_type'    => 'otp',
+	'resource_id'      => null,
+	'after_json'       => (string) json_encode( array( 'mobile' => $mask ) ),
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	'reg-14d: 4-digit suffix collision with foreign mobile prevents unscoped OTP attribution and blocks teardown'
+);
 
 exit( Cpdd_Test::summary() );

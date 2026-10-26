@@ -207,6 +207,15 @@ Workflow پیش از Reset موفق، تأیید اشتباه و Marker فعال
 - اختیار Doctor در Void/Refund همچنان موضوع Baseline است و این ابزار آن را تغییر نمی‌دهد.
 - شکاف همگام‌سازی Clinician/Location در Walk-in شناخته‌شده است؛ ابزار از تخصیص صریح Location استفاده می‌کند و ادعای رفع عمومی ندارد.
 - محدودهٔ OTP در Patient Portal مستقلِ چند-Clinic شناخته‌شده است؛ این Fixture تک‌Clinicِ ساختگی را هدف می‌گیرد، نه اثبات رفع آن نقص را.
+
+## ۹) افزونهٔ همراه مرورگرمبنا (`tools/disposable-demo-installer/`) و چرخهٔ حیات محافظه‌کارانهٔ رکوردها
+
+برای اجرا بدون SSH یا WP-CLI، افزونهٔ همراه مجزا از مسیر `bash bin/build-demo-installer.sh` در قالب بستهٔ `dist/cpms-disposable-demo-1.0.0.zip` ساخته و از مسیر **افزونه‌ها ← افزودن افزونه تازه ← بارگذاری افزونه** نصب می‌شود و تنها یک صفحه در **ابزارها ← دموی یک‌بارمصرف CPMS** ایجاد می‌کند:
+
+- **مالکیت صریح در `cpms_operational_logs`:** ردیف‌های عملیاتی تنها بر پایهٔ کلیدهای صریح و تغییرناپذیر موجودیت‌های دمو در `context_json` (`clinic_id`, `patient_id`, `appointment_id`/`old`/`new`, `slot_id`, `hold_id`, `schedule_id`, `exception_id`, `clinician_id`, `follow_up_id`, `message_id`, `token_id`, `wp_user_id`/`actor`/`by`, شمارهٔ ساختگی `0900` در `SMS_LOG_SENT`، و `username_hash` سی‌ودوکاراکتری حساب‌های `cpdd-*` در `LOGIN_FAILED`/`LOGIN_THROTTLED`) تطبیق داده می‌شوند. هم‌بستگی بر اساس `request_id` مشترکِ پردازش PHP هرگز به‌عنوان اثبات مالکیت استفاده نمی‌شود.
+- **ممیزی OTP بدون Clinic (`cpms_audit_logs`):** ردیف‌های `clinic_id IS NULL AND resource_type = 'otp'` تنها زمانی به دمو نسبت داده می‌شوند که یک توکن بدون Clinic برای شمارهٔ ساختگی `0900` ثبت شده باشد و هیچ شمارهٔ غیرآزمایشی در `cpms_otp_tokens`، `cpms_patients` یا `cpms_sms_messages` در ۴ رقم پایانی با آن اشتراک نداشته باشد. هر ردیف مبهم یا خارجی باعث توقف Teardown می‌شود.
+- **حفظ شمارنده‌های سراسری IP در `cpms_rate_limits`:** در Teardown تنها کلیدهای اختصاصی موجودیت‌های دمو (`otp-day:<0900>`, `otp-hour:<0900>`, `login-user:<32-hex>`, `booking-<uid>` و مشابه) حذف می‌شوند. شمارنده‌های سراسری مبتنی بر IP (`otp-ip:*`, `otp-verify-ip:*`, `login-ip:*`) که مالکیت انحصاری آن‌ها با تطابق IP قابل اثبات نیست، هرگز حذف نمی‌شوند و برای Job دوره‌ای `cleanup.rate_limits` هستهٔ CPMS حفظ می‌گردند؛ پس از ثبت Tombstone معتبر (`cpdd_had_clean_teardown`)، وجود این شمارنده‌های سراسریِ حفظ‌شده مانع راه‌اندازی مجدد (Reprovisioning) در همان سایت یک‌بارمصرف نمی‌شود، اما هر شمارندهٔ موجودیتی غیرآزمایشی هم در Preflight و هم در Teardown مسدودکننده است.
+
 - MariaDB 11.8 پشتیبانی‌شده نیست؛ نتیجهٔ MySQL/نسخه‌های پشتیبانی‌شده را به آن تعمیم ندهید.
 - بایت‌های ZIP لزوماً Reproducible نیستند؛ SHA-256 فقط برای Artifact دقیقِ گزارش‌شده معتبر است.
 
