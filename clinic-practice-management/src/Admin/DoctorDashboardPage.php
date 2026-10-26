@@ -28,14 +28,15 @@ final class DoctorDashboardPage
 
     public static function menu(): void
     {
-        add_menu_page(
+        // B-1: یک منوی واحد. «امروز پزشک» زیر «مدیریت مطب» می‌نشیند؛ capability
+        // خودِ صفحه (QUEUE_READ) دست‌نخورده می‌ماند و والد هیچ مجوزی نمی‌دهد.
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
             'امروز پزشک',
             'امروز پزشک',
             RolesAndCapabilities::QUEUE_READ,
             'cpms-doctor',
-            [self::class, 'render'],
-            'dashicons-heart',
-            25
+            [self::class, 'render']
         );
     }
 

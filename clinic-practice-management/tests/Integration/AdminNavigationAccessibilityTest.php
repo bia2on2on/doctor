@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Integration;
 
+use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsAssets;
 use ClinicCore\Admin\CpmsDashboard;
 use ClinicCore\Admin\CustomRoleDefinitionsPage;
@@ -70,61 +71,79 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
         return is_array( $rows ) ? array_values( $rows ) : [];
     }
 
+    /**
+     * B-1 (unified menu) — قرارداد بازنویسی‌شده، با حفظ کاملِ نیتِ امنیتی.
+     *
+     * نیتِ اصلی: صفحهٔ «واگذاری مالی حساس» نباید زیرِ والدِ `cpms_config` بنشیند،
+     * وگرنه مدیرِ Clinic-scoped (بدون capability وردپرسیِ CONFIG) نه منو را
+     * می‌بیند و نه با URL مستقیم رد نمی‌شود. الزام «Top-Level بودنِ والد» با
+     * «دقیقاً یک منوی CPMS» ناسازگار بود؛ اکنون **والدِ واحد** همان
+     * `CpmsAdminMenu::parentSlug()` است و capability آن `read` است (نه CONFIG).
+     */
     public function testFinanceDelegationIsReachableFromAReadGatedParent(): void
     {
-        $GLOBALS['menu']    = [];
-        $GLOBALS['submenu'] = [];
+        $GLOBALS['menu']             = [];
+        $GLOBALS['submenu']          = [];
+        $GLOBALS['_parent_pages']    = [];
+        $GLOBALS['_registered_pages'] = [];
 
+        CpmsAdminMenu::menu();
         CustomRoleDefinitionsPage::menu();
         FinanceDelegationPage::menu();
 
-        $parent = $this->findTopLevel( CustomRoleDefinitionsPage::PAGE_SLUG );
-        self::assertNotNull( $parent, 'والدِ read-gated باید ثبت شود.' );
+        $parent = $this->findTopLevel( CpmsAdminMenu::parentSlug() );
+        self::assertNotNull( $parent, 'والدِ واحد «مدیریت مطب» باید ثبت شود.' );
         self::assertSame( 'read', $parent[1], 'والد نباید به cpms_config وابسته باشد.' );
 
-        $found = null;
-        foreach ( $this->submenuOf( CustomRoleDefinitionsPage::PAGE_SLUG ) as $row ) {
-            if ( ( $row[2] ?? '' ) === FinanceDelegationPage::PAGE_SLUG ) {
-                $found = $row;
-            }
-        }
-
-        self::assertNotNull( $found, 'صفحهٔ واگذاری مالی باید از یک والدِ read-gated قابلِ دسترس باشد.' );
-        self::assertSame( 'read', $found[1], 'لایهٔ منو نباید چیزی بیش از read مطالبه کند (مجوز واقعی سمتِ سرور است).' );
+        self::assertSame(
+            CpmsAdminMenu::parentSlug(),
+            $GLOBALS['_parent_pages'][ FinanceDelegationPage::PAGE_SLUG ] ?? null,
+            'صفحهٔ واگذاری مالی باید زیرِ والدِ read-gated ثبت شود.'
+        );
+        self::assertArrayHasKey(
+            'cpms-dashboard_page_' . FinanceDelegationPage::PAGE_SLUG,
+            $GLOBALS['_registered_pages'],
+            'ثبتِ صفحه باید واقعاً رخ داده باشد (نه فقط ادعا).'
+        );
+        self::assertSame(
+            'read',
+            CpmsAdminMenu::PAGES[ FinanceDelegationPage::PAGE_SLUG ][2],
+            'لایهٔ منو نباید چیزی بیش از read مطالبه کند (مجوز واقعی سمتِ سرور است).'
+        );
     }
 
     public function testFinanceDelegationNoLongerHidesBehindTheConfigGatedDashboard(): void
     {
-        $GLOBALS['menu']    = [];
-        $GLOBALS['submenu'] = [];
+        $GLOBALS['menu']              = [];
+        $GLOBALS['submenu']           = [];
+        $GLOBALS['_parent_pages']     = [];
+        $GLOBALS['_registered_pages'] = [];
 
-        // والدِ CONFIGمحور فقط به‌عنوان «ظرف» ثبت می‌شود (add_menu_page بررسی
-        // capability ندارد) تا مطمئن شویم صفحه به این والد نمی‌چسبد.
-        add_menu_page( 'داشبورد', 'داشبورد', 'read', CpmsDashboard::PAGE_SLUG, '__return_null' );
-
+        // B-1: منوی واحد با `read` ثبت می‌شود؛ دیگر هیچ ظرفِ CONFIGمحوری وجود
+        // ندارد که صفحهٔ مالی پشتِ آن پنهان شود.
+        CpmsAdminMenu::menu();
         CustomRoleDefinitionsPage::menu();
         FinanceDelegationPage::menu();
 
-        $dashboard_slugs = array_map(
-            static fn ( array $row ): string => (string) ( $row[2] ?? '' ),
-            $this->submenuOf( CpmsDashboard::PAGE_SLUG )
+        $dashboard = $this->findTopLevel( CpmsDashboard::PAGE_SLUG );
+        self::assertNotNull( $dashboard, 'منوی واحد باید ثبت شود.' );
+        self::assertNotSame(
+            'cpms_config',
+            $dashboard[1],
+            'منوی واحد نباید CONFIGمحور باشد (وگرنه مدیرِ Clinic-scoped آن را نمی‌بیند).'
         );
-        self::assertNotContains(
-            FinanceDelegationPage::PAGE_SLUG,
-            $dashboard_slugs,
-            'صفحهٔ واگذاری مالی نباید زیرِ منوی CONFIGمحورِ داشبورد باشد.'
-        );
+        self::assertSame( 'read', $dashboard[1] );
 
-        // کنترلِ مثبت: همان ثبت واقعاً رخ داده و زیرِ والدِ read-gated نشسته است؛
-        // وگرنه ادعای بالا تهی می‌بود.
-        $parent_slugs = array_map(
-            static fn ( array $row ): string => (string) ( $row[2] ?? '' ),
-            $this->submenuOf( CustomRoleDefinitionsPage::PAGE_SLUG )
+        // کنترلِ مثبت: ثبت واقعاً رخ داده و والدِ آن همان منوی واحد است.
+        self::assertSame(
+            CpmsAdminMenu::parentSlug(),
+            $GLOBALS['_parent_pages'][ FinanceDelegationPage::PAGE_SLUG ] ?? null,
+            'صفحهٔ واگذاری مالی باید زیرِ منوی واحدِ read-gated ثبت شود.'
         );
-        self::assertContains(
-            FinanceDelegationPage::PAGE_SLUG,
-            $parent_slugs,
-            'صفحهٔ واگذاری مالی باید زیرِ والدِ read-gated ثبت شود.'
+        self::assertSame(
+            CpmsAdminMenu::parentSlug(),
+            $GLOBALS['_parent_pages'][ CustomRoleDefinitionsPage::PAGE_SLUG ] ?? null,
+            'صفحهٔ نقش‌های سفارشی هم باید زیرِ همان منوی واحد ثبت شود (نه Top-Level).'
         );
     }
 

@@ -1929,6 +1929,27 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # B-3 — پذیرشِ واقعیِ 320px/390px برای ده اسلاگِ مدیریتی: RTL فارسی،
+      # سایدبارِ قابلِ‌استفاده، نبودِ overflow افقی، جدول/فرم در viewport،
+      # دسترسی با کیبورد، و ردِ URLِ مستقیم برای نقشِ نامجاز. همان نصبِ WP و
+      # همان کاربرانِ fixture؛ فقط Chromium و فقط دو عرض (بودجهٔ گیت).
+      - name: Admin narrow RTL acceptance (Chromium — 320/390 × 10 slugs)
+        env:
+          BASE: http://localhost:8080
+          ARESP_ADMIN_PASS: 'Pilot-Gate-2026!'
+          ARESP_SECRETARY_PASS: 'Pilot-Gate-2026!'
+          ARESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
+        run: |
+          python3 -m py_compile bin/pilot-admin-narrow.py
+          python3 bin/pilot-admin-narrow.py | tee /tmp/admin-narrow.log
+          test "${PIPESTATUS[0]}" -eq 0
+          {
+            echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
+            echo '```'
+            grep -E '^(INFO admin_narrow_checks=|PASS admin narrow|FAIL admin narrow|FAIL )' /tmp/admin-narrow.log | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Reuse the same authenticated admin/public-booking smoke on Firefox and
       # WebKit, bounded to phone + tablet widths; no extra copy or product setup.
       - name: Firefox/WebKit compatibility smoke (390×844 + 768×1024)

@@ -1,0 +1,212 @@
+/**
+ * CPMS — صفحاتِ مدیریت سازمان (B-3): 320px / 390px، فارسی RTL.
+ *
+ * چرا فایلِ جدا: این دو صفحه عمداً بیرونِ allowlistِ `CpmsAssets` هستند
+ * (قرارداد `IranGeographyAddressFormsTest`)، پس `cpms-admin.css` را نمی‌گیرند
+ * و در عرضِ باریک overflow افقی داشتند: `<select>`های وردپرس (regular-text ≈
+ * 25em) و جدولِ `form-table` با ستونِ `th` ثابت از viewport پهن‌تر می‌شدند.
+ *
+ * قواعد:
+ *  - فقط با `body.cpms-org-manager` اسکوپ شده — هیچ اثری روی بقیهٔ wp-admin.
+ *  - هیچ محتوایی با overflow پنهان نمی‌شود (مقدارِ hidden در این فایل ممنوع است).
+ *  - RTL-first؛ `word-break` فقط برای شناسه‌های بلند.
+ *  - بدون JS و بدون شبکه.
+ */
+
+body.cpms-org-manager .wrap {
+  max-width: 100%;
+  box-sizing: border-box;
+  padding-inline-end: 10px;
+}
+
+body.cpms-org-manager .wrap h1 {
+  font-size: 20px;
+  line-height: 1.4;
+  margin: 10px 0 8px;
+  overflow-wrap: anywhere;
+}
+
+body.cpms-org-manager .wrap h2 {
+  font-size: 16px;
+  margin: 18px 0 8px;
+  overflow-wrap: anywhere;
+}
+
+body.cpms-org-manager .wrap p,
+body.cpms-org-manager .wrap li,
+body.cpms-org-manager .wrap label,
+body.cpms-org-manager .wrap .description {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+body.cpms-org-manager .notice {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* --- کارتِ هر سازمان ------------------------------------------------------ */
+body.cpms-org-manager .cpms-org-manager-section {
+  background: #fff;
+  border: 1px solid #dcdde3;
+  border-radius: 10px;
+  padding: 12px 14px;
+  margin: 0 0 16px;
+  max-width: 100%;
+  box-sizing: border-box;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04);
+}
+
+body.cpms-org-manager .cpms-org-manager-section > h2:first-child {
+  margin-top: 0;
+  padding-bottom: 8px;
+  border-bottom: 1px solid #dcdde3;
+}
+
+body.cpms-org-manager .cpms-org-manager-section ul {
+  margin: 0 0 12px;
+  padding-inline-start: 18px;
+  list-style: disc;
+}
+
+body.cpms-org-manager .cpms-org-manager-section li {
+  margin: 0 0 8px;
+  line-height: 1.8;
+}
+
+/* --- فرم‌ها --------------------------------------------------------------- */
+body.cpms-org-manager form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+}
+
+body.cpms-org-manager form input[type="hidden"] { display: none; }
+
+body.cpms-org-manager select,
+body.cpms-org-manager input[type="text"],
+body.cpms-org-manager input[type="url"],
+body.cpms-org-manager input[type="number"],
+body.cpms-org-manager textarea {
+  /* سرچشمهٔ اصلیِ overflow: عرضِ ثابتِ `regular-text`/`large-text` در Core. */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
+body.cpms-org-manager .button,
+body.cpms-org-manager button,
+body.cpms-org-manager input[type="submit"] {
+  max-width: 100%;
+  min-height: 32px;      /* touch target */
+  white-space: normal;
+  text-align: center;
+}
+
+body.cpms-org-manager .button:focus-visible,
+body.cpms-org-manager button:focus-visible,
+body.cpms-org-manager a:focus-visible,
+body.cpms-org-manager select:focus-visible,
+body.cpms-org-manager input:focus-visible {
+  outline: 2px solid #2271b1;
+  outline-offset: 2px;
+}
+
+/* --- جدول‌ها (form-table و جدول‌های آینده) -------------------------------- */
+body.cpms-org-manager table {
+  max-width: 100%;
+  border-collapse: collapse;
+}
+
+@media (max-width: 782px) {
+  body.cpms-org-manager .form-table,
+  body.cpms-org-manager .form-table tbody,
+  body.cpms-org-manager .form-table tr,
+  body.cpms-org-manager .form-table th,
+  body.cpms-org-manager .form-table td {
+    display: block;
+    width: auto;
+    max-width: 100%;
+    box-sizing: border-box;
+  }
+
+  body.cpms-org-manager .form-table th {
+    padding-bottom: 2px;
+  }
+
+  body.cpms-org-manager .form-table td {
+    padding-top: 0;
+    padding-inline: 0;
+  }
+
+  /* جدول‌های دادهٔ عادی: اسکرولِ افقیِ محدود به خودِ جدول (نه به صفحه). */
+  body.cpms-org-manager table.widefat,
+  body.cpms-org-manager table:not(.form-table) {
+    display: block;
+    width: 100%;
+    overflow-x: auto;
+  }
+
+  body.cpms-org-manager table.widefat th,
+  body.cpms-org-manager table.widefat td {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  body.cpms-org-manager form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  body.cpms-org-manager form > label,
+  body.cpms-org-manager form > .button,
+  body.cpms-org-manager form > button {
+    width: 100%;
+  }
+}
+
+/* --- ناوبریِ بخش‌ها (B-1) روی همین دو صفحه ------------------------------- */
+body.cpms-org-manager .cpms-sectionnav {
+  margin: 10px 0 14px;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+body.cpms-org-manager .cpms-sectionnav__group {
+  margin: 0 0 6px;
+}
+
+body.cpms-org-manager .cpms-sectionnav__title {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 12px;
+  color: #646970;
+  margin-inline-end: 6px;
+}
+
+body.cpms-org-manager .cpms-sectionnav__links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+body.cpms-org-manager .cpms-sectionnav__link {
+  display: inline-block;
+  padding: 4px 8px;
+  border: 1px solid #dcdde3;
+  border-radius: 6px;
+  background: #fbfbfc;
+  text-decoration: none;
+  color: #2271b1;
+}
+
+body.cpms-org-manager .cpms-sectionnav__link.is-current {
+  background: #2271b1;
+  border-color: #2271b1;
+  color: #fff;
+  font-weight: 600;
+}

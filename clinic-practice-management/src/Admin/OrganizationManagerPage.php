@@ -26,14 +26,14 @@ final class OrganizationManagerPage {
 
     public static function menu(): void {
 
-        add_menu_page(
+        // B-1: «سازمان‌ها» زیر «مدیریت مطب» (capability صفحه: read).
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
             'سازمان‌ها و درمانگاه‌ها',
             'سازمان‌ها',
             'read',
             self::PAGE,
-            [ self::class, 'render' ],
-            'dashicons-building',
-            4
+            [ self::class, 'render' ]
         );
     }
 

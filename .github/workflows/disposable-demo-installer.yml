@@ -19,6 +19,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/scripts/companion-isolation.py'
       - '.github/actions/playwright-browsers/**'
       - 'bin/build-demo-installer.sh'
       - 'tools/disposable-demo-installer/**'
@@ -27,6 +28,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/scripts/companion-isolation.py'
       - '.github/actions/playwright-browsers/**'
       - 'bin/build-demo-installer.sh'
       - 'tools/disposable-demo-installer/**'
@@ -74,6 +76,12 @@ jobs:
 
       - name: Automated tests (authorization, preflight, ownership, OTP, credentials)
         run: php "$COMPANION_DIR/tests/run-tests.php" | tee /tmp/cpdd-tests.log
+
+      # Workflow-only edits must not be able to disable the lane's own controls:
+      # the contract/security suite (and the isolation-rule unit tests inside it)
+      # runs on every lane invocation, including changes to this file alone.
+      - name: Lane contract & isolation-rule tests
+        run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 
       - name: Build installer ZIP twice and prove reproducibility + content
         run: |
@@ -173,27 +181,22 @@ jobs:
         with:
           browsers: chromium
 
-      # Lane-scoped guard, only meaningful for a companion-only change: such a PR
-      # must not also touch the production plugin. A PR that deliberately changes
-      # both is a production PR that also touches this lane — the acceptance run
-      # below then exercises that PR's own production code, which is the
-      # combination that would ship — so the guard reports NOT-APPLICABLE instead
-      # of failing for a reason outside this lane's control.
-      - name: Production subtree unchanged by this lane
+      # Isolation rule, decided by an executable, unit-tested script
+      # (.github/scripts/companion-isolation.py, pinned by
+      # .github/workflows/test_workflow_contracts.py):
+      #   production-only  -> PASS  (legitimate production development)
+      #   companion-only   -> PASS  (production untouched)
+      #   workflow-only    -> PASS  (lane plumbing; the lane's own contract and
+      #                              security checks still run below)
+      #   mixed            -> FAIL closed
+      - name: Companion/production isolation (fail closed on mixed changes)
         run: |
           set -Eeuo pipefail
           BASE="$(git rev-parse "${{ github.event.pull_request.base.sha || 'origin/main' }}")"
-          if git diff --quiet "$BASE" HEAD -- clinic-practice-management; then
-            echo 'PASS: clinic-practice-management/** unchanged'
-            exit 0
-          fi
-          LANE_FILES=("$COMPANION_DIR" bin/build-demo-installer.sh .github/workflows/disposable-demo-installer.yml)
-          if ! git diff --quiet "$BASE" HEAD -- "${LANE_FILES[@]}"; then
-            echo 'NOT-APPLICABLE: PR changes both this lane and clinic-practice-management/**'
-            echo 'The acceptance run below builds and exercises this PR'"'"'s production code.'
-            exit 0
-          fi
-          echo 'FAIL: production subtree modified by a companion-only change' >&2; exit 1
+          git diff --name-only "$BASE" HEAD > /tmp/cpdd-changed.txt
+          wc -l < /tmp/cpdd-changed.txt | xargs echo 'changed paths:'
+          python3 "$GITHUB_WORKSPACE/.github/scripts/companion-isolation.py" \
+            --changed-files /tmp/cpdd-changed.txt
 
       - name: Build production CPMS ZIP (unmodified main-line build script)
         run: |

@@ -414,6 +414,7 @@ final class App
         // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
         CpmsAdminMenu::register();
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
+        \ClinicCore\Admin\OrgManagerAssets::register(); // B-3 — stylesheet اختصاصیِ صفحاتِ مدیریت سازمان (بیرونِ allowlistِ CpmsAssets، طبق قرارداد)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         CpmsActivationRedirect::register(); // Phase 3 — one-shot safe redirect to the wizard on the literal post-activation landing (plugins.php only)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)

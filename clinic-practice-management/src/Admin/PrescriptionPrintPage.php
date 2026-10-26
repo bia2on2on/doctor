@@ -26,14 +26,16 @@ final class PrescriptionPrintPage
     /** صفحه مخفی — بدون نمایش در منو؛ دسترسی از دکمه «🖨️ چاپ» داشبورد پزشک. */
     public static function menu(): void
     {
+        // B-1: زیر «مدیریت مطب» ثبت می‌شود اما در زیرمنو نمایش داده نمی‌شود.
         add_submenu_page(
-            null,
+            CpmsAdminMenu::parentSlug(),
             'چاپ نسخه',
             'چاپ نسخه',
             RolesAndCapabilities::RX_READ,
             'cpms-prescription-print',
             [self::class, 'render']
         );
+        CpmsAdminMenu::hideFromSubmenu('cpms-prescription-print');
     }
 
     public static function render(): void

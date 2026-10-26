@@ -470,3 +470,60 @@ body.cpms-admin .cpms-clinic-selector .description { flex-basis: 100%; margin: 0
   body.cpms-admin textarea { width: 100%; max-width: 100%; box-sizing: border-box; }
   body.cpms-admin .notice.inline { max-width: 100%; box-sizing: border-box; }
 }
+
+/* ---------- B-1 — ناوبریِ بخش‌ها (یک منوی واحد، صفحه‌های جزئیِ قابلِ‌کشف) ----------
+   همین نوار بالای هر صفحهٔ CPMS رندر می‌شود؛ صفحاتی که در زیرمنوی اصلی نیستند
+   از همین‌جا (و از URL مستقیم) در دسترس‌اند. RTL-first، قابلِ‌شکستن در 320px،
+   بدونِ overflow افقی، و با focus-visible برای دسترسیِ کیبوردی. */
+body.cpms-admin .cpms-sectionnav {
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0 16px;
+  padding: 10px 12px;
+  background: var(--cpms-surface);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+}
+body.cpms-admin .cpms-sectionnav__group { margin: 0 0 8px; }
+body.cpms-admin .cpms-sectionnav__group:last-child { margin-bottom: 0; }
+body.cpms-admin .cpms-sectionnav__title {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--cpms-text-muted);
+  margin-inline-end: 6px;
+}
+body.cpms-admin .cpms-sectionnav__links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+body.cpms-admin .cpms-sectionnav__link {
+  display: inline-block;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  background: var(--cpms-surface-alt);
+  color: var(--cpms-primary);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+body.cpms-admin .cpms-sectionnav__link:hover { border-color: var(--cpms-primary); }
+body.cpms-admin .cpms-sectionnav__link.is-current {
+  background: var(--cpms-primary);
+  border-color: var(--cpms-primary);
+  color: #fff;
+  font-weight: 600;
+}
+body.cpms-admin .cpms-sectionnav__link:focus-visible {
+  outline: 2px solid var(--cpms-primary);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  body.cpms-admin .cpms-sectionnav__links { display: flex; }
+  body.cpms-admin .cpms-sectionnav__link { min-height: 32px; }
+}

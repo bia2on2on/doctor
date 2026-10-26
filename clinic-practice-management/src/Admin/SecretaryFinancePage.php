@@ -30,14 +30,15 @@ final class SecretaryFinancePage
         // (با cpms_queue_read) و هم حسابدار (بدون cpms_queue_read — چ. G) بتوانند به
         // «مالی و تسویه» دسترسی داشته باشند؛ وگرنه زیرمنویِ زیر cpms-queue برای حسابدار
         // پنهان می‌شد. نمایش منو = Capability (نه نام نقش/نه parent).
-        add_menu_page(
+        // B-1: زیر «مدیریت مطب». دلیلِ مستقل‌بودنِ ثبت (capability `cpms_finance_read`
+        // و نه `cpms_queue_read`) همچنان برجاست: حسابدار صف را نمی‌بیند اما مالی را می‌بیند.
+        add_submenu_page(
+            CpmsAdminMenu::parentSlug(),
             'مالی و تسویه',
             'مالی و تسویه',
             RolesAndCapabilities::FINANCE_READ,
             'cpms-finance',
-            [self::class, 'render'],
-            'dashicons-money-alt',
-            27
+            [self::class, 'render']
         );
     }
 

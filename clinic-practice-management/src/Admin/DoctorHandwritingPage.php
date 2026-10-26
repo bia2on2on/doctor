@@ -49,7 +49,7 @@ final class DoctorHandwritingPage
     public static function menu(): void
     {
         add_submenu_page(
-            'cpms-doctor', // زیر «امروز پزشک»
+            CpmsAdminMenu::parentSlug(), // B-1: زیر «مدیریت مطب» (پیش‌تر زیر «امروز پزشک»)
             'دست‌خط',
             'دست‌خط',
             RolesAndCapabilities::NOTE_CREATE,
@@ -57,6 +57,7 @@ final class DoctorHandwritingPage
             [self::class, 'render'],
             1
         );
+        CpmsAdminMenu::hideFromSubmenu('cpms-handwriting');
     }
 
     public static function render(): void

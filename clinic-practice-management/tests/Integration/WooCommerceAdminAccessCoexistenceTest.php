@@ -184,6 +184,15 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
                 }
             }
         }
+        // B-1: صفحاتِ «جزئی» ثبت‌شده‌اند اما عمداً از آرایهٔ زیرمنو پنهان می‌شوند
+        // (کشف از ناوبریِ بخش‌ها/URL مستقیم). ثبت واقعیِ آن‌ها همان ردیفی است که
+        // CpmsAdminMenu هنگامِ پنهان‌کردن نگه می‌دارد — بدون آن، این assertion
+        // «ثبت» را با «نمایش» اشتباه می‌گرفت.
+        foreach (CpmsAdminMenu::hiddenSubmenuRows() as $slug => $item) {
+            if (isset($item[1]) && is_string($item[1])) {
+                $found[$slug] = $item[1];
+            }
+        }
 
         return $found;
     }
@@ -452,6 +461,11 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
                     $found[] = $item[2];
                 }
             }
+        }
+        // B-1: ثبت‌شده اما پنهان از زیرمنو (کشف از ناوبریِ بخش‌ها) — «ثبت» است،
+        // نه «نمایش»؛ بدون این، گارد drift در جهتِ اشتباه شلیک می‌کرد.
+        foreach (array_keys(CpmsAdminMenu::hiddenSubmenuRows()) as $hidden_slug) {
+            $found[] = (string) $hidden_slug;
         }
 
         $cpms_slugs = array_values(array_unique(array_filter(

@@ -63,24 +63,51 @@ final class PatientAdminTest extends WP_UnitTestCase
 
     // ================= 1) منو/ثبت =================
 
-    public function testPatientMenuRegisteredAsTopLevelWithPatientReadCap(): void
+    /**
+     * B-1 (unified menu) — «بیماران» دیگر منوی Top-Level مستقل ندارد؛ زیرِ
+     * منوی واحد «مدیریت مطب» ثبت می‌شود.
+     *
+     * قرارداد قبلی (top-level بودن) با الزام «دقیقاً یک منوی CPMS» ناسازگار بود.
+     * آنچه حفظ و سخت‌تر شده: capability **خودِ صفحه** همان `cpms_patient_read`
+     * است و منوی والد (`read`) هیچ مجوزی به فرزند منتقل نمی‌کند.
+     */
+    public function testPatientMenuRegisteredUnderUnifiedMenuWithPatientReadCap(): void
     {
         wp_set_current_user($this->adminId);
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
+        $GLOBALS['_parent_pages'] = [];
+        $GLOBALS['_registered_pages'] = [];
 
         CpmsAdminMenu::menu();
         PatientAdminPage::menu();
 
-        $found = null;
+        $topLevels = [];
         foreach ((array) $GLOBALS['menu'] as $item) {
-            if (($item[2] ?? '') === PatientAdminPage::PAGE_SLUG) {
-                $found = $item;
+            if (is_array($item) && str_starts_with((string) ($item[2] ?? ''), 'cpms-')) {
+                $topLevels[] = $item[2];
+            }
+        }
+        $this->assertSame(
+            [CpmsAdminMenu::parentSlug()],
+            $topLevels,
+            'تنها منوی Top-Level مجاز برای CPMS همان «مدیریت مطب» است'
+        );
+
+        $row = null;
+        foreach ($GLOBALS['submenu'][CpmsAdminMenu::parentSlug()] ?? [] as $candidate) {
+            if (( $candidate[2] ?? '' ) === PatientAdminPage::PAGE_SLUG) {
+                $row = $candidate;
                 break;
             }
         }
-        $this->assertNotNull($found, 'منوی Top-Level «بیماران» باید ثبت شود');
-        $this->assertSame(RolesAndCapabilities::PATIENT_READ, $found[1], 'منوی «بیماران» باید با Capability `cpms_patient_read` ثبت شود');
+        $this->assertNotNull($row, '«بیماران» باید زیر «مدیریت مطب» ثبت شود');
+        $this->assertSame(RolesAndCapabilities::PATIENT_READ, $row[1], 'منوی «بیماران» باید با Capability `cpms_patient_read` ثبت شود');
+        $this->assertSame(
+            RolesAndCapabilities::PATIENT_READ,
+            CpmsAdminMenu::PAGES[PatientAdminPage::PAGE_SLUG][2],
+            'رَجیستری منو باید همان capability صفحه را نگه دارد'
+        );
     }
 
     public function testPatientPageIsCpmsAssetPage(): void

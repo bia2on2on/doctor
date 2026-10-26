@@ -2478,3 +2478,46 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   failure is actionable in one run instead of a guess.
 - **Not touched:** no file under `tools/disposable-demo-installer/**`; the acceptance script, the preflight and
   its baseline list are unchanged, so the lane stays exactly as strict as its author made it.
+
+### [2026-10-26 UTC] — Pass 9: منوی واحد (B-1)، ایزولاسیونِ companion (B-2)، پذیرشِ 320/390 (B-3)، چهار قاعدهٔ پیش از کدنویسی
+
+- **مبنای شروع:** شاخهٔ `arena/b80ae892-doctor` روی `dadeb4a` (Draft PR #275)؛ درخت کار پاک بود.
+- **B-1 (منوی واحد):** `CpmsAdminMenu` به رَجیستریِ واحدِ صفحات (بخش/برچسب/capability/نمایش) مجهز شد؛
+  تنها Top-Level «مدیریت مطب» است و capability آن `read` (نه `cpms_config`) تا مدیرِ Clinic-scoped هم آن را
+  ببیند؛ `hideWhenUnreachable()` منو را از کاربرِ بی‌دسترسی پنهان می‌کند. صفحاتی که قبلاً Top-Level بودند
+  (`cpms-doctor`, `cpms-queue`, `cpms-finance`, `cpms-patients`, `cpms-organizations`, `cpms-custom-roles`) و
+  صفحاتی که در «تنظیمات»/«ابزارها» بودند (bootstrap، shortcodes) همه زیرِ همان والد ثبت می‌شوند؛ slug،
+  callback، nonce و capability هر صفحه دست‌نخورده ماند. زیرمنو بخش‌محور و کوتاه است (۱۴ آیتم)؛ صفحاتِ جزئی
+  ثبت‌شده‌اند اما با `hideFromSubmenu()` از فهرستِ تخت بیرون می‌مانند و از «ناوبری بخش‌ها» (هوکِ
+  `in_admin_header`) و URL مستقیم در دسترس‌اند. `redirectLegacy()` برای مسیرهای قدیمیِ Tools/Settings حفظ شد.
+- **تصمیمِ قراردادی (صریح، نه بی‌صدا):** دو assertionِ «Top-Level بودن» در `PatientAdminTest` و
+  `AdminNavigationAccessibilityTest` (و بازرسیِ `$GLOBALS['menu']` در `CustomRoleLifecycleTest`) با الزامِ
+  «دقیقاً یک منوی CPMS» ناسازگار بود. آن‌ها بازنویسی شدند، **نه حذف**: نیتِ امنیتی‌شان (capability خودِ صفحه
+  حفظ شود؛ والد read-gated و نه CONFIG-gated باشد؛ کاربرِ Clinic-scoped به صفحه برسد) با assertionهای
+  دقیق‌ترِ جدید تثبیت شد. تست جدیدِ `AdminUnifiedMenuTest` رَجیستری↔ثبتِ واقعی، یکتاییِ Top-Level،
+  نبودِ ثبت در Tools/Settings، و «capability والد هرگز جای فرزند نمی‌نشیند» را می‌سنجد.
+- **B-2 (ایزولاسیون):** گاردِ inline که تغییرِ مختلط را NOT-APPLICABLE (exit 0) می‌کرد حذف و با اسکریپتِ
+  اجراپذیرِ `.github/scripts/companion-isolation.py` جایگزین شد: companion-only → PASS، production-only →
+  PASS، workflow-only → PASS، **mixed → exit 1**، ورودیِ ناخواندنی → exit 2. مسیرِ اسکریپت به `paths` هر دو
+  رویداد اضافه شد و خودِ lane اکنون `test_workflow_contracts.py` را اجرا می‌کند تا ویرایشِ workflow-only
+  نتواند کنترل‌ها را خاموش کند. تست‌های اجراییِ جدید (۶ مورد) حالت‌های بالا را می‌سنجند؛ نتیجهٔ محلی:
+  `Ran 30 tests … OK`.
+- **B-3 (320/390):** علتِ ریشه‌ایِ overflow: این دو صفحه بیرونِ allowlistِ `CpmsAssets` هستند (قراردادِ
+  `IranGeographyAddressFormsTest`) پس `cpms-admin.css` را نمی‌گرفتند و `select`های وردپرس (`regular-text` ≈
+  25em) و `form-table` با ستونِ `th` ثابت از viewport پهن‌تر می‌شدند. رفع با allowlistِ دومِ کوچک
+  (`OrgManagerAssets`) + `assets/css/cpms-org-manager.css` (اسکوپ `body.cpms-org-manager`، `@media
+  (max-width: 782px)`، کنترل‌های تمام‌عرض، جدولِ قابلِ‌اسکرول، هدفِ لمسی ۳۲px، `focus-visible`، بدونِ
+  `overflow: hidden`) — allowlistِ عمومی دست‌نخورده ماند. پذیرشِ واقعی: `bin/pilot-admin-narrow.py`
+  (Chromium، 320×800 و 390×844، ده اسلاگِ نام‌برده، RTL/زبان، overflow، ناوبریِ بخش‌ها، تاگلِ سایدبار،
+  دسترسی و فعال‌سازی با کیبورد، اندازiِ هدفِ لمسی، و ردِ URLِ مستقیم برای نقشِ نامجاز) به job
+  `responsive` اضافه شد.
+- **چهار قاعده:** `docs/engineering/pre-coding-rules.md` بر پایهٔ `README.md`/`CLAUDE.md` مخزنِ
+  `multica-ai/andrej-karpathy-skills` (MIT) **پارافریز** شد، با ثبتِ منبع و این تصریح که هیچ تأییدِ صریحی از
+  Andrej Karpathy دیده نشده و اسنادِ حاکمِ همین مخزن (AGENTS.md، امنیت/مجوز، حکمرانیِ Git، ADRها) بر آن
+  مقدم‌اند. هیچ اسکریپت/بسته‌ای از آن مخزن نصب یا اجرا نشد و وابستگی‌ای اضافه نشد.
+- **خارج از دامنه (دست‌نخورده):** `tools/disposable-demo-installer/**` (۰ فایل تغییر کرد).
+- **اعتبارسنجی:** `python3 .github/workflows/test_workflow_contracts.py` → ۳۰ تست OK؛ `node /tmp/wps/lint.mjs`
+  (php-wasm، PHP 8.4.1، `token_get_all(TOKEN_PARSE)`) روی همهٔ فایل‌های تغییرکردهٔ PHP → ۰ خطا؛
+  `py_compile bin/pilot-admin-narrow.py` → OK؛ `yaml.safe_load` روی هر دو workflow → OK. اجرای کاملِ
+  PHPUnit/PHPStan/WPCS و پذیرشِ Chromium **فقط در GitHub Actions** ممکن است (این sandbox نه PHP/Composer/
+  MySQL دارد نه Chromium)؛ نتیجهٔ واقعیِ runها در گزارشِ پایانی ثبت می‌شود.

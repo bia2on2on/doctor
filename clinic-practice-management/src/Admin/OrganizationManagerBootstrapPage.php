@@ -15,14 +15,18 @@ final class OrganizationManagerBootstrapPage {
 
     public static function menu(): void {
 
+        // B-1: از «تنظیمات» به «مدیریت مطب». صفحهٔ راه‌اندازیِ یک‌بارمصرف در زیرمنوی
+        // اصلی نمایش داده نمی‌شود (کشف از ناوبری بخش‌ها/URL مستقیم) اما ثبت‌شده و
+        // قابل دسترسی برای دارندهٔ manage_options باقی می‌ماند.
         add_submenu_page(
-            'options-general.php',
+            CpmsAdminMenu::parentSlug(),
             'فعال‌سازی مدیر اولیهٔ سازمان',
             'فعال‌سازی مدیر اولیهٔ سازمان',
             'manage_options',
             self::PAGE,
             [self::class, 'render']
         );
+        CpmsAdminMenu::hideFromSubmenu( self::PAGE );
     }
 
     public static function render(): void {
@@ -42,7 +46,7 @@ final class OrganizationManagerBootstrapPage {
             'SELECT id, name, status FROM ' . App::db()->table( 'cpms_organizations' ) . ' ORDER BY name, id'
         );
 
-        echo '<div class="wrap" dir="rtl"><h1>فعال‌سازی مدیر اولیهٔ سازمان</h1>';
+        echo '<div class="wrap cpms-org-manager" dir="rtl"><h1>فعال‌سازی مدیر اولیهٔ سازمان</h1>';
         echo '<p>این عملیات فقط یک عضویت مدیر سازمان را در سازمانی که صریحاً انتخاب می‌کنید فعال می‌کند. نقش مدیر WordPress هیچ دسترسی بالینی، مالی، پروندهٔ بیمار، Clinic یا Location ایجاد نمی‌کند.</p>';
         echo '<p>هیچ سازمان یا کاربری به‌طور پیش‌فرض انتخاب نشده است. اگر سازمان قبلاً مدیر فعال، عضویت مدیریتی متعارض، یا وضعیت غیر‌فعال داشته باشد، عملیات رد می‌شود.</p>';
 

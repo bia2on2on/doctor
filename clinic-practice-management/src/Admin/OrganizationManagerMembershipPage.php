@@ -17,13 +17,14 @@ final class OrganizationManagerMembershipPage {
     public static function menu(): void {
 
         add_submenu_page(
-            OrganizationManagerPage::PAGE,
+            CpmsAdminMenu::parentSlug(),
             'مدیران سازمان',
             'مدیران سازمان',
             'read',
             self::PAGE,
             [self::class, 'render']
         );
+        CpmsAdminMenu::hideFromSubmenu( self::PAGE );
     }
 
     public static function render(): void {
@@ -42,7 +43,7 @@ final class OrganizationManagerMembershipPage {
             delete_transient( $notice_key );
         }
 
-        echo '<div class="wrap" dir="rtl"><h1>مدیران سازمان</h1>';
+        echo '<div class="wrap cpms-org-manager" dir="rtl"><h1>مدیران سازمان</h1>';
         echo '<p>اعطا و لغو فقط برای سازمانی انجام می‌شود که مجوز `cpms_org_membership_manage` مؤثر دارید. این عضویت، مجوز Clinic، بالینی، مالی یا پروندهٔ بیمار نمی‌دهد.</p>';
         if ( is_string( $notice ) && $notice !== '' ) {
             $error = str_starts_with( $notice, 'خطا:' );
