@@ -342,7 +342,7 @@ final class BookingService
             $details[ $location_id ] = [
                 'name'    => trim( (string) ( $row['name'] ?? '' ) ),
                 'address' => trim( (string) ( $row['address'] ?? '' ) ),
-        ];
+   ];
         }
 
         return $details;
@@ -641,7 +641,7 @@ final class BookingService
                         'slot_id'   => (int) $slot['id'],
                         'slot_date' => $slot_date,
                         'slot_time' => $slot_time,
-                ],
+                    ],
                     [],
                     (int) $slot['clinic_id']
                 );
@@ -792,7 +792,7 @@ final class BookingService
             // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
-        ], (int) $hold['clinic_id'] );
+            ], (int) $hold['clinic_id'] );
             // phpcs:enable
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
         }
@@ -972,7 +972,7 @@ final class BookingService
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
                             'updated_at'        => $now_sql,
-                    ]
+                        ]
                     );
 
                     $this->machineCheck( 'new', 'book_final', 'patient' );
@@ -998,7 +998,7 @@ final class BookingService
                             [
                                 'auto'   => 'booking_confirm',
                                 'mobile' => MobileValidator::mask( $mobile ),
-                        ],
+                            ],
                             [],
                             $hold_clinic_id
                         );
@@ -1014,7 +1014,7 @@ final class BookingService
                         $confirmed_view,
                         [
                             'mobile' => MobileValidator::mask( $mobile ),
-                    ],
+                        ],
                         $hold_clinic_id
                     );
 
@@ -1023,7 +1023,7 @@ final class BookingService
                         'appointment_id'      => $appt_id,
                         'patient_id'          => $patient_id,
                         'patient_was_created' => $patient_was_created,
-                ];
+     ];
                 }
             );
         } catch (Throwable $e) {
@@ -1071,7 +1071,7 @@ final class BookingService
                 'appointment_id' => $appt_id,
                 'slot_id'        => (int) $hold['slot_id'],
                 'wp_user_id'     => (int) $hold['holder_wp_user_id'],
-        ]
+            ]
         );
 
         $this->sendAppointmentSms(SmsEvents::APPT_CONFIRMED, $mobile, $appt);
@@ -1255,7 +1255,7 @@ final class BookingService
                                 'capacity_left'    => (int) ( $row['capacity_left'] ?? 0 ),
                                 'location_name'    => $location_info['name'],
                                 'location_address' => $location_info['address'],
-                        ];
+       ];
                         }
 
                         foreach ( $grouped as $date => $slots ) {
@@ -1263,7 +1263,7 @@ final class BookingService
                                 'date'   => $date,
                                 'jalali' => Jalali::formatYmd( $date ),
                                 'slots'  => $slots,
-                        ];
+       ];
                         }
                     }
                 }
@@ -1282,7 +1282,7 @@ final class BookingService
                 'current_time'   => substr( (string) $appt['slot_time'], 0, 5 ),
                 'clinician_name' => $clinician_name,
                 'days'           => $filtered_days,
-        ];
+   ];
         } catch ( Throwable $e ) {
             throw $this->toBookingException( $e );
         }
@@ -1568,7 +1568,7 @@ final class BookingService
                             'from_appointment_id' => $appointment_id,
                             'from_date'           => (string) $appt['slot_date'],
                             'from_time'           => (string) $appt['slot_time'],
-                    ],
+                        ],
                         (int) $appt['clinic_id']
                     );
 
@@ -1747,7 +1747,7 @@ final class BookingService
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
                             'updated_at'        => $now_sql,
-                    ]
+                        ]
                     );
 
                     $this->machineCheck( 'new', 'create', 'secretary' );
@@ -1773,7 +1773,7 @@ final class BookingService
                         'appointment'    => $this->appointments->find( $appt_id ),
                         'appointment_id' => $appt_id,
                         'slot'           => $slot,
-                ];
+     ];
                 }
             );
         } catch ( Throwable $e ) {
@@ -1790,7 +1790,7 @@ final class BookingService
             [
                 'appointment_id' => $appt_id,
                 'actor'          => $actor_user_id,
-        ]
+            ]
         );
 
         return $view;
@@ -1926,7 +1926,7 @@ final class BookingService
                 // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-            ], (int) $appt['clinic_id'] );
+                ], (int) $appt['clinic_id'] );
                 // phpcs:enable
                 throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
             }
@@ -2777,7 +2777,7 @@ final class BookingService
                     'patient_id' => $patient_id,
                     'clinic_id'  => $clinic_id,
                     'error_code' => $e->error_code,
-            ]
+                ]
             );
 
             throw BookingException::of( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );

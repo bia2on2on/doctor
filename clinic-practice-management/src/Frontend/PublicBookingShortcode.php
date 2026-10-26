@@ -436,22 +436,22 @@ final class PublicBookingShortcode
         $clinicians = [];
         foreach ($rows as $row) {
             $id = (int) ($row['id'] ?? 0);
-            $name = trim( (string)    ( $row['name'] ?? '' ) );
+            $name = trim( (string) ( $row['name'] ?? '' ) );
             if ( $id <= 0 || $name === '' ) {
                 // پزشکِ بدون نامِ قابل‌نمایش روی سطح عمومی قابل ارائه نیست
                 // (دکمهٔ بی‌نام، UI غیرقابل‌استفاده می‌سازد).
                 continue;
             }
             $weekdays = [];
-            foreach ( (array)    ( $row['weekdays'] ?? [] ) as $day ) {
+            foreach ( (array) ( $row['weekdays'] ?? [] ) as $day ) {
                 $weekdays[] = (int) $day;
             }
             $clinicians[] = [
                 'id'        => $id,
                 'name'      => $name,
-                'specialty' => trim( (string)    ( $row['specialty'] ?? '' ) ),
+                'specialty' => trim( (string) ( $row['specialty'] ?? '' ) ),
                 'weekdays'  => $weekdays,
-        ];
+   ];
         }
 
         return $clinicians;
@@ -520,7 +520,7 @@ final class PublicBookingShortcode
             esc_attr(self::STATE_EMPTY),
             esc_attr( $surface_id )
         );
-        $lines[] = self::renderHead( $clinic_name, $surface_id );
+        $lines[] = self::render_head( $clinic_name, $surface_id );
         $lines[] = sprintf(
             '<p class="%s" role="status">%s</p>',
             esc_attr(self::ROOT_CLASS . '__notice'),
@@ -568,7 +568,7 @@ final class PublicBookingShortcode
                 'clinics'     => $listing['clinics'],
                 'specialties' => $listing['specialties'],
                 'timezones'   => array_column( $listing['clinics'], 'timezone', 'id' ),
-        ]
+            ]
         );
     }
 
@@ -631,7 +631,7 @@ final class PublicBookingShortcode
         if ( $is_discovery ) {
             $lines[] = self::render_discovery_head( $discovery['clinics'], $surface_id );
         } else {
-            $lines[] = self::renderHead( $clinic_name, $surface_id );
+            $lines[] = self::render_head( $clinic_name, $surface_id );
         }
 
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__body'));
@@ -657,7 +657,7 @@ final class PublicBookingShortcode
                 // Bounded page: the public directory never renders an unbounded list.
                 break;
             }
-            $lines[] = self::render_clinician_item( $row, (int)   $row['clinic_id'] );
+            $lines[] = self::render_clinician_item( $row, (int) $row['clinic_id'] );
             ++$rendered_doctors;
         }
         $lines[] = '</ul>';
@@ -721,7 +721,7 @@ final class PublicBookingShortcode
         // ---- Phase 8 Slice 2/3: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
         $continuation = self::continuationState();
         if ($continuation === self::CONTINUATION_ANONYMOUS) {
-            $lines[] = self::renderAuthContinuation( $surface_id );
+            $lines[] = self::render_auth_continuation( $surface_id );
         } elseif ($continuation === self::CONTINUATION_PATIENT) {
             $lines[] = self::render_patient_continuation( $surface_id, $clinic_ids );
         }
@@ -760,11 +760,11 @@ final class PublicBookingShortcode
         }
 
         foreach ( $discovery['clinics'] as $clinic ) {
-            $owner = (int)   ( $clinic['id'] ?? 0 );
+            $owner = (int) ( $clinic['id'] ?? 0 );
             if ( $owner <= 0 ) {
                 continue;
             }
-            foreach ( (array)    ( $clinic['clinicians'] ?? [] ) as $clinician ) {
+            foreach ( (array) ( $clinic['clinicians'] ?? [] ) as $clinician ) {
                 $rows[] = ['clinic_id' => $owner] + (array) $clinician;
             }
         }
@@ -782,10 +782,10 @@ final class PublicBookingShortcode
      * @param array{id:int,name:string,specialty?:string,weekdays?:list<int>} $clinician
      */
     private static function render_clinician_item( array $clinician, int $clinic_id ): string {
-        $id        = (int)   ( $clinician['id'] ?? 0 );
-        $name      = trim( (string)    ( $clinician['name'] ?? '' ) );
-        $specialty = trim( (string)    ( $clinician['specialty'] ?? '' ) );
-        $weekdays  = array_map( 'intval', (array)     ( $clinician['weekdays'] ?? [] ) );
+        $id        = (int) ( $clinician['id'] ?? 0 );
+        $name      = trim( (string) ( $clinician['name'] ?? '' ) );
+        $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
+        $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         $lines   = [];
         $lines[] = sprintf(
@@ -832,7 +832,7 @@ final class PublicBookingShortcode
         foreach ( $weekdays as $day ) {
             // cpms_schedule.day_of_week is 0..6 (0 = Sunday) — map to a stable
             // Persian label without assuming where the week starts.
-            $label = self::weekday_label_from_db( (int)  $day );
+            $label = self::weekday_label_from_db( (int) $day );
             if ( $label !== '' ) {
                 $labels[ $label ] = $label;
             }
@@ -863,7 +863,7 @@ final class PublicBookingShortcode
             4 => 'پنجشنبه',
             5 => 'جمعه',
             6 => 'شنبه',
-    ];
+  ];
 
         return $map[ $day_of_week ] ?? '';
     }
@@ -895,7 +895,7 @@ final class PublicBookingShortcode
             $value
         );
         // Drop diacritics (harakat), tatweel and zero-width joiners (ZWNJ/ZWJ).
-        $value = (string)   preg_replace( '/[\x{064B}-\x{065F}\x{0670}\x{0640}\x{200B}-\x{200F}]/u', '', $value );
+        $value = (string) preg_replace( '/[\x{064B}-\x{065F}\x{0670}\x{0640}\x{200B}-\x{200F}]/u', '', $value );
 
         return function_exists( 'mb_strtolower' ) ? mb_strtolower( $value, 'UTF-8' ) : strtolower( $value );
     }
@@ -935,8 +935,8 @@ final class PublicBookingShortcode
             $lines[] = sprintf(
                 '<option value="%1$d" data-timezone="%2$s">%3$s</option>',
                 (int) $clinic['id'],
-                esc_attr( (string)    ( $clinic['timezone'] ?? '' ) ),
-                esc_html( (string)  $clinic['name'] )
+                esc_attr( (string) ( $clinic['timezone'] ?? '' ) ),
+                esc_html( (string) $clinic['name'] )
             );
         }
         $lines[] = '</select>';
@@ -987,8 +987,8 @@ final class PublicBookingShortcode
             foreach ( $specialties as $specialty ) {
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( (string)  $specialty ),
-                    esc_html( (string)  $specialty )
+                    esc_attr( (string) $specialty ),
+                    esc_html( (string) $specialty )
                 );
             }
             $lines[] = '</select>';
@@ -1085,11 +1085,11 @@ final class PublicBookingShortcode
      * hold/confirm و بدون هیچ PHI — ورود فقط با شمارهٔ موبایل و کدِ پیامکی
      * روی مسیرهای موجودِ A2/A3 انجام می‌شود.
      */
-    private static function renderAuthContinuation( string $surface_id ): string
+    private static function render_auth_continuation( string $surface_id ): string
     {
         $b = self::ROOT_CLASS;
-        $mobileInputId = $surface_id . '-otp-mobile';
-        $codeInputId = $surface_id . '-otp-code';
+        $mobile_input_id = $surface_id . '-otp-mobile';
+        $code_input_id = $surface_id . '-otp-code';
 
         $lines = [];
         $lines[] = sprintf('<div class="%s">', esc_attr($b . '__auth'));
@@ -1105,13 +1105,13 @@ final class PublicBookingShortcode
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
             esc_attr( $b . '__label' ),
-            esc_attr( $mobileInputId ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_attr( $mobile_input_id ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
             esc_html( 'شماره موبایل (۱۱ رقم با پیش‌شماره ۰۹)' )
         );
         $lines[] = sprintf(
             '<input type="tel" class="%1$s" id="%2$s" data-role="otp-mobile" inputmode="tel" maxlength="11" autocomplete="tel" placeholder="09XXXXXXXXX" dir="ltr">',
             esc_attr( $b . '__input' ),
-            esc_attr( $mobileInputId ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_attr( $mobile_input_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
         );
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-auth-action="otp-request">%2$s</button>',
@@ -1124,13 +1124,13 @@ final class PublicBookingShortcode
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
             esc_attr( $b . '__label' ),
-            esc_attr( $codeInputId ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_attr( $code_input_id ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
             esc_html( 'کد ۶ رقمی پیامک‌شده' )
         );
         $lines[] = sprintf(
             '<input type="text" class="%1$s" id="%2$s" data-role="otp-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" dir="ltr">',
             esc_attr( $b . '__input' ),
-            esc_attr( $codeInputId ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
+            esc_attr( $code_input_id ) // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established local parameter.
         );
         $lines[] = sprintf(
             '<div class="%1$s"><button type="button" class="%2$s" data-auth-action="otp-verify">%3$s</button>'
@@ -1174,8 +1174,8 @@ final class PublicBookingShortcode
         $primary_clinic_id = $clinic_ids[0] ?? (int) $clinic_id;
 
         $b = self::ROOT_CLASS;
-        $firstNameId = $surface_id . '-first-name';
-        $lastNameId = $surface_id . '-last-name';
+        $first_name_id = $surface_id . '-first-name';
+        $last_name_id = $surface_id . '-last-name';
 
         // Phase 8 Slice 3 — chooser برای N>1 linked active Patients (LINKED-ONLY authority).
         // فقط برای N>1 رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد. هرگز decoy/same-mobile/cross-clinic/archived را نشان نمی‌دهد.
@@ -1280,24 +1280,24 @@ final class PublicBookingShortcode
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
             esc_attr($b . '__label'),
-            esc_attr($firstNameId),
+            esc_attr($first_name_id),
             esc_html('نام')
         );
         $lines[] = sprintf(
             '<input type="text" class="%1$s" id="%2$s" data-role="patient-first-name" autocomplete="given-name">',
             esc_attr($b . '__input'),
-            esc_attr($firstNameId)
+            esc_attr($first_name_id)
         );
         $lines[] = sprintf(
             '<label class="%1$s" for="%2$s">%3$s</label>',
             esc_attr($b . '__label'),
-            esc_attr($lastNameId),
+            esc_attr($last_name_id),
             esc_html('نام خانوادگی')
         );
         $lines[] = sprintf(
             '<input type="text" class="%1$s" id="%2$s" data-role="patient-last-name" autocomplete="family-name">',
             esc_attr($b . '__input'),
-            esc_attr($lastNameId)
+            esc_attr($last_name_id)
         );
         $lines[] = '</div>';
 
@@ -1414,15 +1414,15 @@ final class PublicBookingShortcode
      * سرتیتر سطح: عنوان + نامِ همان Clinicِ پیوندشده (تنها دادهٔ غیرپزشکیِ
      * نمایشی که از ردیفِ پایدارِ Clinic می‌آید).
      */
-    private static function renderHead( string $clinic_name, string $surface_id ): string
+    private static function render_head( string $clinic_name, string $surface_id ): string
     {
-        $titleId = $surface_id . '-title';
+        $title_id = $surface_id . '-title';
 
         $head = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__head'));
         $head .= sprintf(
             '<p class="%1$s" id="%2$s">%3$s</p>',
             esc_attr(self::ROOT_CLASS . '__title'),
-            esc_attr($titleId),
+            esc_attr($title_id),
             esc_html(self::TITLE)
         );
         if ( $clinic_name !== '' ) {
@@ -1543,7 +1543,7 @@ final class PublicBookingShortcode
     {
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
         $config = [
-            'surface_id' => $surface_id,
+            'surface_id'        => $surface_id,
             'mode'              => $discovery === null ? self::MODE_SINGLE : self::MODE_DISCOVERY,
             // Phase 8 Slice 4 — presentation-only Jalali week scaffold. The
             // server computes every label (same Jalali implementation as A1);
@@ -1553,7 +1553,7 @@ final class PublicBookingShortcode
             'rest_root' => rtrim(rest_url(self::REST_NAMESPACE), '/'),
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
-            'clinic_id' => $clinic_id,
+            'clinic_id'         => $clinic_id,
             'state_vocabulary' => self::STATE_VOCABULARY,
             'initial_state' => 'idle',
         ];
@@ -1609,11 +1609,11 @@ final class PublicBookingShortcode
         $timezones  = [];
         $clinic_ids = [];
         if ( $discovery !== null ) {
-            foreach ( (array)    ( $discovery['clinics'] ?? [] ) as $clinic ) {
-                $id = (int)   ( $clinic['id'] ?? 0 );
+            foreach ( (array) ( $discovery['clinics'] ?? [] ) as $clinic ) {
+                $id = (int) ( $clinic['id'] ?? 0 );
                 if ( $id > 0 ) {
                     $clinic_ids[] = $id;
-                    $timezones[]  = (string)   ( $clinic['timezone'] ?? '' );
+                    $timezones[]  = (string) ( $clinic['timezone'] ?? '' );
                 }
             }
         } elseif ( $clinic_id > 0 ) {
@@ -1624,7 +1624,7 @@ final class PublicBookingShortcode
         $horizon = 7;
         foreach ( $clinic_ids as $index => $id ) {
             try {
-                $timezone = ( $timezones[ $index ] ?? '' ) !== '' ? (string)   $timezones[ $index ] : 'Asia/Tehran';
+                $timezone = ( $timezones[ $index ] ?? '' ) !== '' ? (string) $timezones[ $index ] : 'Asia/Tehran';
                 $today    = new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) );
                 if ( $start === null || $today->format( 'Y-m-d' ) < $start ) {
                     $start = $today->format( 'Y-m-d' );
@@ -1633,7 +1633,7 @@ final class PublicBookingShortcode
                 $start = $start ?? gmdate( 'Y-m-d' );
             }
             try {
-                $days    = (int)     App::settingsFactory()->forClinic( $id )->get( 'booking.max_future_days', 60 );
+                $days    = (int) App::settingsFactory()->forClinic( $id )->get( 'booking.max_future_days', 60 );
                 $horizon = max( $horizon, $days + 2 );
             } catch ( Throwable ) {
                 // The row is skipped; the caller keeps its own fallback.
@@ -1655,10 +1655,10 @@ final class PublicBookingShortcode
         for ( $i       = 0; $i < $horizon; $i++ ) {
             $date = $cursor->format( 'Y-m-d' );
             $calendar[] = [
-                'date'  => $date,
-                'jalali' => Jalali::formatYmd( $date ),
+                'date'    => $date,
+                'jalali'  => Jalali::formatYmd( $date ),
                 'weekday' => self::weekday_label_from_db( (int) $cursor->format( 'w' ) ),
-        ];
+   ];
             $cursor = $cursor->modify( '+1 day' );
         }
 

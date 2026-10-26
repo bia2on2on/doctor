@@ -160,18 +160,18 @@ final class OtpController extends RestBase
     {
         $clinician_id = $request->get_param( 'clinician_id' );
         $slot_id = $request->get_param( 'slot_id' );
-        $slotDate = $request->get_param('slot_date');
-        $slotTime = $request->get_param('slot_time');
+        $slot_date = $request->get_param('slot_date');
+        $slot_time = $request->get_param('slot_time');
 
-        $hasSelection = self::hasValue( $clinician_id ) || self::hasValue( $slot_id )
-            || self::hasValue($slotDate) || self::hasValue($slotTime);
-        if (!$hasSelection) {
+        $has_selection = self::hasValue( $clinician_id ) || self::hasValue( $slot_id )
+            || self::hasValue($slot_date) || self::hasValue($slot_time);
+        if (!$has_selection) {
             return null;
         }
 
         // انتخابِ ناقص = ورودی نامعتبر (نه حدس، نه fallback).
         if ( ! self::hasValue( $clinician_id ) || ! self::hasValue( $slot_id )
-            || !self::hasValue($slotDate) || !self::hasValue($slotTime)) {
+            || !self::hasValue($slot_date) || !self::hasValue($slot_time)) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
@@ -181,9 +181,9 @@ final class OtpController extends RestBase
 
         $clinician_id = (int) $clinician_id;
         $slot_id = (int) $slot_id;
-        $slotDate = (string) $slotDate;
-        $slotTime = (string) $slotTime;
-        if ( $clinician_id <= 0 || $slot_id <= 0 || $slotDate === '' || $slotTime === '' ) {
+        $slot_date = (string) $slot_date;
+        $slot_time = (string) $slot_time;
+        if ( $clinician_id <= 0 || $slot_id <= 0 || $slot_date === '' || $slot_time === '' ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
@@ -220,7 +220,7 @@ final class OtpController extends RestBase
         if ( $slot_clinic_id !== $clinic_id ) {
             // A slot persisted in ANOTHER Clinic is only usable when the
             // clinician holds an ACTIVE durable participation there.
-            if ( !( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
+            if ( ! ( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
             }
             $clinic_id = $slot_clinic_id;
@@ -228,11 +228,11 @@ final class OtpController extends RestBase
 
         // ۴) اثباتِ رابطهٔ slot/clinician/date/time (نرمال‌سازی H:i ↔ H:i:s —
         // همان الگوی مسیر B1).
-        $timeMatches = substr((string) $slot['slot_time'], 0, 8) === substr($slotTime, 0, 8);
+        $timeMatches = substr((string) $slot['slot_time'], 0, 8) === substr($slot_time, 0, 8);
         if ( (int) $slot['clinician_id'] !== $clinician_id
-            || (string) $slot['slot_date'] !== $slotDate
+            || (string) $slot['slot_date'] !== $slot_date
             || !$timeMatches) {
-            $normRequested = substr($slotDate . ' ' . $slotTime, 0, 19);
+            $normRequested = substr($slot_date . ' ' . $slot_time, 0, 19);
             $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
             if ( (int) $slot['clinician_id'] !== $clinician_id
                 || substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {

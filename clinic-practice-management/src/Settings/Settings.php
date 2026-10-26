@@ -216,7 +216,7 @@ final class Settings
                             'value_json'            => $after_json,
                             'updated_by_wp_user_id' => $updated_by,
                             'updated_at'            => $this->db->nowUtcSql(),
-                    ]
+                        ]
                     );
                 } else {
                     $this->db->query(
