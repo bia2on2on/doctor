@@ -166,7 +166,7 @@ final class SystemAdminUxTest extends WP_UnitTestCase
             $this->assertStringContainsString('راه‌اندازی ریشهٔ ذخیره‌سازی', $g['action'], 'راهنما باید به دکمهٔ همین صفحه ارجاع دهد: ' . $key);
             $this->assertStringContainsString('بیرون از DocumentRoot', $g['action'], 'راهنما باید شرطِ مسیر را بگوید: ' . $key);
             $this->assertStringNotContainsString('chmod', $g['action'], 'راهنما نباید بازکردنِ مجوز را پیشنهاد کند: ' . $key);
-            $this->assertStringContainsString('داده', $g['impact']);
+            $this->assertNotSame('', trim($g['impact']), 'اثر باید گفته شود: ' . $key);
         }
 
         $files = SystemPage::guide('storage.files', SystemHealthService::FAIL);

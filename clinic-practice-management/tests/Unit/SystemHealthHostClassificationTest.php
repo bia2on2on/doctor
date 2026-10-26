@@ -107,7 +107,10 @@ final class SystemHealthHostClassificationTest extends TestCase
             $host = SystemHealthService::classifyHost($checks);
 
             $this->assertSame(SystemHealthService::HOST_UNSUPPORTED, $host['status'], $detail);
-            $this->assertContains('db.mysql_version', $host['issues'], $detail);
+            $this->assertNotEmpty(
+                array_filter($host['issues'], static fn (string $i): bool => 0 === strpos($i, 'db.mysql_version:')),
+                $detail
+            );
         }
     }
 

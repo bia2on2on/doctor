@@ -46,6 +46,7 @@ final class DatabaseCompatibilityGate
      */
     public static function engine( string $version, string $comment ): ?string
     {
+        $version       = self::normalize( $version );
         $is_maria_hint = stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false;
         if ( $is_maria_hint && 1 === preg_match( self::MARIADB_VERIFIED_PATTERN, $version ) ) {
             return self::ENGINE_MARIADB;
@@ -63,6 +64,26 @@ final class DatabaseCompatibilityGate
      */
     public static function accepts_mariadb_version( string $version ): bool
     {
-        return 1 === preg_match( self::MARIADB_VERIFIED_PATTERN, $version );
+        return 1 === preg_match( self::MARIADB_VERIFIED_PATTERN, self::normalize( $version ) );
+    }
+
+    /**
+     * حذفِ پیشوندِ سازگاریِ کلاینت.
+     *
+     * MaryDB (و libmysqlclientِ قدیمی) گاهی `5.5.5-` را پیش از نسخهٔ واقعیِ سرور
+     * برمی‌گرداند؛ بدونِ این نرمال‌سازی، یک سرورِ سالمِ `10.11.2` به شکلِ
+     * `5.5.5-10.11.2-MariaDB-log` گزارش می‌شود و دروازه آن را (به‌اشتباه)
+     * fail-closed رد می‌کند — یعنی فعال‌سازی روی سرورِ مجاز شکست می‌خورد، در
+     * حالی که گزارشِ سلامت همان نسخه را درست تفسیر می‌کرد.
+     */
+    private static function normalize( string $version ): string
+    {
+        $version = trim( $version );
+
+        if ( 1 === preg_match( '/\A5\.5\.5-(.+)\z/', $version, $matches ) ) {
+            return trim( (string) $matches[1] );
+        }
+
+        return $version;
     }
 }

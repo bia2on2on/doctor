@@ -37,6 +37,7 @@ final class DatabaseCompatibilityGateParityTest extends TestCase
             '11.4.13-MariaDB'   => true,  // آزمودهٔ CI
             '10.11.19-MariaDB'  => true,  // مرزِ مستند/آزمودهٔ هفتگی
             '10.11.2-MariaDB'   => true,  // همان سری
+            '5.5.5-10.11.2-MariaDB-log' => true, // پیشوندِ سازگاریِ کلاینت باید حذف شود
             '11.4.2-MariaDB'    => false, // 11.4.x غیر از 13 آزموده نشده
             '11.4.12-MariaDB'   => false,
             '11.5.2-MariaDB'    => false,

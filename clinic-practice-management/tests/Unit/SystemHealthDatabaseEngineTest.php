@@ -191,7 +191,9 @@ final class SystemHealthDatabaseEngineTest extends TestCase
      */
     public function testUnparseableMariaDbVersionIsNotReady(): void
     {
-        foreach ( [ 'MariaDB', 'mariadb-unknown', '11.x-MariaDB' ] as $version ) {
+        // توجه: `11.x-MariaDB` اینجا نیست — استخراجِ عدد آن را `11` می‌خواند،
+        // پس مسیرِ «نسخهٔ آزموده‌نشده» است، نه «نسخهٔ ناخوانا».
+        foreach ( [ 'MariaDB', 'mariadb-unknown', '-MariaDB' ] as $version ) {
             $row = SystemHealthService::database_server_version_check( $version );
 
             self::assertSame( SystemHealthService::FAIL, $row['status'], 'نسخهٔ ناخوانای MariaDB باید FAIL باشد: ' . $version );
@@ -259,7 +261,7 @@ final class SystemHealthDatabaseEngineTest extends TestCase
         $host = SystemHealthService::classifyHost( self::hostRows( (string) $row['status'], (string) $row['detail'] ) );
 
         self::assertSame( SystemHealthService::HOST_UNSUPPORTED, $host['status'] );
-        self::assertContains( self::KEY, $host['issues'] );
+        self::assertIssuesMention( self::KEY, $host['issues'] );
         self::assertNotSame( SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, $host['status'] );
     }
 
@@ -272,7 +274,23 @@ final class SystemHealthDatabaseEngineTest extends TestCase
         $host = SystemHealthService::classifyHost( self::hostRows( (string) $row['status'], (string) $row['detail'] ) );
 
         self::assertSame( SystemHealthService::HOST_UNSUPPORTED, $host['status'] );
-        self::assertContains( self::KEY, $host['issues'] );
+        self::assertIssuesMention( self::KEY, $host['issues'] );
+    }
+
+    /**
+     * `issues` ردیف‌های «key: detail» هستند (نه فقط کلید) — شکلِ موجودِ
+     * `classifyHost()` که UI همان را نشان می‌دهد.
+     *
+     * @param list<string> $issues
+     */
+    private static function assertIssuesMention( string $key, array $issues ): void
+    {
+        $match = array_values( array_filter(
+            $issues,
+            static fn ( string $issue ): bool => 0 === strpos( $issue, $key . ':' )
+        ) );
+
+        self::assertNotEmpty( $match, 'ردیفِ «' . $key . '» باید در issues بیاید: ' . implode( ' | ', $issues ) );
     }
 
     public function testTooOldMariaDbHostIsUnsupported(): void
