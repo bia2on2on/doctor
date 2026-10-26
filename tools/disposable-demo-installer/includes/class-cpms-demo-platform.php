@@ -336,7 +336,7 @@ class Platform {
 	 */
 	public function baseline_jobs_where(): array {
 		$placeholders = implode( ',', array_fill( 0, count( self::BASELINE_JOB_TYPES ), '%s' ) );
-		$where        = 'type IN (' . $placeholders . ") AND status IN ('queued','processing','success') AND (payload_json IS NULL OR payload_json IN ('[]','{}',''))";
+		$where        = 'type IN (' . $placeholders . ") AND status IN ('queued','processing','success') AND (payload_json IS NULL OR CAST(payload_json AS CHAR) IN ('[]','{}',''))";
 
 		return array( $where, self::BASELINE_JOB_TYPES );
 	}

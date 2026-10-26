@@ -551,10 +551,10 @@ class Env {
 	/**
 	 * Register or clear a test fault-injection callback.
 	 *
-	 * @param callable|null $fn Callback `fn(string $point, array $context): void`.
+	 * @param callable|null $callback Callback `function(string $point, array $context): void`.
 	 */
-	public function set_fault_injector( ?callable $fn ): void {
-		$this->fault_injector = $fn;
+	public function set_fault_injector( ?callable $callback ): void {
+		$this->fault_injector = $callback;
 	}
 
 	/**
