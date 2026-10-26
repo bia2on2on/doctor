@@ -189,7 +189,7 @@ jobs:
           wp config set WP_DEBUG true --raw --allow-root
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
-          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_urlsafe(30))')"
+          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           wp core install --url="$WP_URL" --title="CPDD Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpdd.invalid --skip-email --allow-root
           echo "WP_ADMIN_CREATED=1"
 
@@ -250,6 +250,8 @@ jobs:
       - name: Real-Chromium browser acceptance (wp-admin ZIP install → provision → 6 personas → booking/OTP → clinical/finance → RTL 320/390 → teardown → delete plugin)
         run: |
           set -Eeuo pipefail
+          : > /tmp/cpdd-ci/browser-acceptance.log
+          exec > >(tee -a /tmp/cpdd-ci/browser-acceptance.log) 2>&1
           mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "DROP DATABASE IF EXISTS $DB_NAME; CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
           rm -rf "$WP_DIR"
           tar -xzf /tmp/wp.tar.gz -C /tmp
@@ -262,14 +264,30 @@ jobs:
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
           wp config set FS_METHOD direct --allow-root
+          wp config set FS_CHMOD_DIR 0775 --raw --allow-root
+          wp config set FS_CHMOD_FILE 0664 --raw --allow-root
           ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
-          python3 -c 'import secrets; print(secrets.token_urlsafe(30), end="")' > "$ADMIN_PASS_FILE"
+          python3 -c 'import secrets; print(secrets.token_hex(24), end="")' > "$ADMIN_PASS_FILE"
           chmod 600 "$ADMIN_PASS_FILE"
           wp core install --url="$WP_URL" --title="CPDD Browser Acceptance" --admin_user="$ADMIN_USER" --admin_password="$(cat "$ADMIN_PASS_FILE")" --admin_email=admin@cpdd.invalid --skip-email --allow-root
-          wp rewrite structure '/%postname%/' --hard --allow-root
+          wp rewrite structure '/%postname%/' --allow-root
+          cat > "$WP_DIR/.htaccess" <<'HT'
+          # BEGIN WordPress
+          <IfModule mod_rewrite.c>
+          RewriteEngine On
+          RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+          RewriteBase /
+          RewriteRule ^index\.php$ - [L]
+          RewriteCond %{REQUEST_FILENAME} !-f
+          RewriteCond %{REQUEST_FILENAME} !-d
+          RewriteRule . /index.php [L]
+          </IfModule>
+          # END WordPress
+          HT
           sudo chmod a+rx /home/runner
-          sudo chown -R www-data:www-data "$WP_DIR"
-          sudo chmod -R u+rwX,go+rX "$WP_DIR"
+          sudo chown -R "$(id -un)":www-data "$WP_DIR"
+          sudo chmod -R ug+rwX,o+rX "$WP_DIR"
+          sudo find "$WP_DIR" -type d -exec chmod g+s {} +
 
           for INI in /etc/php/*/apache2/php.ini; do
             sudo sed -i 's/^display_errors = .*/display_errors = Off/; s/^upload_max_filesize.*/upload_max_filesize = 32M/; s/^post_max_size.*/post_max_size = 32M/' "$INI"
@@ -285,8 +303,8 @@ jobs:
               AllowOverride All
               Require all granted
             </Directory>
-            ErrorLog /tmp/cpdd-ci/apache-error.log
-            CustomLog /tmp/cpdd-ci/apache-access.log combined
+            ErrorLog \${APACHE_LOG_DIR}/cpdd-error.log
+            CustomLog \${APACHE_LOG_DIR}/cpdd-access.log combined
           </VirtualHost>
           EOF
           sudo a2dissite 000-default >/dev/null || true
@@ -294,6 +312,7 @@ jobs:
           sudo apache2ctl configtest
           sudo service apache2 restart
           curl -fsS -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/"
+          curl -fsS -o /dev/null -w 'rest HTTP %{http_code}\n' "$WP_URL/wp-json/"
 
           BASE="$WP_URL" \
           WP_DIR="$WP_DIR" \
@@ -302,9 +321,9 @@ jobs:
           ADMIN_PASS_FILE="$ADMIN_PASS_FILE" \
           CPMS_ZIP="$GITHUB_WORKSPACE/$CPMS_ZIP" \
           COMPANION_ZIP="/tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip" \
-          python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py" \
-            2>&1 | tee /tmp/cpdd-ci/browser-acceptance.log
+          python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py"
           rm -f "$ADMIN_PASS_FILE"
+          sleep 1
           grep -q '^CPDD_BROWSER_ACCEPTANCE=PASS' /tmp/cpdd-ci/browser-acceptance.log
 
       - name: No credentials or OTP codes leaked into logs
@@ -337,13 +356,13 @@ jobs:
             echo '--- companion zip proof ---'
             cat /tmp/cpdd-ci/companion-build.log 2>/dev/null || true
             echo '--- surface ---'
-            sed -E 's/([A-Za-z0-9_-]{24,})/<redacted>/g' /tmp/cpdd-ci/surface.log 2>/dev/null | tail -20 || true
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/surface.log 2>/dev/null | tail -20 || true
             echo '--- integration ---'
-            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -100 || true
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -120 || true
             echo '--- post-teardown ---'
-            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
             echo '--- browser-acceptance ---'
-            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/browser-acceptance.log 2>/dev/null | tail -120 || true
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/browser-acceptance.log 2>/dev/null | tail -160 || true
             echo '```'
           } > /tmp/cpdd-ci/pr-comment.md
           if [ -s /tmp/cpdd-ci/pr-comment.md ]; then
