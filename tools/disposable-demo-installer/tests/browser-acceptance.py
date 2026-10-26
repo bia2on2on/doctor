@@ -239,7 +239,8 @@ def main() -> None:
             tool_url = f"{BASE}/wp-admin/tools.php?page=cpms-disposable-demo"
             admin_page.goto(tool_url, wait_until="domcontentloaded")
             check("companion admin page renders in RTL", admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1)
-            check("admin preflight status is PASS", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1)
+            preflight_fails = admin_page.locator('[data-cpdd-preflight] tr:has(td.cpdd-fail)').all_inner_texts()
+            check("admin preflight status is PASS", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1, " | ".join(preflight_fails))
 
             # 4 & 5. Browser-triggered provisioning + one-time credential display
             stage("4-5. Browser-triggered provisioning and one-time credential display")

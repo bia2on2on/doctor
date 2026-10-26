@@ -155,6 +155,25 @@ Cpdd_Test::ok(
 );
 
 $ctx = cpdd_fixture();
+$ctx['env']->posts[ 92 ] = array(
+	'id'      => 92,
+	'type'    => 'post',
+	'status'  => 'auto-draft',
+	'slug'    => '',
+	'content' => '',
+	'author'  => 1,
+);
+Cpdd_Test::ok(
+	true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'],
+	'preflight: WordPress Dashboard Quick Draft auto-draft placeholder does not block provisioning'
+);
+$ctx['env']->posts[ 92 ]['status'] = 'draft';
+Cpdd_Test::ok(
+	in_array( 'content', ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['blocking'], true ),
+	'preflight: a user-saved draft post blocks provisioning'
+);
+
+$ctx = cpdd_fixture();
 $ctx['env']->plugin_list[] = 'woocommerce/woocommerce.php';
 $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
 Cpdd_Test::ok( in_array( 'plugins', $state['blocking'], true ), 'preflight: another active plugin blocks provisioning' );

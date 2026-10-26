@@ -433,6 +433,9 @@ class Preflight {
 				$unexpected[] = $post['type'] . '#' . $post['id'];
 				continue;
 			}
+			if ( 'auto-draft' === $post['status'] && '' === $post['slug'] ) {
+				continue;
+			}
 			if ( in_array( $post['type'] . ':' . $post['slug'], $default_slugs, true ) ) {
 				continue;
 			}
