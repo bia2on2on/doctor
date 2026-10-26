@@ -136,18 +136,24 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
           coverage: none
 
-      - name: Tooling (checksum-verified WP-CLI + Apache + mysql client + Chromium)
+      - name: Tooling (checksum-verified WP-CLI + Apache + mysql client)
         uses: ./.github/actions/wp-stack-tooling
         with:
-          apt-packages: 'apache2 libapache2-mod-php8.2 mysql-client'
+          apt-packages: >-
+            mysql-client apache2
+            libapache2-mod-php
+            php-mysql
+            php-mbstring
+            php-xml
+            php-curl
+            php-zip
+            php-gd
           apt-log-dir: /tmp/cpdd-ci
 
-      - name: Install Playwright Chromium for real-browser acceptance
-        run: |
-          set -Eeuo pipefail
-          pip3 install --quiet playwright==1.49.1
-          python3 -m playwright install --with-deps chromium > /tmp/cpdd-ci/playwright-install.log 2>&1
-          echo 'PLAYWRIGHT_READY=1'
+      - name: Playwright Chromium (pinned)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
 
       - name: Production subtree unchanged by this lane
         run: |
@@ -261,15 +267,16 @@ jobs:
           chmod 600 "$ADMIN_PASS_FILE"
           wp core install --url="$WP_URL" --title="CPDD Browser Acceptance" --admin_user="$ADMIN_USER" --admin_password="$(cat "$ADMIN_PASS_FILE")" --admin_email=admin@cpdd.invalid --skip-email --allow-root
           wp rewrite structure '/%postname%/' --hard --allow-root
-          chown -R www-data:www-data "$WP_DIR"
+          sudo chmod a+rx /home/runner
+          sudo chown -R www-data:www-data "$WP_DIR"
+          sudo chmod -R u+rwX,go+rX "$WP_DIR"
 
-          PHP_INI="$(find /etc/php -name php.ini | grep apache2 | head -n1)"
-          if [ -n "$PHP_INI" ]; then
-            sudo sed -i 's/^upload_max_filesize.*/upload_max_filesize = 32M/; s/^post_max_size.*/post_max_size = 32M/' "$PHP_INI"
-          fi
+          for INI in /etc/php/*/apache2/php.ini; do
+            sudo sed -i 's/^display_errors = .*/display_errors = Off/; s/^upload_max_filesize.*/upload_max_filesize = 32M/; s/^post_max_size.*/post_max_size = 32M/' "$INI"
+          done
           sudo a2enmod rewrite headers >/dev/null
-          sudo sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf
-          sudo tee /etc/apache2/sites-available/000-default.conf >/dev/null <<EOF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo tee /etc/apache2/sites-available/cpdd.conf >/dev/null <<EOF
           <VirtualHost *:8080>
             ServerName localhost
             DocumentRoot $WP_DIR
@@ -282,7 +289,11 @@ jobs:
             CustomLog /tmp/cpdd-ci/apache-access.log combined
           </VirtualHost>
           EOF
-          sudo systemctl restart apache2
+          sudo a2dissite 000-default >/dev/null || true
+          sudo a2ensite cpdd >/dev/null
+          sudo apache2ctl configtest
+          sudo service apache2 restart
+          curl -fsS -o /dev/null -w 'home HTTP %{http_code}\n' "$WP_URL/"
 
           BASE="$WP_URL" \
           WP_DIR="$WP_DIR" \
