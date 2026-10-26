@@ -2252,3 +2252,28 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   rewrite, no change to `/clinic/v1/health`'s public key set, no `wp-config.php`/host-cron edit, no
   `chmod 777`, no fallback to public `wp-content`, and no private-storage auto-initialisation action (F) in
   this pass — that surface is untouched rather than half-done.
+
+### [2026-10-26 12:40 UTC] — Follow-up: CI triage to full green (branch `arena/b80ae892-doctor` / Draft PR #275)
+
+- **Starting point:** Draft PR #275 @ `f67d1fa` with two red signals on the exact head: unit failure
+  `SystemHealthDatabaseEngineTest::testTestedMariaDbReleaseIsSupported` (a bare numeric version was
+  expected to prove MariaDB) and `SystemHealthService::database_server_version_check()` returning `fail`
+  for `-6.4` instead of `unknown`; plus 4 `Generic.WhiteSpace.ScopeIndent` findings in `SystemPage.php`
+  and one integration failure/risky test in `AdminNavigationAccessibilityTest`.
+- **Fixes:** MariaDB detection is now evidence-only — the test feeds strings that carry an explicit
+  `MariaDB` marker and additionally asserts that a bare numeric version is MySQL evidence; an unparsable
+  or engine-less version returns the fail-closed `DB_ENGINE_UNKNOWN` verdict before any MySQL floor
+  comparison. WPCS findings were cleared by re-indenting the four template fragments and, earlier, by
+  moving braces onto declaration lines and extracting render helpers in `SystemPage`. The integration
+  failure's root cause was in the test, not the product: `add_submenu_page()` performs its own
+  `current_user_can()` check and silently drops the row when no user is current, so only the parent menu
+  appeared. The test now establishes an administrator context, and its "not behind the config-gated
+  dashboard" case registers that parent explicitly, asserts absence there **and** presence under the
+  read-gated parent so the claim is not vacuous.
+- **Validation:** exact-head CI on `54d2f41` — all **33** checks pass: Tripwire, PHPStan, Release
+  Artifact, Unit Tests 8.1–8.5, Integration (WP 7.1 + MySQL 8), WPCS (changed code), Real WP Acceptance
+  (prefix `clinic_`/`wp_`), Facility matrix (mysql/mariadb), First-practice browser, Responsive smoke,
+  Staging Gate, Closure runtimes. **NOT executed locally** (unchanged sandbox limits): PHPUnit, PHPCS,
+  PHPStan, WP integration and real-browser runs; local gate remains tokenizer parse + added-line spacing.
+- **Delivery and open items:** no merge and no release; PR #275 stays a Draft. The remaining scope is
+  review-driven only — no further code change is pending on this branch.
