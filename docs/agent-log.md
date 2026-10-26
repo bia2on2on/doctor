@@ -2199,3 +2199,56 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
 - **Task 3 — root cause established from the run's own evidence and fixed:** the failing disposable browser run at head `4d04103` published its finance diagnostics: an issue button rendered for the exact visit, the form was opened and submitted, and **no invoice request ever reached the server** (only `context` and `invoice-eligible` responses; `failed_requests` empty). The board used a single `state.busy` flag for reads *and* writes with `if (state.busy) return;` at every entry point, so a submit pressed while the initial board load was still in flight returned with no request, no message and no visible failure. Replaced with one ordered queue (`enqueue`) so requests keep their order and nothing is discarded, `state.mutating` retained for duplicate-submit protection, an explicit message when no row is selected, and reads bounded (GET, 20 s) so a read that never completes cannot wedge the queue; writes are deliberately not aborted because the server may already have applied them. The finance template's forbidden-token guard (`serial`, `settle`, `refund`, `polling`, …) was **not** relaxed — the code avoids those tokens.
 - **Task 3 — regression coverage, executed:** a new VM test in `tests/js/day2-portal-workflows.spec.js` runs the real template script with the board read deliberately held open, submits the issue form twice, then releases the read. On the previous template it records **0** invoice POSTs; with the fix it records exactly one POST carrying the same nonce/Clinic/Location headers and the exact typed line. The finance DOM fixture was factored into `financeBoardHtml()` so both finance VM tests share it.
 - **Not executed locally:** PHPUnit, PHPCS, PHPStan, any browser acceptance (no PHP, MySQL or browser in this sandbox). Executed locally: php-parser syntax parse of every changed PHP file (PASS), `node --check` on the extracted board script (PASS), `node tests/js/day2-portal-workflows.spec.js` (PASS, including the new regression test), `node tests/js/cpms-public-booking-discovery.spec.js` (PASS), `python3 -m unittest discover -s tests/disposable-site` (PASS). Exact-head CI evidence for the final tip is recorded in the PR report for this assignment, including every check that was pending, cancelled, skipped or failed.
+
+### [2026-10-26] — CPMS Classic admin UX & operations hardening (A/B/C/D/E/G partial)
+
+- **Assignment:** one cohesive production-quality improvement PR for the CPMS Classic admin surface:
+  navigation (A), settings ownership + multi-Clinic SMS context (B), narrow-viewport RTL overflow (C),
+  MySQL/MariaDB health evidence (D), cron/queue heartbeat + repair (E), health presentation (G).
+  Branch `arena/b80ae892-doctor` from live `main` `858c6f79341e12f7a629dae1870c29e9b8055125`.
+  No reset/clean/rebase/force-push/tag/release/merge; PR #274 and the disposable installer untouched.
+- **Root causes established from code, not guessed:**
+  - **E:** `App::recordTick()` wrote the only queue heartbeat into per-Clinic settings, so in a multi-Clinic
+    install (no ambient `ClinicScope`) `App::settings()` threw `CLINIC_SCOPE_REQUIRED`, the heartbeat stayed
+    `0`, and `queueHealth()` therefore reported `stale=true` for a healthy queue. `queueHealth()`'s own
+    docblock already admitted the "0 ⇒ stale" fallback. A missing `cpms_jobs_tick` event, a fresh install
+    and failed Jobs were all collapsed into the same "stopped" verdict, and a healthy traffic-driven
+    WP-Cron was labelled a critical configuration error. There was no repair path for a lost event.
+  - **D:** every MariaDB evidence string mapped to `UNKNOWN` while the row label always said "(MySQL)", so
+    MariaDB was presented as MySQL 8 and the versions this repository actually executes (`11.4.13` in
+    `ci.yml`, `10.11.19` in `mariadb-10.11-compat.yml`) were never reported as compatible. The legacy
+    `5.5.5-` client prefix also made a 10.11 server look like 5.5.
+  - **A:** `cpms-finance-delegation` was registered with `read` but under the `cpms_config`-gated dashboard
+    parent, so a Clinic-local manager who already held the page's authority could neither see nor reach it;
+    and five registered CPMS screens were missing from `CpmsAssets::PAGES` (no scoped CSS/JS at all).
+  - **B:** the SMS settings page sent only the REST nonce; the SMS routes require a trusted
+    `App::scope()->clinicId` plus Clinic-scoped `cpms_sms_config`, so a multi-Clinic install had no explicit
+    Clinic to authorize against.
+- **Implemented:** installation-level heartbeat (`InstallationSettings::OPTION_JOBS_LAST_TICK_AT`,
+  `autoload=no`) with the legacy per-Clinic write retained as a compatibility value and read only as a
+  fallback; pure `QueueDiagnosis` classification (fresh / missing schedule / stale / failed / healthy) with
+  honest traffic-dependency text; `CronScheduleRepair` (idempotent `wp_schedule_event` only — never a Job,
+  never a per-request tick, never a host file) driven by a throttled `admin_init` self-heal and an
+  authorized, nonce-protected `admin_post_cpms_cron_repair`; engine-aware `database_engine()` /
+  `database_version_number()` / `database_server_version_check()`; `SystemHealthService::group_checks()` and
+  a four-group `SystemPage` render; `?Settings` + `App::clinicSettingsOrNull()` so installation-wide health
+  and update checks no longer require an ambient scope (a scope-free `UpdateService` is never memoised);
+  explicit Clinical context on the SMS page plus `X-CPMS-Clinic-Id` on every REST call; `read`-gated
+  registration for finance delegation; four missing slugs in the asset allowlist; scoped `body.cpms-admin`
+  CSS for 320/390px diagnostics, health cells, Clinic selector, cards and form controls.
+- **Tests added:** `tests/Unit/SystemHealthDatabaseEngineTest.php`, `tests/Unit/QueueHealthHeartbeatTest.php`,
+  `tests/Unit/SystemHealthPresentationTest.php`, `tests/Integration/AdminNavigationAccessibilityTest.php`;
+  `SystemHealthRuntimeCompatibilityTest` updated for the new, evidence-based MariaDB contract.
+- **Executed locally:** PHP tokenizer parse of every changed PHP file (`token_get_all(..., TOKEN_PARSE)` via
+  `@php-wasm/node`) — 16 files, 0 failures; a token-level WPCS spacing check restricted to added lines
+  (parenthesis/comma/negation spacing) — 0 residual findings. **NOT executed locally:** PHPUnit,
+  PHPCS/PHPcbf, PHPStan, the WP integration suite, and any real-browser acceptance. This sandbox has no PHP
+  binary, no MySQL/MariaDB, no Composer vendor tree and no Chromium, and neither `phpcs` nor PHPUnit can run
+  inside the available WASM runtime (no `xmlwriter`/`SimpleXML`; PHAR entry reads fail).
+- **Consequently:** C has **no** real 320/390px browser evidence yet, and no unit/integration result is
+  claimed. Exact-head CI is the only verification source for this branch; anything not shown there is
+  reported as not executed.
+- **Deliberately not done (scope control):** no schema migration, no new dependency, no menu-framework
+  rewrite, no change to `/clinic/v1/health`'s public key set, no `wp-config.php`/host-cron edit, no
+  `chmod 777`, no fallback to public `wp-content`, and no private-storage auto-initialisation action (F) in
+  this pass — that surface is untouched rather than half-done.

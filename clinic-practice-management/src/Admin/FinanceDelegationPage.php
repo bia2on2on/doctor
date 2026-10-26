@@ -34,8 +34,23 @@ final class FinanceDelegationPage {
 	}
 
 	public static function menu(): void {
+		// CPMS Classic Admin UX (A) — ریشهٔ نقصِ دسترسیِ منو:
+		// این صفحه با capability عمومی `read` ثبت می‌شد اما زیرِ منوی
+		// `cpms-dashboard` قرار داشت که خودش `cpms_config` (یک Capability
+		// WordPress-global) می‌خواهد. نتیجه: مدیری که مجوز مدیریتیاش فقط در
+		// سطح Clinic (عضویت فعال + role/cap در DB) است و نقشِ وردپرسیاش
+		// `cpms_config` ندارد، منو را نمی‌دید و `user_can_access_admin_page()`
+		// حتی با URL مستقیم هم رد می‌کرد.
+		//
+		// اکنون زیرِ والدِ read-gated «نقش‌های سفارشی» ثبت می‌شود؛ همان الگوی
+		// مصوبِ CustomRoleDefinitionsPage (Product Decision 2026-10-10). این
+		// تغییر **فقط visibility** است و هیچ مجوزی را باز نمی‌کند:
+		//  - خودِ صفحه با `read` رندر می‌شود و بلافاصله `manageable_clinics()`
+		//    را می‌سنجد (عضویت فعال + AuthorizationService::can CONFIG)؛
+		//  - هر نوشتن در `handle()` با Nonce + همان سرویسِ Clinic-scoped
+		//    مجاز/رد می‌شود؛ `manage_options` هیچ Clinic‌ای ایجاد نمی‌کند.
 		add_submenu_page(
-			CpmsAdminMenu::parentSlug(),
+			CustomRoleDefinitionsPage::PAGE_SLUG,
 			'واگذاری مالی حساس',
 			'واگذاری مالی حساس',
 			'read',

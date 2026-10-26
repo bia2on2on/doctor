@@ -2,6 +2,24 @@
 
 تمام تغییرات مهم پروژه در این فایل ثبت می‌شود. قالب: [Keep a Changelog](https://keepachangelog.com/)؛ نسخه‌بندی: [SemVer](https://semver.org/).
 
+## [Unreleased] — CPMS Classic admin UX & operations hardening (2026-10-26, Draft)
+
+### Added
+- **D — database-engine awareness in System Health.** `SystemHealthService` now derives the engine from the server's own `VERSION()` evidence (`database_engine()`, `database_version_number()`, `database_version_label()`) and judges MySQL and MariaDB on their own terms. MySQL keeps the declared `8.0` floor; MariaDB is no longer described as MySQL 8 and is evaluated against the versions this repository actually executes: `11.4.13` (per-PR integration lane) and the documented `10.11` compatibility series (`mariadb-10.11-compat.yml`, tested patch `10.11.19`). A MariaDB release outside that set is reported as unverified (no support claim, and the fail-closed migration gate is named), an older series is a failure, and unreadable evidence never passes. The `5.5.5-` client compatibility prefix is no longer mistaken for the server version. Row shape, `detail` lead identifiers (`mysql:`/`mariadb:`) and the public `/clinic/v1/health` key set are unchanged.
+- **E — installation-level queue heartbeat and honest Queue/WP-Cron diagnosis.** The authoritative "last tick" now lives in `InstallationSettings` (`cpms_jobs_last_tick_at`, `autoload=no`) instead of only per-Clinic `cpms_settings`, because system workers have no ambient Clinic scope. The previous per-Clinic heartbeat is still written as a best-effort compatibility value and is still read as a fallback, so existing data, the interrupted-setup analysis and single-Clinic behaviour are untouched. `QueueDiagnosis` (pure, unit-tested) separates fresh install / missing schedule / stale execution / failed jobs / healthy traffic-driven WP-Cron; a healthy WP-Cron is never labelled a critical failure, and the dependency on site traffic without an external scheduler is stated explicitly.
+- **E — authorized, nonce-protected manual cron repair.** `admin_post_cpms_cron_repair` (capability `cpms_config` + nonce) re-creates the missing `cpms_jobs_tick` event, is idempotent, never runs a Job, never runs a queue tick per admin request, and never edits `wp-config.php`, host cron or hosting configuration. Host limitations (WP-Cron unavailable, schedule refused) are reported instead of being claimed as repaired.
+- **G — grouped health presentation.** `SystemHealthService::group_checks()` splits rows into genuine blockers, actionable warnings, optional configuration and healthy checks; `SystemPage` renders the four groups with counts and Persian guidance and drops no row, so a failing check can never be hidden behind a green summary.
+- **A — custom-role and finance delegation navigation.** `cpms-finance-delegation` is registered under the `read`-gated custom-role parent instead of the `cpms_config`-gated dashboard, so Clinic-local managers can reach a page they are already authorized for. This is a visibility change only: `read` is the same gate the page and its service already enforced, and every read/write still passes trusted-Clinic establishment + `AuthorizationService`.
+- **A — scoped assets on every CPMS management screen.** `CpmsAssets::PAGES` now also covers `cpms-custom-roles`, `cpms-finance-delegation`, `cpms-facility-setup` and `cpms-shortcodes`, which previously rendered forms and tables without the scoped admin CSS/JS.
+- **B — explicit Clinic context on the SMS settings page.** The page now establishes the Clinic explicitly (selector + `AdminClinicSelector::establish()`), hides the configuration when no Clinic is selected/authorized, and sends `X-CPMS-Clinic-Id` on every REST call so multi-Clinic installs can never silently read or write another Clinic's SMS configuration.
+
+### Changed
+- **B — settings surfaces are labelled by ownership.** The settings page states which values are installation-wide and which are Clinic-local, and the installation-wide block is readable on a multi-Clinic install without selecting a Clinic.
+- **E — health rows no longer depend on an ambient ClinicScope.** `SystemHealthService` accepts `?Settings`; `App::clinicSettingsOrNull()` is the sanctioned scope-free accessor, and Clinic-local rows are reported as "not read without an explicit Clinic" instead of inferring one.
+
+### Fixed
+- **C — narrow-viewport overflow on CPMS admin screens.** Scoped (`body.cpms-admin`) rules wrap long diagnostic `<pre>` content, health/wrap cells, Clinic selectors, form controls and cards at 320–480px without `overflow: hidden` and without touching non-CPMS admin pages.
+
 ## [Unreleased] — Business access: frontend Management Portal, Clinic Manager and facility verticals (2026-10-20, Draft)
 
 ### Added

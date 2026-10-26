@@ -28,7 +28,14 @@ use ClinicCore\Settings\Settings;
  * `wp.version` (WordPress >= 6.9) و `db.mysql_version` (MySQL >= 8.0) به
  * چک‌هایِ حیاتی اضافه شده‌اند. فقط تشخیص/گزارش است: هیچ قفلِ بالینی، قفلِ
  * داده، محدودیتِ بکاپ/بازیابی یا رفتارِ مخربی اضافه نمی‌شود و نقطهٔ عمومی
- * `/clinic/v1/health` گسترش نمی‌یابد. سیاستِ MariaDB اعلام نمی‌شود.
+ * `/clinic/v1/health` گسترش نمی‌یابد.
+ *
+ * CPMS Classic Admin UX (D) — تفکیکِ موتور دیتابیس: MySQL و MariaDB دو موتورِ
+ * مستقل با نسخه‌بندیِ مستقل‌اند. موتور **فقط** از مدرکِ نسخهٔ سرور تشخیص داده
+ * می‌شود (`database_engine()`)، کفِ MySQL 8.0 هرگز روی MariaDB اعمال نمی‌شود و
+ * MariaDB به‌عنوان MySQL 8 بازنمایی نمی‌شود. نسخه‌های ادعاشده فقط بر پایهٔ شواهدِ
+ * واقعیِ همین مخزن‌اند (CI: `mariadb:11.4.13`؛ لِینِ هفتگی: MariaDB 10.11.19)؛
+ * هر نسخهٔ دیگر «آزموده‌نشده» (WARNING) گزارش می‌شود، نه «پشتیبانی‌شده».
  *
  * Live Network تست (سرور لایسنس/خروجی) عمداً اینجا اجرا نمی‌شود — فقط
  * پیکربندی بررسی می‌شود (BLOCKED_BY_ENVIRONMENT برای تأیید زنده).
@@ -77,9 +84,41 @@ final class SystemHealthService
 
     /**
      * کفِ اعلام‌شدهٔ MySQL — برگرفته از SRS §2.2 (محیط اجرا)؛ عددِ جدیدی
-     * اعلام نمی‌شود. سیاستِ MariaDB در اینجا گسترش/اعلام نمی‌شود.
+     * اعلام نمی‌شود.
+     *
+     * این کف **فقط** برای موتورِ MySQL است. MariaDB یک موتورِ جدا با نسخه‌بندیِ
+     * مستقل است و مدرکِ آن هرگز مدرکِ «MySQL ≥ 8.0» نیست؛ سیاستِ MariaDB در
+     * ثابت‌های `MARIADB_*` و در `mariadb_version_row()` آمده است.
      */
     public const MIN_MYSQL_VERSION = '8.0';
+
+    /** شناسهٔ ساختاریافتهٔ موتور MySQL — برگرفته از مدرکِ نسخهٔ سرور. */
+    public const DB_ENGINE_MYSQL = 'mysql';
+
+    /** شناسهٔ ساختاریافتهٔ موتور MariaDB — برگرفته از مدرکِ نسخهٔ سرور. */
+    public const DB_ENGINE_MARIADB = 'mariadb';
+
+    /** موتورِ نامشخص — هرگز به‌صورت MySQL یا MariaDB تفسیر نمی‌شود. */
+    public const DB_ENGINE_UNKNOWN = 'unknown';
+
+    /**
+     * نسخهٔ MariaDB که واقعاً در CI این مخزن اجرا و آزموده می‌شود:
+     * `.github/workflows/ci.yml` سرویسِ `mariadb:11.4.13` را بالا می‌آورد و
+     * مجموعهٔ migration/onboarding روی همان سرور اجرا می‌شود.
+     *
+     * این «نسخهٔ آزمایش‌شده» است، نه «همهٔ نسخه‌های 11.4».
+     */
+    public const MARIADB_TESTED_VERSION = '11.4.13';
+
+    /**
+     * مرزِ سازگاریِ مستندشدهٔ MariaDB = سریِ **10.11** (سریِ توصیه‌شدهٔ رسمیِ
+     * وردپرس). `.github/workflows/mariadb-10.11-compat.yml` این سری را هفتگی
+     * روی MariaDB 10.11.19 با WordPress واقعی اجرا می‌کند.
+     */
+    public const MARIADB_COMPAT_BOUNDARY = '10.11';
+
+    /** وصلهٔ دقیقِ سریِ 10.11 که به‌صورتِ دوره‌ای آزموده می‌شود. */
+    public const MARIADB_COMPAT_BOUNDARY_TESTED_PATCH = '10.11.19';
 
     /** چک‌های حیاتی برای پشتیبانی میزبان */
     private const CRITICAL_KEYS = [
@@ -96,9 +135,16 @@ final class SystemHealthService
     /** @var callable|null (برای تست/تزریق) */
     private $now = null;
 
+    /**
+     * @param Settings|null $settings پیکربندیِ Clinic-local. `null` یعنی هیچ
+     *        ClinicScope معتبری در دسترس نیست (نصبِ چند-Clinic بدونِ انتخابِ
+     *        صریح). گزارشِ سلامت سطح نصب در این حالت هم کامل کار می‌کند؛
+     *        ردیف‌هایی که واقعاً Clinic-local‌اند صادقانه «پیکربندیِ Clinic-local
+     *        خوانده نشد» گزارش می‌شوند و هیچ Clinic‌ای حدس زده نمی‌شود.
+     */
     public function __construct(
         private readonly CpmsDb $db,
-        private readonly Settings $settings,
+        private readonly ?Settings $settings,
         private readonly InstallationSettings $installationSettings,
         private readonly LicenseService $licenses,
         private readonly BackupService $backups,
@@ -185,19 +231,12 @@ final class SystemHealthService
         $add('db.tables', 'جداول cpms_', $tables > 0 ? self::PASS : self::FAIL, (string) $tables);
 
         // ---------- Cron / Jobs (spec §10–§13) ----------
-        $queue = App::queueHealth(300);
-        $cronStatus = self::PASS;
-        $cronDetail = 'System Cron فعال است';
-        if ($queue['stale']) {
-            $cronStatus = self::FAIL;
-            $cronDetail = 'آخرین tick ' . ($queue['last_tick_at'] ? gmdate('Y-m-d H:i', (int) $queue['last_tick_at']) . ' UTC' : 'هرگز') . ' — Queue متوقف است';
-        } elseif (!defined('DISABLE_WP_CRON') || !DISABLE_WP_CRON) {
-            $cronStatus = self::WARNING;
-            $cronDetail = 'WP-Cron به‌عنوان Fallback (توصیه: System Cron + DISABLE_WP_CRON — ADR-0016)';
-        } else {
-            $cronDetail = 'System Cron (DISABLE_WP_CRON)';
-        }
-        $add('cron.jobs', 'Cron/Queue', $cronStatus, $cronDetail . ' | failed=' . $queue['failed']);
+        // CPMS Classic Admin UX (E) — وضعیت از تشخیصِ کاملِ Queue/WP-Cron
+        // می‌آید: نصبِ تازه، رویدادِ زمان‌بندیِ غایب، اجرای کهنه، Jobهای
+        // شکست‌خورده و WP-Cronِ سالمِ متکی به ترافیک از هم تفکیک می‌شوند.
+        // WP-Cronِ سالم دیگر «خطای بحرانیِ پیکربندی» نیست.
+        $cron = App::queue_diagnosis( 300 );
+        $add( 'cron.jobs', 'Cron/Queue', (string) $cron['status'], (string) $cron['label'] . ' | ' . (string) $cron['detail'] );
 
         // ---------- Storage (spec §22/§23) ----------
         $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files', self::FAIL));
@@ -221,12 +260,25 @@ final class SystemHealthService
             $license_detail = ( $license_detail !== '' ? $license_detail . ' | ' : '' ) . 'مهلت/انقضا ' . gmdate( 'Y-m-d', (int) $state['expires_at'] );
         }
         $add( 'license.state', 'مجوز', $license_status, $license_detail );
-        $add(
-            'license.gateway',
-            'سرور مجوز',
-            $this->settings->get('license.server_url', '') !== '' ? self::PASS : self::NOT_CONFIGURED,
-            (string) $this->settings->get('license.server_url', '') !== '' ? 'پیکربندی‌شده' : 'فعال‌سازی دستی/آفلاین ممکن است'
-        );
+        $license_server_url = (string) $this->clinic_setting( 'license.server_url', '' );
+        if ( null === $this->settings ) {
+            // `license.server_url` در پیکربندیِ Clinic-local ذخیره می‌شود؛ در
+            // نصبِ چند-Clinic بدونِ انتخابِ صریح Clinic خوانده نمی‌شود. هیچ
+            // Clinic‌ای حدس زده نمی‌شود و ادعای «پیکربندی‌نشده» هم ساخته نمی‌شود.
+            $add(
+                'license.gateway',
+                'سرور مجوز',
+                self::NOT_CONFIGURED,
+                'پیکربندیِ Clinic-local — بدونِ انتخابِ صریح Clinic خوانده نمی‌شود؛ فعال‌سازی دستی/آفلاین مستقل از این ردیف ممکن است'
+            );
+        } else {
+            $add(
+                'license.gateway',
+                'سرور مجوز',
+                $license_server_url !== '' ? self::PASS : self::NOT_CONFIGURED,
+                $license_server_url !== '' ? 'پیکربندی‌شده' : 'فعال‌سازی دستی/آفلاین ممکن است'
+            );
+        }
 
         // ---------- Backup ---------- (M-2 GREEN: سطح نصب)
         $bkEnabled = $this->installationSettings->getBackupEnabled();
@@ -305,36 +357,119 @@ final class SystemHealthService
     }
 
     /**
-     * چکِ نسخهٔ سرور دیتابیس با کفِ اعلام‌شدهٔ MySQL (SRS §2.2).
+     * تشخیصِ موتورِ دیتابیس **فقط** از مدرکِ نسخهٔ سرور (`SELECT VERSION()`).
+     *
+     * خالص و قابل‌واحدتست. سه مقدار ممکن است: `mysql`، `mariadb`، `unknown`.
+     * هیچ حدس/پیکربندی/فهرستِ بسته‌ای ورودی نیست — تنها مدرکِ خودِ سرور.
+     *
+     * `unknown` یعنی مدرک ناخوانا/ناتجزیه‌پذیر است، نه «MySQL» (fail-closed).
+     */
+    public static function database_engine( ?string $version ): string {
+        $raw = trim( (string) $version );
+
+        if ( '' === $raw ) {
+            return self::DB_ENGINE_UNKNOWN;
+        }
+
+        // نشانگرِ «MariaDB» در رشتهٔ VERSION() تنها مدرکِ قطعیِ موتورِ MariaDB است.
+        if ( false !== stripos( $raw, 'mariadb' ) ) {
+            return self::DB_ENGINE_MARIADB;
+        }
+
+        if ( 1 === preg_match( '/^\d+(?:\.\d+)*/', $raw ) ) {
+            return self::DB_ENGINE_MYSQL;
+        }
+
+        return self::DB_ENGINE_UNKNOWN;
+    }
+
+    /**
+     * شمارهٔ نسخهٔ سرور، نرمال‌شده برای مقایسه — یا null اگر قابل‌استخراج نباشد.
+     *
+     * MySQL:  `8.0.33-0ubuntu0.22.04.1` ⇒ `8.0.33`
+     * MariaDB: `10.11.2-MariaDB` ⇒ `10.11.2`
+     * MariaDB (کلاینتِ قدیمی): `5.5.5-10.11.2-MariaDB-log` ⇒ `10.11.2`
+     *          پیشوندِ `5.5.5-` یک پیشوندِ پروتکلِ سازگاری است، نه نسخهٔ سرور؛
+     *          خواندنِ آن به‌عنوان نسخه، سرورِ 10.11 را «5.5» گزارش می‌کند.
+     */
+    public static function database_version_number( ?string $version, ?string $engine = null ): ?string {
+        $raw = trim( (string) $version );
+
+        if ( '' === $raw ) {
+            return null;
+        }
+
+        $engine = null !== $engine ? $engine : self::database_engine( $raw );
+
+        if ( self::DB_ENGINE_MARIADB === $engine && 1 === preg_match( '/^5\.5\.5-(.+)$/', $raw, $matches ) ) {
+            $raw = (string) $matches[1];
+        }
+
+        if ( 1 !== preg_match( '/\d+(?:\.\d+)*/', $raw, $matches ) ) {
+            return null;
+        }
+
+        return (string) $matches[0];
+    }
+
+    /** برچسبِ کاربرپسندِ ردیفِ نسخهٔ دیتابیس، بر پایهٔ موتورِ تشخیص‌داده‌شده. */
+    public static function database_version_label( string $engine ): string {
+        return match ( $engine ) {
+            self::DB_ENGINE_MARIADB => 'نسخهٔ سرور دیتابیس (MariaDB)',
+            self::DB_ENGINE_MYSQL   => 'نسخهٔ سرور دیتابیس (MySQL)',
+            default                 => 'نسخهٔ سرور دیتابیس',
+        };
+    }
+
+    /**
+     * چکِ نسخهٔ سرور دیتابیس — تفکیک‌شده بر پایهٔ موتور.
      *
      * خالص و قابل‌واحدتست. منبعِ نسخه در `run()` خودِ سرور است
      * (`SELECT VERSION()`)، چون فقط سرور می‌تواند دربارهٔ خودش مدرک بدهد.
      *
-     * سیاستِ MariaDB در اینجا اعلام/گسترش نمی‌شود: مدرکِ MariaDB مدرکِ
-     * «MySQL ≥ 8.0» نیست، پس `PASS` تولید نمی‌کند و در عین حال ادعایِ
-     * نادرستِ «زیرِ کف» (`FAIL`) هم نمی‌سازد ⇒ `UNKNOWN` (fail-closed).
+     * قراردادها:
+     *  - MySQL: کفِ اعلام‌شده `MIN_MYSQL_VERSION` (8.0) — زیرِ کف ⇒ FAIL.
+     *  - MariaDB: مدرکِ MariaDB **هرگز** مدرکِ «MySQL 8» نیست و ادعایِ چنین
+     *    چیزی تولید نمی‌شود. وضعیت از شواهدِ واقعیِ همین مخزن می‌آید:
+     *      • `11.4.13` (نسخهٔ آزموده‌شده در CI) ⇒ PASS
+     *      • سریِ `10.11` (مرزِ سازگاریِ مستند/آزمودهٔ هفتگی؛ وصلهٔ آزموده‌شده
+     *        `10.11.19`) ⇒ PASS
+     *      • کهنه‌تر از مرزِ 10.11 ⇒ FAIL (پشتیبانی نمی‌شود)
+     *      • هر نسخهٔ دیگر (مثلاً 10.6، 11.0–11.3، 11.4.x≠13، 11.5+، 12.x)
+     *        ⇒ WARNING (آزموده‌نشده — پشتیبانی ادعا نمی‌شود، شکست هم ادعا نمی‌شود)
+     *  - مدرکِ ناخوانا/ناتجزیه‌پذیر ⇒ UNKNOWN (fail-closed؛ هرگز PASS).
+     *
+     * `detail` همیشه با یک شناسهٔ ساختاریِ انگلیسی (`mysql:`/`mariadb:`) شروع
+     * می‌شود تا مصرف‌کننده‌ها به متنِ فارسیِ ترجمه‌پذیر وابسته نشوند.
      *
      * @return array{key:string,label:string,status:string,detail:string}
      */
     public static function database_server_version_check( ?string $version ): array {
-        $raw = trim( (string) $version );
+        $raw      = trim( (string) $version );
+        $engine   = self::database_engine( $raw );
+        $parsed   = self::database_version_number( $raw, $engine );
+        $label    = self::database_version_label( $engine );
 
-        if ( '' !== $raw && false !== stripos( $raw, 'mariadb' ) ) {
-            return [
-                'key'    => 'db.mysql_version',
-                'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
-                'status' => self::UNKNOWN,
-                'detail' => 'mariadb:detected | MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL '
-                    . self::MIN_MYSQL_VERSION . ' است و سیاستِ MariaDB اعلام نشده است',
-            ];
+        if ( self::DB_ENGINE_MARIADB === $engine ) {
+            if ( null === $parsed ) {
+                return [
+                    'key'    => 'db.mysql_version',
+                    'label'  => $label,
+                    'status' => self::UNKNOWN,
+                    'detail' => 'mariadb:unknown_version | ' . ( '' !== $raw ? $raw : 'نامشخص' )
+                        . ' | MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌استخراج نیست — تأییدِ سازگاری ممکن نیست'
+                        . ' | نسخه‌های آزموده‌شده: MariaDB ' . self::MARIADB_TESTED_VERSION
+                        . ' و سریِ ' . self::MARIADB_COMPAT_BOUNDARY,
+                ];
+            }
+
+            return self::mariadb_version_row( $raw, $parsed );
         }
-
-        $parsed = self::parse_version( $raw );
 
         if ( null === $parsed ) {
             return [
                 'key'    => 'db.mysql_version',
-                'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
+                'label'  => $label,
                 'status' => self::UNKNOWN,
                 'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL '
                     . self::MIN_MYSQL_VERSION . ' تأییدپذیر نیست',
@@ -343,9 +478,67 @@ final class SystemHealthService
 
         return [
             'key'    => 'db.mysql_version',
-            'label'  => 'نسخهٔ سرور دیتابیس (MySQL)',
+            'label'  => $label,
             'status' => version_compare( $parsed, self::MIN_MYSQL_VERSION, '>=' ) ? self::PASS : self::FAIL,
-            'detail' => $raw . ' — کفِ اعلام‌شده: MySQL ' . self::MIN_MYSQL_VERSION,
+            'detail' => 'mysql:detected | ' . $raw . ' — کفِ اعلام‌شده: MySQL ' . self::MIN_MYSQL_VERSION,
+        ];
+    }
+
+    /**
+     * ردیفِ MariaDB — بر پایهٔ شواهدِ واقعیِ همین مخزن (نه حدس/گمان).
+     *
+     * @return array{key:string,label:string,status:string,detail:string}
+     */
+    private static function mariadb_version_row( string $raw, string $parsed ): array {
+        $label      = self::database_version_label( self::DB_ENGINE_MARIADB );
+        $boundary   = self::MARIADB_COMPAT_BOUNDARY;
+        $tested     = self::MARIADB_TESTED_VERSION;
+        $patch      = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
+        $in_series  = str_starts_with( $parsed . '.', $boundary . '.' );
+        $fixed_note = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
+
+        if ( version_compare( $parsed, $boundary, '<' ) ) {
+            return [
+                'key'    => 'db.mysql_version',
+                'label'  => $label,
+                'status' => self::FAIL,
+                'detail' => 'mariadb:below_boundary | ' . $raw
+                    . ' — کهنه‌تر از مرزِ سازگاریِ مستند: MariaDB ' . $boundary
+                    . ' (آزموده‌شده: ' . $patch . ') یا نسخهٔ آزموده‌شدهٔ MariaDB ' . $tested
+                    . $fixed_note,
+            ];
+        }
+
+        if ( $in_series ) {
+            return [
+                'key'    => 'db.mysql_version',
+                'label'  => $label,
+                'status' => self::PASS,
+                'detail' => 'mariadb:compatibility_boundary | ' . $raw
+                    . ' — سریِ ' . $boundary . ' مرزِ سازگاریِ مستند و آزمودهٔ این افزونه است (وصلهٔ آزموده‌شده: '
+                    . $patch . ')' . $fixed_note,
+            ];
+        }
+
+        if ( version_compare( $parsed, $tested, '==' ) ) {
+            return [
+                'key'    => 'db.mysql_version',
+                'label'  => $label,
+                'status' => self::PASS,
+                'detail' => 'mariadb:tested | ' . $raw
+                    . ' — نسخهٔ MariaDB آزموده‌شده در CI این افزونه: ' . $tested . $fixed_note,
+            ];
+        }
+
+        return [
+            'key'    => 'db.mysql_version',
+            'label'  => $label,
+            'status' => self::WARNING,
+            'detail' => 'mariadb:unverified | ' . $raw
+                . ' — این نسخهٔ MariaDB در CI این افزونه آزموده نشده است؛ نسخه‌های آزموده‌شده: MariaDB '
+                . $tested . ' و سریِ ' . $boundary . ' (وصلهٔ آزموده‌شده: ' . $patch . ')'
+                . ' — پشتیبانی برای این نسخه ادعا نمی‌شود و دروازهٔ مهاجرت/فعال‌سازی، نسخه‌های خارج از این مجموعه را'
+                . ' به‌صورت fail-closed رد می‌کند (migration 0027)' . $fixed_note,
         ];
     }
 
@@ -495,11 +688,12 @@ final class SystemHealthService
             if (!in_array($c['key'], self::CRITICAL_KEYS, true)) {
                 continue;
             }
-            // MariaDB: سرورِ تشخیص‌داده‌شده MariaDB مدرکِ «MySQL ≥ 8.0» نیست،
-            // پس ردیفِ db.mysql_version صادقانه UNKNOWN می‌ماند؛ اما این نبودِ
-            // مدرکِ MySQL-اختصاصی به‌تنهایی نباید کلِ میزبان را UNSUPPORTED کند.
-            // در عین حال ادعایِ سازگاریِ کامل هم نمی‌شود: به‌عنوان «نیازمند
-            // تنظیم» (warning) گزارش می‌شود تا مدرکِ نامشخص حفظ شود.
+            // CPMS Classic Admin UX (D) — ردیفِ db.mysql_version اکنون بر پایهٔ
+            // موتور قضاوت می‌شود: MySQL با کفِ 8.0، MariaDB با نسخه‌های آزمودهٔ
+            // واقعی (11.4.13 و سریِ 10.11). ردیفِ MariaDBِ آزموده‌نشده WARNING
+            // است (نه PASS؛ ادعایِ پشتیبانی ساخته نمی‌شود) و میراثِ MariaDB
+            // با وضعیتِ UNKNOWN + جزئیاتِ ساختاریافته نیز همچنان «نیازمند
+            // تنظیم» می‌ماند تا مدرکِ نامشخص کلِ میزبان را UNSUPPORTED نکند.
             $maria_db_uncertified = $c['key'] === 'db.mysql_version'
                 && $c['status'] === self::UNKNOWN
                 && self::is_maria_db_compatibility_detail( (string) ( $c['detail'] ?? '' ) );
@@ -518,6 +712,52 @@ final class SystemHealthService
             'status' => $warnings !== [] ? self::HOST_SUPPORTED_WITH_WARNINGS : self::HOST_SUPPORTED,
             'issues' => $warnings !== [] ? $warnings : [],
         ];
+    }
+
+    /**
+     * CPMS Classic Admin UX (G) — گروه‌بندیِ خالصِ ردیف‌های سلامت برای ارائه.
+     *
+     * چهار گروهِ متمایز، بدونِ هیچ حذف یا «سبزکردنِ» نمایشی:
+     *  - `blockers`  : وضعیتِ FAIL/UNKNOWN (و هر وضعیتِ ناشناخته — احتیاطی)
+     *  - `warnings`  : WARNING (قابل‌اقدام)
+     *  - `optional`  : NOT_CONFIGURED (پیکربندیِ اختیاری)
+     *  - `healthy`   : PASS
+     *
+     * هیچ ردیفی دور ریخته نمی‌شود: مجموعِ چهار گروه همیشه برابرِ ورودی است.
+     *
+     * @param list<array{key:string,label:string,status:string,detail:string}> $checks
+     *
+     * @return array{
+     *     blockers:list<array{key:string,label:string,status:string,detail:string}>,
+     *     warnings:list<array{key:string,label:string,status:string,detail:string}>,
+     *     optional:list<array{key:string,label:string,status:string,detail:string}>,
+     *     healthy:list<array{key:string,label:string,status:string,detail:string}>
+     * }
+     */
+    public static function group_checks( array $checks ): array
+    {
+        $groups = [
+            'blockers' => [],
+            'warnings' => [],
+            'optional' => [],
+            'healthy'  => [],
+        ];
+
+        foreach ( $checks as $check ) {
+            $status = (string) ( $check['status'] ?? '' );
+
+            $group = match ( $status ) {
+                self::PASS                        => 'healthy',
+                self::WARNING                     => 'warnings',
+                self::NOT_CONFIGURED              => 'optional',
+                self::FAIL, self::UNKNOWN         => 'blockers',
+                default                           => 'blockers',
+            };
+
+            $groups[ $group ][] = $check;
+        }
+
+        return $groups;
     }
 
     /**
@@ -631,9 +871,30 @@ final class SystemHealthService
         return $latest !== '' && $applied !== null && $applied >= $latest;
     }
 
+    /**
+     * خواندنِ یک Settingِ Clinic-local **بدونِ الزام به Scope**.
+     *
+     * وقتی ClinicScope معتبری در دسترس نیست (`$settings === null`) یا خواندن
+     * شکست می‌خورد، پیش‌فرضِ امنِ همان کلید برمی‌گردد — نه یک مقدارِ Clinicِ
+     * حدس‌زده‌شده. این تنها نقطهٔ مجازِ خواندنِ پیکربندیِ Clinic-local در این
+     * سرویس است.
+     */
+    private function clinic_setting( string $key, mixed $default = null ): mixed
+    {
+        if ( null === $this->settings ) {
+            return $default;
+        }
+
+        try {
+            return $this->settings->get( $key, $default );
+        } catch ( \Throwable ) {
+            return $default;
+        }
+    }
+
     private function filesBase(): string
     {
-        $configured = trim((string) $this->settings->get('files.storage_path', ''));
+        $configured = trim( (string) $this->clinic_setting( 'files.storage_path', '' ) );
         if ($configured !== '') {
             return $configured;
         }

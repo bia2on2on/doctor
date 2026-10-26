@@ -38,6 +38,13 @@ final class CpmsAssets
         'cpms-prescription-print',
         'cpms-patient',
         'cpms-patients',
+        // CPMS Classic Admin UX (A) — صفحاتِ ثبت‌شده‌ای که پیش از این هیچ
+        // asset اسکوپ‌شده‌ای نمی‌گرفتند (فرم‌ها/جدول‌ها/انتخاب‌گرها و
+        // confirm/validation سمتِ کلاینت بدون CSS/JS می‌ماندند).
+        'cpms-custom-roles',
+        'cpms-finance-delegation',
+        'cpms-facility-setup',
+        'cpms-shortcodes',
     ];
 
     public static function register(): void
