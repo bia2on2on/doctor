@@ -470,24 +470,33 @@ final class App
     }
 
     /**
-     * ثبتِ بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
+     * بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
      *
-     * از `boot()` بیرون کشیده شد تا **فعال‌سازی** هم بتواند پیش از اولین
+     * @param array<string, array<string, mixed>> $schedules بازه‌های ثبت‌شدهٔ WordPress.
+     * @return array<string, array<string, mixed>>
+     */
+    public static function filter_cron_schedules( array $schedules ): array {
+        if ( ! isset( $schedules['cpms_minute'] ) ) {
+            $schedules['cpms_minute'] = array(
+                'interval' => 60,
+                'display'  => 'هر دقیقه (CPMS)',
+            );
+        }
+
+        return $schedules;
+    }
+
+    /**
+     * ثبتِ فیلترِ بازه — از `boot()` و `activate()` فراخوانی می‌شود.
+     *
+     * از `boot()` بیرون کشیده شد تا **فعال‌سازی** هم پیش از اولین
      * `ensure_scheduled()` آن را ثبت کند. بدونِ این، `wp_schedule_event()` در
      * `activate()` بازه را نمی‌شناخت، رویداد ساخته نمی‌شد و اولین بازدیدِ
-     * پیشخوان یک «ترمیم»ِ کاذب (`CPMS_CRON_SCHEDULE_REPAIRED`) روی یک سایتِ
-     * تازه ثبت می‌کرد — که هم لاگ را آلوده می‌کرد و هم در سایتِ یک‌بارمصرف
-     * «سایت خالی نیست» را نقض می‌کرد.
+     * پیشخوان یک «ترمیم»ِ کاذب (`CPMS_CRON_SCHEDULE_REPAIRED`) روی سایتِ تازه
+     * ثبت می‌کرد — هم لاگ را آلوده می‌کرد و هم «سایت خالی نیست» را نقض می‌کرد.
      */
-    private static function register_cron_schedules(): void
-    {
-        add_filter('cron_schedules', static function (array $schedules): array {
-            if (!isset($schedules['cpms_minute'])) {
-                $schedules['cpms_minute'] = ['interval' => 60, 'display' => 'هر دقیقه (CPMS)'];
-            }
-
-            return $schedules;
-        });
+    private static function register_cron_schedules(): void {
+        add_filter( 'cron_schedules', array( self::class, 'filter_cron_schedules' ) );
     }
 
     private static function ensureMigrated(): void

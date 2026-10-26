@@ -226,7 +226,7 @@ jobs:
           sudo mkdir -p /home/runner/cpdd-private
           sudo chown www-data:runner /home/runner/cpdd-private
           sudo chmod 0775 /home/runner/cpdd-private
-          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --raw --allow-root
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --type=constant --allow-root
           ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           wp core install --url="$WP_URL" --title="CPDD Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpdd.invalid --skip-email --allow-root
           echo "WP_ADMIN_CREATED=1"
@@ -305,7 +305,7 @@ jobs:
           sudo mkdir -p /home/runner/cpdd-private
           sudo chown www-data:runner /home/runner/cpdd-private
           sudo chmod 0775 /home/runner/cpdd-private
-          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --raw --allow-root
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --type=constant --allow-root
           ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
           python3 -c 'import secrets; print(secrets.token_hex(24), end="")' > "$ADMIN_PASS_FILE"
           chmod 600 "$ADMIN_PASS_FILE"
