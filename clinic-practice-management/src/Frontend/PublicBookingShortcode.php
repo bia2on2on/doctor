@@ -436,20 +436,20 @@ final class PublicBookingShortcode
         $clinicians = [];
         foreach ($rows as $row) {
             $id = (int) ($row['id'] ?? 0);
-            $name = trim( (string)    ( $row['name'] ?? '' ) );
+            $name = trim( (string) ( $row['name'] ?? '' ) );
             if ( $id <= 0 || $name === '' ) {
                 // پزشکِ بدون نامِ قابل‌نمایش روی سطح عمومی قابل ارائه نیست
                 // (دکمهٔ بی‌نام، UI غیرقابل‌استفاده می‌سازد).
                 continue;
             }
             $weekdays = [];
-            foreach ( (array)    ( $row['weekdays'] ?? [] ) as $day ) {
+            foreach ( (array) ( $row['weekdays'] ?? [] ) as $day ) {
                 $weekdays[] = (int) $day;
             }
             $clinicians[] = [
                 'id'        => $id,
                 'name'      => $name,
-                'specialty' => trim( (string)    ( $row['specialty'] ?? '' ) ),
+                'specialty' => trim( (string) ( $row['specialty'] ?? '' ) ),
                 'weekdays'  => $weekdays,
             ];
         }
@@ -568,7 +568,7 @@ final class PublicBookingShortcode
                 'clinics'     => $listing['clinics'],
                 'specialties' => $listing['specialties'],
                 'timezones'   => array_column( $listing['clinics'], 'timezone', 'id' ),
-        ]
+            ]
         );
     }
 
@@ -657,7 +657,7 @@ final class PublicBookingShortcode
                 // Bounded page: the public directory never renders an unbounded list.
                 break;
             }
-            $lines[] = self::render_clinician_item( $row, (int)   $row['clinic_id'] );
+            $lines[] = self::render_clinician_item( $row, (int) $row['clinic_id'] );
             ++$rendered_doctors;
         }
         $lines[] = '</ul>';
@@ -760,11 +760,11 @@ final class PublicBookingShortcode
         }
 
         foreach ( $discovery['clinics'] as $clinic ) {
-            $owner = (int)   ( $clinic['id'] ?? 0 );
+            $owner = (int) ( $clinic['id'] ?? 0 );
             if ( $owner <= 0 ) {
                 continue;
             }
-            foreach ( (array)    ( $clinic['clinicians'] ?? [] ) as $clinician ) {
+            foreach ( (array) ( $clinic['clinicians'] ?? [] ) as $clinician ) {
                 $rows[] = ['clinic_id' => $owner] + (array) $clinician;
             }
         }
@@ -782,10 +782,10 @@ final class PublicBookingShortcode
      * @param array{id:int,name:string,specialty?:string,weekdays?:list<int>} $clinician
      */
     private static function render_clinician_item( array $clinician, int $clinic_id ): string {
-        $id        = (int)   ( $clinician['id'] ?? 0 );
-        $name      = trim( (string)    ( $clinician['name'] ?? '' ) );
-        $specialty = trim( (string)    ( $clinician['specialty'] ?? '' ) );
-        $weekdays  = array_map( 'intval', (array)     ( $clinician['weekdays'] ?? [] ) );
+        $id        = (int) ( $clinician['id'] ?? 0 );
+        $name      = trim( (string) ( $clinician['name'] ?? '' ) );
+        $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
+        $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         $lines   = [];
         $lines[] = sprintf(
@@ -832,7 +832,7 @@ final class PublicBookingShortcode
         foreach ( $weekdays as $day ) {
             // cpms_schedule.day_of_week is 0..6 (0 = Sunday) — map to a stable
             // Persian label without assuming where the week starts.
-            $label = self::weekday_label_from_db( (int)  $day );
+            $label = self::weekday_label_from_db( (int) $day );
             if ( $label !== '' ) {
                 $labels[ $label ] = $label;
             }
@@ -895,7 +895,7 @@ final class PublicBookingShortcode
             $value
         );
         // Drop diacritics (harakat), tatweel and zero-width joiners (ZWNJ/ZWJ).
-        $value = (string)   preg_replace( '/[\x{064B}-\x{065F}\x{0670}\x{0640}\x{200B}-\x{200F}]/u', '', $value );
+        $value = (string) preg_replace( '/[\x{064B}-\x{065F}\x{0670}\x{0640}\x{200B}-\x{200F}]/u', '', $value );
 
         return function_exists( 'mb_strtolower' ) ? mb_strtolower( $value, 'UTF-8' ) : strtolower( $value );
     }
@@ -935,8 +935,8 @@ final class PublicBookingShortcode
             $lines[] = sprintf(
                 '<option value="%1$d" data-timezone="%2$s">%3$s</option>',
                 (int) $clinic['id'],
-                esc_attr( (string)    ( $clinic['timezone'] ?? '' ) ),
-                esc_html( (string)  $clinic['name'] )
+                esc_attr( (string) ( $clinic['timezone'] ?? '' ) ),
+                esc_html( (string) $clinic['name'] )
             );
         }
         $lines[] = '</select>';
@@ -987,8 +987,8 @@ final class PublicBookingShortcode
             foreach ( $specialties as $specialty ) {
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( (string)  $specialty ),
-                    esc_html( (string)  $specialty )
+                    esc_attr( (string) $specialty ),
+                    esc_html( (string) $specialty )
                 );
             }
             $lines[] = '</select>';
@@ -1543,7 +1543,7 @@ final class PublicBookingShortcode
     {
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
         $config = [
-            'surface_id' => $surface_id,
+            'surface_id'        => $surface_id,
             'mode'              => $discovery === null ? self::MODE_SINGLE : self::MODE_DISCOVERY,
             // Phase 8 Slice 4 — presentation-only Jalali week scaffold. The
             // server computes every label (same Jalali implementation as A1);
@@ -1553,7 +1553,7 @@ final class PublicBookingShortcode
             'rest_root' => rtrim(rest_url(self::REST_NAMESPACE), '/'),
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
-            'clinic_id' => $clinic_id,
+            'clinic_id'         => $clinic_id,
             'state_vocabulary' => self::STATE_VOCABULARY,
             'initial_state' => 'idle',
         ];
@@ -1609,11 +1609,11 @@ final class PublicBookingShortcode
         $timezones  = [];
         $clinic_ids = [];
         if ( $discovery !== null ) {
-            foreach ( (array)    ( $discovery['clinics'] ?? [] ) as $clinic ) {
-                $id = (int)   ( $clinic['id'] ?? 0 );
+            foreach ( (array) ( $discovery['clinics'] ?? [] ) as $clinic ) {
+                $id = (int) ( $clinic['id'] ?? 0 );
                 if ( $id > 0 ) {
                     $clinic_ids[] = $id;
-                    $timezones[]  = (string)   ( $clinic['timezone'] ?? '' );
+                    $timezones[]  = (string) ( $clinic['timezone'] ?? '' );
                 }
             }
         } elseif ( $clinic_id > 0 ) {
@@ -1624,7 +1624,7 @@ final class PublicBookingShortcode
         $horizon = 7;
         foreach ( $clinic_ids as $index => $id ) {
             try {
-                $timezone = ( $timezones[ $index ] ?? '' ) !== '' ? (string)   $timezones[ $index ] : 'Asia/Tehran';
+                $timezone = ( $timezones[ $index ] ?? '' ) !== '' ? (string) $timezones[ $index ] : 'Asia/Tehran';
                 $today    = new \DateTimeImmutable( 'now', new \DateTimeZone( $timezone ) );
                 if ( $start === null || $today->format( 'Y-m-d' ) < $start ) {
                     $start = $today->format( 'Y-m-d' );
@@ -1633,7 +1633,7 @@ final class PublicBookingShortcode
                 $start = $start ?? gmdate( 'Y-m-d' );
             }
             try {
-                $days    = (int)     App::settingsFactory()->forClinic( $id )->get( 'booking.max_future_days', 60 );
+                $days    = (int) App::settingsFactory()->forClinic( $id )->get( 'booking.max_future_days', 60 );
                 $horizon = max( $horizon, $days + 2 );
             } catch ( Throwable ) {
                 // Unreadable policy never widens the scaffold.
@@ -1655,8 +1655,8 @@ final class PublicBookingShortcode
         for ( $i       = 0; $i < $horizon; $i++ ) {
             $date       = $cursor->format( 'Y-m-d' );
             $calendar[] = [
-                'date'  => $date,
-                'jalali' => Jalali::formatYmd( $date ),
+                'date'    => $date,
+                'jalali'  => Jalali::formatYmd( $date ),
                 'weekday' => self::weekday_label_from_db( (int) $cursor->format( 'w' ) ),
             ];
             $cursor     = $cursor->modify( '+1 day' );

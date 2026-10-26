@@ -165,13 +165,13 @@ final class OtpController extends RestBase
 
         $has_selection = self::hasValue( $clinician_id ) || self::hasValue( $slot_id )
             || self::hasValue( $slot_date ) || self::hasValue( $slot_time );
-        if ( !$has_selection ) {
+        if ( ! $has_selection ) {
             return null;
         }
 
         // انتخابِ ناقص = ورودی نامعتبر (نه حدس، نه fallback).
         if ( ! self::hasValue( $clinician_id ) || ! self::hasValue( $slot_id )
-            || !self::hasValue( $slot_date ) || !self::hasValue( $slot_time ) ) {
+            || ! self::hasValue( $slot_date ) || ! self::hasValue( $slot_time ) ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
@@ -220,7 +220,7 @@ final class OtpController extends RestBase
         if ( $slot_clinic_id !== $clinic_id ) {
             // A slot persisted in ANOTHER Clinic is only usable when the
             // clinician holds an ACTIVE durable participation there.
-            if ( !( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
+            if ( ! ( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
             }
             $clinic_id = $slot_clinic_id;
@@ -231,11 +231,11 @@ final class OtpController extends RestBase
         $time_matches = substr( (string) $slot['slot_time'], 0, 8 ) === substr( $slot_time, 0, 8 );
         if ( (int) $slot['clinician_id'] !== $clinician_id
             || (string) $slot['slot_date'] !== $slot_date
-            || !$time_matches) {
+            || ! $time_matches ) {
             $norm_requested = substr( $slot_date . ' ' . $slot_time, 0, 19 );
-            $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
+            $norm_slot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
             if ( (int) $slot['clinician_id'] !== $clinician_id
-                || substr($norm_requested, 0, 16) !== substr($normSlot, 0, 16)) {
+                || substr( $norm_requested, 0, 16 ) !== substr( $norm_slot, 0, 16 ) ) {
                 throw BookingException::of(
                     'CLINIC_VALIDATION_FAILED',
                     'انتخاب نوبت با رکورد زمان‌بندی همخوانی ندارد — دوباره نوبت را انتخاب کنید',

@@ -141,7 +141,7 @@ final class BookingController extends RestBase
                         ],
                     ],
                 ],
-        ]
+            ]
         );
 
         register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule', [
