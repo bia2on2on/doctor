@@ -55,6 +55,12 @@ final class Settings
         'jobs.default_max_attempts' => 3,
         // بیمار
         'patient.profile_invoices_visible' => false,
+        // Public clinic discovery (Phase 8 Slice 4) — FAIL-CLOSED opt-in.
+        // A Clinic is advertised in the public directory ONLY when its own
+        // settings row sets this key to a true value AND the Clinic/lifecycle,
+        // Organization and Location gates pass. Absent row ⇒ false ⇒ never
+        // listed. There is intentionally no "list every active Clinic" default.
+        'public.listing_opt_in'             => false,
         // دست‌خط
         'hw.local_retain' => 'off', // off|last|always
         'hw.autosave_sec' => 5,

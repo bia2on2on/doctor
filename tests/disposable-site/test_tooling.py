@@ -182,6 +182,49 @@ class StaticBoundaryTest(unittest.TestCase):
         self.assertIn('--require-secret-count 14', workflow)
         self.assertIn('package-proof-full.json', workflow)
 
+    def test_production_scope_policy_accepts_product_prs_and_rejects_contamination(self):
+        """The isolation rule must protect packaging without rejecting product PRs.
+
+        The previous rule asserted the whole `clinic-practice-management/` tree was
+        byte-identical to live main, which can only ever pass for a tooling-only
+        PR. That rule is replaced by (a) a product-tree scope check, (b) a
+        demo/disposable path check, (c) a marker scan of changed product files and
+        (d) provenance against the CANDIDATE tree. All four must stay present.
+        """
+        workflow = (ROOT / ".github/workflows/disposable-site-acceptance.yml").read_text(encoding="utf-8")
+
+        # The invalid assumption is gone.
+        self.assertNotIn('git diff --exit-code "$BASE_SHA" -- clinic-practice-management', workflow)
+        self.assertNotIn("byte-identical to live main; all task code is external", workflow)
+
+        # Every replacement protection is present.
+        self.assertIn('mapfile -t PRODUCT_CHANGED < <(git diff --name-only "$BASE_SHA" -- clinic-practice-management)', workflow)
+        self.assertIn("*demo*|*disposable*)", workflow)
+        self.assertIn("FAIL: demo/disposable material inside the product tree", workflow)
+        self.assertIn("FAIL: product-tree change outside the allowed product source scope", workflow)
+        self.assertIn("FAIL: disposable/demo tooling marker inside a changed product file", workflow)
+
+        # Packaging provenance now applies to the candidate tree, not to live main.
+        self.assertNotIn("--baseline-source /tmp/cpms-live-main/clinic-practice-management", workflow)
+        self.assertEqual(
+            3, workflow.count("--baseline-source /tmp/cpms-candidate/clinic-practice-management")
+        )
+        self.assertIn('--candidate-sha "$HEAD_SHA"', workflow)
+
+        # The checker still enforces the real package-integrity invariants.
+        checker = PACKAGE_CHECKER.read_text(encoding="utf-8")
+        self.assertIn("--candidate-sha", checker)
+        self.assertIn('"provenance_source": "candidate-head-tree"', checker)
+        for invariant in (
+            "external demo/test marker found in production ZIP",
+            "development, test, docs, or secret path in production ZIP",
+            "generated credential material found in production ZIP",
+            "shipped production file differs from the provenance source tree",
+            "required production runtime files missing",
+            "symbolic links are forbidden in the production ZIP",
+        ):
+            self.assertIn(invariant, checker)
+
     def test_doctor_list_and_workflow_permission_contracts(self):
         workflow = (ROOT / ".github/workflows/disposable-site-acceptance.yml").read_text(encoding="utf-8")
         permissions = workflow.split("permissions:", 1)[1].split("\nenv:", 1)[0]

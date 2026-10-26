@@ -264,7 +264,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], busy: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '' };
+    var state = { clinicId: null, locationId: null, locations: [], mutating: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '' };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
@@ -309,6 +309,18 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var eligibleLabels = ['بیمار', 'پزشک', 'تاریخ و ساعت عملیاتی', 'وضعیت ویزیت', 'اقدام'];
     var paidLabels = ['بیمار', 'پزشک', 'تاریخ و ساعت عملیاتی', 'وضعیت ویزیت', 'فاکتور', 'اقدام'];
 
+    // Every finance request runs through one ordered queue. The old shared
+    // `state.busy` flag dropped whatever arrived while another request was in
+    // flight, so a submit pressed during the initial board load produced no
+    // request and no message at all. Ordering keeps the user's request, and
+    // guarantees a stale read cannot overwrite the result of a write that
+    // started later. state.mutating still blocks a duplicated submit.
+    var queue = Promise.resolve();
+    function enqueue(task) {
+        var run = queue.then(function () { return task(); });
+        queue = run.then(function () {}, function () {});
+        return run;
+    }
     function esc(value) {
         return String(value === null || value === undefined ? '' : value)
             .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -324,8 +336,14 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (state.locationId) value['X-CPMS-Location-Id'] = String(state.locationId);
         return value;
     }
+    // A read that never completes must not wedge the board: every ordered action
+    // behind it would wait forever. Reads are therefore bounded. Writes are not
+    // aborted, because the server may already have applied them (a payment
+    // carries an Idempotency-Key, an invoice POST deliberately does not).
+    var READ_TIMEOUT_MS = 20000;
     function request(path, method, body, extraHeaders) {
-        var options = { method: method || 'GET', headers: headers(), credentials: 'same-origin', cache: 'no-store' };
+        var verb = method || 'GET';
+        var options = { method: verb, headers: headers(), credentials: 'same-origin', cache: 'no-store' };
         if (extraHeaders) {
             Object.keys(extraHeaders).forEach(function (name) { options.headers[name] = String(extraHeaders[name]); });
         }
@@ -333,10 +351,24 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
         }
+        var controller = null;
+        var timer = null;
+        if (verb === 'GET' && typeof AbortController === 'function') {
+            controller = new AbortController();
+            options.signal = controller.signal;
+            timer = window.setTimeout(function () { controller.abort(); }, READ_TIMEOUT_MS);
+        }
+        var clearReadTimer = function () {
+            if (timer !== null) { window.clearTimeout(timer); timer = null; }
+        };
         return fetch(root + path, options).then(function (response) {
+            clearReadTimer();
             return response.json().catch(function () { return {}; }).then(function (payload) {
                 return { ok: response.ok, body: payload };
             });
+        }, function (error) {
+            clearReadTimer();
+            throw error;
         });
     }
     function payload(result) { return result.body && result.body.data ? result.body.data : {}; }
@@ -577,31 +609,30 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             paymentRows;
     }
     function openReceipt(visitId) {
-        if (state.busy || !visitId) return;
-        state.busy = true;
-        request('/staff/portal/finance/visits/' + Number(visitId) + '/receipt').then(function (result) {
-            state.busy = false;
-            if (!result.ok) {
-                var code = result.body && result.body.code || '';
-                if (code === 'CLINIC_RECEIPT_NOT_ELIGIBLE') {
-                    // Fail closed: accounting history that cannot be proven as
-                    // the normal fully paid path is never turned into a receipt.
-                    closeReceipt();
-                    setStatus('رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.', 'error');
+        if (!visitId) return;
+        return enqueue(function () {
+            return request('/staff/portal/finance/visits/' + Number(visitId) + '/receipt').then(function (result) {
+                if (!result.ok) {
+                    var code = result.body && result.body.code || '';
+                    if (code === 'CLINIC_RECEIPT_NOT_ELIGIBLE') {
+                        // Fail closed: accounting history that cannot be proven as
+                        // the normal fully paid path is never turned into a receipt.
+                        closeReceipt();
+                        setStatus('رسید این فاکتور در دسترس نیست؛ مسیر تسویهٔ عادی و کامل آن قابل اثبات نیست.', 'error');
+                        return;
+                    }
+                    setStatus(showError(result, 'دریافت رسید ناموفق بود.'), 'error');
                     return;
                 }
-                setStatus(showError(result, 'دریافت رسید ناموفق بود.'), 'error');
-                return;
-            }
-            var data = payload(result);
-            state.selectedReceiptVisit = Number(visitId);
-            state.receiptLabel = String((data.receipt || {}).invoice_number || '');
-            renderReceipt(data.receipt || {});
-            receiptPanel.hidden = false;
-            setStatus('رسید از دادهٔ پایدار سرور خوانده شد.', '');
-        }).catch(function () {
-            state.busy = false;
-            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+                var data = payload(result);
+                state.selectedReceiptVisit = Number(visitId);
+                state.receiptLabel = String((data.receipt || {}).invoice_number || '');
+                renderReceipt(data.receipt || {});
+                receiptPanel.hidden = false;
+                setStatus('رسید از دادهٔ پایدار سرور خوانده شد.', '');
+            }).catch(function () {
+                setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            });
         });
     }
     // Browser print only: the receipt surface is isolated from the portal
@@ -625,108 +656,109 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         }
     }
     function loadPaid() {
-        if (state.busy) return Promise.resolve();
         if (state.locations.length > 1 && !state.locationId) return Promise.resolve();
-        state.busy = true;
-        return request('/staff/portal/finance/paid').then(function (result) {
-            if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ پرداخت‌شده ناموفق بود.'), 'error'); return; }
-            renderPaid(payload(result));
-        }).catch(function () {
-            setStatus('ارتباط با تختهٔ پرداخت‌شده برقرار نشد.', 'error');
-        }).then(function () {
-            state.busy = false;
+        return enqueue(function () {
+            return request('/staff/portal/finance/paid').then(function (result) {
+                if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ پرداخت‌شده ناموفق بود.'), 'error'); return; }
+                renderPaid(payload(result));
+            }).catch(function () {
+                setStatus('ارتباط با تختهٔ پرداخت‌شده برقرار نشد.', 'error');
+            });
         });
     }
     function submitCheckout() {
-        if (state.busy || !state.selectedCheckoutVisit) return;
-        state.busy = true;
+        if (state.mutating || !state.selectedCheckoutVisit) return;
+        state.mutating = true;
         checkoutSubmitNode.disabled = true;
-        request('/staff/portal/finance/visits/' + Number(state.selectedCheckoutVisit) + '/checkout', 'POST', {}).then(function (result) {
-            state.busy = false;
-            checkoutSubmitNode.disabled = false;
-            if (!result.ok) {
-                var message = result.body && result.body.message ? result.body.message : 'خروج ویزیت ناموفق بود.';
-                setStatus(message, 'error');
+        return enqueue(function () {
+            return request('/staff/portal/finance/visits/' + Number(state.selectedCheckoutVisit) + '/checkout', 'POST', {}).then(function (result) {
+                state.mutating = false;
+                checkoutSubmitNode.disabled = false;
+                if (!result.ok) {
+                    var message = result.body && result.body.message ? result.body.message : 'خروج ویزیت ناموفق بود.';
+                    setStatus(message, 'error');
+                    refreshAll();
+                    return;
+                }
+                closeCheckoutForm();
+                setStatus('ویزیت خارج شد؛ فهرست از سرور به‌روز شد.', '');
                 refreshAll();
-                return;
-            }
-            closeCheckoutForm();
-            setStatus('ویزیت خارج شد؛ فهرست از سرور به‌روز شد.', '');
-            refreshAll();
-        }).catch(function () {
-            state.busy = false;
-            checkoutSubmitNode.disabled = false;
-            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            }).catch(function () {
+                state.mutating = false;
+                checkoutSubmitNode.disabled = false;
+                setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            });
         });
     }
     function loadEligible() {
         if (!state.canIssue) return Promise.resolve();
-        if (state.busy) return Promise.resolve();
         if (state.locations.length > 1 && !state.locationId) return Promise.resolve();
-        state.busy = true;
-        return request('/staff/portal/finance/invoice-eligible').then(function (result) {
-            if (!result.ok) { setStatus(showError(result, 'دریافت فهرست ویزیت‌های قابل صدور ناموفق بود.'), 'error'); return; }
-            renderEligible(payload(result));
-        }).catch(function () {
-            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
-        }).then(function () {
-            state.busy = false;
+        return enqueue(function () {
+            return request('/staff/portal/finance/invoice-eligible').then(function (result) {
+                if (!result.ok) { setStatus(showError(result, 'دریافت فهرست ویزیت‌های قابل صدور ناموفق بود.'), 'error'); return; }
+                renderEligible(payload(result));
+            }).catch(function () {
+                setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            });
         });
     }
     function loadBoard() {
-        if (state.busy) return Promise.resolve();
         if (state.locations.length > 1 && !state.locationId) {
             setStatus('برای مشاهدهٔ اطلاعات مالی، یک موقعیت را انتخاب کنید.', 'error');
             return Promise.resolve();
         }
-        state.busy = true;
-        locationSelect.disabled = true;
-        return request('/staff/portal/finance/awaiting-payment').then(function (result) {
-            if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ مالی ناموفق بود.'), 'error'); return; }
-            renderBoard(payload(result));
-        }).catch(function () {
-            setStatus('ارتباط با تختهٔ مالی برقرار نشد.', 'error');
-        }).then(function () {
-            state.busy = false;
-            locationSelect.disabled = false;
+        return enqueue(function () {
+            locationSelect.disabled = true;
+            return request('/staff/portal/finance/awaiting-payment').then(function (result) {
+                if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ مالی ناموفق بود.'), 'error'); return; }
+                renderBoard(payload(result));
+            }).catch(function () {
+                setStatus('ارتباط با تختهٔ مالی برقرار نشد.', 'error');
+            }).then(function () {
+                locationSelect.disabled = false;
+            });
         });
     }
     function refreshAll() {
         return loadEligible().then(function () { return loadBoard(); }).then(function () { return loadPaid(); });
     }
     function submitIssue() {
-        if (state.busy || !state.selectedVisit) return;
+        if (state.mutating) return;
+        if (!state.selectedVisit) { setStatus('ابتدا یک ویزیت را انتخاب کنید.', 'error'); return; }
         var description = String(descriptionInput.value || '').trim();
         var quantity = Number(quantityInput.value);
         var unitPrice = Number(priceInput.value);
         if (!description) { setStatus('شرح خدمت الزامی است.', 'error'); return; }
         if (!isFinite(quantity) || quantity <= 0) { setStatus('تعداد باید بزرگ‌تر از صفر باشد.', 'error'); return; }
         if (!isFinite(unitPrice) || unitPrice < 0 || Math.floor(unitPrice) !== unitPrice) { setStatus('مبلغ واحد باید عدد صحیح غیرمنفی (ریال) باشد.', 'error'); return; }
-        state.busy = true;
+        state.mutating = true;
         submitNode.disabled = true;
-        request('/staff/portal/finance/visits/' + Number(state.selectedVisit) + '/invoice', 'POST', {
-            items: [{ description: description, quantity: quantity, unit_price: unitPrice }]
-        }).then(function (result) {
-            state.busy = false;
-            submitNode.disabled = false;
-            if (!result.ok) {
-                setStatus(showError(result, 'صدور فاکتور ناموفق بود.'), 'error');
+        return enqueue(function () {
+            return request('/staff/portal/finance/visits/' + Number(state.selectedVisit) + '/invoice', 'POST', {
+                items: [{ description: description, quantity: quantity, unit_price: unitPrice }]
+            }).then(function (result) {
+                state.mutating = false;
+                submitNode.disabled = false;
+                if (!result.ok) {
+                    setStatus(showError(result, 'صدور فاکتور ناموفق بود.'), 'error');
+                    refreshAll();
+                    return;
+                }
+                var invoice = payload(result);
+                closeIssueForm();
+                setStatus('فاکتور ' + String(invoice.invoice_number || '') + ' صادر شد.', '');
                 refreshAll();
-                return;
-            }
-            var invoice = payload(result);
-            closeIssueForm();
-            setStatus('فاکتور ' + String(invoice.invoice_number || '') + ' صادر شد.', '');
-            refreshAll();
-        }).catch(function () {
-            state.busy = false;
-            submitNode.disabled = false;
-            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            }).catch(function () {
+                state.mutating = false;
+                submitNode.disabled = false;
+                setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            });
         });
     }
 
     function submitPayment() {
-        if (state.busy || !state.selectedInvoice) return;
+        if (state.mutating) return;
+        if (!state.selectedInvoice) { setStatus('ابتدا یک فاکتور را انتخاب کنید.', 'error'); return; }
         var amount = Number(payAmountInput.value);
         var method = String(payMethodSelect.value || '');
         if (!isFinite(amount) || amount <= 0 || Math.floor(amount) !== amount) {
@@ -742,25 +774,27 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (reference) body.transaction_ref = reference;
         var key = state.paymentKey || paymentKey();
         state.paymentKey = key;
-        state.busy = true;
+        state.mutating = true;
         paySubmitNode.disabled = true;
-        request('/staff/portal/finance/invoices/' + Number(state.selectedInvoice) + '/payments', 'POST', body, { 'Idempotency-Key': key }).then(function (result) {
-            state.busy = false;
-            paySubmitNode.disabled = false;
-            if (!result.ok) {
-                setStatus(showError(result, 'ثبت پرداخت ناموفق بود.'), 'error');
+        return enqueue(function () {
+            return request('/staff/portal/finance/invoices/' + Number(state.selectedInvoice) + '/payments', 'POST', body, { 'Idempotency-Key': key }).then(function (result) {
+                state.mutating = false;
+                paySubmitNode.disabled = false;
+                if (!result.ok) {
+                    setStatus(showError(result, 'ثبت پرداخت ناموفق بود.'), 'error');
+                    refreshAll();
+                    return;
+                }
+                var data = payload(result);
+                var replay = data && data.idempotent_replay === true;
+                closePayForm();
+                setStatus(replay ? 'این پرداخت پیش‌تر ثبت شده بود؛ همان رکورد بازخوانی شد.' : 'پرداخت ' + String(amount) + ' ریال ثبت شد.', '');
                 refreshAll();
-                return;
-            }
-            var data = payload(result);
-            var replay = data && data.idempotent_replay === true;
-            closePayForm();
-            setStatus(replay ? 'این پرداخت پیش‌تر ثبت شده بود؛ همان رکورد بازخوانی شد.' : 'پرداخت ' + String(amount) + ' ریال ثبت شد.', '');
-            refreshAll();
-        }).catch(function () {
-            state.busy = false;
-            paySubmitNode.disabled = false;
-            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            }).catch(function () {
+                state.mutating = false;
+                paySubmitNode.disabled = false;
+                setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+            });
         });
     }
 
@@ -816,7 +850,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (reconRowsNode) reconRowsNode.innerHTML = '';
     }
     function loadReconciliation(useToday) {
-        if (state.busy) return;
+        if (state.reconLoading) return;
         if (!state.clinicId || (!state.locationId && state.locations.length > 1)) {
             setStatus('ابتدا موقعیت عملیاتی را انتخاب کنید.', 'error');
             return;
@@ -829,11 +863,11 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             if (toVal) qsParts.push('to=' + encodeURIComponent(toVal));
         }
         var path = '/staff/portal/finance/reconciliation' + (qsParts.length ? ('?' + qsParts.join('&')) : '');
-        state.busy = true;
+        state.reconLoading = true;
         if (reconLoadNode) reconLoadNode.disabled = true;
         if (reconTodayNode) reconTodayNode.disabled = true;
         request(path, 'GET').then(function (result) {
-            state.busy = false;
+            state.reconLoading = false;
             if (reconLoadNode) reconLoadNode.disabled = false;
             if (reconTodayNode) reconTodayNode.disabled = false;
             if (!result.ok) {
@@ -880,7 +914,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             }
             setStatus('', '');
         }).catch(function () {
-            state.busy = false;
+            state.reconLoading = false;
             if (reconLoadNode) reconLoadNode.disabled = false;
             if (reconTodayNode) reconTodayNode.disabled = false;
             setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
