@@ -643,3 +643,12 @@ Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی باز�
 | **علامت** | `IranGeographyAddressFormsTest::testCpmsAssetsRecognizesAndEnqueuesOnOrganizationClinicAndLocationPages` — «Page cpms-organization-manager-bootstrap must not be in CpmsAssets allowlist» |
 | **علت** | مأموریت F دو صفحهٔ `cpms-organization-managers` و `cpms-organization-manager-bootstrap` را به `CpmsAssets::PAGES` افزوده بود؛ قراردادِ main صریحاً این دو را «بدونِ کنترلِ جغرافیایی/JSِ عمومی» تعریف می‌کند |
 | **اقدام** | هر دو از allowlist حذف شدند؛ چهار صفحهٔ دیگر (`cpms-custom-roles`، `cpms-finance-delegation`، `cpms-facility-setup`، `cpms-shortcodes`) می‌مانند. رفعِ overflow در عرضِ کوچک باید در مارک‌آپِ خودِ همان صفحه‌ها انجام شود |
+
+### ۱۱-C — گیتِ laneِ «Disposable Demo Installer» روی هر PRِ تولیدی قرمز می‌شد
+
+| | |
+|---|---|
+| **علامت** | پس از mergeِ `main` (`4830b3fb`, PR #274)، گیتِ `Real WordPress acceptance (clean WP → CPMS → companion → teardown)` روی همین PR قرمز شد؛ گامِ شکست‌خورده: `Production subtree unchanged by this lane` |
+| **علت** | آن lane در `main` بدونِ فیلترِ مسیر روی **همهٔ** PRها اجرا می‌شود و گاردش `git diff base..HEAD -- clinic-practice-management` را بررسی می‌کند؛ یعنی هر PRی که وظیفه‌اش تغییرِ زیردرختِ تولید است به‌طورِ ساختاری قرمز می‌شود (روی `main` سبز بود چون آن PR اصلاً تولید را تغییر نمی‌داد) |
+| **اقدام** | (۱) lane با `paths:` به فایل‌های خودش محدود شد، پس دیگر گیتِ جهانی نیست؛ (۲) گارد برای PRِ **ترکیبی** (که هم lane و هم تولید را تغییر می‌دهد) `NOT-APPLICABLE` گزارش می‌کند و ادامهٔ اجرا همان کدِ تولیدیِ همین PR را می‌سازد و می‌آزماید؛ (۳) برای PRِ **فقط-companion** گارد دقیقاً مثلِ قبل fail-closed می‌ماند |
+| **تست** | `test_workflow_contracts.py::test_disposable_demo_lane_is_path_scoped_to_its_own_files` (۲۰ تست، OK) — مسیرها، `workflow_dispatch` و وجودِ گامِ گارد را pin می‌کند |

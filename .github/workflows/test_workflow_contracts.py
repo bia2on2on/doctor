@@ -44,6 +44,26 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("name: Closure Gate (GO-LIVE evidence closure)", workflow("closure-gate.yml"))
         self.assertIn("name: Pilot/Staging Readiness Gate", workflow("pilot-gate.yml"))
 
+    def test_disposable_demo_lane_is_path_scoped_to_its_own_files(self):
+        """The lane's guard fails when clinic-practice-management/** differs from
+        the PR base, so the lane must not run on PRs whose whole purpose is a
+        production change. Path scoping keeps the guard meaningful without
+        turning it into a global gate."""
+        text = workflow("disposable-demo-installer.yml")
+        events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+
+        self.assertEqual(events.count("    paths:\n"), 2, events)
+        for path in (
+            "'.github/workflows/disposable-demo-installer.yml'",
+            "'tools/disposable-demo-installer/**'",
+            "'bin/build-demo-installer.sh'",
+            "'.github/actions/playwright-browsers/**'",
+            "'docs/demo-setup-fa.md'",
+        ):
+            self.assertEqual(events.count(path), 2, path)
+        self.assertIn("workflow_dispatch:", events)
+        self.assertIn("Production subtree unchanged by this lane", text)
+
     def test_persian_wc_diagnosis_is_named_and_acceptance_requires_stage_b(self):
         text = workflow("persian-coexistence.yml")
         self.assertIn(

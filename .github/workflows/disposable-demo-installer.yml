@@ -6,13 +6,31 @@ name: Disposable Demo Installer (browser-only companion)
 #
 # The production plugin's own workflows are untouched; this lane never modifies
 # clinic-practice-management/**.
+#
+# Path-scoped on purpose: the lane's own guard fails whenever the production
+# subtree differs from the PR base, so running it on a PR that legitimately
+# changes clinic-practice-management/** (its whole purpose) would fail for a
+# reason that has nothing to do with this lane. It runs only when its own files
+# change; `workflow_dispatch` still allows a manual run anywhere.
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths:
+      - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/actions/playwright-browsers/**'
+      - 'bin/build-demo-installer.sh'
+      - 'tools/disposable-demo-installer/**'
+      - 'docs/demo-setup-fa.md'
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/actions/playwright-browsers/**'
+      - 'bin/build-demo-installer.sh'
+      - 'tools/disposable-demo-installer/**'
+      - 'docs/demo-setup-fa.md'
 
 permissions:
   contents: read
@@ -155,15 +173,27 @@ jobs:
         with:
           browsers: chromium
 
+      # Lane-scoped guard, only meaningful for a companion-only change: such a PR
+      # must not also touch the production plugin. A PR that deliberately changes
+      # both is a production PR that also touches this lane — the acceptance run
+      # below then exercises that PR's own production code, which is the
+      # combination that would ship — so the guard reports NOT-APPLICABLE instead
+      # of failing for a reason outside this lane's control.
       - name: Production subtree unchanged by this lane
         run: |
           set -Eeuo pipefail
           BASE="$(git rev-parse "${{ github.event.pull_request.base.sha || 'origin/main' }}")"
           if git diff --quiet "$BASE" HEAD -- clinic-practice-management; then
             echo 'PASS: clinic-practice-management/** unchanged'
-          else
-            echo 'FAIL: production subtree modified' >&2; exit 1
+            exit 0
           fi
+          LANE_FILES=("$COMPANION_DIR" bin/build-demo-installer.sh .github/workflows/disposable-demo-installer.yml)
+          if ! git diff --quiet "$BASE" HEAD -- "${LANE_FILES[@]}"; then
+            echo 'NOT-APPLICABLE: PR changes both this lane and clinic-practice-management/**'
+            echo 'The acceptance run below builds and exercises this PR'"'"'s production code.'
+            exit 0
+          fi
+          echo 'FAIL: production subtree modified by a companion-only change' >&2; exit 1
 
       - name: Build production CPMS ZIP (unmodified main-line build script)
         run: |

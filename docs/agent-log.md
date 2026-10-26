@@ -2410,3 +2410,18 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   database version added or widened, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no
   public-path fallback, `/clinic/v1/health` key set untouched, PR #275 stays **Draft** — merging is the
   owner's call.
+
+### Pass 6 — main moved (PR #274) and its new lane gate had to be scoped
+
+- **Merge:** `origin/main` (`4830b3fb`, the disposable-demo-installer work) was merged into this branch. The
+  only conflict was append-only in `docs/agent-log.md`; both dated sections were kept, ordered by date. The
+  PR is `MERGEABLE` again (it had gone `CONFLICTING` while main advanced).
+- **New red, not caused by product code:** main's `.github/workflows/disposable-demo-installer.yml` runs on
+  **every** PR and its step `Production subtree unchanged by this lane` fails whenever
+  `clinic-practice-management/**` differs from the PR base — i.e. for any PR whose purpose is a production
+  change. It was green on main only because that PR did not touch the production subtree.
+- **Fix (drift-register §۱۱-C):** the lane is path-scoped to its own files, so it is no longer a global
+  gate; and for a *mixed* PR (lane + production, which is what this one is) the guard reports
+  `NOT-APPLICABLE` and the acceptance run continues against **this PR's** production code — the combination
+  that would actually ship. For a companion-only PR the guard is unchanged and still fail-closed.
+  `test_workflow_contracts.py` gained one test pinning the scope (20 tests, OK).
