@@ -149,7 +149,7 @@ def rest_response(responses: list, path: str):
     return None
 
 
-def install_zip_via_wp_admin(admin_page, zip_path: str, label: str) -> None:
+def install_zip_via_wp_admin(admin_page, zip_path: str, plugin_basename: str, label: str) -> None:
     check(f"{label} ZIP file exists", os.path.isfile(zip_path), os.path.basename(zip_path))
     admin_page.goto(f"{BASE}/wp-admin/plugin-install.php?tab=upload", wait_until="domcontentloaded")
     file_input = admin_page.locator("input#pluginzip")
@@ -157,14 +157,17 @@ def install_zip_via_wp_admin(admin_page, zip_path: str, label: str) -> None:
     file_input.set_input_files(zip_path)
     submit_btn = admin_page.locator("input#install-plugin-submit")
     submit_btn.wait_for(state="visible")
-    submit_btn.click()
+    with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+        submit_btn.click()
     activate_link = admin_page.locator("a[href*='action=activate']").first
     activate_link.wait_for(state="visible", timeout=60000)
-    activate_link.click()
-    admin_page.wait_for_load_state("domcontentloaded", timeout=30000)
+    with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=60000):
+        activate_link.click()
+    admin_page.goto(f"{BASE}/wp-admin/plugins.php", wait_until="domcontentloaded")
     check(
         f"{label} installed and activated through wp-admin",
-        "plugins.php" in admin_page.url or "activated=true" in admin_page.url or admin_page.locator(".updated, .notice-success").count() >= 1,
+        admin_page.locator(f'tr[data-plugin="{plugin_basename}"].active').count() == 1,
+        plugin_basename,
     )
 
 
@@ -200,8 +203,18 @@ def main() -> None:
             admin_page.set_default_timeout(30000)
             check("admin login via wp-login.php", login_wp(admin_page, ADMIN_USER, admin_secret))
 
-            install_zip_via_wp_admin(admin_page, CPMS_ZIP, "CPMS Classic production plugin")
-            install_zip_via_wp_admin(admin_page, COMPANION_ZIP, "CPMS Disposable Demo companion plugin")
+            install_zip_via_wp_admin(
+                admin_page,
+                CPMS_ZIP,
+                "clinic-practice-management/clinic-practice-management.php",
+                "CPMS Classic production plugin",
+            )
+            install_zip_via_wp_admin(
+                admin_page,
+                COMPANION_ZIP,
+                "cpms-disposable-demo/cpms-disposable-demo.php",
+                "CPMS Disposable Demo companion plugin",
+            )
 
             db_boot = json.loads(
                 wp_eval(
@@ -524,9 +537,6 @@ def main() -> None:
             contexts.append(acc_ctx)
             acc_page.goto(links["accountant"], wait_until="domcontentloaded")
             acc_page.locator('[data-role="finance-root"]').wait_for(state="visible")
-            acc_loc = acc_page.locator('[data-role="finance-location"]')
-            acc_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
-            acc_loc.select_option(str(fixture_meta["location_id"]))
             issue_btn = acc_page.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
             issue_btn.wait_for(state="visible", timeout=35000)
             issue_btn.click()
@@ -561,9 +571,6 @@ def main() -> None:
             contexts.append(rec2_ctx)
             rec2_page.goto(links["accountant"], wait_until="domcontentloaded")
             rec2_page.locator('[data-role="finance-root"]').wait_for(state="visible")
-            rec2_loc = rec2_page.locator('[data-role="finance-location"]')
-            rec2_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
-            rec2_loc.select_option(str(fixture_meta["location_id"]))
             checkout_btn = rec2_page.locator(f'[data-role="finance-checkout-open"][data-visit-id="{visit_id}"]')
             checkout_btn.wait_for(state="visible", timeout=35000)
             checkout_btn.click()
@@ -711,14 +718,16 @@ def main() -> None:
             stage("20. Safe plugin deactivation and removal through wp-admin")
             admin_page.on("dialog", lambda d: d.accept())
             admin_page.goto(f"{BASE}/wp-admin/plugins.php", wait_until="domcontentloaded")
-            deact = admin_page.locator("a[href*='action=deactivate'][href*='cpms-disposable-demo']").first
+            companion_row = admin_page.locator('tr[data-plugin="cpms-disposable-demo/cpms-disposable-demo.php"]')
+            deact = companion_row.locator("a[href*='action=deactivate']").first
             deact.wait_for(state="visible")
-            deact.click()
-            admin_page.wait_for_load_state("domcontentloaded")
-            delete_link = admin_page.locator("a[href*='action=delete-selected'][href*='cpms-disposable-demo'], tr[data-slug='cpms-disposable-demo'] .delete a").first
+            with admin_page.expect_navigation(wait_until="domcontentloaded", timeout=30000):
+                deact.click()
+            companion_row = admin_page.locator('tr[data-plugin="cpms-disposable-demo/cpms-disposable-demo.php"]')
+            delete_link = companion_row.locator(".delete a, a[href*='action=delete-selected']").first
             delete_link.wait_for(state="visible")
             delete_link.click()
-            for _ in range(30):
+            for _ in range(40):
                 admin_page.wait_for_timeout(500)
                 if admin_page.locator("input#submit").count() > 0:
                     admin_page.locator("input#submit").click()

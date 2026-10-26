@@ -250,8 +250,6 @@ jobs:
       - name: Real-Chromium browser acceptance (wp-admin ZIP install → provision → 6 personas → booking/OTP → clinical/finance → RTL 320/390 → teardown → delete plugin)
         run: |
           set -Eeuo pipefail
-          : > /tmp/cpdd-ci/browser-acceptance.log
-          exec > >(tee -a /tmp/cpdd-ci/browser-acceptance.log) 2>&1
           mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "DROP DATABASE IF EXISTS $DB_NAME; CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
           rm -rf "$WP_DIR"
           tar -xzf /tmp/wp.tar.gz -C /tmp
@@ -321,9 +319,9 @@ jobs:
           ADMIN_PASS_FILE="$ADMIN_PASS_FILE" \
           CPMS_ZIP="$GITHUB_WORKSPACE/$CPMS_ZIP" \
           COMPANION_ZIP="/tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip" \
-          python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py"
+          python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py" \
+            2>&1 | tee /tmp/cpdd-ci/browser-acceptance.log
           rm -f "$ADMIN_PASS_FILE"
-          sleep 1
           grep -q '^CPDD_BROWSER_ACCEPTANCE=PASS' /tmp/cpdd-ci/browser-acceptance.log
 
       - name: No credentials or OTP codes leaked into logs
