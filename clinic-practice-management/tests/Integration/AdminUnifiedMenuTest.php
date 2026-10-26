@@ -450,7 +450,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
             'the page selector itself must not be duplicated'
         );
         foreach (['cpms-system', 'cpms-settings', 'cpms-shortcodes', 'cpms-clinicians', 'cpms-roles'] as $legacy) {
-            self::assertContains(
+            self::assertArrayHasKey(
                 $legacy,
                 \ClinicCore\Admin\CpmsAdminMenu::PAGES,
                 "{$legacy} must stay registered after the legacy re-home"
