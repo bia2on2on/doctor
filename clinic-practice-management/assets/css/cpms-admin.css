@@ -469,6 +469,14 @@ body.cpms-admin .cpms-clinic-selector .description { flex-basis: 100%; margin: 0
   body.cpms-admin textarea.large-text,
   body.cpms-admin textarea { width: 100%; max-width: 100%; box-sizing: border-box; }
   body.cpms-admin .notice.inline { max-width: 100%; box-sizing: border-box; }
+  /* کنترل‌های ذاتی‌پهن: `input` با عرضِ `size` (مثل امضای Base64 در صفحهٔ سیستم = ۹۶۷px)
+     و دکمهٔ با برچسبِ بلندِ فارسی (مثل «راه‌اندازی ریشهٔ ذخیره‌سازی…» = ۳۲۹px) در
+     ۳۲۰px از viewport بیرون می‌زدند. عرض سقف می‌گیرد و برچسبِ دکمه می‌شکند. */
+  body.cpms-admin input[type="text"],
+  body.cpms-admin input[type="number"],
+  body.cpms-admin input[type="url"],
+  body.cpms-admin select { max-width: 100%; box-sizing: border-box; }
+  body.cpms-admin .button { max-width: 100%; white-space: normal; height: auto; }
 }
 
 /* ---------- B-1 — ناوبریِ بخش‌ها (یک منوی واحد، صفحه‌های جزئیِ قابلِ‌کشف) ----------

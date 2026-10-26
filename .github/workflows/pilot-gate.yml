@@ -1956,7 +1956,8 @@ jobs:
           {
             echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
             echo '```'
-            grep -E '^(INFO |PASS |FAIL |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
+            grep -E '^(FAIL |INFO |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
+            grep -E '^PASS ' /tmp/admin-narrow.log | sed -E 's/^PASS ([a-zA-Z0-9_-]+@[0-9]+) .*/\1/' | sort | uniq -c
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           # `set +e` بالاتر یعنی کدِ خروجِ `test` خطا نمی‌سازد و آخرین فرمانِ این
@@ -2270,7 +2271,14 @@ jobs:
             # هر سطرِ سنجش (PASS/FAIL/INFO) از خودِ اسکریپت منتشر می‌شود؛ پیش‌تر
             # grep فقط سطرِ جمع‌بندی را می‌گرفت و پذیرشِ موفق در PR دیده نمی‌شد.
             if [ -s /tmp/admin-narrow.log ]; then
-              grep -E '^(INFO |PASS |FAIL |MISSING )' /tmp/admin-narrow.log | head -80
+              # ابتدا همهٔ شکست‌ها، بعد جمع‌بندی‌ها، بعد شمارشِ اثباتِ اجرا برای هر
+              # slug@viewport؛ head -80 پیش‌تر شکست‌های بعدی را از دیدِ PR حذف می‌کرد.
+              echo '--- failures (every FAIL line) ---'
+              grep -E '^FAIL ' /tmp/admin-narrow.log || echo '(no FAIL line)'
+              echo '--- INFO / aggregate ---'
+              grep -E '^(INFO |MISSING )' /tmp/admin-narrow.log || true
+              echo '--- per slug@viewport PASS count (proof each combination ran) ---'
+              grep -E '^PASS ' /tmp/admin-narrow.log | sed -E 's/^PASS ([a-zA-Z0-9_-]+@[0-9]+) .*/\1/' | sort | uniq -c || true
             else
               echo '(admin-narrow.log نه تولید شد: این گام در همین job اجرا نشده است — Re-run failed jobs روی runner تازه آغاز می‌شود و فایل‌های /tmp گام‌های قبلی وجود ندارند)'
             fi
