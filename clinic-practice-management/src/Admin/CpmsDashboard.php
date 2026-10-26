@@ -92,7 +92,7 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::APPT_READ)) : ?>
                     <div class="cpms-card">
                         <h2>نوبت‌های امروز</h2>
-                        <p class="cpms-big"><?php echo esc_html((string) ($today_appointments ?? 0)); ?></p>
+                        <p class="cpms-big"><?php echo esc_html( (string) ( $today_appointments ?? 0 ) ); ?></p>
                         <p class="description">نوبت‌های امروز (در انتظار / تأییدشده)</p>
                     </div>
                 <?php endif; ?>
@@ -114,7 +114,7 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::CONFIG)) : ?>
                     <div class="cpms-card">
                         <h2>پزشکان فعال</h2>
-                        <p class="cpms-big"><?php echo esc_html((string) ($active_doctors ?? 0)); ?></p>
+                        <p class="cpms-big"><?php echo esc_html( (string) ( $active_doctors ?? 0 ) ); ?></p>
                         <p class="description">پزشکان فعال</p>
                     </div>
                 <?php endif; ?>
