@@ -54,6 +54,18 @@ final class CronScheduleRepair {
         return (int) $next;
     }
 
+    /** رویداد در همین فراخوانی ساخته شد. */
+    public const RESULT_SCHEDULED = 'scheduled';
+
+    /** رویداد از قبل موجود بود (کاری لازم نبود). */
+    public const RESULT_PRESENT = 'present';
+
+    /** تلاش انجام شد اما رویداد هنوز وجود ندارد — قابل‌تلاشِ دوباره. */
+    public const RESULT_FAILED = 'failed';
+
+    /** خارج از WordPress / API زمان‌بندی در دسترس نیست. */
+    public const RESULT_UNSUPPORTED = 'unsupported';
+
     /**
      * تضمینِ وجودِ رویداد — idempotent و بدونِ اجرای هیچ Jobی.
      *
@@ -61,18 +73,32 @@ final class CronScheduleRepair {
      *              یا امکانِ زمان‌بندی وجود ندارد.
      */
     public static function ensure_scheduled( ?int $now = null ): bool {
+        return self::RESULT_SCHEDULED === self::repair( $now );
+    }
+
+    /**
+     * نسخهٔ قابل‌تفکیکِ `ensure_scheduled()` — چهار نتیجهٔ متمایز.
+     *
+     * چرا لازم است: `ensure_scheduled()` نمی‌تواند «از قبل موجود بود» را از
+     * «تلاش کردم و نشد» جدا کند. بدونِ این تفکیک، throttleِ خودترمیمی روی یک
+     * **شکست** هم ست می‌شد و ترمیم تا یک ساعت بی‌صدا سرکوب می‌شد؛ لاگ هم فقط
+     * وقتی نوشته می‌شد که ترمیم موفق باشد، پس شکست هرگز دیده نمی‌شد.
+     *
+     * @return self::RESULT_* یکی از چهار ثابت
+     */
+    public static function repair( ?int $now = null ): string {
         if ( ! function_exists( 'wp_next_scheduled' ) || ! function_exists( 'wp_schedule_event' ) ) {
-            return false;
+            return self::RESULT_UNSUPPORTED;
         }
         if ( false !== wp_next_scheduled( self::HOOK ) ) {
-            return false;
+            return self::RESULT_PRESENT;
         }
         $now = null !== $now ? $now : time();
 
         // همان بازهٔ موجود: یک دقیقه پس از «اکنون» — بدونِ اجرای فوری.
         wp_schedule_event( $now + 60, self::RECURRENCE, self::HOOK );
 
-        return false !== wp_next_scheduled( self::HOOK );
+        return false !== wp_next_scheduled( self::HOOK ) ? self::RESULT_SCHEDULED : self::RESULT_FAILED;
     }
 
     /**
@@ -85,20 +111,38 @@ final class CronScheduleRepair {
      * @return bool true اگر در همین فراخوانی ترمیم شد.
      */
     public static function self_heal_in_admin(): bool {
+        return self::RESULT_SCHEDULED === self::self_heal_in_admin_result();
+    }
+
+    /**
+     * نسخهٔ قابل‌تفکیکِ خودترمیمیِ سمتِ مدیریت.
+     *
+     * قاعدهٔ throttle: فقط وقتی «حالتِ خوبِ شناخته‌شده» داریم — یعنی رویداد
+     * موجود است یا در همین فراخوانی ساخته شد — نشانگر ست می‌شود. اگر تلاش
+     * شکست بخورد یا API در دسترس نباشد، **نشانگر ست نمی‌شود** تا درخواستِ
+     * مدیریتیِ بعدی دوباره تلاش کند (خطای پایدار نباید تا ابد کش شود).
+     *
+     * @return self::RESULT_* یکی از چهار ثابت؛ خارج از wp-admin ⇒ RESULT_UNSUPPORTED
+     */
+    public static function self_heal_in_admin_result(): string {
         if ( ! function_exists( 'is_admin' ) || ! is_admin() ) {
-            return false;
+            return self::RESULT_UNSUPPORTED;
         }
         if ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) {
-            return false;
+            return self::RESULT_UNSUPPORTED;
         }
         if ( function_exists( 'get_transient' ) && false !== get_transient( self::AUTOREPAIR_THROTTLE ) ) {
-            return false;
+            return self::RESULT_PRESENT;
         }
-        if ( function_exists( 'set_transient' ) ) {
+
+        $result = self::repair();
+
+        if ( function_exists( 'set_transient' )
+            && ( self::RESULT_SCHEDULED === $result || self::RESULT_PRESENT === $result ) ) {
             set_transient( self::AUTOREPAIR_THROTTLE, 1, self::AUTOREPAIR_INTERVAL );
         }
 
-        return self::ensure_scheduled();
+        return $result;
     }
 
     /** توضیحِ فارسی و صادقانهٔ روشِ زمان‌بندی — برای نمایش در UI. */

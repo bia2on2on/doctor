@@ -45,6 +45,12 @@ final class CpmsAssets
         'cpms-finance-delegation',
         'cpms-facility-setup',
         'cpms-shortcodes',
+        // F — دو صفحهٔ واقعیِ مدیریتِ سازمان (ADR-0031) که ثبت می‌شدند اما از
+        // allowlist جا افتاده بودند: بدونِ CSS/JS اسکوپ‌شده (و بدونِ
+        // `body.cpms-admin`) رندر می‌شدند، پس در عرض‌های کوچک overflow و
+        // کنترل‌های بریده‌شده داشتند و confirm/validation سمتِ کلاینت نداشتند.
+        'cpms-organization-managers',
+        'cpms-organization-manager-bootstrap',
     ];
 
     public static function register(): void

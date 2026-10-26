@@ -128,6 +128,7 @@ use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
 use ClinicCore\Infrastructure\Storage\PrivateStorageMigrator;
+use ClinicCore\Infrastructure\Storage\PrivateStorageInitializer;
 use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
@@ -182,6 +183,23 @@ final class App
     private static ?LicenseGate $licenseGate = null;
     private static ?VisitService $visitService = null;
     private static bool $booted = false;
+
+    /**
+     * CPMS Classic Admin UX (B) — کشِ **per-Clinic** برای سرویس‌هایی که
+     * پیکربندیِ Clinic-local را نگه می‌دارند.
+     *
+     * کلید: شناسهٔ Clinic (برای `UpdateService`) و `clinic:{id}`/`installation`
+     * (برای `SystemHealthService`). هیچ نمونه‌ای بین دو Clinic به اشتراک
+     * گذاشته نمی‌شود.
+     *
+     * @var array<int, UpdateService>
+     */
+    private static array $updateServices = [];
+
+    /**
+     * @var array<string, SystemHealthService>
+     */
+    private static array $healthServices = [];
 
     public static function boot(): void
     {
@@ -326,24 +344,30 @@ final class App
 
             return $schedules;
         });
-        // CPMS Classic Admin UX (E) — ترمیمِ idempotent و بدونِ اجرای Job.
-        // `ensure_scheduled()` فقط در نبودِ رویداد زمان‌بندی می‌کند و هرگز صف را
-        // اجرا نمی‌کند؛ بنابراین مسیرِ boot/activation/رندر صفحه نمی‌تواند کارِ
-        // مخرب/مالی/پیامکی/طولانی را به‌طورِ ناخواسته راه بیندازد.
-        CronScheduleRepair::ensure_scheduled();
-
-        // ترمیمِ ارزان و throttle‌شده در سمتِ مدیریت (حداکثر یک‌بار در ساعت):
-        // اگر رویداد حذف/منقضی شده باشد، اولین بازدیدِ پیشخوان آن را بازمی‌سازد.
+        // CPMS Classic Admin UX (E) — ترمیمِ زمان‌بندی **فقط در سمتِ مدیریت**.
+        //
+        // پیش از این `ensure_scheduled()` بی‌قید در `boot()` صدا زده می‌شد، یعنی
+        // روی **هر** درخواست — از جمله بازدیدِ آنونیمِ فرانت‌اند — یک
+        // `wp_next_scheduled()` (خواندنِ Optionِ `cron`) و در بدترین حالت یک
+        // `wp_schedule_event()` انجام می‌شد. ترمیم سطحِ نصب است و به یک بازدیدِ
+        // پیشخوان یا فعال‌سازی بسنده می‌کند، پس از مسیرِ عمومی حذف شد.
+        //
+        // `admin_init` (نه هر درخواست): idempotent، throttle‌شده و بدونِ اجرای
+        // هیچ Jobی. رخدادِ **واقعی** و شکستِ ترمیم هر دو ثبت می‌شوند تا لاگ با
+        // یک ترمیمِ خاموشِ قبلی پنهان نشود.
         $cron_self_heal = static function (): void {
-            if ( ! CronScheduleRepair::self_heal_in_admin() ) {
-                return;
-            }
-            // فقط یک رخدادِ observability — بدونِ هیچ اجرای Job.
+            $result = CronScheduleRepair::self_heal_in_admin_result();
+
             $context = [
                 'hook'       => CronScheduleRepair::HOOK,
                 'recurrence' => CronScheduleRepair::RECURRENCE,
+                'result'     => $result,
             ];
-            self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
+            if ( CronScheduleRepair::RESULT_SCHEDULED === $result ) {
+                self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
+            } elseif ( CronScheduleRepair::RESULT_FAILED === $result ) {
+                self::op()->warning( 'CPMS_CRON_SCHEDULE_REPAIR_FAILED', $context );
+            }
         };
         add_action( 'admin_init', $cron_self_heal, 20 );
 
@@ -420,6 +444,10 @@ final class App
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
         self::ensurePrivateStorage();
+        // C — راه‌اندازیِ صریحِ ریشه‌های **فعال** (بدونِ وابستگی به legacy و
+        // بدونِ ClinicScope). اگر میزبان اجازهٔ ساخت ندهد، خطا ثبت می‌شود و
+        // صفحهٔ سلامت آن را مسدودکننده گزارش می‌کند (نه «اختیاری»).
+        self::initializePrivateStorage( true );
 
         // فقط زمان‌بندی — هیچ Jobی در activation اجرا نمی‌شود.
         CronScheduleRepair::ensure_scheduled();
@@ -449,6 +477,9 @@ final class App
         try {
             self::migrations()->migrate();
             self::ensurePrivateStorage();
+            // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
+            // شود یا آخرین تلاش ناموفق بوده باشد کارِ واقعی انجام می‌شود.
+            self::initializePrivateStorage( false );
         } finally {
             delete_transient($lock);
         }
@@ -531,6 +562,52 @@ final class App
         if ($clean) {
             update_option(self::PRIVATE_STORAGE_OPTION, self::PRIVATE_STORAGE_DONE, false);
         }
+    }
+
+    /**
+     * C — راه‌اندازیِ ریشه‌های فعالِ ذخیره‌سازی خصوصی (سطح نصب).
+     *
+     * - **بدونِ ClinicScope**: `files.storage_path`/`backup.storage_path` فقط
+     *   وقتی خوانده می‌شوند که Scopeِ معتبری موجود باشد؛ در غیر این صورت
+     *   پیش‌فرض‌های امنِ سطح نصب استفاده می‌شوند. هیچ Clinic‌ای حدس زده نمی‌شود.
+     * - **بدونِ وابستگی به legacy**: نبودِ پوشهٔ قدیمی مانع ساختِ ریشهٔ فعال نیست.
+     * - `$force=true` (فعال‌سازی یا اقدامِ صریحِ مدیر) کار را همیشه انجام می‌دهد؛
+     *   `$force=false` مسیرِ ارزانِ option-guarded است.
+     */
+    public static function initializePrivateStorage( bool $force = false ): array
+    {
+        $files_root  = LocalFileStorage::defaultBasePath();
+        $backup_root = ProtectedBackupStore::defaultBasePath();
+
+        $settings = self::clinic_settings_or_null();
+        if ( null !== $settings ) {
+            try {
+                $configured_files = trim( (string) $settings->get( 'files.storage_path', '' ) );
+                if ( $configured_files !== '' ) {
+                    $files_root = $configured_files;
+                }
+            } catch ( \Throwable ) {
+                // خواندنِ Setting نباید راه‌اندازی را متوقف کند؛ پیش‌فرض امن می‌ماند.
+            }
+        }
+
+        $configured_backups = trim( self::installationSettings()->getBackupStoragePath() );
+        if ( $configured_backups !== '' ) {
+            // مسیر سفارشیِ داخل webroot توسط خودِ ProtectedBackupStore fail-closed رد
+            // می‌شود؛ اینجا جایگزینی انجام نمی‌شود و خطا در نتیجه گزارش می‌گردد.
+            $backup_root = $configured_backups;
+        }
+
+        $result = $force
+            ? PrivateStorageInitializer::initialize( $files_root, $backup_root )
+            : PrivateStorageInitializer::ensure_initialized( $files_root, $backup_root );
+
+        if ( ! $result['ok'] && $force ) {
+            $context = [ 'roots' => $result['roots'] ];
+            self::op()->warning( 'CPMS_PRIVATE_STORAGE_INIT_FAILED', $context );
+        }
+
+        return $result;
     }
 
     /** مقایسهٔ نرمال‌شدهٔ دو مسیر (بدون اثر اسلش انتهایی/ویندوزی). */
@@ -1676,21 +1753,25 @@ final class App
             );
         }
 
-        static $updates = null;
-        if ( $updates === null ) {
+        // کلیدِ کش = Clinicِ همان Settings. پیش از این یک `static $updates`
+        // تک‌متغیره بود: در یک فرآیندِ PHP با چند Clinic (WP-CLI، تست‌ها، یا
+        // درخواستی که Scope را عوض می‌کند) نمونهٔ Clinicِ اول برای Clinicِ دوم
+        // برگردانده می‌شد — یعنی نشتِ پیکربندیِ بین‌Clinic.
+        $key = $settings->clinicId();
+        if ( ! isset( self::$updateServices[ $key ] ) ) {
             try {
                 $server_url = (string) $settings->get( 'license.server_url', '' );
             } catch ( \Throwable ) {
                 $server_url = '';
             }
-            $updates = new UpdateService(
+            self::$updateServices[ $key ] = new UpdateService(
                 $settings,
                 self::licenseService(),
                 new HttpUpdateMetadataGateway( [ 'server_url' => $server_url ] )
             );
         }
 
-        return $updates;
+        return self::$updateServices[ $key ];
     }
 
     /**
@@ -1715,26 +1796,32 @@ final class App
      * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
      */
     public static function systemHealthService(): SystemHealthService
-        {
-            static $health = null;
-            if ($health === null) {
-                // Installation-wide health must be readable on a multi-Clinic
-                // install with no ambient ClinicScope. Clinic-local settings are
-                // passed only when a trusted scope already exists; no Clinic is
-                // ever inferred for the report.
-                $health = new SystemHealthService(
-                    self::db(),
-                    self::clinic_settings_or_null(),
-                    self::installationSettings(),
-                    self::licenseService(),
-                    self::backupService(),
-                    self::updateService(),
-                    self::op()
-                );
-            }
+    {
+        // Installation-wide health must be readable on a multi-Clinic install
+        // with no ambient ClinicScope. Clinic-local settings are passed only
+        // when a trusted scope already exists; no Clinic is ever inferred.
+        //
+        // کلیدِ کش = Clinicِ همان Scope (`null` ⇒ سطح نصب). یک `static` تک‌متغیره
+        // نشت می‌داد: نمونه‌ای که با Scopeِ Clinic A ساخته شد، در همان فرآیند
+        // برای Clinic B هم برگردانده می‌شد و گزارشِ سلامت پیکربندیِ Clinic اشتباه
+        // (مثلاً ریشهٔ فایل یا کانال به‌روزرسانی) را می‌خواند.
+        $settings = self::clinic_settings_or_null();
+        $key      = null === $settings ? 'installation' : 'clinic:' . $settings->clinicId();
 
-            return $health;
+        if ( ! isset( self::$healthServices[ $key ] ) ) {
+            self::$healthServices[ $key ] = new SystemHealthService(
+                self::db(),
+                $settings,
+                self::installationSettings(),
+                self::licenseService(),
+                self::backupService(),
+                self::updateService(),
+                self::op()
+            );
         }
+
+        return self::$healthServices[ $key ];
+    }
 
     public static function dispatcher(): JobsDispatcher
     {

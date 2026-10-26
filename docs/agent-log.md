@@ -2277,3 +2277,68 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   PHPStan, WP integration and real-browser runs; local gate remains tokenizer parse + added-line spacing.
 - **Delivery and open items:** no merge and no release; PR #275 stays a Draft. The remaining scope is
   review-driven only — no further code change is pending on this branch.
+
+### [2026-10-26 16:05 UTC] — Remediation pass 2: gate unification, real storage init, bounded cron repair
+
+- **Scope of this pass (B–G of the review):** per-Clinic memoization for the health/update service
+  accessors, installation-level initialization of the private storage roots with a real admin control,
+  one shared MariaDB/MySQL gate instead of two divergent copies, an honest and bounded queue-schedule
+  repair contract, allowlist completion for the two Organization Manager screens, and a re-verification
+  of the locked `/clinic/v1/health` key set.
+- **D — why one gate:** the migration's fail-closed check and the health verdict each carried their own
+  regular expression and judged the same server differently; an operator could see "needs attention" for
+  a version activation would reject, or the reverse. `Infrastructure\Db\DatabaseCompatibilityGate` now
+  owns detection (`VERSION()`, then `@@version_comment`), the accepted set (`MySQL 8.x`, `MariaDB
+  10.11.x`, `MariaDB 11.4.13`) and the boundary predicate; migration `0027` and `SystemHealthService`
+  both call it, and the migration's local regex is deleted. **No version was added or widened** — 11.5/11.8
+  and 10.6 remain rejected, because there is no runtime evidence for them.
+- **D — health verdict:** gate-accepted ⇒ `pass` (`mariadb:tested` only for the pinned 11.4.13, otherwise
+  `mariadb:compatibility_boundary`); parseable-but-rejected ⇒ `fail` `mariadb:unverified` (copy names the
+  gate and says «آزموده نشده»); unreadable ⇒ `fail` `mariadb:unknown_version`; below the series floor ⇒
+  `fail` `mariadb:below_boundary`. The MariaDB exemption in `classifyHost()` was removed: unverified
+  evidence now produces `issues` + `HOST_UNSUPPORTED`, and `group_checks()` keeps a strict 1:1 mapping
+  (`fail|unknown` ⇒ blockers, `not_configured` ⇒ optional) so a required row cannot be re-labelled as
+  optional configuration.
+- **C — storage initialization:** `PrivateStorageInitializer` is installation-level (no ClinicScope) and
+  legacy-independent. It creates `0750` roots, writes `.htaccess`/`web.config`/`index.php`/
+  `README-SECURITY.txt`, **re-reads** every guard after writing, never overwrites an existing guard, never
+  deletes or moves anything, never falls back to a public path and never runs `chmod 777`. Paths inside the
+  document root are rejected on `realpath` (so a symlink into the webroot is rejected too). State is one
+  `get_option` per request (`cpms_private_storage_state`, `guard_version` 1, autoload off); a failure is
+  **not** cached, so the next request retries. `App::activate()` forces initialization; `ensureMigrated()`
+  takes the cheap path; `admin_post_cpms_storage_init` (capability `cpms_config` + nonce
+  `cpms_storage_init`) exposes the same call, which is the control the health guide already referenced.
+  Failure logs `CPMS_PRIVATE_STORAGE_INIT_FAILED`.
+- **E — cron repair contract:** `CronScheduleRepair::repair()` now returns `scheduled|present|failed|
+  unsupported`, and `self_heal_in_admin_result()` sets the throttle **only** for the two good outcomes.
+  Previously the marker was written before the attempt (a failure was suppressed for an hour) and the log
+  line was emitted only on the success path. Auto-repair stays on `admin_init`, so no anonymous
+  front-end request reads or rewrites the `cron` option.
+- **B — per-Clinic accessors:** `App::systemHealthService()` and `App::updateService()` were single
+  process-wide instances, so a request that legitimately switched Clinic scope reused the first Clinic's
+  `Settings` object (license gateway, storage paths, health rows). Both are now keyed
+  (`installation` / `clinic:{id}`), matching the scope-free path, which was already un-memoized.
+- **F — assets:** `cpms-organization-managers` and `cpms-organization-manager-bootstrap` were registered
+  management screens and were missing from `CpmsAssets::PAGES`; both are now in the allowlist.
+- **Tests written/updated this pass:** `DatabaseCompatibilityGateParityTest` (bidirectional parity matrix
+  plus a source assertion that the migration delegates and carries no local regex),
+  `ServiceScopeMemoizationTest` (A→B→A identity, and a `license.gateway` row that differs per Clinic),
+  `PrivateStorageInitializationTest` (fresh install, idempotency with existing clinical bytes preserved,
+  inside-webroot rejection, symlink rejection, unwritable parent, failure not cached, installation-level
+  without scope, required-row-not-optional), `CronScheduleRepairTest` (schedule/present/unsupported, the
+  throttle only on good outcomes, no repair on public requests, and a source-level contract that `boot()`
+  no longer inspects cron per request), and the storage/MariaDB render and `guide()` assertions in
+  `SystemAdminUxTest` (including that the handler is registered only as `admin_post_`, and that a missing
+  or capability-less request is rejected by `wp_die` with no row created).
+- **G re-verified:** `/clinic/v1/health` was not touched in this pass; its public key set remains exactly
+  `jobs, ok, plugin, schema, time_utc, version` as asserted by `Phase18Slice1RuntimeCompatibilityTest`.
+- **Docs:** `docs/settings-reference.md` now states the outside-document-root default for
+  `files.storage_path`, the rejection rule, the guard files, the installation-level initialization and the
+  blocker (not optional) health semantics. `CHANGELOG.md` has a "remediation pass 2" section.
+- **Validation honesty:** every touched PHP file was parsed with the local tokenizer gate
+  (`node /tmp/phpwasm/lint.mjs`, 0 failures) and the added-line spacing gate. **PHPUnit, PHPCS, PHPStan,
+  WP integration and real-browser runs were NOT executed locally** — no PHP/Composer/MySQL/Chromium in
+  this sandbox — so CI on this head is the first real execution of the new tests.
+- **Deliberately not done:** no schema migration, no dependency, no change to the accepted database
+  versions, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no public-path fallback, and no
+  merge or release (PR #275 stays Draft).

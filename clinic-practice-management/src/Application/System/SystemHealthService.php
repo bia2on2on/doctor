@@ -10,6 +10,7 @@ use ClinicCore\Application\Update\UpdateService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Settings\InstallationSettings;
@@ -239,11 +240,13 @@ final class SystemHealthService
         $add( 'cron.jobs', 'Cron/Queue', (string) $cron['status'], (string) $cron['label'] . ' | ' . (string) $cron['detail'] );
 
         // ---------- Storage (spec §22/§23) ----------
-        $add('storage.files', 'Storage فایل‌های پزشکی', $this->storageStatus($this->filesBase(), 'storage.files', self::FAIL));
+        $files_storage = $this->storageStatus( $this->filesBase() );
+        $add( 'storage.files', 'Storage فایل‌های پزشکی', $files_storage['status'], $files_storage['detail'] );
         // OD-9 — ریشهٔ بکاپ داخل DocumentRoot دیگر WARNING نیست: یک dump کامل
         // پایگاه داده داخل webroot یک پیکربندی **رد‌شده** است (نوشتن Fail-Closed
         // می‌شود) و سلامت سیستم باید صادقانه FAIL گزارش دهد.
-        $add('storage.backups', 'Storage بکاپ', $this->storageStatus($this->backups->store()->basePath(), 'storage.backups', self::FAIL));
+        $backups_storage = $this->storageStatus( $this->backups->store()->basePath() );
+        $add( 'storage.backups', 'Storage بکاپ', $backups_storage['status'], $backups_storage['detail'] );
 
         // ---------- License (ADR-0023) ----------
         $state = $this->licenses->currentState();
@@ -465,12 +468,15 @@ final class SystemHealthService
 
         if ( self::DB_ENGINE_MARIADB === $engine ) {
             if ( null === $parsed ) {
+                // D5/D6 — مدرکِ نامعتبر/نامشخص «آماده» نیست و دروازهٔ مهاجرت
+                // (migration 0027) هم آن را fail-closed رد می‌کند (انطباقِ regex دقیق). بنابراین اینجا UNKNOWNِ «هشدارگونه» ساخته نمی‌شود.
                 return [
                     'key'    => 'db.mysql_version',
                     'label'  => $label,
-                    'status' => self::UNKNOWN,
+                    'status' => self::FAIL,
                     'detail' => 'mariadb:unknown_version | ' . ( '' !== $raw ? $raw : 'نامشخص' )
-                        . ' | MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌استخراج نیست — تأییدِ سازگاری ممکن نیست'
+                        . ' | MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌استخراج نیست — سازگاری تأییدپذیر نیست'
+                        . ' و دروازهٔ مهاجرت/فعال‌سازی (migration 0027) نسخهٔ ناشناخته را Fail-Closed رد می‌کند'
                         . ' | نسخه‌های آزموده‌شده: MariaDB ' . self::MARIADB_TESTED_VERSION
                         . ' و سریِ ' . self::MARIADB_COMPAT_BOUNDARY,
                 ];
@@ -507,7 +513,9 @@ final class SystemHealthService
         $boundary    = self::MARIADB_COMPAT_BOUNDARY;
         $tested      = self::MARIADB_TESTED_VERSION;
         $patch       = self::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH;
-        $in_series   = str_starts_with( $parsed . '.', $boundary . '.' );
+        // تصمیمِ PASS/FAIL از **همان دروازه‌ای** می‌آید که مهاجرت استفاده می‌کند؛
+        // مقایسهٔ نسخه‌ای در این کلاس دیگر مرجع نیست (فقط برای متنِ توضیح).
+        $gate_accepts = DatabaseCompatibilityGate::accepts_mariadb_version( $raw );
         $engine_note = ' | MariaDB به‌عنوان MySQL ' . self::MIN_MYSQL_VERSION . ' تفسیر نمی‌شود (موتورِ مستقل با نسخه‌بندیِ مستقل)';
 
         if ( version_compare( $parsed, $boundary, '<' ) ) {
@@ -522,7 +530,17 @@ final class SystemHealthService
             ];
         }
 
-        if ( $in_series ) {
+        if ( $gate_accepts && version_compare( $parsed, $tested, '==' ) ) {
+            return [
+                'key'    => 'db.mysql_version',
+                'label'  => $label,
+                'status' => self::PASS,
+                'detail' => 'mariadb:tested | ' . $raw
+                    . ' — نسخهٔ MariaDB آزموده‌شده در CI این افزونه: ' . $tested . $engine_note,
+            ];
+        }
+
+        if ( $gate_accepts ) {
             return [
                 'key'    => 'db.mysql_version',
                 'label'  => $label,
@@ -533,25 +551,22 @@ final class SystemHealthService
             ];
         }
 
-        if ( version_compare( $parsed, $tested, '==' ) ) {
-            return [
-                'key'    => 'db.mysql_version',
-                'label'  => $label,
-                'status' => self::PASS,
-                'detail' => 'mariadb:tested | ' . $raw
-                    . ' — نسخهٔ MariaDB آزموده‌شده در CI این افزونه: ' . $tested . $engine_note,
-            ];
-        }
-
+        // D1/D6 — هم‌خوانیِ صریح با دروازهٔ واقعیِ migration 0027.
+        //
+        // دروازه فقط `10.11.x` و `11.4.13` را می‌پذیرد و بقیه را fail-closed رد
+        // می‌کند (فعال‌سازی/Migration شکست می‌خورد). بنابراین این ردیف نمی‌تواند
+        // WARNING ("پشتیبانی‌شده با هشدار") باشد: چنین نسخه‌ای در عمل **پشتیبانی
+        // نمی‌شود** تا وقتی واقعاً آزموده و دروازه گسترش یابد. صادقانه FAIL، با
+        // تفکیکِ واضح از «آزموده‌شده» و «زیرِ مرز».
         return [
             'key'    => 'db.mysql_version',
             'label'  => $label,
-            'status' => self::WARNING,
+            'status' => self::FAIL,
             'detail' => 'mariadb:unverified | ' . $raw
-                . ' — این نسخهٔ MariaDB در CI این افزونه آزموده نشده است؛ نسخه‌های آزموده‌شده: MariaDB '
+                . ' — این نسخهٔ MariaDB در CI این افزونه آزموده نشده و دروازهٔ مهاجرت/فعال‌سازی (migration 0027)'
+                . ' آن را Fail-Closed رد می‌کند؛ نسخه‌های آزموده‌شده: MariaDB '
                 . $tested . ' و سریِ ' . $boundary . ' (وصلهٔ آزموده‌شده: ' . $patch . ')'
-                . ' — پشتیبانی برای این نسخه ادعا نمی‌شود و دروازهٔ مهاجرت/فعال‌سازی، نسخه‌های خارج از این مجموعه را'
-                . ' به‌صورت fail-closed رد می‌کند (migration 0027)' . $engine_note,
+                . $engine_note,
         ];
     }
 
@@ -701,19 +716,19 @@ final class SystemHealthService
             if (!in_array($c['key'], self::CRITICAL_KEYS, true)) {
                 continue;
             }
-            // CPMS Classic Admin UX (D) — ردیفِ db.mysql_version اکنون بر پایهٔ
-            // موتور قضاوت می‌شود: MySQL با کفِ 8.0، MariaDB با نسخه‌های آزمودهٔ
-            // واقعی (11.4.13 و سریِ 10.11). ردیفِ MariaDBِ آزموده‌نشده WARNING
-            // است (نه PASS؛ ادعایِ پشتیبانی ساخته نمی‌شود) و میراثِ MariaDB
-            // با وضعیتِ UNKNOWN + جزئیاتِ ساختاریافته نیز همچنان «نیازمند
-            // تنظیم» می‌ماند تا مدرکِ نامشخص کلِ میزبان را UNSUPPORTED نکند.
-            $maria_db_uncertified = $c['key'] === 'db.mysql_version'
-                && $c['status'] === self::UNKNOWN
-                && self::is_maria_db_compatibility_detail( (string) ( $c['detail'] ?? '' ) );
-
-            if ( $c['status'] === self::FAIL || ( $c['status'] === self::UNKNOWN && ! $maria_db_uncertified ) ) {
-                $issues[] = $c['key'] . ': ' . $c['detail'];
-            } elseif ( $c['status'] === self::WARNING || $maria_db_uncertified ) {
+            // CPMS Classic Admin UX (D) — ردیفِ db.mysql_version بر پایهٔ موتور
+            // قضاوت می‌شود: MySQL با کفِ 8.0، MariaDB فقط با نسخه‌هایی که
+            // **دروازهٔ مهاجرت** (migration 0027) واقعاً می‌پذیرد.
+            //
+            // پیش از این یک استثنای ویژه، هر ردیفِ MariaDB با وضعیتِ UNKNOWN را
+            // (پیشوندِ `mariadb:` یا حتی فقط واژهٔ MariaDB در متن) به «هشدار»
+            // تنزل می‌داد؛ نتیجه: مدرکِ نامشخص/ناتجزیه‌پذیر میزبان را
+            // «پشتیبانی‌شده با هشدار» نشان می‌داد در حالی که مهاجرت همان نسخه را
+            // fail-closed رد می‌کند. این استثنا حذف شد (D5/D6): مدرکِ نامشخص یا
+            // نسخهٔ آزموده‌نشده، مسدودکننده است و صادقانه در `issues` می‌آید.
+            if ( $c['status'] === self::FAIL || $c['status'] === self::UNKNOWN ) {
+                $issues[] = $c['key'] . ': ' . ( $c['detail'] ?? '' );
+            } elseif ( $c['status'] === self::WARNING ) {
                 $warnings[] = $c['key'];
             }
         }
@@ -758,16 +773,22 @@ final class SystemHealthService
         foreach ( $checks as $check ) {
             $status = (string) ( $check['status'] ?? '' );
 
+            // نگاشت **تک‌به‌یک** و بدونِ استثنای پنهان:
+            //   NOT_CONFIGURED ⇒ optional، FAIL/UNKNOWN ⇒ blockers.
+            //
+            // پیش از این یک استثنای ویژه هر `db.mysql_version` با وضعیتِ UNKNOWN
+            // را (اگر متنش MariaDB را ذکر می‌کرد) به «هشدار» می‌برد؛ یعنی همان
+            // ادعای «مدرکِ نامشخص = قابل‌قبول» که در `classifyHost()` هم حذف شد.
+            // نکتهٔ مهم: `NOT_CONFIGURED` هرگز برای ریشهٔ **الزامیِ** ذخیره‌سازی
+            // صادر نمی‌شود (`storageStatus()` نبودِ پوشه را FAIL می‌دهد) و برای
+            // ردیف‌های واقعاً اختیاری (مثل سرور مجوز یا بکاپِ غیرفعال) می‌ماند.
             $group = match ( $status ) {
-                self::PASS                        => 'healthy',
-                self::WARNING                     => 'warnings',
-                self::NOT_CONFIGURED              => 'optional',
-                self::FAIL                        => 'blockers',
-                // MariaDBِ آزموده‌نشین که فقط «مدرکِ MySQL-اختصاصی» ندارد،
-                // مسدودکننده نیست (همان قراردادِ classifyHost): هشدارِ
-                // قابل‌اقدام گزارش می‌شود، نه خطای بحرانی و نه PASS.
-                self::UNKNOWN                     => ( 'db.mysql_version' === (string) $check['key'] && self::is_maria_db_compatibility_detail( (string) ( $check['detail'] ?? '' ) ) ) ? 'warnings' : 'blockers',
-                default                           => 'blockers',
+                self::PASS           => 'healthy',
+                self::WARNING        => 'warnings',
+                self::NOT_CONFIGURED => 'optional',
+                self::FAIL           => 'blockers',
+                self::UNKNOWN        => 'blockers',
+                default              => 'blockers',
             };
 
             $groups[ $group ][] = $check;
@@ -780,13 +801,10 @@ final class SystemHealthService
      * نگاشتِ وضعیتِ داخلی به یکی از سه وضعیتِ کاربرپسند (فارسی).
      */
     public static function user_facing_status( string $status, string $key = '', string $detail = '' ): string {
-        $is_maria = 'db.mysql_version' === $key
-            && self::UNKNOWN === $status
-            && self::is_maria_db_compatibility_detail( $detail );
-
-        if ( $is_maria ) {
-            return self::USER_STATUS_NEEDS_SETUP;
-        }
+        // `$key`/`$detail` برای سازگاریِ امضای منتشرشده نگه داشته شده‌اند؛
+        // وضعیتِ کاربرپسند فقط از `$status` می‌آید تا هیچ ردیفی با متنِ فارسیِ
+        // خودش «سبک‌تر» از واقعیت نمایش داده نشود.
+        unset( $key, $detail );
 
         return match ( $status ) {
             self::PASS => self::USER_STATUS_READY,
@@ -929,27 +947,55 @@ final class SystemHealthService
      *
      * `PASS` فقط وقتی داده می‌شود که ریشه بیرون از DocumentRoot باشد.
      */
-    private function storageStatus(string $path, string $key, string $insideWebRoot = self::WARNING): string
+    /**
+     * وضعیت یک ریشهٔ **فعالِ الزامی** ذخیره‌سازی.
+     *
+     * اصلاحِ نقصِ پذیرش (C/F): پیش از این «پوشه وجود ندارد» ⇒
+     * `NOT_CONFIGURED` بود؛ `group_checks()` آن وضعیت را به گروهِ
+     * «پیکربندیِ اختیاری» می‌برد. یعنی یک ریشهٔ **الزامیِ** بالینی در نصبِ تازه
+     * (یا روی میزبانِ غیرقابل‌نوشتن) به‌صورت «اختیاری و سالم» نمایش داده می‌شد،
+     * در حالی که `classifyHost()` همان کلید را در `CRITICAL_KEYS` می‌شمارد.
+     *
+     * اکنون: نبودِ پوشه ⇒ `FAIL` با جزئیاتِ قابل‌اقدام. `PrivateStorageInitializer`
+     * این پوشه‌ها را در فعال‌سازی/ادمین می‌سازد؛ اگر میزبان اجازه ندهد، همین
+     * ردیف صادقانه مسدودکننده می‌ماند تا مشکل پنهان نشود.
+     *
+     * @return array{status:string,detail:string}
+     */
+    private function storageStatus(string $path): array
     {
-        if (!is_dir($path)) {
-            return self::NOT_CONFIGURED;
+        if ( $path === '' ) {
+            return [
+                'status' => self::FAIL,
+                'detail' => 'مسیر ذخیره‌سازی خالی است؛ هیچ ریشهٔ فعالی پیکربندی نشده',
+            ];
         }
-        if (!is_writable($path)) {
-            return self::FAIL;
+        if ( ! is_dir( $path ) ) {
+            return [
+                'status' => self::FAIL,
+                'detail' => 'ریشهٔ ذخیره‌سازی وجود ندارد: ' . $path
+                    . ' — از «سلامت سیستم» دکمهٔ «راه‌اندازی ریشهٔ ذخیره‌سازی» را اجرا کنید؛'
+                    . ' اگر میزبان اجازهٔ ساخت پوشه را نداد، والدِ پوشه را برای وب‌سرور قابل‌نوشتن کنید',
+            ];
         }
-        if ($this->isInsideWebRoot($path)) {
+        if ( ! is_writable( $path ) ) {
+            return [
+                'status' => self::FAIL,
+                'detail' => 'ریشهٔ ذخیره‌سازی برای وب‌سرور قابل‌نوشتن نیست: ' . $path,
+            ];
+        }
+        if ( $this->isInsideWebRoot( $path ) ) {
             // گاردها (در صورت وجود) Defence in Depth هستند، نه Authorization.
             // از OD-7 (بالینی) و OD-9 (بکاپ) به بعد ریشهٔ داخل DocumentRoot یک
-            // پیکربندی **رد‌شده** است — نوشتن Fail-Closed می‌شود — پس هر دو
-            // صدادقانه FAIL گزارش می‌شوند. هر دو فراخوانی self::FAIL پاس می‌دهند؛
-            // پارامتر برای خوانایی فراخوان‌ها نگه داشته شده است.
-            return $insideWebRoot;
-        }
-        if (is_file($path . '/.htaccess')) {
-            return self::PASS;
+            // پیکربندی **رد‌شده** است — نوشتن Fail-Closed می‌شود — پس صادقانه FAIL.
+            return [
+                'status' => self::FAIL,
+                'detail' => 'ریشهٔ ذخیره‌سازی داخل DocumentRoot است و نوشتن در آن Fail-Closed رد می‌شود: ' . $path,
+            ];
         }
 
-        return self::PASS; // بیرون از DocumentRoot — گارد وب‌سرور موضوعیت ندارد
+        // بیرون از DocumentRoot — گارد وب‌سرور فقط لایهٔ مکمل است.
+        return [ 'status' => self::PASS, 'detail' => $path ];
     }
 
     /**

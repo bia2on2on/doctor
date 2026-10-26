@@ -87,13 +87,20 @@ final class SystemHealthPresentationTest extends TestCase
         );
     }
 
-    public function testUncertifiedMariaDbRowIsAWarningNotABlocker(): void
+    /**
+     * D — هیچ وضعیت UNKNOWNای «هشدار» نمی‌شود؛ مسدودکننده است.
+     *
+     * پیش از این ردیفِ `db.mysql_version` با وضعیت UNKNOWN (اگر متنش MariaDB
+     * را ذکر می‌کرد) به گروهِ «هشدار» می‌رفت، یعنی همان ادعای «مدرکِ نامشخص =
+     * قابل‌قبول» که در `classifyHost()` هم حذف شد. حالا نگاشت یک‌به‌یک است.
+     */
+    public function testUnknownEvidenceIsAlwaysABlockerIncludingMariaDb(): void
     {
         $groups = SystemHealthService::group_checks(
             [
                 [
                     'key'    => 'db.mysql_version',
-                    'label'  => 'نسخهٔ سرور دیتابیس (MariaDB)',
+                    'label'  => self::KEY_UNKNOWN_LABEL,
                     'status' => SystemHealthService::UNKNOWN,
                     'detail' => 'mariadb:unverified | 11.5.2-MariaDB — آزموده‌نشده',
                 ],
@@ -103,13 +110,40 @@ final class SystemHealthPresentationTest extends TestCase
                     'status' => SystemHealthService::UNKNOWN,
                     'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست',
                 ],
+                [
+                    'key'    => 'db.mysql_version',
+                    'label'  => 'نسخهٔ سرور دیتابیس (MariaDB)',
+                    'status' => SystemHealthService::FAIL,
+                    'detail' => 'mariadb:unknown_version | MariaDB',
+                ],
             ]
         );
 
-        self::assertCount( 1, $groups['warnings'], 'MariaDBِ آزموده‌نشین هشدار است.' );
-        self::assertSame( self::KEY_UNKNOWN_LABEL, $groups['warnings'][0]['label'] );
-        self::assertCount( 1, $groups['blockers'], 'مدرکِ ناخوانا مسدودکننده می‌ماند.' );
-        self::assertSame( 'نسخهٔ سرور دیتابیس', $groups['blockers'][0]['label'] );
+        self::assertSame( [], $groups['warnings'], 'هیچ مدرکِ نامشخصی نباید در گروهِ هشدار بنشیند.' );
+        self::assertCount( 3, $groups['blockers'] );
+    }
+
+    /**
+     * C/F — ریشهٔ الزامیِ ذخیره‌سازی هرگز «پیکربندیِ اختیاری» نمایش داده نمی‌شود.
+     *
+     * `storageStatus()` پیش از این برای «پوشه وجود ندارد» مقدار
+     * `NOT_CONFIGURED` برمی‌گرداند و `group_checks()` آن را به گروهِ `optional`
+     * می‌برد؛ در حالی که `classifyHost()` همان کلید را حیاتی می‌شمارد. اکنون
+     * نبودِ ریشه FAIL است و در گروهِ مسدودکننده‌ها می‌آید.
+     */
+    public function testMissingRequiredStorageIsABlockerNotOptionalConfiguration(): void
+    {
+        $groups = SystemHealthService::group_checks(
+            [
+                self::row( 'storage.files', SystemHealthService::FAIL, 'ریشهٔ ذخیره‌سازی وجود ندارد' ),
+                self::row( 'storage.backups', SystemHealthService::FAIL, 'ریشهٔ ذخیره‌سازی وجود ندارد' ),
+                self::row( 'license.gateway', SystemHealthService::NOT_CONFIGURED, 'پیکربندی‌نشده' ),
+            ]
+        );
+
+        self::assertCount( 2, $groups['blockers'] );
+        self::assertCount( 1, $groups['optional'], 'فقط ردیفِ واقعاً اختیاری (سرور مجوز) در optional می‌ماند.' );
+        self::assertSame( 'license.gateway', $groups['optional'][0]['key'] );
     }
 
     public function testOptionalConfigurationIsNotPresentedAsABlocker(): void

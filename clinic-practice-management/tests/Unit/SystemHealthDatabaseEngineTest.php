@@ -161,15 +161,42 @@ final class SystemHealthDatabaseEngineTest extends TestCase
         }
     }
 
-    public function testUntestedMariaDbReleasesAreWarnedNotClaimed(): void
+    /**
+     * D1/D6/D7 — نسخهٔ MariaDBِ آزموده‌نشده **پشتیبانی‌شده نیست**.
+     *
+     * پیش از این این ردیف WARNING («پشتیبانی‌شده با هشدار») بود، در حالی که
+     * دروازهٔ واقعیِ مهاجرت (migration 0027) همان نسخه را fail-closed رد
+     * می‌کند؛ یعنی فعال‌سازی روی آن سرور شکست می‌خورد. وضعیت باید دقیقاً FAIL
+     * باشد و متن هم همین را بگوید (نه ادعای پشتیبانی).
+     */
+    public function testUntestedMariaDbReleasesAreExplicitlyUnsupported(): void
     {
-        // نسخه‌های 11.4.x غیر از 13، 11.0–11.3 و نسخه‌های جدیدتر از آزموده.
-        foreach ( [ '11.4.2-mariadb', '11.4.12-MariaDB', '11.0.6-MariaDB', '11.2.2-MariaDB', '11.5.2-MariaDB', '12.0.1-MariaDB' ] as $version ) {
+        // نسخه‌های 11.4.x غیر از 13، 11.0–11.3، 11.8 و نسخه‌های جدیدتر.
+        foreach ( [ '11.4.2-mariadb', '11.4.12-MariaDB', '11.0.6-MariaDB', '11.2.2-MariaDB', '11.5.2-MariaDB', '11.8.2-MariaDB', '12.0.1-MariaDB' ] as $version ) {
             $row = SystemHealthService::database_server_version_check( $version );
 
-            self::assertSame( SystemHealthService::WARNING, $row['status'], 'نسخهٔ آزموده‌نشده باید WARNING باشد: ' . $version );
-            self::assertStringStartsWith( 'mariadb:unverified', $row['detail'] );
-            self::assertStringContainsString( 'پشتیبانی', (string) $row['detail'], 'ادعایِ پشتیبانی برای نسخهٔ آزموده‌نشده نباید تولید شود.' );
+            self::assertSame( SystemHealthService::FAIL, $row['status'], 'نسخهٔ آزموده‌نشده باید FAIL باشد: ' . $version );
+            self::assertStringStartsWith( 'mariadb:unverified', (string) $row['detail'] );
+            self::assertStringContainsString( 'آزموده نشده', (string) $row['detail'] );
+            self::assertStringContainsString( 'fail-closed', strtolower( (string) $row['detail'] ), 'متن باید صریحاً بگوید دروازه آن را رد می‌کند.' );
+        }
+    }
+
+    /**
+     * D5/D7 — نسخهٔ MariaDBِ **ناخوانا** آماده نیست.
+     *
+     * `'MariaDB'` موتور را مشخص می‌کند اما شمارهٔ نسخه را نمی‌دهد. این حالت
+     * پیش از این UNKNOWN بود و در طبقه‌بندیِ میزبان با یک استثنای پنهان حتی
+     * از مسدودکننده‌ها بیرون می‌رفت (یعنی «قابل‌قبول»). اکنون FAIL است.
+     */
+    public function testUnparseableMariaDbVersionIsNotReady(): void
+    {
+        foreach ( [ 'MariaDB', 'mariadb-unknown', '11.x-MariaDB' ] as $version ) {
+            $row = SystemHealthService::database_server_version_check( $version );
+
+            self::assertSame( SystemHealthService::FAIL, $row['status'], 'نسخهٔ ناخوانای MariaDB باید FAIL باشد: ' . $version );
+            self::assertStringStartsWith( 'mariadb:unknown_version', (string) $row['detail'] );
+            self::assertNotSame( SystemHealthService::PASS, $row['status'] );
         }
     }
 
@@ -219,12 +246,32 @@ final class SystemHealthDatabaseEngineTest extends TestCase
         self::assertSame( SystemHealthService::HOST_SUPPORTED, $host['status'], 'MariaDB آزموده‌شده نباید UNSUPPORTED شود.' );
     }
 
-    public function testUntestedMariaDbHostIsSupportedWithWarnings(): void
+    /**
+     * D1/D7 — میزبان با MariaDBِ آزموده‌نشده «پشتیبانی‌شده» نیست.
+     *
+     * `classifyHost()` پیش از این هر ردیفِ `db.mysql_version` با وضعیت UNKNOWN و
+     * متنِ حاوی MariaDB را به «هشدار» تنزل می‌داد؛ نتیجه: میزانی که مهاجرت
+     * رویش شکست می‌خورد، «SUPPORTED_WITH_WARNINGS» گزارش می‌شد.
+     */
+    public function testUntestedMariaDbHostIsUnsupportedAndListedAsIssue(): void
     {
         $row  = SystemHealthService::database_server_version_check( '11.5.2-MariaDB' );
         $host = SystemHealthService::classifyHost( self::hostRows( (string) $row['status'], (string) $row['detail'] ) );
 
-        self::assertSame( SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, $host['status'] );
+        self::assertSame( SystemHealthService::HOST_UNSUPPORTED, $host['status'] );
+        self::assertContains( self::KEY, $host['issues'] );
+        self::assertNotSame( SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, $host['status'] );
+    }
+
+    /**
+     * D5/D7 — مدرکِ ناخوانای MariaDB میزبان را «پشتیبانی‌شده» نمی‌کند.
+     */
+    public function testUnparseableMariaDbEvidenceCannotPassHostClassification(): void
+    {
+        $row  = SystemHealthService::database_server_version_check( 'MariaDB' );
+        $host = SystemHealthService::classifyHost( self::hostRows( (string) $row['status'], (string) $row['detail'] ) );
+
+        self::assertSame( SystemHealthService::HOST_UNSUPPORTED, $host['status'] );
         self::assertContains( self::KEY, $host['issues'] );
     }
 
@@ -246,8 +293,9 @@ final class SystemHealthDatabaseEngineTest extends TestCase
 
         $unverified = SystemHealthService::database_server_version_check( '11.5.2-MariaDB' );
         self::assertSame(
-            SystemHealthService::USER_STATUS_NEEDS_SETUP,
-            SystemHealthService::user_facing_status( (string) $unverified['status'], self::KEY, (string) $unverified['detail'] )
+            SystemHealthService::USER_STATUS_CRITICAL,
+            SystemHealthService::user_facing_status( (string) $unverified['status'], self::KEY, (string) $unverified['detail'] ),
+            'نسخهٔ آزموده‌نشده باید «بحرانی» نمایش داده شود، نه «نیازمند تنظیم».'
         );
 
         $too_old = SystemHealthService::database_server_version_check( '10.6.16-MariaDB' );

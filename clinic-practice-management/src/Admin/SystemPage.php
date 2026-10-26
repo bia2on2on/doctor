@@ -46,6 +46,10 @@ final class SystemPage
         add_action('admin_post_cpms_update_settings', [self::class, 'updateSettings']);
         // CPMS Classic Admin UX (E) — ترمیمِ مجاز و Nonceدارِ زمان‌بندیِ صف.
         add_action( 'admin_post_cpms_cron_repair', [ self::class, 'cron_repair' ] );
+        // C — راه‌اندازی/بررسیِ مجاز و Nonceدارِ ریشه‌های ذخیره‌سازی خصوصی.
+        // این همان کنترلی است که متنِ بخشِ سلامت به آن ارجاع می‌دهد؛ پیش از این
+        // هیچ کنترلی وجود نداشت و راهنما به دکمه‌ای اشاره می‌کرد که نبود.
+        add_action( 'admin_post_cpms_storage_init', [ self::class, 'storage_init' ] );
     }
 
     public static function menu(): void
@@ -173,6 +177,8 @@ final class SystemPage
                 <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
                     <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
                 <?php endif; ?>
+
+                <?php self::render_storage_init_control(); ?>
 
                 <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
 
@@ -440,6 +446,34 @@ final class SystemPage
     }
 
     /**
+     * C — راه‌اندازیِ دستی و مجازِ ریشه‌های ذخیره‌سازی خصوصی.
+     *
+     * امنیت: `cpms_config` + Nonce (`cpms_storage_init`) از طریق `guard()`.
+     * سطحِ نصب است و ClinicScope لازم ندارد (هیچ Clinic‌ای حدس زده نمی‌شود).
+     * مسیرها با همان قواعدِ فعال‌سازی بررسی می‌شوند: بیرون از DocumentRoot
+     * (realpath ⇒ symlink/`..`)، ساخت با 0750، نوشتنِ گاردها و **تأییدِ
+     * خواندنِ دوبارهٔ** آن‌ها. هیچ پوشهٔ موجودی پاک/جابه‌جا و هیچ مسیری
+     * خودکار عوض نمی‌شود و هیچ `chmod 777`ای اجرا نمی‌شود.
+     */
+    public static function storage_init(): void {
+        self::guard( 'cpms_storage_init' );
+
+        $result = App::initializePrivateStorage( true );
+
+        $lines = [];
+        foreach ( $result['roots'] as $key => $root ) {
+            $label = 'files' === $key ? 'فایل‌های پزشکی' : 'بکاپ';
+            if ( $root['ok'] ) {
+                $lines[] = $label . ' ✅ ' . ( $root['created'] ? 'ساخته شد: ' : 'از قبل آماده بود: ' ) . $root['path'];
+            } else {
+                $lines[] = $label . ' ⛔ ' . ( $root['path'] !== '' ? $root['path'] . ' — ' : '' ) . $root['error'];
+            }
+        }
+
+        self::notify( implode( ' | ', $lines ), (bool) $result['ok'] );
+    }
+
+    /**
      * CPMS Classic Admin UX (E) — ترمیمِ دستیِ زمان‌بندیِ صف.
      *
      * امنیت: `cpms_config` + Nonce (`cpms_cron_repair`). هیچ Jobی اجرا نمی‌شود؛
@@ -538,6 +572,23 @@ final class SystemPage
                 'explain' => 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.',
             ],
         ];
+    }
+
+    /**
+     * C — کنترلِ مجازِ راه‌اندازی/بررسیِ ریشه‌های ذخیره‌سازی خصوصی.
+     *
+     * چرا در گروهِ Health و نه در تنظیمات: نبودِ ریشهٔ ذخیره‌سازی یک
+     * **مسدودکنندهٔ** بالینی است، نه یک پیکربندیِ اختیاری؛ اقدامِ اصلاحی باید
+     * کنارِ همان ردیف باشد. فرم فقط با `cpms_config` + Nonce اجرا می‌شود
+     * (`storage_init()` → `guard()`).
+     */
+    private static function render_storage_init_control(): void {
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:10px 0">';
+        wp_nonce_field( 'cpms_storage_init' );
+        echo '<input type="hidden" name="action" value="cpms_storage_init">';
+        echo '<button class="button">راه‌اندازی ریشهٔ ذخیره‌سازی (ساخت پوشه و گاردها)</button> ';
+        echo '<span class="description">مسیرهای بیرون از DocumentRoot ساخته/بررسی می‌شوند؛ هیچ فایل موجودی پاک یا جابه‌جا نمی‌شود.</span>';
+        echo '</form>';
     }
 
     /**
@@ -680,6 +731,25 @@ final class SystemPage
             if ( $maria ) {
                 // ادعا فقط بر پایهٔ وضعیتِ واقعیِ ردیف — نه متنِ فارسی.
                 if ( $status === SystemHealthService::FAIL ) {
+                    // سه حالتِ واقعیِ FAIL را از هم جدا می‌کنیم: کهنه‌تر از مرز،
+                    // آزموده‌نشده، و نسخهٔ ناخوانا. متنِ یکسان برای هر سه،
+                    // اقدامِ درست را پنهان می‌کرد.
+                    if ( str_contains( $detail, 'mariadb:unknown_version' ) ) {
+                        return [
+                            'what'   => 'سرور MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌خواندن/تشخیص نیست.',
+                            'impact' => 'دروازهٔ مهاجرت/فعال‌سازی (migration 0027) نسخهٔ ناشناخته را Fail-Closed رد می‌کند، پس فعال‌سازی/به‌روزرسانی روی این سرور شکست می‌خورد. دادهٔ موجود حذف نمی‌شود.',
+                            'action' => 'نسخهٔ دقیق MariaDB را از پنل هاست/`SELECT VERSION()` بگیرید و میزبان را به نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' یا سریِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' منتقل کنید؛ پیش از هر تغییر بکاپ بگیرید.',
+                        ];
+                    }
+
+                    if ( str_contains( $detail, 'mariadb:unverified' ) ) {
+                        return [
+                            'what'   => 'این نسخهٔ MariaDB در CI این افزونه آزموده نشده است.',
+                            'impact' => 'دروازهٔ مهاجرت/فعال‌سازی (migration 0027) این نسخه را Fail-Closed رد می‌کند، پس فعال‌سازی/به‌روزرسانی روی این سرور شکست می‌خورد. دادهٔ موجود حذف نمی‌شود.',
+                            'action' => 'MariaDB را به نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' یا سریِ مرزِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' (وصلهٔ آزموده‌شده: ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH . ') منتقل کنید؛ پیش از هر تغییر یک بکاپ کامل بگیرید.',
+                        ];
+                    }
+
                     return [
                         'what'   => 'نسخهٔ MariaDB این سرور کهنه‌تر از مرزِ سازگاریِ مستندشده (' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ') است.',
                         'impact' => 'این نسخه در CI این افزونه آزموده نشده و پشتیبانی نمی‌شود؛ ممکن است بخشی از عملیات دیتابیس رفتار متفاوت یا خطا داشته باشد. دسترسی به داده به‌صورت خودکار محدود نمی‌شود.',
@@ -768,14 +838,14 @@ final class SystemPage
                 'action' => 'در بخش «Queue و WP-Cron» همین صفحه وضعیت دقیق را ببینید؛ اگر رویدادِ زمان‌بندی غایب است دکمهٔ «ترمیم زمان‌بندی صف» را بزنید (هیچ Jobی فوراً اجرا نمی‌شود). برای اجرای قطعی و مستقل از ترافیک، System Cron را با DISABLE_WP_CRON تنظیم کنید (ADR-0016).',
             ],
             'storage.files' => [
-                'what' => 'محل ذخیرهٔ فایل‌های پزشکی در دسترس/قابل‌نوشتن نیست.',
+                'what' => 'ریشهٔ فعالِ ذخیرهٔ فایل‌های پزشکی وجود ندارد، داخل DocumentRoot است، یا برای وب‌سرور قابل‌نوشتن نیست. این یک نیازِ بالینیِ الزامی است، نه یک پیکربندیِ اختیاری.',
                 'impact' => 'آپلود/دریافت فایل‌های پزشکی و دست‌خط شکست می‌خورد.',
-                'action' => 'مجوزهای پوشهٔ storage را برای وب‌سرور قابل‌نوشتن کنید و فضا/مسیر را بررسی کنید.',
+                'action' => 'دکمهٔ «راه‌اندازی ریشهٔ ذخیره‌سازی» را در همین صفحه بزنید (پوشه و گاردها ساخته و بررسی می‌شوند). اگر میزبان اجازهٔ ساخت نداد، والدِ پوشه را برای وب‌سرور قابل‌نوشتن کنید یا ثابت CPMS_PRIVATE_STORAGE_DIR را به مسیری بیرون از DocumentRoot تنظیم کنید؛ هرگز پوشهٔ عمومی wp-content را به‌عنوان جایگزین استفاده نکنید.',
             ],
             'storage.backups' => [
-                'what' => 'محل ذخیرهٔ بکاپ در دسترس/قابل‌نوشتن نیست.',
+                'what' => 'ریشهٔ فعالِ ذخیرهٔ بکاپ وجود ندارد، داخل DocumentRoot است، یا برای وب‌سرور قابل‌نوشتن نیست. این الزامی است، نه اختیاری.',
                 'impact' => 'ساخت/بازیابی بکاپ ممکن نیست (ریسک از دست رفتن داده در خرابی).',
-                'action' => 'پوشهٔ بکاپ را قابل‌نوشتن کنید و مسیر در تنظیمات «بکاپ» را اصلاح کنید.',
+                'action' => 'دکمهٔ «راه‌اندازی ریشهٔ ذخیره‌سازی» را بزنید؛ اگر شکست خورد، مسیر `backup.storage_path` را به مسیری بیرون از DocumentRoot با مجوز نوشتن برای وب‌سرور اصلاح کنید.',
             ],
             'license.state' => [
                 'what' => 'وضعیت مجوز فعال/معتبر نیست.',
@@ -819,13 +889,9 @@ final class SystemPage
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
     private static function statusBadge( string $status, string $key = '', string $detail = '' ): string
     {
-        $is_maria = 'db.mysql_version' === $key
-            && SystemHealthService::UNKNOWN === $status
-            && SystemHealthService::is_maria_db_compatibility_detail( $detail );
-
-        if ( $is_maria ) {
-            return '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP;
-        }
+        // CPMS Classic Admin UX (D) — بدونِ استثنای MariaDB: نشانِ هر ردیف دقیقاً
+        // همان وضعیتِ طبقه‌بندی‌شده است (مدرکِ نامشخص ⇒ «بحرانی»، نه «نیازمند تنظیم»).
+        unset( $key, $detail );
 
         return match ( $status ) {
             'pass', SystemHealthService::PASS => '✅ ' . SystemHealthService::USER_STATUS_READY,
