@@ -1940,13 +1940,22 @@ jobs:
           ARESP_SECRETARY_PASS: 'Pilot-Gate-2026!'
           ARESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
         run: |
-          python3 -m py_compile bin/pilot-admin-narrow.py
+          # یک لاگ برای هر دو گام: اگر کامپایل شکست بخورد، شواهدِ PR باید همان
+          # شکست را نشان دهد (پیش‌تر لاگ ساخته نمی‌شد و علت نامعلوم می‌ماند).
+          set +e
+          python3 -m py_compile bin/pilot-admin-narrow.py > /tmp/admin-narrow-compile.log 2>&1
+          compile_rc=$?
+          if [ "${compile_rc}" -ne 0 ]; then
+            { echo "INFO py_compile_rc=${compile_rc}"; cat /tmp/admin-narrow-compile.log; } > /tmp/admin-narrow.log
+            cat /tmp/admin-narrow.log
+            exit 1
+          fi
           python3 bin/pilot-admin-narrow.py | tee /tmp/admin-narrow.log
           test "${PIPESTATUS[0]}" -eq 0
           {
             echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
             echo '```'
-            grep -E '^(INFO admin_narrow_checks=|PASS admin narrow|FAIL admin narrow|FAIL )' /tmp/admin-narrow.log | head -80
+            grep -E '^(INFO |PASS admin narrow|FAIL admin narrow|FAIL |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
