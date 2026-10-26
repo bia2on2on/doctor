@@ -190,7 +190,7 @@ final class PrivateStorageInitializationTest extends WP_UnitTestCase
         App::resetScope();
         ScopeContext::clear();
 
-        $result = App::initializePrivateStorage( true );
+        $result = App::initialize_private_storage( true );
 
         self::assertArrayHasKey( 'files', $result['roots'] );
         self::assertArrayHasKey( 'backups', $result['roots'] );
@@ -235,7 +235,7 @@ final class PrivateStorageInitializationTest extends WP_UnitTestCase
         $previous = ScopeContext::tryGet();
         App::replaceExplicitScope( ClinicScope::forClinic( $clinicId ) );
         try {
-            $scoped = App::initializePrivateStorage( true );
+            $scoped = App::initialize_private_storage( true );
         } finally {
             App::replaceExplicitScope( $previous );
         }
@@ -246,7 +246,7 @@ final class PrivateStorageInitializationTest extends WP_UnitTestCase
         // بدونِ Scope، هیچ Clinic‌ای حدس زده نمی‌شود ⇒ پیش‌فرضِ سطحِ نصب.
         App::resetScope();
         ScopeContext::clear();
-        $installation = App::initializePrivateStorage( true );
+        $installation = App::initialize_private_storage( true );
         self::assertSame( LocalFileStorage::defaultBasePath(), $installation['roots']['files']['path'] );
         self::assertNotSame( $custom, $installation['roots']['files']['path'] );
     }

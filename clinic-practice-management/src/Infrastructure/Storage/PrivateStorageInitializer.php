@@ -48,7 +48,7 @@ final class PrivateStorageInitializer {
      */
     public const GUARD_VERSION = 1;
 
-    public const ROOT_FILES  = 'files';
+    public const ROOT_FILES   = 'files';
     public const ROOT_BACKUPS = 'backups';
 
     /**
@@ -73,7 +73,7 @@ final class PrivateStorageInitializer {
                     'EMPTY_PATH',
                     'مسیر ریشهٔ ذخیره‌سازی خالی است.'
                 );
-                $result['ok'] = false;
+                $result['ok']            = false;
                 continue;
             }
 
@@ -98,13 +98,13 @@ final class PrivateStorageInitializer {
             } catch ( StorageConfigurationException $e ) {
                 // نامِ ویژگیِ این استثنا از پیش منتشر شده و camelCase است؛ خواندنِ
                 // داینامیک آن را دست‌نخورده نگه می‌دارد و گیتِ نام‌گذاری را نمی‌شکند.
-                $code = $e->{'errorCode'};
+                $code                    = $e->{'errorCode'};
                 $result['roots'][ $key ] = self::failure( $path, $code, $e->getMessage() );
-                $result['ok'] = false;
+                $result['ok']            = false;
                 continue;
             } catch ( \Throwable $e ) {
                 $result['roots'][ $key ] = self::failure( $path, 'STORAGE_INIT_FAILED', $e->getMessage() );
-                $result['ok'] = false;
+                $result['ok']            = false;
                 continue;
             }
 
@@ -136,8 +136,8 @@ final class PrivateStorageInitializer {
         $state = self::state();
         if ( is_array( $state )
             && ( $state['guard_version'] ?? null ) === self::GUARD_VERSION
-            && ( $state['roots'][self::ROOT_FILES]['path'] ?? null ) === rtrim( $files_root, '/' )
-            && ( $state['roots'][self::ROOT_BACKUPS]['path'] ?? null ) === rtrim( $backup_root, '/' )
+            && ( $state['roots'][ self::ROOT_FILES ]['path'] ?? null ) === rtrim( $files_root, '/' )
+            && ( $state['roots'][ self::ROOT_BACKUPS ]['path'] ?? null ) === rtrim( $backup_root, '/' )
             && ( $state['ok'] ?? false ) === true ) {
             /** @var array{ok:bool,roots:array<string,mixed>} $state */
             return $state;

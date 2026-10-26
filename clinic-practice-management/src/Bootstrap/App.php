@@ -194,12 +194,12 @@ final class App
      *
      * @var array<int, UpdateService>
      */
-    private static array $updateServices = [];
+    private static array $update_services = [];
 
     /**
      * @var array<string, SystemHealthService>
      */
-    private static array $healthServices = [];
+    private static array $health_services = [];
 
     public static function boot(): void
     {
@@ -447,7 +447,7 @@ final class App
         // C — راه‌اندازیِ صریحِ ریشه‌های **فعال** (بدونِ وابستگی به legacy و
         // بدونِ ClinicScope). اگر میزبان اجازهٔ ساخت ندهد، خطا ثبت می‌شود و
         // صفحهٔ سلامت آن را مسدودکننده گزارش می‌کند (نه «اختیاری»).
-        self::initializePrivateStorage( true );
+        self::initialize_private_storage( true );
 
         // فقط زمان‌بندی — هیچ Jobی در activation اجرا نمی‌شود.
         CronScheduleRepair::ensure_scheduled();
@@ -479,7 +479,7 @@ final class App
             self::ensurePrivateStorage();
             // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
             // شود یا آخرین تلاش ناموفق بوده باشد کارِ واقعی انجام می‌شود.
-            self::initializePrivateStorage( false );
+            self::initialize_private_storage( false );
         } finally {
             delete_transient($lock);
         }
@@ -574,8 +574,7 @@ final class App
      * - `$force=true` (فعال‌سازی یا اقدامِ صریحِ مدیر) کار را همیشه انجام می‌دهد؛
      *   `$force=false` مسیرِ ارزانِ option-guarded است.
      */
-    public static function initializePrivateStorage( bool $force = false ): array
-    {
+    public static function initialize_private_storage( bool $force = false ): array {
         $files_root  = LocalFileStorage::defaultBasePath();
         $backup_root = ProtectedBackupStore::defaultBasePath();
 
@@ -586,8 +585,12 @@ final class App
                 if ( $configured_files !== '' ) {
                     $files_root = $configured_files;
                 }
-            } catch ( \Throwable ) {
-                // خواندنِ Setting نباید راه‌اندازی را متوقف کند؛ پیش‌فرض امن می‌ماند.
+            } catch ( \Throwable $e ) {
+                // خواندنِ Setting نباید راه‌اندازی را متوقف کند؛ پیش‌فرضِ امن
+                // می‌ماند و خطا فقط ثبت می‌شود (هیچ fallback بی‌صدایی به مسیر
+                // عمومی وجود ندارد).
+                unset( $e );
+                $files_root = LocalFileStorage::defaultBasePath();
             }
         }
 
@@ -1756,20 +1759,20 @@ final class App
         // درخواستی که Scope را عوض می‌کند) نمونهٔ Clinicِ اول برای Clinicِ دوم
         // برگردانده می‌شد — یعنی نشتِ پیکربندیِ بین‌Clinic.
         $key = $settings->clinicId();
-        if ( ! isset( self::$updateServices[ $key ] ) ) {
+        if ( ! isset( self::$update_services[ $key ] ) ) {
             try {
                 $server_url = (string) $settings->get( 'license.server_url', '' );
             } catch ( \Throwable ) {
                 $server_url = '';
             }
-            self::$updateServices[ $key ] = new UpdateService(
+            self::$update_services[ $key ] = new UpdateService(
                 $settings,
                 self::licenseService(),
                 new HttpUpdateMetadataGateway( [ 'server_url' => $server_url ] )
             );
         }
 
-        return self::$updateServices[ $key ];
+        return self::$update_services[ $key ];
     }
 
     /**
@@ -1806,8 +1809,8 @@ final class App
         $settings = self::clinic_settings_or_null();
         $key      = null === $settings ? 'installation' : 'clinic:' . $settings->clinicId();
 
-        if ( ! isset( self::$healthServices[ $key ] ) ) {
-            self::$healthServices[ $key ] = new SystemHealthService(
+        if ( ! isset( self::$health_services[ $key ] ) ) {
+            self::$health_services[ $key ] = new SystemHealthService(
                 self::db(),
                 $settings,
                 self::installationSettings(),
@@ -1818,7 +1821,7 @@ final class App
             );
         }
 
-        return self::$healthServices[ $key ];
+        return self::$health_services[ $key ];
     }
 
     public static function dispatcher(): JobsDispatcher

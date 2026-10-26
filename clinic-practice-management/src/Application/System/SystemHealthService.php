@@ -453,7 +453,6 @@ final class SystemHealthService
         $parsed = self::database_version_number( $raw, $engine );
         $label  = self::database_version_label( $engine );
 
-
         if ( self::DB_ENGINE_UNKNOWN === $engine ) {
             // مدرکِ ناخوانا/ناتجزیه‌پذیر: هیچ قضاوتی روی کفِ MySQL انجام نمی‌شود
             // (fail-closed). استخراجِ یک عددِ تصادفی از رشتهٔ نامعتبر، نسخهٔ
