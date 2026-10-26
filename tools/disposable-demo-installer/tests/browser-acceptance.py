@@ -544,6 +544,10 @@ def main() -> None:
             contexts.append(acc_ctx)
             acc_page.goto(links["accountant"], wait_until="domcontentloaded")
             acc_page.locator('[data-role="finance-root"]').wait_for(state="visible")
+            fl_sel = acc_page.locator('[data-role="finance-location"]')
+            acc_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
+            if fl_sel.input_value() != str(fixture_meta["location_id"]):
+                fl_sel.select_option(str(fixture_meta["location_id"]))
             issue_btn = acc_page.locator(f'[data-role="finance-issue-open"][data-visit-id="{visit_id}"]')
             issue_btn.wait_for(state="visible", timeout=35000)
             issue_btn.click()
@@ -578,6 +582,10 @@ def main() -> None:
             contexts.append(rec2_ctx)
             rec2_page.goto(links["accountant"], wait_until="domcontentloaded")
             rec2_page.locator('[data-role="finance-root"]').wait_for(state="visible")
+            rfl_sel = rec2_page.locator('[data-role="finance-location"]')
+            rec2_page.locator(f'[data-role="finance-location"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
+            if rfl_sel.input_value() != str(fixture_meta["location_id"]):
+                rfl_sel.select_option(str(fixture_meta["location_id"]))
             checkout_btn = rec2_page.locator(f'[data-role="finance-checkout-open"][data-visit-id="{visit_id}"]')
             checkout_btn.wait_for(state="visible", timeout=35000)
             checkout_btn.click()
