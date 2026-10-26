@@ -750,7 +750,11 @@ final class SystemHealthService
                 self::PASS                        => 'healthy',
                 self::WARNING                     => 'warnings',
                 self::NOT_CONFIGURED              => 'optional',
-                self::FAIL, self::UNKNOWN         => 'blockers',
+                self::FAIL                        => 'blockers',
+                // MariaDBِ آزموده‌نشین که فقط «مدرکِ MySQL-اختصاصی» ندارد،
+                // مسدودکننده نیست (همان قراردادِ classifyHost): هشدارِ
+                // قابل‌اقدام گزارش می‌شود، نه خطای بحرانی و نه PASS.
+                self::UNKNOWN                     => ( 'db.mysql_version' === (string) $check['key'] && self::is_maria_db_compatibility_detail( (string) ( $check['detail'] ?? '' ) ) ) ? 'warnings' : 'blockers',
                 default                           => 'blockers',
             };
 

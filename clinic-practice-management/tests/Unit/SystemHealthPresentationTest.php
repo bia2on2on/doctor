@@ -18,6 +18,8 @@ use PHPUnit\Framework\TestCase;
  */
 final class SystemHealthPresentationTest extends TestCase
 {
+    private const KEY_UNKNOWN_LABEL = 'نسخهٔ سرور دیتابیس (MariaDB)';
+
     /**
      * @return array{key:string,label:string,status:string,detail:string}
      */
@@ -83,6 +85,31 @@ final class SystemHealthPresentationTest extends TestCase
             [ 'blockers' => [], 'warnings' => [], 'optional' => [], 'healthy' => [] ],
             $groups
         );
+    }
+
+    public function testUncertifiedMariaDbRowIsAWarningNotABlocker(): void
+    {
+        $groups = SystemHealthService::group_checks(
+            [
+                [
+                    'key'    => 'db.mysql_version',
+                    'label'  => 'نسخهٔ سرور دیتابیس (MariaDB)',
+                    'status' => SystemHealthService::UNKNOWN,
+                    'detail' => 'mariadb:unverified | 11.5.2-MariaDB — آزموده‌نشده',
+                ],
+                [
+                    'key'    => 'db.mysql_version',
+                    'label'  => 'نسخهٔ سرور دیتابیس',
+                    'status' => SystemHealthService::UNKNOWN,
+                    'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست',
+                ],
+            ]
+        );
+
+        self::assertCount( 1, $groups['warnings'], 'MariaDBِ آزموده‌نشین هشدار است.' );
+        self::assertSame( self::KEY_UNKNOWN_LABEL, $groups['warnings'][0]['label'] );
+        self::assertCount( 1, $groups['blockers'], 'مدرکِ ناخوانا مسدودکننده می‌ماند.' );
+        self::assertSame( 'نسخهٔ سرور دیتابیس', $groups['blockers'][0]['label'] );
     }
 
     public function testOptionalConfigurationIsNotPresentedAsABlocker(): void
