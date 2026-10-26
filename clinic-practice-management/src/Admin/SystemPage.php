@@ -168,16 +168,16 @@ final class SystemPage
                     <br><code><?php echo esc_html(implode(' | ', $health['host']['issues'])); ?></code>
                 <?php endif; ?>
             </p>
-            <?php self::render_health_groups( $health_groups ); ?>
+                <?php self::render_health_groups( $health_groups ); ?>
 
-            <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
-                <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
-            <?php endif; ?>
+                <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
+                    <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
+                <?php endif; ?>
 
-            <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
+                <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
 
-            <h2>Queue و WP-Cron</h2>
-            <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
+                <h2>Queue و WP-Cron</h2>
+                <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
             <?php endif; ?>
 
             <h2>مجوز</h2>
