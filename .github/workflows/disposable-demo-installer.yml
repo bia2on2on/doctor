@@ -136,11 +136,18 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
           coverage: none
 
-      - name: Tooling (checksum-verified WP-CLI + mysql client)
+      - name: Tooling (checksum-verified WP-CLI + Apache + mysql client + Chromium)
         uses: ./.github/actions/wp-stack-tooling
         with:
-          apt-packages: 'mysql-client'
+          apt-packages: 'apache2 libapache2-mod-php8.2 mysql-client'
           apt-log-dir: /tmp/cpdd-ci
+
+      - name: Install Playwright Chromium for real-browser acceptance
+        run: |
+          set -Eeuo pipefail
+          pip3 install --quiet playwright==1.49.1
+          python3 -m playwright install --with-deps chromium > /tmp/cpdd-ci/playwright-install.log 2>&1
+          echo 'PLAYWRIGHT_READY=1'
 
       - name: Production subtree unchanged by this lane
         run: |
@@ -234,14 +241,72 @@ jobs:
           grep -q '^CLINICS=1$' /tmp/cpdd-ci/post-teardown.log
           grep -q '^PATIENTS=0$' /tmp/cpdd-ci/post-teardown.log
 
+      - name: Real-Chromium browser acceptance (wp-admin ZIP install → provision → 6 personas → booking/OTP → clinical/finance → RTL 320/390 → teardown → delete plugin)
+        run: |
+          set -Eeuo pipefail
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "DROP DATABASE IF EXISTS $DB_NAME; CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          rm -rf "$WP_DIR"
+          tar -xzf /tmp/wp.tar.gz -C /tmp
+          mv /tmp/wordpress "$WP_DIR"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          wp config set FS_METHOD direct --allow-root
+          ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
+          python3 -c 'import secrets; print(secrets.token_urlsafe(30), end="")' > "$ADMIN_PASS_FILE"
+          chmod 600 "$ADMIN_PASS_FILE"
+          wp core install --url="$WP_URL" --title="CPDD Browser Acceptance" --admin_user="$ADMIN_USER" --admin_password="$(cat "$ADMIN_PASS_FILE")" --admin_email=admin@cpdd.invalid --skip-email --allow-root
+          wp rewrite structure '/%postname%/' --hard --allow-root
+          chown -R www-data:www-data "$WP_DIR"
+
+          PHP_INI="$(find /etc/php -name php.ini | grep apache2 | head -n1)"
+          if [ -n "$PHP_INI" ]; then
+            sudo sed -i 's/^upload_max_filesize.*/upload_max_filesize = 32M/; s/^post_max_size.*/post_max_size = 32M/' "$PHP_INI"
+          fi
+          sudo a2enmod rewrite headers >/dev/null
+          sudo sed -i 's/Listen 80/Listen 8080/' /etc/apache2/ports.conf
+          sudo tee /etc/apache2/sites-available/000-default.conf >/dev/null <<EOF
+          <VirtualHost *:8080>
+            ServerName localhost
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              Options FollowSymLinks
+              AllowOverride All
+              Require all granted
+            </Directory>
+            ErrorLog /tmp/cpdd-ci/apache-error.log
+            CustomLog /tmp/cpdd-ci/apache-access.log combined
+          </VirtualHost>
+          EOF
+          sudo systemctl restart apache2
+
+          BASE="$WP_URL" \
+          WP_DIR="$WP_DIR" \
+          OUT="/tmp/cpdd-ci" \
+          ADMIN_USER="$ADMIN_USER" \
+          ADMIN_PASS_FILE="$ADMIN_PASS_FILE" \
+          CPMS_ZIP="$GITHUB_WORKSPACE/$CPMS_ZIP" \
+          COMPANION_ZIP="/tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip" \
+          python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py" \
+            2>&1 | tee /tmp/cpdd-ci/browser-acceptance.log
+          rm -f "$ADMIN_PASS_FILE"
+          grep -q '^CPDD_BROWSER_ACCEPTANCE=PASS' /tmp/cpdd-ci/browser-acceptance.log
+
       - name: No credentials or OTP codes leaked into logs
         if: always()
         run: |
           set -Eeuo pipefail
-          if grep -rEiq '(password|passwd|cpdd-[a-z_]+-[a-f0-9]{16}[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|OTP_CODE=)' /tmp/cpdd-ci/integration.log; then
-            echo 'FAIL: possible credential material in evidence' >&2; exit 1
-          fi
-          echo 'PASS: integration evidence contains no credential material'
+          rm -f /tmp/cpdd-ci/.admin-pass
+          for LOG_FILE in /tmp/cpdd-ci/integration.log /tmp/cpdd-ci/browser-acceptance.log /tmp/cpdd-ci/browser-results.json; do
+            if [ -f "$LOG_FILE" ] && grep -rEiq '(password|passwd|cpdd-[a-z_]+-[a-f0-9]{16}[[:space:]]*[:=][[:space:]]*[A-Za-z0-9_-]{20,}|OTP_CODE=)' "$LOG_FILE"; then
+              echo "FAIL: possible credential material in $LOG_FILE" >&2; exit 1
+            fi
+          done
+          echo 'PASS: integration and browser evidence contain no credential material'
 
       - name: Publish sanitized acceptance detail to the PR (no credentials)
         if: always() && github.event_name == 'pull_request'
@@ -252,7 +317,7 @@ jobs:
           set -Eeuo pipefail
           mkdir -p /tmp/cpdd-ci
           {
-            echo '### CPMS disposable demo — real-WordPress acceptance detail'
+            echo '### CPMS disposable demo — real-WordPress & real-Chromium acceptance detail'
             echo
             echo "Commit: \`${{ github.sha }}\`"
             echo "Workflow run & artifact download: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
@@ -263,9 +328,11 @@ jobs:
             echo '--- surface ---'
             sed -E 's/([A-Za-z0-9_-]{24,})/<redacted>/g' /tmp/cpdd-ci/surface.log 2>/dev/null | tail -20 || true
             echo '--- integration ---'
-            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -80 || true
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/integration.log 2>/dev/null | tail -100 || true
             echo '--- post-teardown ---'
             sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
+            echo '--- browser-acceptance ---'
+            sed -E 's/([A-Za-z0-9_-]{40,})/<redacted>/g' /tmp/cpdd-ci/browser-acceptance.log 2>/dev/null | tail -120 || true
             echo '```'
           } > /tmp/cpdd-ci/pr-comment.md
           if [ -s /tmp/cpdd-ci/pr-comment.md ]; then

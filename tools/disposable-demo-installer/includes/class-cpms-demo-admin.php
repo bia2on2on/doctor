@@ -60,6 +60,46 @@ class Admin {
 	private static $provisioned = null;
 
 	/**
+	 * Optional test environment override.
+	 *
+	 * @var Env|null
+	 */
+	private static ?Env $test_env = null;
+
+	/**
+	 * Optional test platform override.
+	 *
+	 * @var Platform|null
+	 */
+	private static ?Platform $test_platform = null;
+
+	/**
+	 * Reset transient per-request rendering state (used by test harness).
+	 *
+	 * @return void
+	 */
+	public static function reset_state(): void {
+		self::$notice      = null;
+		self::$credentials = null;
+		self::$otp         = null;
+		self::$diagnostic  = null;
+		self::$teardown    = null;
+		self::$provisioned = null;
+	}
+
+	/**
+	 * Configure test service overrides (used by unit test harness).
+	 *
+	 * @param Env|null      $env      Test environment.
+	 * @param Platform|null $platform Test platform.
+	 * @return void
+	 */
+	public static function set_test_services( ?Env $env, ?Platform $platform ): void {
+		self::$test_env      = $env;
+		self::$test_platform = $platform;
+	}
+
+	/**
 	 * Register the page under Tools and hook the pre-render dispatcher.
 	 *
 	 * @return void
@@ -93,14 +133,14 @@ class Admin {
 	 * @return Env
 	 */
 	private static function env(): Env {
-		return new Env();
+		return self::$test_env ?? new Env();
 	}
 
 	/**
 	 * @return Platform
 	 */
 	private static function platform(): Platform {
-		return new Platform();
+		return self::$test_platform ?? new Platform();
 	}
 
 	/**
@@ -230,11 +270,16 @@ class Admin {
 					break;
 
 				case Request::ACTION_DISMISS:
-					$tombstone = $manifest->tombstone();
-					if ( null !== $tombstone && ( $tombstone['ok'] ?? false ) !== true ) {
-						throw new Exception( 'TEARDOWN_INCOMPLETE', 'سابقهٔ پاک‌سازی ناقص را نمی‌توان پاک کرد؛ ابتدا آثار باقی‌مانده را بررسی کنید.' );
-					}
-					$env->option_delete( Manifest::TOMBSTONE );
+					$env->with_lock(
+						'dismiss_tombstone',
+						static function () use ( $env, $manifest ): void {
+							$tombstone = $manifest->tombstone();
+							if ( null !== $tombstone && true !== ( $tombstone['ok'] ?? $tombstone['clean'] ?? false ) ) {
+								throw new Exception( 'TEARDOWN_INCOMPLETE', 'سابقهٔ پاک‌سازی ناقص را نمی‌توان پاک کرد؛ ابتدا آثار باقی‌مانده را بررسی کنید.' );
+							}
+							$env->option_delete( Manifest::TOMBSTONE );
+						}
+					);
 					self::$notice = array(
 						'type' => 'success',
 						'text' => 'سابقهٔ پاک‌سازی حذف شد.',
@@ -285,26 +330,35 @@ class Admin {
 		} catch ( Exception $e ) {
 			$manifest_err = $e->getMessage();
 		}
-		$tombstone = $manifest->tombstone();
+		$tombstone         = $manifest->tombstone();
+		$uninstall_blocked = $env->option_get( 'cpdd_uninstall_blocked', false );
 
 		echo '<div class="wrap cpdd" dir="rtl">';
 		echo '<h1>دموی یک‌بارمصرف CPMS Classic</h1>';
 		echo '<p class="cpdd-lead">این صفحه فقط برای <strong>سایت آزمایشی خالی</strong> است. هیچ دادهٔ واقعی بیمار، پیامک واقعی یا پرداخت واقعی ساخته نمی‌شود و افزونهٔ Production تغییر نمی‌کند.</p>';
 
 		self::render_notice();
+		if ( is_array( $uninstall_blocked ) ) {
+			echo '<div class="notice notice-warning inline" data-cpdd-uninstall-blocked="1"><p>تلاش قبلی برای حذف افزونهٔ همراه متوقف شد زیرا دادهٔ دمو هنوز در پایگاه‌داده وجود داشت. فرادادهٔ مالکیت حفظ شده است؛ اکنون می‌توانید تشخیص و پاک‌سازی ایمن را اجرا کنید.</p></div>';
+		}
 		self::render_identity( $env, $manifest, $loaded );
 		if ( '' !== $manifest_err ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $manifest_err ) . '</p></div>';
 		}
 		self::render_preflight( $state );
-		self::render_credentials();
+		self::render_credentials( $loaded );
 		self::render_otp();
 
 		if ( null === $loaded ) {
 			self::render_form( $request, Request::ACTION_PROVISION, 'ساخت دمو', 'I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE', 'ساخت دمو فقط زمانی انجام می‌شود که همهٔ بررسی‌های بالا PASS باشند.' );
 		} else {
-			self::render_links( $platform, $loaded );
-			self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای شش حساب', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
+			if ( 'active' === (string) ( $loaded['status'] ?? '' ) ) {
+				self::render_links( $platform, $loaded );
+				self::render_form( $request, Request::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_DEMO_OTP', 'پس از زدن «درخواست کد» در برگهٔ رزرو عمومی بیمار، این دکمه کد یک‌بارمصرف همان چالش را فقط در همین پاسخ نمایش می‌دهد.' );
+				self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای شش حساب', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
+			} else {
+				self::render_recovery_card( $loaded );
+			}
 			self::render_form( $request, Request::ACTION_DIAGNOSE, 'تشخیص فقط‌خواندنی مالکیت', 'RUN_READ_ONLY_DIAGNOSTIC', 'هیچ چیزی حذف نمی‌شود؛ فقط اثبات مالکیت و برنامهٔ حذف را نشان می‌دهد.' );
 			self::render_diagnostic();
 			self::render_form( $request, Request::ACTION_TEARDOWN, 'پاک‌سازی انتخاب‌شدهٔ دمو', 'DESTROY_DEMO_DATA_ONLY', 'اگر مالکیت کامل اثبات نشود، پاک‌سازی مسدود می‌شود و هیچ ردیفی حذف نمی‌شود.' );
@@ -317,6 +371,22 @@ class Admin {
 
 		self::render_instructions();
 		self::render_limitations();
+		echo '</div>';
+	}
+
+	/**
+	 * Render recovery details when provisioning or teardown was interrupted (S-4).
+	 *
+	 * @param array<string,mixed> $loaded Loaded manifest.
+	 * @return void
+	 */
+	private static function render_recovery_card( array $loaded ): void {
+		$status = (string) ( $loaded['status'] ?? 'unknown' );
+		$stage  = (string) ( $loaded['failed_stage'] ?? '—' );
+		$code   = (string) ( $loaded['failure_code'] ?? '—' );
+		echo '<div class="cpdd-card" data-cpdd-recovery="' . esc_attr( $status ) . '">';
+		echo '<h2>بازیابی ایمن عملیات ناتمام</h2>';
+		echo '<p class="cpdd-warn">این دمو در وضعیت ناتمام (<code dir="ltr">' . esc_html( $status ) . '</code> — مرحلهٔ <code dir="ltr">' . esc_html( $stage ) . '</code> — کد <code dir="ltr">' . esc_html( $code ) . '</code>) قرار دارد. چرخش رمز و صدور OTP غیرفعال است؛ از «تشخیص فقط‌خواندنی» و «پاک‌سازی انتخاب‌شدهٔ دمو» برای حذف ایمن رکوردهای باقی‌مانده استفاده کنید.</p>';
 		echo '</div>';
 	}
 
@@ -351,8 +421,8 @@ class Admin {
 			echo '<tr><th>' . esc_html( $label ) . '</th><td dir="ltr">' . esc_html( (string) $value ) . '</td></tr>';
 		}
 		if ( is_array( $loaded ) ) {
-			echo '<tr><th>شناسهٔ دمو</th><td dir="ltr">' . esc_html( (string) $loaded['fixture_id'] ) . '</td></tr>';
-			echo '<tr><th>وضعیت دمو</th><td>' . esc_html( (string) $loaded['status'] ) . '</td></tr>';
+			echo '<tr><th>شناسهٔ دمو</th><td dir="ltr" data-cpdd-fixture-id="' . esc_attr( (string) $loaded['fixture_id'] ) . '">' . esc_html( (string) $loaded['fixture_id'] ) . '</td></tr>';
+			echo '<tr><th>وضعیت دمو</th><td data-cpdd-status="' . esc_attr( (string) $loaded['status'] ) . '">' . esc_html( (string) $loaded['status'] ) . '</td></tr>';
 			echo '<tr><th>Shortcode رزرو</th><td dir="ltr">' . esc_html( (string) ( $loaded['shortcode'] ?? '' ) ) . '</td></tr>';
 		}
 		echo '</tbody></table></div>';
@@ -363,7 +433,7 @@ class Admin {
 	 * @return void
 	 */
 	private static function render_preflight( array $state ): void {
-		echo '<div class="cpdd-card"><h2>پیش‌بررسی امنیتی</h2><p>وضعیت کلی: ';
+		echo '<div class="cpdd-card" data-cpdd-preflight="' . ( $state['ok'] ? 'pass' : 'fail' ) . '"><h2>پیش‌بررسی امنیتی</h2><p>وضعیت کلی: ';
 		echo $state['ok'] ? '<strong class="cpdd-pass">PASS</strong>' : '<strong class="cpdd-fail">FAIL — ایجاد دمو مسدود است</strong>';
 		echo '</p><table class="widefat striped"><thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead><tbody>';
 		foreach ( $state['checks'] as $check ) {
@@ -374,20 +444,28 @@ class Admin {
 	}
 
 	/**
+	 * Render one-time credentials for provisioning or password rotation (S-6).
+	 *
+	 * @param array<string,mixed>|null $loaded Active manifest.
 	 * @return void
 	 */
-	private static function render_credentials(): void {
+	private static function render_credentials( ?array $loaded = null ): void {
 		if ( ! is_array( self::$credentials ) ) {
 			return;
 		}
 		$personas = Credentials::personas();
-		$fixture  = is_array( self::$provisioned ) ? (string) self::$provisioned['manifest']['fixture_id'] : '';
-		echo '<div class="cpdd-card cpdd-secret"><h2>رمزهای یک‌بارمصرف (فقط همین پاسخ)</h2>';
+		$fixture  = '';
+		if ( is_array( $loaded ) && isset( $loaded['fixture_id'] ) ) {
+			$fixture = (string) $loaded['fixture_id'];
+		} elseif ( is_array( self::$provisioned ) && isset( self::$provisioned['manifest']['fixture_id'] ) ) {
+			$fixture = (string) self::$provisioned['manifest']['fixture_id'];
+		}
+		echo '<div class="cpdd-card cpdd-secret" data-cpdd-secret="credentials"><h2>رمزهای یک‌بارمصرف (فقط همین پاسخ)</h2>';
 		echo '<p class="cpdd-warn">این رمزها ذخیره نمی‌شوند و با بازخوانی صفحه از بین می‌روند. هر رمز مستقل و تصادفی است. آن‌ها را فقط در یک مدیر رمز امن نگه دارید و در هیچ Issue/Log/تصویر منتشر نکنید.</p>';
 		echo '<table class="widefat striped"><thead><tr><th>نقش</th><th>نام کاربری</th><th>رمز</th></tr></thead><tbody>';
 		foreach ( $personas as $key => $persona ) {
 			$login = 'cpdd-' . $key . '-' . $fixture;
-			echo '<tr><td>' . esc_html( $persona['label'] ) . '</td><td dir="ltr">' . esc_html( $login ) . '</td><td><textarea readonly rows="1" dir="ltr" class="cpdd-pass-field">' . esc_textarea( (string) ( self::$credentials[ $key ] ?? '' ) ) . '</textarea></td></tr>';
+			echo '<tr data-cpdd-persona="' . esc_attr( $key ) . '"><td>' . esc_html( $persona['label'] ) . '</td><td dir="ltr" data-cpdd-login="' . esc_attr( $login ) . '">' . esc_html( $login ) . '</td><td><textarea readonly rows="1" dir="ltr" class="cpdd-pass-field">' . esc_textarea( (string) ( self::$credentials[ $key ] ?? '' ) ) . '</textarea></td></tr>';
 		}
 		echo '</tbody></table></div>';
 	}
@@ -399,7 +477,7 @@ class Admin {
 		if ( ! is_array( self::$otp ) ) {
 			return;
 		}
-		echo '<div class="cpdd-card cpdd-secret"><h2>کد OTP نمایشی</h2>';
+		echo '<div class="cpdd-card cpdd-secret" data-cpdd-secret="otp"><h2>کد OTP نمایشی</h2>';
 		echo '<p>کد: <code dir="ltr" class="cpdd-otp">' . esc_html( (string) self::$otp['code'] ) . '</code></p>';
 		echo '<p>انقضا (UTC): <span dir="ltr">' . esc_html( (string) self::$otp['expires_at'] ) . '</span></p>';
 		echo '<p class="cpdd-warn">این کد فقط یک بار و از مسیر عادی Verify قابل استفاده است. سقف تلاش، قفل موقت و مصرف یک‌باره تغییر نکرده‌اند.</p></div>';
@@ -416,7 +494,7 @@ class Admin {
 	private static function render_form( Request $request, string $action, string $title, string $phrase, string $hint ): void {
 		$label = Request::actions()[ $action ]['label'] ?? $action;
 		echo '<div class="cpdd-card"><h2>' . esc_html( $label ) . '</h2><p>' . esc_html( $hint ) . '</p>';
-		echo '<form method="post" autocomplete="off">';
+		echo '<form method="post" autocomplete="off" data-cpdd-form="' . esc_attr( $action ) . '">';
 		wp_nonce_field( $request->nonce_action( $action ), 'cpdd_nonce' );
 		echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( $action ) . '" />';
 		echo '<input type="hidden" name="cpdd_site" value="' . esc_attr( $request->site_fingerprint_field() ) . '" />';
@@ -444,7 +522,7 @@ class Admin {
 			'accountant'           => 'Staff Portal — ماژول finance',
 			'patient'              => 'Patient Portal',
 		);
-		echo '<div class="cpdd-card"><h2>پیوندها و نقشهٔ نقش ← صفحه</h2>';
+		echo '<div class="cpdd-card" data-cpdd-links="card"><h2>پیوندها و نقشهٔ نقش ← صفحه</h2>';
 		echo '<p>ورود هر Persona را در یک <strong>Private/Incognito</strong> جدا انجام دهید تا نشست‌ها قاطی نشوند.</p>';
 		echo '<table class="widefat striped"><thead><tr><th>Persona</th><th>صفحه (مسیر واقعی ثبت‌شده)</th><th>پیوند</th><th>نام کاربری</th></tr></thead><tbody>';
 		foreach ( $pages as $persona => $page ) {
@@ -466,14 +544,14 @@ class Admin {
 			}
 			echo '<tr><td>' . esc_html( Credentials::personas()[ $persona ]['label'] ) . '</td><td>' . esc_html( $page ) . '</td><td>';
 			if ( '' !== $url ) {
-				echo '<a href="' . esc_url( $url ) . '" target="_blank" rel="noopener noreferrer">باز کردن</a> <code dir="ltr">' . esc_html( $url ) . '</code>';
+				echo '<a href="' . esc_url( $url ) . '" data-cpdd-link="' . esc_attr( $persona ) . '" target="_blank" rel="noopener noreferrer">باز کردن</a> <code dir="ltr">' . esc_html( $url ) . '</code>';
 			} else {
 				echo '—';
 			}
 			echo '</td><td dir="ltr">' . esc_html( 'cpdd-' . $persona . '-' . $fixture ) . '</td></tr>';
 		}
 		echo '</tbody></table>';
-		echo '<p><strong>رزرو عمومی:</strong> <a href="' . esc_url( (string) ( $links['booking'] ?? '' ) ) . '" target="_blank" rel="noopener noreferrer">' . esc_html( (string) ( $links['booking'] ?? '' ) ) . '</a></p>';
+		echo '<p><strong>رزرو عمومی:</strong> <a href="' . esc_url( (string) ( $links['booking'] ?? '' ) ) . '" data-cpdd-link="booking" target="_blank" rel="noopener noreferrer">' . esc_html( (string) ( $links['booking'] ?? '' ) ) . '</a></p>';
 		echo '<p>Shortcode واقعی برگه: <code dir="ltr">' . esc_html( $platform->booking_shortcode( $clinic ) ) . '</code></p>';
 		echo '</div>';
 	}
@@ -485,7 +563,7 @@ class Admin {
 		if ( ! is_array( self::$diagnostic ) ) {
 			return;
 		}
-		echo '<div class="cpdd-card"><h2>نتیجهٔ تشخیص</h2>';
+		echo '<div class="cpdd-card" data-cpdd-diagnostic="' . ( self::$diagnostic['ok'] ? 'pass' : 'blocked' ) . '"><h2>نتیجهٔ تشخیص</h2>';
 		echo '<p>اثبات مالکیت: ' . ( self::$diagnostic['ok'] ? '<strong class="cpdd-pass">PASS</strong>' : '<strong class="cpdd-fail">BLOCKED</strong>' ) . '</p>';
 		if ( array() !== (array) self::$diagnostic['problems'] ) {
 			echo '<ul>';
@@ -511,7 +589,7 @@ class Admin {
 		if ( ! is_array( self::$teardown ) ) {
 			return;
 		}
-		echo '<div class="cpdd-card"><h2>نتیجهٔ پاک‌سازی</h2>';
+		echo '<div class="cpdd-card" data-cpdd-teardown="' . ( self::$teardown['ok'] ? 'clean' : 'incomplete' ) . '"><h2>نتیجهٔ پاک‌سازی</h2>';
 		echo '<p>وضعیت: ' . ( self::$teardown['ok'] ? '<strong class="cpdd-pass">CLEAN</strong>' : '<strong class="cpdd-fail">INCOMPLETE</strong>' ) . '</p>';
 		echo '<p>ردیف‌های حذف‌شده:</p><ul>';
 		foreach ( (array) self::$teardown['deleted'] as $table => $count ) {
@@ -534,9 +612,11 @@ class Admin {
 	 * @return void
 	 */
 	private static function render_tombstone( Request $request, array $tombstone ): void {
-		echo '<div class="cpdd-card"><h2>سابقهٔ آخرین پاک‌سازی</h2>';
-		echo '<p>شناسهٔ دمو: <span dir="ltr">' . esc_html( (string) ( $tombstone['fixture_id'] ?? '' ) ) . '</span> — زمان: <span dir="ltr">' . esc_html( (string) ( $tombstone['at'] ?? '' ) ) . '</span></p>';
-		echo '<p>نتیجه: ' . ( ( $tombstone['ok'] ?? false ) ? 'کامل' : 'ناقص — بررسی لازم است' ) . '</p>';
+		$is_ok = true === ( $tombstone['ok'] ?? $tombstone['clean'] ?? false );
+		$when  = (string) ( $tombstone['at'] ?? $tombstone['removed_at'] ?? '' );
+		echo '<div class="cpdd-card" data-cpdd-tombstone="' . ( $is_ok ? 'clean' : 'incomplete' ) . '"><h2>سابقهٔ آخرین پاک‌سازی</h2>';
+		echo '<p>شناسهٔ دمو: <span dir="ltr">' . esc_html( (string) ( $tombstone['fixture_id'] ?? '' ) ) . '</span> — زمان: <span dir="ltr">' . esc_html( $when ) . '</span></p>';
+		echo '<p>نتیجه: ' . ( $is_ok ? 'کامل' : 'ناقص — بررسی لازم است' ) . '</p>';
 		if ( array() !== (array) ( $tombstone['remaining'] ?? array() ) ) {
 			echo '<ul>';
 			foreach ( (array) $tombstone['remaining'] as $item ) {
@@ -544,13 +624,13 @@ class Admin {
 			}
 			echo '</ul>';
 		}
-		if ( ( $tombstone['ok'] ?? false ) === true ) {
-			echo '<form method="post" autocomplete="off">';
+		if ( $is_ok ) {
+			echo '<form method="post" autocomplete="off" data-cpdd-form="' . esc_attr( Request::ACTION_DISMISS ) . '">';
 			wp_nonce_field( $request->nonce_action( Request::ACTION_DISMISS ), 'cpdd_nonce' );
 			echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( Request::ACTION_DISMISS ) . '" />';
 			echo '<input type="hidden" name="cpdd_site" value="' . esc_attr( $request->site_fingerprint_field() ) . '" />';
 			echo '<p><label>عبارت تأیید: <code dir="ltr">CLEAR_TEARDOWN_RECORD</code></label> <input dir="ltr" name="cpdd_confirm" value="" /></p>';
-			echo '<p><button class="button">پاک‌کردن سابقه</button></p></form>';
+			echo '<p><button type="submit" class="button">پاک‌کردن سابقه</button></p></form>';
 		}
 		echo '</div>';
 	}

@@ -1,15 +1,22 @@
 <?php
 /**
- * Fail-closed teardown of exactly one synthetic demo.
+ * Scoped, fail-closed teardown of the synthetic demo.
  *
- * Ownership is proven from live rows, never from the manifest alone: every
- * object id must still carry the fixture markers, and every row touched must be
- * attributable to the fixture Clinic/Organization/patients/users or to its
- * parent rows via foreign keys. If ownership cannot be proven for any table
- * with data, teardown refuses and reports the artifact instead of guessing.
- * The default bootstrap Organization/Clinic/Location, installation-level
- * migration/license tables and the Owner's Administrator account are never in
- * scope.
+ * Deletion never truncates a table and never touches Organization 1 / Clinic 1 /
+ * Location 1 / the Administrator account. Every DELETE carries an explicit
+ * ownership predicate (`clinic_id = <demo>`, `organization_id = <demo>`, or a
+ * child foreign-key list collected from those two parents), and every table is
+ * checked BEFORE any row is deleted so the whole run refuses if a single
+ * non-demo row exists anywhere in the operational tables.
+ *
+ * Security guarantees (S-2, S-3, S-4, S-5):
+ * - Runs under the session-bound concurrency guard (`Env::with_lock`).
+ * - Never relies on `id > baseline_max_id` or `window_id >= 0`.
+ * - Fails closed on any SQL delete error (`$wpdb->query === false`).
+ * - Supports safe recovery from partial provisioning or interrupted teardown
+ *   without requiring every intended fixture entity to exist.
+ * - Preserves `cpdd_manifest` (with `status = 'teardown_failed'`) until
+ *   cleanup is 100% proven complete.
  *
  * @package CpmsDisposableDemo
  */
@@ -21,25 +28,22 @@ namespace CpmsDemo;
 defined( 'ABSPATH' ) || exit;
 
 /**
- * Ownership verification + selective deletion.
+ * Verifies ownership and removes the synthetic fixture in FK-safe order.
  */
 class Teardown {
 
 	/**
-	 * Installation-level baseline tables created on CPMS activation. Verified
-	 * for integrity and preserved untouched across teardown.
-	 */
-	public const BASELINE_TABLES = array(
-		'cpms_schema_migrations',
-		'cpms_license_install',
-		'cpms_license_state',
-	);
-
-	/**
-	 * Topologically sorted child-first deletion order across all 50 non-baseline
-	 * CPMS tables.
+	 * Deletion order: durable-log/queue tables first (while parent FK rows
+	 * still exist for correlation), then child tables before parent tables,
+	 * clinic before organization.
+	 *
+	 * @var list<string>
 	 */
 	public const DELETE_ORDER = array(
+		'cpms_jobs',
+		'cpms_operational_logs',
+		'cpms_rate_limits',
+		'cpms_audit_logs',
 		'cpms_payment_adjustments',
 		'cpms_payments',
 		'cpms_invoice_items',
@@ -50,6 +54,7 @@ class Teardown {
 		'cpms_prescription_items',
 		'cpms_prescriptions',
 		'cpms_drug_reference',
+		'cpms_visit_status_history',
 		'cpms_clinical_note_versions',
 		'cpms_clinical_notes',
 		'cpms_ocr_jobs',
@@ -57,7 +62,6 @@ class Teardown {
 		'cpms_handwriting_pages',
 		'cpms_handwriting_documents',
 		'cpms_medical_attachments',
-		'cpms_visit_status_history',
 		'cpms_visits',
 		'cpms_appointments',
 		'cpms_slot_holds',
@@ -72,20 +76,16 @@ class Teardown {
 		'cpms_otp_tokens',
 		'cpms_sms_messages',
 		'cpms_notifications',
-		'cpms_rate_limits',
 		'cpms_idempotency_keys',
-		'cpms_jobs',
-		'cpms_operational_logs',
-		'cpms_audit_logs',
-		'cpms_custom_role_capabilities',
-		'cpms_custom_role_defs',
 		'cpms_clinician_locations',
 		'cpms_membership_locations',
 		'cpms_membership_capabilities',
+		'cpms_custom_role_capabilities',
+		'cpms_custom_role_defs',
 		'cpms_clinic_memberships',
+		'cpms_clinicians',
 		'cpms_organization_membership_capabilities',
 		'cpms_organization_memberships',
-		'cpms_clinicians',
 		'cpms_settings',
 		'cpms_locations',
 		'cpms_clinics',
@@ -116,495 +116,734 @@ class Teardown {
 		$this->env      = $env;
 		$this->platform = $platform;
 		$this->manifest = $manifest;
+		$this->platform->set_env( $this->env );
 	}
 
 	/**
-	 * Collect live parent IDs belonging to the fixture clinic/organization so
-	 * child tables without direct clinic_id/organization_id columns can be
-	 * verified and deleted by foreign-key membership.
+	 * Collect parent IDs belonging to the demo clinic/organization so child
+	 * tables without a direct `clinic_id` column can still be deleted by an
+	 * explicit `parent_id IN (...)` predicate.
+	 *
+	 * Merges live database rows with IDs recorded in `$manifest['ids']` and
+	 * `$manifest['scope_snapshot']` so interrupted teardowns remain recoverable
+	 * even if parent rows were already deleted in an earlier attempt (S-4).
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
-	 * @return array<string,list<int>>
+	 * @return array<string,mixed>
 	 */
-	private function scope_ids( array $manifest ): array {
-		$clinic_id  = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
-		$org_id     = (int) ( $manifest['ids']['organization_id'] ?? 0 );
-		$hw_doc_ids = $this->col_ints( 'cpms_handwriting_documents', 'clinic_id', $clinic_id );
-		$hw_pages   = array();
-		foreach ( $hw_doc_ids as $doc_id ) {
-			foreach ( $this->col_ints( 'cpms_handwriting_pages', 'document_id', $doc_id ) as $page_id ) {
-				$hw_pages[] = $page_id;
+	public function scope_ids( array $manifest ): array {
+		$clinic_id = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
+		$org_id    = (int) ( $manifest['ids']['organization_id'] ?? 0 );
+		$fixture   = (string) ( $manifest['fixture_id'] ?? '' );
+		$mobile    = (string) ( $manifest['patient_mobile'] ?? '' );
+		$snapshot  = is_array( $manifest['scope_snapshot'] ?? null ) ? $manifest['scope_snapshot'] : array();
+		$m_ids     = is_array( $manifest['ids'] ?? null ) ? $manifest['ids'] : array();
+
+		$merge_ints = static function ( array ...$lists ): array {
+			$out = array();
+			foreach ( $lists as $list ) {
+				foreach ( $list as $val ) {
+					$int = (int) $val;
+					if ( $int > 0 ) {
+						$out[] = $int;
+					}
+				}
+			}
+
+			return array_values( array_unique( $out ) );
+		};
+
+		$merge_strs = static function ( array ...$lists ): array {
+			$out = array();
+			foreach ( $lists as $list ) {
+				foreach ( $list as $val ) {
+					$str = trim( (string) $val );
+					if ( '' !== $str ) {
+						$out[] = $str;
+					}
+				}
+			}
+
+			return array_values( array_unique( $out ) );
+		};
+
+		$hw_docs = $clinic_id > 1 ? $this->ids_by_clinic( 'cpms_handwriting_documents', $clinic_id ) : array();
+		$hw_docs = $merge_ints( $hw_docs, (array) ( $snapshot['hw_doc_ids'] ?? array() ) );
+
+		$user_ids = array();
+		foreach ( (array) ( $m_ids['user_ids'] ?? array() ) as $uid ) {
+			$uid = (int) $uid;
+			if ( $uid > 0 && $uid !== (int) ( $manifest['admin_id'] ?? 0 ) ) {
+				$user_ids[] = $uid;
+			}
+		}
+		if ( 1 === preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+			foreach ( Credentials::PERSONA_ORDER as $persona ) {
+				$acct = $this->env->user_by_login( 'cpdd-' . $persona . '-' . $fixture );
+				if ( is_array( $acct ) && isset( $acct['id'] ) && (int) $acct['id'] > 0 && (int) $acct['id'] !== (int) ( $manifest['admin_id'] ?? 0 ) ) {
+					$user_ids[] = (int) $acct['id'];
+				}
+			}
+		}
+		$user_ids = $merge_ints( $user_ids, (array) ( $snapshot['user_ids'] ?? array() ) );
+
+		$login_user_keys = array();
+		if ( 1 === preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+			foreach ( Credentials::PERSONA_ORDER as $persona ) {
+				$login             = 'cpdd-' . $persona . '-' . $fixture;
+				$login_user_keys[] = 'login-user:' . substr( hash( 'sha256', strtolower( $login ) ), 0, 32 );
 			}
 		}
 
-		return array(
-			'patient_ids'           => $this->col_ints( 'cpms_patients', 'clinic_id', $clinic_id ),
-			'invoice_ids'           => $this->col_ints( 'cpms_invoices', 'clinic_id', $clinic_id ),
-			'prescription_ids'      => $this->col_ints( 'cpms_prescriptions', 'clinic_id', $clinic_id ),
-			'visit_ids'             => $this->col_ints( 'cpms_visits', 'clinic_id', $clinic_id ),
-			'note_ids'              => $this->col_ints( 'cpms_clinical_notes', 'clinic_id', $clinic_id ),
-			'hw_doc_ids'            => $hw_doc_ids,
-			'hw_page_ids'           => $hw_pages,
-			'clinician_ids'         => $this->col_ints( 'cpms_clinicians', 'clinic_id', $clinic_id ),
-			'clinic_membership_ids' => $this->col_ints( 'cpms_clinic_memberships', 'clinic_id', $clinic_id ),
-			'org_membership_ids'    => $this->col_ints( 'cpms_organization_memberships', 'organization_id', $org_id ),
-			'custom_role_def_ids'   => $this->col_ints( 'cpms_custom_role_defs', 'clinic_id', $clinic_id ),
+		$otp_token_ids = array();
+		if ( $this->platform->table_exists( 'cpms_otp_tokens' ) ) {
+			if ( $clinic_id > 1 && '' !== $mobile ) {
+				$rows = $this->platform->fetch_all(
+					'SELECT id FROM ' . $this->platform->table( 'cpms_otp_tokens' ) . ' WHERE clinic_id = %d OR (clinic_id IS NULL AND mobile = %s)',
+					array( $clinic_id, $mobile )
+				);
+				foreach ( $rows as $row ) {
+					$otp_token_ids[] = (int) ( $row['id'] ?? 0 );
+				}
+			} elseif ( $clinic_id > 1 ) {
+				$otp_token_ids = $this->ids_by_clinic( 'cpms_otp_tokens', $clinic_id );
+			}
+		}
+		$otp_token_ids = $merge_ints( $otp_token_ids, (array) ( $snapshot['otp_token_ids'] ?? array() ) );
+
+		$scope = array(
+			'fixture_id'            => $fixture,
+			'clinic_id'             => $clinic_id,
+			'organization_id'       => $org_id,
+			'patient_mobile'        => $mobile,
+			'user_ids'              => $user_ids,
+			'login_user_keys'       => $login_user_keys,
+			'invoice_ids'           => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_invoices', $clinic_id ) : array(),
+				isset( $m_ids['invoice_id'] ) ? array( (int) $m_ids['invoice_id'] ) : array(),
+				(array) ( $snapshot['invoice_ids'] ?? array() )
+			),
+			'prescription_ids'      => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_prescriptions', $clinic_id ) : array(),
+				isset( $m_ids['prescription_id'] ) ? array( (int) $m_ids['prescription_id'] ) : array(),
+				(array) ( $snapshot['prescription_ids'] ?? array() )
+			),
+			'visit_ids'             => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_visits', $clinic_id ) : array(),
+				isset( $m_ids['visit_id'] ) ? array( (int) $m_ids['visit_id'] ) : array(),
+				(array) ( $snapshot['visit_ids'] ?? array() )
+			),
+			'note_ids'              => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinical_notes', $clinic_id ) : array(),
+				(array) ( $m_ids['note_ids'] ?? array() ),
+				(array) ( $snapshot['note_ids'] ?? array() )
+			),
+			'hw_doc_ids'            => $hw_docs,
+			'hw_page_ids'           => $merge_ints(
+				$this->ids_by_parent( 'cpms_handwriting_pages', 'document_id', $hw_docs ),
+				(array) ( $snapshot['hw_page_ids'] ?? array() )
+			),
+			'clinician_ids'         => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinicians', $clinic_id ) : array(),
+				isset( $m_ids['clinician_id'] ) ? array( (int) $m_ids['clinician_id'] ) : array(),
+				(array) ( $snapshot['clinician_ids'] ?? array() )
+			),
+			'clinic_membership_ids' => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_clinic_memberships', $clinic_id ) : array(),
+				(array) ( $snapshot['clinic_membership_ids'] ?? array() )
+			),
+			'custom_role_def_ids'   => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_custom_role_defs', $clinic_id ) : array(),
+				(array) ( $snapshot['custom_role_def_ids'] ?? array() )
+			),
+			'org_membership_ids'    => $merge_ints(
+				$org_id > 1 ? $this->ids_by_org( 'cpms_organization_memberships', $org_id ) : array(),
+				(array) ( $snapshot['org_membership_ids'] ?? array() )
+			),
+			'patient_ids'           => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_patients', $clinic_id ) : array(),
+				isset( $m_ids['patient_id'] ) ? array( (int) $m_ids['patient_id'] ) : array(),
+				(array) ( $snapshot['patient_ids'] ?? array() )
+			),
+			'identity_ids'          => $merge_ints(
+				$org_id > 1 ? $this->ids_by_org( 'cpms_patient_identities', $org_id ) : array(),
+				isset( $m_ids['identity_id'] ) ? array( (int) $m_ids['identity_id'] ) : array(),
+				(array) ( $snapshot['identity_ids'] ?? array() )
+			),
+			'appointment_ids'       => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_appointments', $clinic_id ) : array(),
+				isset( $m_ids['appointment_id'] ) ? array( (int) $m_ids['appointment_id'] ) : array(),
+				(array) ( $snapshot['appointment_ids'] ?? array() )
+			),
+			'slot_ids'              => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_schedule_slots', $clinic_id ) : array(),
+				(array) ( $m_ids['slot_ids'] ?? array() ),
+				(array) ( $snapshot['slot_ids'] ?? array() )
+			),
+			'follow_up_ids'         => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_follow_ups', $clinic_id ) : array(),
+				isset( $m_ids['follow_up_id'] ) ? array( (int) $m_ids['follow_up_id'] ) : array(),
+				(array) ( $snapshot['follow_up_ids'] ?? array() )
+			),
+			'sms_message_ids'       => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_sms_messages', $clinic_id ) : array(),
+				(array) ( $snapshot['sms_message_ids'] ?? array() )
+			),
+			'otp_token_ids'         => $otp_token_ids,
 		);
+
+		$scope['audit_request_ids'] = $merge_strs(
+			$this->platform->audit_request_ids_for_scope( $scope ),
+			(array) ( $snapshot['audit_request_ids'] ?? array() )
+		);
+		$scope['otp_ip_hashes']     = $merge_strs(
+			$this->platform->audit_otp_ip_hashes_for_scope( $scope ),
+			(array) ( $snapshot['otp_ip_hashes'] ?? array() )
+		);
+		$scope['login_failed_ips']  = $merge_strs(
+			$this->platform->login_failed_ips_for_scope( $scope ),
+			(array) ( $snapshot['login_failed_ips'] ?? array() )
+		);
+
+		return $scope;
 	}
 
 	/**
-	 * @param string $short     Short table name.
-	 * @param string $where_col Column name.
-	 * @param int    $where_val Column integer value.
+	 * @param string $short Short table name.
+	 * @param int    $clinic_id Clinic id.
 	 * @return list<int>
 	 */
-	private function col_ints( string $short, string $where_col, int $where_val ): array {
-		if ( $where_val <= 0 || ! $this->platform->table_exists( $short ) ) {
+	private function ids_by_clinic( string $short, int $clinic_id ): array {
+		if ( $clinic_id <= 1 || ! $this->platform->table_exists( $short ) ) {
 			return array();
 		}
 		$rows = $this->platform->fetch_all(
-			'SELECT id FROM ' . $this->platform->table( $short ) . ' WHERE ' . $where_col . ' = %d',
-			array( $where_val )
+			'SELECT id FROM ' . $this->platform->table( $short ) . ' WHERE clinic_id = %d',
+			array( $clinic_id )
 		);
 		$out  = array();
 		foreach ( $rows as $row ) {
-			if ( isset( $row['id'] ) ) {
-				$out[] = (int) $row['id'];
-			}
+			$out[] = (int) $row['id'];
 		}
 
 		return $out;
 	}
 
 	/**
-	 * Build an `IN (...)` predicate for a foreign-key column, or an impossible
-	 * `= -1` predicate when the parent table has zero rows in the fixture scope.
-	 *
-	 * @param string    $col   Column name.
-	 * @param list<int> $ids   Parent row IDs.
-	 * @param string    $label Diagnostic label.
-	 * @return array{where:string,params:list<mixed>,label:string}
+	 * @param string $short Short table name.
+	 * @param int    $org_id Organization id.
+	 * @return list<int>
 	 */
-	private function in_predicate( string $col, array $ids, string $label ): array {
-		if ( array() === $ids ) {
-			return array(
-				'where'  => $col . ' = %d',
-				'params' => array( -1 ),
-				'label'  => $label,
-			);
+	private function ids_by_org( string $short, int $org_id ): array {
+		if ( $org_id <= 1 || ! $this->platform->table_exists( $short ) ) {
+			return array();
 		}
-		$in = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
-
-		return array(
-			'where'  => $col . ' IN (' . $in . ')',
-			'params' => $ids,
-			'label'  => $label,
+		$rows = $this->platform->fetch_all(
+			'SELECT id FROM ' . $this->platform->table( $short ) . ' WHERE organization_id = %d',
+			array( $org_id )
 		);
+		$out  = array();
+		foreach ( $rows as $row ) {
+			$out[] = (int) $row['id'];
+		}
+
+		return $out;
 	}
 
 	/**
-	 * Read-only ownership verification + deletion plan.
-	 *
-	 * @param array<string,mixed> $manifest Verified manifest.
-	 * @param int                 $admin_id Acting Administrator.
-	 * @return array{ok:bool,problems:list<string>,plan:list<array{table:string,predicate:string,rows:int}>,unknown:list<string>}
+	 * @param string    $short Short table name.
+	 * @param string    $column Foreign-key column.
+	 * @param list<int> $parents Parent IDs.
+	 * @return list<int>
 	 */
-	public function verify( array $manifest, int $admin_id ): array {
-		$problems = array();
-		$unknown  = array();
-		$plan     = array();
+	private function ids_by_parent( string $short, string $column, array $parents ): array {
+		if ( array() === $parents || ! $this->platform->table_exists( $short ) ) {
+			return array();
+		}
+		$placeholders = implode( ',', array_fill( 0, count( $parents ), '%d' ) );
+		$rows         = $this->platform->fetch_all(
+			'SELECT id FROM ' . $this->platform->table( $short ) . ' WHERE ' . $column . ' IN (' . $placeholders . ')',
+			$parents
+		);
+		$out          = array();
+		foreach ( $rows as $row ) {
+			$out[] = (int) $row['id'];
+		}
 
-		$fixture   = (string) $manifest['fixture_id'];
+		return $out;
+	}
+
+	/**
+	 * Build the ownership predicate for a single table (S-3).
+	 *
+	 * @param string              $short Short table name.
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param array<string,mixed> $scope Collected parent IDs.
+	 * @return array{0:string,1:list<mixed>}|null `[ $where_sql, $params ]` or null when nothing in this table belongs to the fixture.
+	 */
+	public function predicate( string $short, array $manifest, array $scope ): ?array {
 		$clinic_id = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
 		$org_id    = (int) ( $manifest['ids']['organization_id'] ?? 0 );
-		if ( $clinic_id <= 0 || $org_id <= 0 ) {
-			return array(
-				'ok'       => false,
-				'problems' => array( 'شناسهٔ درمانگاه/سازمان در فایل مالکیت موجود نیست.' ),
-				'plan'     => array(),
-				'unknown'  => array(),
+		$mobile    = (string) ( $manifest['patient_mobile'] ?? '' );
+
+		switch ( $short ) {
+			case 'cpms_clinics':
+				return $clinic_id > 1 ? array( 'id = %d', array( $clinic_id ) ) : null;
+			case 'cpms_organizations':
+				return $org_id > 1 ? array( 'id = %d', array( $org_id ) ) : null;
+			case 'cpms_payment_adjustments':
+			case 'cpms_invoice_items':
+				return $this->in_clause( 'invoice_id', (array) ( $scope['invoice_ids'] ?? array() ) );
+			case 'cpms_prescription_items':
+				return $this->in_clause( 'prescription_id', (array) ( $scope['prescription_ids'] ?? array() ) );
+			case 'cpms_visit_status_history':
+				return $this->in_clause( 'visit_id', (array) ( $scope['visit_ids'] ?? array() ) );
+			case 'cpms_clinical_note_versions':
+				return $this->in_clause( 'note_id', (array) ( $scope['note_ids'] ?? array() ) );
+			case 'cpms_handwriting_pages':
+				return $this->in_clause( 'document_id', (array) ( $scope['hw_doc_ids'] ?? array() ) );
+			case 'cpms_handwriting_page_versions':
+				return $this->in_clause( 'page_id', (array) ( $scope['hw_page_ids'] ?? array() ) );
+			case 'cpms_clinician_locations':
+				return $this->in_clause( 'clinician_id', (array) ( $scope['clinician_ids'] ?? array() ) );
+			case 'cpms_membership_locations':
+			case 'cpms_membership_capabilities':
+				return $this->in_clause( 'membership_id', (array) ( $scope['clinic_membership_ids'] ?? array() ) );
+			case 'cpms_custom_role_capabilities':
+				return $this->in_clause( 'role_def_id', (array) ( $scope['custom_role_def_ids'] ?? array() ) );
+			case 'cpms_organization_membership_capabilities':
+				return $this->in_clause( 'membership_id', (array) ( $scope['org_membership_ids'] ?? array() ) );
+			case 'cpms_jobs':
+				$pred = $this->platform->owned_jobs_predicate( $scope );
+				return '1 = 0' === $pred[0] ? null : $pred;
+			case 'cpms_operational_logs':
+				$pred = $this->platform->owned_oplogs_predicate( $scope );
+				return '1 = 0' === $pred[0] ? null : $pred;
+			case 'cpms_audit_logs':
+				$pred = $this->platform->owned_audit_logs_predicate( $scope );
+				return '1 = 0' === $pred[0] ? null : $pred;
+			case 'cpms_rate_limits':
+				$pred = $this->platform->owned_rate_limits_predicate( $scope );
+				return '1 = 0' === $pred[0] ? null : $pred;
+			case 'cpms_otp_tokens':
+				if ( $clinic_id > 1 && '' !== $mobile ) {
+					return array( '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))', array( $clinic_id, $mobile ) );
+				}
+				if ( $clinic_id > 1 ) {
+					return array( 'clinic_id = %d', array( $clinic_id ) );
+				}
+				if ( '' !== $mobile ) {
+					return array( '(clinic_id IS NULL AND mobile = %s)', array( $mobile ) );
+				}
+				return null;
+			default:
+				$full = $this->platform->table( $short );
+				$cols = $this->platform->columns( $full );
+				if ( in_array( 'clinic_id', $cols, true ) ) {
+					return $clinic_id > 1 ? array( 'clinic_id = %d', array( $clinic_id ) ) : null;
+				}
+				if ( in_array( 'organization_id', $cols, true ) ) {
+					return $org_id > 1 ? array( 'organization_id = %d', array( $org_id ) ) : null;
+				}
+
+				return null;
+		}
+	}
+
+	/**
+	 * @param string    $column Column name.
+	 * @param list<int> $ids IDs.
+	 * @return array{0:string,1:list<int>}|null
+	 */
+	private function in_clause( string $column, array $ids ): ?array {
+		$ids = array_values( array_filter( array_map( 'intval', $ids ), static fn ( int $v ): bool => $v > 0 ) );
+		if ( array() === $ids ) {
+			return null;
+		}
+		$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+
+		return array( $column . ' IN (' . $placeholders . ')', $ids );
+	}
+
+	/**
+	 * Verify that every surviving demo object still matches its manifest
+	 * fingerprint AND that no non-demo operational rows have appeared since
+	 * provisioning (S-2, S-3, S-4).
+	 *
+	 * Does not require every intended fixture entity to exist when recovering
+	 * partial work or interrupted teardown.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return array{ok:bool,problems:list<string>,plan:list<array{table:string,rows:int,total:int,foreign_rows:int}>,users:list<int>,page_id:int}
+	 */
+	public function verify( array $manifest ): array {
+		$problems  = array();
+		$clinic_id = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
+		$org_id    = (int) ( $manifest['ids']['organization_id'] ?? 0 );
+		$fixture   = (string) ( $manifest['fixture_id'] ?? '' );
+		$admin_id  = (int) ( $manifest['admin_id'] ?? 0 );
+
+		if ( 1 !== preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+			$problems[] = 'شناسهٔ دمو در فایل مالکیت نامعتبر است.';
+		}
+		if ( 1 === $clinic_id || 1 === $org_id ) {
+			$problems[] = 'شناسهٔ سازمان/درمانگاه پایه (1) هرگز در محدودهٔ حذف قرار نمی‌گیرد.';
+		}
+
+		// Verify that default bootstrap Organization 1 / Clinic 1 / Location 1 still exist and are untouched.
+		$default_org = $this->platform->fetch_row(
+			'SELECT id, slug, status FROM ' . $this->platform->table( 'cpms_organizations' ) . ' WHERE id = %d',
+			array( 1 )
+		);
+		$default_clinic = $this->platform->fetch_row(
+			'SELECT id, organization_id, slug, status FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d',
+			array( 1 )
+		);
+		if ( null === $default_org || 'default' !== (string) ( $default_org['slug'] ?? '' ) || null === $default_clinic || 'default' !== (string) ( $default_clinic['slug'] ?? '' ) ) {
+			$problems[] = 'سازمان یا درمانگاه پیش‌فرض (شناسه 1) دست‌کاری شده است.';
+		}
+
+		if ( $org_id > 1 ) {
+			$organization = $this->platform->fetch_row(
+				'SELECT id, slug FROM ' . $this->platform->table( 'cpms_organizations' ) . ' WHERE id = %d',
+				array( $org_id )
 			);
-		}
-
-		$clinic = $this->platform->fetch_row(
-			'SELECT id, organization_id, slug FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d',
-			array( $clinic_id )
-		);
-		if ( null === $clinic || (int) $clinic['organization_id'] !== $org_id || $clinic['slug'] !== $manifest['slugs']['clinic'] ) {
-			$problems[] = 'درمانگاه ساختگی با شناسهٔ ثبت‌شده هم‌خوان نیست.';
-		}
-		$organization = $this->platform->fetch_row(
-			'SELECT id, slug FROM ' . $this->platform->table( 'cpms_organizations' ) . ' WHERE id = %d',
-			array( $org_id )
-		);
-		if ( null === $organization || $organization['slug'] !== $manifest['slugs']['organization'] ) {
-			$problems[] = 'سازمان ساختگی با شناسهٔ ثبت‌شده هم‌خوان نیست.';
-		}
-
-		$all_clinics = $this->platform->fetch_all(
-			'SELECT id FROM ' . $this->platform->table( 'cpms_clinics' ) . ' ORDER BY id'
-		);
-		foreach ( $all_clinics as $c_row ) {
-			$cid = (int) ( $c_row['id'] ?? 0 );
-			if ( 1 !== $cid && $clinic_id !== $cid ) {
-				$problems[] = 'درمانگاه دیگری (id=' . $cid . ') خارج از دمو در سایت وجود دارد.';
+			if ( null !== $organization && (string) ( $organization['slug'] ?? '' ) !== (string) ( $manifest['slugs']['organization'] ?? '' ) ) {
+				$problems[] = 'سازمان دمو با Slug ثبت‌شده هم‌خوان نیست.';
 			}
 		}
 
-		$all_orgs = $this->platform->fetch_all(
-			'SELECT id FROM ' . $this->platform->table( 'cpms_organizations' ) . ' ORDER BY id'
-		);
-		foreach ( $all_orgs as $o_row ) {
-			$oid = (int) ( $o_row['id'] ?? 0 );
-			if ( 1 !== $oid && $org_id !== $oid ) {
-				$problems[] = 'سازمان دیگری (id=' . $oid . ') خارج از دمو در سایت وجود دارد.';
+		if ( $clinic_id > 1 ) {
+			$clinic = $this->platform->fetch_row(
+				'SELECT id, organization_id, slug FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d',
+				array( $clinic_id )
+			);
+			if ( null !== $clinic ) {
+				if ( (int) ( $clinic['organization_id'] ?? 0 ) !== $org_id || (string) ( $clinic['slug'] ?? '' ) !== (string) ( $manifest['slugs']['clinic'] ?? '' ) ) {
+					$problems[] = 'درمانگاه دمو با سازمان یا Slug ثبت‌شده هم‌خوان نیست.';
+				}
 			}
 		}
 
-		$users = (array) ( $manifest['ids']['user_ids'] ?? array() );
+		$users              = (array) ( $manifest['ids']['user_ids'] ?? array() );
+		$surviving_user_ids = array();
 		foreach ( Credentials::PERSONA_ORDER as $persona ) {
-			$user_id = (int) ( $users[ $persona ] ?? 0 );
-			$account = $user_id > 0 ? $this->env->user( $user_id ) : null;
-			if ( null === $account ) {
-				$problems[] = 'حساب «' . $persona . '» یافت نشد.';
+			$uid = (int) ( $users[ $persona ] ?? 0 );
+			if ( $uid <= 0 && 1 === preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+				$by_login = $this->env->user_by_login( 'cpdd-' . $persona . '-' . $fixture );
+				if ( null !== $by_login ) {
+					$uid = (int) $by_login['id'];
+				}
+			}
+			if ( $uid <= 0 ) {
 				continue;
 			}
-			if ( $user_id === $admin_id ) {
-				$problems[] = 'حساب مدیر جاری در فهرست حذف قرار گرفته است؛ عملیات مسدود شد.';
+			if ( $uid === $admin_id ) {
+				$problems[] = 'حساب مدیر کل هرگز در محدودهٔ حذف قرار نمی‌گیرد.';
+				continue;
 			}
-			if ( in_array( 'administrator', $account['roles'], true ) || $this->env->user_can( $user_id, 'manage_options' ) ) {
-				$problems[] = 'حساب «' . $persona . '» اختیار مدیریتی دارد و هرگز حذف نمی‌شود.';
+			$account = $this->env->user( $uid );
+			if ( null === $account ) {
+				// Surviving record check (S-4): previously deleted fixture user does not block recovery.
+				continue;
 			}
-			if ( ! str_starts_with( $account['login'], 'cpdd-' . $persona . '-' . $fixture ) ) {
+			if ( 'cpdd-' . $persona . '-' . $fixture !== (string) $account['login'] ) {
 				$problems[] = 'نام کاربری «' . $persona . '» با شناسهٔ دمو هم‌خوان نیست.';
+				continue;
+			}
+			if ( in_array( 'administrator', $account['roles'], true ) || $this->env->user_can( $uid, 'manage_options' ) ) {
+				$problems[] = 'حساب «' . $persona . '» دارای اختیار مدیریتی غیرمجاز است؛ حذف متوقف شد.';
+				continue;
+			}
+			$surviving_user_ids[ $persona ] = $uid;
+		}
+
+		// Ensure no foreign WordPress user was created outside the fixture and the acting Admin.
+		$allowed_wp_users = array_merge( array( $admin_id ), array_values( $surviving_user_ids ) );
+		foreach ( $this->env->all_users() as $wp_user ) {
+			$wp_uid = (int) ( $wp_user['id'] ?? 0 );
+			if ( ! in_array( $wp_uid, $allowed_wp_users, true ) ) {
+				$problems[] = 'حساب کاربری غیرآزمایشی «' . (string) ( $wp_user['login'] ?? $wp_uid ) . '» در سایت وجود دارد.';
 			}
 		}
 
-		$page_id = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
-		$page    = $page_id > 0 ? $this->env->post( $page_id ) : null;
-		if ( null === $page || 'page' !== $page['type'] || $page['slug'] !== $manifest['slugs']['page'] ) {
-			$problems[] = 'برگهٔ عمومی رزرو با شناسهٔ ثبت‌شده هم‌خوان نیست.';
-		} elseif ( ! str_contains( $page['content'], $this->platform->booking_shortcode( $clinic_id ) ) ) {
-			$problems[] = 'برگهٔ عمومی رزرو، Shortcode همان درمانگاه ساختگی را ندارد.';
+		$page_id        = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
+		$surviving_page = 0;
+		if ( $page_id > 0 ) {
+			$page = $this->env->post( $page_id );
+			if ( null !== $page ) {
+				if ( 'page' !== $page['type'] || (string) $page['slug'] !== (string) ( $manifest['slugs']['page'] ?? '' ) || ! str_contains( (string) ( $page['content'] ?? '' ), '[cpms_public_booking' ) ) {
+					$problems[] = 'برگهٔ رزرو آزمایشی تغییر یافته است؛ حذف خودکار متوقف شد.';
+				} else {
+					$surviving_page = $page_id;
+				}
+			}
+		}
+
+		$unknown_tables = array();
+		foreach ( $this->platform->table_names() as $short ) {
+			if ( ! in_array( $short, Preflight::KNOWN_TABLES, true ) && $this->platform->count_all( $short ) > 0 ) {
+				$unknown_tables[] = $short;
+				$problems[]       = 'جدول ناشناختهٔ «' . $short . '» شامل داده است؛ حذف متوقف شد.';
+			}
+		}
+		if ( $this->platform->table_exists( 'cpms_license_state' ) && $this->platform->count_all( 'cpms_license_state' ) > 0 ) {
+			$problems[] = 'سند مجوز تجاری در cpms_license_state ثبت شده است؛ حذف متوقف شد.';
+		}
+		if ( $this->platform->table_exists( 'cpms_license_install' ) && $this->platform->count_all( 'cpms_license_install' ) > 1 ) {
+			$problems[] = 'cpms_license_install شامل بیش از یک رکورد نصب است؛ حذف متوقف شد.';
 		}
 
 		$scope = $this->scope_ids( $manifest );
-
-		foreach ( $this->platform->table_names() as $short ) {
-			if ( ! in_array( $short, Preflight::KNOWN_TABLES, true ) ) {
-				$count = $this->platform->count_all( $short );
-				if ( $count > 0 ) {
-					$unknown[] = $short . ' (' . $count . ' ردیف)';
-				}
+		$plan  = array();
+		foreach ( self::DELETE_ORDER as $short ) {
+			if ( ! $this->platform->table_exists( $short ) ) {
 				continue;
 			}
-			if ( in_array( $short, self::BASELINE_TABLES, true ) ) {
-				if ( 'cpms_schema_migrations' === $short && CPMS_DEMO_SCHEMA_VERSION !== $this->platform->schema_version() ) {
-					$problems[] = 'نسخهٔ Schema جدول cpms_schema_migrations تغییر کرده است.';
-				} elseif ( 'cpms_license_install' === $short && $this->platform->count_all( $short ) > 1 ) {
-					$problems[] = 'جدول cpms_license_install بیش از یک ردیف نصب دارد.';
-				} elseif ( 'cpms_license_state' === $short && $this->platform->count_all( $short ) > 0 ) {
-					$problems[] = 'سند مجوز فعال در cpms_license_state وجود دارد.';
-				}
-				continue;
+			$full      = $this->platform->table( $short );
+			$predicate = $this->predicate( $short, $manifest, $scope );
+			$rows      = null === $predicate ? 0 : $this->platform->count_where( $full, $predicate[0], $predicate[1] );
+			$total     = $this->platform->count_all( $short );
+			$baseline  = $this->expected_baseline( $short );
+			$foreign   = max( 0, $total - $rows - $baseline );
+			if ( $foreign > 0 ) {
+				$problems[] = $short . ' شامل ' . $foreign . ' ردیف خارج از محدودهٔ دمو است؛ برای حفاظت از داده متوقف شد.';
 			}
-
-			$columns   = $this->platform->columns( $this->platform->table( $short ) );
-			$predicate = $this->predicate( $short, $columns, $manifest, $scope );
-			if ( null === $predicate ) {
-				$count = $this->platform->count_all( $short );
-				if ( $count > 0 ) {
-					$unknown[] = $short . ' (بدون ستون مالکیت؛ ' . $count . ' ردیف)';
-				}
-				continue;
-			}
-			$rows = $this->platform->count_where( $this->platform->table( $short ), $predicate['where'], $predicate['params'] );
-			if ( in_array( $short, Preflight::OPERATIONAL_TABLES, true ) ) {
-				$total = $this->platform->count_all( $short );
-				if ( $total > $rows ) {
-					$unknown[] = $short . ' (' . ( $total - $rows ) . ' ردیف خارج از مالکیت دمو)';
-					continue;
-				}
-			}
-			if ( $rows > 0 ) {
-				$plan[] = array(
-					'table'     => $short,
-					'predicate' => $predicate['label'],
-					'rows'      => $rows,
-				);
-			}
-		}
-
-		if ( array() !== $unknown ) {
-			$problems[] = 'مالکیت برخی جدول‌های دارای داده قابل اثبات نیست: ' . implode( ', ', $unknown );
+			$plan[] = array(
+				'table'        => $short,
+				'predicate'    => null === $predicate ? '—' : $predicate[0],
+				'rows'         => $rows,
+				'total'        => $total,
+				'foreign_rows' => $foreign,
+			);
 		}
 
 		return array(
 			'ok'       => array() === $problems,
 			'problems' => $problems,
+			'unknown'  => $unknown_tables,
 			'plan'     => $plan,
-			'unknown'  => $unknown,
+			'users'    => array_values( $surviving_user_ids ),
+			'page_id'  => $surviving_page,
 		);
 	}
 
 	/**
-	 * @param string                  $short    Table short name.
-	 * @param list<string>            $columns  Columns.
-	 * @param array<string,mixed>     $manifest Manifest.
-	 * @param array<string,list<int>> $scope    Parent IDs in fixture scope.
-	 * @return array{where:string,params:list<mixed>,label:string}|null
-	 */
-	private function predicate( string $short, array $columns, array $manifest, array $scope ): ?array {
-		$clinic_id = (int) $manifest['ids']['clinic_id'];
-		$org_id    = (int) $manifest['ids']['organization_id'];
-		$users     = array_values( array_map( 'intval', (array) $manifest['ids']['user_ids'] ) );
-		$clinician = (int) ( $manifest['ids']['clinician_id'] ?? 0 );
-
-		// Explicit child tables linked via foreign key to a parent table.
-		switch ( $short ) {
-			case 'cpms_invoice_items':
-			case 'cpms_payment_adjustments':
-				return $this->in_predicate( 'invoice_id', $scope['invoice_ids'] ?? array(), 'invoice_id∈fixture' );
-
-			case 'cpms_prescription_items':
-				return $this->in_predicate( 'prescription_id', $scope['prescription_ids'] ?? array(), 'prescription_id∈fixture' );
-
-			case 'cpms_visit_status_history':
-				return $this->in_predicate( 'visit_id', $scope['visit_ids'] ?? array(), 'visit_id∈fixture' );
-
-			case 'cpms_clinical_note_versions':
-				return $this->in_predicate( 'note_id', $scope['note_ids'] ?? array(), 'note_id∈fixture' );
-
-			case 'cpms_handwriting_pages':
-				return $this->in_predicate( 'document_id', $scope['hw_doc_ids'] ?? array(), 'document_id∈fixture' );
-
-			case 'cpms_handwriting_page_versions':
-				return $this->in_predicate( 'page_id', $scope['hw_page_ids'] ?? array(), 'page_id∈fixture' );
-
-			case 'cpms_clinician_locations':
-				return $this->in_predicate( 'clinician_id', $scope['clinician_ids'] ?? array(), 'clinician_id∈fixture' );
-
-			case 'cpms_membership_capabilities':
-			case 'cpms_membership_locations':
-				return $this->in_predicate( 'membership_id', $scope['clinic_membership_ids'] ?? array(), 'membership_id∈fixture' );
-
-			case 'cpms_custom_role_capabilities':
-				return $this->in_predicate( 'role_def_id', $scope['custom_role_def_ids'] ?? array(), 'role_def_id∈fixture' );
-
-			case 'cpms_organization_membership_capabilities':
-				return $this->in_predicate( 'membership_id', $scope['org_membership_ids'] ?? array(), 'org_membership_id∈fixture' );
-
-			case 'cpms_jobs':
-				$max_job_id = (int) ( $manifest['ids']['baseline_max_job_id'] ?? 0 );
-
-				return array(
-					'where'  => 'id > %d',
-					'params' => array( $max_job_id ),
-					'label'  => 'id>' . $max_job_id,
-				);
-
-			case 'cpms_operational_logs':
-				$max_oplog_id = (int) ( $manifest['ids']['baseline_max_oplog_id'] ?? 0 );
-
-				return array(
-					'where'  => 'id > %d',
-					'params' => array( $max_oplog_id ),
-					'label'  => 'id>' . $max_oplog_id,
-				);
-
-			case 'cpms_audit_logs':
-				$max_audit_id = (int) ( $manifest['ids']['baseline_max_audit_id'] ?? 0 );
-
-				return array(
-					'where'  => 'id > %d',
-					'params' => array( $max_audit_id ),
-					'label'  => 'id>' . $max_audit_id,
-				);
-
-			case 'cpms_rate_limits':
-				return array(
-					'where'  => 'window_id >= %d',
-					'params' => array( 0 ),
-					'label'  => 'window_id>=0',
-				);
-		}
-
-		if ( 'cpms_clinics' === $short && in_array( 'id', $columns, true ) ) {
-			return array(
-				'where'  => 'id = %d',
-				'params' => array( $clinic_id ),
-				'label'  => 'clinic=' . $clinic_id,
-			);
-		}
-		if ( 'cpms_organizations' === $short && in_array( 'id', $columns, true ) ) {
-			return array(
-				'where'  => 'id = %d',
-				'params' => array( $org_id ),
-				'label'  => 'organization=' . $org_id,
-			);
-		}
-		if ( in_array( 'clinic_id', $columns, true ) ) {
-			return array(
-				'where'  => 'clinic_id = %d',
-				'params' => array( $clinic_id ),
-				'label'  => 'clinic_id=' . $clinic_id,
-			);
-		}
-		if ( in_array( 'organization_id', $columns, true ) ) {
-			return array(
-				'where'  => 'organization_id = %d',
-				'params' => array( $org_id ),
-				'label'  => 'organization_id=' . $org_id,
-			);
-		}
-		$patient_ids = $scope['patient_ids'] ?? array();
-		if ( in_array( 'patient_id', $columns, true ) && array() !== $patient_ids ) {
-			return $this->in_predicate( 'patient_id', $patient_ids, 'patient_id∈fixture' );
-		}
-		foreach ( array( 'wp_user_id', 'user_id', 'actor_wp_user_id' ) as $column ) {
-			if ( in_array( $column, $columns, true ) && array() !== $users ) {
-				return $this->in_predicate( $column, $users, $column . '∈fixture' );
-			}
-		}
-		if ( in_array( 'clinician_id', $columns, true ) && $clinician > 0 ) {
-			return array(
-				'where'  => 'clinician_id = %d',
-				'params' => array( $clinician ),
-				'label'  => 'clinician_id=' . $clinician,
-			);
-		}
-
-		return null;
-	}
-
-	/**
-	 * Delete only proven-owned objects, then prove the result.
+	 * Read-only ownership and foreign-row diagnostic report for the admin UI.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
-	 * @param int                 $admin_id Acting Administrator.
-	 * @return array{ok:bool,deleted:array<string,int>,remaining:list<string>,problems:list<string>}
-	 * @throws Exception When ownership is not proven (nothing is deleted).
+	 * @param int                 $actor_id Acting Administrator.
+	 * @return array{ok:bool,problems:list<string>,plan:list<array{table:string,predicate:string,rows:int,total:int,foreign_rows:int}>,users:list<int>,page_id:int}
 	 */
-	public function execute( array $manifest, int $admin_id ): array {
-		$verification = $this->verify( $manifest, $admin_id );
-		if ( ! $verification['ok'] ) {
-			throw new Exception(
-				'TEARDOWN_BLOCKED',
-				'پاک‌سازی مسدود شد؛ مالکیت کامل اثبات نشد: ' . implode( ' | ', array_slice( $verification['problems'], 0, 4 ) )
-			);
-		}
+	public function diagnose( array $manifest, int $actor_id = 0 ): array {
+		unset( $actor_id );
 
-		$scope   = $this->scope_ids( $manifest );
-		$deleted = array();
-		foreach ( self::DELETE_ORDER as $short ) {
-			if ( ! $this->platform->table_exists( $short ) ) {
-				continue;
-			}
-			$columns   = $this->platform->columns( $this->platform->table( $short ) );
-			$predicate = $this->predicate( $short, $columns, $manifest, $scope );
-			if ( null === $predicate ) {
-				continue;
-			}
-			$count = $this->platform->delete_where( $this->platform->table( $short ), $predicate['where'], $predicate['params'] );
-			if ( $count > 0 ) {
-				$deleted[ $short ] = $count;
-			}
-		}
-
-		$users = (array) ( $manifest['ids']['user_ids'] ?? array() );
-		foreach ( Credentials::PERSONA_ORDER as $persona ) {
-			$user_id = (int) ( $users[ $persona ] ?? 0 );
-			$account = $user_id > 0 ? $this->env->user( $user_id ) : null;
-			if ( null === $account ) {
-				continue;
-			}
-			if ( $user_id === $admin_id || in_array( 'administrator', $account['roles'], true ) ) {
-				throw new Exception( 'TEARDOWN_BLOCKED', 'حساب مدیر در محدودهٔ حذف قرار گرفت؛ عملیات متوقف شد.' );
-			}
-			if ( $this->env->delete_user( $user_id ) ) {
-				$deleted['wp_users'] = ( $deleted['wp_users'] ?? 0 ) + 1;
-			}
-		}
-
-		$page_id = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
-		if ( $page_id > 0 && null !== $this->env->post( $page_id ) ) {
-			if ( $this->env->delete_post( $page_id ) ) {
-				$deleted['wp_posts'] = 1;
-			}
-		}
-
-		$this->manifest->delete();
-
-		$remaining = array();
-		foreach ( $this->platform->table_names() as $short ) {
-			if ( ! in_array( $short, Preflight::KNOWN_TABLES, true ) ) {
-				if ( $this->platform->count_all( $short ) > 0 ) {
-					$remaining[] = $short;
-				}
-				continue;
-			}
-			if ( in_array( $short, self::BASELINE_TABLES, true ) ) {
-				continue;
-			}
-			$columns   = $this->platform->columns( $this->platform->table( $short ) );
-			$predicate = $this->predicate( $short, $columns, $manifest, $scope );
-			if ( null === $predicate ) {
-				if ( $this->platform->count_all( $short ) > 0 ) {
-					$remaining[] = $short;
-				}
-				continue;
-			}
-			if ( $this->platform->count_where( $this->platform->table( $short ), $predicate['where'], $predicate['params'] ) > 0 ) {
-				$remaining[] = $short;
-			}
-		}
-		foreach ( Credentials::PERSONA_ORDER as $persona ) {
-			$user_id = (int) ( $users[ $persona ] ?? 0 );
-			if ( $user_id > 0 && null !== $this->env->user( $user_id ) ) {
-				$remaining[] = 'wp_user:' . $persona;
-			}
-		}
-		if ( $page_id > 0 && null !== $this->env->post( $page_id ) ) {
-			$remaining[] = 'wp_page';
-		}
-
-		if ( array() === $remaining && (int) $manifest['ids']['organization_id'] > 0 ) {
-			$clinic_left = $this->platform->fetch_row(
-				'SELECT id FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d',
-				array( (int) $manifest['ids']['clinic_id'] )
-			);
-			if ( null !== $clinic_left ) {
-				$remaining[] = 'cpms_clinics';
-			}
-		}
-
-		$summary = array(
-			'fixture_id' => (string) $manifest['fixture_id'],
-			'ok'         => array() === $remaining,
-			'deleted'    => $deleted,
-			'remaining'  => $remaining,
-		);
-		$this->manifest->write_tombstone( $summary );
-
-		return $summary;
+		return $this->verify( $manifest );
 	}
 
 	/**
-	 * Read-only diagnostic for tables that still hold fixture rows. Never
-	 * deletes anything; used when teardown must refuse.
+	 * Rows that belong to the untouched CPMS bootstrap in tables shared with the
+	 * demo (Organization 1, Clinic 1, Location 1, system heartbeat, recurring
+	 * jobs, migration/activation operational logs).
 	 *
-	 * @param array<string,mixed> $manifest Manifest.
-	 * @param int                 $admin_id Actor.
-	 * @return array<string,mixed>
+	 * @param string $short Short table name.
+	 * @return int
 	 */
-	public function diagnose( array $manifest, int $admin_id ): array {
-		$verification = $this->verify( $manifest, $admin_id );
+	private function expected_baseline( string $short ): int {
+		switch ( $short ) {
+			case 'cpms_organizations':
+				return $this->platform->count_where(
+					$this->platform->table( 'cpms_organizations' ),
+					'id = %d AND slug = %s',
+					array( 1, 'default' )
+				);
+			case 'cpms_clinics':
+				return $this->platform->count_where(
+					$this->platform->table( 'cpms_clinics' ),
+					'id = %d AND organization_id = %d AND slug = %s',
+					array( 1, 1, 'default' )
+				);
+			case 'cpms_locations':
+				return $this->platform->count_where(
+					$this->platform->table( 'cpms_locations' ),
+					'id = %d AND clinic_id = %d AND slug = %s',
+					array( 1, 1, 'main' )
+				);
+			case 'cpms_settings':
+				return $this->platform->count_where(
+					$this->platform->table( 'cpms_settings' ),
+					'clinic_id = %d AND `key` = %s',
+					array( 1, 'jobs.last_tick_at' )
+				);
+			case 'cpms_jobs':
+				return $this->platform->baseline_jobs_count();
+			case 'cpms_operational_logs':
+				return $this->platform->baseline_oplogs_count();
+			default:
+				return 0;
+		}
+	}
+
+	/**
+	 * Execute the verified teardown under the concurrency lock (S-2, S-4, S-5).
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param int                 $actor_id Acting Administrator.
+	 * @return array{ok:bool,deleted:array<string,int>,remaining:list<string>,tombstone:array<string,mixed>}
+	 * @throws Exception When verification fails or any post-delete residual remains.
+	 */
+	public function execute( array $manifest, int $actor_id ): array {
+		return $this->env->with_lock(
+			'teardown',
+			function () use ( $manifest, $actor_id ): array {
+				return $this->do_execute( $manifest, $actor_id );
+			}
+		);
+	}
+
+	/**
+	 * Internal teardown implementation executed under the concurrency lock.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param int                 $actor_id Acting Administrator.
+	 * @return array{ok:bool,deleted:array<string,int>,remaining:list<string>,tombstone:array<string,mixed>}
+	 * @throws Exception When verification fails or any delete/post-check fails.
+	 */
+	private function do_execute( array $manifest, int $actor_id ): array {
+		$report = $this->verify( $manifest );
+		if ( ! $report['ok'] ) {
+			throw new Exception( 'TEARDOWN_BLOCKED', 'حذف ایمن متوقف شد: ' . implode( ' | ', array_slice( $report['problems'], 0, 3 ) ) );
+		}
+
+		$scope                      = $this->scope_ids( $manifest );
+		$manifest['status']         = 'tearing_down';
+		$manifest['teardown_started'] = true;
+		$manifest['scope_snapshot'] = $scope;
+		$manifest                   = $this->manifest->save( $manifest );
+
+		$deleted = array();
+		$stage   = 'tables';
+
+		try {
+			foreach ( $report['plan'] as $step ) {
+				$short     = $step['table'];
+				$stage     = 'table:' . $short;
+				$predicate = $this->predicate( $short, $manifest, $scope );
+				if ( null === $predicate || 0 === $step['rows'] ) {
+					$deleted[ $short ] = 0;
+					continue;
+				}
+				$full              = $this->platform->table( $short );
+				$deleted[ $short ] = $this->platform->delete_where( $full, $predicate[0], $predicate[1] );
+			}
+
+			$stage   = 'booking_page';
+			$page_id = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
+			if ( $page_id > 0 && null !== $this->env->post( $page_id ) ) {
+				$this->env->maybe_inject_fault( 'teardown:delete_post', array( 'page_id' => $page_id ) );
+				if ( ! $this->env->delete_post( $page_id ) ) {
+					throw new Exception( 'POST_DELETE_FAILED', 'حذف برگهٔ رزرو آزمایشی ناموفق بود.' );
+				}
+				$deleted['booking_page'] = 1;
+			} else {
+				$deleted['booking_page'] = 0;
+			}
+
+			$deleted['users'] = 0;
+			$users            = (array) ( $manifest['ids']['user_ids'] ?? array() );
+			$fixture          = (string) ( $manifest['fixture_id'] ?? '' );
+			foreach ( Credentials::PERSONA_ORDER as $persona ) {
+				$stage = 'user:' . $persona;
+				$uid   = (int) ( $users[ $persona ] ?? 0 );
+				if ( $uid <= 0 && 1 === preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+					$by_login = $this->env->user_by_login( 'cpdd-' . $persona . '-' . $fixture );
+					if ( null !== $by_login ) {
+						$uid = (int) $by_login['id'];
+					}
+				}
+				if ( $uid <= 0 || null === $this->env->user( $uid ) ) {
+					continue;
+				}
+				$this->env->maybe_inject_fault( 'teardown:delete_user:' . $persona, array( 'persona' => $persona, 'user_id' => $uid ) );
+				$this->env->maybe_inject_fault( 'teardown:delete_user', array( 'persona' => $persona, 'user_id' => $uid ) );
+				$this->env->destroy_sessions( $uid );
+				if ( ! $this->env->delete_user( $uid ) ) {
+					throw new Exception( 'USER_DELETE_FAILED', 'حذف حساب آزمایشی «' . $persona . '» ناموفق بود.' );
+				}
+				++$deleted['users'];
+			}
+
+			$stage     = 'post_verify';
+			$remaining = array();
+			$post_scope = $this->scope_ids( $manifest );
+			foreach ( self::DELETE_ORDER as $short ) {
+				if ( ! $this->platform->table_exists( $short ) ) {
+					continue;
+				}
+				$full      = $this->platform->table( $short );
+				$predicate = $this->predicate( $short, $manifest, $post_scope );
+				$owned_rem = null === $predicate ? 0 : $this->platform->count_where( $full, $predicate[0], $predicate[1] );
+				$total_rem = $this->platform->count_all( $short );
+				$base_rem  = $this->expected_baseline( $short );
+				if ( $owned_rem > 0 || $total_rem > $base_rem ) {
+					$remaining[] = $short;
+				}
+			}
+			foreach ( Credentials::PERSONA_ORDER as $persona ) {
+				$uid = (int) ( $users[ $persona ] ?? 0 );
+				if ( ( $uid > 0 && null !== $this->env->user( $uid ) )
+					|| ( '' !== $fixture && null !== $this->env->user_by_login( 'cpdd-' . $persona . '-' . $fixture ) )
+				) {
+					$remaining[] = 'user:' . $persona;
+				}
+			}
+			if ( $page_id > 0 && null !== $this->env->post( $page_id ) ) {
+				$remaining[] = 'post:' . $page_id;
+			}
+
+			$this->env->maybe_inject_fault( 'teardown:before_complete', array( 'remaining' => $remaining ) );
+			if ( array() !== $remaining ) {
+				throw new Exception( 'TEARDOWN_INCOMPLETE', 'حذف کامل اثبات نشد؛ اقلام باقی‌مانده: ' . implode( ', ', $remaining ) );
+			}
+		} catch ( \Throwable $error ) {
+			$manifest['status']          = 'teardown_failed';
+			$manifest['failed_stage']    = $stage;
+			$manifest['failure_code']    = $error instanceof Exception ? $error->demo_code() : 'TEARDOWN_FAILED';
+			$manifest['failure_message'] = $error->getMessage();
+			$manifest['partial_deleted'] = $deleted;
+			try {
+				$this->manifest->save( $manifest );
+			} catch ( \Throwable $ignored ) {
+				unset( $ignored );
+			}
+			if ( $error instanceof Exception ) {
+				throw $error;
+			}
+			throw new Exception( 'TEARDOWN_FAILED', 'حذف دمو در مرحلهٔ «' . $stage . '» ناموفق بود: ' . $error->getMessage() );
+		}
+
+		// Cleanup is 100% proven complete: now and only now record the tombstone
+		// and remove cpdd_manifest (S-2).
+		$removed_at = $this->env->now_sql();
+		$tombstone  = array(
+			'fixture_id' => (string) $manifest['fixture_id'],
+			'removed_at' => $removed_at,
+			'at'         => $removed_at,
+			'actor_id'   => $actor_id,
+			'deleted'    => $deleted,
+			'remaining'  => array(),
+			'clean'      => true,
+			'ok'         => true,
+		);
+		$this->env->option_delete( 'cpdd_uninstall_blocked' );
+		$this->manifest->write_tombstone( $tombstone );
+		$this->manifest->delete();
 
 		return array(
-			'ok'       => $verification['ok'],
-			'problems' => $verification['problems'],
-			'plan'     => $verification['plan'],
-			'unknown'  => $verification['unknown'],
+			'ok'        => true,
+			'deleted'   => $deleted,
+			'remaining' => array(),
+			'tombstone' => $tombstone,
 		);
 	}
 }

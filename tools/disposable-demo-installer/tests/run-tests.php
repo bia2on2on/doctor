@@ -17,8 +17,10 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/bootstrap.php';
 
+use CpmsDemo\Admin;
 use CpmsDemo\Credentials;
 use CpmsDemo\Env;
+use CpmsDemo\Exception as DemoException;
 use CpmsDemo\Manifest;
 use CpmsDemo\Otp;
 use CpmsDemo\Platform;
@@ -561,5 +563,339 @@ $ctx['platform']->tables_data['cpms_mystery_table'] = array( array( 'id' => 1 ) 
 $diag = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->diagnose( $post['manifest'], 1 );
 Cpdd_Test::ok( false === $diag['ok'] && array() !== $diag['unknown'], 'teardown: diagnostic reports unprovable ownership without deleting' );
 Cpdd_Test::ok( 2 === count( $ctx['platform']->tables_data['cpms_clinics'] ), 'teardown: diagnostic is read-only' );
+
+// ---------------------------------------------------------------------------
+// 8. S-1 Safe Uninstall (preserve manifest & recovery metadata when active/incomplete)
+// ---------------------------------------------------------------------------
+if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+	define( 'WP_UNINSTALL_PLUGIN', true );
+}
+
+// 8a. Uninstall while demo is active must preserve cpdd_manifest and all fixture rows.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+require CPMS_DEMO_DIR . 'uninstall.php';
+Cpdd_Test::ok( is_array( $ctx['env']->option_get( Manifest::OPTION, null ) ), 's1: uninstall with active fixture preserves cpdd_manifest' );
+Cpdd_Test::ok( is_array( $ctx['env']->option_get( 'cpdd_uninstall_blocked', null ) ), 's1: uninstall with active fixture records cpdd_uninstall_blocked recovery marker' );
+Cpdd_Test::equals( 2, count( $ctx['platform']->tables_data['cpms_clinics'] ), 's1: uninstall never auto-deletes clinic or clinical records' );
+Cpdd_Test::equals( 7, count( $ctx['env']->users ), 's1: uninstall never auto-deletes WordPress users' );
+
+// Reinstall & recover: Teardown::execute() succeeds and clears cpdd_uninstall_blocked.
+$res_after_reinstall = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $ctx['manifest']->load(), 1 );
+Cpdd_Test::ok( true === $res_after_reinstall['ok'], 's1: after reinstalling companion plugin, teardown recovers cleanly' );
+Cpdd_Test::ok( false === $ctx['env']->option_get( 'cpdd_uninstall_blocked', false ), 's1: clean teardown clears cpdd_uninstall_blocked marker' );
+
+// 8b. Uninstall after clean teardown removes tombstone and leaves zero cpdd_* options.
+require CPMS_DEMO_DIR . 'uninstall.php';
+Cpdd_Test::ok( false === $ctx['env']->option_get( Manifest::TOMBSTONE, false ), 's1: uninstall after clean teardown removes cpdd_tombstone' );
+Cpdd_Test::ok( false === $ctx['env']->option_get( Manifest::OPTION, false ), 's1: uninstall after clean teardown leaves no cpdd_manifest' );
+
+// ---------------------------------------------------------------------------
+// 9. S-2 Safe Teardown (fail closed on SQL/post/user error, preserve manifest)
+// ---------------------------------------------------------------------------
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->fail_delete_on = 'cpms_visits';
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'SQL_DELETE_FAILED',
+	's2: SQL failure during table deletion fails closed with SQL_DELETE_FAILED'
+);
+$failed_manifest = $ctx['manifest']->load();
+Cpdd_Test::ok( is_array( $failed_manifest ), 's2: cpdd_manifest is preserved when teardown fails partway through' );
+Cpdd_Test::equals( 'teardown_failed', $failed_manifest['status'] ?? '', 's2: manifest status records teardown_failed' );
+Cpdd_Test::equals( 'table:cpms_visits', $failed_manifest['failed_stage'] ?? '', 's2: manifest records exact failed stage' );
+Cpdd_Test::ok( false === $ctx['env']->option_get( Manifest::TOMBSTONE, false ), 's2: tombstone is not written when teardown fails' );
+
+// Uninstall during teardown_failed must also preserve manifest!
+require CPMS_DEMO_DIR . 'uninstall.php';
+Cpdd_Test::ok( is_array( $ctx['manifest']->load() ), 's1/s2: uninstall during teardown_failed preserves cpdd_manifest' );
+
+// Retry teardown after SQL error is resolved: recovers using scope_snapshot and completes cleanly.
+$ctx['platform']->fail_delete_on = null;
+$retry_res = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $ctx['manifest']->load(), 1 );
+Cpdd_Test::ok( true === $retry_res['ok'], 's2: retry after mid-teardown SQL failure completes cleanly' );
+Cpdd_Test::ok( null === $ctx['manifest']->load(), 's2: manifest deleted only after retry proves cleanup complete' );
+
+// User deletion failure during teardown preserves manifest and supports retry.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['env']->delete_user_result = false;
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'USER_DELETE_FAILED',
+	's2: user deletion failure fails closed with USER_DELETE_FAILED'
+);
+Cpdd_Test::equals( 'teardown_failed', $ctx['manifest']->load()['status'] ?? '', 's2: manifest preserved on user deletion failure' );
+$ctx['env']->delete_user_result = true;
+$retry_user_res = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $ctx['manifest']->load(), 1 );
+Cpdd_Test::ok( true === $retry_user_res['ok'], 's2: retry after user deletion failure completes cleanly' );
+
+// ---------------------------------------------------------------------------
+// 10. S-3 Record Ownership (durable relationships, preflight & teardown foreign rows)
+// ---------------------------------------------------------------------------
+// 10a. Pre-existing foreign rows before provisioning are caught by Preflight.
+foreach ( array(
+	'cpms_audit_logs'       => array( 'id' => 1, 'clinic_id' => 1, 'action' => 'PATIENT_CREATE' ),
+	'cpms_drug_reference'   => array( 'id' => 1, 'clinic_id' => 1, 'generic_name' => 'Aspirin' ),
+	'cpms_rate_limits'      => array( 'window_key' => 'otp-day:09121112233', 'window_id' => 1, 'hits' => 1 ),
+	'cpms_jobs'             => array( 'id' => 99, 'type' => 'sms.send', 'status' => 'queued', 'payload_json' => '{"message_id":5}' ),
+	'cpms_operational_logs' => array( 'id' => 99, 'level' => 'warning', 'message' => 'LOGIN_FAILED', 'context_json' => '{"username_hash":"login-user:foreign"}' ),
+) as $table_name => $foreign_row ) {
+	$ctx = cpdd_fixture();
+	$ctx['platform']->tables_data[ $table_name ][] = $foreign_row;
+	$pf = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+	Cpdd_Test::ok( false === $pf['ok'], 's3 preflight: pre-existing operational row in ' . $table_name . ' blocks provisioning' );
+}
+
+// 10b. Post-provisioning foreign rows with id > baseline_max_id block teardown (id > baseline_max_id is NOT ownership proof).
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'               => 999,
+	'clinic_id'        => null,
+	'action'           => 'FOREIGN_NULL_CLINIC_AUDIT',
+	'resource_type'    => 'organization',
+	'resource_id'      => 1,
+	'actor_wp_user_id' => 1,
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	's3 teardown: foreign audit_log row with id > baseline_max_id blocks teardown'
+);
+
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_jobs'][] = array(
+	'id'           => 999,
+	'type'         => 'sms.send',
+	'status'       => 'queued',
+	'payload_json' => '{"message_id":99999}',
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	's3 teardown: foreign sms.send job with id > baseline_max_id blocks teardown'
+);
+
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_operational_logs'][] = array(
+	'id'           => 999,
+	'level'        => 'info',
+	'message'      => 'BOOKING_CREATED',
+	'context_json' => '{"appointment_id":99999,"patient_id":88888}',
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	's3 teardown: foreign operational_log row with id > baseline_max_id blocks teardown'
+);
+
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key' => 'otp-day:09129998877',
+	'window_id'  => 20000,
+	'hits'       => 1,
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	's3 teardown: foreign rate_limit row blocks teardown (never uses window_id >= 0)'
+);
+
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['platform']->tables_data['cpms_drug_reference'][] = array(
+	'id'           => 50,
+	'clinic_id'    => 1,
+	'generic_name' => 'Foreign-Clinic-Drug',
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'TEARDOWN_BLOCKED',
+	's3 teardown: foreign drug_reference row in Clinic 1 blocks teardown'
+);
+
+// 10c. Legitimate baseline recurring job ticked after provisioning (high id, empty payload) is preserved, while owned rows in audit/jobs/oplogs/rate_limits/drug_reference are removed.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$cid  = (int) $post['manifest']['ids']['clinic_id'];
+$oid  = (int) $post['manifest']['ids']['organization_id'];
+$ctx['platform']->tables_data['cpms_jobs'][] = array(
+	'id'           => 500,
+	'type'         => 'cleanup.otp',
+	'status'       => 'success',
+	'payload_json' => '[]',
+);
+$ctx['platform']->tables_data['cpms_sms_messages'][] = array(
+	'id'        => 42,
+	'clinic_id' => $cid,
+);
+$ctx['platform']->tables_data['cpms_jobs'][] = array(
+	'id'           => 501,
+	'type'         => 'sms.send',
+	'status'       => 'queued',
+	'payload_json' => '{"message_id":42}',
+);
+$ctx['platform']->tables_data['cpms_audit_logs'][] = array(
+	'id'            => 502,
+	'clinic_id'     => null,
+	'action'        => 'ORGANIZATION_OWNER_BOOTSTRAPPED',
+	'resource_type' => 'organization',
+	'resource_id'   => $oid,
+);
+$ctx['platform']->tables_data['cpms_drug_reference'][] = array(
+	'id'           => 10,
+	'clinic_id'    => $cid,
+	'generic_name' => 'SYNTHETIC-DRUG',
+);
+$s3_clean = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
+Cpdd_Test::ok( true === $s3_clean['ok'], 's3 teardown: owned rows across audit_logs, jobs, oplogs, rate_limits, drug_reference are cleanly removed' );
+Cpdd_Test::equals( 3, count( $ctx['platform']->tables_data['cpms_jobs'] ), 's3 teardown: new recurring system job row with id=500 is preserved as baseline' );
+Cpdd_Test::equals( 0, count( $ctx['platform']->tables_data['cpms_drug_reference'] ), 's3 teardown: fixture drug_reference row removed' );
+
+// ---------------------------------------------------------------------------
+// 11. S-4 Partial Operations Recovery (fault injection at each provisioning stage)
+// ---------------------------------------------------------------------------
+foreach ( array(
+	'provision:users_partial',
+	'provision:users',
+	'provision:organization',
+	'provision:before_clinic',
+	'provision:clinical',
+	'provision:booking-page',
+) as $fault_point ) {
+	$ctx = cpdd_fixture();
+	$ctx['env']->set_fault_injector(
+		static function ( string $point ) use ( $fault_point ): void {
+			if ( $point === $fault_point ) {
+				throw new DemoException( 'INJECTED_FAULT', 'خطای تزریق‌شده در ' . $point );
+			}
+		}
+	);
+	Cpdd_Test::refuses(
+		static fn () => cpdd_provision( $ctx ),
+		'INJECTED_FAULT',
+		's4: provisioning stops at injected fault ' . $fault_point
+	);
+	$ctx['env']->set_fault_injector( null );
+	$partial = $ctx['manifest']->load();
+	Cpdd_Test::ok( is_array( $partial ) && 'failed' === ( $partial['status'] ?? '' ), 's4: partial manifest preserved with failed status at ' . $fault_point );
+	$recovered = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $partial, 1 );
+	Cpdd_Test::ok( true === $recovered['ok'], 's4: teardown safely recovers partial fixture from ' . $fault_point );
+	Cpdd_Test::ok( true === ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run()['ok'], 's4: site returns to clean preflight state after recovering ' . $fault_point );
+}
+
+// 11b. Previously deleted fixture user, booking page, and clinic record do not block recovery.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+unset( $ctx['env']->users[ $post['manifest']['ids']['user_ids']['doctor'] ] );
+unset( $ctx['env']->posts[ $post['manifest']['ids']['booking_page_id'] ] );
+$ctx['platform']->tables_data['cpms_clinics'] = array(
+	array( 'id' => 1, 'organization_id' => 1, 'slug' => 'default', 'status' => 'active' ),
+);
+$s4_missing = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 );
+Cpdd_Test::ok( true === $s4_missing['ok'], 's4: previously deleted fixture user, page, and clinic record do not block teardown recovery' );
+Cpdd_Test::equals( 1, count( $ctx['env']->users ), 's4: remaining fixture users removed while Admin preserved' );
+
+// ---------------------------------------------------------------------------
+// 12. S-5 Concurrency Guard (contention rejection & lock release after failure)
+// ---------------------------------------------------------------------------
+$ctx = cpdd_fixture();
+$ctx['env']->simulate_lock_contention = true;
+Cpdd_Test::refuses(
+	static fn () => cpdd_provision( $ctx ),
+	'CONCURRENT_OPERATION',
+	's5: concurrent provisioning is rejected when lock is held'
+);
+Cpdd_Test::equals( 1, count( $ctx['platform']->tables_data['cpms_organizations'] ), 's5: rejected concurrent provisioning creates zero untracked fixtures' );
+$ctx['env']->simulate_lock_contention = false;
+
+// Re-entrant mutation inside an active lock is rejected with CONCURRENT_OPERATION.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['env']->set_fault_injector(
+	static function ( string $point ) use ( $ctx, $post ): void {
+		if ( 'delete_where:cpms_visits' === $point ) {
+			( new Credentials( $ctx['env'] ) )->rotate( $post['manifest'] );
+		}
+	}
+);
+Cpdd_Test::refuses(
+	static fn () => ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $post['manifest'], 1 ),
+	'CONCURRENT_OPERATION',
+	's5: overlapping password rotation during active teardown is rejected by concurrency guard'
+);
+$ctx['env']->set_fault_injector( null );
+$s5_recover = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $ctx['manifest']->load(), 1 );
+Cpdd_Test::ok( true === $s5_recover['ok'], 's5: lock is released in finally block after contention failure so recovery succeeds' );
+
+// ---------------------------------------------------------------------------
+// 13. S-6 Password Rotation & Admin UI One-Time Credential Rendering
+// ---------------------------------------------------------------------------
+$ctx = cpdd_fixture();
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+$req_helper = new Request( $ctx['env'], $ctx['manifest'] );
+
+// Simulate browser POST for ACTION_PROVISION.
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST                     = array(
+	Admin::ACTION  => Request::ACTION_PROVISION,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_PROVISION ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_PROVISION ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_provision = (string) ob_get_clean();
+$active_manifest = $ctx['manifest']->load();
+$fx_id           = (string) $active_manifest['fixture_id'];
+Cpdd_Test::ok( str_contains( $html_provision, 'data-cpdd-secret="credentials"' ), 's6: provisioning response renders one-time credentials block' );
+foreach ( Credentials::PERSONA_ORDER as $persona_key ) {
+	Cpdd_Test::ok(
+		str_contains( $html_provision, 'cpdd-' . $persona_key . '-' . $fx_id ),
+		's6: provisioning response renders complete username for ' . $persona_key
+	);
+}
+
+// Simulate browser POST for ACTION_ROTATE (where self::$provisioned is null!).
+Admin::reset_state();
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST                     = array(
+	Admin::ACTION  => Request::ACTION_ROTATE,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_ROTATE ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_ROTATE ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_rotate = (string) ob_get_clean();
+Cpdd_Test::ok( str_contains( $html_rotate, 'data-cpdd-secret="credentials"' ), 's6: rotation response renders one-time credentials block' );
+foreach ( Credentials::PERSONA_ORDER as $persona_key ) {
+	$expected_login = 'cpdd-' . $persona_key . '-' . $fx_id;
+	Cpdd_Test::ok(
+		str_contains( $html_rotate, 'data-cpdd-login="' . $expected_login . '"' ),
+		's6: rotation response renders complete username with fixture_id for ' . $persona_key
+	);
+}
+
+// Simulate subsequent GET reload: credentials block must not appear!
+Admin::reset_state();
+$_SERVER['REQUEST_METHOD'] = 'GET';
+$_POST                     = array();
+ob_start();
+Admin::render();
+$html_get = (string) ob_get_clean();
+Cpdd_Test::ok( ! str_contains( $html_get, 'data-cpdd-secret="credentials"' ), 's6: subsequent GET reload never renders plaintext credentials' );
+foreach ( $ctx['env']->passwords as $stored_pass ) {
+	Cpdd_Test::ok( ! str_contains( $html_get, (string) $stored_pass ), 's6: subsequent GET reload contains zero password values' );
+}
+Admin::set_test_services( null, null );
 
 exit( Cpdd_Test::summary() );

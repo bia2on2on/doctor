@@ -64,6 +64,8 @@ class Preflight {
 		'cpms_rate_limits',
 		'cpms_idempotency_keys',
 		'cpms_notifications',
+		'cpms_audit_logs',
+		'cpms_drug_reference',
 	);
 
 	/** Tables whose rows may legitimately exist on a freshly activated install. */
@@ -75,8 +77,6 @@ class Preflight {
 		'cpms_schema_migrations',
 		'cpms_jobs',
 		'cpms_operational_logs',
-		'cpms_audit_logs',
-		'cpms_drug_reference',
 		'cpms_license_install',
 		'cpms_license_state',
 	);
@@ -482,6 +482,23 @@ class Preflight {
 
 		if ( $this->platform->table_exists( 'cpms_license_state' ) && $this->platform->count_all( 'cpms_license_state' ) > 0 ) {
 			return $this->result( $id, $label, 'fail', 'سند مجوز تجاری در cpms_license_state ثبت شده است؛ این سایت یک‌بارمصرف خالی نیست.' );
+		}
+		if ( $this->platform->table_exists( 'cpms_license_install' ) && $this->platform->count_all( 'cpms_license_install' ) > 1 ) {
+			return $this->result( $id, $label, 'fail', 'cpms_license_install شامل بیش از یک رکورد نصب است؛ این سایت یک‌بارمصرف خالی نیست.' );
+		}
+		if ( ! $this->platform->table_exists( 'cpms_jobs' ) ) {
+			return $this->result( $id, $label, 'fail', 'جدول cpms_jobs وجود ندارد؛ Migration کامل نیست.' );
+		}
+		$unexpected_jobs = $this->platform->non_baseline_jobs_count();
+		if ( $unexpected_jobs > 0 ) {
+			return $this->result( $id, $label, 'fail', 'cpms_jobs شامل ' . $unexpected_jobs . ' کار غیرپیش‌فرض است؛ سایت یک‌بارمصرف خالی نیست.' );
+		}
+		if ( ! $this->platform->table_exists( 'cpms_operational_logs' ) ) {
+			return $this->result( $id, $label, 'fail', 'جدول cpms_operational_logs وجود ندارد؛ Migration کامل نیست.' );
+		}
+		$unexpected_oplogs = $this->platform->non_baseline_oplogs_count();
+		if ( $unexpected_oplogs > 0 ) {
+			return $this->result( $id, $label, 'fail', 'cpms_operational_logs شامل ' . $unexpected_oplogs . ' رخداد عملیاتی غیرپیش‌فرض است؛ سایت یک‌بارمصرف خالی نیست.' );
 		}
 
 		$bootstrap = $this->platform->bootstrap_state();

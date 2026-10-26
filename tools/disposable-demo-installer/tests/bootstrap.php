@@ -65,6 +65,81 @@ function wp_using_ext_object_cache(): bool {
 	return false;
 }
 
+function esc_html( string $text ): string {
+	return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_attr( string $text ): string {
+	return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_url( string $url ): string {
+	return htmlspecialchars( $url, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_textarea( string $text ): string {
+	return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
+}
+
+function esc_html__( string $text, string $domain = 'default' ): string {
+	unset( $domain );
+
+	return esc_html( $text );
+}
+
+function wp_nonce_field( string $action, string $name = '_wpnonce', bool $referer = true, bool $display = true ): string {
+	unset( $referer );
+	$env   = $GLOBALS['cpdd_active_fake_env'] ?? null;
+	$nonce = $env instanceof Cpdd_Fake_Env ? $env->nonce_create( $action ) : 'nonce-' . $action;
+	$html  = '<input type="hidden" name="' . esc_attr( $name ) . '" value="' . esc_attr( $nonce ) . '" />';
+	if ( $display ) {
+		echo $html;
+	}
+
+	return $html;
+}
+
+function wp_die( string $message = '' ): void {
+	throw new RuntimeException( 'wp_die: ' . $message );
+}
+
+function get_option( string $name, $default = false ) {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+
+	return $env instanceof Cpdd_Fake_Env ? $env->option_get( $name, $default ) : $default;
+}
+
+function update_option( string $name, $value, $autoload = null ): bool {
+	unset( $autoload );
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+
+	return $env instanceof Cpdd_Fake_Env ? $env->option_set( $name, $value ) : false;
+}
+
+function delete_option( string $name ): bool {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+
+	return $env instanceof Cpdd_Fake_Env ? $env->option_delete( $name ) : false;
+}
+
+function get_users( array $args = array() ): array {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+	if ( ! ( $env instanceof Cpdd_Fake_Env ) ) {
+		return array();
+	}
+	$out = array();
+	foreach ( $env->all_users() as $user ) {
+		if ( isset( $args['search'] ) && 'cpdd-*' === $args['search'] ) {
+			if ( ! str_starts_with( (string) $user['login'], 'cpdd-' ) ) {
+				continue;
+			}
+		}
+		$out[] = 'ID' === ( $args['fields'] ?? '' ) ? (int) $user['id'] : $user;
+	}
+
+	return $out;
+}
+
 // --- Plugin classes under test (main plugin file is never loaded here). -----
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
@@ -76,6 +151,7 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-otp.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-teardown.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-admin.php';
 
 /**
  * In-memory WordPress environment.
@@ -103,6 +179,17 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	public string $db            = 'wp_disposable';
 	public string $home          = 'https://demo.test/';
 	public array $nonces        = array();
+	public bool $simulate_lock_contention = false;
+	public bool $delete_user_result = true;
+	public bool $delete_post_result = true;
+
+	public function acquire_lock( string $operation ): string {
+		if ( $this->simulate_lock_contention ) {
+			throw new CpmsDemo\Exception( 'CONCURRENT_OPERATION', 'عملیات دیگری روی دمو در حال اجراست؛ هم‌زمانی مسدود شد.' );
+		}
+
+		return parent::acquire_lock( $operation );
+	}
 
 	public function is_multisite(): bool {
 		return $this->multisite;
@@ -190,6 +277,9 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	}
 
 	public function delete_user( int $user_id ): bool {
+		if ( ! $this->delete_user_result ) {
+			return false;
+		}
 		unset( $this->users[ $user_id ] );
 
 		return true;
@@ -257,6 +347,9 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	}
 
 	public function delete_post( int $post_id ): bool {
+		if ( ! $this->delete_post_result ) {
+			return false;
+		}
 		unset( $this->posts[ $post_id ] );
 
 		return true;
@@ -310,6 +403,7 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	 * Seed a clean disposable site: one Administrator, default WP content.
 	 */
 	public function seed_clean_site(): void {
+		$GLOBALS['cpdd_active_fake_env'] = $this;
 		$this->users        = array(
 			1 => array(
 				'id'    => 1,
@@ -357,6 +451,9 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public string $schema     = '2026_10_18_0029';
 	public array $settings    = array();
 	public int $fake_clinic_id = 0;
+	public string $fake_patient_mobile = '';
+	public ?string $fail_delete_on = null;
+	private array $last_scope = array();
 
 	public function available(): bool {
 		return $this->available_flag;
@@ -390,8 +487,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				array( 'id' => 1, 'install_id' => '0123456789abcdef0123456789abcdef', 'environment' => 'production' ),
 			),
 			'cpms_jobs'              => array(
-				array( 'id' => 1, 'type' => 'holds.expire', 'payload_json' => '{}' ),
-				array( 'id' => 2, 'type' => 'slots.generate', 'payload_json' => '{}' ),
+				array( 'id' => 1, 'type' => 'holds.expire', 'status' => 'queued', 'payload_json' => '{}' ),
+				array( 'id' => 2, 'type' => 'slots.generate', 'status' => 'queued', 'payload_json' => '{}' ),
 			),
 			'cpms_operational_logs'  => array(
 				array( 'id' => 1, 'level' => 'info', 'message' => 'MIGRATION_START' ),
@@ -419,7 +516,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function table( string $short ): string {
-		return 'wp_' . $short;
+		return str_starts_with( $short, 'wp_' ) ? $short : 'wp_' . $short;
 	}
 
 	public function tables(): array {
@@ -458,6 +555,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'cpms_locations'                            => array( 'id', 'clinic_id', 'slug', 'is_primary', 'is_active' ),
 			'cpms_settings'                             => array( 'clinic_id', 'key', 'value_json', 'updated_by_wp_user_id' ),
 			'cpms_patients'                             => array( 'id', 'clinic_id', 'mobile' ),
+			'cpms_patient_identities'                   => array( 'id', 'organization_id' ),
+			'cpms_organization_memberships'             => array( 'id', 'organization_id', 'wp_user_id' ),
 			'cpms_invoice_items'                        => array( 'id', 'invoice_id', 'service_id', 'amount' ),
 			'cpms_payment_adjustments'                  => array( 'id', 'invoice_id', 'payment_id', 'amount' ),
 			'cpms_prescription_items'                   => array( 'id', 'prescription_id', 'generic_name' ),
@@ -470,38 +569,263 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'cpms_membership_locations'                 => array( 'id', 'membership_id', 'location_id' ),
 			'cpms_custom_role_capabilities'             => array( 'id', 'role_def_id', 'capability' ),
 			'cpms_organization_membership_capabilities' => array( 'id', 'membership_id', 'capability' ),
-			'cpms_jobs'                                 => array( 'id', 'type', 'payload_json' ),
-			'cpms_operational_logs'                     => array( 'id', 'level', 'message' ),
-			'cpms_audit_logs'                           => array( 'id', 'clinic_id', 'action' ),
+			'cpms_jobs'                                 => array( 'id', 'type', 'status', 'payload_json' ),
+			'cpms_operational_logs'                     => array( 'id', 'level', 'message', 'context_json', 'request_id' ),
+			'cpms_audit_logs'                           => array( 'id', 'clinic_id', 'action', 'resource_type', 'resource_id', 'actor_wp_user_id', 'meta_json', 'request_id', 'ip_hash' ),
 			'cpms_rate_limits'                          => array( 'window_key', 'window_id', 'hits' ),
+			'cpms_drug_reference'                       => array( 'id', 'clinic_id', 'generic_name' ),
 		);
 
 		return $map[ $short ] ?? array( 'id', 'clinic_id' );
 	}
 
+	private function is_baseline_job_row( array $row ): bool {
+		$type    = (string) ( $row['type'] ?? '' );
+		$status  = (string) ( $row['status'] ?? 'queued' );
+		$payload = $row['payload_json'] ?? '';
+
+		return in_array( $type, self::BASELINE_JOB_TYPES, true )
+			&& in_array( $status, array( 'queued', 'processing', 'success' ), true )
+			&& in_array( $payload, array( null, '', '[]', '{}' ), true );
+	}
+
+	private function is_baseline_oplog_row( array $row ): bool {
+		$level   = (string) ( $row['level'] ?? 'info' );
+		$message = (string) ( $row['message'] ?? '' );
+
+		return 'info' === $level && in_array( $message, self::BASELINE_OPLOG_MESSAGES, true );
+	}
+
+	private function is_owned_audit_row( array $row, array $scope ): bool {
+		$clinic_id    = (int) ( $scope['clinic_id'] ?? 0 );
+		$org_id       = (int) ( $scope['organization_id'] ?? 0 );
+		$fixture_id   = (string) ( $scope['fixture_id'] ?? '' );
+		$identity_ids = array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) );
+		$user_ids     = array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) );
+
+		$row_clinic = $row['clinic_id'] ?? null;
+		if ( null !== $row_clinic && $clinic_id > 1 && (int) $row_clinic === $clinic_id ) {
+			return true;
+		}
+		if ( null === $row_clinic ) {
+			$rtype = (string) ( $row['resource_type'] ?? '' );
+			$rid   = (int) ( $row['resource_id'] ?? 0 );
+			$actor = (int) ( $row['actor_wp_user_id'] ?? 0 );
+			if ( $org_id > 1 && 'organization' === $rtype && $rid === $org_id ) {
+				return true;
+			}
+			if ( 'patient_identity' === $rtype && in_array( $rid, $identity_ids, true ) ) {
+				return true;
+			}
+			if ( $actor > 0 && in_array( $actor, $user_ids, true ) ) {
+				return true;
+			}
+			if ( 'cpdd_fixture' === $rtype && '' !== $fixture_id ) {
+				$meta = json_decode( (string) ( $row['meta_json'] ?? '{}' ), true );
+				if ( is_array( $meta ) && (string) ( $meta['fixture_id'] ?? '' ) === $fixture_id ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	private function is_owned_job_row( array $row, array $scope ): bool {
+		if ( $this->is_baseline_job_row( $row ) ) {
+			return false;
+		}
+		$clinic_id = (int) ( $scope['clinic_id'] ?? 0 );
+		$sms_ids   = array_map( 'intval', (array) ( $scope['sms_message_ids'] ?? array() ) );
+		$payload   = json_decode( (string) ( $row['payload_json'] ?? '{}' ), true );
+		if ( ! is_array( $payload ) ) {
+			$payload = array();
+		}
+		if ( $clinic_id > 1 && (int) ( $payload['clinic_id'] ?? 0 ) === $clinic_id ) {
+			return true;
+		}
+		if ( 'sms.send' === (string) ( $row['type'] ?? '' ) && in_array( (int) ( $payload['message_id'] ?? 0 ), $sms_ids, true ) ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	private function is_owned_oplog_row( array $row, array $scope ): bool {
+		if ( $this->is_baseline_oplog_row( $row ) ) {
+			return false;
+		}
+		$clinic_id      = (int) ( $scope['clinic_id'] ?? 0 );
+		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
+		$ctx            = json_decode( (string) ( $row['context_json'] ?? '{}' ), true );
+		if ( ! is_array( $ctx ) ) {
+			$ctx = array();
+		}
+		if ( $clinic_id > 1 && (int) ( $ctx['clinic_id'] ?? 0 ) === $clinic_id ) {
+			return true;
+		}
+		$id_fields = array(
+			'patient_ids'     => array( 'patient_id' ),
+			'appointment_ids' => array( 'appointment_id', 'old' ),
+			'slot_ids'        => array( 'slot_id' ),
+			'clinician_ids'   => array( 'clinician_id' ),
+			'follow_up_ids'   => array( 'follow_up_id' ),
+			'sms_message_ids' => array( 'message_id' ),
+			'otp_token_ids'   => array( 'token_id' ),
+			'user_ids'        => array( 'wp_user_id', 'actor', 'by' ),
+		);
+		foreach ( $id_fields as $scope_key => $ctx_keys ) {
+			$ids = array_map( 'intval', (array) ( $scope[ $scope_key ] ?? array() ) );
+			foreach ( $ctx_keys as $ck ) {
+				if ( isset( $ctx[ $ck ] ) && in_array( (int) $ctx[ $ck ], $ids, true ) ) {
+					return true;
+				}
+			}
+		}
+		$msg = (string) ( $row['message'] ?? '' );
+		if ( '' !== $patient_mobile && 'SMS_LOG_SENT' === $msg && (string) ( $ctx['to'] ?? '' ) === $patient_mobile ) {
+			return true;
+		}
+		$login_keys = array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) );
+		if ( in_array( $msg, array( 'LOGIN_FAILED', 'LOGIN_LOCKED_USER', 'LOGIN_LOCKED_IP' ), true )
+			&& in_array( (string) ( $ctx['username_hash'] ?? '' ), $login_keys, true )
+		) {
+			return true;
+		}
+		$req_ids = array_map( 'strval', (array) ( $scope['audit_request_ids'] ?? array() ) );
+		$req     = trim( (string) ( $row['request_id'] ?? '' ) );
+		if ( '' !== $req && in_array( $req, $req_ids, true ) ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	public function owned_audit_logs_predicate( array $scope ): array {
+		$this->last_scope = $scope;
+
+		return parent::owned_audit_logs_predicate( $scope );
+	}
+
+	public function owned_jobs_predicate( array $scope ): array {
+		$this->last_scope = $scope;
+
+		return parent::owned_jobs_predicate( $scope );
+	}
+
+	public function owned_oplogs_predicate( array $scope ): array {
+		$this->last_scope = $scope;
+
+		return parent::owned_oplogs_predicate( $scope );
+	}
+
+	public function owned_rate_limits_predicate( array $scope ): array {
+		$this->last_scope = $scope;
+
+		return parent::owned_rate_limits_predicate( $scope );
+	}
+
 	/**
-	 * Evaluate the small predicate grammar the teardown emits.
+	 * Evaluate the predicate grammar emitted by Platform and Teardown.
 	 *
 	 * @return list<array<string,mixed>>
 	 */
 	private function matches( string $short, string $where, array $params ): array {
 		$rows = $this->tables_data[ $short ] ?? array();
 		$out  = array();
+		if ( '1 = 0' === $where ) {
+			return array();
+		}
 		foreach ( $rows as $index => $row ) {
+			if ( 'cpms_jobs' === $short ) {
+				if ( str_starts_with( $where, 'type IN (' ) ) {
+					if ( $this->is_baseline_job_row( $row ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( str_starts_with( $where, 'NOT (' ) ) {
+					if ( $this->is_owned_job_row( $row, $this->last_scope ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+			}
+			if ( 'cpms_operational_logs' === $short ) {
+				if ( str_starts_with( $where, "level = 'info' AND message IN (" ) ) {
+					if ( $this->is_baseline_oplog_row( $row ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( str_starts_with( $where, 'NOT (' ) ) {
+					if ( $this->is_owned_oplog_row( $row, $this->last_scope ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( str_starts_with( $where, "message IN ('LOGIN_FAILED'" ) ) {
+					$msg = (string) ( $row['message'] ?? '' );
+					$ctx = json_decode( (string) ( $row['context_json'] ?? '{}' ), true );
+					$uh  = is_array( $ctx ) ? (string) ( $ctx['username_hash'] ?? '' ) : '';
+					if ( in_array( $msg, array( 'LOGIN_FAILED', 'LOGIN_LOCKED_USER', 'LOGIN_LOCKED_IP' ), true ) && ! in_array( $uh, $params, true ) ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+			}
+			if ( 'cpms_audit_logs' === $short ) {
+				if ( '(clinic_id IS NULL OR clinic_id <> %d) AND action = %s' === $where ) {
+					$rc = $row['clinic_id'] ?? null;
+					if ( ( null === $rc || (int) $rc !== (int) $params[0] ) && (string) ( $row['action'] ?? '' ) === (string) $params[1] ) {
+						$out[ $index ] = $row;
+					}
+					continue;
+				}
+				if ( $this->is_owned_audit_row( $row, $this->last_scope ) ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'cpms_rate_limits' === $short && preg_match( '/^window_key IN \((.*)\)$/', $where ) === 1 ) {
+				if ( in_array( (string) ( $row['window_key'] ?? '' ), array_map( 'strval', $params ), true ) ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'cpms_otp_tokens' === $short && '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))' === $where ) {
+				$rc = $row['clinic_id'] ?? null;
+				if ( ( null !== $rc && (int) $rc === (int) $params[0] ) || ( null === $rc && (string) ( $row['mobile'] ?? '' ) === (string) $params[1] ) ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'id = %d AND slug = %s' === $where ) {
+				if ( (int) ( $row['id'] ?? 0 ) === (int) $params[0] && (string) ( $row['slug'] ?? '' ) === (string) $params[1] ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'id = %d AND organization_id = %d AND slug = %s' === $where ) {
+				if ( (int) ( $row['id'] ?? 0 ) === (int) $params[0] && (int) ( $row['organization_id'] ?? 0 ) === (int) $params[1] && (string) ( $row['slug'] ?? '' ) === (string) $params[2] ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'id = %d AND clinic_id = %d AND slug = %s' === $where ) {
+				if ( (int) ( $row['id'] ?? 0 ) === (int) $params[0] && (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[1] && (string) ( $row['slug'] ?? '' ) === (string) $params[2] ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			if ( 'clinic_id = %d AND `key` = %s' === $where ) {
+				if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && (string) ( $row['key'] ?? '' ) === (string) $params[1] ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
 			if ( preg_match( '/^([a-z_]+) = %d$/', $where, $m ) === 1 ) {
 				if ( (int) ( $row[ $m[1] ] ?? -1 ) === (int) $params[0] ) {
-					$out[ $index ] = $row;
-				}
-				continue;
-			}
-			if ( preg_match( '/^([a-z_]+) > %d$/', $where, $m ) === 1 ) {
-				if ( (int) ( $row[ $m[1] ] ?? 0 ) > (int) $params[0] ) {
-					$out[ $index ] = $row;
-				}
-				continue;
-			}
-			if ( preg_match( '/^([a-z_]+) >= %d$/', $where, $m ) === 1 ) {
-				if ( (int) ( $row[ $m[1] ] ?? -1 ) >= (int) $params[0] ) {
 					$out[ $index ] = $row;
 				}
 				continue;
@@ -513,7 +837,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				}
 				continue;
 			}
-			throw new RuntimeException( 'unsupported test predicate: ' . $where );
+			throw new RuntimeException( 'unsupported test predicate: ' . $where . ' on ' . $short );
 		}
 
 		return $out;
@@ -526,7 +850,14 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function delete_where( string $table, string $where, array $params = array() ): int {
-		$short   = str_starts_with( $table, 'wp_' ) ? substr( $table, 3 ) : $table;
+		$short = str_starts_with( $table, 'wp_' ) ? substr( $table, 3 ) : $table;
+		if ( null !== $this->env ) {
+			$this->env->maybe_inject_fault( 'delete_where:' . $short, array( 'table' => $short, 'where' => $where ) );
+			$this->env->maybe_inject_fault( 'delete_where', array( 'table' => $short, 'where' => $where ) );
+		}
+		if ( $this->fail_delete_on === $short ) {
+			throw new CpmsDemo\Exception( 'SQL_DELETE_FAILED', 'خطای پایگاه‌داده هنگام حذف ردیف‌های جدول ' . $short . '.' );
+		}
 		$matched = $this->matches( $short, $where, $params );
 		$keep    = array();
 		$drops   = 0;
@@ -543,8 +874,52 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function fetch_all( string $sql, array $params = array() ): array {
+		if ( str_contains( $sql, 'SELECT DISTINCT request_id FROM wp_cpms_audit_logs' ) ) {
+			$out = array();
+			foreach ( $this->tables_data['cpms_audit_logs'] ?? array() as $row ) {
+				if ( $this->is_owned_audit_row( $row, $this->last_scope ) && ! empty( $row['request_id'] ) ) {
+					$out[] = array( 'request_id' => $row['request_id'] );
+				}
+			}
+			return $out;
+		}
+		if ( str_contains( $sql, 'SELECT DISTINCT ip_hash FROM wp_cpms_audit_logs' ) ) {
+			$out = array();
+			foreach ( $this->tables_data['cpms_audit_logs'] ?? array() as $row ) {
+				if ( (int) ( $row['clinic_id'] ?? 0 ) === (int) $params[0] && (string) ( $row['action'] ?? '' ) === (string) $params[1] && ! empty( $row['ip_hash'] ) ) {
+					$out[] = array( 'ip_hash' => $row['ip_hash'] );
+				}
+			}
+			return $out;
+		}
+		if ( str_contains( $sql, 'FROM wp_cpms_operational_logs WHERE message IN' ) ) {
+			$out = array();
+			foreach ( $this->tables_data['cpms_operational_logs'] ?? array() as $row ) {
+				$ctx = json_decode( (string) ( $row['context_json'] ?? '{}' ), true );
+				if ( is_array( $ctx ) && in_array( (string) ( $ctx['username_hash'] ?? '' ), $params, true ) && ! empty( $ctx['ip'] ) ) {
+					$out[] = array( 'ip' => $ctx['ip'] );
+				}
+			}
+			return $out;
+		}
+		if ( str_contains( $sql, 'SELECT DISTINCT window_key FROM wp_cpms_rate_limits' ) ) {
+			$out = array();
+			foreach ( $this->tables_data['cpms_rate_limits'] ?? array() as $row ) {
+				$wk = (string) ( $row['window_key'] ?? '' );
+				if ( str_starts_with( $wk, 'otp-ip:' ) || str_starts_with( $wk, 'otp-verify-ip:' ) ) {
+					$out[] = array( 'window_key' => $wk );
+				}
+			}
+			return $out;
+		}
+		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id = %d OR (clinic_id IS NULL AND mobile = %s)' ) ) {
+			return $this->matches( 'cpms_otp_tokens', '(clinic_id = %d OR (clinic_id IS NULL AND mobile = %s))', $params );
+		}
 		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $sql, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );
+		}
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $sql, $m ) === 1 ) {
+			return $this->matches( $m[1], $m[2] . ' IN (' . $m[3] . ')', $params );
 		}
 		if ( preg_match( '/FROM wp_([a-z_]+) ORDER BY id/', $sql, $m ) === 1 ) {
 			return $this->tables_data[ $m[1] ] ?? array();
@@ -732,16 +1107,22 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function create_patient( int $actor_id, array $fields ): array {
-		$this->calls[] = 'create_patient';
-		$id            = count( $this->tables_data['cpms_patients'] ) + 1;
+		$this->calls[]             = 'create_patient';
+		$this->fake_patient_mobile = (string) $fields['mobile'];
+		$id                        = count( $this->tables_data['cpms_patients'] ) + 1;
+		$identity_id               = count( $this->tables_data['cpms_patient_identities'] ) + 1;
 		$this->tables_data['cpms_patients'][] = array(
 			'id'        => $id,
 			'clinic_id' => $this->fake_clinic_id,
 			'mobile'    => $fields['mobile'],
 			'name'      => $fields['first_name'],
 		);
+		$this->tables_data['cpms_patient_identities'][] = array(
+			'id'              => $identity_id,
+			'organization_id' => 2,
+		);
 
-		return array( 'id' => $id, 'identity_id' => 1 );
+		return array( 'id' => $id, 'identity_id' => $identity_id );
 	}
 
 	public function set_setting( int $clinic_id, string $key, $value ): void {
@@ -842,10 +1223,15 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 
 	public function record_payment( int $actor_id, int $invoice_id, array $input, string $idempotency_key ): int {
 		$this->calls[] = 'record_payment';
-		$this->tables_data['cpms_payments'][]           = array( 'id' => 1, 'clinic_id' => $this->fake_clinic_id, 'invoice_id' => $invoice_id, 'method' => $input['method'] );
+		$this->tables_data['cpms_payments'][]             = array( 'id' => 1, 'clinic_id' => $this->fake_clinic_id, 'invoice_id' => $invoice_id, 'method' => $input['method'] );
 		$this->tables_data['cpms_visit_status_history'][] = array( 'id' => 1, 'visit_id' => 1, 'to_status' => 'paid' );
-		$this->tables_data['cpms_rate_limits'][]        = array( 'window_key' => 'otp-day:demo', 'window_id' => 20000, 'hits' => 1 );
-		$this->tables_data['cpms_operational_logs'][]   = array( 'id' => $this->max_id( 'cpms_operational_logs' ) + 1, 'level' => 'info', 'message' => 'DEMO_OP' );
+		$this->tables_data['cpms_rate_limits'][]          = array( 'window_key' => 'otp-day:' . $this->fake_patient_mobile, 'window_id' => 20000, 'hits' => 1 );
+		$this->tables_data['cpms_operational_logs'][]     = array(
+			'id'           => $this->max_id( 'cpms_operational_logs' ) + 1,
+			'level'        => 'info',
+			'message'      => 'DEMO_OP',
+			'context_json' => (string) json_encode( array( 'clinic_id' => $this->fake_clinic_id ) ),
+		);
 
 		return 1;
 	}

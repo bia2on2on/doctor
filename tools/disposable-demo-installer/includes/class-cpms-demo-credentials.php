@@ -112,27 +112,44 @@ class Credentials {
 	 * @throws Exception When a manifest account is missing or out of scope.
 	 */
 	public function rotate( array $manifest ): array {
-		$fixture = (string) $manifest['fixture_id'];
-		$users   = (array) ( $manifest['ids']['user_ids'] ?? array() );
-		$out     = array();
-		foreach ( self::PERSONA_ORDER as $persona ) {
-			$user_id = (int) ( $users[ $persona ] ?? 0 );
-			$account = $user_id > 0 ? $this->env->user( $user_id ) : null;
-			if ( null === $account ) {
-				throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی «' . $persona . '» یافت نشد؛ چرخش رمز متوقف شد.' );
-			}
-			if ( ! str_starts_with( $account['login'], 'cpdd-' . $persona . '-' . $fixture ) ) {
-				throw new Exception( 'ROTATE_SCOPE', 'نام کاربری «' . $persona . '» با شناسهٔ دمو هم‌خوان نیست؛ چرخش رمز متوقف شد.' );
-			}
-			if ( in_array( 'administrator', $account['roles'], true ) ) {
-				throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی نباید Administrator باشد؛ چرخش رمز متوقف شد.' );
-			}
-			$password                = self::generate_password();
-			$out[ $persona ]         = $password;
-			$this->env->set_user_password( $user_id, $password );
-			$this->env->destroy_sessions( $user_id );
-		}
+		return $this->env->with_lock(
+			'rotate_credentials',
+			function () use ( $manifest ): array {
+				if ( 'active' !== (string) ( $manifest['status'] ?? '' ) ) {
+					throw new Exception( 'ROTATE_INACTIVE', 'چرخش رمز فقط برای دموی فعال مجاز است.' );
+				}
+				$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
+				$admin_id = (int) ( $manifest['admin_id'] ?? 0 );
+				if ( 1 !== preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+					throw new Exception( 'ROTATE_SCOPE', 'شناسهٔ دمو نامعتبر است؛ چرخش رمز متوقف شد.' );
+				}
+				$users    = (array) ( $manifest['ids']['user_ids'] ?? array() );
+				$verified = array();
+				foreach ( self::PERSONA_ORDER as $persona ) {
+					$user_id = (int) ( $users[ $persona ] ?? 0 );
+					$account = $user_id > 0 ? $this->env->user( $user_id ) : null;
+					if ( null === $account ) {
+						throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی «' . $persona . '» یافت نشد؛ چرخش رمز متوقف شد.' );
+					}
+					if ( $user_id === $admin_id || $this->env->user_can( $user_id, 'manage_options' ) || in_array( 'administrator', $account['roles'], true ) ) {
+						throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی نباید Administrator باشد؛ چرخش رمز متوقف شد.' );
+					}
+					if ( 'cpdd-' . $persona . '-' . $fixture !== (string) $account['login'] ) {
+						throw new Exception( 'ROTATE_SCOPE', 'نام کاربری «' . $persona . '» با شناسهٔ دمو هم‌خوان نیست؛ چرخش رمز متوقف شد.' );
+					}
+					$verified[ $persona ] = $user_id;
+				}
+				$out = array();
+				foreach ( self::PERSONA_ORDER as $persona ) {
+					$user_id         = $verified[ $persona ];
+					$password        = self::generate_password();
+					$out[ $persona ] = $password;
+					$this->env->set_user_password( $user_id, $password );
+					$this->env->destroy_sessions( $user_id );
+				}
 
-		return $out;
+				return $out;
+			}
+		);
 	}
 }

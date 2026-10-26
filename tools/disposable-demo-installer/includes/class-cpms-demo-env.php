@@ -22,6 +22,20 @@ defined( 'ABSPATH' ) || exit;
 class Env {
 
 	/**
+	 * Active in-process lock token, or null when idle.
+	 *
+	 * @var string|null
+	 */
+	private ?string $active_lock_token = null;
+
+	/**
+	 * Optional test fault-injection callback (`callable(string $point, array $context): void`).
+	 *
+	 * @var callable|null
+	 */
+	private $fault_injector = null;
+
+	/**
 	 * @return bool
 	 */
 	public function is_multisite(): bool {
@@ -437,5 +451,121 @@ class Env {
 	 */
 	public function filterable_option( string $name, $fallback = false ) {
 		return get_option( $name, $fallback );
+	}
+
+	/**
+	 * Compute the hash used by AuditLogger::hashIp() for correlation with audit rows.
+	 *
+	 * @param string $ip Client IP address.
+	 * @return string
+	 */
+	public function ip_hash( string $ip ): string {
+		$salt = function_exists( 'wp_salt' ) ? (string) wp_salt( 'auth' ) : '';
+		if ( '' === $salt ) {
+			$salt = $this->mac_key();
+		}
+
+		return hash_hmac( 'sha256', $ip, $salt );
+	}
+
+	/**
+	 * Deterministic MySQL advisory lock name for this WordPress site (max 64 chars).
+	 *
+	 * @return string
+	 */
+	public function lock_name(): string {
+		return 'cpdd_mutex_' . substr( hash( 'sha256', $this->db_name() . '|' . $this->table_prefix() ), 0, 32 );
+	}
+
+	/**
+	 * Acquire a non-blocking session-bound concurrency guard (S-5).
+	 *
+	 * Uses MySQL GET_LOCK(name, 0) so the lock never expires while the holding
+	 * DB connection is still running, and is automatically released by MySQL if
+	 * the PHP process crashes or disconnects.
+	 *
+	 * @param string $operation Operation identifier.
+	 * @return string Lock token.
+	 */
+	public function acquire_lock( string $operation ): string {
+		if ( null !== $this->active_lock_token ) {
+			throw new Exception( 'CONCURRENT_OPERATION', 'عملیات دیگری روی دمو در حال اجراست؛ هم‌زمانی مسدود شد.' );
+		}
+		global $wpdb;
+		if ( isset( $wpdb ) && is_object( $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Advisory session lock on the active DB connection.
+			$acquired = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, 0)', $this->lock_name() ) );
+			if ( '1' !== (string) $acquired && 1 !== $acquired ) {
+				throw new Exception( 'CONCURRENT_OPERATION', 'عملیات دیگری روی دمو در حال اجراست؛ هم‌زمانی مسدود شد.' );
+			}
+		}
+		$token                   = bin2hex( random_bytes( 12 ) );
+		$this->active_lock_token = $token;
+		$this->option_set(
+			'cpdd_lock_state',
+			array(
+				'operation'  => $operation,
+				'token'      => $token,
+				'started_at' => $this->now_sql(),
+			)
+		);
+
+		return $token;
+	}
+
+	/**
+	 * Release a previously acquired concurrency guard.
+	 *
+	 * @param string $token Lock token returned by acquire_lock().
+	 */
+	public function release_lock( string $token ): void {
+		if ( $this->active_lock_token !== $token ) {
+			return;
+		}
+		$this->active_lock_token = null;
+		$this->option_delete( 'cpdd_lock_state' );
+		global $wpdb;
+		if ( isset( $wpdb ) && is_object( $wpdb ) ) {
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Release advisory session lock on the active DB connection.
+			$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $this->lock_name() ) );
+		}
+	}
+
+	/**
+	 * Execute a mutation under the concurrency guard, always releasing on exit.
+	 *
+	 * @template T
+	 * @param string          $operation Operation identifier.
+	 * @param callable():mixed $callback  Mutation callback.
+	 * @return mixed
+	 */
+	public function with_lock( string $operation, callable $callback ) {
+		$token = $this->acquire_lock( $operation );
+		try {
+			return $callback();
+		} finally {
+			$this->release_lock( $token );
+		}
+	}
+
+	/**
+	 * Register or clear a test fault-injection callback.
+	 *
+	 * @param callable|null $fn Callback `fn(string $point, array $context): void`.
+	 */
+	public function set_fault_injector( ?callable $fn ): void {
+		$this->fault_injector = $fn;
+	}
+
+	/**
+	 * Trigger a registered test fault-injection callback if present.
+	 *
+	 * @param string               $point   Named fault-injection point.
+	 * @param array<string,mixed>  $context Context metadata.
+	 */
+	public function maybe_inject_fault( string $point, array $context = array() ): void {
+		if ( is_callable( $this->fault_injector ) ) {
+			( $this->fault_injector )( $point, $context );
+		}
 	}
 }

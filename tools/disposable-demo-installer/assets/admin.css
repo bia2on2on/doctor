@@ -1,9 +1,12 @@
 /* CPMS disposable demo — wp-admin, RTL-safe, mobile 320/390px. */
-.cpdd { direction: rtl; max-width: 1100px; box-sizing: border-box; }
+.cpdd { direction: rtl; max-width: 1100px; width: 100%; box-sizing: border-box; overflow-x: hidden; }
+.cpdd *, .cpdd *::before, .cpdd *::after { box-sizing: border-box; }
 .cpdd .cpdd-lead { font-size: 14px; max-width: 70ch; }
-.cpdd .cpdd-card { background: #fff; border: 1px solid #dcdcde; border-radius: 6px; padding: 12px 16px; margin: 16px 0; overflow-wrap: anywhere; }
+.cpdd .cpdd-card { background: #fff; border: 1px solid #dcdcde; border-radius: 6px; padding: 12px 16px; margin: 16px 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; overflow-x: auto; }
 .cpdd .cpdd-card h2 { margin-top: 4px; font-size: 16px; }
-.cpdd table.widefat th, .cpdd table.widefat td { text-align: right; vertical-align: middle; }
+.cpdd code { overflow-wrap: anywhere; word-break: break-all; white-space: normal; }
+.cpdd table.widefat { max-width: 100%; table-layout: fixed; }
+.cpdd table.widefat th, .cpdd table.widefat td { text-align: right; vertical-align: middle; overflow-wrap: anywhere; word-break: break-word; }
 .cpdd .cpdd-kv th { width: 220px; }
 .cpdd .cpdd-pass { color: #007017; font-weight: 700; }
 .cpdd .cpdd-fail { color: #b32d2e; font-weight: 700; }
@@ -14,8 +17,9 @@
 .cpdd .cpdd-steps { padding-inline-start: 22px; }
 .cpdd .cpdd-steps li { margin-bottom: 6px; line-height: 1.9; }
 @media (max-width: 782px) {
+  #wpbody-content, .wrap.cpdd { max-width: 100%; overflow-x: hidden; margin-inline: 0; padding-inline: 8px; }
   .cpdd table.widefat { display: block; overflow-x: auto; max-width: 100%; }
-  .cpdd input.regular-text { width: 100%; max-width: 100%; box-sizing: border-box; }
+  .cpdd input.regular-text, .cpdd input[name="cpdd_confirm"] { width: 100%; max-width: 100%; box-sizing: border-box; }
 }
 @media (max-width: 420px) {
   .cpdd .cpdd-card { padding: 10px; }

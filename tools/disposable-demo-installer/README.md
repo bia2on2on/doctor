@@ -89,12 +89,24 @@ the whole disposable site/database container.
 
 ## Verification & test suites
 
-- **Unit & negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
-  (96 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
+- **Unit & security negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
+  (179 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
   enforcement, manifest HMAC tamper & site-transplant detection, CSPRNG credential generation
-  & rotation, OTP scope/attempt/expiry/provider guardrails, provisioning idempotency, and
-  ownership-proofed teardown across parent, child, baseline and operational tables).
+  & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider guardrails,
+  concurrency lock contention, partial provisioning and interrupted teardown fault-injection recovery,
+  safe uninstall preservation when a fixture is active, and durable ownership-proofed teardown across
+  all 53 `cpms_*` tables including `cpms_audit_logs`, `cpms_jobs`, `cpms_operational_logs`,
+  `cpms_rate_limits`, and `cpms_drug_reference`).
 - **Real-WordPress integration acceptance:** `tools/disposable-demo-installer/tests/integration-wp.php`
   (executed in `.github/workflows/disposable-demo-installer.yml` on a clean WordPress 7.1.3 +
-  MySQL 8 + production CPMS 1.0.0 ZIP + companion `cpms-disposable-demo-1.0.0.zip`).
+  MySQL 8 + production CPMS 1.0.0 ZIP + companion `cpms-disposable-demo-1.0.0.zip`, including
+  cross-connection MySQL `GET_LOCK` concurrency contention, mid-teardown fault injection, and
+  partial provisioning recovery).
+- **Real-Chromium browser acceptance:** `tools/disposable-demo-installer/tests/browser-acceptance.py`
+  (executed in `.github/workflows/disposable-demo-installer.yml` with Playwright Chromium against
+  Apache + WordPress 7.1.3 + MySQL 8 covering `wp-admin` ZIP upload & activation, preflight UI,
+  provisioning, one-time credentials, password rotation, 6 independent persona contexts, role
+  portals, authorization denials, public booking, UI OTP issuance & verification, clinical and
+  finance journeys, 320px/390px RTL responsiveness, diagnostics, teardown, DB verification, and
+  safe plugin removal).
 

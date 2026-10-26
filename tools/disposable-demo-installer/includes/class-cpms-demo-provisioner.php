@@ -65,6 +65,7 @@ class Provisioner {
 		$this->manifest    = $manifest;
 		$this->preflight   = $preflight;
 		$this->credentials = $credentials;
+		$this->platform->set_env( $this->env );
 	}
 
 	/**
@@ -97,6 +98,22 @@ class Provisioner {
 	 * @throws Exception On any failed check or failed production call.
 	 */
 	public function provision( int $admin_id ): array {
+		return $this->env->with_lock(
+			'provision',
+			function () use ( $admin_id ): array {
+				return $this->do_provision( $admin_id );
+			}
+		);
+	}
+
+	/**
+	 * Internal provisioning implementation executed under the concurrency lock.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>}
+	 * @throws Exception On any failed check or failed production call.
+	 */
+	private function do_provision( int $admin_id ): array {
 		if ( $this->manifest->exists() ) {
 			throw new Exception( 'ALREADY_PROVISIONED', 'یک دمو از قبل ثبت شده است؛ برای ساخت دموی تازه ابتدا آن را پاک‌سازی کنید.' );
 		}
@@ -119,25 +136,22 @@ class Provisioner {
 		$mobile      = self::mobile_for( $fixture['fixture_id'] );
 		$stage       = 'start';
 		$manifest    = array(
-			'fixture_id'  => $fixture['fixture_id'],
-			'status'      => 'provisioning',
-			'created_at'  => $this->env->now_sql(),
-			'admin_id'    => $admin_id,
+			'fixture_id'     => $fixture['fixture_id'],
+			'status'         => 'provisioning',
+			'created_at'     => $this->env->now_sql(),
+			'admin_id'       => $admin_id,
 			'patient_mobile' => $mobile,
 			'schema_version' => CPMS_DEMO_SCHEMA_VERSION,
 			'cpms_version'   => $this->platform->plugin_version(),
-			'ids'         => array(
-				'user_ids'              => array(),
-				'baseline_max_job_id'   => $this->platform->max_id( 'cpms_jobs' ),
-				'baseline_max_oplog_id' => $this->platform->max_id( 'cpms_operational_logs' ),
-				'baseline_max_audit_id' => $this->platform->max_id( 'cpms_audit_logs' ),
+			'ids'            => array(
+				'user_ids' => array(),
 			),
 			'slugs'       => array(
-				'organization'      => $fixture['slug'],
-				'clinic'            => $fixture['slug'] . '-clinic',
-				'location_primary'  => $fixture['slug'] . '-main',
+				'organization'       => $fixture['slug'],
+				'clinic'             => $fixture['slug'] . '-clinic',
+				'location_primary'   => $fixture['slug'] . '-main',
 				'location_secondary' => $fixture['slug'] . '-branch',
-				'page'              => $fixture['slug'] . '-booking',
+				'page'               => $fixture['slug'] . '-booking',
 			),
 			'links'       => array(),
 			'counts'      => array(),
@@ -145,6 +159,7 @@ class Provisioner {
 
 		try {
 			$stage = 'users';
+			$index = 0;
 			foreach ( Credentials::PERSONA_ORDER as $persona ) {
 				$login = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
 				if ( $this->env->username_exists( $login ) ) {
@@ -165,7 +180,12 @@ class Provisioner {
 				);
 				$manifest['ids']['user_ids'][ $persona ] = $user_id;
 				$manifest = $this->manifest->save( $manifest );
+				++$index;
+				if ( 3 === $index ) {
+					$this->env->maybe_inject_fault( 'provision:users_partial', array( 'stage' => $stage, 'created_users' => $index ) );
+				}
 			}
+			$this->env->maybe_inject_fault( 'provision:users', array( 'stage' => $stage ) );
 
 			$manager_id = (int) $manifest['ids']['user_ids']['clinic_manager'];
 			$doctor     = (int) $manifest['ids']['user_ids']['doctor'];
@@ -176,9 +196,11 @@ class Provisioner {
 			$organization_id          = $this->platform->create_organization( 'سازمان کاملاً آزمایشی CPMS ' . $fixture['fixture_id'], $fixture['slug'] );
 			$manifest['ids']['organization_id'] = $organization_id;
 			$manifest                 = $this->manifest->save( $manifest );
+			$this->env->maybe_inject_fault( 'provision:organization', array( 'stage' => $stage, 'organization_id' => $organization_id ) );
 
 			$stage = 'onboarding';
 			$this->platform->bootstrap_owner( $admin_id, $organization_id, (int) $manifest['ids']['user_ids']['organization_manager'] );
+			$this->env->maybe_inject_fault( 'provision:before_clinic', array( 'stage' => $stage, 'organization_id' => $organization_id ) );
 			$clinic   = $this->platform->provision_clinic(
 				(int) $manifest['ids']['user_ids']['organization_manager'],
 				$organization_id,
@@ -193,6 +215,7 @@ class Provisioner {
 			$manifest['ids']['clinic_id']   = $clinic_id;
 			$manifest['ids']['location_ids'] = array( $location_primary );
 			$manifest = $this->manifest->save( $manifest );
+			$this->env->maybe_inject_fault( 'provision:onboarding', array( 'stage' => $stage, 'clinic_id' => $clinic_id ) );
 
 			$stage = 'memberships';
 			$this->platform->designate_clinic_manager( (int) $manifest['ids']['user_ids']['organization_manager'], $organization_id, $clinic_id, $manager_id );
@@ -235,6 +258,9 @@ class Provisioner {
 					)
 				);
 				$manifest['ids']['patient_id'] = (int) $patient['id'];
+				if ( isset( $patient['identity_id'] ) && (int) $patient['identity_id'] > 0 ) {
+					$manifest['ids']['identity_id'] = (int) $patient['identity_id'];
+				}
 				$manifest = $this->manifest->save( $manifest );
 
 				$stage = 'settings';
@@ -279,6 +305,7 @@ class Provisioner {
 				$visit = $this->platform->walk_in( $reception, (int) $manifest['ids']['patient_id'], $clinician_id, array( 'note' => 'داده کاملاً فرضی' ) );
 				$manifest['ids']['visit_id'] = $visit;
 				$manifest                     = $this->manifest->save( $manifest );
+				$this->env->maybe_inject_fault( 'provision:clinical', array( 'stage' => $stage, 'visit_id' => $visit ) );
 				$this->platform->transition( $doctor, $visit, 'call', array( 'room' => 'SYNTHETIC' ) );
 				$this->platform->transition( $doctor, $visit, 'start' );
 				$manifest['ids']['note_ids'][] = $this->platform->add_note(
@@ -360,7 +387,8 @@ class Provisioner {
 				$this->platform->restore_scope( $previous );
 			}
 
-			$stage    = 'booking-page';
+			$stage = 'booking-page';
+			$this->env->maybe_inject_fault( 'provision:booking-page', array( 'stage' => $stage, 'clinic_id' => $clinic_id ) );
 			$page_id  = $this->env->insert_page(
 				array(
 					'title'   => 'رزرو آزمایشی CPMS — داده فرضی',
@@ -400,8 +428,10 @@ class Provisioner {
 				'credentials' => $passwords,
 			);
 		} catch ( \Throwable $error ) {
-			$manifest['status']       = 'failed';
-			$manifest['failed_stage'] = $stage;
+			$manifest['status']          = 'failed';
+			$manifest['failed_stage']    = $stage;
+			$manifest['failure_code']    = $error instanceof Exception ? $error->demo_code() : 'PROVISION_FAILED';
+			$manifest['failure_message'] = $error->getMessage();
 			try {
 				$this->manifest->save( $manifest );
 			} catch ( \Throwable $ignored ) {

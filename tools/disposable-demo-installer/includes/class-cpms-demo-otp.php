@@ -54,6 +54,7 @@ class Otp {
 	public function __construct( Env $env, Platform $platform ) {
 		$this->env      = $env;
 		$this->platform = $platform;
+		$this->platform->set_env( $this->env );
 	}
 
 	/**
@@ -62,6 +63,22 @@ class Otp {
 	 * @throws Exception When no safe demo challenge exists.
 	 */
 	public function issue( array $manifest ): array {
+		return $this->env->with_lock(
+			'issue_otp',
+			function () use ( $manifest ): array {
+				return $this->do_issue( $manifest );
+			}
+		);
+	}
+
+	/**
+	 * Internal OTP binding executed under the concurrency guard.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return array{code:string,token_id:int,expires_at:string}
+	 * @throws Exception When no safe demo challenge exists.
+	 */
+	private function do_issue( array $manifest ): array {
 		$clinic_id = (int) $manifest['ids']['clinic_id'];
 		$mobile    = (string) $manifest['patient_mobile'];
 		$fixture   = (string) $manifest['fixture_id'];

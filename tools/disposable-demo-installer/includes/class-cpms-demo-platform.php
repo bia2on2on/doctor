@@ -41,6 +41,78 @@ class Platform {
 	public const PRODUCT = 'CPMS Classic';
 
 	/**
+	 * Baseline recurring system job types registered by App::activate().
+	 *
+	 * @var list<string>
+	 */
+	public const BASELINE_JOB_TYPES = array(
+		'holds.expire',
+		'slots.generate',
+		'visits.no_show',
+		'notif.dispatch',
+		'appt.reminder',
+		'fu.reminder',
+		'cleanup.otp',
+		'cleanup.rate_limits',
+		'cleanup.idem',
+		'cleanup.oplog',
+		'license.refresh',
+		'backup.run',
+		'handwriting.gc',
+	);
+
+	/**
+	 * Baseline operational log messages written during schema migration / activation.
+	 *
+	 * @var list<string>
+	 */
+	public const BASELINE_OPLOG_MESSAGES = array(
+		'MIGRATION_START',
+		'MIGRATION_DONE',
+		'MIGRATION_0011_LOCATIONS_BACKFILL',
+		'CPMS_ACTIVATED',
+		'CPMS_PRIVATE_STORAGE_MIGRATION',
+	);
+
+	/**
+	 * Optional environment reference for fault injection and IP hash correlation.
+	 *
+	 * @var Env|null
+	 */
+	protected ?Env $env = null;
+
+	/**
+	 * @param Env|null $env Optional environment adapter.
+	 */
+	public function __construct( ?Env $env = null ) {
+		$this->env = $env;
+	}
+
+	/**
+	 * Bind environment adapter.
+	 *
+	 * @param Env $env Environment adapter.
+	 */
+	public function set_env( Env $env ): void {
+		$this->env = $env;
+	}
+
+	/**
+	 * Normalize a full or short table name to its short `cpms_*` form.
+	 *
+	 * @param string $table Full or short table name.
+	 * @return string
+	 */
+	protected function short_name( string $table ): string {
+		if ( str_starts_with( $table, 'cpms_' ) ) {
+			return $table;
+		}
+		$pos = strpos( $table, 'cpms_' );
+
+		return false !== $pos ? substr( $table, $pos ) : $table;
+	}
+
+	/**
 	 * @return bool
 	 */
 	public function available(): bool {
@@ -238,12 +310,466 @@ class Platform {
 	 * @return int Rows deleted.
 	 */
 	public function delete_where( string $table, string $where, array $params = array() ): int {
+		$short = $this->short_name( $table );
+		if ( null !== $this->env ) {
+			$this->env->maybe_inject_fault( 'delete_where:' . $short, array( 'table' => $short, 'where' => $where ) );
+			$this->env->maybe_inject_fault( 'delete_where', array( 'table' => $short, 'where' => $where ) );
+		}
 		$sql = 'DELETE FROM `' . str_replace( '`', '', $table ) . '` WHERE ' . $where;
 		if ( $params !== array() ) {
 			$sql = $this->db()->prepare( $sql, $params );
 		}
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.NotPrepared -- Prepared above when params present.
+		$affected = $wpdb->query( $sql );
+		if ( false === $affected || '' !== (string) $wpdb->last_error ) {
+			throw new Exception( 'SQL_DELETE_FAILED', 'خطای پایگاه‌داده هنگام حذف ردیف‌های جدول ' . $short . '.' );
+		}
 
-		return (int) $this->db()->execute( $sql );
+		return (int) $affected;
+	}
+
+	/**
+	 * Baseline recurring system jobs predicate.
+	 *
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function baseline_jobs_where(): array {
+		$placeholders = implode( ',', array_fill( 0, count( self::BASELINE_JOB_TYPES ), '%s' ) );
+		$where        = 'type IN (' . $placeholders . ") AND status IN ('queued','processing','success') AND (payload_json IS NULL OR payload_json IN ('[]','{}',''))";
+
+		return array( $where, self::BASELINE_JOB_TYPES );
+	}
+
+	/**
+	 * Count legitimate baseline recurring system jobs in `cpms_jobs`.
+	 *
+	 * @return int
+	 */
+	public function baseline_jobs_count(): int {
+		if ( ! $this->table_exists( 'cpms_jobs' ) ) {
+			return 0;
+		}
+		list( $where, $params ) = $this->baseline_jobs_where();
+
+		return $this->count_where( $this->table( 'cpms_jobs' ), $where, $params );
+	}
+
+	/**
+	 * Count non-baseline rows in `cpms_jobs`.
+	 *
+	 * @return int
+	 */
+	public function non_baseline_jobs_count(): int {
+		if ( ! $this->table_exists( 'cpms_jobs' ) ) {
+			return 0;
+		}
+
+		return max( 0, $this->count_all( 'cpms_jobs' ) - $this->baseline_jobs_count() );
+	}
+
+	/**
+	 * Baseline operational logs predicate.
+	 *
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function baseline_oplogs_where(): array {
+		$placeholders = implode( ',', array_fill( 0, count( self::BASELINE_OPLOG_MESSAGES ), '%s' ) );
+		$where        = "level = 'info' AND message IN (" . $placeholders . ')';
+
+		return array( $where, self::BASELINE_OPLOG_MESSAGES );
+	}
+
+	/**
+	 * Count legitimate baseline activation/migration logs in `cpms_operational_logs`.
+	 *
+	 * @return int
+	 */
+	public function baseline_oplogs_count(): int {
+		if ( ! $this->table_exists( 'cpms_operational_logs' ) ) {
+			return 0;
+		}
+		list( $where, $params ) = $this->baseline_oplogs_where();
+
+		return $this->count_where( $this->table( 'cpms_operational_logs' ), $where, $params );
+	}
+
+	/**
+	 * Count non-baseline rows in `cpms_operational_logs`.
+	 *
+	 * @return int
+	 */
+	public function non_baseline_oplogs_count(): int {
+		if ( ! $this->table_exists( 'cpms_operational_logs' ) ) {
+			return 0;
+		}
+
+		return max( 0, $this->count_all( 'cpms_operational_logs' ) - $this->baseline_oplogs_count() );
+	}
+
+	/**
+	 * Build durable ownership predicate for `cpms_audit_logs` (S-3).
+	 *
+	 * Never uses `id > baseline_max_id`. Rows must be linked to the synthetic
+	 * clinic, synthetic organization, synthetic patient identities, synthetic
+	 * persona user IDs, or the synthetic fixture identifier.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function owned_audit_logs_predicate( array $scope ): array {
+		$clinic_id    = (int) ( $scope['clinic_id'] ?? 0 );
+		$org_id       = (int) ( $scope['organization_id'] ?? 0 );
+		$fixture_id   = (string) ( $scope['fixture_id'] ?? '' );
+		$identity_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['identity_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+		$user_ids     = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+
+		$clauses = array();
+		$params  = array();
+
+		if ( $clinic_id > 1 ) {
+			$clauses[] = '(clinic_id = %d)';
+			$params[]  = $clinic_id;
+		}
+		if ( $org_id > 1 ) {
+			$clauses[] = '(clinic_id IS NULL AND resource_type = %s AND resource_id = %d)';
+			$params[]  = 'organization';
+			$params[]  = $org_id;
+		}
+		if ( array() !== $identity_ids ) {
+			$ph        = implode( ',', array_fill( 0, count( $identity_ids ), '%d' ) );
+			$clauses[] = '(clinic_id IS NULL AND resource_type = %s AND resource_id IN (' . $ph . '))';
+			$params[]  = 'patient_identity';
+			foreach ( $identity_ids as $id ) {
+				$params[] = $id;
+			}
+		}
+		if ( array() !== $user_ids ) {
+			$ph        = implode( ',', array_fill( 0, count( $user_ids ), '%d' ) );
+			$clauses[] = '(clinic_id IS NULL AND actor_wp_user_id IN (' . $ph . '))';
+			foreach ( $user_ids as $id ) {
+				$params[] = $id;
+			}
+		}
+		if ( '' !== $fixture_id ) {
+			$clauses[] = "(clinic_id IS NULL AND resource_type = %s AND JSON_UNQUOTE(JSON_EXTRACT(meta_json, '$.fixture_id')) = %s)";
+			$params[]  = 'cpdd_fixture';
+			$params[]  = $fixture_id;
+		}
+
+		if ( array() === $clauses ) {
+			return array( '1 = 0', array() );
+		}
+
+		return array( '(' . implode( ' OR ', $clauses ) . ')', $params );
+	}
+
+	/**
+	 * Collect distinct non-empty `request_id` values from proven-owned `cpms_audit_logs` rows.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return list<string>
+	 */
+	public function audit_request_ids_for_scope( array $scope ): array {
+		if ( ! $this->table_exists( 'cpms_audit_logs' ) ) {
+			return array();
+		}
+		list( $where, $params ) = $this->owned_audit_logs_predicate( $scope );
+		if ( '1 = 0' === $where ) {
+			return array();
+		}
+		$total = $this->count_all( 'cpms_audit_logs' );
+		$owned = $this->count_where( $this->table( 'cpms_audit_logs' ), $where, $params );
+		if ( $total !== $owned ) {
+			// Do not trust request_id correlation if any foreign audit row exists.
+			return array();
+		}
+		$rows = $this->fetch_all(
+			'SELECT DISTINCT request_id FROM ' . $this->table( 'cpms_audit_logs' ) . ' WHERE ' . $where . " AND request_id IS NOT NULL AND request_id <> ''",
+			$params
+		);
+		$out  = array();
+		foreach ( $rows as $row ) {
+			$req = trim( (string) ( $row['request_id'] ?? '' ) );
+			if ( '' !== $req ) {
+				$out[] = $req;
+			}
+		}
+
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * Collect distinct `ip_hash` values from proven fixture `OTP_REQUEST` audit rows.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return list<string>
+	 */
+	public function audit_otp_ip_hashes_for_scope( array $scope ): array {
+		$clinic_id = (int) ( $scope['clinic_id'] ?? 0 );
+		if ( $clinic_id <= 1 || ! $this->table_exists( 'cpms_audit_logs' ) ) {
+			return array();
+		}
+		$foreign_otp = $this->count_where(
+			$this->table( 'cpms_audit_logs' ),
+			'(clinic_id IS NULL OR clinic_id <> %d) AND action = %s',
+			array( $clinic_id, 'OTP_REQUEST' )
+		);
+		if ( $foreign_otp > 0 ) {
+			return array();
+		}
+		$rows = $this->fetch_all(
+			'SELECT DISTINCT ip_hash FROM ' . $this->table( 'cpms_audit_logs' ) . " WHERE clinic_id = %d AND action = %s AND ip_hash IS NOT NULL AND ip_hash <> ''",
+			array( $clinic_id, 'OTP_REQUEST' )
+		);
+		$out  = array();
+		foreach ( $rows as $row ) {
+			$hash = trim( (string) ( $row['ip_hash'] ?? '' ) );
+			if ( '' !== $hash ) {
+				$out[] = $hash;
+			}
+		}
+
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * Collect distinct client IPs from proven fixture `LOGIN_FAILED` operational log rows.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return list<string>
+	 */
+	public function login_failed_ips_for_scope( array $scope ): array {
+		$login_keys = array_values( array_filter( array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) ) ) );
+		if ( array() === $login_keys || ! $this->table_exists( 'cpms_operational_logs' ) ) {
+			return array();
+		}
+		$ph      = implode( ',', array_fill( 0, count( $login_keys ), '%s' ) );
+		$foreign = $this->count_where(
+			$this->table( 'cpms_operational_logs' ),
+			"message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND (JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IS NULL OR JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) NOT IN (" . $ph . '))',
+			$login_keys
+		);
+		if ( $foreign > 0 ) {
+			return array();
+		}
+		$rows = $this->fetch_all(
+			"SELECT DISTINCT JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.ip')) AS ip FROM " . $this->table( 'cpms_operational_logs' ) . " WHERE message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IN (" . $ph . ')',
+			$login_keys
+		);
+		$out  = array();
+		foreach ( $rows as $row ) {
+			$ip = trim( (string) ( $row['ip'] ?? '' ) );
+			if ( '' !== $ip ) {
+				$out[] = $ip;
+			}
+		}
+
+		return array_values( array_unique( $out ) );
+	}
+
+	/**
+	 * Build durable ownership predicate for `cpms_jobs` (S-3).
+	 *
+	 * Never uses `id > baseline_max_id`. Only jobs whose payload references the
+	 * synthetic clinic or a synthetic SMS message ID are owned.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function owned_jobs_predicate( array $scope ): array {
+		$clinic_id = (int) ( $scope['clinic_id'] ?? 0 );
+		$sms_ids   = array_values( array_filter( array_map( 'intval', (array) ( $scope['sms_message_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+
+		$clauses = array();
+		$params  = array();
+
+		if ( $clinic_id > 1 ) {
+			$clauses[] = "(CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, '$.clinic_id')) AS UNSIGNED) = %d)";
+			$params[]  = $clinic_id;
+		}
+		if ( array() !== $sms_ids ) {
+			$ph        = implode( ',', array_fill( 0, count( $sms_ids ), '%d' ) );
+			$clauses[] = '(type = %s AND CAST(JSON_UNQUOTE(JSON_EXTRACT(payload_json, \'$.message_id\')) AS UNSIGNED) IN (' . $ph . '))';
+			$params[]  = 'sms.send';
+			foreach ( $sms_ids as $id ) {
+				$params[] = $id;
+			}
+		}
+
+		if ( array() === $clauses ) {
+			return array( '1 = 0', array() );
+		}
+
+		list( $base_where, $base_params ) = $this->baseline_jobs_where();
+
+		return array(
+			'NOT (' . $base_where . ') AND (' . implode( ' OR ', $clauses ) . ')',
+			array_merge( $base_params, $params ),
+		);
+	}
+
+	/**
+	 * Build durable ownership predicate for `cpms_operational_logs` (S-3).
+	 *
+	 * Never uses `id > baseline_max_id`. Every matched row must carry a durable
+	 * foreign key / identifier in `context_json` or a proven fixture `request_id`.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function owned_oplogs_predicate( array $scope ): array {
+		$clinic_id      = (int) ( $scope['clinic_id'] ?? 0 );
+		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
+
+		$clauses = array();
+		$params  = array();
+
+		if ( $clinic_id > 1 ) {
+			$clauses[] = "(CAST(JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.clinic_id')) AS UNSIGNED) = %d)";
+			$params[]  = $clinic_id;
+		}
+
+		$id_fields = array(
+			'patient_ids'     => array( '$.patient_id' ),
+			'appointment_ids' => array( '$.appointment_id', '$.old' ),
+			'slot_ids'        => array( '$.slot_id' ),
+			'clinician_ids'   => array( '$.clinician_id' ),
+			'follow_up_ids'   => array( '$.follow_up_id' ),
+			'sms_message_ids' => array( '$.message_id' ),
+			'otp_token_ids'   => array( '$.token_id' ),
+			'user_ids'        => array( '$.wp_user_id', '$.actor', '$.by' ),
+		);
+
+		foreach ( $id_fields as $scope_key => $json_paths ) {
+			$ids = array_values( array_filter( array_map( 'intval', (array) ( $scope[ $scope_key ] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+			if ( array() === $ids ) {
+				continue;
+			}
+			$ph = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+			foreach ( $json_paths as $path ) {
+				$clauses[] = '(CAST(JSON_UNQUOTE(JSON_EXTRACT(context_json, \'' . $path . '\')) AS UNSIGNED) IN (' . $ph . '))';
+				foreach ( $ids as $id ) {
+					$params[] = $id;
+				}
+			}
+		}
+
+		if ( '' !== $patient_mobile ) {
+			$clauses[] = "(message = %s AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.to')) = %s)";
+			$params[]  = 'SMS_LOG_SENT';
+			$params[]  = $patient_mobile;
+		}
+
+		$login_keys = array_values( array_filter( array_map( 'strval', (array) ( $scope['login_user_keys'] ?? array() ) ) ) );
+		if ( array() !== $login_keys ) {
+			$ph        = implode( ',', array_fill( 0, count( $login_keys ), '%s' ) );
+			$clauses[] = "(message IN ('LOGIN_FAILED','LOGIN_LOCKED_USER','LOGIN_LOCKED_IP') AND JSON_UNQUOTE(JSON_EXTRACT(context_json, '$.username_hash')) IN (" . $ph . '))';
+			foreach ( $login_keys as $k ) {
+				$params[] = $k;
+			}
+		}
+
+		$req_ids = array_values( array_filter( array_map( 'strval', (array) ( $scope['audit_request_ids'] ?? array() ) ) ) );
+		if ( array() !== $req_ids ) {
+			$ph        = implode( ',', array_fill( 0, count( $req_ids ), '%s' ) );
+			$clauses[] = "(request_id IS NOT NULL AND request_id <> '' AND request_id IN (" . $ph . '))';
+			foreach ( $req_ids as $req ) {
+				$params[] = $req;
+			}
+		}
+
+		if ( array() === $clauses ) {
+			return array( '1 = 0', array() );
+		}
+
+		list( $base_where, $base_params ) = $this->baseline_oplogs_where();
+
+		return array(
+			'NOT (' . $base_where . ') AND (' . implode( ' OR ', $clauses ) . ')',
+			array_merge( $base_params, $params ),
+		);
+	}
+
+	/**
+	 * Compute the exact list of `window_key` values owned by the fixture (S-3).
+	 *
+	 * Never uses `window_id >= 0`. Every allowed key is derived from the fixture's
+	 * patient mobile, synthetic persona user IDs, synthetic login hashes, or
+	 * proven fixture OTP/login audit correlations.
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return list<string>
+	 */
+	public function allowed_rate_limit_keys_for_scope( array $scope ): array {
+		$keys           = array();
+		$patient_mobile = (string) ( $scope['patient_mobile'] ?? '' );
+		if ( '' !== $patient_mobile ) {
+			$keys[] = 'otp-day:' . $patient_mobile;
+			$keys[] = 'otp-hour:' . $patient_mobile;
+		}
+
+		$user_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+		foreach ( $user_ids as $uid ) {
+			$keys[] = 'booking-' . $uid;
+			$keys[] = 'files:upload:' . $uid;
+			$keys[] = 'rt_notif_' . $uid;
+			$keys[] = 'rt_queue_' . $uid;
+			$keys[] = 'rt_queue_portal_' . $uid;
+			$keys[] = 'sms-test-' . $uid;
+			$keys[] = 'sms-send-' . $uid;
+			$keys[] = 'sms-tmpl-' . $uid;
+		}
+
+		foreach ( (array) ( $scope['login_user_keys'] ?? array() ) as $login_key ) {
+			$login_key = (string) $login_key;
+			if ( '' !== $login_key ) {
+				$keys[] = $login_key;
+			}
+		}
+
+		foreach ( (array) ( $scope['login_failed_ips'] ?? array() ) as $ip ) {
+			$ip = (string) $ip;
+			if ( '' !== $ip ) {
+				$keys[] = 'login-ip:' . $ip;
+			}
+		}
+
+		$otp_token_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['otp_token_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );
+		$otp_ip_hashes = array_values( array_filter( array_map( 'strval', (array) ( $scope['otp_ip_hashes'] ?? array() ) ) ) );
+		if ( array() !== $otp_token_ids && array() !== $otp_ip_hashes && null !== $this->env && $this->table_exists( 'cpms_rate_limits' ) ) {
+			$rows = $this->fetch_all( 'SELECT DISTINCT window_key FROM ' . $this->table( 'cpms_rate_limits' ) . " WHERE window_key LIKE 'otp-ip:%' OR window_key LIKE 'otp-verify-ip:%'" );
+			foreach ( $rows as $row ) {
+				$wk = (string) ( $row['window_key'] ?? '' );
+				$ip = '';
+				if ( str_starts_with( $wk, 'otp-ip:' ) ) {
+					$ip = substr( $wk, 7 );
+				} elseif ( str_starts_with( $wk, 'otp-verify-ip:' ) ) {
+					$ip = substr( $wk, 14 );
+				}
+				if ( '' !== $ip && in_array( $this->env->ip_hash( $ip ), $otp_ip_hashes, true ) ) {
+					$keys[] = $wk;
+				}
+			}
+		}
+
+		return array_values( array_unique( $keys ) );
+	}
+
+	/**
+	 * Build durable ownership predicate for `cpms_rate_limits` (S-3).
+	 *
+	 * @param array<string,mixed> $scope Collected fixture scope.
+	 * @return array{0:string,1:list<mixed>}
+	 */
+	public function owned_rate_limits_predicate( array $scope ): array {
+		$keys = $this->allowed_rate_limit_keys_for_scope( $scope );
+		if ( array() === $keys ) {
+			return array( '1 = 0', array() );
+		}
+		$ph = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
+
+		return array( 'window_key IN (' . $ph . ')', $keys );
 	}
 
 	/**
