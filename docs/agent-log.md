@@ -2446,3 +2446,35 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   (60 s cadence). It is inherited behaviour (ADR-0016) that only became an "added line" because the
   registration moved out of `boot()`'s inline filter, so the line carries a **narrow** `phpcs:ignore` for
   that one sniff with its reason — no sniff, path or severity was relaxed.
+
+### Pass 8 — the two open reds on #275: WPCS annotation scope, and a dirty storage root
+
+- **FAILURE 1 (WPCS), root cause proven from the rule implementations, not guessed.** The previous exception was
+  placed above the `'interval' => 60` array entry, but `WordPress.WP.CronInterval.CronSchedulesInterval`
+  reports on the **`'cron_schedules'` string token**, i.e. the `add_filter( 'cron_schedules', … )` line — so an
+  annotation 20 lines away suppresses nothing. It now sits directly above that one statement, and the
+  redundant annotation was removed. Verified against the shipped sources: the sniff calls
+  `addWarning( …, $stackPtr, 'CronSchedulesInterval' )` with `$stackPtr` at the `cron_schedules` string
+  (`WordPress/Sniffs/WP/CronIntervalSniff.php`), and `PHP_CodeSniffer` maps a standalone `// phpcs:ignore
+  <Code>` line onto `ignoredLines[commentLine + 1]` (`src/Tokenizers/Tokenizer.php`) which `File::addMessage()`
+  consults for the full code `WordPress.WP.CronInterval.CronSchedulesInterval`. Nothing is disabled globally:
+  the rule stays active everywhere else, and the minute cadence is inherited behaviour (ADR-0016).
+- **FAILURE 2 (real Chromium), what the evidence actually says.** The failed step's own PR evidence names the
+  exact assertion: stage 3 `admin preflight status is PASS`, check *«دادهٔ بالینی/مالی/نوبت خالی و Bootstrap
+  دستنخورده»*, reason *«cpms_operational_logs شامل ۱ رخداد عملیاتی غیرپیشفرض است»* — the browser stage died
+  before provisioning anything, on a site that must be pristine. The sanitized report deliberately prints only
+  the verdict, not the offending row, and job logs/artifacts are not reachable from the authoring sandbox
+  (blob download returns EOF), so the row's identity is **not yet observed**.
+- **Most probable, code-level mechanism (inference, stated as such):** the browser stage activates CPMS through
+  wp-admin as `www-data`, but `/home/runner/cpdd-private` was created by the earlier CLI stage where activation
+  (as the runner user) already wrote `files`/`backups` at `0750`. A web-server user cannot write those, so
+  `PrivateStorageInitializer::initialize()` returns `ok=false` and `App::activate()` logs
+  `CPMS_PRIVATE_STORAGE_INIT_FAILED` (warning) — exactly one non-baseline row.
+- **Changes (smallest safe set):** the browser stage now starts from a fresh, web-server-owned private root
+  (`rm -rf` + `chown -R www-data:runner`, `0775`) — the same one-time action a real host performs, and it cannot
+  mask a product defect because the plugin still has to create its own roots and guards. A **failure-only**
+  diagnostic step now names the offending rows (`OPLOG_NON_DEFAULT=…` with level/message/context/timestamp,
+  total count, private-storage state and root) and publishes them into the sanitized PR comment, so a repeat
+  failure is actionable in one run instead of a guess.
+- **Not touched:** no file under `tools/disposable-demo-installer/**`; the acceptance script, the preflight and
+  its baseline list are unchanged, so the lane stays exactly as strict as its author made it.

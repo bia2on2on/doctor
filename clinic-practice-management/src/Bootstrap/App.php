@@ -480,7 +480,6 @@ final class App
      */
     public static function filter_cron_schedules( array $schedules ): array {
         if ( ! isset( $schedules['cpms_minute'] ) ) {
-            // phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval -- ADR-0016: minute cadence is intentional.
             $schedules['cpms_minute'] = array(
                 'interval' => 60,
                 'display'  => 'هر دقیقه (CPMS)',
@@ -500,6 +499,11 @@ final class App
      * ثبت می‌کرد — هم لاگ را آلوده می‌کرد و هم «سایت خالی نیست» را نقض می‌کرد.
      */
     private static function register_cron_schedules(): void {
+        // ADR-0016: the queue tick is a 60-second schedule by design (VIP's
+        // 15-minute rule does not apply to an on-premise install whose queue is
+        // driven by this event). The sniff reports on this `add_filter()` line,
+        // so the exception is scoped to exactly this statement.
+        // phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval
         add_filter( 'cron_schedules', array( self::class, 'filter_cron_schedules' ) );
     }
 

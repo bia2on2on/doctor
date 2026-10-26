@@ -302,8 +302,15 @@ jobs:
           wp config set FS_METHOD direct --allow-root
           wp config set FS_CHMOD_DIR 0775 --raw --allow-root
           wp config set FS_CHMOD_FILE 0664 --raw --allow-root
+          # Fresh, web-server-owned private storage root. The earlier CLI stage
+          # already created files/backups-roots (0750) owned by the runner user,
+          # and this stage activates the plugin as www-data through wp-admin; a
+          # host provisions its private root once, for the web-server user.
+          # Reusing the CLI-owned tree would make activation fail its own storage
+          # guard and log a non-default operational event.
+          sudo rm -rf /home/runner/cpdd-private
           sudo mkdir -p /home/runner/cpdd-private
-          sudo chown www-data:runner /home/runner/cpdd-private
+          sudo chown -R www-data:runner /home/runner/cpdd-private
           sudo chmod 0775 /home/runner/cpdd-private
           wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --type=constant --allow-root
           ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
@@ -366,6 +373,30 @@ jobs:
           rm -f "$ADMIN_PASS_FILE"
           grep -q '^CPDD_BROWSER_ACCEPTANCE=PASS' /tmp/cpdd-ci/browser-acceptance.log
 
+      # A "non-default operational event" verdict is not actionable on its own:
+      # name the row so the next run does not need another guess. Runs only when
+      # something already failed, and never changes the acceptance result.
+      - name: Diagnose non-default operational log rows (failure only)
+        if: failure()
+        run: |
+          set -Euo pipefail
+          mkdir -p /tmp/cpdd-ci
+          wp eval "
+            global \$wpdb;
+            \$baseline = array( 'MIGRATION_START', 'MIGRATION_DONE', 'MIGRATION_0011_LOCATIONS_BACKFILL', 'CPMS_ACTIVATED', 'CPMS_PRIVATE_STORAGE_MIGRATION' );
+            \$table    = \$wpdb->prefix . 'cpms_operational_logs';
+            \$placeholders = implode( ',', array_fill( 0, count( \$baseline ), '%s' ) );
+            \$params   = array_merge( array( 'info' ), \$baseline );
+            \$sql      = 'SELECT level, message, context_json, created_at FROM ' . \$table . ' WHERE NOT ( level = %s AND message IN (' . \$placeholders . ') ) ORDER BY id';
+            \$rows     = \$wpdb->get_results( \$wpdb->prepare( \$sql, \$params ), ARRAY_A );
+            foreach ( (array) \$rows as \$row ) {
+                echo 'OPLOG_NON_DEFAULT=' . wp_json_encode( \$row ) . PHP_EOL;
+            }
+            echo 'OPLOG_TOTAL=' . (int) \$wpdb->get_var( 'SELECT COUNT(*) FROM ' . \$table ) . PHP_EOL;
+            echo 'PRIVATE_STORAGE_STATE=' . wp_json_encode( get_option( 'cpms_private_storage_state' ) ) . PHP_EOL;
+            echo 'PRIVATE_STORAGE_ROOT=' . ( defined( 'CPMS_PRIVATE_STORAGE_DIR' ) ? CPMS_PRIVATE_STORAGE_DIR : '(undefined)' ) . PHP_EOL;
+          " --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/cpdd-ci/oplog-diagnosis.log
+
       - name: No credentials or OTP codes leaked into logs
         if: always()
         run: |
@@ -403,6 +434,8 @@ jobs:
             sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
             echo '--- browser-acceptance ---'
             sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/browser-acceptance.log 2>/dev/null | tail -160 || true
+            echo '--- oplog diagnosis (failure only) ---'
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/oplog-diagnosis.log 2>/dev/null | tail -40 || true
             echo '```'
           } > /tmp/cpdd-ci/pr-comment.md
           if [ -s /tmp/cpdd-ci/pr-comment.md ]; then
