@@ -334,16 +334,18 @@ final class App
 
         // ترمیمِ ارزان و throttle‌شده در سمتِ مدیریت (حداکثر یک‌بار در ساعت):
         // اگر رویداد حذف/منقضی شده باشد، اولین بازدیدِ پیشخوان آن را بازمی‌سازد.
-        add_action( 'admin_init', static function (): void {
-            if ( CronScheduleRepair::self_heal_in_admin() ) {
-                // فقط یک رخدادِ observability — بدونِ هیچ اجرای Job.
-                $context = [
-                    'hook'       => CronScheduleRepair::HOOK,
-                    'recurrence' => CronScheduleRepair::RECURRENCE,
-                ];
-                self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
+        $cron_self_heal = static function (): void {
+            if ( ! CronScheduleRepair::self_heal_in_admin() ) {
+                return;
             }
-        }, 20 );
+            // فقط یک رخدادِ observability — بدونِ هیچ اجرای Job.
+            $context = [
+                'hook'       => CronScheduleRepair::HOOK,
+                'recurrence' => CronScheduleRepair::RECURRENCE,
+            ];
+            self::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
+        };
+        add_action( 'admin_init', $cron_self_heal, 20 );
 
         add_action('cpms_jobs_tick', static function (): void {
             self::runTick(20);
@@ -673,14 +675,18 @@ final class App
     public static function queueHealth( int $staleAfterSec = 300 ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing published API name/parameter (consumed by Rest/HealthController and existing tests); renaming would break the public contract.
         $evidence  = self::queue_evidence();
         $last_tick = (int) $evidence['last_tick_at'];
-        $stale     = $last_tick > 0 && ( time() - $last_tick ) > $staleAfterSec; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter of queueHealth().
+        // پارامترِ عمومیِ موجود نامِ تاریخیِ خود را دارد؛ این‌جا به یک متغیرِ
+        // snake_case نگاشت می‌شود تا قاعدهٔ نام‌گذاری در بدنه رعایت شود.
+        $stale_window = $staleAfterSec; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter name of queueHealth().
+
+        $stale = $last_tick > 0 && ( time() - $last_tick ) > $stale_window;
 
         return [
-            'last_tick_at' => $last_tick,
-            'stale'        => $last_tick === 0 ? true : $stale,
-            'stale_after_sec' => $staleAfterSec, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter of queueHealth().
-            'queued' => (int) $evidence['queued'],
-            'failed' => (int) $evidence['failed'],
+            'last_tick_at'    => $last_tick,
+            'stale'           => $last_tick === 0 ? true : $stale,
+            'stale_after_sec' => $stale_window,
+            'queued'          => (int) $evidence['queued'],
+            'failed'          => (int) $evidence['failed'],
         ];
     }
 

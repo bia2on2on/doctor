@@ -45,7 +45,7 @@ final class SystemPage
         add_action('admin_post_cpms_update_check', [self::class, 'updateCheck']);
         add_action('admin_post_cpms_update_settings', [self::class, 'updateSettings']);
         // CPMS Classic Admin UX (E) — ترمیمِ مجاز و Nonceدارِ زمان‌بندیِ صف.
-        add_action('admin_post_cpms_cron_repair', [self::class, 'cron_repair']);
+        add_action( 'admin_post_cpms_cron_repair', [ self::class, 'cron_repair' ] );
     }
 
     public static function menu(): void
@@ -131,24 +131,7 @@ final class SystemPage
 
         // CPMS Classic Admin UX (G) — چهار گروهِ متمایز: مسدودکننده، هشدارِ
         // قابل‌اقدام، پیکربندیِ اختیاری، سالم. هیچ ردیفی حذف نمی‌شود.
-        $health_groups   = is_array( $health ) ? SystemHealthService::group_checks( $health['checks'] ) : [];
-        $health_sections = [
-            'blockers' => [
-                'title'   => '⛔ مسدودکننده‌ها',
-                'notice'  => 'notice-error',
-                'explain' => 'این موارد باید پیش از استفادهٔ عملیاتی رفع شوند.',
-            ],
-            'warnings' => [
-                'title'   => '⚠️ هشدارهای قابل‌اقدام',
-                'notice'  => 'notice-warning',
-                'explain' => 'افزونه کار می‌کند، اما این موارد باید بررسی شوند.',
-            ],
-            'optional' => [
-                'title'   => '➖ پیکربندی اختیاری',
-                'notice'  => 'notice-info',
-                'explain' => 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.',
-            ],
-        ];
+        $health_groups = is_array( $health ) ? SystemHealthService::group_checks( $health['checks'] ) : [];
 
         // CPMS Classic Admin UX (E) — کلاسِ اعلانِ وضعیتِ صف بر پایهٔ شدت.
         $queue_notice_class = match ( is_array( $queue_diagnosis ) ? (string) $queue_diagnosis['severity'] : '' ) {
@@ -185,67 +168,16 @@ final class SystemPage
                     <br><code><?php echo esc_html(implode(' | ', $health['host']['issues'])); ?></code>
                 <?php endif; ?>
             </p>
-            <?php foreach ( $health_sections as $group_key => $section ) : ?>
-                <?php if ( [] === $health_groups[ $group_key ] ) : ?>
-                    <?php continue; ?>
-                <?php endif; ?>
-                <h3><?php echo esc_html( $section['title'] ); ?> (<?php echo (int) count( $health_groups[ $group_key ] ); ?>)</h3>
-                <p class="description"><?php echo esc_html( $section['explain'] ); ?></p>
-                <?php foreach ( $health_groups[ $group_key ] as $c ) : ?>
-                    <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
-                    <div class="notice <?php echo esc_attr( $section['notice'] ); ?> inline cpms-health-item" style="max-width:100%">
-                        <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
-                        <p>🔎 <strong>چی:</strong> <?php echo esc_html( $g['what'] ); ?></p>
-                        <p>⚡ <strong>اثر:</strong> <?php echo esc_html( $g['impact'] ); ?></p>
-                        <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html( $g['action'] ); ?></p>
-                        <details><summary style="cursor:pointer">جزئیات فنی</summary>
-                            <pre class="cpms-diag" dir="ltr"><?php echo esc_html( (string) $c['detail'] ); ?></pre>
-                        </details>
-                    </div>
-                <?php endforeach; ?>
-            <?php endforeach; ?>
+            <?php self::render_health_groups( $health_groups ); ?>
 
             <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
                 <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
             <?php endif; ?>
 
-            <h3>✅ بررسی‌های سالم (<?php echo (int) count( $health_groups['healthy'] ); ?>)</h3>
-            <table class="widefat striped cpms-health-table">
-                <thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>
-                <tbody>
-                <?php foreach ( $health_groups['healthy'] as $c ) : ?>
-                    <tr>
-                        <td><?php echo esc_html( $c['label'] ); ?></td>
-                        <td><?php echo esc_html( self::statusBadge( $c['status'], $c['key'], $c['detail'] ) ); ?></td>
-                        <td class="cpms-wrap-cell"><?php echo esc_html( $c['detail'] ); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-                <?php if ( [] === $health_groups['healthy'] ) : ?>
-                    <tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>
-                <?php endif; ?>
-                </tbody>
-            </table>
-            <?php endif; ?>
+            <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
 
             <h2>Queue و WP-Cron</h2>
-            <?php if ( null === $queue_diagnosis ) : ?>
-                <div class="notice notice-error inline"><p>⛔ وضعیت صف خوانده نشد؛ بقیهٔ صفحه مستقل از این بخش کار می‌کند.</p></div>
-            <?php else : ?>
-                <div class="notice <?php echo esc_attr( $queue_notice_class ); ?> inline cpms-queue-state" style="max-width:100%" data-cpms-queue-state="<?php echo esc_attr( (string) $queue_diagnosis['state'] ); ?>">
-                    <p><strong><?php echo esc_html( (string) $queue_diagnosis['label'] ); ?></strong></p>
-                    <p><?php echo esc_html( (string) $queue_diagnosis['detail'] ); ?></p>
-                    <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html( (string) $queue_diagnosis['guidance'] ); ?></p>
-                </div>
-                <p class="description"><?php echo esc_html( CronScheduleRepair::scheduler_explanation() ); ?></p>
-
-                <?php if ( (bool) $queue_diagnosis['repairable'] ) : ?>
-                    <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-bottom:12px">
-                        <?php wp_nonce_field( 'cpms_cron_repair' ); ?>
-                        <input type="hidden" name="action" value="cpms_cron_repair">
-                        <button class="button button-primary">ترمیم زمان‌بندی صف</button>
-                        <span class="description">فقط رویدادِ زمان‌بندیِ WP-Cron بازساخته می‌شود؛ هیچ Jobی همین حالا اجرا نمی‌شود.</span>
-                    </form>
-                <?php endif; ?>
+            <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
             <?php endif; ?>
 
             <h2>مجوز</h2>
@@ -514,8 +446,7 @@ final class SystemPage
      * فقط رویدادِ تکرارشوندهٔ WP-Cron در صورتِ نبود بازساخته می‌شود. هیچ فایل یا
      * زمان‌بندِ میزبان تغییر نمی‌کند.
      */
-    public static function cron_repair(): void
-    {
+    public static function cron_repair(): void {
         self::guard( 'cpms_cron_repair' );
 
         $was_scheduled = CronScheduleRepair::is_scheduled();
@@ -581,6 +512,130 @@ final class SystemPage
         $s->set('update.channel', in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable');
         $s->set('update.check_interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
         self::notify('تنظیمات به‌روزرسانی ذخیره شد', true);
+    }
+
+
+    /**
+     * CPMS Classic Admin UX (G) — چهار گروهِ متمایزِ سلامت (بدونِ حذفِ هیچ ردیف).
+     *
+     * @return array<string, array{title:string, notice:string, explain:string}>
+     */
+    private static function health_sections(): array {
+        return [
+            'blockers' => [
+                'title'   => '⛔ مسدودکننده‌ها',
+                'notice'  => 'notice-error',
+                'explain' => 'این موارد باید پیش از استفادهٔ عملیاتی رفع شوند.',
+            ],
+            'warnings' => [
+                'title'   => '⚠️ هشدارهای قابل‌اقدام',
+                'notice'  => 'notice-warning',
+                'explain' => 'افزونه کار می‌کند، اما این موارد باید بررسی شوند.',
+            ],
+            'optional' => [
+                'title'   => '➖ پیکربندی اختیاری',
+                'notice'  => 'notice-info',
+                'explain' => 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.',
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, list<array{key:string,label:string,status:string,detail:string}>> $health_groups
+     */
+    private static function render_health_groups( array $health_groups ): void {
+        foreach ( self::health_sections() as $group_key => $section ) {
+            $checks = $health_groups[ $group_key ] ?? [];
+            if ( [] === $checks ) {
+                continue;
+            }
+
+            echo '<h3>' . esc_html( $section['title'] ) . ' (' . (int) count( $checks ) . ')</h3>';
+            echo '<p class="description">' . esc_html( $section['explain'] ) . '</p>';
+
+            foreach ( $checks as $check ) {
+                self::render_health_item( $check, $section['notice'] );
+            }
+        }
+    }
+
+    /**
+     * @param array{key:string,label:string,status:string,detail:string} $check
+     */
+    private static function render_health_item( array $check, string $notice ): void {
+        $key    = (string) $check['key'];
+        $status = (string) $check['status'];
+        $detail = (string) $check['detail'];
+        $badge  = self::statusBadge( $status, $key, $detail );
+        $guide  = self::guide( $key, $status, $detail );
+
+        echo '<div class="notice ' . esc_attr( $notice ) . ' inline cpms-health-item" style="max-width:100%">';
+        echo '<p><strong>' . esc_html( $badge ) . ' ' . esc_html( (string) $check['label'] ) . '</strong></p>';
+        echo '<p>🔎 <strong>چی:</strong> ' . esc_html( $guide['what'] ) . '</p>';
+        echo '<p>⚡ <strong>اثر:</strong> ' . esc_html( $guide['impact'] ) . '</p>';
+        echo '<p>🛠 <strong>چه کنم:</strong> ' . esc_html( $guide['action'] ) . '</p>';
+        echo '<details><summary style="cursor:pointer">جزئیات فنی</summary>';
+        echo '<pre class="cpms-diag" dir="ltr">' . esc_html( $detail ) . '</pre>';
+        echo '</details>';
+        echo '</div>';
+    }
+
+    /**
+     * @param list<array{key:string,label:string,status:string,detail:string}> $checks
+     */
+    private static function render_healthy_table( array $checks ): void {
+        echo '<h3>✅ بررسی‌های سالم (' . (int) count( $checks ) . ')</h3>';
+        echo '<table class="widefat striped cpms-health-table">';
+        echo '<thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>';
+        echo '<tbody>';
+        foreach ( $checks as $check ) {
+            echo '<tr>';
+            echo '<td>' . esc_html( (string) $check['label'] ) . '</td>';
+            echo '<td>' . esc_html( self::statusBadge( (string) $check['status'], (string) $check['key'], (string) $check['detail'] ) ) . '</td>';
+            echo '<td class="cpms-wrap-cell">' . esc_html( (string) $check['detail'] ) . '</td>';
+            echo '</tr>';
+        }
+        if ( [] === $checks ) {
+            echo '<tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>';
+        }
+        echo '</tbody>';
+        echo '</table>';
+    }
+
+    /**
+     * CPMS Classic Admin UX (E) — بخشِ «Queue و WP-Cron».
+     *
+     * هیچ Jobی این‌جا اجرا نمی‌شود؛ تنها اقدامِ ممکن، بازساختنِ idempotentِ رویدادِ
+     * زمان‌بندی با Nonce و مجوزِ `cpms_config` است.
+     *
+     * @param array<string, mixed>|null $queue_diagnosis
+     */
+    private static function render_queue_section( ?array $queue_diagnosis, string $notice_class ): void {
+        if ( null === $queue_diagnosis ) {
+            echo '<div class="notice notice-error inline"><p>⛔ وضعیت صف خوانده نشد؛ بقیهٔ صفحه مستقل از این بخش کار می‌کند.</p></div>';
+
+            return;
+        }
+
+        $state = (string) $queue_diagnosis['state'];
+
+        echo '<div class="notice ' . esc_attr( $notice_class ) . ' inline cpms-queue-state" style="max-width:100%" data-cpms-queue-state="' . esc_attr( $state ) . '">';
+        echo '<p><strong>' . esc_html( (string) $queue_diagnosis['label'] ) . '</strong></p>';
+        echo '<p>' . esc_html( (string) $queue_diagnosis['detail'] ) . '</p>';
+        echo '<p>🛠 <strong>چه کنم:</strong> ' . esc_html( (string) $queue_diagnosis['guidance'] ) . '</p>';
+        echo '</div>';
+        echo '<p class="description">' . esc_html( CronScheduleRepair::scheduler_explanation() ) . '</p>';
+
+        if ( ! (bool) $queue_diagnosis['repairable'] ) {
+            return;
+        }
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:12px">';
+        wp_nonce_field( 'cpms_cron_repair' );
+        echo '<input type="hidden" name="action" value="cpms_cron_repair">';
+        echo '<button class="button button-primary">ترمیم زمان‌بندی صف</button>';
+        echo '<span class="description">فقط رویدادِ زمان‌بندیِ WP-Cron بازساخته می‌شود؛ هیچ Jobی همین حالا اجرا نمی‌شود.</span>';
+        echo '</form>';
     }
 
     // ================= helpers =================
