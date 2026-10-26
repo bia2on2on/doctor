@@ -138,10 +138,10 @@ final class BookingController extends RestBase
                         'id' => [
                             'required' => true,
                             'type'     => 'integer',
-      ],
-     ],
-    ],
-            ]
+                        ],
+                    ],
+                ],
+        ]
         );
 
         register_rest_route(self::NS, '/appointments/(?P<id>\d+)/reschedule', [

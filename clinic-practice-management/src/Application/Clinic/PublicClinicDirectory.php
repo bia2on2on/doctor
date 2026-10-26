@@ -132,7 +132,7 @@ final class PublicClinicDirectory {
 		$consent = $this->consent_map( array_column( $candidates, 'id' ) );
 		$ids     = [];
 		foreach ( $candidates as $candidate ) {
-			if ( $consent[ (int) $candidate['id'] ] === true ) {
+			if ( $consent[(int)  $candidate['id']] === true ) {
 				$ids[] = (int) $candidate['id'];
 			}
 		}
@@ -160,13 +160,13 @@ final class PublicClinicDirectory {
 			}
 			foreach ( $clinicians as $clinician ) {
 				if ( $clinician['specialty'] !== '' ) {
-					$specialties[ $clinician['specialty'] ] = true;
+					$specialties[$clinician['specialty']] = true;
 				}
 			}
 			$clinics[] = [
 				'id'         => $clinic_id,
 				'name'       => (string) $candidate['name'],
-				'timezone'   => (string) ( $candidate['timezone'] ?? '' ),
+				'timezone'   => (string)   ( $candidate['timezone'] ?? '' ),
 				'clinicians' => $clinicians,
 			];
 		}
@@ -257,7 +257,7 @@ final class PublicClinicDirectory {
 			return $decoded === 1;
 		}
 
-		$token = strtolower( trim( $decoded === null ? $raw : (string) $decoded ) );
+		$token = strtolower( trim( $decoded === null ? $raw : (string)     $decoded ) );
 
 		return in_array( $token, ['1', 'true', 'on', 'yes'], true );
 	}
@@ -296,14 +296,14 @@ final class PublicClinicDirectory {
 
 		$clinics = [];
 		foreach ( $rows as $row ) {
-			$id = (int) ( $row['id'] ?? 0 );
+			$id = (int)   ( $row['id'] ?? 0 );
 			if ( $id <= 0 ) {
 				continue;
 			}
 			$clinics[] = [
 				'id'       => $id,
-				'name'     => trim( (string) ( $row['name'] ?? '' ) ),
-				'timezone' => trim( (string) ( $row['timezone'] ?? '' ) ),
+				'name'     => trim( (string)    ( $row['name'] ?? '' ) ),
+				'timezone' => trim( (string)    ( $row['timezone'] ?? '' ) ),
 			];
 		}
 
@@ -329,8 +329,8 @@ final class PublicClinicDirectory {
 			array_merge( [self::CONSENT_SETTING], array_map( 'intval', $clinic_ids ) )
 		);
 
-		foreach ( (array) $rows as $row ) {
-			$clinic_id = (int) ( $row['clinic_id'] ?? 0 );
+		foreach ( (array)  $rows as $row ) {
+			$clinic_id = (int)   ( $row['clinic_id'] ?? 0 );
 			if ( $clinic_id > 0 ) {
 				$map[ $clinic_id ] = self::normalize_consent( $row['value_json'] ?? null );
 			}
@@ -383,13 +383,13 @@ final class PublicClinicDirectory {
 
 		$result = [];
 		foreach ( [ $home, $shared ] as $rows ) {
-			foreach ( (array) $rows as $row ) {
-				$clinic_id    = (int) ( $row['clinic_id'] ?? 0 );
-				$clinician_id = (int) ( $row['id'] ?? 0 );
+			foreach ( (array)  $rows as $row ) {
+				$clinic_id    = (int)   ( $row['clinic_id'] ?? 0 );
+				$clinician_id = (int)   ( $row['id'] ?? 0 );
 				if ( $clinic_id <= 0 || $clinician_id <= 0 ) {
 					continue;
 				}
-				$name = trim( (string) ( $row['full_name'] ?? '' ) );
+				$name = trim( (string)    ( $row['full_name'] ?? '' ) );
 				if ( $name === '' ) {
 					// An unnamed button is unusable; never publish it.
 					continue;
@@ -404,7 +404,7 @@ final class PublicClinicDirectory {
 				$result[ $clinic_id ][ $clinician_id ] = [
 					'id'        => $clinician_id,
 					'name'      => $name,
-					'specialty' => trim( (string) ( $row['specialty'] ?? '' ) ),
+					'specialty' => trim( (string)    ( $row['specialty'] ?? '' ) ),
 					'weekdays'  => $weekdays[ $clinic_id ][ $clinician_id ] ?? [],
 				];
 			}
@@ -449,10 +449,10 @@ final class PublicClinicDirectory {
 		);
 
 		$map = [];
-		foreach ( (array) $rows as $row ) {
-			$clinic_id    = (int) ( $row['clinic_id'] ?? 0 );
-			$clinician_id = (int) ( $row['clinician_id'] ?? 0 );
-			$day          = (int) ( $row['day_of_week'] ?? -1 );
+		foreach ( (array)  $rows as $row ) {
+			$clinic_id    = (int)   ( $row['clinic_id'] ?? 0 );
+			$clinician_id = (int)   ( $row['clinician_id'] ?? 0 );
+			$day          = (int)   ( $row['day_of_week'] ?? -1 );
 			if ( $clinic_id <= 0 || $clinician_id <= 0 || $day < 0 || $day > 6 ) {
 				continue;
 			}
@@ -477,8 +477,8 @@ final class PublicClinicDirectory {
 		try {
 			App::op()->warning( 'CPMS_PUBLIC_DIRECTORY_FAILED', ['reason' => $e->getMessage()] );
 		} catch ( Throwable ) {
-		    // The row is skipped; the caller keeps its own fallback.
 			// A logging failure must never surface a Clinic that failed a gate.
+			return;
 		}
 	}
 }
