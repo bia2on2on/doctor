@@ -60,7 +60,7 @@ final class Settings
         // settings row sets this key to a true value AND the Clinic/lifecycle,
         // Organization and Location gates pass. Absent row ⇒ false ⇒ never
         // listed. There is intentionally no "list every active Clinic" default.
-        'public.listing_opt_in' => false,
+        'public.listing_opt_in'             => false,
         // دست‌خط
         'hw.local_retain' => 'off', // off|last|always
         'hw.autosave_sec' => 5,
@@ -216,7 +216,7 @@ final class Settings
                             'value_json'            => $after_json,
                             'updated_by_wp_user_id' => $updated_by,
                             'updated_at'            => $this->db->nowUtcSql(),
-                        ]
+                    ]
                     );
                 } else {
                     $this->db->query(

@@ -58,7 +58,7 @@ final class BookingService
 
     private readonly MembershipRepository $memberships;
 
-    /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 (ساختِ بیمارِ جدیدِ OTP-verified). */
+    /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 ( ساختِ بیمارِ جدیدِ OTP-verified ). */
     private readonly PatientIdentityActivator $identities;
 
     public function __construct(
@@ -113,11 +113,11 @@ final class BookingService
      * @return array{days: list<array<string, mixed>>}
      */
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
-    public function availability(int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $clinicId = null): array
+    public function availability( int $clinicianId, ?string $fromDate = null, ?string $toDate = null, ?int $clinicId = null ): array
     {
         // Phase 8 Slice 4 — optional Clinic selector (BC: omitted ⇒ home Clinic).
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase local of this method.
-        $clinicId = $this->resolve_booking_clinic($clinicianId, $clinicId);
+        $clinicId = $this->resolve_booking_clinic( $clinicianId, $clinicId );
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended
         // Clinic publishes no bookable slots. Returns the established public
@@ -342,7 +342,7 @@ final class BookingService
             $details[ $location_id ] = [
                 'name'    => trim( (string) ( $row['name'] ?? '' ) ),
                 'address' => trim( (string) ( $row['address'] ?? '' ) ),
-            ];
+        ];
         }
 
         return $details;
@@ -404,14 +404,16 @@ final class BookingService
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
-    public function quote(int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null): array
+    public function quote( int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $locationId = null ): array
     {
         // Phase 8 Slice 4 — the PERSISTED slot decides the Clinic when an exact
         // slot id is supplied (shared-clinician support). No client-supplied
         // Clinic value participates in this decision.
         $clinicId = $this->requireClinician($clinicianId);
-        if ($slotId !== null && $slotId > 0) {
-            $clinicId = $this->clinic_for_persisted_slot($clinicId, $clinicianId, $slotId);
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter (PHP 8 named-argument contract).
+        if ( $slotId !== null && $slotId > 0 ) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter (PHP 8 named-argument contract).
+            $clinicId = $this->clinic_for_persisted_slot( $clinicId, $clinicianId, $slotId );
         }
 
         // Clinic lifecycle policy - public advertisement boundary: a suspended Clinic
@@ -471,7 +473,7 @@ final class BookingService
      */
     // phpcs:ignore Squiz.Functions.FunctionDeclarationArgumentSpacing, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names (PHP 8 named-argument contract).
-    public function hold(int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null): array
+    public function hold( int $wpUserId, int $clinicianId, string $slotDate, string $slotTime, ?int $slotId = null, ?int $patientId = null, ?int $locationId = null ): array
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_BOOK);
 
@@ -616,7 +618,7 @@ final class BookingService
                     'expires_at'        => $expires_at,
                     'status'            => 'active',
                     'created_at'        => $this->db->nowUtcSql(),
-                ];
+            ];
                 if ( $has_patient_col ) {
                     $row['patient_id'] = $patient_id_to_persist;
                 }
@@ -639,7 +641,7 @@ final class BookingService
                         'slot_id'   => (int) $slot['id'],
                         'slot_date' => $slot_date,
                         'slot_time' => $slot_time,
-                    ],
+                ],
                     [],
                     (int) $slot['clinic_id']
                 );
@@ -790,7 +792,7 @@ final class BookingService
             // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
                 'mobile' => MobileValidator::mask((string) ($hold['holder_mobile'] ?? '')),
-            ], (int) $hold['clinic_id']);
+        ], (int) $hold['clinic_id'] );
             // phpcs:enable
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
         }
@@ -960,7 +962,7 @@ final class BookingService
                             'slot_id'           => $slot_id,
                             'slot_date'         => (string) $slot['slot_date'],
                             'slot_time'         => (string) $slot['slot_time'],
-                            'duration_min'      => $duration, // Snapshot (ADR-0017)
+                            'duration_min'      => $duration, // Snapshot ( ADR-0017 )
                             'slot_end_time'     => $end_time, // Snapshot
                             'wp_user_id'        => $wp_user_id,
                             'reason'            => is_string( $reason ) && $reason !== '' ? mb_substr( $reason, 0, 255 ) : null,
@@ -970,7 +972,7 @@ final class BookingService
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
                             'updated_at'        => $now_sql,
-                        ]
+                    ]
                     );
 
                     $this->machineCheck( 'new', 'book_final', 'patient' );
@@ -996,7 +998,7 @@ final class BookingService
                             [
                                 'auto'   => 'booking_confirm',
                                 'mobile' => MobileValidator::mask( $mobile ),
-                            ],
+                        ],
                             [],
                             $hold_clinic_id
                         );
@@ -1012,7 +1014,7 @@ final class BookingService
                         $confirmed_view,
                         [
                             'mobile' => MobileValidator::mask( $mobile ),
-                        ],
+                    ],
                         $hold_clinic_id
                     );
 
@@ -1021,7 +1023,7 @@ final class BookingService
                         'appointment_id'      => $appt_id,
                         'patient_id'          => $patient_id,
                         'patient_was_created' => $patient_was_created,
-                    ];
+                ];
                 }
             );
         } catch (Throwable $e) {
@@ -1069,7 +1071,7 @@ final class BookingService
                 'appointment_id' => $appt_id,
                 'slot_id'        => (int) $hold['slot_id'],
                 'wp_user_id'     => (int) $hold['holder_wp_user_id'],
-            ]
+        ]
         );
 
         $this->sendAppointmentSms(SmsEvents::APPT_CONFIRMED, $mobile, $appt);
@@ -1253,7 +1255,7 @@ final class BookingService
                                 'capacity_left'    => (int) ( $row['capacity_left'] ?? 0 ),
                                 'location_name'    => $location_info['name'],
                                 'location_address' => $location_info['address'],
-                            ];
+                        ];
                         }
 
                         foreach ( $grouped as $date => $slots ) {
@@ -1261,7 +1263,7 @@ final class BookingService
                                 'date'   => $date,
                                 'jalali' => Jalali::formatYmd( $date ),
                                 'slots'  => $slots,
-                            ];
+                        ];
                         }
                     }
                 }
@@ -1280,7 +1282,7 @@ final class BookingService
                 'current_time'   => substr( (string) $appt['slot_time'], 0, 5 ),
                 'clinician_name' => $clinician_name,
                 'days'           => $filtered_days,
-            ];
+        ];
         } catch ( Throwable $e ) {
             throw $this->toBookingException( $e );
         }
@@ -1367,7 +1369,7 @@ final class BookingService
         }
 
         try {
-            [$old_appt, $new_appt_id, $new_slot] = $this->db->transactional(
+            [ $old_appt, $new_appt_id, $new_slot ] = $this->db->transactional(
                 function () use (
                     $actor_user_id,
                     $appointment_id,
@@ -1471,7 +1473,7 @@ final class BookingService
 
                     // Lock both Slots in ascending id order after the tenant lifecycle
                     // rows; the Location lock follows the Slot locks (established order).
-                    [$first, $second] = $old_slot_id < $new_slot_id ? [ $old_slot_id, $new_slot_id ] : [ $new_slot_id, $old_slot_id ];
+                    [ $first, $second ] = $old_slot_id < $new_slot_id ? [ $old_slot_id, $new_slot_id ] : [ $new_slot_id, $old_slot_id ];
                     $first_slot       = $this->slots->findForUpdate( $first );
                     $second_slot      = $second === $first ? $first_slot : $this->slots->findForUpdate( $second );
                     if ( $first_slot === null || $second_slot === null ) {
@@ -1566,11 +1568,11 @@ final class BookingService
                             'from_appointment_id' => $appointment_id,
                             'from_date'           => (string) $appt['slot_date'],
                             'from_time'           => (string) $appt['slot_time'],
-                        ],
+                    ],
                         (int) $appt['clinic_id']
                     );
 
-                    return [$appt, $new_appt_id, $new_slot];
+                    return [ $appt, $new_appt_id, $new_slot ];
                 }
             );
         } catch (Throwable $e) {
@@ -1739,13 +1741,13 @@ final class BookingService
                             'duration_min'      => $duration,
                             'slot_end_time'     => DurationResolver::slotEndTime( $slot_time, $duration ),
                             'reason'            => is_string( $reason_value ) && $reason_value !== '' ? mb_substr( $reason_value, 0, 255 ) : null,
-                            'status'            => 'confirmed', // N-2: create→pending→confirm در یک operation (مطابه State Machine)
+                            'status'            => 'confirmed', // N-2: create→pending→confirm در یک operation ( مطابه State Machine )
                             'is_walkin_express' => $is_today ? 1 : 0,
                             'booked_at'         => $now_sql,
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
                             'updated_at'        => $now_sql,
-                        ]
+                    ]
                     );
 
                     $this->machineCheck( 'new', 'create', 'secretary' );
@@ -1771,7 +1773,7 @@ final class BookingService
                         'appointment'    => $this->appointments->find( $appt_id ),
                         'appointment_id' => $appt_id,
                         'slot'           => $slot,
-                    ];
+                ];
                 }
             );
         } catch ( Throwable $e ) {
@@ -1788,7 +1790,7 @@ final class BookingService
             [
                 'appointment_id' => $appt_id,
                 'actor'          => $actor_user_id,
-            ]
+        ]
         );
 
         return $view;
@@ -1924,7 +1926,7 @@ final class BookingService
                 // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
                 $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
                     'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-                ], (int) $appt['clinic_id']);
+            ], (int) $appt['clinic_id'] );
                 // phpcs:enable
                 throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
             }
@@ -2454,8 +2456,7 @@ final class BookingService
      *
      * @param int $home_clinic_id Already-resolved home Clinic of an ACTIVE clinician.
      */
-    private function clinic_for_persisted_slot( int $home_clinic_id, int $clinician_id, int $slot_id ): int
-    {
+    private function clinic_for_persisted_slot( int $home_clinic_id, int $clinician_id, int $slot_id ): int {
         $slot = $this->db->fetchRow(
             'SELECT id, clinic_id, clinician_id FROM ' . $this->db->table( 'cpms_schedule_slots' ) . ' WHERE id = %d LIMIT 1',
             [ $slot_id ]
@@ -2487,8 +2488,7 @@ final class BookingService
         return $slot_clinic_id;
     }
 
-    private function resolve_booking_clinic( int $clinician_id, ?int $requested_clinic_id ): int
-    {
+    private function resolve_booking_clinic( int $clinician_id, ?int $requested_clinic_id ): int {
         $home_clinic_id = $this->requireClinician( $clinician_id );
 
         if ( null === $requested_clinic_id || $requested_clinic_id <= 0 || $requested_clinic_id === $home_clinic_id ) {
@@ -2777,7 +2777,7 @@ final class BookingService
                     'patient_id' => $patient_id,
                     'clinic_id'  => $clinic_id,
                     'error_code' => $e->error_code,
-                ]
+            ]
             );
 
             throw BookingException::of( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );

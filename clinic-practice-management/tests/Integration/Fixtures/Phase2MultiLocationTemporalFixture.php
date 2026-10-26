@@ -130,6 +130,9 @@ trait Phase2MultiLocationTemporalFixture
             $now
         ));
         $this->fxTPatient = (int) $wpdb->insert_id;
+        if ($this->fxTPatient <= 0) {
+            self::fail('fixture setup: patient insert failed (leftover fixture rows? see purgeMultiLocationTemporalFixture)');
+        }
 
         // Settings per clinic
         Settings::flushCache();
@@ -273,6 +276,36 @@ trait Phase2MultiLocationTemporalFixture
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', self::FX_T_CLINICIAN_ID));
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+
+        // 8b) Clinic-referencing history that RESTRICTs the clinic row. In particular
+        //     cpms_audit_logs (`fk_audit_logs_clinic`) is written by Settings::set()
+        //     during setup, so omitting it made step 9 fail with a foreign-key error,
+        //     leaving org 62200 / clinic 62201 behind; the next test in the class then
+        //     collided on those fixed primary keys and its fixture inserts silently
+        //     returned 0 (seen as "fixture: valid-timezone appointment persisted").
+        $existing_tables = $wpdb->get_col($wpdb->prepare(
+            'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME LIKE %s',
+            $wpdb->esc_like($wpdb->prefix . 'cpms_') . '%'
+        ));
+        $existing_tables = array_flip(array_map('strval', (array) $existing_tables));
+        foreach ([
+            'cpms_payments',
+            'cpms_invoices',
+            'cpms_medical_attachments',
+            'cpms_ocr_jobs',
+            'cpms_patient_merges',
+            'cpms_recommendations',
+            'cpms_follow_ups',
+            'cpms_drug_reference',
+            'cpms_schedule_exceptions',
+            'cpms_audit_logs',
+        ] as $historyTable) {
+            $table = $db->table($historyTable);
+            if (!isset($existing_tables[$table])) {
+                continue;
+            }
+            $wpdb->query($wpdb->prepare('DELETE FROM ' . $table . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));
+        }
 
         // 9) Locations, settings, clinics, orgs
         $wpdb->query($wpdb->prepare('DELETE FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d', self::FX_T_CLINIC_ID));

@@ -158,19 +158,19 @@ final class OtpController extends RestBase
      */
     private function resolveSelectionClinic(WP_REST_Request $request): ?int
     {
-        $clinicianId = $request->get_param('clinician_id');
-        $slotId = $request->get_param('slot_id');
+        $clinician_id = $request->get_param( 'clinician_id' );
+        $slot_id = $request->get_param( 'slot_id' );
         $slotDate = $request->get_param('slot_date');
         $slotTime = $request->get_param('slot_time');
 
-        $hasSelection = self::hasValue($clinicianId) || self::hasValue($slotId)
+        $hasSelection = self::hasValue( $clinician_id ) || self::hasValue( $slot_id )
             || self::hasValue($slotDate) || self::hasValue($slotTime);
         if (!$hasSelection) {
             return null;
         }
 
         // انتخابِ ناقص = ورودی نامعتبر (نه حدس، نه fallback).
-        if (!self::hasValue($clinicianId) || !self::hasValue($slotId)
+        if ( ! self::hasValue( $clinician_id ) || ! self::hasValue( $slot_id )
             || !self::hasValue($slotDate) || !self::hasValue($slotTime)) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
@@ -179,11 +179,11 @@ final class OtpController extends RestBase
             );
         }
 
-        $clinicianId = (int) $clinicianId;
-        $slotId = (int) $slotId;
+        $clinician_id = (int) $clinician_id;
+        $slot_id = (int) $slot_id;
         $slotDate = (string) $slotDate;
         $slotTime = (string) $slotTime;
-        if ($clinicianId <= 0 || $slotId <= 0 || $slotDate === '' || $slotTime === '') {
+        if ( $clinician_id <= 0 || $slot_id <= 0 || $slotDate === '' || $slotTime === '' ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ادامهٔ رزرو، انتخاب نوبت ناقص است — دوباره پزشک و نوبت را انتخاب کنید',
@@ -194,47 +194,47 @@ final class OtpController extends RestBase
         // ۱+۲) clinicianِ فعالِ persisted — Clinic فقط از ردیفِ persisted.
         $clinician = App::db()->fetchRow(
             'SELECT clinic_id, is_active FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
-            [$clinicianId]
+            [ $clinician_id ]
         );
         if ($clinician === null || (int) $clinician['is_active'] !== 1) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'پزشک انتخابی یافت نشد', 404);
         }
-        $clinicId = (int) $clinician['clinic_id'];
+        $clinic_id = (int) $clinician['clinic_id'];
 
         // Phase 8 Slice 4 — the PERSISTED slot owns the Clinic. A clinician who
         // legitimately participates in more than one Clinic therefore binds the
         // challenge to the slot's Clinic, while any client-supplied clinic_id is
         // ignored entirely (never authority, never a selector).
         $slot = App::db()->fetchRow(
-            'SELECT clinic_id, clinician_id, slot_date, slot_time FROM ' . App::db()->table('cpms_schedule_slots') .
+            'SELECT clinic_id, clinician_id, slot_date, slot_time FROM ' . App::db()->table( 'cpms_schedule_slots' ) .
             ' WHERE id = %d AND clinician_id = %d LIMIT 1',
-            [$slotId, $clinicianId]
+            [ $slot_id, $clinician_id ]
         );
         if ($slot === null) {
             throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
         }
         $slot_clinic_id = (int) $slot['clinic_id'];
-        if ($slot_clinic_id <= 0) {
-            throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+        if ( $slot_clinic_id <= 0 ) {
+            throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
         }
-        if ($slot_clinic_id !== $clinicId) {
+        if ( $slot_clinic_id !== $clinic_id ) {
             // A slot persisted in ANOTHER Clinic is only usable when the
             // clinician holds an ACTIVE durable participation there.
-            if (!(new MembershipRepository(App::db()))->clinician_participates_in($clinicianId, $slot_clinic_id)) {
-                throw BookingException::of('CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404);
+            if ( !( new MembershipRepository( App::db() ) )->clinician_participates_in( $clinician_id, $slot_clinic_id ) ) {
+                throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات انتخابی یافت نشد', 404 );
             }
-            $clinicId = $slot_clinic_id;
+            $clinic_id = $slot_clinic_id;
         }
 
         // ۴) اثباتِ رابطهٔ slot/clinician/date/time (نرمال‌سازی H:i ↔ H:i:s —
         // همان الگوی مسیر B1).
         $timeMatches = substr((string) $slot['slot_time'], 0, 8) === substr($slotTime, 0, 8);
-        if ((int) $slot['clinician_id'] !== $clinicianId
+        if ( (int) $slot['clinician_id'] !== $clinician_id
             || (string) $slot['slot_date'] !== $slotDate
             || !$timeMatches) {
             $normRequested = substr($slotDate . ' ' . $slotTime, 0, 19);
             $normSlot = (string) $slot['slot_date'] . ' ' . substr((string) $slot['slot_time'], 0, 8);
-            if ((int) $slot['clinician_id'] !== $clinicianId
+            if ( (int) $slot['clinician_id'] !== $clinician_id
                 || substr($normRequested, 0, 16) !== substr($normSlot, 0, 16)) {
                 throw BookingException::of(
                     'CLINIC_VALIDATION_FAILED',
@@ -245,7 +245,7 @@ final class OtpController extends RestBase
         }
 
         // ۵) Clinicِ ناشی از رابطهٔ persisted نوبت‌دهی.
-        return $clinicId;
+        return $clinic_id;
     }
 
     private static function hasValue(mixed $value): bool
