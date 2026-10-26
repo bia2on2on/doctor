@@ -199,6 +199,19 @@ final class CpmsAdminMenu {
 
 		self::$hidden_slugs[] = $slug;
 
+		// ثبتِ ردیف در همین لحظهٔ ثبتِ صفحه (نه در گامِ پنهان‌سازی): فیلترِ
+		// هم‌زیستیِ WooCommerce روی `admin_init` اجرا می‌شود، یعنی **پیش از**
+		// `admin_head`؛ اگر ردیف را دیر ثبت کنیم، آن فیلتر صفحهٔ ثبت‌شده را
+		// «ثبت‌نشده» می‌بیند و مدیرِ Clinic-scoped دوباره ریدایرکت می‌شود.
+		$parent = self::parent_slug();
+		if ( isset( $GLOBALS['submenu'][ $parent ] ) && is_array( $GLOBALS['submenu'][ $parent ] ) ) {
+			foreach ( $GLOBALS['submenu'][ $parent ] as $row ) {
+				if ( is_array( $row ) && $slug === ( $row[2] ?? '' ) ) {
+					self::$hidden_rows[ $slug ] = $row;
+				}
+			}
+		}
+
 		// اگر register() هنوز اجرا نشده باشد (مثلاً در تست)، همان قابلیتِ خودترمیم.
 		if ( false === has_action( 'admin_head', array( self::class, 'prune_hidden_submenu_rows' ) ) ) {
 			add_action( 'admin_head', array( self::class, 'prune_hidden_submenu_rows' ), 1 );
@@ -247,7 +260,7 @@ final class CpmsAdminMenu {
 
 	/** پاک‌سازیِ ردیف‌های پنهان (تست‌ها بین سناریوها آلوده نشوند). */
 	public static function reset_hidden_rows(): void {
-		self::$hidden_rows = array();
+		self::$hidden_rows  = array();
 		self::$hidden_slugs = array();
 	}
 

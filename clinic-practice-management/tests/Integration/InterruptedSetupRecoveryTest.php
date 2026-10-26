@@ -127,6 +127,10 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         CpmsAdminMenu::menu();
         CpmsSetupWizard::menu();
         FirstPracticeSetupPage::menu();
+        // پنهان‌سازیِ نمایشی در محصول روی `admin_head` انجام می‌شود (پس از بررسیِ
+        // دسترسیِ هسته، وگرنه URL مستقیم 403 می‌شود). همان گامِ واقعی را صدا می‌زنیم
+        // تا این قرارداد با «فهرستِ زیرمنویی که کاربر می‌بیند» سنجیده شود.
+        CpmsAdminMenu::prune_hidden_submenu_rows();
 
         $sub   = $GLOBALS['submenu']['cpms-dashboard'] ?? [];
         $slugs = array_map(static fn ($r) => $r[2] ?? '', $sub);

@@ -1950,6 +1950,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+
       # Reuse the same authenticated admin/public-booking smoke on Firefox and
       # WebKit, bounded to phone + tablet widths; no extra copy or product setup.
       - name: Firefox/WebKit compatibility smoke (390×844 + 768×1024)
@@ -2247,6 +2248,9 @@ jobs:
                 echo 'NOT RUN / log not produced'
               fi
             done
+            echo '--- admin narrow RTL acceptance (320/390 × 10 slugs; B-3) ---'
+            grep -E '^(INFO admin_narrow_checks=|PASS admin narrow|FAIL admin narrow|FAIL |MISSING )' /tmp/admin-narrow.log 2>/dev/null || echo '(admin-narrow.log missing — narrow acceptance NOT exercised)'
+            python3 -c "import json;d=json.load(open('pilot-admin-narrow-results.json'));print(json.dumps(d['summary'],ensure_ascii=False))" 2>/dev/null || true
             echo '```'
           } > /tmp/resp-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md
