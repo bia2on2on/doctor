@@ -115,10 +115,23 @@ final class CpmsAdminMenu {
 	 */
 	private static array $hidden_rows = array();
 
+	/**
+	 * اسلاگ‌هایی که باید در نمایش پنهان شوند (ثبت‌شده باقی می‌مانند).
+	 *
+	 * @var array<int, string>
+	 */
+	private static array $hidden_slugs = array();
+
 	public static function register(): void {
 		add_action( 'admin_menu', array( self::class, 'menu' ), 1 );
 		// ترتیب/پنهان‌سازی زیرمنو پس از ثبت همهٔ صفحات (اولویت پیش‌فرض 10).
 		add_action( 'admin_menu', array( self::class, 'order_submenu' ), 50 );
+		// پنهان‌سازیِ نمایشی باید **بعد** از بررسیِ دسترسیِ هسته انجام شود:
+		// `user_can_access_admin_page()` (در انتهای menu.php) والدِ صفحه را با
+		// پیمایشِ `$submenu` پیدا می‌کند؛ اگر ردیف پیش از آن حذف شود، WordPress
+		// صفحه را «ثبت‌نشده» می‌بیند و URL مستقیم 403 می‌شود (رگرسیونِ واقعیِ
+		// observable: `admin.cpms-first-practice-setup.http200` → 403).
+		add_action( 'admin_head', array( self::class, 'prune_hidden_submenu_rows' ), 1 );
 		add_action( 'admin_menu', array( self::class, 'hide_when_unreachable' ), 999 );
 		// Legacy redirect باید در admin_menu اجرا شود نه admin_init: چون wp-admin/menu.php
 		// در انتهای خود user_can_access_admin_page() را اجرا می‌کند و اگر صفحه اصلاً در
@@ -176,24 +189,47 @@ final class CpmsAdminMenu {
 	 *
 	 * نکتهٔ امنیتی: حذف از آرایهٔ زیرمنو فقط نمایش است؛ مجوز صفحه همان capability
 	 * ثبت‌شدهٔ خودش است و `$_registered_pages` دست‌نخورده می‌ماند.
+	 * نکتهٔ فنی (رگرسیونِ واقعی): حذف **همین‌جا** مجاز نیست — هسته پس از `admin_menu`
+	 * والدِ صفحه را از `$submenu` می‌یابد؛ حذفِ زودهنگام یعنی 403 برای URL مستقیم.
 	 */
 	public static function hide_from_submenu( string $slug ): void {
-		$parent = self::parent_slug();
-		if ( ! isset( $GLOBALS['submenu'][ $parent ] ) || ! is_array( $GLOBALS['submenu'][ $parent ] ) ) {
+		if ( in_array( $slug, self::$hidden_slugs, true ) ) {
 			return;
 		}
 
-		$found = false;
-		foreach ( $GLOBALS['submenu'][ $parent ] as $row ) {
-			if ( is_array( $row ) && $slug === ( $row[2] ?? '' ) ) {
-				// نگه‌داشتنِ ردیف برای بازرسی/تست: «پنهان از زیرمنو» ≠ «ثبت‌نشده».
-				self::$hidden_rows[ $slug ] = $row;
-				$found                      = true;
-			}
+		self::$hidden_slugs[] = $slug;
+
+		// اگر register() هنوز اجرا نشده باشد (مثلاً در تست)، همان قابلیتِ خودترمیم.
+		if ( false === has_action( 'admin_head', array( self::class, 'prune_hidden_submenu_rows' ) ) ) {
+			add_action( 'admin_head', array( self::class, 'prune_hidden_submenu_rows' ), 1 );
+		}
+	}
+
+	/**
+	 * حذفِ **نمایشیِ** ردیف‌های پنهان از زیرمنو — روی `admin_head`، یعنی پس از
+	 * بررسیِ دسترسیِ هسته و پیش از رندرِ منو.
+	 *
+	 * چرا اینجا: `user_can_access_admin_page()` والدِ صفحه را از `$submenu` پیدا
+	 * می‌کند و hookname را از همان والد می‌سازد؛ حذفِ زودهنگام یعنی 403 برای URL
+	 * مستقیم. پس «پنهان از منو» فقط نمایش است و مجوز/hookname دست‌نخورده می‌ماند.
+	 */
+	public static function prune_hidden_submenu_rows(): void {
+		if ( array() === self::$hidden_slugs ) {
+			return;
 		}
 
-		if ( $found ) {
-			// API خودِ هسته؛ هیچ دسترسی‌ای از `$GLOBALS['submenu']` مستقیم نوشته نمی‌شود.
+		foreach ( self::$hidden_slugs as $slug ) {
+			$parent = self::parent_slug();
+			if ( ! isset( $GLOBALS['submenu'][ $parent ] ) || ! is_array( $GLOBALS['submenu'][ $parent ] ) ) {
+				continue;
+			}
+			foreach ( $GLOBALS['submenu'][ $parent ] as $row ) {
+				if ( is_array( $row ) && $slug === ( $row[2] ?? '' ) ) {
+					// نگه‌داشتنِ ردیف برای بازرسی/تست: «پنهان از زیرمنو» ≠ «ثبت‌نشده».
+					self::$hidden_rows[ $slug ] = $row;
+				}
+			}
+			// API خودِ هسته؛ هیچ نوشتنِ مستقیمی روی `$GLOBALS['submenu']` لازم نیست.
 			remove_submenu_page( $parent, $slug );
 		}
 	}
@@ -212,10 +248,11 @@ final class CpmsAdminMenu {
 	/** پاک‌سازیِ ردیف‌های پنهان (تست‌ها بین سناریوها آلوده نشوند). */
 	public static function reset_hidden_rows(): void {
 		self::$hidden_rows = array();
+		self::$hidden_slugs = array();
 	}
 
 	/**
-	 * مرتب‌سازی زیرمنو بر اساس بخش‌ها و حذفِ دفاعیِ صفحاتِ نامرئی.
+	 * مرتب‌سازی زیرمنو بر اساس بخش‌ها (فقط مرتب‌سازی؛ هیچ ردیفی حذف نمی‌شود).
 	 *
 	 * آخرین مرحلهٔ admin_menu تا همهٔ ثبت‌کننده‌ها (اولویت پیش‌فرض 10) اجرا شده
 	 * باشند. ثبت‌های ناشناخته (افزونهٔ سوم) حفظ می‌شوند و انتهای فهرست می‌آیند.
@@ -233,18 +270,19 @@ final class CpmsAdminMenu {
 			}
 		}
 
+		// ترتیبِ رَجیستری برای همهٔ صفحاتِ ثبت‌شده — از جمله صفحاتِ «نامرئی».
+		// حذفِ آن‌ها اینجا ممنوع است: `user_can_access_admin_page()` پس از این هوک و
+		// پیش از `admin_head` اجرا می‌شود و والدِ صفحه را از همین آرایه می‌یابد؛
+		// حذفِ زودهنگام = 403 برای URL مستقیم. حذفِ نمایشی در `admin_head` است.
 		$ordered = array();
-		foreach ( self::PAGES as $slug => $page ) {
-			if ( ! isset( $rows[ $slug ] ) || empty( $page[3] ) ) {
+		foreach ( array_keys( self::PAGES ) as $slug ) {
+			if ( ! isset( $rows[ $slug ] ) ) {
 				continue;
 			}
 			$ordered[] = $rows[ $slug ];
 			unset( $rows[ $slug ] );
 		}
-		foreach ( $rows as $slug => $row ) {
-			if ( isset( self::PAGES[ $slug ] ) ) {
-				continue; // صفحهٔ شناخته‌شدهٔ «نامرئی»
-			}
+		foreach ( $rows as $row ) {
 			$ordered[] = $row;
 		}
 

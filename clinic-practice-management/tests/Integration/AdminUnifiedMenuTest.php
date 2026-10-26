@@ -64,6 +64,9 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     protected function setUp(): void
     {
         parent::setUp();
+        if (get_role('no_caps_probe') === null) {
+            add_role('no_caps_probe', 'no caps', []);
+        }
         foreach (['menu', 'submenu', '_parent_pages', '_registered_pages', '_wp_submenu_nopriv'] as $key) {
             $this->backup[$key] = $GLOBALS[$key] ?? null;
         }
@@ -142,6 +145,10 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         PatientAdminPage::menu();
         PublicShortcodeAdminPage::menu();
         CpmsAdminMenu::order_submenu();
+        // پنهان‌سازیِ نمایشی در محیطِ واقعی روی `admin_head` انجام می‌شود؛ همان
+        // گامِ هستهٔ محصول را عیناً صدا می‌زنیم تا ادعای «زیرمنوی کوتاه» با رفتارِ
+        // واقعی سنجیده شود، نه با یک وضعیتِ ساختگیِ تست.
+        CpmsAdminMenu::prune_hidden_submenu_rows();
     }
 
     /** @return list<string> */
@@ -270,6 +277,46 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * رگرسیونِ واقعیِ کشف‌شده در Runtime: حذفِ زودهنگامِ ردیفِ زیرمنو، والدِ صفحه را
+     * از `get_admin_page_parent()` پاک می‌کند و WordPress در `user_can_access_admin_page()`
+     * دسترسیِ URL مستقیم را 403 می‌کند. پس ردیف باید تا `admin_head` باقی بماند.
+     */
+    public function testHiddenPagesKeepTheirRegisteredParentUntilTheAdminHeadStep(): void
+    {
+        $this->registerEveryCpmsPage();
+        $parent = CpmsAdminMenu::parent_slug();
+
+        // ۱) هوکِ پنهان‌سازی واقعاً به admin_head وصل است (نه یک تابعِ بی‌مصرف).
+        self::assertNotFalse(
+            has_action('admin_head', [CpmsAdminMenu::class, 'prune_hidden_submenu_rows']),
+            'پنهان‌سازیِ نمایشی باید روی admin_head وصل باشد'
+        );
+
+        // ۲) در گامِ admin_head ردیف‌ها حذف شده‌اند، اما هر صفحهٔ پنهان همچنان
+        //    با hooknameِ والدِ خودش ثبت‌شده است — یعنی «ثبت‌شده، نامرئی».
+        foreach (['cpms-handwriting', 'cpms-first-practice-setup', 'cpms-finance-delegation'] as $slug) {
+            self::assertNotContains($slug, $this->submenuSlugs($parent), "{$slug} باید از نمایش حذف شود");
+            self::assertArrayHasKey(
+                get_plugin_page_hookname($slug, $parent),
+                $GLOBALS['_registered_pages'],
+                "{$slug} باید با hooknameِ والدِ واحد ثبت‌شده بماند (وگرنه 403)"
+            );
+            self::assertSame($parent, $GLOBALS['_parent_pages'][$slug] ?? null, "والدِ {$slug}");
+        }
+
+        // ۳) پیش از admin_head، ردیف‌ها باید هنوز موجود باشند تا هسته والد را پیدا کند.
+        CpmsAdminMenu::reset_hidden_rows();
+        $GLOBALS['submenu'] = [];
+        $GLOBALS['submenu'][$parent] = [];
+        FinanceDelegationPage::menu();
+        self::assertContains(
+            FinanceDelegationPage::PAGE_SLUG,
+            $this->submenuSlugs($parent),
+            'پیش از admin_head ردیف باید در آرایهٔ زیرمنو بماند تا user_can_access_admin_page() والد را بیابد'
+        );
+    }
+
     // ------------------------------------------------------------------
     // 3) capability والد ≠ مجوز فرزند
     // ------------------------------------------------------------------
@@ -351,8 +398,31 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
             self::assertSame([] !== $expected, CpmsAdminMenu::has_any_accessible_page(), "نقش {$role_key}");
         }
 
-        // کاربرِ بدونِ هیچ صفحهٔ CPMS: ظرف منو باید حذف شود.
+        // هر کاربرِ واردشده `read` دارد و چند صفحه از رَجیستری عمداً `read`-gated
+        // هستند (مدیرِ Clinic-scoped بدونِ capability وردپرسیِ CONFIG). پس ظرفِ منو
+        // برای این کاربران دیده می‌شود — اما هیچ capability اختصاصی‌ای باز نمی‌شود و
+        // مجوزِ هر صفحه همان capability خودش است (Clinic-scoped هم سمتِ سرویس‌ها).
         wp_set_current_user((int) self::factory()->user->create(['role' => 'subscriber']));
+        self::assertTrue(CpmsAdminMenu::has_any_accessible_page());
+        $read_only_reachable = [];
+        foreach (CpmsAdminMenu::accessible_sections() as $pages) {
+            foreach (array_keys($pages) as $slug) {
+                $read_only_reachable[] = $slug;
+            }
+        }
+        sort($read_only_reachable);
+        $read_gated_only = [];
+        foreach (CpmsAdminMenu::PAGES as $slug => $page) {
+            if ('read' === (string) $page[2]) {
+                $read_gated_only[] = $slug;
+            }
+        }
+        sort($read_gated_only);
+        self::assertSame($read_gated_only, $read_only_reachable, 'کاربر با read تنها همان صفحات read-gated را می‌بیند');
+
+        // کاربرِ بدونِ `read` (نقشِ بدونِ هیچ capability): ظرف باید حذف شود.
+        wp_set_current_user((int) self::factory()->user->create(['role' => 'no_caps_probe']));
+        self::assertFalse(current_user_can('read'));
         self::assertFalse(CpmsAdminMenu::has_any_accessible_page());
         $GLOBALS['menu'] = [];
         CpmsAdminMenu::menu();
