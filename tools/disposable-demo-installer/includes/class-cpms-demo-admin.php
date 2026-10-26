@@ -272,12 +272,12 @@ class Admin {
 				case Request::ACTION_DISMISS:
 					$env->with_lock(
 						'dismiss_tombstone',
-						static function () use ( $env, $manifest ): void {
+						static function () use ( $manifest ): void {
 							$tombstone = $manifest->tombstone();
 							if ( null !== $tombstone && true !== ( $tombstone['ok'] ?? $tombstone['clean'] ?? false ) ) {
 								throw new Exception( 'TEARDOWN_INCOMPLETE', 'سابقهٔ پاک‌سازی ناقص را نمی‌توان پاک کرد؛ ابتدا آثار باقی‌مانده را بررسی کنید.' );
 							}
-							$env->option_delete( Manifest::TOMBSTONE );
+							$manifest->clear_tombstone();
 						}
 					);
 					self::$notice = array(

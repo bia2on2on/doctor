@@ -918,6 +918,12 @@ foreach ( $ctx['env']->passwords as $stored_pass ) {
 }
 
 // Simulate browser POST for ACTION_TEARDOWN: must render data-cpdd-teardown="clean" even though manifest is now deleted.
+$ctx['platform']->tables_data['cpms_rate_limits'][] = array(
+	'window_key'   => 'otp-ip:127.0.0.1',
+	'window_start' => time(),
+	'window_sec'   => 3600,
+	'counter'      => 1,
+);
 Admin::reset_state();
 $_SERVER['REQUEST_METHOD'] = 'POST';
 $_POST                     = array(
@@ -933,6 +939,36 @@ $html_teardown = (string) ob_get_clean();
 Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-teardown="clean"' ), 's6: teardown response renders data-cpdd-teardown="clean" after manifest deletion' );
 Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-tombstone="clean"' ), 's6: teardown response renders data-cpdd-tombstone="clean"' );
 Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-preflight="pass"' ), 's6: teardown response renders data-cpdd-preflight="pass"' );
+
+// Simulate browser POST for ACTION_DISMISS followed by ACTION_PROVISION with preserved shared-IP rate limits.
+Admin::reset_state();
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST                     = array(
+	Admin::ACTION  => Request::ACTION_DISMISS,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_DISMISS ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_DISMISS ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_dismiss = (string) ob_get_clean();
+Cpdd_Test::ok( ! str_contains( $html_dismiss, 'data-cpdd-tombstone=' ), 's6: dismiss response removes tombstone card' );
+Cpdd_Test::ok( str_contains( $html_dismiss, 'data-cpdd-preflight="pass"' ), 's6: preflight remains pass after dismissing tombstone with preserved shared-IP rate limits' );
+
+Admin::reset_state();
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST                     = array(
+	Admin::ACTION  => Request::ACTION_PROVISION,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_PROVISION ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_PROVISION ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_reprovision = (string) ob_get_clean();
+Cpdd_Test::ok( str_contains( $html_reprovision, 'data-cpdd-secret="credentials"' ), 's6: reprovisioning after ACTION_DISMISS renders new one-time credentials block' );
 Admin::set_test_services( null, null );
 
 // ---------------------------------------------------------------------------
