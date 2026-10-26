@@ -362,8 +362,9 @@ class Admin {
 			self::render_form( $request, Request::ACTION_DIAGNOSE, 'تشخیص فقط‌خواندنی مالکیت', 'RUN_READ_ONLY_DIAGNOSTIC', 'هیچ چیزی حذف نمی‌شود؛ فقط اثبات مالکیت و برنامهٔ حذف را نشان می‌دهد.' );
 			self::render_diagnostic();
 			self::render_form( $request, Request::ACTION_TEARDOWN, 'پاک‌سازی انتخاب‌شدهٔ دمو', 'DESTROY_DEMO_DATA_ONLY', 'اگر مالکیت کامل اثبات نشود، پاک‌سازی مسدود می‌شود و هیچ ردیفی حذف نمی‌شود.' );
-			self::render_teardown_result();
 		}
+
+		self::render_teardown_result();
 
 		if ( is_array( $tombstone ) ) {
 			self::render_tombstone( $request, $tombstone );

@@ -916,6 +916,23 @@ Cpdd_Test::ok( ! str_contains( $html_get, 'data-cpdd-secret="credentials"' ), 's
 foreach ( $ctx['env']->passwords as $stored_pass ) {
 	Cpdd_Test::ok( ! str_contains( $html_get, (string) $stored_pass ), 's6: subsequent GET reload contains zero password values' );
 }
+
+// Simulate browser POST for ACTION_TEARDOWN: must render data-cpdd-teardown="clean" even though manifest is now deleted.
+Admin::reset_state();
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST                     = array(
+	Admin::ACTION  => Request::ACTION_TEARDOWN,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_TEARDOWN ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_TEARDOWN ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_teardown = (string) ob_get_clean();
+Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-teardown="clean"' ), 's6: teardown response renders data-cpdd-teardown="clean" after manifest deletion' );
+Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-tombstone="clean"' ), 's6: teardown response renders data-cpdd-tombstone="clean"' );
+Cpdd_Test::ok( str_contains( $html_teardown, 'data-cpdd-preflight="pass"' ), 's6: teardown response renders data-cpdd-preflight="pass"' );
 Admin::set_test_services( null, null );
 
 // ---------------------------------------------------------------------------
