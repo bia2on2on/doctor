@@ -235,11 +235,18 @@ def check_page(page, slug, label, width):
 
     if reached:
         href = page.evaluate("() => document.activeElement.getAttribute('href') || ''")
+        navigated = False
         try:
-            page.keyboard.press("Enter")
+            # Enter یک ناوبریِ واقعی در همان تب است. پیش‌تر بدونِ انتظار برای اتمامِ
+            # آن ادامه می‌دادیم و سنجشِ بعدی روی contextِ ازبین‌رفته اجرا می‌شد
+            # («Execution context was destroyed, most likely because of a
+            # navigation») — یعنی پذیرش پس از اولین اسلاگ متوقف می‌شد. اکنون تا
+            # اتمامِ همان ناوبری صبر می‌کنیم؛ معیار همان است (URL با page= در BASE).
+            with page.expect_navigation(timeout=10000):
+                page.keyboard.press("Enter")
             page.wait_for_load_state("domcontentloaded")
             navigated = page.url.startswith(BASE) and "page=" in page.url
-        except Exception:  # noqa: BLE001
+        except Exception:  # noqa: BLE001 - گزارشِ صادقانهٔ شکستِ تعامل
             navigated = False
         record(navigated and href != "", f"{prefix} keyboard-activates-link", href.split("page=")[-1])
 

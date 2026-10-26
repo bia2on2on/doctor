@@ -1952,12 +1952,21 @@ jobs:
           fi
           python3 bin/pilot-admin-narrow.py | tee /tmp/admin-narrow.log
           test "${PIPESTATUS[0]}" -eq 0
+          narrow_rc=$?
           {
             echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
             echo '```'
             grep -E '^(INFO |PASS |FAIL |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+          # `set +e` بالاتر یعنی کدِ خروجِ `test` خطا نمی‌سازد و آخرین فرمانِ این
+          # گام (بلوکِ step-summary، که همیشه موفق است) وضعیتِ گام را تعیین می‌کرد:
+          # پذیرشِ باریک حتی وقتی در همان صفحهٔ نخست متوقف شده بود «سبز» گزارش
+          # می‌شد. اکنون کدِ خروجِ پذیرش صریحاً fail-closed است.
+          if [ "${narrow_rc}" -ne 0 ]; then
+            echo "::error::Admin narrow RTL acceptance exited ${narrow_rc} — see the published evidence"
+            exit "${narrow_rc}"
+          fi
 
 
       # Reuse the same authenticated admin/public-booking smoke on Firefox and
