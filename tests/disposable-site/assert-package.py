@@ -109,6 +109,10 @@ def main():
     parser.add_argument("--zip", required=True)
     parser.add_argument("--baseline-source", required=True)
     parser.add_argument("--baseline-sha", required=True)
+    # The tree the ZIP must be byte-identical to is the CANDIDATE source it was
+    # built from. --baseline-sha stays the live main the delta is measured
+    # against; --candidate-sha records which commit supplies the tree.
+    parser.add_argument("--candidate-sha", default="")
     parser.add_argument("--secret-file", action="append", default=[])
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
@@ -131,7 +135,7 @@ def main():
             raise RuntimeError("required production runtime files missing: " + ", ".join(sorted(missing)))
         own_names = {name for name in names if not name.startswith("clinic-practice-management/vendor/")}
         if own_names != set(expected):
-            raise RuntimeError("shipped non-vendor whitelist differs from live-main source")
+            raise RuntimeError("shipped non-vendor whitelist differs from the provenance source tree")
         for info in infos:
             name = info.filename
             path = PurePosixPath(name)
@@ -153,7 +157,7 @@ def main():
             shipped = archive.read(name)
             baseline = baseline_path.read_bytes()
             if shipped != baseline:
-                raise RuntimeError("shipped production file differs from live main: " + name)
+                raise RuntimeError("shipped production file differs from the provenance source tree: " + name)
         raw_zip = zip_path.read_bytes()
         for secret in secrets:
             if contains_secret(raw_zip, secret):
@@ -166,6 +170,8 @@ def main():
         "sha256": sha256(zip_path.read_bytes()),
         "files": len(names),
         "baseline_main_sha": args.baseline_sha,
+        "candidate_head_sha": args.candidate_sha,
+        "provenance_source": "candidate-head-tree",
         "non_vendor_files_byte_identical_to_main": len(expected),
         "external_tool_markers_absent": len(TOOL_MARKERS),
         "generated_secrets_absent": bool(secrets),

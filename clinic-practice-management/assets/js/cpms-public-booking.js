@@ -65,6 +65,7 @@
 
 	/* ====================== واژگانِ وضعیت (منتشرشده توسط سرور) ====================== */
 
+	var STATE_IDLE = 'idle';
 	var STATE_LOADING = 'loading';
 	var STATE_SELECTABLE = 'selectable';
 	var STATE_LOCATION_REQUIRED = 'location_required';
@@ -249,27 +250,72 @@
 		return value;
 	}
 
-	function readStoredSelection() {
+	/**
+	 * Phase 8 Slice 4 — per-surface storage key.
+	 *
+	 * Two booking widgets on one page must never share a preserved selection
+	 * (that would let one widget's Clinic/slot leak into another widget's OTP or
+	 * hold). The key is therefore derived from the surface id the SERVER minted
+	 * (`wp_unique_id`), falling back to the Clinic id for older markup.
+	 */
+	function selectionKeyFor(surfaceId, clinicId, rootCount) {
+		// A page with ONE booking widget keeps the established key exactly, so the
+		// preserved-selection contract (and the specs that pin it) is unchanged.
+		// Only a page with SEVERAL widgets namespaces the key per surface, which is
+		// what prevents one widget's Clinic/slot from leaking into another's OTP
+		// or Hold.
+		if (typeof rootCount !== 'number' || rootCount <= 1) {
+			return SELECT_KEY;
+		}
+		var suffix = isNonEmptyString(surfaceId) ? surfaceId : ('clinic-' + String(toInt(clinicId)));
+		return SELECT_KEY + ':' + suffix;
+	}
+
+	/**
+	 * Phase 8 Slice 3/4 — patient-selection storage suffix.
+	 *
+	 * The ESTABLISHED single-widget contract is exactly
+	 * `cpms-patient-selection:<clinic_id>` (pinned by
+	 * tests/Unit/Frontend/PublicBookingJsSendGateTest and exercised by the
+	 * Slice-3 chooser browser acceptance). A page with ONE widget must keep it
+	 * byte-for-byte, otherwise an already-stored selection becomes unreachable
+	 * and the acceptance journey cannot restore Patient B.
+	 *
+	 * A page with SEVERAL widgets namespaces the key per surface so one widget's
+	 * patient can never be used by another. The Clinic id stays in the suffix in
+	 * BOTH shapes, so switching Clinic (discovery mode) can never restore a
+	 * patient selected under a different Clinic.
+	 */
+	function patientKeySuffix(surfaceId, clinicId, rootCount) {
+		var clinicPart = String(toInt(clinicId));
+		if (typeof rootCount !== 'number' || rootCount <= 1) {
+			return clinicPart;
+		}
+		var scope = isNonEmptyString(surfaceId) ? surfaceId : ('clinic-' + clinicPart);
+		return scope + ':' + clinicPart;
+	}
+
+	function readStoredSelectionFor(key) {
 		try {
-			return validSelection(JSON.parse(window.sessionStorage.getItem(SELECT_KEY) || 'null'));
+			return validSelection(JSON.parse(window.sessionStorage.getItem(key || SELECT_KEY) || 'null'));
 		} catch (e) {
 			return null;
 		}
 	}
 
-	function storeSelection(selection) {
+	function storeSelectionFor(selection, key) {
 		try {
 			if (validSelection(selection)) {
-				window.sessionStorage.setItem(SELECT_KEY, JSON.stringify(selection));
+				window.sessionStorage.setItem(key || SELECT_KEY, JSON.stringify(selection));
 			}
 		} catch (e) {
 			// بدون storage هم جریان ادامه می‌یابد — کاربر دوباره انتخاب می‌کند.
 		}
 	}
 
-	function clearStoredSelection() {
+	function clearStoredSelectionFor(key) {
 		try {
-			window.sessionStorage.removeItem(SELECT_KEY);
+			window.sessionStorage.removeItem(key || SELECT_KEY);
 		} catch (e) {
 			// بی‌اثر.
 		}
@@ -329,7 +375,52 @@
 		var busy = false;
 		var selectedClinicianId = 0;
 		var selectedLocationId = 0;
+		// Per-surface (not module-global) selection storage: the key embeds the
+		// server-minted surface id, so two widgets on one page never share state.
+		var selectKey = selectionKeyFor(
+			config.surface_id,
+			config.clinic_id,
+			document.querySelectorAll(ROOT_SELECTOR).length
+		);
+		function readStoredSelection() { return readStoredSelectionFor(selectKey); }
+		function storeSelection(selection) { storeSelectionFor(selection, selectKey); }
+		function clearStoredSelection() { clearStoredSelectionFor(selectKey); }
+
 		var availableDays = [];
+		var weekOffset = 0;
+		var calendarScaffold = Array.isArray(config.calendar) ? config.calendar : [];
+		var activeClinicId = toInt(root.getAttribute('data-clinic-id'));
+		var clinicSelect = root.querySelector('[data-role="clinic-select"]');
+		var weekLabel = root.querySelector('[data-role="week-label"]');
+		var prevWeekBtn = root.querySelector('[data-role="prev-week"]');
+		var nextWeekBtn = root.querySelector('[data-role="next-week"]');
+		var firstAvailableBtn = root.querySelector('[data-role="first-available-week"]');
+		var weekEmptyNotice = root.querySelector('[data-role="week-empty"]');
+		var timezoneNode = root.querySelector('[data-role="clinic-timezone"]');
+		var doctorSearch = root.querySelector('[data-role="doctor-search"]');
+		var specialtyFilter = root.querySelector('[data-role="specialty-filter"]');
+		var doctorReset = root.querySelector('[data-role="doctor-reset"]');
+		var filterEmpty = root.querySelector('[data-role="filter-empty"]');
+
+		/**
+		 * Clinicِ هر پزشک — از `data-clinic-id` همان دکمه (سرور آن را نوشته),
+		 * و در حالت تک‌Clinic از ریشه. هرگز حدس زده نمی‌شود.
+		 */
+		function clinicianClinicId(node) {
+			var own = node ? toInt(node.getAttribute('data-clinic-id')) : 0;
+			return own > 0 ? own : activeClinicId;
+		}
+
+		function currentClinicId() {
+			return activeClinicId > 0 ? activeClinicId : 0;
+		}
+
+		/** افزودنِ `clinic_id` انتخاب‌شده به هر درخواستِ رزرو (وقتی معلوم است). */
+		function withClinic(payload) {
+			var clinicId = currentClinicId();
+			if (clinicId > 0) { payload.clinic_id = clinicId; }
+			return payload;
+		}
 		var availableLocations = [];
 
 		/* -------------- Phase 8 Slice 2 — وضعیت continuation -------------- */
@@ -355,7 +446,11 @@
 		var selectedPatientId = 0;
 		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
-		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + String(config.clinic_id);
+		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + patientKeySuffix(
+			config.surface_id,
+			config.clinic_id,
+			document.querySelectorAll(ROOT_SELECTOR).length
+		);
 		function getStoredPatientId() {
 			try {
 				var v = window.sessionStorage.getItem(PATIENT_STORAGE_KEY);
@@ -746,19 +841,130 @@
 			return node;
 		}
 
+		/**
+		 * رندرِ تقویم: اگر سرور اسکلتِ Jalali (`config.calendar`) را منتشر کرده
+		 * باشد، هفتهٔ جاری (۷ روز) نمایش داده می‌شود و روزهای بدونِ نوبت هم
+		 * دیده می‌شوند. بدونِ اسکلت، رفتارِ پیشین (فقط روزهای دارای نوبت)
+		 * عیناً حفظ می‌شود.
+		 */
 		function renderDays(days) {
 			setText(daysHost, '');
 
 			var slotCount = 0;
-			for (var i = 0; i < days.length; i++) {
-				var dayNode = buildDay(days[i]);
-				if (dayNode) {
-					daysHost.appendChild(dayNode);
-					slotCount += dayNode.querySelectorAll(SLOT_SELECTOR).length;
+
+			if (calendarScaffold.length === 0) {
+				for (var plain = 0; plain < days.length; plain++) {
+					var plainNode = buildDay(days[plain]);
+					if (plainNode) {
+						daysHost.appendChild(plainNode);
+						slotCount += plainNode.querySelectorAll(SLOT_SELECTOR).length;
+					}
+				}
+				updateWeekChrome(slotCount);
+				return slotCount;
+			}
+
+			var byDate = {};
+			for (var d = 0; d < days.length; d++) {
+				if (days[d] && isNonEmptyString(days[d].date)) {
+					byDate[days[d].date] = days[d];
 				}
 			}
 
+			var start = weekStartIndex(weekOffset, calendarScaffold.length);
+			var last = Math.min(start + 7, calendarScaffold.length);
+
+			for (var i = start; i < last; i++) {
+				var entry = calendarScaffold[i];
+				if (!entry || !isNonEmptyString(entry.date)) { continue; }
+				var cell = templateNode(root, 'week-day');
+				if (!cell) { continue; }
+				fill(cell, 'weekday', isNonEmptyString(entry.weekday) ? entry.weekday : '');
+				fill(cell, 'jalali', isNonEmptyString(entry.jalali) ? entry.jalali : entry.date);
+
+				var dayData = byDate[entry.date] || null;
+				var slotsHost = cell.querySelector('[data-host="slots"]');
+				var rendered = 0;
+				var slotRows = dayData && Array.isArray(dayData.slots) ? dayData.slots : [];
+				for (var k = 0; k < slotRows.length; k++) {
+					var slotNode = buildSlot(dayData, slotRows[k]);
+					if (slotNode && slotsHost) {
+						slotsHost.appendChild(slotNode);
+						rendered++;
+					}
+				}
+				cell.setAttribute('data-date', entry.date);
+				if (rendered === 0) {
+					cell.setAttribute('data-empty', 'true');
+				}
+				daysHost.appendChild(cell);
+				slotCount += rendered;
+			}
+
+			updateWeekChrome(slotCount);
 			return slotCount;
+		}
+
+		/** برچسب/کرانِ هفته + پیامِ هفتهٔ خالی. */
+		function updateWeekChrome(slotCount) {
+			var total = calendarScaffold.length;
+			if (weekLabel) {
+				var first = calendarScaffold[weekStartIndex(weekOffset, total)];
+				var lastIndex = Math.min(weekStartIndex(weekOffset, total) + 6, total - 1);
+				var last = calendarScaffold[lastIndex];
+				if (first && last) {
+					weekLabel.textContent = (isNonEmptyString(first.jalali) ? first.jalali : first.date)
+						+ ' — ' + (isNonEmptyString(last.jalali) ? last.jalali : last.date);
+				} else {
+					weekLabel.textContent = '';
+				}
+			}
+			if (prevWeekBtn) {
+				prevWeekBtn.disabled = !weekOffsetInBounds(weekOffset - 1, total);
+			}
+			if (nextWeekBtn) {
+				nextWeekBtn.disabled = !weekOffsetInBounds(weekOffset + 1, total);
+			}
+			if (firstAvailableBtn) {
+				var target = firstAvailableIndex(calendarScaffold, availableDays);
+				firstAvailableBtn.hidden = target < 0 || Math.floor(target / 7) === weekOffset;
+			}
+			if (weekEmptyNotice) {
+				weekEmptyNotice.hidden = !(calendarScaffold.length > 0 && slotCount === 0 && selectedClinicianId > 0);
+			}
+			return slotCount;
+		}
+
+		function gotoWeek(offset) {
+			if (!weekOffsetInBounds(offset, calendarScaffold.length)) { return; }
+			weekOffset = offset;
+			var count = renderDays(filterDaysForLocation(availableDays, selectedLocationId));
+			if (count === 0) {
+				showDetail('week-empty-detail', {});
+			}
+			return count;
+		}
+
+		/** فیلترِ پزشکان: Clinicِ فعال + عبارتِ نام + تخصص. */
+		function applyDoctorFilters() {
+			var query = doctorSearch ? normalizeSearchText(doctorSearch.value || '') : '';
+			var specialty = specialtyFilter ? String(specialtyFilter.value || '') : '';
+			var items = root.querySelectorAll('[data-role="clinicians"] .cpms-public-booking__clinician-item');
+			var visible = 0;
+			for (var i = 0; i < items.length; i++) {
+				var item = items[i];
+				var clinicMatch = activeClinicId <= 0 || toInt(item.getAttribute('data-clinic-id')) === activeClinicId;
+				var haystack = String(item.getAttribute('data-search') || '');
+				var nameMatch = query === '' || haystack.indexOf(query) !== -1;
+				var specialtyMatch = specialty === '' || String(item.getAttribute('data-specialty') || '') === specialty;
+				var show = clinicMatch && nameMatch && specialtyMatch;
+				item.hidden = !show;
+				if (show) { visible++; }
+			}
+			if (filterEmpty) {
+				filterEmpty.hidden = visible > 0 || activeClinicId <= 0;
+			}
+			return visible;
 		}
 
 		function loadAvailability(clinicianId, restoreSelection) {
@@ -781,10 +987,11 @@
 
 			// A1 — joinِ سازگار با permalink (Plain: `&`، Pretty: `?`). مسیر و
 			// ریشه هر دو از قراردادِ منتشرشدهٔ سرور می‌آیند؛ هیچ hardcode ای نیست.
-			var url = apiUrl(
-				config.rest_root,
-				config.availability_path + '?clinician_id=' + encodeURIComponent(String(clinicianId))
-			);
+			var availabilityQuery = config.availability_path + '?clinician_id=' + encodeURIComponent(String(clinicianId));
+			if (currentClinicId() > 0) {
+				availabilityQuery += '&clinic_id=' + encodeURIComponent(String(currentClinicId()));
+			}
+			var url = apiUrl(config.rest_root, availabilityQuery);
 
 			requestJson(url, {
 				method: 'GET',
@@ -1043,6 +1250,17 @@
 				payload.slot_id = toInt(a2Selection.slot_id);
 				payload.slot_date = a2Selection.slot_date;
 				payload.slot_time = a2Selection.slot_time;
+				// Phase 8 Slice 4 — the challenge is bound to the Clinic of the
+				// PERSISTED slot, and the server never treats this field as a
+				// selector: it re-derives the Clinic and fails closed with the
+				// non-enumerating CLINIC_NOT_FOUND when the clinician has no ACTIVE
+				// participation in that slot's Clinic. Keeping it in the payload
+				// only preserves the established request shape.
+				if (toInt(a2Selection.clinic_id) > 0) {
+					payload.clinic_id = toInt(a2Selection.clinic_id);
+				} else {
+					withClinic(payload);
+				}
 			}
 
 			setBusy(true);
@@ -1413,6 +1631,7 @@
 			selectedClinicianId = clinicianId;
 
 			lastSelection = {
+				clinic_id: currentClinicId(),
 				clinician_id: clinicianId,
 				slot_id: toInt(selection.slot_id),
 				location_id: locationId,
@@ -1481,6 +1700,31 @@
 
 			var target = event.target;
 			if (!target || typeof target.closest !== 'function') {
+				return;
+			}
+
+			// Phase 8 Slice 4 — ناوبری هفته (presentation-only؛ bookability سمت سرور).
+			var prevWeek = target.closest('[data-role="prev-week"]');
+			if (prevWeek && root.contains(prevWeek) && !prevWeek.disabled) {
+				gotoWeek(weekOffset - 1);
+				return;
+			}
+			var nextWeek = target.closest('[data-role="next-week"]');
+			if (nextWeek && root.contains(nextWeek) && !nextWeek.disabled) {
+				gotoWeek(weekOffset + 1);
+				return;
+			}
+			var jumpWeek = target.closest('[data-role="first-available-week"]');
+			if (jumpWeek && root.contains(jumpWeek)) {
+				var firstIndex = firstAvailableIndex(calendarScaffold, availableDays);
+				if (firstIndex >= 0) { gotoWeek(Math.floor(firstIndex / 7)); }
+				return;
+			}
+			var resetFilters = target.closest('[data-role="doctor-reset"]');
+			if (resetFilters && root.contains(resetFilters)) {
+				if (doctorSearch) { doctorSearch.value = ''; }
+				if (specialtyFilter) { specialtyFilter.value = ''; }
+				applyDoctorFilters();
 				return;
 			}
 
@@ -1569,7 +1813,133 @@
 				}, true);
 			}
 		});
+
+		/* ---------- Phase 8 Slice 4: filters + week init ---------- */
+
+		if (doctorSearch) {
+			doctorSearch.addEventListener('input', applyDoctorFilters);
+		}
+		if (specialtyFilter) {
+			specialtyFilter.addEventListener('change', applyDoctorFilters);
+		}
+		if (clinicSelect) {
+			// The first option is the server's own first listed Clinic; adopting it
+			// here means the very first A1 request already carries clinic_id.
+			if (activeClinicId <= 0) {
+				activeClinicId = toInt(clinicSelect.value);
+				root.setAttribute('data-clinic-id', String(activeClinicId));
+			}
+			clinicSelect.addEventListener('change', function () {
+				var next = toInt(clinicSelect.value);
+				activeClinicId = next > 0 ? next : 0;
+				root.setAttribute('data-clinic-id', String(activeClinicId));
+				// انتخابِ Clinicِ دیگر، انتخابِ پزشک/نوبتِ قبلی را بی‌اعتبار می‌کند
+				// (هیچ نوبتی از Clinic دیگر حفظ نمی‌شود).
+				selectedClinicianId = 0;
+				lastSelection = null;
+				weekOffset = 0;
+				availableDays = [];
+				clearStoredSelection();
+				setText(daysHost, '');
+				setPressed(clinicianButtons, null);
+				panelState(STATE_IDLE);
+				updateTimezoneLabel();
+				applyDoctorFilters();
+			});
+		}
+		updateTimezoneLabel();
+		applyDoctorFilters();
+		updateWeekChrome(0);
+
+		/**
+		 * منطقهٔ زمانیِ Clinicِ انتخاب‌شده — مقدار از `data-timezone` گزینهٔ
+		 * خودِ سرور و برچسب از `data-label` همان گره؛ هیچ رشتهٔ فارسیِ تازه و
+		 * هیچ محاسبهٔ timezone در JS ساخته نمی‌شود.
+		 */
+		function updateTimezoneLabel() {
+			if (!timezoneNode) { return; }
+			var tz = '';
+			if (clinicSelect && clinicSelect.selectedIndex >= 0 && clinicSelect.options[clinicSelect.selectedIndex]) {
+				tz = String(clinicSelect.options[clinicSelect.selectedIndex].getAttribute('data-timezone') || '');
+			}
+			if (tz === '') {
+				timezoneNode.hidden = true;
+				timezoneNode.textContent = '';
+				return;
+			}
+			var label = String(timezoneNode.getAttribute('data-label') || '');
+			timezoneNode.textContent = label === '' ? tz : label + ' ' + tz;
+			timezoneNode.hidden = false;
+		}
 	}
+
+	/* ====================== Phase 8 Slice 4 helpers ====================== */
+
+	/**
+	 * نرمال‌سازیِ متنِ جست‌وجوی فارسی/عربی — هم‌ارزِ سرور
+	 * (PublicBookingShortcode::normalize_search_text). فقط عبارتِ **کاربر**
+	 * نرمال می‌شود؛ دادهٔ پزشکان از پیش در `data-search` نرمال‌شده آمده است.
+	 */
+	function normalizeSearchText(value) {
+		var text = typeof value === 'string' ? value : '';
+		text = text.trim();
+		if (text === '') {
+			return '';
+		}
+		text = text
+			.replace(/[يىئ]/g, 'ی')
+			.replace(/ك/g, 'ک')
+			.replace(/[ةۀ]/g, 'ه')
+			.replace(/[أإآٱ]/g, 'ا')
+			.replace(/ؤ/g, 'و')
+			.replace(/[\u064B-\u065F\u0670\u0640\u200B-\u200F]/g, '')
+			.replace(/[\u0660-\u0669]/g, function (d) { return String(d.charCodeAt(0) - 0x0660); })
+			.replace(/[\u06F0-\u06F9]/g, function (d) { return String(d.charCodeAt(0) - 0x06F0); });
+		return text.toLowerCase();
+	}
+
+	/** ایندکسِ شروعِ هفتهٔ `offset` روی تقویمِ منتشرشده (bounded). */
+	function weekStartIndex(offset, total) {
+		var start = Math.floor(offset) * 7;
+		if (!isFinite(start) || start < 0) { start = 0; }
+		if (total > 0 && start > total - 1) { start = Math.floor((total - 1) / 7) * 7; }
+		return start;
+	}
+
+	/** آیا هفتهٔ `offset` قابلِ نمایش است؟ (کرانِ جلو/عقب) */
+	function weekOffsetInBounds(offset, total) {
+		if (!isFinite(offset) || offset < 0) { return false; }
+		if (total <= 0) { return offset === 0; }
+		return offset * 7 < total;
+	}
+
+	/** ایندکسِ اولین روزِ تقویم که در A1 نوبت دارد (یا -1). */
+	function firstAvailableIndex(calendar, days) {
+		if (!Array.isArray(calendar) || !Array.isArray(days)) { return -1; }
+		var dates = {};
+		for (var i = 0; i < days.length; i++) {
+			var d = days[i] && typeof days[i] === 'object' ? days[i].date : null;
+			if (isNonEmptyString(d) && Array.isArray(days[i].slots) && days[i].slots.length > 0) {
+				dates[d] = true;
+			}
+		}
+		for (var j = 0; j < calendar.length; j++) {
+			if (calendar[j] && dates[calendar[j].date] === true) { return j; }
+		}
+		return -1;
+	}
+
+	// Test seam (pure logic only — no DOM, no network, no bookability).
+	window.CpmsPublicBookingDiscovery = {
+		normalizeSearchText: normalizeSearchText,
+		weekStartIndex: weekStartIndex,
+		weekOffsetInBounds: weekOffsetInBounds,
+		firstAvailableIndex: firstAvailableIndex,
+		patientKeySuffix: patientKeySuffix,
+		// صرفاً برای specِ مستقلِ Node (multi-widget isolation) صادر می‌شود:
+		// تنها یک تابعِ خالص است و هیچ state یا side effect ندارد.
+		selectionKeyFor: selectionKeyFor
+	};
 
 	/* ====================== راه‌اندازی ====================== */
 

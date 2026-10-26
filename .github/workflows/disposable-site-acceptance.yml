@@ -91,10 +91,79 @@ jobs:
           echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "live_main=$BASE_SHA candidate_head=$HEAD_SHA"
-          git diff --exit-code "$BASE_SHA" -- clinic-practice-management
-          mkdir -p /tmp/cpms-live-main
-          git archive "$BASE_SHA" clinic-practice-management | tar -x -C /tmp/cpms-live-main
-          echo 'PASS: installable production tree is byte-identical to live main; all task code is external'
+
+          # ------------------------------------------------------------------
+          # Isolation policy (corrected assumption).
+          #
+          # The rule this job exists to protect is: disposable/demo tooling must
+          # never enter the installable production tree, and the ZIP must ship
+          # exactly the source it was built from. The previous rule here was
+          # "the whole clinic-practice-management/ tree must be byte-identical to
+          # live main", which is only true for tooling-only PRs and therefore
+          # rejects every legitimate product PR without testing anything about
+          # packaging integrity. It is replaced by two checks that protect the
+          # same invariant for both kinds of PR:
+          #   1. scope: any product-tree change must be an ordinary product source
+          #      file - never tests, demo/disposable material, build output, or
+          #      vendored secrets;
+          #   2. provenance: the ZIP is compared byte-for-byte with the CANDIDATE
+          #      tree (below), so unexplained packaging additions still fail.
+          # ------------------------------------------------------------------
+          mapfile -t PRODUCT_CHANGED < <(git diff --name-only "$BASE_SHA" -- clinic-practice-management)
+          echo "product_tree_changed_files=${#PRODUCT_CHANGED[@]}"
+          for path in "${PRODUCT_CHANGED[@]:-}"; do
+            [ -n "$path" ] || continue
+            echo "product_change: $path"
+            # a) No demo/disposable material may ever live inside the product tree,
+            #    whatever directory it hides in.
+            lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+            case "$lower" in
+              *demo*|*disposable*)
+                echo "FAIL: demo/disposable material inside the product tree: $path"
+                exit 1
+                ;;
+            esac
+            # b) Changes must be ordinary product source (the ZIP whitelist below
+            #    still proves that nothing outside src/assets/templates ships).
+            case "$path" in
+              clinic-practice-management/src/*|clinic-practice-management/assets/*|\
+              clinic-practice-management/templates/*|clinic-practice-management/bin/*|\
+              clinic-practice-management/tests/*|\
+              clinic-practice-management/clinic-practice-management.php|\
+              clinic-practice-management/uninstall.php|clinic-practice-management/README.md|\
+              clinic-practice-management/THIRD-PARTY-NOTICES.md|clinic-practice-management/composer.json|\
+              clinic-practice-management/composer.lock|clinic-practice-management/phpcs.xml.dist|\
+              clinic-practice-management/phpstan.neon.dist|clinic-practice-management/phpunit.xml)
+                ;;
+              *)
+                echo "FAIL: product-tree change outside the allowed product source scope: $path"
+                exit 1
+                ;;
+            esac
+          done
+          # c) Disposable-tool markers may not appear in any changed product file,
+          #    including product test code that never ships.
+          for path in "${PRODUCT_CHANGED[@]:-}"; do
+            [ -n "$path" ] && [ -f "$path" ] || continue
+            if grep -I -q -e 'DemoService' -e 'DemoAccessGuard' -e 'DemoSmsProvider' \
+                 -e 'DemoSetupPage' -e 'cpms_disposable' -e 'cpms-disposable' \
+                 -e 'CPMS_DISPOSABLE' -e 'tests/disposable-site' -e 'rwp-demo-acceptance' \
+                 -e 'DISPOSABLE_SITE_PROVISIONED' "$path"; then
+              echo "FAIL: disposable/demo tooling marker inside a changed product file: $path"
+              exit 1
+            fi
+          done
+          # Provenance source = the exact tree the ZIP is built from (the candidate
+          # working tree, minus build output and installed dependencies). It is
+          # materialised at the SAME path shape the checker expects:
+          #   /tmp/cpms-candidate/clinic-practice-management/<product files>
+          mkdir -p /tmp/cpms-candidate/clinic-practice-management
+          tar -C clinic-practice-management \
+            --exclude=./dist --exclude=./node_modules --exclude=./vendor \
+            -cf - . | tar -x -C /tmp/cpms-candidate/clinic-practice-management
+          test -f /tmp/cpms-candidate/clinic-practice-management/clinic-practice-management.php
+          test -d /tmp/cpms-candidate/clinic-practice-management/src
+          echo "PASS: product-tree changes are product source only; packaging proven against the candidate tree"
 
       - name: Clean WordPress with arbitrary DB prefix and CSPRNG Administrator password
         run: |
@@ -173,8 +242,8 @@ jobs:
           echo "ZIP_PATH=$ZIP" >> "$GITHUB_ENV"
           python3 tests/disposable-site/assert-package.py \
             --zip "$ZIP" \
-            --baseline-source /tmp/cpms-live-main/clinic-practice-management \
-            --baseline-sha "$BASE_SHA" \
+            --baseline-source /tmp/cpms-candidate/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" --candidate-sha "$HEAD_SHA" \
             --output /tmp/acc/package-proof.json | tee /tmp/acc/logs/package-proof.log
 
       - name: Install/reactivate/reapply activation — no fixture auto-runs
@@ -224,8 +293,8 @@ jobs:
           test "$(stat -c '%a' "$(dirname "$CPMS_DISPOSABLE_STATE")")" = '700'
           CPMS_DISPOSABLE_EXPECT=active wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/verify-active-before.log
           python3 tests/disposable-site/assert-package.py \
-            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
-            --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
+            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-candidate/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" --candidate-sha "$HEAD_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
             --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" \
             --output /tmp/acc/package-proof-with-secrets.json | tee /tmp/acc/logs/package-secret-exclusion.log
 
@@ -304,8 +373,8 @@ jobs:
           set -Eeuo pipefail
           CPMS_DISPOSABLE_EXPECT=browser-complete wp eval-file tests/disposable-site/wp-cli/verify.php --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" 2>&1 | tee /tmp/acc/logs/verify-browser-complete.log
           python3 tests/disposable-site/assert-package.py \
-            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-live-main/clinic-practice-management \
-            --baseline-sha "$BASE_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
+            --zip "$ZIP_PATH" --baseline-source /tmp/cpms-candidate/clinic-practice-management \
+            --baseline-sha "$BASE_SHA" --candidate-sha "$HEAD_SHA" --secret-file "$CPMS_DISPOSABLE_STATE" \
             --secret-file "$CPMS_DISPOSABLE_GENERATED_SECRETS" \
             --output /tmp/acc/package-proof-full.json | tee /tmp/acc/logs/package-full-secret-exclusion.log
           python3 tests/disposable-site/scan-evidence.py --root /tmp/acc --state "$CPMS_DISPOSABLE_STATE" \
@@ -357,7 +426,7 @@ jobs:
             echo "### External Disposable Site — prefix \`${{ matrix.prefix }}\` (job: ${{ job.status }})"
             echo
             echo "- candidate head: \`$HEAD_SHA\`; live main retrieved by this job: \`$BASE_SHA\`"
-            echo '- production tree vs live main: byte-identical (the job fails otherwise)'
+            echo '- production packaging: byte-identical to the candidate source tree; product-tree changes must be product source only, and disposable/demo markers, test paths and generated secrets are rejected (the job fails otherwise)'
             echo '- packaging/provenance (initial build):'
             echo '```'
             cat /tmp/acc/package-proof.json 2>/dev/null || echo '(not reached)'

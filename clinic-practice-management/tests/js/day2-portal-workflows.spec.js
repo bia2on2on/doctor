@@ -798,15 +798,10 @@ function testStaffTemplatesContracts() {
 }
 
 // ---------------------------------------------------------------------------
-// TEST 4: Finance Daily Reconciliation Live VM Execution (`templates/staff-finance-board.php`)
-// ---------------------------------------------------------------------------
-async function testFinanceReconciliationVm() {
-  var financePhp = readPluginFile('templates/staff-finance-board.php');
-  var scriptMatch = financePhp.match(/<script>\n([\s\S]*?)\n<\/script>/);
-  assert.ok(scriptMatch && scriptMatch[1], 'Extracts finance inline script');
-
-  var calls = [];
-  var html =
+// Finance board DOM fixture shared by the finance VM tests. It mirrors every
+// data-role the inline IIFE queries, so the real template script runs unmodified.
+function financeBoardHtml() {
+  return (
     '<main data-role="finance-root">' +
       '<select data-role="finance-location" hidden></select>' +
       '<span data-role="finance-date"></span>' +
@@ -857,7 +852,19 @@ async function testFinanceReconciliationVm() {
       '<script type="application/json" id="cpms-finance-board-config">' +
         JSON.stringify({ rest_root: 'https://clinic.test/wp-json/clinic/v1', nonce: 'nonce-fin-1' }) +
       '</script>' +
-    '</main>';
+    '</main>'
+  );
+}
+
+// TEST 4: Finance Daily Reconciliation Live VM Execution (`templates/staff-finance-board.php`)
+// ---------------------------------------------------------------------------
+async function testFinanceReconciliationVm() {
+  var financePhp = readPluginFile('templates/staff-finance-board.php');
+  var scriptMatch = financePhp.match(/<script>\n([\s\S]*?)\n<\/script>/);
+  assert.ok(scriptMatch && scriptMatch[1], 'Extracts finance inline script');
+
+  var calls = [];
+  var html = financeBoardHtml();
 
   var env = createDomEnv(html, function (url, opts) {
     calls.push({ url: url, opts: opts || {} });
@@ -976,6 +983,120 @@ function testPatientPortalCompletionTemplateContracts() {
   assert.strictEqual(page.indexOf('رزرو آنلاین اینترنتی به‌زودی فعال می‌شود'), -1, 'Stale booking-soon placeholder is removed');
 }
 
+// TEST 5: A finance submit is never dropped by an in-flight board read
+// ---------------------------------------------------------------------------
+// Regression: the board used one shared "busy" flag for reads and writes and
+// every entry point returned early while it was set. A submit pressed while the
+// initial board read was still in flight therefore produced no request and no
+// message, which is exactly the state the disposable browser run captured (a
+// rendered issue button, no invoice POST at all). The board now orders requests
+// instead of dropping them.
+async function testFinanceSubmitSurvivesInFlightRead() {
+  var financePhp = readPluginFile('templates/staff-finance-board.php');
+  var scriptMatch = financePhp.match(/<script>\n([\s\S]*?)\n<\/script>/);
+  assert.ok(scriptMatch && scriptMatch[1], 'Extracts finance inline script');
+
+  var calls = [];
+  var releaseBoard = null;
+  var boardGate = new Promise(function (resolve) { releaseBoard = resolve; });
+  var env = createDomEnv(financeBoardHtml(), function (url, opts) {
+    calls.push({ url: url, opts: opts || {} });
+    if (url.indexOf('/staff/portal/finance/context') !== -1) {
+      return jsonResponse(200, {
+        ok: true,
+        data: {
+          clinic_id: 7,
+          location_id: 14,
+          locations: [{ id: 14, name: 'شعبه ۱' }],
+          can_issue_invoice: true,
+          can_capture_payment: true,
+          can_check_out: true
+        }
+      });
+    }
+    if (url.indexOf('/staff/portal/finance/invoice-eligible') !== -1) {
+      return jsonResponse(200, {
+        ok: true,
+        data: {
+          date: '2026-10-23',
+          jalali_date: '1405/08/01',
+          location_id: 14,
+          visits: [{
+            visit_id: 2,
+            patient_name: 'بیمار آزمایشی',
+            clinician_name: 'پزشک آزمایشی',
+            operational_date: '2026-10-23',
+            operational_time: '11:45',
+            visit_status: 'completed'
+          }],
+          has_more: false
+        }
+      });
+    }
+    if (url.indexOf('/staff/portal/finance/awaiting-payment') !== -1) {
+      // Held open on purpose: the user acts while this read is still in flight.
+      return boardGate.then(function () {
+        return jsonResponse(200, { ok: true, data: { date: '2026-10-23', visits: [], has_more: false } });
+      });
+    }
+    if (url.indexOf('/staff/portal/finance/invoice') !== -1) {
+      return jsonResponse(201, { ok: true, data: { invoice_number: 'INV-TEST-1', invoice_id: 9 } });
+    }
+    return jsonResponse(200, { ok: true, data: { date: '2026-10-23', visits: [], has_more: false } });
+  });
+
+  vm.runInContext(scriptMatch[1], env.context);
+  await flushPromises();
+  await flushPromises();
+
+  assert.ok(
+    calls.some(function (c) { return c.url.indexOf('/awaiting-payment') !== -1; }),
+    'Initial board read is in flight'
+  );
+  assert.ok(
+    !calls.some(function (c) { return c.url.indexOf('/finance/visits/') !== -1; }),
+    'No invoice request before the user acts'
+  );
+
+  var openButton = env.doc.querySelector('[data-role="finance-issue-open"]');
+  assert.ok(openButton, 'Eligible row renders an issue action');
+  openButton.dispatch('click');
+  var form = env.doc.querySelector('[data-role="finance-issue-form"]');
+  assert.strictEqual(form.hidden, false, 'Clicking the row action opens the issue form');
+
+  env.doc.querySelector('[data-role="finance-issue-description"]').value = 'ویزیت آزمایشی مرورگر';
+  env.doc.querySelector('[data-role="finance-issue-quantity"]').value = '1';
+  env.doc.querySelector('[data-role="finance-issue-unit-price"]').value = '1000';
+  form.dispatch('submit');
+  // A second press while the first submit is queued must not issue a second invoice.
+  form.dispatch('submit');
+  await flushPromises();
+  await flushPromises();
+
+  var invoicePosts = function () {
+    return calls.filter(function (c) {
+      return c.url.indexOf('/finance/visits/2/invoice') !== -1 && String(c.opts.method || '').toUpperCase() === 'POST';
+    });
+  };
+  assert.strictEqual(invoicePosts().length, 0, 'The submit waits for the in-flight read instead of racing it');
+
+  releaseBoard();
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  var posted = invoicePosts();
+  assert.strictEqual(posted.length, 1, 'The submit is delivered exactly once after the in-flight read settles');
+  assert.strictEqual(posted[0].opts.headers['X-CPMS-Clinic-Id'], '7', 'Submit keeps the trusted Clinic selector header');
+  assert.strictEqual(posted[0].opts.headers['X-CPMS-Location-Id'], '14', 'Submit keeps the trusted Location selector header');
+  assert.strictEqual(posted[0].opts.headers['X-WP-Nonce'], 'nonce-fin-1', 'Submit keeps the REST nonce');
+  assert.deepStrictEqual(
+    JSON.parse(posted[0].opts.body),
+    { items: [{ description: 'ویزیت آزمایشی مرورگر', quantity: 1, unit_price: 1000 }] },
+    'Submit sends the exact invoice line the user typed'
+  );
+}
+
 (async function main() {
   try {
     await testPatientPortalReschedule();
@@ -983,6 +1104,7 @@ function testPatientPortalCompletionTemplateContracts() {
     testStaffTemplatesContracts();
     testPatientPortalCompletionTemplateContracts();
     await testFinanceReconciliationVm();
+    await testFinanceSubmitSurvivesInFlightRead();
     console.log('OK: all Day-2 portal workflow JS & template assertions passed');
   } catch (err) {
     console.error('FAIL:', err && err.stack ? err.stack : err);

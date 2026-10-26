@@ -44,6 +44,11 @@ final class BookingController extends RestBase
                     // (BookingService::availability با from/to = null).
                     'from' => ['required' => false, 'type' => 'string'],
                     'to' => ['required' => false, 'type' => 'string'],
+                    // Phase 8 Slice 4 — optional Clinic selector. BC: omitted ⇒
+                    // the clinician's home Clinic (established behaviour). A
+                    // supplied value is only accepted when the clinician holds
+                    // an active durable participation in it.
+                    'clinic_id'    => ['required' => false, 'type' => 'integer'],
                 ],
             ],
         ]);
@@ -213,10 +218,14 @@ final class BookingController extends RestBase
         $from = $request->get_param('from');
         $to = $request->get_param('to');
 
+        $clinic_id = $request->get_param( 'clinic_id' );
+
         return $this->wrap(fn () => $this->booking->availability(
             (int) $request->get_param('clinician_id'),
             is_string($from) && $from !== '' ? $from : null,
-            is_string($to) && $to !== '' ? $to : null
+            is_string( $to ) && $to !== '' ? $to : null,
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            $clinic_id !== null && $clinic_id !== '' ? (int) $clinic_id : null
         ));
     }
 
