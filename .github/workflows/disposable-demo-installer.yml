@@ -219,6 +219,14 @@ jobs:
           wp config set WP_DEBUG true --raw --allow-root
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          # Private clinical storage must live outside the document root and be
+          # writable by the web server (php-fpm/apache user). A real host does
+          # this once by hand; here it is provisioned explicitly so the plugin
+          # never has to fall back or log a failed initialization on a pristine site.
+          sudo mkdir -p /home/runner/cpdd-private
+          sudo chown www-data:runner /home/runner/cpdd-private
+          sudo chmod 0775 /home/runner/cpdd-private
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --raw --allow-root
           ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           wp core install --url="$WP_URL" --title="CPDD Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpdd.invalid --skip-email --allow-root
           echo "WP_ADMIN_CREATED=1"
@@ -294,6 +302,10 @@ jobs:
           wp config set FS_METHOD direct --allow-root
           wp config set FS_CHMOD_DIR 0775 --raw --allow-root
           wp config set FS_CHMOD_FILE 0664 --raw --allow-root
+          sudo mkdir -p /home/runner/cpdd-private
+          sudo chown www-data:runner /home/runner/cpdd-private
+          sudo chmod 0775 /home/runner/cpdd-private
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --raw --allow-root
           ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
           python3 -c 'import secrets; print(secrets.token_hex(24), end="")' > "$ADMIN_PASS_FILE"
           chmod 600 "$ADMIN_PASS_FILE"

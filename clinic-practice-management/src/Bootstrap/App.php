@@ -337,13 +337,7 @@ final class App
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
-        add_filter('cron_schedules', static function (array $schedules): array {
-            if (!isset($schedules['cpms_minute'])) {
-                $schedules['cpms_minute'] = ['interval' => 60, 'display' => 'هر دقیقه (CPMS)'];
-            }
-
-            return $schedules;
-        });
+        self::register_cron_schedules();
         // CPMS Classic Admin UX (E) — ثبتِ idempotentِ رویداد در بارگذاریِ افزونه.
         //
         // این فراخوانی **عمداً** در `boot()` می‌ماند (همان رفتارِ main): قراردادِ
@@ -454,6 +448,10 @@ final class App
         self::initialize_private_storage( true );
 
         // فقط زمان‌بندی — هیچ Jobی در activation اجرا نمی‌شود.
+        // بازه باید **قبل** از زمان‌بندی ثبت شود، وگرنه `cpms_minute` ناشناخته
+        // است و `wp_schedule_event()` شکست می‌خورد (پیش‌تر در `boot()` ثبت
+        // می‌شد که در درخواستِ فعال‌سازی هنوز اجرا نشده است).
+        self::register_cron_schedules();
         CronScheduleRepair::ensure_scheduled();
 
         self::op()->info('CPMS_ACTIVATED');
@@ -469,6 +467,27 @@ final class App
     public static function deactivate(): void
     {
         wp_clear_scheduled_hook('cpms_jobs_tick');
+    }
+
+    /**
+     * ثبتِ بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
+     *
+     * از `boot()` بیرون کشیده شد تا **فعال‌سازی** هم بتواند پیش از اولین
+     * `ensure_scheduled()` آن را ثبت کند. بدونِ این، `wp_schedule_event()` در
+     * `activate()` بازه را نمی‌شناخت، رویداد ساخته نمی‌شد و اولین بازدیدِ
+     * پیشخوان یک «ترمیم»ِ کاذب (`CPMS_CRON_SCHEDULE_REPAIRED`) روی یک سایتِ
+     * تازه ثبت می‌کرد — که هم لاگ را آلوده می‌کرد و هم در سایتِ یک‌بارمصرف
+     * «سایت خالی نیست» را نقض می‌کرد.
+     */
+    private static function register_cron_schedules(): void
+    {
+        add_filter('cron_schedules', static function (array $schedules): array {
+            if (!isset($schedules['cpms_minute'])) {
+                $schedules['cpms_minute'] = ['interval' => 60, 'display' => 'هر دقیقه (CPMS)'];
+            }
+
+            return $schedules;
+        });
     }
 
     private static function ensureMigrated(): void

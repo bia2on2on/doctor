@@ -158,6 +158,35 @@ final class CronScheduleRepairTest extends WP_UnitTestCase
     }
 
     /**
+     * فعال‌سازی باید بازهٔ `cpms_minute` را **قبل** از زمان‌بندی ثبت کند.
+     *
+     * بدونِ آن، `wp_schedule_event()` در `activate()` بازه را نمی‌شناسد، رویداد
+     * ساخته نمی‌شود و اولین بازدیدِ پیشخوان یک ترمیمِ کاذب (و یک ردیفِ لاگِ
+     * عملیاتیِ غیرپیش‌فرض روی سایتِ تازه) ثبت می‌کند.
+     */
+    public function testActivationRegistersTheRecurrenceBeforeScheduling(): void
+    {
+        $source = (string) file_get_contents( dirname( __DIR__, 2 ) . '/src/Bootstrap/App.php' );
+
+        $activateStart = strpos( $source, 'public static function activate(' );
+        $activateEnd   = strpos( $source, 'public static function deactivate(' );
+        self::assertNotFalse( $activateStart );
+        self::assertNotFalse( $activateEnd );
+
+        $body            = substr( $source, $activateStart, $activateEnd - $activateStart );
+        $register_offset = strpos( $body, 'self::register_cron_schedules();' );
+        $schedule_offset = strpos( $body, 'CronScheduleRepair::ensure_scheduled();' );
+
+        self::assertNotFalse( $register_offset, 'activate() باید بازهٔ cron را ثبت کند.' );
+        self::assertNotFalse( $schedule_offset, 'activate() باید رویداد را زمان‌بندی کند.' );
+        self::assertLessThan(
+            $schedule_offset,
+            $register_offset,
+            'ثبتِ بازه باید پیش از زمان‌بندی باشد، وگرنه recurrence ناشناخته است.'
+        );
+    }
+
+    /**
      * E4 — heartbeat سطحِ نصب است و به Clinic وابسته نیست.
      */
     public function testInstallationHeartbeatIsRecordedWithoutAClinicScope(): void
