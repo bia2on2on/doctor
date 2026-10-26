@@ -27,6 +27,16 @@ use WP_UnitTestCase;
  */
 final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
 {
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // add_submenu_page() بازگشتِ خودکار برای capability کاربرِ جاری دارد؛
+        // این کلاس «ثبتِ منو» را می‌سنجد، نه مجوز را — پس یک Administrator
+        // (که `read` دارد) زمینهٔ لازم است. مجوز واقعی همچنان در سرویس‌ها
+        // سنجیده می‌شود و در این فایل ادعا نمی‌شود.
+        wp_set_current_user( self::factory()->user->create( [ 'role' => 'administrator' ] ) );
+    }
+
     protected function tearDown(): void
     {
         $GLOBALS['menu'] = [];
@@ -88,15 +98,34 @@ final class AdminNavigationAccessibilityTest extends WP_UnitTestCase
         $GLOBALS['menu']    = [];
         $GLOBALS['submenu'] = [];
 
+        // والدِ CONFIGمحور فقط به‌عنوان «ظرف» ثبت می‌شود (add_menu_page بررسی
+        // capability ندارد) تا مطمئن شویم صفحه به این والد نمی‌چسبد.
+        add_menu_page( 'داشبورد', 'داشبورد', 'read', CpmsDashboard::PAGE_SLUG, '__return_null' );
+
+        CustomRoleDefinitionsPage::menu();
         FinanceDelegationPage::menu();
 
-        foreach ( $this->submenuOf( CpmsDashboard::PAGE_SLUG ) as $row ) {
-            self::assertNotSame(
-                FinanceDelegationPage::PAGE_SLUG,
-                $row[2] ?? '',
-                'صفحهٔ واگذاری مالی نباید زیرِ منوی CONFIGمحورِ داشبورد باشد.'
-            );
-        }
+        $dashboard_slugs = array_map(
+            static fn ( array $row ): string => (string) ( $row[2] ?? '' ),
+            $this->submenuOf( CpmsDashboard::PAGE_SLUG )
+        );
+        self::assertNotContains(
+            FinanceDelegationPage::PAGE_SLUG,
+            $dashboard_slugs,
+            'صفحهٔ واگذاری مالی نباید زیرِ منوی CONFIGمحورِ داشبورد باشد.'
+        );
+
+        // کنترلِ مثبت: همان ثبت واقعاً رخ داده و زیرِ والدِ read-gated نشسته است؛
+        // وگرنه ادعای بالا تهی می‌بود.
+        $parent_slugs = array_map(
+            static fn ( array $row ): string => (string) ( $row[2] ?? '' ),
+            $this->submenuOf( CustomRoleDefinitionsPage::PAGE_SLUG )
+        );
+        self::assertContains(
+            FinanceDelegationPage::PAGE_SLUG,
+            $parent_slugs,
+            'صفحهٔ واگذاری مالی باید زیرِ والدِ read-gated ثبت شود.'
+        );
     }
 
     public function testPageSlugsArePreservedForBookmarks(): void
