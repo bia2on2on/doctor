@@ -480,12 +480,21 @@ def journeys_phase(browser) -> None:
     cfg = surface_config(page, "patient")
     nonce = str(cfg.get("nonce", ""))
     root = str(cfg.get("rest_root", "") or REST)
+    # The ONLY production writer of cpms_patient_user_links is the mobile-OTP
+    # enrollment flow, and this companion deliberately never reads or echoes an
+    # OTP code. The demo patient account is therefore authenticated but not
+    # bound to a patient record, so both routes must fail CLOSED: an empty record
+    # list and a non-enumerating 404, never somebody else's data.
     me = api(page, nonce, "GET", "/patient/me", rest_root=root)
-    check("patient reads their own portal profile", me["status"] == 200,
+    check("unbound demo patient gets a non-enumerating 404 for /patient/me",
+          me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
           f"HTTP {me['status']} {code_of(me)}")
     records = api(page, nonce, "GET", "/patient/my-records", rest_root=root)
-    check("patient reads their own records", records["status"] == 200,
-          f"HTTP {records['status']} {code_of(records)}")
+    record_list = payload_of(records)
+    listed = record_list.get("records") if isinstance(record_list.get("records"), list) else record_list
+    check("unbound demo patient lists no patient records",
+          records["status"] == 200 and not listed,
+          f"HTTP {records['status']} records={json.dumps(record_list, ensure_ascii=False)[:200]}")
     queue_denied = api(page, nonce, "GET", "/staff/portal/reception/board",
                        headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("patient is refused the staff arrival board", queue_denied["status"] in (401, 403),
@@ -530,6 +539,7 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
         "limitations": [
             "Journeys call the plugin REST API from the persona's own portal surface, not every UI form",
             "clinic_manager/organization_manager assert the management portal surface, not REST journeys",
+            "The demo patient account is not bound to a patient record: the only production writer of cpms_patient_user_links is the mobile-OTP enrollment flow, which this companion never bypasses",
             "Screenshot pixels not inspected",
         ],
     }
