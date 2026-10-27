@@ -619,9 +619,25 @@ def journeys_phase(browser) -> None:
     check("the booking returns an appointment id", booked_id > 0, f"id={booked_id}")
 
     board_after = api(page, nonce, "GET", "/staff/portal/reception/board", headers=headers, rest_root=root)
-    check("the new appointment appears on the arrival board",
-          board_after["status"] == 200 and str(booked_id) in json.dumps(board_after.get("data"), ensure_ascii=False),
-          f"HTTP {board_after['status']} id={booked_id}")
+    board_body = board_after.get("data") if isinstance(board_after.get("data"), dict) else {}
+    board_date = str(board_body.get("date") or "")
+    board_rows = board_body.get("appointments") if isinstance(board_body.get("appointments"), list) else []
+    board_ids = [int(row.get("id") or 0) for row in board_rows if isinstance(row, dict)]
+    slot_date = str(slot.get("date") or "")
+    if slot_date == board_date:
+        check("the new appointment appears on today's arrival board",
+              board_after["status"] == 200 and booked_id in board_ids,
+              f"HTTP {board_after['status']} id={booked_id} board_date={board_date} ids={board_ids[:20]}")
+    else:
+        # The board endpoint is hardcoded to the operational TODAY (it takes no
+        # date parameter), so a booking on a later day can never appear in it.
+        # That is the delivered behaviour, so assert it explicitly instead of
+        # pretending the board covers the week (and instead of a substring search
+        # over JSON, which matches an id inside any other number).
+        check("the arrival board is scoped to today and excludes the future booking",
+              board_after["status"] == 200 and "" != board_date and booked_id not in board_ids,
+              f"HTTP {board_after['status']} id={booked_id} board_date={board_date} "
+              f"slot_date={slot_date} ids={board_ids[:20]}")
 
     # Owner policy 2026-10-15: the secretary may capture a payment but never void.
     if payment_id:
