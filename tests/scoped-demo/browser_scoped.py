@@ -303,18 +303,21 @@ def journeys_phase(browser) -> None:
     nonce = str(cfg.get("nonce", ""))
     root = str(cfg.get("rest_root", "") or REST)
 
-    context = api(page, nonce, "GET", "/staff/portal/reception/context", rest_root=root)
+    # The context route only resolves eligible Locations for an EXPLICITLY
+    # selected Clinic (X-CPMS-Clinic-Id), exactly like the delivered selector.
+    context = api(page, nonce, "GET", "/staff/portal/reception/context",
+                  headers=scope_headers(clinic_id), rest_root=root)
     check("receptionist reads the reception context", context["status"] == 200,
           f"HTTP {context['status']} {code_of(context)}")
     ctx_data = payload_of(context)
-    location_id = 0
-    for candidate in (ctx_data.get("eligible_locations") or []):
-        if int(candidate.get("id") or 0) == int(slot.get("location_id") or 0):
-            location_id = int(candidate["id"])
-            break
-    if not location_id and ctx_data.get("eligible_locations"):
-        location_id = int((ctx_data["eligible_locations"][0] or {}).get("id") or 0)
-    check("receptionist has an eligible operational location", location_id > 0, f"location_id={location_id}")
+    expected_location = int(slot.get("location_id") or 0)
+    eligible = [int((row or {}).get("id") or 0) for row in (ctx_data.get("eligible_locations") or [])]
+    check("receptionist's demo Clinic is in their reception scope",
+          any(int((row or {}).get("id") or 0) == clinic_id for row in (ctx_data.get("clinics") or [])),
+          f"clinics={ctx_data.get('clinics')}")
+    location_id = expected_location if expected_location in eligible else (eligible[0] if eligible else 0)
+    check("receptionist has an eligible operational location", location_id > 0,
+          f"eligible={eligible} slot_location={expected_location}")
     headers = scope_headers(clinic_id, location_id)
 
     board = api(page, nonce, "GET", "/staff/portal/reception/board", headers=headers, rest_root=root)
@@ -400,15 +403,17 @@ def journeys_phase(browser) -> None:
     nonce = str(cfg.get("nonce", ""))
     root = str(cfg.get("rest_root", "") or REST)
 
-    fin_context = api(page, nonce, "GET", "/staff/portal/finance/context", rest_root=root)
+    fin_context = api(page, nonce, "GET", "/staff/portal/finance/context",
+                      headers=scope_headers(clinic_id), rest_root=root)
     check("accountant reads the finance context", fin_context["status"] == 200,
           f"HTTP {fin_context['status']} {code_of(fin_context)}")
     fin_data = payload_of(fin_context)
-    fin_location = 0
-    for candidate in (fin_data.get("eligible_locations") or fin_data.get("locations") or []):
-        fin_location = int((candidate or {}).get("id") or 0)
-        if fin_location:
-            break
+    fin_locations = [int((row or {}).get("id") or 0) for row in (fin_data.get("locations") or [])]
+    fin_location = int(fin_data.get("location_id") or 0)
+    if not fin_location and fin_locations:
+        fin_location = fin_locations[0]
+    check("the accountant finance scope exposes an operational location",
+          fin_location > 0, f"locations={fin_locations}")
     fin_headers = scope_headers(clinic_id, fin_location)
 
     awaiting = api(page, nonce, "GET", "/staff/portal/finance/awaiting-payment",
