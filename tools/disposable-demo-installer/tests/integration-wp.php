@@ -110,6 +110,33 @@ $slots = (int) $db->fetchValue(
 );
 cpdd_assert( $slots >= 6, 'open future slots available for a NEW public booking (count=' . $slots . ')' );
 
+// Regression (near-midnight fixture defect). The browser journey books the
+// earliest still-available slot and then checks that appointment in on the Staff
+// Portal reception board, which is strictly the Location's local "today"
+// (ReceptionPortalController::board -> VisitService::today plus today's booked
+// rows). Ask the production availability read - the same one the public booking
+// shortcode consumes - which day it offers first, and require that to be the
+// board's local day. Before the fix this held only outside a daily
+// ~22:55-24:00 Asia/Tehran window, so the lane failed on the wall clock alone.
+$location_timezone = (string) $db->fetchValue(
+	'SELECT timezone FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+	array( (int) $fixture['ids']['location_ids'][0], $clinic_id )
+);
+cpdd_assert( in_array( $location_timezone, timezone_identifiers_list(), true ), 'fixture Location carries a valid IANA timezone' );
+$board_local_today = ( new DateTimeImmutable( 'now', new DateTimeZone( 'UTC' ) ) )
+	->setTimezone( new DateTimeZone( $location_timezone ) )
+	->format( 'Y-m-d' );
+$offer_days = array();
+foreach ( (array) ( App::bookingService()->availability( $doctor_id, null, null, $clinic_id )['days'] ?? array() ) as $offer_day ) {
+	if ( ! empty( $offer_day['slots'] ) ) {
+		$offer_days[] = (string) $offer_day['date'];
+	}
+}
+cpdd_assert(
+	array() !== $offer_days && $offer_days[0] === $board_local_today,
+	'the earliest genuinely bookable public slot is on the reception board local today (first=' . ( $offer_days[0] ?? 'none' ) . ' board=' . $board_local_today . ')'
+);
+
 // --- 5. Real OTP request → demo code → real verify ------------------------
 $previous = ScopeContext::tryGet();
 ScopeContext::set( ClinicScope::forClinic( $clinic_id, (int) $fixture['ids']['location_ids'][0] )->withOrganization( (int) $fixture['ids']['organization_id'] ) );
