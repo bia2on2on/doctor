@@ -125,7 +125,7 @@ class Admin {
 	public static function register_menu(): void {
 		$parent = self::cpms_parent_slug();
 		if ( null !== $parent ) {
-			$hook   = add_submenu_page(
+			$hook = add_submenu_page(
 				$parent,
 				'دموی یک‌بارمصرف CPMS',
 				'دموی یک‌بارمصرف CPMS',
