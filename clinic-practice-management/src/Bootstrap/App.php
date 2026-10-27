@@ -36,6 +36,8 @@ use ClinicCore\Application\Clinical\ClinicalService;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Application\Finance\FinanceDelegationService;
 use ClinicCore\Application\Finance\FinanceService;
+use ClinicCore\Application\Finance\VisitPricingService;
+use ClinicCore\Application\Messaging\StaffMessagingService;
 use ClinicCore\Application\Handwriting\HandwritingService;
 use ClinicCore\Application\Location\LocationService;
 use ClinicCore\Application\Membership\MembershipService;
@@ -108,6 +110,7 @@ use ClinicCore\Infrastructure\Repository\HandwritingRepository;
 use ClinicCore\Infrastructure\Repository\InvoiceRepository;
 use ClinicCore\Infrastructure\Repository\LicenseRepository;
 use ClinicCore\Infrastructure\Repository\MedicalFileRepository;
+use ClinicCore\Infrastructure\Repository\MessageRepository;
 use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Infrastructure\Repository\PaymentRepository;
 use ClinicCore\Infrastructure\Repository\PatientRepository;
@@ -117,6 +120,7 @@ use ClinicCore\Infrastructure\Repository\ScheduleRepository;
 use ClinicCore\Infrastructure\Repository\ServiceRepository;
 use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
+use ClinicCore\Infrastructure\Repository\VisitPricingRepository;
 use ClinicCore\Infrastructure\Security\Idempotency;
 use ClinicCore\Infrastructure\Security\LoginRateLimiter;
 use ClinicCore\Infrastructure\Security\RateLimiter;
@@ -139,6 +143,7 @@ use ClinicCore\Rest\FinanceController;
 use ClinicCore\Rest\FinancePortalController;
 use ClinicCore\Rest\HandwritingController;
 use ClinicCore\Rest\HealthController;
+use ClinicCore\Rest\MessagingController;
 use ClinicCore\Rest\NotificationsController;
 use ClinicCore\Rest\OtpController;
 use ClinicCore\Rest\PatientController;
@@ -148,6 +153,7 @@ use ClinicCore\Rest\ReportsController;
 use ClinicCore\Rest\RestClinicContext;
 use ClinicCore\Rest\ScheduleController;
 use ClinicCore\Rest\SmsController;
+use ClinicCore\Rest\VisitPricingController;
 use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Settings\Settings;
 use ClinicCore\Settings\SettingsFactory;
@@ -318,6 +324,9 @@ final class App
             (new FinanceController(self::financeService()))->register_routes();
             (new HandwritingController(self::handwritingService()))->register_routes();
             (new NotificationsController(self::notificationService()))->register_routes();
+            // Iran V1 — internal staff messaging + doctor-managed visit pricing.
+            (new MessagingController(self::staff_messaging_service()))->register_routes();
+            (new VisitPricingController(self::visit_pricing_service()))->register_routes();
             (new ReportsController(self::reportService(), self::exportService()))->register_routes();
             ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
             // Phase 11 Slices 1–5 — Staff Portal reception boundary (stricter contract lives there).
@@ -1129,11 +1138,59 @@ final class App
                 new VisitRepository($db),
                 self::visitService(),
                 new PatientRepository($db),
-                self::audit()
+                self::audit(),
+                self::visit_pricing_service()
             );
         }
 
         return $finance;
+    }
+
+
+    /**
+     * Iran V1 — تعرفه ویزیت پزشک و اقلام خدمات پیشنویس (بدون موتور صورتحساب دوم).
+     */
+    public static function visit_pricing_service(): VisitPricingService
+    {
+        static $pricing = null;
+        if ($pricing === null) {
+            $db = self::db();
+            $pricing = new VisitPricingService(
+                $db,
+                new VisitPricingRepository($db),
+                new VisitRepository($db),
+                new InvoiceRepository($db),
+                new PaymentRepository($db),
+                new ClinicianRepository($db),
+                new MembershipRepository($db),
+                new PatientRepository($db),
+                self::audit()
+            );
+        }
+
+        return $pricing;
+    }
+
+    /**
+     * Iran V1 — پیامرسانی داخلی پزشک/پذیرش در همان Clinic مورد اعتماد.
+     */
+    public static function staff_messaging_service(): StaffMessagingService
+    {
+        static $messaging = null;
+        if ($messaging === null) {
+            $db = self::db();
+            $messaging = new StaffMessagingService(
+                $db,
+                new MessageRepository($db),
+                new MembershipRepository($db),
+                new VisitRepository($db),
+                new PatientRepository($db),
+                new ClinicianRepository($db),
+                self::audit()
+            );
+        }
+
+        return $messaging;
     }
 
     /**

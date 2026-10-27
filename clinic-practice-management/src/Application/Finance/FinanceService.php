@@ -43,7 +43,8 @@ final class FinanceService
         private readonly VisitRepository $visits,
         private readonly VisitService $visitService,
         private readonly PatientRepository $patients,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly VisitPricingService $pricing
     ) {
     }
 
@@ -406,6 +407,46 @@ final class FinanceService
             );
 
             return $this->invoiceView($invoiceId);
+        });
+    }
+
+    /**
+     * Iran V1 — صدور فاکتور از تعرفه پزشک + اقلام خدمات پیش‌نویس ویزیت.
+     *
+     * ONLY an adapter: items are built from the persisted doctor fee/override
+     * and draft charges, then handed to the existing issueInvoice() contract
+     * (same InvoiceCalc, invoice numbering, Visit transition, audit trail).
+     * Charge rows are stamped with the new invoice id in the SAME transaction,
+     * so a settled invoice can never be silently mutated afterwards.
+     *
+     * @return array<string, mixed>
+     */
+    public function issue_invoice_from_pricing(int $actorUserId, int $visitId): array
+    {
+        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
+        $clinicId = $this->requireTrustedClinicId();
+        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
+        if ($visitId <= 0) {
+            throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'شناسه ویزیت نامعتبر است', 422);
+        }
+
+        return $this->db->transactional(function () use ($actorUserId, $visitId, $clinicId): array {
+            $visit = $this->visits->findForUpdate($visitId);
+            if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
+                throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
+            }
+            if ($this->invoices->activeForVisit($visitId) !== null) {
+                throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409);
+            }
+
+            $built = $this->pricing->build_invoice_items($visit);
+            $invoice = $this->issueInvoice($actorUserId, [
+                'visit_id' => $visitId,
+                'items'    => $built['items'],
+            ]);
+            $this->pricing->stamp_charges_invoiced($built['charge_ids'], (int) $invoice['id'], $clinicId);
+
+            return $invoice;
         });
     }
 
