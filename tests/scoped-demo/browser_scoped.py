@@ -508,10 +508,22 @@ def journeys_phase(browser) -> None:
     queue_denied = api(page, nonce, "GET", "/staff/portal/reception/board",
                        headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("patient is refused the staff arrival board", queue_denied["status"] in (401, 403),
-          f"HTTP {queue_denied['status']}")
-    finance_denied = api(page, nonce, "GET", "/staff/portal/finance/context", rest_root=root)
-    check("patient is refused the finance context", finance_denied["status"] in (401, 403),
-          f"HTTP {finance_denied['status']}")
+          f"HTTP {queue_denied['status']} {code_of(queue_denied)}")
+    # Scope first, capability second: the staff finance route refuses an
+    # unscoped call outright (400), and even with a valid Clinic header it
+    # refuses the patient on capability (403). Neither may leak finance data.
+    unscoped = api(page, nonce, "GET", "/staff/portal/finance/context", rest_root=root)
+    check("patient's unscoped finance context fails closed", unscoped["status"] == 400,
+          f"HTTP {unscoped['status']} {code_of(unscoped)}")
+    finance_denied = api(page, nonce, "GET", "/staff/portal/finance/context",
+                         headers=scope_headers(clinic_id), rest_root=root)
+    # The trusted-scope boundary denies before the capability check can run: a
+    # patient holds no membership in this Clinic, so the scope itself is
+    # unavailable (403) rather than the capability being merely missing.
+    check("patient is refused the finance context in a real Clinic scope",
+          finance_denied["status"] == 403
+          and code_of(finance_denied) in ("CLINIC_SCOPE_UNAVAILABLE", "CLINIC_PERMISSION_DENIED"),
+          f"HTTP {finance_denied['status']} {code_of(finance_denied)}")
     page.screenshot(path=str(EVIDENCE / "journey-patient.png"))
     ctx.close()
 
