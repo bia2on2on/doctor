@@ -2,7 +2,7 @@
 
 **Branch:** `arena/3c5e41b4-doctor` (Arena-fixed; no second branch was created).
 **Main merged forward:** `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8` via normal merge commit `e870023d…`, preserving preparation commit `5e951c837cbd195d483395cc6944211b9d038293`.
-**Status:** implementation complete; the six-persona browser acceptance journey now runs end-to-end (58 journeys checks + 11 provisioning checks, `ok: true`) on both database engines at the exact head below. Repository-wide green is still blocked by unrelated lanes, and the items listed under *Remaining risks* remain NOT RUN.
+**Status:** implementation complete. At head `10bc7f4…` the six-persona browser acceptance journey runs end-to-end (58 journeys checks + 11 provisioning checks, `ok: true`) on both database engines, and **all 30 required checks on this PR are green** (`mergeStateStatus: CLEAN`, still draft on purpose). The items listed under *Remaining risks* remain NOT RUN.
 
 ## Stage 1 — post-merge failure
 
@@ -75,13 +75,19 @@ The Chromium script drives the six personas through their real delivered surface
 
 ## Exact-head CI evidence (scoped lane)
 
-**Head:** `b11a672206ca69ef860249bdd3135e7a0fadd0c0` (PR #277, draft, base `main` @ `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8`).
+**Head:** `10bc7f4…` (PR #277, draft, base `main` @ `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8`). 30/30 checks green.
 
 | Check | Result | Evidence |
 |---|---|---|
-| Static gates, unit tests and reproducible companion ZIP | **success** | [job 122184525693](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184525693) |
-| Real WordPress integration (mysql-8) | **success** | [job 122184638814](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184638814) |
-| Real WordPress integration (mariadb-11.4.13) | **success** | [job 122184638655](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184638655) |
+| Real WordPress integration (mysql-8) | **success** | [job 122336972065](https://github.com/bia2on2on/doctor/actions/runs/40546023923/job/122336972065) |
+| Real WordPress integration (mariadb-11.4.13) | **success** | [job 122336972066](https://github.com/bia2on2on/doctor/actions/runs/40546023923/job/122336972066) |
+| WPCS (changed code) | **success** | [job 122337261687](https://github.com/bia2on2on/doctor/actions/runs/40546024165/job/122337261687) |
+| Static gates + reproducible installer ZIP | **success** | [job 122336923680](https://github.com/bia2on2on/doctor/actions/runs/40546023961/job/122336923680) |
+| Static Analysis (PHPStan) / Tenant Tripwire / Unit Tests 8.1–8.5 | **success** | [run 40546024165](https://github.com/bia2on2on/doctor/actions/runs/40546024165) |
+| Responsive smoke, Staging Gate, Upgrade path, Release Artifact | **success** | [run 40546023894](https://github.com/bia2on2on/doctor/actions/runs/40546023894) |
+| Real WordPress acceptance, First-practice browser, Facility matrix, coexistence lanes, Disposable external tool | **success** | [check runs on `10bc7f4`](https://github.com/bia2on2on/doctor/commit/10bc7f4) |
+
+The earlier green reference point `b11a672…` (run `40502823762`) reported `{"ok": true, "checks": 21}` for the old, narrower browser script; the current script performs 58 journey checks plus 11 provisioning checks.
 
 Inside those two jobs, the seeded non-empty integration gate exited 0 (the gate exits 1 if its JSON result is not `ok`), and the Chromium step reported:
 
@@ -121,7 +127,7 @@ Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at 
 
 - The baseline digest deliberately ignores WordPress runtime user rows (`session_tokens`, `wp_user-settings`, `wp_user-settings-time`, `wp_dashboard_quick_press_last_post_id`, `wp_media_library_mode`) in `wp_usermeta`. They are WP core session/UI state written by the operator's own login and dashboard use, never CPMS or demo data; without the exclusion any real login blocks the safe teardown with `TEARDOWN_BLOCKED`, which the six-persona browser lane surfaced. The invariant still covers every CPMS table and every other core row.
 - The demo patient account is **authenticated but not bound** to a patient record. The only production writer of `cpms_patient_user_links` is the mobile-OTP enrollment flow, and this companion never reads, echoes or bypasses an OTP code. The browser journey therefore asserts the fail-closed production behaviour instead of a successful read: `/patient/me` answers the non-enumerating `404 CLINIC_NOT_FOUND` and `/patient/my-records` answers `200` with an empty list. Binding the persona would require either an OTP bypass or a new production API; neither is in scope here, and no journey claims the patient can see clinical data.
-- Repository-wide green is not claimed: several unrelated lanes were still running, one pre-existing disposable-site lane failed intermittently, and the `Responsive smoke` harness race described above remains open.
+- Green is claimed only for the exact head above. The unrelated `Disposable external tool (prefix clinic_)` browser-login failure seen on an earlier head did not reproduce, and the pre-existing `Responsive smoke` keyboard-focus race described in Stage 1 is still an open harness issue even though that lane passed on this head.
 - The production `cpms_audit_logs` table has a foreign key to `cpms_clinics`. Preserving the full audit chain and adding no production schema migration therefore requires retaining the three synthetic parent rows as suspended/inactive audit anchors. This is an explicit architectural limitation, not a silent residual: owned operational, clinical and financial records are removed, but the synthetic Organization/Clinic/Locations rows are archived rather than physically deleted.
 - OTP code issuance is not driven in the browser lane, and a *successful* payment capture plus idempotent replay is proven only in the PHP integration suite (`cross_clinic`, replay `idempotent_replay: true`) — the settled fixture invoice makes a second capture impossible by design, so the browser lane asserts the refusal instead. A tampered-manifest runtime test, a repeated-teardown runtime test and storage/audit failure injection remain NOT RUN.
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
