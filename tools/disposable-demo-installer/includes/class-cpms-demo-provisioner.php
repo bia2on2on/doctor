@@ -476,8 +476,12 @@ class Provisioner {
 
 	/**
 	 * Future public-booking slots: one block today (if time remains before
-	 * Tehran midnight) plus blocks on the next two days. Deliberately generated
-	 * with the same production slot table contract.
+	 * Tehran midnight) plus blocks on the next two days. When the today block is
+	 * no longer available (roughly after 23:15 Tehran) a third day is added
+	 * instead, so the fixture always offers at least six OPEN slots: the visit
+	 * appointment takes one of them, and the "open future slots for a NEW public
+	 * booking" contract in the integration suite counts what is left. Deliberately
+	 * generated with the same production slot table contract.
 	 *
 	 * @return list<array{date:string,time:string}>
 	 */
@@ -498,7 +502,8 @@ class Provisioner {
 				);
 			}
 		}
-		for ( $day = 1; $day <= 2; $day++ ) {
+		$days = array() === $plan ? 3 : 2;
+		for ( $day = 1; $day <= $days; $day++ ) {
 			foreach ( array( '09:00:00', '09:20:00', '09:40:00' ) as $time ) {
 				$plan[] = array(
 					'date' => $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' ),
