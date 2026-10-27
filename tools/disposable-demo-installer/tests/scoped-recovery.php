@@ -371,7 +371,15 @@ try {
 		} catch ( Throwable $error ) {
 			$reprovision_code = 'UNEXPECTED:' . get_class( $error );
 		}
-		cpsd_rec_check( 'PREFLIGHT' === $reprovision_code, 'R1 tampered ' . $label . ': re-provisioning is refused (' . $reprovision_code . ')', $checks );
+		// A tampered payload is still an existing manifest, so the provisioner
+		// refuses it at its own guard (ALREADY_PROVISIONED) before it can reach the
+		// preflight refusal (PREFLIGHT). Both are refusals; the point is that no
+		// provisioning run starts.
+		cpsd_rec_check(
+			in_array( $reprovision_code, array( 'ALREADY_PROVISIONED', 'PREFLIGHT' ), true ),
+			'R1 tampered ' . $label . ': re-provisioning is refused (' . $reprovision_code . ')',
+			$checks
+		);
 		cpsd_rec_check(
 			cpsd_rec_fixture_row_counts( $platform, $live ) === $fixture_rows,
 			'R1 tampered ' . $label . ': neither a refusal nor a re-provision attempt added or deleted a row',
