@@ -8,8 +8,13 @@
  * Every scenario below is executed for real against MySQL/MariaDB; nothing is
  * simulated except the deliberate fault that interrupts an operation:
  *
- *   R1  tampered manifest is refused (no destructive action, no partial delete)
- *   R2  repeated teardown is idempotent
+ *   R1  tampered manifest is refused on load, on the preview fed the payload as
+ *       stored, on teardown execution and on re-provisioning - for four separate
+ *       vectors (three identity fields and a forged seal), with a row-count proof
+ *       that nothing was added or deleted
+ *   R2  repeated teardown is idempotent across three consecutive runs, keeps the
+ *       tombstone and the preserved audit rows, and leaves every pre-existing
+ *       host row byte-identical
  *   R3  interrupted provisioning leaves a flagged, recoverable state
  *       (fault injected at four different provisioning stages)
  *   R4  interrupted teardown is flagged with its stage and safely resumable
@@ -160,6 +165,102 @@ function cpsd_rec_synthetic_users( Env $env ): int {
 }
 
 /**
+ * Row-level fingerprint of the PRE-EXISTING host Clinics.
+ *
+ * The baseline proves the tracked global classes are unchanged; this proves the
+ * actual clinical/financial rows of the host Clinics are byte-identical, which
+ * is the property a User actually cares about after a drill has run.
+ *
+ * @param Platform $platform Adapter.
+ * @param array<string,mixed> $host Host identities.
+ * @return string sha256 of every host-owned row, or '' when nothing to compare.
+ */
+function cpsd_rec_host_digest( Platform $platform, array $host ): string {
+	$clinic_ids = array_values( array_unique( array_filter( array( (int) ( $host['clinic_a_id'] ?? 0 ), (int) ( $host['clinic_b_id'] ?? 0 ) ) ) ) );
+	if ( array() === $clinic_ids ) {
+		return '';
+	}
+	$placeholders = implode( ',', array_fill( 0, count( $clinic_ids ), '%d' ) );
+	$tables       = array(
+		'cpms_clinics',
+		'cpms_locations',
+		'cpms_clinicians',
+		'cpms_schedule_slots',
+		'cpms_patients',
+		'cpms_patient_user_links',
+		'cpms_appointments',
+		'cpms_visits',
+		'cpms_invoices',
+		'cpms_payments',
+	);
+	$digest       = array();
+	foreach ( $tables as $short ) {
+		if ( ! $platform->table_exists( $short ) ) {
+			continue;
+		}
+		$full = $platform->table( $short );
+		$cols = $platform->columns( $full );
+		// cpms_clinics has no clinic_id of its own; every other table is tenant-scoped.
+		$column = in_array( 'clinic_id', $cols, true ) ? 'clinic_id' : ( 'cpms_clinics' === $short ? 'id' : '' );
+		if ( '' === $column || ! in_array( 'id', $cols, true ) ) {
+			continue;
+		}
+		$digest[ $short ] = (array) $platform->fetch_all(
+			'SELECT * FROM `' . $full . '` WHERE `' . $column . '` IN (' . $placeholders . ') ORDER BY id ASC',
+			$clinic_ids
+		);
+	}
+
+	return hash( 'sha256', (string) wp_json_encode( $digest ) );
+}
+
+/**
+ * Deterministic per-table row counts inside the fixture's own Clinic.
+ *
+ * Used to prove that a refused operation added nothing and deleted nothing,
+ * not merely that it returned an error.
+ *
+ * @param Platform $platform Adapter.
+ * @param array<string,mixed> $live Verified manifest.
+ * @return array<string,int>
+ */
+function cpsd_rec_fixture_row_counts( Platform $platform, array $live ): array {
+	$clinic_id = (int) ( $live['ids']['clinic_id'] ?? 0 );
+	$tables    = array(
+		'cpms_clinics',
+		'cpms_organizations',
+		'cpms_locations',
+		'cpms_clinicians',
+		'cpms_schedule_slots',
+		'cpms_slot_holds',
+		'cpms_patients',
+		'cpms_patient_user_links',
+		'cpms_appointments',
+		'cpms_visits',
+		'cpms_invoices',
+		'cpms_payments',
+		'cpms_otp_tokens',
+	);
+	$counts    = array();
+	foreach ( $tables as $short ) {
+		if ( ! $platform->table_exists( $short ) ) {
+			continue;
+		}
+		$full = $platform->table( $short );
+		$cols = $platform->columns( $full );
+		if ( $clinic_id > 0 && in_array( 'clinic_id', $cols, true ) ) {
+			$counts[ $short ] = count(
+				(array) $platform->fetch_all( 'SELECT id FROM `' . $full . '` WHERE clinic_id = %d', array( $clinic_id ) )
+			);
+			continue;
+		}
+		$counts[ $short ] = (int) $platform->count_all( $short );
+	}
+
+	return $counts;
+}
+
+/**
  * Sum the per-table delete counters of a teardown result.
  *
  * @param array<string,mixed> $result Teardown result.
@@ -194,50 +295,147 @@ try {
 	$checks[]    = 'INFO host clinics=' . $platform->count_all( 'cpms_clinics' ) . ' seeded=' . ( $host['seeded'] ? 'yes' : 'no' );
 
 	// ---------------------------------------------------------------- R1 tamper
+	$host_digest_before = cpsd_rec_host_digest( $platform, $host );
+	$checks[]           = 'INFO host row digest=' . substr( $host_digest_before, 0, 16 ) . ' clinics=' . count( (array) array_filter( array( $host['clinic_a_id'], $host['clinic_b_id'] ) ) );
+
 	$manifest->enable_mode( $admin_id );
 	$services['provisioner']->provision( $admin_id );
 	$live        = $manifest->load();
 	cpsd_rec_check( is_array( $live ) && 'active' === (string) $live['status'], 'R1 fixture provisioned for the tamper drill', $checks );
+	$fixture_rows = cpsd_rec_fixture_row_counts( $platform, $live );
 
-	$tampered = $live;
-	$tampered['ids']['clinic_id'] = (int) $live['ids']['clinic_id'] + 5000;
-	$env->option_set( 'cpsd_manifest', $tampered );
+	// Every id in the sealed payload is HMAC-covered, so each of these must fail
+	// closed in every consumer: load(), the teardown preview (fed the payload AS
+	// STORED, which is what the admin page does), teardown execution, and the
+	// re-provisioning preflight.
+	$tamper_vectors = array(
+		'ids.clinic_id'        => static function ( array $payload ): array {
+			$payload['ids']['clinic_id'] = (int) $payload['ids']['clinic_id'] + 5000;
+			return $payload;
+		},
+		'ids.invoice_id'       => static function ( array $payload ): array {
+			$payload['ids']['invoice_id'] = (int) ( $payload['ids']['invoice_id'] ?? 0 ) + 5000;
+			return $payload;
+		},
+		'ids.user_ids.patient' => static function ( array $payload ): array {
+			$payload['ids']['user_ids']['patient'] = (int) ( $payload['ids']['user_ids']['patient'] ?? 0 ) + 5000;
+			return $payload;
+		},
+		'mac'                  => static function ( array $payload ): array {
+			// The payload stays untouched; only the seal is forged. This proves the
+			// HMAC itself is what is checked, not just field-to-field agreement.
+			$payload['mac'] = str_repeat( '0', 64 );
+			return $payload;
+		},
+	);
+	$tamper_refusals = 0;
+	foreach ( $tamper_vectors as $label => $mutate ) {
+		$env->option_set( 'cpsd_manifest', $mutate( $live ) );
 
-	$refused_load = false;
-	try {
-		$manifest->load();
-	} catch ( DemoException $error ) {
-		$refused_load = 'MANIFEST_TAMPERED' === $error->demo_code();
+		$refused_load = false;
+		try {
+			$manifest->load();
+		} catch ( DemoException $error ) {
+			$refused_load = 'MANIFEST_TAMPERED' === $error->demo_code();
+		}
+		cpsd_rec_check( $refused_load, 'R1 tampered ' . $label . ': refused on load (MANIFEST_TAMPERED)', $checks );
+
+		$stored = $env->option_get( 'cpsd_manifest', array() );
+		$stored = is_array( $stored ) ? $stored : array();
+		$stored_preview = $services['teardown']->preview( $stored );
+		cpsd_rec_check(
+			false === (bool) $stored_preview['ok'] && in_array( 'MANIFEST_TAMPERED', (array) $stored_preview['problems'], true ),
+			'R1 tampered ' . $label . ': the preview refuses the payload as stored',
+			$checks
+		);
+
+		$refused_execute = false;
+		try {
+			$services['teardown']->execute( $stored, $admin_id );
+		} catch ( DemoException $error ) {
+			$refused_execute = in_array( $error->demo_code(), array( 'TEARDOWN_BLOCKED', 'MANIFEST_TAMPERED' ), true );
+		}
+		cpsd_rec_check( $refused_execute, 'R1 tampered ' . $label . ': refused by teardown execution', $checks );
+
+		$preflight_state = $services['preflight']->run();
+		cpsd_rec_check(
+			in_array( 'other_manifest', (array) $preflight_state['blocking'], true ),
+			'R1 tampered ' . $label . ': the preflight still refuses a second fixture',
+			$checks
+		);
+		$reprovision_code = '';
+		try {
+			$services['provisioner']->provision( $admin_id );
+		} catch ( DemoException $error ) {
+			$reprovision_code = $error->demo_code();
+		} catch ( Throwable $error ) {
+			$reprovision_code = 'UNEXPECTED:' . get_class( $error );
+		}
+		cpsd_rec_check( 'PREFLIGHT' === $reprovision_code, 'R1 tampered ' . $label . ': re-provisioning is refused (' . $reprovision_code . ')', $checks );
+		cpsd_rec_check(
+			cpsd_rec_fixture_row_counts( $platform, $live ) === $fixture_rows,
+			'R1 tampered ' . $label . ': neither a refusal nor a re-provision attempt added or deleted a row',
+			$checks
+		);
+		++$tamper_refusals;
 	}
-	cpsd_rec_check( $refused_load, 'R1 tampered manifest is refused on load (MANIFEST_TAMPERED)', $checks );
-
-	$tampered_preview = $services['teardown']->preview( $tampered );
-	cpsd_rec_check( false === (bool) $tampered_preview['ok'] && in_array( 'MANIFEST_TAMPERED', (array) $tampered_preview['problems'], true ), 'R1 tampered manifest is refused by the teardown preview', $checks );
-
-	$tampered_execute_refused = false;
-	try {
-		$services['teardown']->execute( $tampered, $admin_id );
-	} catch ( DemoException $error ) {
-		$tampered_execute_refused = in_array( $error->demo_code(), array( 'TEARDOWN_BLOCKED', 'MANIFEST_TAMPERED' ), true );
-	}
-	cpsd_rec_check( $tampered_execute_refused, 'R1 tampered manifest is refused by teardown execution', $checks );
-	$clinic_still_there = null === $platform->fetch_row( 'SELECT id FROM `' . $platform->table( 'cpms_clinics' ) . '` WHERE id = %d', array( (int) $live['ids']['clinic_id'] ) ) ? 0 : 1;
-	cpsd_rec_check( 1 === $clinic_still_there, 'R1 refusal deleted nothing (synthetic Clinic still present)', $checks );
+	$report['tamper_vectors_refused'] = $tamper_refusals;
 
 	// Restore the sealed manifest and tear down for real.
 	$env->option_set( 'cpsd_manifest', $live );
-	$clean = $services['teardown']->execute( $manifest->load(), $admin_id );
+	$restored = $manifest->load();
+	cpsd_rec_check( is_array( $restored ) && $manifest->verify( $restored ), 'R1 the sealed manifest is intact again after the tamper drill', $checks );
+	$clean = $services['teardown']->execute( $restored, $admin_id );
 	cpsd_rec_check( true === (bool) $clean['ok'], 'R1 authorized teardown after the tamper drill succeeds', $checks );
 	cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R1 no synthetic account survives the clean teardown', $checks );
 
 	// ------------------------------------------------- R2 repeated teardown
-	$repeat = $services['teardown']->execute( $live, $admin_id );
-	cpsd_rec_check( true === (bool) $repeat['ok'], 'R2 a second teardown of the same fixture completes without error', $checks );
-	cpsd_rec_check( 0 === cpsd_rec_deleted_total( $repeat ), 'R2 the second teardown deletes nothing (idempotent): ' . (string) wp_json_encode( $repeat['deleted'] ), $checks );
-	$repeat_baseline = $baseline->verify( (array) $live['baseline'] );
-	cpsd_rec_check( true === (bool) $repeat_baseline['ok'], 'R2 pre-existing baseline still intact after the repeat: ' . implode( ' | ', (array) $repeat_baseline['problems'] ), $checks );
-	$repeat_chain = $audit_guard->verify_chain();
-	cpsd_rec_check( true === (bool) $repeat_chain['ok'], 'R2 audit chain valid after the repeat', $checks );
+	// Three consecutive runs over an already-torn-down fixture: every run must
+	// report success, delete nothing, and leave the preserved audit rows in place.
+	foreach ( array( 2, 3 ) as $run ) {
+		$repeat = $services['teardown']->execute( $live, $admin_id );
+		cpsd_rec_check( true === (bool) $repeat['ok'], 'R2 run ' . $run . ': a repeated teardown completes without error', $checks );
+		cpsd_rec_check(
+			0 === cpsd_rec_deleted_total( $repeat ),
+			'R2 run ' . $run . ': deletes nothing (idempotent): ' . (string) wp_json_encode( $repeat['deleted'] ),
+			$checks
+		);
+		cpsd_rec_check(
+			(int) ( $repeat['tombstone']['preserved_audit'] ?? 0 ) > 0,
+			'R2 run ' . $run . ': the preserved audit rows still exist (' . (int) ( $repeat['tombstone']['preserved_audit'] ?? 0 ) . ')',
+			$checks
+		);
+		cpsd_rec_check( true === (bool) ( $repeat['tombstone']['clean'] ?? false ), 'R2 run ' . $run . ': the tombstone records a clean teardown', $checks );
+		$repeat_baseline = $baseline->verify( (array) $live['baseline'] );
+		cpsd_rec_check( true === (bool) $repeat_baseline['ok'], 'R2 run ' . $run . ': pre-existing baseline still intact: ' . implode( ' | ', (array) $repeat_baseline['problems'] ), $checks );
+		$repeat_chain = $audit_guard->verify_chain();
+		cpsd_rec_check( true === (bool) $repeat_chain['ok'], 'R2 run ' . $run . ': audit chain valid', $checks );
+		cpsd_rec_check(
+			cpsd_rec_host_digest( $platform, $host ) === $host_digest_before,
+			'R2 run ' . $run . ': every pre-existing host row is byte-identical',
+			$checks
+		);
+	}
+
+	$tombstone_after = $manifest->tombstone();
+	cpsd_rec_check(
+		is_array( $tombstone_after ) && (string) ( $tombstone_after['fixture_id'] ?? '' ) === (string) $live['fixture_id'],
+		'R2 the repeated runs leave the tombstone of THIS fixture, not of another one',
+		$checks
+	);
+	cpsd_rec_check( true === $manifest->had_clean_teardown(), 'R2 the site still reports a verified clean teardown', $checks );
+	cpsd_rec_check( null === $manifest->load() && false === $manifest->exists(), 'R2 no manifest is resurrected by the repeats', $checks );
+
+	$empty_preview = $services['teardown']->preview( $live );
+	cpsd_rec_check( true === (bool) $empty_preview['ok'], 'R2 the preview of the already-removed fixture is clean: ' . implode( ' | ', (array) $empty_preview['problems'] ), $checks );
+	$empty_scope = (array) ( $empty_preview['scope']['tables'] ?? array() );
+	foreach ( array( 'cpms_patients', 'cpms_appointments', 'cpms_visits', 'cpms_invoices', 'cpms_payments', 'cpms_schedule_slots', 'cpms_slot_holds', 'cpms_patient_user_links', 'cpms_otp_tokens', 'cpms_sms_messages' ) as $short ) {
+		cpsd_rec_check(
+			array() === (array) ( $empty_scope[ $short ] ?? array() ),
+			'R2 no ' . $short . ' row of the fixture is left to delete',
+			$checks
+		);
+	}
 
 	// ------------------------------------- R3 interrupted provisioning (4 points)
 	$fault_points = array( 'provision:users_partial', 'provision:organization', 'provision:onboarding', 'provision:clinical' );
@@ -480,6 +678,22 @@ try {
 		cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R7 no synthetic account survives the kill recovery', $checks );
 		$report['sigkill'] = array( 'exit_code' => $exit_code, 'stderr_bytes' => strlen( $child_err ) );
 	}
+
+	// ------------------------------------------------------ final host invariant
+	// Every drill above (provisioning, four tamper vectors, three teardowns,
+	// four interrupted provisions, three interrupted teardowns, concurrency,
+	// cross-Clinic REST, SIGKILL) must have left the pre-existing Clinics
+	// byte-identical at row level - not merely "still present".
+	$host_digest_after = cpsd_rec_host_digest( $platform, $host );
+	cpsd_rec_check(
+		'' !== $host_digest_before && $host_digest_after === $host_digest_before,
+		'R8 every pre-existing host row is byte-identical after all drills',
+		$checks
+	);
+	$report['host_digest'] = array(
+		'before' => substr( $host_digest_before, 0, 16 ),
+		'after'  => substr( $host_digest_after, 0, 16 ),
+	);
 
 	echo (string) wp_json_encode(
 		array(

@@ -314,6 +314,59 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Tamper the sealed manifest out of band (PHP side)
+        env:
+          CPSD_TAMPER_MODE: tamper
+          CPSD_TAMPER_FILE: /tmp/cpsd-ci/manifest-pristine.json
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/tamper-manifest.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-tamper.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-tamper.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_TAMPER_OK=' + str(bool(data.get('ok'))))
+          print('SCOPED_TAMPER=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'unknown error'), file=sys.stderr)
+              sys.exit(1)
+          if data.get('load_refused') is not True:
+              print('FAIL the tampered manifest was not refused on load', file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Chromium scoped admin refuses the tampered manifest (tamper phase)
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsd-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_scoped.py tamper | tee /tmp/cpsd-ci/browser-tamper.log
+
+      - name: Restore the sealed manifest and re-prove the fixture is intact
+        env:
+          CPSD_TAMPER_MODE: restore
+          CPSD_TAMPER_FILE: /tmp/cpsd-ci/manifest-pristine.json
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/tamper-manifest.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-tamper-restore.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-tamper-restore.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_TAMPER_RESTORE_OK=' + str(bool(data.get('ok'))))
+          print('SCOPED_TAMPER_RESTORE=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok') or data.get('preview_ok') is not True or data.get('fixture_clinic_present') is not True:
+              print(data.get('error', 'restore did not re-prove the fixture'), file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: Chromium six persona journeys + authorized teardown (journeys phase)
         env:
           BASE: ${{ env.WP_URL }}
@@ -328,7 +381,7 @@ jobs:
           import json, sys
           from pathlib import Path
           ok = True
-          for phase in ('provision', 'journeys'):
+          for phase in ('provision', 'tamper', 'journeys'):
               path = Path(f'/tmp/cpsd-ci/browser/browser-result-{phase}.json')
               if not path.exists():
                   print(f'FAIL missing browser result for phase {phase}', file=sys.stderr)
@@ -352,6 +405,9 @@ jobs:
           path: |
             /tmp/cpsd-ci/scoped-integration.json
             /tmp/cpsd-ci/scoped-recovery.json
+            /tmp/cpsd-ci/scoped-tamper.json
+            /tmp/cpsd-ci/scoped-tamper-restore.json
+            /tmp/cpsd-ci/browser-tamper.log
             /tmp/cpsd-ci/browser-provision.log
             /tmp/cpsd-ci/browser.log
             /tmp/cpsd-ci/browser/persona-targets.json

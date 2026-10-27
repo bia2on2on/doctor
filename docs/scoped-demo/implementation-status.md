@@ -2,7 +2,7 @@
 
 **Branch:** `arena/3c5e41b4-doctor` (Arena-fixed; no second branch was created).
 **Main merged forward:** `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8` via normal merge commit `e870023d…`, preserving preparation commit `5e951c837cbd195d483395cc6944211b9d038293`.
-**Status:** implementation complete. At head `10bc7f4…` the six-persona browser acceptance journey runs end-to-end (58 journeys checks + 11 provisioning checks, `ok: true`) on both database engines, and **all 30 required checks on this PR are green** (`mergeStateStatus: CLEAN`, still draft on purpose). The items listed under *Remaining risks* remain NOT RUN.
+**Status:** implementation complete, plus three runtime-hardening tasks requested before the PR leaves draft: (1) tampered-manifest rejection proven at every entry point including the real admin page, (2) idempotent teardown proven across three consecutive runs with a row-level proof that pre-existing host rows are byte-identical, and (3) a real OTP-bound patient identity in the browser with a captured write and its idempotent replay. See *Stage 4* below for the before/after of each one. The exact head, the per-check counts and the job links for this work are recorded in PR #277 and in the *Exact-head CI evidence* section; nothing here is claimed for a head that has not been green. The items listed under *Remaining risks* remain NOT RUN.
 
 ## Stage 1 — post-merge failure
 
@@ -21,6 +21,37 @@ Diagnosed separately in [`post-merge-failure-diagnosis.md`](post-merge-failure-d
 - `ScopedBaseline` stores only IDs/counts/SHA-256 digests for all 53 CPMS tables and core WP record tables, excluding volatile options and plugin-owned option rows.
 - `ScopedTeardown` collects exact IDs from live rows using verified parent IDs plus baseline max-ID secondary guards; preserves unrelated queue jobs and shared/global rate-limit counters; acquires `cpms_jobs_tick`; refuses processing owned jobs; deletes owned operational logs only by exact IDs and verified fixture/entity context; deletes clinical/financial children before parents; verifies baseline and full audit chain after cleanup; retains a failed manifest on interruption.
 - Browser-only Persian admin instructions, credentials, portal links, OTP helper, teardown preview and clean tombstone are rendered by `ScopedAdmin`.
+
+## Stage 4 — three hardening tasks (requested before un-drafting)
+
+Each task is listed as *before* (what the lane actually proved at `10bc7f4…`) and *after* (what it proves now). The tasks were chosen because the earlier report was thinner than it sounded: the drills existed, but they proved less than a reader would assume.
+
+### Task 1 — tampered manifest is rejected, everywhere
+
+- **Before:** one PHP drill (`R1`) mutated `ids.clinic_id`, then called `load()`, `preview()` and `execute()` with the tampered array it still held in memory. Nothing exercised the admin page, nothing proved re-provisioning was refused, and nothing fed the preview the payload *as stored*.
+- **After:**
+  - `R1` now iterates **four vectors** — `ids.clinic_id`, `ids.invoice_id`, `ids.user_ids.patient` (a financial row and an account row, not just the tenant id) and a **forged seal** (`mac` replaced while the payload stays byte-identical, which proves the HMAC itself is checked rather than field agreement).
+  - For each vector: `load()` refuses with `MANIFEST_TAMPERED`; the preview refuses the payload **read back from storage** (the path the admin page actually takes); teardown execution refuses; the preflight reports `other_manifest` and re-provisioning is refused with `PREFLIGHT`; and per-table row counts inside the fixture Clinic are unchanged, so nothing was added by the attempt and nothing was deleted by the refusal.
+  - `tests/scoped-demo/tamper-manifest.php` breaks the seal out of band, a new Chromium phase (`browser_scoped.py tamper`) proves the **real scoped admin page** reports `MANIFEST_TAMPERED` and renders **zero** action forms (no provision, no diagnose, no teardown), and a `restore` step re-proves the fixture is intact (`load()`, `verify()`, a clean preview, the synthetic Clinic still present) before the journeys phase runs.
+
+### Task 2 — repeated teardown is idempotent
+
+- **Before:** `R2` ran teardown **once** more, asserted `ok` and a zero delete total, and stopped there.
+- **After:** three consecutive runs (2nd and 3rd after the first clean one); every run must return `ok`, delete nothing, keep the tombstone `clean` for **this** fixture, and still report a positive `preserved_audit` count — which is simultaneously proof that the audit rows were never deleted. The baseline verify and the full hash-chain verify run on every repetition. Afterwards the manifest stays absent, `had_clean_teardown()` still holds, a preview of the removed fixture is clean, and ten fixture-owned tables are asserted to hold **no** row left to delete.
+- **New invariant:** a row-level fingerprint (`cpsd_rec_host_digest`) of ten tables for the two pre-existing host Clinics is captured before the first drill and compared after each repetition and again after **all** drills (provisioning, tampering, repeated teardowns, four interrupted provisions, three interrupted teardowns, concurrency, cross-Clinic REST, SIGKILL). "Still present" is no longer the claim; **byte-identical** is.
+
+### Task 3 — real OTP-bound patient identity with capture + replay (browser)
+
+- **Before:** the lane explicitly asserted that the demo patient was *unbound* and that the settled fixture invoice made a successful capture unprovable in the browser. OTP was never issued, so the patient journey could only show fail-closed behaviour.
+- **After:** a new browser journey does the real thing, with no bypass:
+  1. an **anonymous** context opens the real public booking page the fixture created and posts the widget's own `/otp/request` payload (mobile + the persisted clinician/slot/date/time selection), which creates a challenge stamped with the fixture Clinic;
+  2. the Administrator asks the scoped companion, through its own admin form, to show the code — `ScopedOtp` rebinds the code hash of that live challenge only; it mints no token, no session, no SMS, and leaves attempts/expiry untouched;
+  3. a **wrong** code is refused (`CLINIC_OTP_INVALID`) and issues no cookie;
+  4. the shown code is verified through the production `/otp/verify` route: `session_issued: true`, `is_new_user: false`, the `user_id` is the existing synthetic patient account, and exactly one `patient_links` entry names the synthetic patient — i.e. OTP **bound the existing identity instead of provisioning a new one**;
+  5. the patient portal then answers `/patient/me` with the synthetic patient (right id and mobile) and `/patient/my-records` with exactly one link in the fixture Clinic and no foreign patient, which the same account could not do before step 4;
+  6. replaying the consumed code is refused and does **not** replace the session cookie;
+  7. as that OTP-bound patient, a real slot is held and `/booking/confirm` commits a new appointment with a UUID `Idempotency-Key`; replaying the identical request returns the **same** appointment, and `/appointments/mine` shows exactly **one** appointment for that slot.
+- The teardown afterwards proves the new rows (patient link, hold, appointment, idempotency key, OTP token, SMS row, rate-limit counters) are owned and removed, which is a stronger end-to-end ownership test than any of the earlier journeys.
 
 ## Files added/changed (implementation)
 
@@ -45,6 +76,8 @@ Workflow/tests/docs:
 - `.github/workflows/scoped-demo.yml`
 - `tests/scoped-demo/test_php_contract.py`
 - `tests/scoped-demo/browser_scoped.py`
+- `tests/scoped-demo/persona-targets.php` (read-only identifier exporter: adds the patient mobile, the patient WP id, the booking page and a second bookable slot)
+- `tests/scoped-demo/tamper-manifest.php` (out-of-band tamper/restore driver for the tamper phase)
 - `docs/scoped-demo/post-merge-failure-diagnosis.md`
 - `docs/scoped-demo/implementation-status.md`
 - `docs/scoped-demo/preparation-checkpoint.md`
@@ -71,7 +104,7 @@ Strict `run-tests.php` was **NOT RUN successfully locally** because the php-wasm
 - real WordPress integration matrix on **MySQL 8** and **MariaDB 11.4.13**: seeded non-empty WP/CPMS fixture, baseline capture, six real `wp_authenticate` checks, foreign activity during demo, teardown preview/execute, baseline preservation, full audit-chain verification, and preservation of existing/foreign users/posts/comments/invoices/jobs.
 - Chromium job on both DB lanes: real wp-admin enable/provision/diagnose/teardown forms and six independent browser-context logins.
 
-The Chromium script drives the six personas through their real delivered surfaces: the front-end Staff Portal modules (`?page_id=…&cpms-module=reception|finance|doctor`), the patient portal page and the management portal page, calling the plugin's own REST routes from the authenticated page. OTP code issuance is still **NOT RUN** in the browser (the companion never reads or echoes a code). Screenshot pixels are saved but not inspected.
+The Chromium script drives the six personas through their real delivered surfaces: the front-end Staff Portal modules (`?page_id=…&cpms-module=reception|finance|doctor`), the patient portal page and the management portal page, calling the plugin's own REST routes from the authenticated page. Since Stage 4 it also drives a real OTP login of the demo patient (challenge → sanctioned code display → `/otp/verify` → bound identity → captured booking → idempotent replay) and a `tamper` phase that proves the admin page refuses a broken seal. The companion still never reads or echoes an OTP code from production storage, and it never defines `CPMS_DEV_OTP_ECHO`. Screenshot pixels are saved but not inspected.
 
 ## Exact-head CI evidence (scoped lane)
 
@@ -126,10 +159,12 @@ Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at 
 ## Remaining risks / honest limitations
 
 - The baseline digest deliberately ignores WordPress runtime user rows (`session_tokens`, `wp_user-settings`, `wp_user-settings-time`, `wp_dashboard_quick_press_last_post_id`, `wp_media_library_mode`) in `wp_usermeta`. They are WP core session/UI state written by the operator's own login and dashboard use, never CPMS or demo data; without the exclusion any real login blocks the safe teardown with `TEARDOWN_BLOCKED`, which the six-persona browser lane surfaced. The invariant still covers every CPMS table and every other core row.
-- The demo patient account is **authenticated but not bound** to a patient record. The only production writer of `cpms_patient_user_links` is the mobile-OTP enrollment flow, and this companion never reads, echoes or bypasses an OTP code. The browser journey therefore asserts the fail-closed production behaviour instead of a successful read: `/patient/me` answers the non-enumerating `404 CLINIC_NOT_FOUND` and `/patient/my-records` answers `200` with an empty list. Binding the persona would require either an OTP bypass or a new production API; neither is in scope here, and no journey claims the patient can see clinical data.
+- The demo patient account has **two** browser outcomes and both are asserted: with a password session alone it stays unbound and must fail closed (`/patient/me` → non-enumerating `404 CLINIC_NOT_FOUND`, `/patient/my-records` → `200` with an empty list, because the only production writer of `cpms_patient_user_links` is the mobile-OTP flow); after a real OTP login through `/otp/request` + the companion's sanctioned code display + `/otp/verify`, the same account is bound and must see exactly its own record. The OTP *widget* click path (calendar → slot → button) is not driven: the request payload is the widget's own tuple posted from the real booking page, and the patient portal's own OTP form is unusable on a multi-Clinic install by design (`CLINIC_SCOPE_REQUIRED`).
 - Green is claimed only for the exact head above. The unrelated `Disposable external tool (prefix clinic_)` browser-login failure seen on an earlier head did not reproduce, and the pre-existing `Responsive smoke` keyboard-focus race described in Stage 1 is still an open harness issue even though that lane passed on this head.
 - The production `cpms_audit_logs` table has a foreign key to `cpms_clinics`. Preserving the full audit chain and adding no production schema migration therefore requires retaining the three synthetic parent rows as suspended/inactive audit anchors. This is an explicit architectural limitation, not a silent residual: owned operational, clinical and financial records are removed, but the synthetic Organization/Clinic/Locations rows are archived rather than physically deleted.
-- OTP code issuance is not driven in the browser lane, and a *successful* payment capture plus idempotent replay is proven only in the PHP integration suite (`cross_clinic`, replay `idempotent_replay: true`) — the settled fixture invoice makes a second capture impossible by design, so the browser lane asserts the refusal instead. A tampered-manifest runtime test, a repeated-teardown runtime test and storage/audit failure injection remain NOT RUN.
+- OTP issuance **is** now driven in the browser lane (Task 3), and a *successful* captured write with an idempotent replay is proven there for the booking confirm route (`/booking/hold` → `/booking/confirm` → identical replay). A successful **payment** capture plus replay in the browser is still not claimed: the fixture invoice is settled at provisioning by design, so the browser keeps asserting the refusal (`409 CLINIC_INVOICE_NOT_MODIFIABLE`) and the `idempotent_replay: true` payment proof stays in the PHP suite.
+- Storage/audit **failure injection** remains NOT RUN: the drills interrupt provisioning and teardown at named stages and SIGKILL a child process, but no drill makes the storage layer or the audit writer itself fail mid-transaction.
+- Screenshot pixels are still not inspected, and the tamper drill proves rejection of a payload whose HMAC no longer holds — it does not attempt to forge a *valid* HMAC (that would require the site's seal key, which the harness deliberately never reads).
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
 - Universal hosting compatibility is not claimed. The conservative preflight refuses multisite, persistent object cache, schema drift, unknown CPMS tables with data, dev OTP echo, and a busy queue runner.
 - Local `php-wasm` checks are syntax/unit evidence only, not real MySQL/MariaDB/WordPress/Chromium evidence.

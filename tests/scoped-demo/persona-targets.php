@@ -66,6 +66,26 @@ try {
 			gmdate( 'Y-m-d' )
 		)
 	);
+	// A second, untouched open slot: the receptionist journey books the earliest
+	// one, so the patient's own OTP-bound booking (hold -> confirm) needs its own
+	// slot rather than a race against that write.
+	$patient_slot = $wpdb->get_row(
+		$wpdb->prepare(
+			'SELECT id, slot_date, slot_time, clinician_id, location_id FROM ' . $table( 'cpms_schedule_slots' )
+			. ' WHERE clinic_id = %d AND is_open = 1 AND booked_count < capacity AND slot_date >= %s'
+			. ' ORDER BY slot_date DESC, slot_time DESC, id DESC LIMIT 1',
+			$clinic_id,
+			gmdate( 'Y-m-d' )
+		)
+	);
+	$booking_page_id = (int) ( $live['ids']['booking_page_id'] ?? 0 );
+	// Prefer the permalink the provisioner itself sealed into the manifest; fall
+	// back to WordPress only when that link is missing.
+	$booking_url = (string) ( $live['links']['booking'] ?? '' );
+	if ( '' === $booking_url && $booking_page_id > 0 ) {
+		$booking_link = get_permalink( $booking_page_id );
+		$booking_url  = is_string( $booking_link ) && '' !== $booking_link ? $booking_link : home_url( '/?page_id=' . $booking_page_id );
+	}
 	$visit_row = $wpdb->get_row(
 		$wpdb->prepare(
 			'SELECT id, clinician_id, location_id FROM ' . $table( 'cpms_visits' ) . ' WHERE id = %d',
@@ -126,6 +146,19 @@ try {
 				'time'         => (string) $slot->slot_time,
 				'clinician_id' => (int) $slot->clinician_id,
 				'location_id'  => (int) ( $slot->location_id ?? 0 ),
+			),
+			'patient_slot' => null === $patient_slot ? null : array(
+				'id'           => (int) $patient_slot->id,
+				'date'         => (string) $patient_slot->slot_date,
+				'time'         => (string) $patient_slot->slot_time,
+				'clinician_id' => (int) $patient_slot->clinician_id,
+				'location_id'  => (int) ( $patient_slot->location_id ?? 0 ),
+			),
+			'patient_mobile' => (string) ( $live['patient_mobile'] ?? '' ),
+			'patient_wp_user_id' => (int) ( $live['ids']['user_ids']['patient'] ?? 0 ),
+			'booking'      => array(
+				'id'  => $booking_page_id,
+				'url' => $booking_url,
 			),
 			'portals'      => array(
 				'staff'      => $staff_portal,

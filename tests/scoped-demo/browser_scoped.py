@@ -7,10 +7,15 @@ between):
 
   provision  admin form workflow (mode, preflight, provisioning, one-time
              credentials, reload hardening) and writes persona-credentials.json
+  tamper     the sealed manifest is broken out of band (by
+             tests/scoped-demo/tamper-manifest.php) and this phase proves the
+             scoped admin page refuses it and offers no action at all
   journeys   six independent Chromium logins, then one real workflow per
              persona through the production REST stack, from inside the page so
-             the cookies and REST nonce are the browser's own; then the admin
-             diagnose + teardown forms
+             the cookies and REST nonce are the browser's own; then a real
+             OTP login of the demo patient (challenge -> sanctioned code ->
+             verify -> bound identity -> captured booking -> replay); then the
+             admin diagnose + teardown forms
 
 Honest scope notes (do not overclaim):
   * Each persona lands on its real production surface (the front-end Staff Portal
@@ -20,6 +25,12 @@ Honest scope notes (do not overclaim):
   * Journeys call the plugin's real REST API from inside those pages. They are
     not UI click-throughs of every form: button-level interaction, Persian
     layout and drag/drop behaviour are not covered here.
+  * The patient OTP journey posts the same `/otp/request` payload the public
+    booking widget posts (mobile + the persisted clinician/slot/date/time
+    selection) from inside the real booking page, then verifies through the
+    production `/otp/verify` endpoint. The calendar/slot *click* path and the
+    patient portal's own OTP form (which multi-Clinic installs refuse with
+    CLINIC_SCOPE_REQUIRED by design) are not driven.
   * clinic_manager and organization_manager prove the portal renders *and* that
     their fixture membership (not a WordPress role) grants the surface. No REST
     call is claimed for them.
@@ -197,6 +208,23 @@ def payload_of(result: dict) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def list_of(result: dict) -> list:
+    """List-returning routes nest the array: {"data": [...]} or {"data": {"data": [...]}}."""
+    body = result.get("data")
+    if isinstance(body, dict) and "data" in body:
+        body = body["data"]
+    return body if isinstance(body, list) else []
+
+
+def session_cookies(ctx) -> dict:
+    """The WordPress logged-in cookie set, keyed by name, for replay comparisons."""
+    return {
+        cookie.get("name", ""): cookie.get("value", "")
+        for cookie in ctx.cookies()
+        if str(cookie.get("name", "")).startswith("wordpress_logged_in_")
+    }
+
+
 def new_idempotency_key() -> str:
     """A canonical UUIDv4, the only shape the payment routes accept."""
     return str(uuid.uuid4())
@@ -270,6 +298,206 @@ def management_journey(page, label: str, url: str, expected: str) -> None:
           f"text={page.locator('.cpms-mgmt-shell').inner_text()[:300] if page.locator('.cpms-mgmt-shell').count() else ''}")
     check(f"{label}: portal shows their own scope", bool(expected) and expected in body,
           f"expected={expected!r} present={expected in body}")
+
+
+def patient_otp_journey(browser, targets: dict) -> None:
+    """Real OTP login of the demo patient, then one captured write and its replay.
+
+    Nothing here bypasses a production boundary: the challenge is created by the
+    public `/otp/request` route, the code is disclosed only through the scoped
+    companion's administrator form (which rebinds the hash of that live
+    challenge and never mints a token or a session), and the login, the patient
+    read, the hold and the confirm all go through the delivered REST stack.
+    """
+    clinic_id = int(targets.get("clinic_id") or 0)
+    patient_id = int(targets.get("patient_id") or 0)
+    patient_wp = int(targets.get("patient_wp_user_id") or 0)
+    mobile = str(targets.get("patient_mobile") or "")
+    booking = targets.get("booking") or {}
+    slot = targets.get("patient_slot") or {}
+    fixture_slot = targets.get("slot") or {}
+    portals = targets.get("portals") or {}
+    foreign = targets.get("foreign") or {}
+    patient_url = str((portals.get("patient") or {}).get("url") or "")
+
+    check("the fixture exports the synthetic patient mobile",
+          len(mobile) == 11 and mobile.startswith("09"), f"mobile_len={len(mobile)}")
+    check("the fixture exports a usable synthetic WP identity for the patient",
+          patient_wp > 0 and patient_id > 0, f"wp={patient_wp} patient={patient_id}")
+    check("the fixture exports the public booking page it created",
+          bool(booking.get("url")) and int(booking.get("id") or 0) > 0,
+          json.dumps(booking, ensure_ascii=False))
+    check("the fixture reserves a separate bookable slot for the patient",
+          bool(slot.get("id")) and int(slot.get("id") or 0) != int(fixture_slot.get("id") or 0),
+          json.dumps({"patient_slot": slot, "reception_slot": fixture_slot}, ensure_ascii=False))
+
+    # ------------------------------------------------ anonymous public page
+    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+    page = ctx.new_page()
+    page.goto(str(booking.get("url")), wait_until="domcontentloaded")
+    check("the anonymous public booking page renders its own OTP step",
+          page.locator('[data-role="otp-mobile"]').count() == 1
+          and page.locator('[data-role="otp-code"]').count() == 1, f"url={page.url}")
+    check("the anonymous visitor starts without a WordPress session",
+          session_cookies(ctx) == {}, str(sorted(session_cookies(ctx))))
+
+    requested = api(page, "", "POST", "/otp/request", {
+        "mobile": mobile,
+        "purpose": "login",
+        "clinician_id": int(slot.get("clinician_id") or 0),
+        "slot_id": int(slot.get("id") or 0),
+        "slot_date": str(slot.get("date") or ""),
+        "slot_time": str(slot.get("time") or ""),
+    })
+    check("the public OTP request accepts the persisted slot selection",
+          requested["status"] == 200,
+          f"HTTP {requested['status']} {code_of(requested)} "
+          f"{json.dumps(requested.get('data'), ensure_ascii=False)[:200]}")
+
+    # ------------------------------- sanctioned code disclosure (admin form)
+    ctx_a, admin = admin_login(browser)
+    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    submit_form(admin, "otp", "SHOW_SCOPED_DEMO_OTP")
+    otp_node = admin.locator("[data-cpsd-otp-code]")
+    code = otp_node.inner_text().strip() if otp_node.count() else ""
+    check("the scoped admin form shows the code of that live challenge",
+          len(code) == 6 and code.isdigit(), f"code_len={len(code)}")
+    admin.screenshot(path=str(EVIDENCE / "scoped-admin-otp.png"))
+    ctx_a.close()
+
+    # --------------------------------------------- wrong code fails closed
+    wrong = "000000" if code != "000000" else "111111"
+    refused = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": wrong})
+    check("a wrong OTP code is refused by the production verify path",
+          refused["status"] in (400, 401, 422) and code_of(refused) == "CLINIC_OTP_INVALID",
+          f"HTTP {refused['status']} {code_of(refused)}")
+    check("the refused code issued no WordPress session", session_cookies(ctx) == {},
+          str(sorted(session_cookies(ctx))))
+
+    # --------------------------------------------------- real OTP login
+    verified = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": code})
+    verified_data = payload_of(verified)
+    check("the production verify path issues a session for the OTP code",
+          verified["status"] == 200 and verified_data.get("session_issued") is True,
+          f"HTTP {verified['status']} {code_of(verified)} "
+          f"{json.dumps(verified_data, ensure_ascii=False)[:300]}")
+    check("OTP log-in reuses the existing synthetic identity (no new WP user)",
+          verified_data.get("is_new_user") is False and int(verified_data.get("user_id") or 0) == patient_wp,
+          f"user_id={verified_data.get('user_id')} is_new_user={verified_data.get('is_new_user')}")
+    links = verified_data.get("patient_links") if isinstance(verified_data.get("patient_links"), list) else []
+    check("the OTP login bound exactly the synthetic patient to that account",
+          len(links) == 1 and int((links[0] or {}).get("id") or 0) == patient_id,
+          json.dumps(links, ensure_ascii=False)[:300])
+    logged_in = session_cookies(ctx)
+    check("the browser now holds the WordPress session cookie issued by OTP",
+          bool(logged_in), str(sorted(logged_in)))
+
+    # ------------------------------------- the bound identity reads its own data
+    page.goto(patient_url, wait_until="domcontentloaded")
+    check("the OTP session renders the patient portal",
+          page.locator("script.cpms-patient-portal__config").count() == 1, f"url={page.url}")
+    cfg = surface_config(page, "otp patient")
+    nonce = str(cfg.get("nonce", ""))
+    root = str(cfg.get("rest_root", "") or REST)
+
+    me = api(page, nonce, "GET", "/patient/me", rest_root=root)
+    me_data = payload_of(me)
+    check("the OTP-bound patient reads their own record",
+          me["status"] == 200 and int(me_data.get("id") or 0) == patient_id,
+          f"HTTP {me['status']} {code_of(me)} id={me_data.get('id')}")
+    check("the record returned is the synthetic identity, not another person",
+          str(me_data.get("mobile") or "") == mobile,
+          f"mobile_match={str(me_data.get('mobile') or '') == mobile}")
+    records = api(page, nonce, "GET", "/patient/my-records", rest_root=root)
+    listed = list_of(records)
+    check("the OTP-bound patient sees exactly one linked record",
+          records["status"] == 200 and len(listed) == 1
+          and int((listed[0] or {}).get("patient_id") or 0) == patient_id
+          and int((listed[0] or {}).get("clinic_id") or 0) == clinic_id,
+          f"HTTP {records['status']} {json.dumps(listed, ensure_ascii=False)[:300]}")
+    foreign_patient = int(foreign.get("patient_id") or 0)
+    check("no foreign patient leaks into the OTP session",
+          foreign_patient == 0
+          or all(int((row or {}).get("patient_id") or 0) != foreign_patient for row in listed),
+          f"foreign_patient={foreign_patient} listed={json.dumps(listed, ensure_ascii=False)[:300]}")
+
+    # ------------------------------------------- replay of the consumed code
+    replay = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": code})
+    check("replaying the consumed OTP code is refused (single use)",
+          replay["status"] in (400, 401, 422) and code_of(replay) == "CLINIC_OTP_INVALID",
+          f"HTTP {replay['status']} {code_of(replay)}")
+    check("the replay did not replace the browser session", session_cookies(ctx) == logged_in,
+          "cookie set changed")
+
+    # --------------------------- captured write + idempotent replay, as the patient
+    hold = api(page, nonce, "POST", "/booking/hold", {
+        "clinician_id": int(slot.get("clinician_id") or 0),
+        "slot_id": int(slot.get("id") or 0),
+        "slot_date": str(slot.get("date") or ""),
+        "slot_time": str(slot.get("time") or ""),
+    }, rest_root=root)
+    hold_data = payload_of(hold)
+    hold_token = str(hold_data.get("hold_token") or "")
+    check("the OTP-bound patient holds a real slot",
+          hold["status"] == 200 and bool(hold_token),
+          f"HTTP {hold['status']} {code_of(hold)} {json.dumps(hold_data, ensure_ascii=False)[:200]}")
+
+    key = new_idempotency_key()
+    confirm_body = {"hold_token": hold_token, "reason": "scoped demo patient journey"}
+    captured = api(page, nonce, "POST", "/booking/confirm", confirm_body,
+                   headers={"Idempotency-Key": key}, rest_root=root)
+    captured_data = payload_of(captured)
+    appointment_id = int(captured_data.get("appointment_id") or captured_data.get("id") or 0)
+    check("the captured booking is committed once",
+          captured["status"] == 200 and appointment_id > 0,
+          f"HTTP {captured['status']} {code_of(captured)} "
+          f"{json.dumps(captured_data, ensure_ascii=False)[:200]}")
+    check("the committed appointment is a new row, not the fixture appointment",
+          appointment_id != int(targets.get("appointment_id") or 0),
+          f"appointment={appointment_id} fixture={targets.get('appointment_id')}")
+
+    replayed = api(page, nonce, "POST", "/booking/confirm", confirm_body,
+                   headers={"Idempotency-Key": key}, rest_root=root)
+    replayed_data = payload_of(replayed)
+    check("replaying the identical request returns the same appointment",
+          replayed["status"] == 200
+          and int(replayed_data.get("appointment_id") or replayed_data.get("id") or 0) == appointment_id,
+          f"HTTP {replayed['status']} {code_of(replayed)} "
+          f"{json.dumps(replayed_data, ensure_ascii=False)[:200]}")
+
+    mine = api(page, nonce, "GET", "/appointments/mine", rest_root=root)
+    mine_list = list_of(mine)
+    slot_date = str(slot.get("date") or "")
+    slot_time = str(slot.get("time") or "")[:5]
+    same_slot = [row for row in mine_list
+                 if isinstance(row, dict) and str(row.get("date") or "") == slot_date
+                 and str(row.get("time") or "")[:5] == slot_time]
+    check("exactly one appointment exists for the captured slot after the replay",
+          mine["status"] == 200 and len(same_slot) == 1
+          and int(same_slot[0].get("id") or 0) == appointment_id,
+          f"HTTP {mine['status']} matches={json.dumps(same_slot, ensure_ascii=False)[:300]}")
+
+    page.screenshot(path=str(EVIDENCE / "journey-patient-otp.png"))
+    ctx.close()
+
+
+def tamper_phase(browser) -> None:
+    """The scoped admin surface must refuse a manifest whose HMAC no longer holds."""
+    ctx, admin = admin_login(browser)
+    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    check("the scoped admin page still renders while the manifest is tampered",
+          admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")
+    wrap_text = admin.locator(".wrap.cpdd").inner_text() if admin.locator(".wrap.cpdd").count() else ""
+    check("the tampered manifest is surfaced with its own refusal code",
+          "MANIFEST_TAMPERED" in wrap_text, wrap_text[:400])
+    check("a tampered manifest offers no scoped action at all",
+          admin.locator("form[data-cpsd-form]").count() == 0,
+          f"forms={admin.locator('form[data-cpsd-form]').count()} text={wrap_text[:400]}")
+    check("no diagnostic or teardown result is rendered for a tampered manifest",
+          admin.locator("[data-cpsd-diagnostic], [data-cpsd-teardown]").count() == 0,
+          wrap_text[:400])
+    admin.screenshot(path=str(EVIDENCE / "scoped-admin-tampered.png"))
+    ctx.close()
 
 
 def journeys_phase(browser) -> None:
@@ -531,6 +759,9 @@ def journeys_phase(browser) -> None:
     page.screenshot(path=str(EVIDENCE / "journey-patient.png"))
     ctx.close()
 
+    # --------------- the patient again, this time bound by a real OTP login
+    patient_otp_journey(browser, targets)
+
     # ---------------- clinic manager: the management portal for their own Clinic
     management_url = str((portals.get("management") or {}).get("url") or "")
     ctx, page = persona_login(browser, creds["clinic_manager"]["username"], creds["clinic_manager"]["password"])
@@ -575,7 +806,8 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
         "limitations": [
             "Journeys call the plugin REST API from the persona's own portal surface, not every UI form",
             "clinic_manager/organization_manager assert the management portal surface, not REST journeys",
-            "The demo patient account is not bound to a patient record: the only production writer of cpms_patient_user_links is the mobile-OTP enrollment flow, which this companion never bypasses",
+            "The patient OTP journey posts the widget's own /otp/request payload from inside the real booking page; the calendar/slot click path and the patient portal's OTP form (which multi-Clinic installs refuse with CLINIC_SCOPE_REQUIRED) are not driven",
+            "Password-only patient login stays unbound by design: cpms_patient_user_links is written only by the mobile-OTP enrollment flow, which is exercised through the production /otp/verify route",
             "Screenshot pixels not inspected",
         ],
     }
@@ -597,6 +829,8 @@ def main() -> int:
             try:
                 if phase in ("all", "provision"):
                     provision_phase(browser)
+                if phase in ("all", "tamper"):
+                    tamper_phase(browser)
                 if phase in ("all", "journeys"):
                     journeys_phase(browser)
             finally:
