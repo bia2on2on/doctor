@@ -46,6 +46,13 @@ inputs:
       bounded failure.
     required: false
     default: '240'
+  apt-install-cap-seconds:
+    description: >-
+      Hard wall-clock cap (seconds) for package installation. The package set
+      can be larger than the index refresh, so it has a separately bounded
+      budget while still failing well before a job-level timeout.
+    required: false
+    default: '600'
   wp-cli-version:
     description: 'Exact WP-CLI release to install (official wp-cli/wp-cli release).'
     required: false
@@ -118,6 +125,7 @@ runs:
         APT_RETRIES: ${{ inputs.apt-retries }}
         APT_TIMEOUT_SECONDS: ${{ inputs.apt-timeout-seconds }}
         APT_UPDATE_CAP_SECONDS: ${{ inputs.apt-update-cap-seconds }}
+        APT_INSTALL_CAP_SECONDS: ${{ inputs.apt-install-cap-seconds }}
       run: |
         set -euo pipefail
         LOG_DIR="$APT_LOG_DIR"
@@ -174,11 +182,13 @@ runs:
 
         started=$(date +%s)
         echo "+ apt-get update (bounded: retries=${APT_RETRIES}, http/https timeout=${APT_TIMEOUT_SECONDS}s, wall-clock cap=${APT_UPDATE_CAP_SECONDS}s)"
-        echo "+ apt-get install -y -qq ${PKGS[*]}"
+        APT_INSTALL_CAP_SECONDS="${APT_INSTALL_CAP_SECONDS:-600}"
+        echo "+ apt-get update (bounded: retries=${APT_RETRIES}, http/https timeout=${APT_TIMEOUT_SECONDS}s, wall-clock cap=${APT_UPDATE_CAP_SECONDS}s)"
+        echo "+ apt-get install -y -qq ${PKGS[*]} (wall-clock cap=${APT_INSTALL_CAP_SECONDS}s)"
         sudo timeout "$APT_UPDATE_CAP_SECONDS" apt-get "${APT_OPTS[@]}" -o Acquire::Languages=none update -qq > "$LOG" 2>&1 \
           || apt_fail "apt-get update did not complete inside ${APT_UPDATE_CAP_SECONDS}s (bounded retry/timeout budget); this is a package-index download failure, not a package-selection failure"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" install -y -qq "${PKGS[@]}" >> "$LOG" 2>&1 \
-          || apt_fail "apt-get install failed for: ${PKGS[*]}"
+        sudo timeout "$APT_INSTALL_CAP_SECONDS" env DEBIAN_FRONTEND=noninteractive apt-get "${APT_OPTS[@]}" install -y -qq "${PKGS[@]}" >> "$LOG" 2>&1 \
+          || apt_fail "apt-get install failed or exceeded its ${APT_INSTALL_CAP_SECONDS}s wall-clock cap for: ${PKGS[*]}"
 
         # Fail closed. apt's exit status is not proof that every requested package
         # landed: a partially applied run must never be measured as a provisioned

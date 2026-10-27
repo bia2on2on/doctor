@@ -158,6 +158,10 @@ runs:
           -o Acquire::https::Timeout=45
           -o DPkg::Lock::Timeout=120
         )
+        # Wall-clock cap for each direct apt invocation in the missing-deps
+        # branch. Keep it independent of the browser-download budget: mirrors
+        # can retry within apt's connection limits, but cannot consume the job.
+        PW_APT_TIMEOUT_SECONDS=240
         deps_note=""
 
         install_browsers() {
@@ -199,17 +203,17 @@ runs:
             install_pw_deps
           else
             echo "missing system dependencies: ${MISSING[*]}"
-            if ! sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" > "$deps_apt_log" 2>&1; then
-              echo "::warning title=playwright system dependencies::the bounded install failed against the existing indexes; refreshing them once inside the bounded budget and retrying once."
+            if ! sudo timeout "$PW_APT_TIMEOUT_SECONDS" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" > "$deps_apt_log" 2>&1; then
+              echo "::warning title=playwright system dependencies::the first apt-get install failed or hit its ${PW_APT_TIMEOUT_SECONDS}s wall-clock cap; refreshing indexes once and retrying the install once."
               tail -10 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-800 || true
-              sudo apt-get "${apt_opts[@]}" -o Acquire::Languages=none update -qq >> "$deps_apt_log" 2>&1 || {
-                echo "::error title=playwright system dependencies::apt-get update failed inside the bounded retry/timeout budget. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+              if ! sudo timeout "$PW_APT_TIMEOUT_SECONDS" apt-get "${apt_opts[@]}" -o Acquire::Languages=none update -qq >> "$deps_apt_log" 2>&1; then
+                echo "::error title=playwright system dependencies::apt-get update failed or exceeded its ${PW_APT_TIMEOUT_SECONDS}s wall-clock cap; no further retry will be attempted. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
                 exit 1
-              }
-              sudo env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" >> "$deps_apt_log" 2>&1 || {
-                echo "::error title=playwright system dependencies::still not installable after one bounded index refresh. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+              fi
+              if ! sudo timeout "$PW_APT_TIMEOUT_SECONDS" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" >> "$deps_apt_log" 2>&1; then
+                echo "::error title=playwright system dependencies::apt-get install still failed or exceeded its ${PW_APT_TIMEOUT_SECONDS}s wall-clock cap after one index refresh; no further retry will be attempted. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
                 exit 1
-              }
+              fi
             fi
           fi
           # Fail closed: the dependency set has to verify before the suite runs.
