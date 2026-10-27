@@ -131,11 +131,11 @@ class ScopedBaseline {
 	 * @param int $max_id Optional baseline max ID for re-verification.
 	 * @return array<string,mixed>
 	 */
-	private function snapshot_table( string $table, string $force_id = '', int $max_id = 0 ): array {
+	private function snapshot_table( string $table, string $force_id = '', int $max_id = -1 ): array {
 		global $wpdb;
 		$id_col = '' !== $force_id ? $force_id : $this->auto_increment_column( $table );
 		if ( '' !== $id_col ) {
-			$limit = $max_id > 0 ? $max_id : (int) $wpdb->get_var( 'SELECT COALESCE(MAX(`' . $id_col . '`), 0) FROM `' . $table . '`' );
+			$limit = $max_id >= 0 ? $max_id : (int) $wpdb->get_var( 'SELECT COALESCE(MAX(`' . $id_col . '`), 0) FROM `' . $table . '`' );
 			$digest = $this->prefix_digest( $table, $id_col, $limit );
 
 			return array(
@@ -200,7 +200,7 @@ class ScopedBaseline {
 				break;
 			}
 			foreach ( (array) $rows as $row ) {
-				hash_update( $hash, $this->row_hash( $row ) . "\n" );
+				hash_update( $hash, $this->row_hash( $row, $table ) . "\n" );
 			}
 			if ( count( (array) $rows ) < self::CHUNK ) {
 				break;
@@ -243,7 +243,7 @@ class ScopedBaseline {
 				$parts[] = (string) ( $row[ $col ] ?? '' );
 			}
 			$key = implode( '|', $parts );
-			$out[ $key ] = $this->row_hash( $row );
+			$out[ $key ] = $this->row_hash( $row, $table );
 		}
 		ksort( $out );
 
@@ -286,7 +286,13 @@ class ScopedBaseline {
 	 * @param array<string,mixed> $row Database row.
 	 * @return string
 	 */
-	private function row_hash( array $row ): string {
+	private function row_hash( array $row, string $table = '' ): string {
+		// WordPress maintains term_taxonomy.count as a cache-like counter when
+		// posts are published. It is not an immutable site record; excluding it
+		// prevents legitimate foreign activity from looking like baseline damage.
+		if ( false !== strpos( $table, 'term_taxonomy' ) ) {
+			unset( $row['count'] );
+		}
 		ksort( $row );
 		$canonical = (string) wp_json_encode( $row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 
