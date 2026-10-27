@@ -78,5 +78,6 @@ function cpms_demo_activate(): void {
 }
 register_activation_hook( __FILE__, 'cpms_demo_activate' );
 
+add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'redirect_legacy_tools_url' ), 0 );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );

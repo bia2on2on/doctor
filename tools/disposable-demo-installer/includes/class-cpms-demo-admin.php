@@ -30,11 +30,6 @@ class Admin {
 	private static string $hook = '';
 
 	/**
-	 * @var string Hook suffix of the legacy Tools URL, when CPMS is active.
-	 */
-	private static string $legacy_hook = '';
-
-	/**
 	 * @var array{type:string,text:string}|null
 	 */
 	private static $notice = null;
@@ -107,8 +102,8 @@ class Admin {
 	/**
 	 * Register the page under CPMS Classic when its unified menu is available;
 	 * otherwise retain a standalone Tools fallback without creating a top-level
-	 * menu. The legacy Tools URL remains registered but its menu item is hidden
-	 * and requests are redirected when CPMS is active.
+	 * menu. The old Tools URL is intercepted before WordPress's admin-menu
+	 * authorization check and redirected when CPMS is active.
 	 *
 	 * @return void
 	 */
@@ -129,18 +124,6 @@ class Admin {
 				add_action( 'load-' . $hook, array( __CLASS__, 'dispatch' ) );
 			}
 
-			$legacy_hook = add_management_page(
-				'دموی یک‌بارمصرف CPMS',
-				'دموی یک‌بارمصرف CPMS',
-				self::CAP,
-				self::PAGE,
-				array( __CLASS__, 'redirect_legacy_tools_url' )
-			);
-			if ( is_string( $legacy_hook ) ) {
-				self::$legacy_hook = $legacy_hook;
-				add_action( 'load-' . $legacy_hook, array( __CLASS__, 'redirect_legacy_tools_url' ) );
-			}
-			add_action( 'admin_head', array( __CLASS__, 'hide_legacy_tools_link' ), 1 );
 			return;
 		}
 
@@ -159,15 +142,25 @@ class Admin {
 		}
 	}
 
-	/** Hide only the old Tools navigation row; its registered URL remains routable. */
-	public static function hide_legacy_tools_link(): void {
-		if ( self::$legacy_hook !== '' ) {
-			remove_submenu_page( 'tools.php', self::PAGE );
-		}
-	}
-
-	/** Redirect the preserved legacy Tools URL after WordPress has authorized it. */
+	/**
+	 * Redirect the legacy Tools URL before WordPress validates menu registration.
+	 *
+	 * This runs on `admin_menu` before the core direct-page access check. The
+	 * legacy slug is deliberately not registered a second time: WordPress keys
+	 * plugin-page callbacks by slug, so duplicate parent registrations can route
+	 * the canonical page back to the redirect handler.
+	 *
+	 * @return void
+	 */
 	public static function redirect_legacy_tools_url(): void {
+		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
+		if ( ! class_exists( $cpms_menu ) || ! is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
+			return;
+		}
+		if ( 'tools.php' !== basename( (string) ( $_SERVER['PHP_SELF'] ?? '' ) )
+			|| self::PAGE !== (string) ( $_GET['page'] ?? '' ) ) {
+			return;
+		}
 		if ( ! current_user_can( self::CAP ) ) {
 			wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
 		}
