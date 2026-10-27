@@ -266,7 +266,8 @@ def management_journey(page, label: str, url: str, expected: str) -> None:
     denied = MANAGEMENT_DENIED in body or "دسترسی ندارید" in body
     check(f"{label}: management surface is granted by the fixture membership",
           bool(url) and not denied and "cpms-mgmt-card" in body,
-          f"url={page.url} denied={denied}")
+          f"url={page.url} denied={denied} cards={page.locator('.cpms-mgmt-card').count()} "
+          f"text={page.locator('.cpms-mgmt-shell').inner_text()[:300] if page.locator('.cpms-mgmt-shell').count() else ''}")
     check(f"{label}: portal shows their own scope", bool(expected) and expected in body,
           f"expected={expected!r} present={expected in body}")
 
@@ -490,11 +491,20 @@ def journeys_phase(browser) -> None:
           me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
           f"HTTP {me['status']} {code_of(me)}")
     records = api(page, nonce, "GET", "/patient/my-records", rest_root=root)
-    record_list = payload_of(records)
-    listed = record_list.get("records") if isinstance(record_list.get("records"), list) else record_list
+    # A list-returning route: `success()` wraps it as {"data": [...]}, so the
+    # value is a bare array and payload_of (a dict helper) would hide it.
+    record_body = (records.get("data") or {})
+    if isinstance(record_body, dict) and "data" in record_body:
+        record_body = record_body["data"]
+    if isinstance(record_body, list):
+        listed = record_body
+    elif isinstance(record_body, dict):
+        listed = record_body.get("records") or []
+    else:
+        listed = []
     check("unbound demo patient lists no patient records",
-          records["status"] == 200 and not listed,
-          f"HTTP {records['status']} records={json.dumps(record_list, ensure_ascii=False)[:200]}")
+          records["status"] == 200 and listed == [],
+          f"HTTP {records['status']} records={json.dumps(record_body, ensure_ascii=False)[:200]}")
     queue_denied = api(page, nonce, "GET", "/staff/portal/reception/board",
                        headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("patient is refused the staff arrival board", queue_denied["status"] in (401, 403),
@@ -524,9 +534,16 @@ def journeys_phase(browser) -> None:
     ctx, admin = admin_login(browser)
     admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     submit_form(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
-    check("teardown preview passes", admin.locator('[data-cpsd-diagnostic="pass"]').count() == 1)
+    check("the read-only diagnostic page publishes the scoped surface",
+          admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")
+    check("teardown preview passes",
+          admin.locator('[data-cpsd-diagnostic="pass"]').count() == 1,
+          f"diagnostic={admin.locator('[data-cpsd-diagnostic]').count()} "
+          f"text={admin.locator('.wrap.cpdd').inner_text()[-400:] if admin.locator('.wrap.cpdd').count() else ''}")
     submit_form(admin, "teardown", "REMOVE_ONLY_SCOPED_DEMO_DATA")
-    check("authorized teardown clean", admin.locator('[data-cpsd-teardown="clean"]').count() == 1)
+    check("authorized teardown clean", admin.locator('[data-cpsd-teardown="clean"]').count() == 1,
+          f"teardown_card={admin.locator('[data-cpsd-teardown]').count()} "
+          f"text={admin.locator('.wrap.cpdd').inner_text()[:300] if admin.locator('.wrap.cpdd').count() else ''}")
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-teardown.png"))
     ctx.close()
 
