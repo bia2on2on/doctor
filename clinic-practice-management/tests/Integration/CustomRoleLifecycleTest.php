@@ -1037,15 +1037,29 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
 
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
+        $GLOBALS['_parent_pages'] = [];
+        $GLOBALS['_registered_pages'] = [];
+        // B-1 (unified menu): the page is no longer its own top-level menu; it is
+        // registered under the single «مدیریت مطب» container, whose capability is
+        // `read` (never `cpms_config`), so a Clinic-scoped manager still reaches it.
+        \ClinicCore\Admin\CpmsAdminMenu::menu();
         CustomRoleDefinitionsPage::menu();
-        $found = false;
-        foreach ($GLOBALS['menu'] as $item) {
-            if (is_array($item) && ($item[2] ?? '') === CustomRoleDefinitionsPage::PAGE_SLUG) {
-                $found = true;
-                self::assertSame('read', $item[1] ?? null, 'the standalone entry is only gated by ordinary wp-admin read access');
+        $container_capability = null;
+        foreach ( (array) $GLOBALS['menu'] as $item ) {
+            if ( is_array( $item ) && ( $item[2] ?? '' ) === \ClinicCore\Admin\CpmsAdminMenu::parent_slug() ) {
+                $container_capability = $item[1] ?? null;
             }
         }
-        self::assertTrue($found, 'an authorized Clinic-local manager must have a reachable management-page entry');
+        self::assertSame(
+            'read',
+            $container_capability,
+            'the container entry must only be gated by ordinary wp-admin read access'
+        );
+        self::assertSame(
+            \ClinicCore\Admin\CpmsAdminMenu::parent_slug(),
+            $GLOBALS['_parent_pages'][ CustomRoleDefinitionsPage::PAGE_SLUG ] ?? null,
+            'an authorized Clinic-local manager must have a reachable management-page entry'
+        );
 
         $oldGet = $_GET;
         $_GET['cpms_clinic_id'] = (string) $this->clinicA;

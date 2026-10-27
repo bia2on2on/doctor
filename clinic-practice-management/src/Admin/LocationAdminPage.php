@@ -51,7 +51,7 @@ final class LocationAdminPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'شعبه‌ها و محل‌ها',
             'شعبه‌ها',
             RolesAndCapabilities::CONFIG,

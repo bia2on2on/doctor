@@ -19,13 +19,32 @@ final class PublicShortcodeAdminPageTest extends TestCase {
 	}
 
 	public function testPageIsManageOptionsOnlyAndListsOnlyAuthorizedClinicChoices(): void {
-		self::assertStringContainsString( 'add_management_page(', $this->source );
+		// B-1: this helper is no longer a global Tools entry; it is registered
+		// beneath the single CPMS menu and keeps its own manage_options gate.
+		self::assertStringNotContainsString( 'add_management_page(', $this->source );
+		self::assertStringContainsString( 'add_submenu_page(', $this->source );
+		self::assertStringContainsString( 'CpmsAdminMenu::parent_slug()', $this->source );
 		self::assertStringContainsString( "'manage_options'", $this->source );
 		self::assertStringContainsString( 'active_memberships_for_user', $this->source );
 		self::assertStringContainsString( 'RolesAndCapabilities::CONFIG', $this->source );
 		self::assertStringContainsString( 'array_intersect( $known_cpms_tags, $registered )', $this->source );
 		self::assertStringContainsString( 'PublicBookingShortcode::TAG', $this->source );
 		self::assertStringNotContainsString( 'register_rest_route(', $this->source );
+	}
+
+	/**
+	 * رگرسیونِ واقعیِ Real WP Acceptance: فرم با GET ارسال می‌شود و اگر action به
+	 * مسیرِ legacy (`tools.php`) اشاره کند، redirectِ سازگاری باید `clinic_id` را
+	 * حفظ کند — وگرنه صفحه با انتخابِ خالی برمی‌گردد و کد کوتاه تولید نمی‌شود.
+	 */
+	public function testFormPostsBackToTheCanonicalPageAndKeepsTheClinicSelector(): void {
+		self::assertStringContainsString(
+			"admin_url( 'admin.php?page=' . self::PAGE_SLUG )",
+			$this->source,
+			'form action must be the canonical CPMS page URL'
+		);
+		self::assertStringNotContainsString( "admin_url( 'tools.php' )", $this->source );
+		self::assertStringContainsString( 'type="hidden" name="page"', $this->source );
 	}
 
 	public function testGeneratedValueIsClinicScopedAndPageDoesNotCreateContent(): void {

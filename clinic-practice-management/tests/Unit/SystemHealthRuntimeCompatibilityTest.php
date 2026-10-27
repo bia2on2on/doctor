@@ -262,17 +262,30 @@ final class SystemHealthRuntimeCompatibilityTest extends TestCase
     }
 
     /**
-     * سیاستِ MariaDB در این برش گسترش/اعلام نمی‌شود. مدرکِ MariaDB مدرکِ
-     * «MySQL ≥ 8.0» نیست، پس هرگز PASS تولید نمی‌کند (fail-closed) و در عین
-     * حال ادعایِ نادرستِ «زیرِ کف» (FAIL) هم نمی‌سازد.
+     * CPMS Classic Admin UX (D) — سیاستِ MariaDB اکنون صریح و مبتنی بر شواهدِ
+     * واقعیِ مخزن است (CI: `mariadb:11.4.13`؛ لِینِ هفتگی: MariaDB 10.11.19).
+     *
+     * قراردادِ تغییر‌یافته (پیش از این همیشه UNKNOWN بود):
+     *  - موتور همیشه MariaDB تشخیص داده می‌شود (هرگز MySQL)؛
+     *  - برچسب ردیف صریحاً MariaDB است و نه «(MySQL)»؛
+     *  - جزئیات با شناسهٔ ساختاریِ `mariadb:` شروع می‌شود؛
+     *  - کفِ MySQL 8.0 هرگز مبنای قضاوتِ MariaDB نیست.
      */
-    public function testMariaDbEvidenceNeverClaimsTheMySqlFloor(): void
+    public function testMariaDbEvidenceIsNeverJudgedAgainstTheMySqlFloor(): void
     {
-        foreach (self::mariaDbVersions() as $version) {
-            $row = SystemHealthService::database_server_version_check($version);
+        foreach (self::mariaDbVersions() as $version ) {
+            $row = SystemHealthService::database_server_version_check( $version );
 
-            self::assertNotSame(SystemHealthService::PASS, $row['status'], 'MariaDB مجوزِ PASS روی کفِ MySQL نمی‌گیرد: ' . $version);
-            self::assertSame(SystemHealthService::UNKNOWN, $row['status'], 'سیاستِ MariaDB اعلام نشده ⇒ UNKNOWN: ' . $version);
+            self::assertSame( SystemHealthService::DB_ENGINE_MARIADB, SystemHealthService::database_engine( $version ), 'موتور باید MariaDB تشخیص داده شود: ' . $version );
+            self::assertStringContainsString( 'MariaDB', $row['label'], 'برچسبِ ردیف باید صریحاً MariaDB باشد: ' . $version );
+            self::assertStringNotContainsString( '(MySQL)', $row['label'], 'MariaDB نباید با برچسبِ MySQL بازنمایی شود: ' . $version );
+            self::assertStringStartsWith( 'mariadb:', $row['detail'], 'شناسهٔ ساختاریِ موتور در detail لازم است: ' . $version );
+            self::assertStringNotContainsString( 'کفِ اعلام‌شده: MySQL', $row['detail'], 'کفِ MySQL نباید مبنای قضاوتِ MariaDB باشد: ' . $version );
+            self::assertContains(
+                $row['status'],
+                [ SystemHealthService::PASS, SystemHealthService::WARNING, SystemHealthService::FAIL, SystemHealthService::UNKNOWN ],
+                'وضعیتِ MariaDB باید یکی از وضعیت‌های تعریف‌شده باشد: ' . $version
+            );
         }
     }
 

@@ -25,14 +25,14 @@ final class SecretaryQueuePage
 
     public static function menu(): void
     {
-        add_menu_page(
+        // B-1: زیر «مدیریت مطب» (capability صفحه، نه والد).
+        add_submenu_page(
+            CpmsAdminMenu::parent_slug(),
             'صف امروز',
             'صف امروز',
             RolesAndCapabilities::QUEUE_READ,
             'cpms-queue',
-            [self::class, 'render'],
-            'dashicons-list-view',
-            26
+            [self::class, 'render']
         );
     }
 

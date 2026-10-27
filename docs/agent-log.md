@@ -2227,4 +2227,351 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
 - **Documentation alignment (`tools/disposable-demo-installer/README.md`, `docs/demo-setup-fa.md`):** Corrected documentation drift so both documents state accurately that unscoped (`clinic_id IS NULL`) OTP audit records always fail closed during teardown and clinic-scoped (`clinic_id = <demo>`) OTP audit correlation rejects any 4-digit mobile suffix collision across `cpms_otp_tokens`, `cpms_patients`, or `cpms_sms_messages`.
 - **Stage 15, Stage 17 & Stage 19b browser acceptance fixes (`tools/disposable-demo-installer/tests/browser-acceptance.py`, `tools/disposable-demo-installer/includes/class-cpms-demo-admin.php`):** Selected `[data-role="finance-location"]` in Stage 15 before submitting the multi-location clinic finance invoice form (`state.locations.length > 1` requirement in `staff-finance-board.php`), moved `Admin::render_teardown_result()` outside the `if ( null === $loaded ) ... else ...` block in `Admin::render()` so `data-cpdd-teardown="clean"` is rendered when clean teardown deletes `cpdd_manifest`, and updated `Admin::dispatch()` (`ACTION_DISMISS`) to call `$manifest->clear_tombstone()` (recording the HMAC-sealed, site-fingerprinted `cpdd_had_clean_teardown` marker before removing `cpdd_tombstone` so reprovisioning succeeds when shared-IP rate-limit counters are preserved). Local unit suite passed `PASS=219 FAIL=0`; rebuilt reproducible `dist/cpms-disposable-demo-1.0.0.zip` (`58278` bytes, `15` entries, SHA-256 `dcbfffe2fc2450a69962bfd040603909e9cb63baebb954413a0f4c8816b7e7a9`).
 
+### [2026-10-26] — CPMS Classic admin UX & operations hardening (A/B/C/D/E/G partial)
+
+- **Assignment:** one cohesive production-quality improvement PR for the CPMS Classic admin surface:
+  navigation (A), settings ownership + multi-Clinic SMS context (B), narrow-viewport RTL overflow (C),
+  MySQL/MariaDB health evidence (D), cron/queue heartbeat + repair (E), health presentation (G).
+  Branch `arena/b80ae892-doctor` from live `main` `858c6f79341e12f7a629dae1870c29e9b8055125`.
+  No reset/clean/rebase/force-push/tag/release/merge; PR #274 and the disposable installer untouched.
+- **Root causes established from code, not guessed:**
+  - **E:** `App::recordTick()` wrote the only queue heartbeat into per-Clinic settings, so in a multi-Clinic
+    install (no ambient `ClinicScope`) `App::settings()` threw `CLINIC_SCOPE_REQUIRED`, the heartbeat stayed
+    `0`, and `queueHealth()` therefore reported `stale=true` for a healthy queue. `queueHealth()`'s own
+    docblock already admitted the "0 ⇒ stale" fallback. A missing `cpms_jobs_tick` event, a fresh install
+    and failed Jobs were all collapsed into the same "stopped" verdict, and a healthy traffic-driven
+    WP-Cron was labelled a critical configuration error. There was no repair path for a lost event.
+  - **D:** every MariaDB evidence string mapped to `UNKNOWN` while the row label always said "(MySQL)", so
+    MariaDB was presented as MySQL 8 and the versions this repository actually executes (`11.4.13` in
+    `ci.yml`, `10.11.19` in `mariadb-10.11-compat.yml`) were never reported as compatible. The legacy
+    `5.5.5-` client prefix also made a 10.11 server look like 5.5.
+  - **A:** `cpms-finance-delegation` was registered with `read` but under the `cpms_config`-gated dashboard
+    parent, so a Clinic-local manager who already held the page's authority could neither see nor reach it;
+    and five registered CPMS screens were missing from `CpmsAssets::PAGES` (no scoped CSS/JS at all).
+  - **B:** the SMS settings page sent only the REST nonce; the SMS routes require a trusted
+    `App::scope()->clinicId` plus Clinic-scoped `cpms_sms_config`, so a multi-Clinic install had no explicit
+    Clinic to authorize against.
+- **Implemented:** installation-level heartbeat (`InstallationSettings::OPTION_JOBS_LAST_TICK_AT`,
+  `autoload=no`) with the legacy per-Clinic write retained as a compatibility value and read only as a
+  fallback; pure `QueueDiagnosis` classification (fresh / missing schedule / stale / failed / healthy) with
+  honest traffic-dependency text; `CronScheduleRepair` (idempotent `wp_schedule_event` only — never a Job,
+  never a per-request tick, never a host file) driven by a throttled `admin_init` self-heal and an
+  authorized, nonce-protected `admin_post_cpms_cron_repair`; engine-aware `database_engine()` /
+  `database_version_number()` / `database_server_version_check()`; `SystemHealthService::group_checks()` and
+  a four-group `SystemPage` render; `?Settings` + `App::clinicSettingsOrNull()` so installation-wide health
+  and update checks no longer require an ambient scope (a scope-free `UpdateService` is never memoised);
+  explicit Clinical context on the SMS page plus `X-CPMS-Clinic-Id` on every REST call; `read`-gated
+  registration for finance delegation; four missing slugs in the asset allowlist; scoped `body.cpms-admin`
+  CSS for 320/390px diagnostics, health cells, Clinic selector, cards and form controls.
+- **Tests added:** `tests/Unit/SystemHealthDatabaseEngineTest.php`, `tests/Unit/QueueHealthHeartbeatTest.php`,
+  `tests/Unit/SystemHealthPresentationTest.php`, `tests/Integration/AdminNavigationAccessibilityTest.php`;
+  `SystemHealthRuntimeCompatibilityTest` updated for the new, evidence-based MariaDB contract.
+- **Executed locally:** PHP tokenizer parse of every changed PHP file (`token_get_all(..., TOKEN_PARSE)` via
+  `@php-wasm/node`) — 16 files, 0 failures; a token-level WPCS spacing check restricted to added lines
+  (parenthesis/comma/negation spacing) — 0 residual findings. **NOT executed locally:** PHPUnit,
+  PHPCS/PHPcbf, PHPStan, the WP integration suite, and any real-browser acceptance. This sandbox has no PHP
+  binary, no MySQL/MariaDB, no Composer vendor tree and no Chromium, and neither `phpcs` nor PHPUnit can run
+  inside the available WASM runtime (no `xmlwriter`/`SimpleXML`; PHAR entry reads fail).
+- **Consequently:** C has **no** real 320/390px browser evidence yet, and no unit/integration result is
+  claimed. Exact-head CI is the only verification source for this branch; anything not shown there is
+  reported as not executed.
+- **Deliberately not done (scope control):** no schema migration, no new dependency, no menu-framework
+  rewrite, no change to `/clinic/v1/health`'s public key set, no `wp-config.php`/host-cron edit, no
+  `chmod 777`, no fallback to public `wp-content`, and no private-storage auto-initialisation action (F) in
+  this pass — that surface is untouched rather than half-done.
+
+### [2026-10-26 12:40 UTC] — Follow-up: CI triage to full green (branch `arena/b80ae892-doctor` / Draft PR #275)
+
+- **Starting point:** Draft PR #275 @ `f67d1fa` with two red signals on the exact head: unit failure
+  `SystemHealthDatabaseEngineTest::testTestedMariaDbReleaseIsSupported` (a bare numeric version was
+  expected to prove MariaDB) and `SystemHealthService::database_server_version_check()` returning `fail`
+  for `-6.4` instead of `unknown`; plus 4 `Generic.WhiteSpace.ScopeIndent` findings in `SystemPage.php`
+  and one integration failure/risky test in `AdminNavigationAccessibilityTest`.
+- **Fixes:** MariaDB detection is now evidence-only — the test feeds strings that carry an explicit
+  `MariaDB` marker and additionally asserts that a bare numeric version is MySQL evidence; an unparsable
+  or engine-less version returns the fail-closed `DB_ENGINE_UNKNOWN` verdict before any MySQL floor
+  comparison. WPCS findings were cleared by re-indenting the four template fragments and, earlier, by
+  moving braces onto declaration lines and extracting render helpers in `SystemPage`. The integration
+  failure's root cause was in the test, not the product: `add_submenu_page()` performs its own
+  `current_user_can()` check and silently drops the row when no user is current, so only the parent menu
+  appeared. The test now establishes an administrator context, and its "not behind the config-gated
+  dashboard" case registers that parent explicitly, asserts absence there **and** presence under the
+  read-gated parent so the claim is not vacuous.
+- **Validation:** exact-head CI on `54d2f41` — all **33** checks pass: Tripwire, PHPStan, Release
+  Artifact, Unit Tests 8.1–8.5, Integration (WP 7.1 + MySQL 8), WPCS (changed code), Real WP Acceptance
+  (prefix `clinic_`/`wp_`), Facility matrix (mysql/mariadb), First-practice browser, Responsive smoke,
+  Staging Gate, Closure runtimes. **NOT executed locally** (unchanged sandbox limits): PHPUnit, PHPCS,
+  PHPStan, WP integration and real-browser runs; local gate remains tokenizer parse + added-line spacing.
+- **Delivery and open items:** no merge and no release; PR #275 stays a Draft. The remaining scope is
+  review-driven only — no further code change is pending on this branch.
+
+### [2026-10-26 16:05 UTC] — Remediation pass 2: gate unification, real storage init, bounded cron repair
+
+- **Scope of this pass (B–G of the review):** per-Clinic memoization for the health/update service
+  accessors, installation-level initialization of the private storage roots with a real admin control,
+  one shared MariaDB/MySQL gate instead of two divergent copies, an honest and bounded queue-schedule
+  repair contract, allowlist completion for the two Organization Manager screens, and a re-verification
+  of the locked `/clinic/v1/health` key set.
+- **D — why one gate:** the migration's fail-closed check and the health verdict each carried their own
+  regular expression and judged the same server differently; an operator could see "needs attention" for
+  a version activation would reject, or the reverse. `Infrastructure\Db\DatabaseCompatibilityGate` now
+  owns detection (`VERSION()`, then `@@version_comment`), the accepted set (`MySQL 8.x`, `MariaDB
+  10.11.x`, `MariaDB 11.4.13`) and the boundary predicate; migration `0027` and `SystemHealthService`
+  both call it, and the migration's local regex is deleted. **No version was added or widened** — 11.5/11.8
+  and 10.6 remain rejected, because there is no runtime evidence for them.
+- **D — health verdict:** gate-accepted ⇒ `pass` (`mariadb:tested` only for the pinned 11.4.13, otherwise
+  `mariadb:compatibility_boundary`); parseable-but-rejected ⇒ `fail` `mariadb:unverified` (copy names the
+  gate and says «آزموده نشده»); unreadable ⇒ `fail` `mariadb:unknown_version`; below the series floor ⇒
+  `fail` `mariadb:below_boundary`. The MariaDB exemption in `classifyHost()` was removed: unverified
+  evidence now produces `issues` + `HOST_UNSUPPORTED`, and `group_checks()` keeps a strict 1:1 mapping
+  (`fail|unknown` ⇒ blockers, `not_configured` ⇒ optional) so a required row cannot be re-labelled as
+  optional configuration.
+- **C — storage initialization:** `PrivateStorageInitializer` is installation-level (no ClinicScope) and
+  legacy-independent. It creates `0750` roots, writes `.htaccess`/`web.config`/`index.php`/
+  `README-SECURITY.txt`, **re-reads** every guard after writing, never overwrites an existing guard, never
+  deletes or moves anything, never falls back to a public path and never runs `chmod 777`. Paths inside the
+  document root are rejected on `realpath` (so a symlink into the webroot is rejected too). State is one
+  `get_option` per request (`cpms_private_storage_state`, `guard_version` 1, autoload off); a failure is
+  **not** cached, so the next request retries. `App::activate()` forces initialization; `ensureMigrated()`
+  takes the cheap path; `admin_post_cpms_storage_init` (capability `cpms_config` + nonce
+  `cpms_storage_init`) exposes the same call, which is the control the health guide already referenced.
+  Failure logs `CPMS_PRIVATE_STORAGE_INIT_FAILED`.
+- **E — cron repair contract:** `CronScheduleRepair::repair()` now returns `scheduled|present|failed|
+  unsupported`, and `self_heal_in_admin_result()` sets the throttle **only** for the two good outcomes.
+  Previously the marker was written before the attempt (a failure was suppressed for an hour) and the log
+  line was emitted only on the success path. Auto-repair stays on `admin_init`.
+  **Correction (pass 5):** the first version of this mission also removed the idempotent registration from
+  `App::boot()`. That broke a merged main contract
+  (`JobFastWakeContractRedTest::testRecurringMinuteTickRemainsRegisteredAndUnchanged` errors with
+  "Attempt to read property \"schedule\" on bool"), so registration is back in `boot()` — unchanged from
+  main — and only the *write* is conditional: `ensure_scheduled()` reads the autoloaded `cron` option and
+  schedules only when the event is absent, so a healthy anonymous request performs no cron write. The
+  branch's own contract test was rewritten to pin exactly that (single registration path, no direct
+  `wp_schedule_event()` in `boot()`).
+- **B — per-Clinic accessors:** `App::system_health_service()` and `App::updateService()` were single
+  process-wide instances, so a request that legitimately switched Clinic scope reused the first Clinic's
+  `Settings` object (license gateway, storage paths, health rows). Both are now keyed
+  (`installation` / `clinic:{id}`), matching the scope-free path, which was already un-memoized.
+- **F — assets:** `cpms-custom-roles`, `cpms-finance-delegation`, `cpms-facility-setup` and
+  `cpms-shortcodes` were registered management screens with no scoped assets and are now in
+  `CpmsAssets::PAGES`. The two organization screens were **reverted** out of the allowlist in pass 5: the
+  merged main contract `IranGeographyAddressFormsTest` defines
+  `cpms-organization-managers`/`cpms-organization-manager-bootstrap` as pages *without* geography/admin-JS
+  controls and asserts they are not recognized by `CpmsAssets`; their small-width layout must be fixed in
+  their own markup instead of by widening the allowlist.
+- **Tests written/updated this pass:** `DatabaseCompatibilityGateParityTest` (bidirectional parity matrix
+  plus a source assertion that the migration delegates and carries no local regex),
+  `ServiceScopeMemoizationTest` (A→B→A identity, and a `license.gateway` row that differs per Clinic),
+  `PrivateStorageInitializationTest` (fresh install, idempotency with existing clinical bytes preserved,
+  inside-webroot rejection, symlink rejection, unwritable parent, failure not cached, installation-level
+  without scope, required-row-not-optional), `CronScheduleRepairTest` (schedule/present/unsupported, the
+  throttle only on good outcomes, no repair on public requests, and a source-level contract that the
+  recurring tick is registered through exactly one path and that `boot()` never calls
+  `wp_schedule_event()` directly), and the storage/MariaDB render and `guide()` assertions in
+  `SystemAdminUxTest` (including that the handler is registered only as `admin_post_`, and that a missing
+  or capability-less request is rejected by `wp_die` with no row created).
+- **G re-verified:** `/clinic/v1/health` was not touched in this pass; its public key set remains exactly
+  `jobs, ok, plugin, schema, time_utc, version` as asserted by `Phase18Slice1RuntimeCompatibilityTest`.
+- **Docs:** `docs/settings-reference.md` now states the outside-document-root default for
+  `files.storage_path`, the rejection rule, the guard files, the installation-level initialization and the
+  blocker (not optional) health semantics. `CHANGELOG.md` has a "remediation pass 2" section.
+- **Validation honesty:** every touched PHP file was parsed with the local tokenizer gate
+  (`node /tmp/phpwasm/lint.mjs`, 0 failures) and the added-line spacing gate. **PHPUnit, PHPCS, PHPStan,
+  WP integration and real-browser runs were NOT executed locally** — no PHP/Composer/MySQL/Chromium in
+  this sandbox — so CI on this head is the first real execution of the new tests.
+- **Deliberately not done:** no schema migration, no dependency, no change to the accepted database
+  versions, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no public-path fallback, and no
+  merge or release (PR #275 stays Draft).
+
+### Pass 5 — all required checks green on the branch head
+
+- **The gate that kept failing was a toolchain, not a style, problem.** The `WPCS (changed code)` step
+  resolved PHP_CodeSniffer freshly on every run. The same baseline (`2263ed67…`), the same 170-file scope
+  and the same 55,570 added lines produced no finding at 12:26Z and 168 findings at 13:41Z; the sniff
+  labels in the findings are 4.x-only. The step now pins `phpcsstandards/php_codesniffer:^3.13` next to
+  `wp-coding-standards/wpcs:^3.1` (major pinned, patch free, no sniff disabled, no path excluded, the
+  added-line filter untouched, fail-closed preserved). Recorded as drift-register §۸-۱-۲; the 4.x
+  migration is its own future PR.
+- **Counts after the pin:** 168 → 24 (pin applied) → 1 (own-code style) → 0. The single remaining finding
+  in the middle step was a pre-existing main line whose brace moved into the diff, so it was fixed rather
+  than excluded, and the accessor it belongs to was renamed to `App::system_health_service()` with every
+  call site updated (its body is branch-authored, so the declaration line is an added line).
+- **Two main contracts were broken and restored, not argued with:** the recurring minute tick is back in
+  `boot()` and the two organization screens are back out of the `CpmsAssets` allowlist. Both are in
+  drift-register §۱۱ with the exact failing assertion, plus the tests that now pin the surviving
+  guarantee.
+- **Exact-head evidence:** PR #275 head `44d96cf` — 33/33 checks pass, including `WPCS (changed code)`,
+  `Unit Tests (PHP 8.1–8.5)`, `Integration (WP 7.1 + MySQL 8)`, `Static Analysis (PHPStan)`,
+  `Real WP Acceptance`, `First-practice browser (mariadb|mysql)`, `Responsive smoke (Chromium ×4)`,
+  `Staging Gate (fresh install → restore drill)`, `Upgrade path`, `Closure — PHP 8.1/8.3/8.4` and
+  `Tenant Tripwire`. Local gates on the same head: tokenizer parse gate 0 failures, workflow contract
+  suite 19/19.
+- **Unchanged boundaries:** no migration, no dependency change beyond the phpcs major pin, no accepted
+  database version added or widened, no `wp-config.php`/host-cron/hosting edit, no `chmod 777`, no
+  public-path fallback, `/clinic/v1/health` key set untouched, PR #275 stays **Draft** — merging is the
+  owner's call.
+
+### Pass 6 — main moved (PR #274) and its new lane gate had to be scoped
+
+- **Merge:** `origin/main` (`4830b3fb`, the disposable-demo-installer work) was merged into this branch. The
+  only conflict was append-only in `docs/agent-log.md`; both dated sections were kept, ordered by date. The
+  PR is `MERGEABLE` again (it had gone `CONFLICTING` while main advanced).
+- **New red, not caused by product code:** main's `.github/workflows/disposable-demo-installer.yml` runs on
+  **every** PR and its step `Production subtree unchanged by this lane` fails whenever
+  `clinic-practice-management/**` differs from the PR base — i.e. for any PR whose purpose is a production
+  change. It was green on main only because that PR did not touch the production subtree.
+- **Fix (drift-register §۱۱-C):** the lane is path-scoped to its own files, so it is no longer a global
+  gate; and for a *mixed* PR (lane + production, which is what this one is) the guard reports
+  `NOT-APPLICABLE` and the acceptance run continues against **this PR's** production code — the combination
+  that would actually ship. For a companion-only PR the guard is unchanged and still fail-closed.
+  `test_workflow_contracts.py` gained one test pinning the scope (20 tests, OK).
+
+### Pass 7 — the disposable lane's clean-site invariant, and a WPCS warning
+
+- **Diagnosis (from the lane's own PR evidence, not guesswork):** the real-Chromium acceptance failed at
+  `admin preflight status is PASS` with *«cpms_operational_logs شامل ۱ رخداد عملیاتی غیرپیش‌فرض است»* — a
+  pristine site must have no non-baseline operational log rows.
+- **Root cause:** `admin_init` fires **before** `App::activate()` in the plugin-activation request, so the
+  auto self-heal scheduled the minute event first and logged `CPMS_CRON_SCHEDULE_REPAIRED`. Every fresh
+  install therefore produced one "repair" row for an event that had simply not been created yet.
+- **Two fixes:** the auto path now logs **failures only** (`CPMS_CRON_SCHEDULE_REPAIR_FAILED`); the success
+  line stays only on the explicit, user-initiated `admin_post_cpms_cron_repair` path. And the recurrence is
+  registered before activation schedules it (`register_cron_schedules()` from both `boot()` and
+  `activate()`), so `wp_schedule_event(..., 'cpms_minute', ...)` no longer fails against an unknown
+  recurrence.
+- **Lane provisioning:** the workflow now creates `CPMS_PRIVATE_STORAGE_DIR` outside the document root,
+  writable by the web server (`www-data:runner 0775`) — the same one-time action a real host performs. The
+  earlier `--raw` flag wrote the string unquoted (a PHP syntax error); it is now `--type=constant`.
+- **WPCS:** the single remaining finding on the new code is `WordPress.WP.CronInterval.CronSchedulesInterval`
+  (60 s cadence). It is inherited behaviour (ADR-0016) that only became an "added line" because the
+  registration moved out of `boot()`'s inline filter, so the line carries a **narrow** `phpcs:ignore` for
+  that one sniff with its reason — no sniff, path or severity was relaxed.
+
+### Pass 8 — the two open reds on #275: WPCS annotation scope, and a dirty storage root
+
+- **FAILURE 1 (WPCS), root cause proven from the rule implementations, not guessed.** The previous exception was
+  placed above the `'interval' => 60` array entry, but `WordPress.WP.CronInterval.CronSchedulesInterval`
+  reports on the **`'cron_schedules'` string token**, i.e. the `add_filter( 'cron_schedules', … )` line — so an
+  annotation 20 lines away suppresses nothing. It now sits directly above that one statement, and the
+  redundant annotation was removed. Verified against the shipped sources: the sniff calls
+  `addWarning( …, $stackPtr, 'CronSchedulesInterval' )` with `$stackPtr` at the `cron_schedules` string
+  (`WordPress/Sniffs/WP/CronIntervalSniff.php`), and `PHP_CodeSniffer` maps a standalone `// phpcs:ignore
+  <Code>` line onto `ignoredLines[commentLine + 1]` (`src/Tokenizers/Tokenizer.php`) which `File::addMessage()`
+  consults for the full code `WordPress.WP.CronInterval.CronSchedulesInterval`. Nothing is disabled globally:
+  the rule stays active everywhere else, and the minute cadence is inherited behaviour (ADR-0016).
+- **FAILURE 2 (real Chromium), what the evidence actually says.** The failed step's own PR evidence names the
+  exact assertion: stage 3 `admin preflight status is PASS`, check *«دادهٔ بالینی/مالی/نوبت خالی و Bootstrap
+  دستنخورده»*, reason *«cpms_operational_logs شامل ۱ رخداد عملیاتی غیرپیشفرض است»* — the browser stage died
+  before provisioning anything, on a site that must be pristine. The sanitized report deliberately prints only
+  the verdict, not the offending row, and job logs/artifacts are not reachable from the authoring sandbox
+  (blob download returns EOF), so the row's identity is **not yet observed**.
+- **Most probable, code-level mechanism (inference, stated as such):** the browser stage activates CPMS through
+  wp-admin as `www-data`, but `/home/runner/cpdd-private` was created by the earlier CLI stage where activation
+  (as the runner user) already wrote `files`/`backups` at `0750`. A web-server user cannot write those, so
+  `PrivateStorageInitializer::initialize()` returns `ok=false` and `App::activate()` logs
+  `CPMS_PRIVATE_STORAGE_INIT_FAILED` (warning) — exactly one non-baseline row.
+- **Changes (smallest safe set):** the browser stage now starts from a fresh, web-server-owned private root
+  (`rm -rf` + `chown -R www-data:runner`, `0775`) — the same one-time action a real host performs, and it cannot
+  mask a product defect because the plugin still has to create its own roots and guards. A **failure-only**
+  diagnostic step now names the offending rows (`OPLOG_NON_DEFAULT=…` with level/message/context/timestamp,
+  total count, private-storage state and root) and publishes them into the sanitized PR comment, so a repeat
+  failure is actionable in one run instead of a guess.
+- **Not touched:** no file under `tools/disposable-demo-installer/**`; the acceptance script, the preflight and
+  its baseline list are unchanged, so the lane stays exactly as strict as its author made it.
+
+### [2026-10-26 UTC] — Pass 9: منوی واحد (B-1)، ایزولاسیونِ companion (B-2)، پذیرشِ 320/390 (B-3)، چهار قاعدهٔ پیش از کدنویسی
+
+- **مبنای شروع:** شاخهٔ `arena/b80ae892-doctor` روی `dadeb4a` (Draft PR #275)؛ درخت کار پاک بود.
+- **B-1 (منوی واحد):** `CpmsAdminMenu` به رَجیستریِ واحدِ صفحات (بخش/برچسب/capability/نمایش) مجهز شد؛
+  تنها Top-Level «مدیریت مطب» است و capability آن `read` (نه `cpms_config`) تا مدیرِ Clinic-scoped هم آن را
+  ببیند؛ `hide_when_unreachable()` منو را از کاربرِ بی‌دسترسی پنهان می‌کند. صفحاتی که قبلاً Top-Level بودند
+  (`cpms-doctor`, `cpms-queue`, `cpms-finance`, `cpms-patients`, `cpms-organizations`, `cpms-custom-roles`) و
+  صفحاتی که در «تنظیمات»/«ابزارها» بودند (bootstrap، shortcodes) همه زیرِ همان والد ثبت می‌شوند؛ slug،
+  callback، nonce و capability هر صفحه دست‌نخورده ماند. زیرمنو بخش‌محور و کوتاه است (۱۴ آیتم)؛ صفحاتِ جزئی
+  ثبت‌شده‌اند اما با `hide_from_submenu()` از فهرستِ تخت بیرون می‌مانند و از «ناوبری بخش‌ها» (هوکِ
+  `in_admin_header`) و URL مستقیم در دسترس‌اند. `redirect_legacy()` برای مسیرهای قدیمیِ Tools/Settings حفظ شد.
+- **تصمیمِ قراردادی (صریح، نه بی‌صدا):** دو assertionِ «Top-Level بودن» در `PatientAdminTest` و
+  `AdminNavigationAccessibilityTest` (و بازرسیِ `$GLOBALS['menu']` در `CustomRoleLifecycleTest`) با الزامِ
+  «دقیقاً یک منوی CPMS» ناسازگار بود. آن‌ها بازنویسی شدند، **نه حذف**: نیتِ امنیتی‌شان (capability خودِ صفحه
+  حفظ شود؛ والد read-gated و نه CONFIG-gated باشد؛ کاربرِ Clinic-scoped به صفحه برسد) با assertionهای
+  دقیق‌ترِ جدید تثبیت شد. تست جدیدِ `AdminUnifiedMenuTest` رَجیستری↔ثبتِ واقعی، یکتاییِ Top-Level،
+  نبودِ ثبت در Tools/Settings، و «capability والد هرگز جای فرزند نمی‌نشیند» را می‌سنجد.
+- **B-2 (ایزولاسیون):** گاردِ inline که تغییرِ مختلط را NOT-APPLICABLE (exit 0) می‌کرد حذف و با اسکریپتِ
+  اجراپذیرِ `.github/scripts/companion-isolation.py` جایگزین شد: companion-only → PASS، production-only →
+  PASS، workflow-only → PASS، **mixed → exit 1**، ورودیِ ناخواندنی → exit 2. مسیرِ اسکریپت به `paths` هر دو
+  رویداد اضافه شد و خودِ lane اکنون `test_workflow_contracts.py` را اجرا می‌کند تا ویرایشِ workflow-only
+  نتواند کنترل‌ها را خاموش کند. تست‌های اجراییِ جدید (۶ مورد) حالت‌های بالا را می‌سنجند؛ نتیجهٔ محلی:
+  `Ran 30 tests … OK`.
+- **B-3 (320/390):** علتِ ریشه‌ایِ overflow: این دو صفحه بیرونِ allowlistِ `CpmsAssets` هستند (قراردادِ
+  `IranGeographyAddressFormsTest`) پس `cpms-admin.css` را نمی‌گرفتند و `select`های وردپرس (`regular-text` ≈
+  25em) و `form-table` با ستونِ `th` ثابت از viewport پهن‌تر می‌شدند. رفع با allowlistِ دومِ کوچک
+  (`OrgManagerAssets`) + `assets/css/cpms-org-manager.css` (اسکوپ `body.cpms-org-manager`، `@media
+  (max-width: 782px)`، کنترل‌های تمام‌عرض، جدولِ قابلِ‌اسکرول، هدفِ لمسی ۳۲px، `focus-visible`، بدونِ
+  `overflow: hidden`) — allowlistِ عمومی دست‌نخورده ماند. پذیرشِ واقعی: `bin/pilot-admin-narrow.py`
+  (Chromium، 320×800 و 390×844، ده اسلاگِ نام‌برده، RTL/زبان، overflow، ناوبریِ بخش‌ها، تاگلِ سایدبار،
+  دسترسی و فعال‌سازی با کیبورد، اندازiِ هدفِ لمسی، و ردِ URLِ مستقیم برای نقشِ نامجاز) به job
+  `responsive` اضافه شد.
+- **چهار قاعده:** `docs/engineering/pre-coding-rules.md` بر پایهٔ `README.md`/`CLAUDE.md` مخزنِ
+  `multica-ai/andrej-karpathy-skills` (MIT) **پارافریز** شد، با ثبتِ منبع و این تصریح که هیچ تأییدِ صریحی از
+  Andrej Karpathy دیده نشده و اسنادِ حاکمِ همین مخزن (AGENTS.md، امنیت/مجوز، حکمرانیِ Git، ADRها) بر آن
+  مقدم‌اند. هیچ اسکریپت/بسته‌ای از آن مخزن نصب یا اجرا نشد و وابستگی‌ای اضافه نشد.
+- **خارج از دامنه (دست‌نخورده):** `tools/disposable-demo-installer/**` (۰ فایل تغییر کرد).
+- **اعتبارسنجی:** `python3 .github/workflows/test_workflow_contracts.py` → ۳۰ تست OK؛ `node /tmp/wps/lint.mjs`
+  (php-wasm، PHP 8.4.1، `token_get_all(TOKEN_PARSE)`) روی همهٔ فایل‌های تغییرکردهٔ PHP → ۰ خطا؛
+  `py_compile bin/pilot-admin-narrow.py` → OK؛ `yaml.safe_load` روی هر دو workflow → OK. اجرای کاملِ
+  PHPUnit/PHPStan/WPCS و پذیرشِ Chromium **فقط در GitHub Actions** ممکن است (این sandbox نه PHP/Composer/
+  MySQL دارد نه Chromium)؛ نتیجهٔ واقعیِ runها در گزارشِ پایانی ثبت می‌شود.
+
+### Pass 9 — اصلاحِ سه ریشهٔ شکستِ CI (head بعدی)
+
+- **WPCS (۱۳ نقص روی خطوطِ افزوده):** ریشهٔ واقعی از گزارشِ ماشینیِ همان run استخراج شد، نه حدس:
+  `Generic.WhiteSpace.ArbitraryParenthesesSpacing` در `CpmsAdminMenu.php` (پرانتزهای `( $x ?? '' )`،
+  `( $is_current ? … : … )`) و یک `Generic.Formatting.MultipleStatementAlignment`.
+  - **حذفِ نیاز به ignore:** پنهان‌سازیِ زیرمنو دیگر `$GLOBALS['submenu']` را مستقیم نمی‌نویسد؛ از API خودِ
+    هسته `remove_submenu_page()` استفاده می‌شود (ردیف پیش از حذف در `hidden_submenu_rows()` نگه داشته
+    می‌شود تا «ثبت‌شده اما نامرئی» قابلِ بازرسی بماند).
+  - تنها یک نوشتنِ `$GLOBALS['submenu']` باقی می‌ماند (مرتب‌سازیِ نمایشیِ `order_submenu()`) و آن **یک**
+    ignoreِ درون‌خطیِ مستند دارد؛ هیچ `<exclude>`/`phpcs:disable`/سرکوبِ sniff اضافه نشد.
+- **شکست‌های Integration (۱۰ failure + ۳ error) و ریشه‌هایشان:**
+  1. `OrgManagerResponsiveAssetsTest` متدِ `body_class()` را صدا می‌زد؛ APIِ واقعی snake_case است → تست
+     با APIِ واقعی هم‌راست شد (هیچ assertionی حذف نشد).
+  2. hooknameِ ساختگیِ `cpms-dashboard_page_<slug>` در `AdminUnifiedMenuTest`/`AdminNavigationAccessibilityTest`
+     غلط بود؛ WordPress برای صفحهٔ هم‌اسلاگ با والد `toplevel_page_<slug>` می‌سازد → تست‌ها از
+     `get_plugin_page_hookname()` خودِ هسته استفاده می‌کنند (منبعِ حقیقت، نه رشتهٔ دستی).
+  3. ثبتِ منو در WordPress برای کاربری که capability آیتم را ندارد ردیفی نمی‌سازد؛ تست‌ها با Administrator
+     خالی اجرا می‌شدند (بدون `cpms_patient_read` و…) → کاربرِ «همهٔ capabilityهای رَجیستری» ساخته می‌شود.
+  4. `WooCommerceAdminAccess::is_registered_page()` صفحاتِ «ثبت‌شده اما پنهان» را نمی‌دید (مثلاً
+     `cpms-handwriting`) → اسکنِ ردیف‌های `hidden_submenu_rows()` اضافه شد؛ **هیچ capability‌ای گسترش نیافت**
+     (همان capability صفحه + اثباتِ ثبت در همین ریکوئست شرط است).
+  5. `CustomRoleLifecycleTest` ردیفِ ظرف را با ایندکس `$GLOBALS['menu'][0]` می‌گرفت → با جست‌وجوی slug.
+- **تصمیمِ صریح (بدونِ گسترشِ مجوز):** allowlistِ همرزیستیِ WooCommerce **گسترش داده نشد**. آن رَجیستری
+  عمداً فقط صفحاتی را می‌پذیرد که capabilityشان یک capability اختصاصیِ CPMS یا `manage_options` است؛
+  افزودنِ صفحاتِ `read`-gated قراردادِ «هیچ‌گاه بر capabilityهای عمومی تکیه نکن» را می‌شکست (و
+  `tests/Unit/WooCommerceAdminAccessTest::testRegistryIsClosedToCpmsOwnedPagesOnly` آن را رد می‌کند).
+  به‌جای گسترش، assertionِ driftِ دوطرفه به رَجیستریِ واقعیِ منو (`CpmsAdminMenu::PAGES`) گره خورد.
+- **آلودگیِ بین‌تستی:** `reset_hidden_rows()` به helperِ `resetMenuGlobals()` اضافه شد.
+
+### Pass 9 — ریشه‌یابیِ شکست‌های Runtime (Real WP Acceptance + Disposable Site)
+
+- **B-1 / redirect قدیمی (باگِ واقعی، کشف‌شده از شواهدِ Runtime):** `redirect_legacy()` کوئریِ
+  باقی‌مانده را دور می‌ریخت. صفحهٔ «کدهای کوتاه» یک فرمِ `GET` دارد که `clinic_id` را در URL می‌آورد؛
+  پس از redirect به `admin.php?page=cpms-shortcodes` انتخاب پاک می‌شد و دو checkِ
+  `admin.cpms-shortcodes.generated_registered_tag` و `admin.cpms-shortcodes.copy_fallback_available`
+  قرمز می‌شدند (هر دو prefix). رفع: انتقالِ شفافِ همان کوئری با `add_query_arg()` (کلیدها/مقادیر
+  sanitize می‌شوند، `page` حذف می‌شود) + تغییرِ `action` فرمِ همان صفحه به URLِ canonical.
+  تستِ رگرسیون: `PublicShortcodeAdminPageTest::testFormPostsBackToTheCanonicalPageAndKeepsTheClinicSelector`
+  و `AdminUnifiedMenuTest::testLegacyRedirectKeepsTheRemainingQueryArguments`.
+- **پنهان‌سازیِ زیرمنو باید پس از بررسیِ دسترسیِ هسته باشد:** حذفِ ردیف در `admin_menu` باعث می‌شد
+  `user_can_access_admin_page()` والد را پیدا نکند و URL مستقیم `403` شود (شاهد: First-practice browser،
+  `admin.cpms-first-practice-setup.http200`). اکنون ردیف در لحظهٔ ثبت فقط **ضبط** می‌شود و حذفِ نمایشی
+  روی `admin_head` با `remove_submenu_page()` انجام می‌شود.
+- **شواهدِ گم‌شده را قابلِ‌خواندن کردیم (بدون تغییرِ معیار):** خطِ verdictِ هم‌زیستی اکنون نامِ checkهای
+  قرمزِ Stage B را هم می‌آورد؛ گامِ پذیرشِ 320/390 لاگِ خودش را در مسیرِ قابلِ‌انتشار می‌نویسد و همان
+  summary در کامنتِ شواهدِ Responsive چاپ می‌شود. با همین‌ها علتِ قرمزیِ laneهای باقی‌مانده مشخص شد:
+  `existing_harness::browser_acceptance` + `existing_acceptance_complete` (که خودشان از همین دو
+  checkِ لوکال مشتق می‌شوند) — و در موردِ Disposable Site، امتناعِ زمان‌محورِ fixture
+  (`SLOT_TIME: provision at least 50 minutes before Tehran midnight`)، نه نقصِ محصول.
+- **اصلاحِ معیارِ تستِ خودمان (نه محصول):** گیتِ `lang-fa` در `pilot-admin-narrow.py` در واقع locale
+  نصب (en_US) را می‌سنجید؛ جای آن، RTL بودنِ سند و حضورِ متنِ فارسیِ رابط سنجیده می‌شود. تاگلِ سایدبار
+  نیز به‌جای خواندنِ فوریِ ۱۲۰ms با انتظارِ کران‌دار + تاییدِ «منو قابلِ مشاهده است» سنجیده می‌شود.
 

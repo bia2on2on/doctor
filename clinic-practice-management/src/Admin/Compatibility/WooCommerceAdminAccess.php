@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Admin\Compatibility;
 
+use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Auth\RolesAndCapabilities;
 
 /**
@@ -202,6 +203,16 @@ final class WooCommerceAdminAccess {
                 if ( self::entry_matches( $item, $slug, $capability ) ) {
                     return true;
                 }
+            }
+        }
+
+        // B-1: detail pages stay registered beneath «مدیریت مطب» but are hidden from
+        // the visible submenu array. Registration is not visibility: the row captured
+        // at registration time proves this request really registered the page, and the
+        // capability stored on that row must still match. Nothing is widened here.
+        foreach ( CpmsAdminMenu::hidden_submenu_rows() as $item ) {
+            if ( self::entry_matches( $item, $slug, $capability ) ) {
+                return true;
             }
         }
 

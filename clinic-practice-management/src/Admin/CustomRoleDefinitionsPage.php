@@ -54,17 +54,19 @@ final class CustomRoleDefinitionsPage {
 	}
 
 	public static function menu(): void {
-		// A standalone read-gated entry avoids inheriting the plugin dashboard's
-		// WP-global CONFIG gate. The page/service still authorize every Clinic.
-		add_menu_page(
+		// B-1: منوی واحد. این صفحه با `read` ثبت می‌شود تا مدیرِ Clinic-scoped
+		// (بدونِ cpms_config) به آن برسد؛ اما دیگر یک Top-Level مستقل نمی‌سازد.
+		// مجوز واقعی همان `render()` + سرویس‌های Clinic-scoped است.
+		add_submenu_page(
+			CpmsAdminMenu::parent_slug(),
 			__( 'نقش‌های سفارشی', 'cpms' ),
 			__( 'نقش‌های سفارشی', 'cpms' ),
 			'read',
 			self::PAGE_SLUG,
-			[ self::class, 'render' ],
-			'dashicons-groups',
-			58
+			[ self::class, 'render' ]
 		);
+		// صفحهٔ مدیریتیِ پیشرفته: از ناوبری بخش‌ها و URL مستقیم در دسترس است.
+		CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
 	}
 
 	public static function render(): void {

@@ -59,13 +59,14 @@ final class FacilitySetupPage {
 
     public static function menu(): void {
         add_submenu_page(
-            OrganizationManagerPage::PAGE,
+            CpmsAdminMenu::parent_slug(),
             'راه‌اندازی مرکز چنددرمانگاهی',
             'راه‌اندازی مرکز چنددرمانگاهی',
             'read',
             self::PAGE,
             [ self::class, 'render' ]
         );
+        CpmsAdminMenu::hide_from_submenu( self::PAGE );
     }
 
     public static function service(): FacilitySetupService {

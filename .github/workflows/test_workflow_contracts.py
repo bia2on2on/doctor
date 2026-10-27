@@ -1,11 +1,12 @@
 """Static and executable contracts for acceptance workflow routing (stdlib only)."""
-from pathlib import Path
 import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -43,6 +44,152 @@ class WorkflowContractTests(unittest.TestCase):
                 self.assertIn("cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}", text)
         self.assertIn("name: Closure Gate (GO-LIVE evidence closure)", workflow("closure-gate.yml"))
         self.assertIn("name: Pilot/Staging Readiness Gate", workflow("pilot-gate.yml"))
+
+    def test_disposable_demo_lane_is_path_scoped_to_its_own_files(self):
+        """The lane must not act as a global gate: it runs only for changes to
+        its own files, and its isolation decision is made by an executable,
+        unit-tested script rather than an inline conditional."""
+        text = workflow("disposable-demo-installer.yml")
+        events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+
+        self.assertEqual(events.count("    paths:\n"), 2, events)
+        for path in (
+            "'.github/workflows/disposable-demo-installer.yml'",
+            "'.github/scripts/companion-isolation.py'",
+            "'tools/disposable-demo-installer/**'",
+            "'bin/build-demo-installer.sh'",
+            "'.github/actions/playwright-browsers/**'",
+            "'docs/demo-setup-fa.md'",
+        ):
+            self.assertEqual(events.count(path), 2, path)
+        self.assertIn("workflow_dispatch:", events)
+
+        # The old inline guard let mixed changes through as NOT-APPLICABLE.
+        self.assertNotIn("NOT-APPLICABLE", text)
+        self.assertIn("Companion/production isolation (fail closed on mixed changes)", text)
+        self.assertIn(
+            ".github/scripts/companion-isolation.py", text,
+            "the isolation decision must come from the unit-tested script",
+        )
+
+    def test_admin_narrow_acceptance_is_real_chromium_at_320_and_390(self):
+        """B-3 must be proven in a real browser at 320px and 390px for the ten
+        named slugs — not asserted from markup."""
+        text = workflow("pilot-gate.yml")
+        self.assertIn("Admin narrow RTL acceptance (Chromium — 320/390 × 10 slugs)", text)
+        responsive_job = text.split("  responsive:\n", 1)[1].split("\n  # ====", 1)[0]
+        self.assertIn("python3 bin/pilot-admin-narrow.py | tee /tmp/admin-narrow.log", responsive_job)
+        self.assertIn('test "${PIPESTATUS[0]}" -eq 0', responsive_job)
+
+        script = (ROOT / "clinic-practice-management" / "bin" / "pilot-admin-narrow.py").read_text(encoding="utf-8")
+        # Two narrow widths, exactly.
+        self.assertIn('("narrow-320", 320, 800)', script)
+        self.assertIn('("narrow-390", 390, 844)', script)
+        for slug in (
+            "cpms-dashboard",
+            "cpms-settings",
+            "cpms-system",
+            "cpms-sms",
+            "cpms-custom-roles",
+            "cpms-finance-delegation",
+            "cpms-organizations",
+            "cpms-organization-managers",
+            "cpms-organization-manager-bootstrap",
+            "cpms-shortcodes",
+        ):
+            self.assertIn(f'("{slug}"', script, slug)
+        # Persian RTL, overflow, keyboard and role-denial assertions must exist.
+        for needle in ('rtl', "scrollWidth", "keyboard-reaches-section-nav", "ROLE_MATRIX"):
+            self.assertIn(needle, script)
+        self.assertIn("FAIL admin narrow RTL acceptance", script)
+
+    def test_org_manager_narrow_screen_stylesheet_keeps_the_assets_contract(self):
+        """The two organization-manager pages must be fixed with their own
+        scoped stylesheet, not by widening CpmsAssets::PAGES."""
+        assets = (ROOT / "clinic-practice-management" / "src" / "Admin" / "CpmsAssets.php").read_text(encoding="utf-8")
+        allowlist = assets.split("private const PAGES = [", 1)[1].split("];", 1)[0]
+        self.assertNotIn("'cpms-organization-managers'", allowlist)
+        self.assertNotIn("'cpms-organization-manager-bootstrap'", allowlist)
+
+        css = (ROOT / "clinic-practice-management" / "assets" / "css" / "cpms-org-manager.css").read_text(encoding="utf-8")
+        self.assertIn("body.cpms-org-manager", css)
+        self.assertIn("@media (max-width: 782px)", css)
+        self.assertIn("width: 100%", css)
+        self.assertIn("overflow-x: auto", css)
+        self.assertNotIn("overflow: hidden", css)
+
+    def test_lane_runs_its_own_contract_and_security_suite(self):
+        """A workflow-only edit must not be able to disable the lane's controls."""
+        text = workflow("disposable-demo-installer.yml")
+        static_job = text.split("  static:\n", 1)[1].split("\n  real-wordpress:", 1)[0]
+        self.assertIn(
+            "python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v",
+            static_job,
+        )
+
+
+class CompanionIsolationTests(unittest.TestCase):
+    """Executable tests for the companion/production isolation rule."""
+
+    SCRIPT = ROOT / ".github" / "scripts" / "companion-isolation.py"
+
+    def _run(self, paths):
+        import subprocess
+        import tempfile
+
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as handle:
+            handle.write("\n".join(paths) + "\n")
+            listing = handle.name
+        try:
+            return subprocess.run(
+                [sys.executable, str(self.SCRIPT), "--changed-files", listing],
+                capture_output=True, text=True, check=False,
+            )
+        finally:
+            os.unlink(listing)
+
+    def test_production_only_change_is_allowed(self):
+        result = self._run(["clinic-practice-management/src/Admin/SystemPage.php"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("companion-isolation: PASS", result.stdout)
+
+    def test_companion_only_change_is_allowed_when_production_is_untouched(self):
+        result = self._run(["tools/disposable-demo-installer/uninstall.php"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("companion-isolation: PASS", result.stdout)
+
+    def test_mixed_companion_and_production_change_fails_closed(self):
+        result = self._run([
+            "tools/disposable-demo-installer/uninstall.php",
+            "clinic-practice-management/src/Admin/SystemPage.php",
+        ])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("companion-isolation: FAIL", result.stdout)
+        self.assertIn("mixed change", result.stdout)
+
+    def test_build_script_counts_as_companion(self):
+        result = self._run([
+            "bin/build-demo-installer.sh",
+            "clinic-practice-management/src/Bootstrap/App.php",
+        ])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_workflow_only_change_is_allowed(self):
+        result = self._run([".github/workflows/disposable-demo-installer.yml"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_unreadable_change_list_fails_closed(self):
+        import subprocess
+
+        result = subprocess.run(
+            [sys.executable, str(self.SCRIPT), "--changed-files", "/nonexistent/changed.txt"],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_docs_only_change_is_out_of_scope(self):
+        result = self._run(["docs/demo-setup-fa.md"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_persian_wc_diagnosis_is_named_and_acceptance_requires_stage_b(self):
         text = workflow("persian-coexistence.yml")

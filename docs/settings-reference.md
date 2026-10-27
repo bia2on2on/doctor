@@ -1,6 +1,23 @@
 # Settings Reference — CPMS (واحد و semantics هر Setting)
 
-نسخه 1.5 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+نسخه 1.7 | 2026-10-26 (یادداشت‌های تغییر 1.5–1.7 پایین‌تر) | قبلاً 1.5 | 2026-09-07 | جدول `cpms_settings` (کلید/مقدار JSON) + پیش‌فرض‌های `Settings::DEFAULTS`
+
+> **تغییر 1.7 (CPMS Classic admin UX — 2026-10-26):** کلید **مستقل و سطح-نصبِ** جدید
+> `cpms_jobs_last_tick_at` (Option وردپرس، `autoload=no`؛ مالک: `InstallationSettings::getJobsLastTickAt()` /
+> `setJobsLastTickAt()`) **heartbeat معتبرِ** صف (`cpms_jobs_tick`) است. دلیل: صف/Jobهای طبقهٔ S سطح نصب‌اند و
+> کارگرِ سیستم هیچ ClinicScope محیطی ندارد؛ نوشتنِ heartbeat فقط در `cpms_settings` یک Clinic باعث می‌شد در نصبِ
+> چند-Clinic مقدار ۰ خوانده شود و صفِ سالم «متوقف» گزارش شود. کلیدِ قدیمیِ `jobs.last_tick_at` در
+> `Settings::RUNTIME_KEYS` **حفظ** شده و همچنان به‌صورتِ best-effort نوشته می‌شود؛ خواندنِ گزارش فقط در صورتِ
+> نبودِ heartbeat سطح‌نصب به آن fallback می‌کند (بدونِ مهاجرتِ داده/حذف، و بدونِ آنکه Clinic حدس زده شود).
+> هیچ کلید کاربریِ دیگری جابه‌جا نشد و هیچ Settingِ جدیدِ قابل‌ویرایش اضافه نشد. مرجعِ نمایش/ترمیم:
+> `src/Application/System/QueueDiagnosis.php` و `src/Application/System/CronScheduleRepair.php`.
+>
+> **همین تغییر — سیاستِ موتورِ دیتابیس (فقط گزارش):** ردیفِ `db.mysql_version` در گزارشِ سلامت بر پایهٔ موتور
+> قضاوت می‌شود. MySQL با کفِ `8.0` (بدونِ تغییر)؛ MariaDB با نسخه‌هایی که این مخزن واقعاً اجرا می‌کند:
+> `11.4.13` (لِینِ Integration) و سریِ `10.11` (لِینِ هفتگی، وصلهٔ آزموده‌شده `10.11.19`). هر نسخهٔ MariaDBِ دیگر
+> «آزموده‌نشده» (WARNING، بدون ادعای پشتیبانی؛ دروازهٔ fail-closed مهاجرت 0027 هم نام برده می‌شود) و سریِ کهنه‌تر
+> از `10.11` ناموفق گزارش می‌شود. هیچ نسخهٔ جدیدی پشتیبانی‌شده اعلام نشد و قراردادِ عمومیِ `/clinic/v1/health`
+> تغییر نکرد. این یک سیاستِ **گزارش** است، نه دروازهٔ فعال‌سازی.
 
 > **تغییر 1.6 (آشتی نهایی فاز ۲ — 2026-09-15):** مالکیتِ سطحِ نصب برای کلیدهای **پذیرفته‌شده**
 > به‌روز شد: `notif.archive_days` (ادغامِ مسیرِ #40)، `retention.oplog_days` (M-2) و پیکربندیِ
@@ -52,7 +69,7 @@
 | `hw.autosave_sec` | `5` | ثانیه | فاصله Auto-save ویرایشگر دست‌خط. |
 | `hw.version_keep` | `10` | عدد ≥1 | حداقل تعداد نسخه اخیر هر صفحه که GC (`handwriting.gc`) هرگز حذف نمی‌کند (ADR-0009). |
 | `hw.version_max_age_days` | `30` | روز ≥1 | نسخه‌های قدیمی‌تر از این سن (و خارج از `hw.version_keep`) در جاب روزانه پاک‌سازی می‌شوند. |
-| `files.storage_path` | `` | مسیر مطلق | پوشه ذخیرهفایلهای پزشکی فاز F5 — خالی = `wp-content/clinic-files/` (خارج uploads) با گارد `.htaccess` deny + `index.php`. توصیه file-storage.md: مسیر مطلق خارج DocumentRoot. تغییر در هر Request خوانده می‌شود (بدون کش). |
+| `files.storage_path` | `` | مسیر مطلق | ریشهٔ فعالِ فایل‌های پزشکی. **خالی = پیش‌فرضِ خصوصیِ بیرون از DocumentRoot** (`CPMS_PRIVATE_STORAGE_DIR` اگر تعریف شده باشد، وگرنه `dirname(ABSPATH)/cpms-private/clinic-files`) — پیش‌فرضِ قدیمی داخلِ `wp-content` دیگر پذیرفته نمی‌شود و فقط به‌عنوان **مبدأ فقط‌خواندنی** برای مهاجرت خوانده می‌شود. مسیر داخل DocumentRoot (شاملِ symlink که با `realpath` به داخل برسد) با `CLINIC_STORAGE_INSIDE_WEBROOT` رد می‌شود؛ پوشه با `0750` ساخته و گاردهای `.htaccess`/`web.config`/`index.php`/`README-SECURITY.txt` نوشته و **دوباره خوانده** می‌شوند؛ هیچ پوشهٔ موجودی پاک/جابه‌جا نمی‌شود و هیچ `chmod 777`ای اجرا نمی‌شود. راه‌اندازی سطحِ نصب است (بدون ClinicScope) و از `admin_post_cpms_storage_init` (capability `cpms_config` + nonce `cpms_storage_init`) یا خودکار در فعال‌سازی انجام می‌شود؛ وضعیت در ردیفِ `storage.files` سلامت به‌صورت **مسدودکننده** گزارش می‌شود، نه پیکربندی اختیاری. تغییر در هر Request خوانده می‌شود (بدون کش). |
 | `files.max_upload_bytes` | `10485760` | بایت | سقف حجم آپلود E16/C3 — پیشفرض 10 MB؛ اعملای سرور (F-3) با خطای `CLINIC_FILE_INVALID` 400. |
 | `clinical.require_chief_complaint` | `true` | bool | الزام ثبت شکایت اصلی قبل از Complete (FR-8.7 — E14). |
 | `notif.quiet_hours_start` | `08:00` | `HH:MM` محلی | شروع بازه ارسال SMS غیرتعاملی (یادآوری‌ها — F8 notifications §5؛ OTP مستثنا). **فاز ۲:** در مسیرهای قابل‌دسترسِ `appt.reminder`/`fu.reminder` این ساعتِ محلی از **تایم‌زونِ صریح و ماندگارِ Location** ردیفِ عملیاتی (`cpms_locations.timezone`) در همان لحظهٔ مرجعِ کنترل‌شدهٔ پردازشِ یادآوری محاسبه می‌شود — تایم‌زونِ کلینیک جایگزینِ Location نمی‌شود (فقط وقتی هیچ تایم‌زونِ صریحی داده نشود قراردادِ قدیمیِ کلینیک‌محور حفظ می‌شود). نبود/خرابیِ تایم‌زونِ Location پیش از ارزیابی، ردیف را به‌صورتِ شکستِ بسته رد می‌کند. |

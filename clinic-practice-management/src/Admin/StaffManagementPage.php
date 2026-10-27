@@ -68,7 +68,7 @@ final class StaffManagementPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'کاربران و دسترسی‌ها',
             'کاربران و دسترسی‌ها',
             RolesAndCapabilities::CONFIG,

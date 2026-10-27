@@ -23,7 +23,7 @@ final class SmsSettingsPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'پیامک و اعلان‌ها',
             'پیامک و اعلان‌ها',
             RolesAndCapabilities::SMS_CONFIG,
@@ -38,13 +38,53 @@ final class SmsSettingsPage
             wp_die('دسترسی ندارید', 403);
         }
 
+        // CPMS Classic Admin UX (B) — پیکربندیِ SMS، Clinic-local است.
+        // ریشهٔ نقص: این صفحه هیچ Clinic را در درخواست‌های REST نمی‌فرستاد؛ در
+        // نصبِ چند-Clinic، `RestClinicContext` Clinic را از payload نمی‌سازد و
+        // درخواست fail-closed می‌شد (یا بدتر: در نصبِ تک‌Clinic به Clinicِ
+        // ضمنی تکیه می‌کرد). اکنون Clinic **صریحاً** انتخاب و در هر درخواست
+        // ارسال می‌شود؛ سرور همچنان عضویت فعال + مجوز Clinic-scoped را مستقل
+        // بررسی می‌کند ("انتخاب ≠ مجوز").
+        $actor_user_id       = (int) get_current_user_id();
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $_GET ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- read-only display selector; the helper sanitises/validates the scalar itself and the value is verified against active membership + Clinic-scoped SMS_CONFIG before any read.
+        $clinic_choices      = AdminClinicSelector::choices( $actor_user_id, RolesAndCapabilities::SMS_CONFIG );
+        $clinic_scope        = AdminClinicSelector::establish( $actor_user_id, $requested_clinic_id, RolesAndCapabilities::SMS_CONFIG );
+        $selected_clinic_id  = null !== $clinic_scope ? (int) $clinic_scope->clinicId : 0; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
+
+        if ( [] === $clinic_choices ) {
+            echo '<div class="wrap" dir="rtl" id="cpms-sms-wrap">';
+            echo '<h1>تنظیمات پیامک</h1>';
+            echo '<div class="notice notice-warning inline" data-cpms-clinic-scope="unavailable"><p>';
+            echo esc_html( 'برای دیدن یا تغییر تنظیمات پیامک، عضویت فعالِ یک درمانگاه با مجوز پیامک (cpms_sms_config) لازم است. نقش Administrator وردپرس به‌تنهایی مجوز درمانگاه ایجاد نمی‌کند.' );
+            echo '</p></div></div>';
+
+            return;
+        }
+
+        if ( $selected_clinic_id <= 0 ) {
+            echo '<div class="wrap" dir="rtl" id="cpms-sms-wrap">';
+            echo '<h1>تنظیمات پیامک</h1>';
+            AdminClinicSelector::render_selector( 'cpms-sms', 'cpms_sms_clinic', $clinic_choices, 0, 'درمانگاه' );
+            if ( null !== $requested_clinic_id ) {
+                echo '<div class="notice notice-error inline" data-cpms-clinic-scope="denied"><p>' . esc_html( 'درمانگاه درخواست‌شده معتبر نیست یا عضویت فعال و مجوز پیامک آن را ندارید؛ هیچ تنظیمی نمایش داده یا ذخیره نشد.' ) . '</p></div>';
+            } else {
+                echo '<div class="notice notice-info inline" data-cpms-clinic-scope="required"><p>' . esc_html( 'تنظیمات پیامک برای هر درمانگاه جداست. درمانگاه را صریحاً انتخاب کنید؛ هیچ درمانگاهی پیش‌فرض حدس زده نمی‌شود.' ) . '</p></div>';
+            }
+            echo '</div>';
+
+            return;
+        }
+
         $config = [
             'rest_url' => esc_url_raw(rest_url('clinic/v1/sms/')),
             'nonce' => wp_create_nonce('wp_rest'),
+            // Selector فقط زمینهٔ درخواست است؛ سرور عضویت/مجوز را دوباره می‌سنجد.
+            'clinic_id' => $selected_clinic_id,
         ];
         ?>
 <div class="wrap" dir="rtl" id="cpms-sms-wrap">
     <h1>تنظیمات پیامک</h1>
+        <?php AdminClinicSelector::render_selector( 'cpms-sms', 'cpms_sms_clinic', $clinic_choices, $selected_clinic_id, 'درمانگاه' ); ?>
 
     <div class="notice notice-info" id="cpms-sms-state-banner" style="display:none"></div>
 
@@ -175,6 +215,9 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
 
     function api(method, path, body) {
         var headers = { 'X-WP-Nonce': CFG.nonce };
+        // صریح و همیشه: clinic انتخاب‌شده به‌عنوان Scope منتقل می‌شود
+        // (Clinic-scoped SMS_CONFIG روی سرور دوباره اعتبارسنجی می‌شود).
+        if (CFG.clinic_id) headers['X-CPMS-Clinic-Id'] = String(CFG.clinic_id);
         if (body) headers['Content-Type'] = 'application/json';
         return fetch(apiUrl(path), {
             method: method,

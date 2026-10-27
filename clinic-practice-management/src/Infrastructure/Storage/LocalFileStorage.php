@@ -91,7 +91,7 @@ final class LocalFileStorage
      */
     public function store(string $content, int $clinicId, string $extension): string
     {
-        $this->ensureGuards();
+        $this->ensure_ready();
 
         $storedName = bin2hex(random_bytes(16)) . '.' . $extension;
         $relative = $clinicId . '/' . substr($storedName, 0, 2) . '/' . $storedName;
@@ -200,35 +200,86 @@ final class LocalFileStorage
     }
 
     /**
-     * گاردهای سرور: `.htaccess` (deny) + `index.php` خالی — Idempotent.
+     * آماده‌سازی صریح و قابل‌راستی‌آزماییِ ریشه: ساخت پوشه + نوشتن همهٔ گاردها.
+     *
+     * برخلاف مسیرِ تنبلِ `store()`، اینجا هر شکست **خطای تایپ‌شده** می‌دهد و
+     * هر گارد پس از نوشتن دوباره خوانده و بررسی می‌شود. مصرف‌کننده: راه‌اندازی
+     * فعال‌سازی/ادمین (`PrivateStorageInitializer`) تا «نبودنِ پوشه» به‌عنوان
+     * پیکربندیِ اختیاری گزارش نشود.
+     *
+     * @return list<string> نام گاردهایی که در این فراخوانی نوشته شدند
+     *
+     * @throws StorageConfigurationException
      */
-    private function ensureGuards(): void
-    {
-        if (!is_dir($this->basePath)) {
-            if (!mkdir($this->basePath, 0750, true) && !is_dir($this->basePath)) {
-                throw new RuntimeException('storage mkdir failed: ' . $this->basePath);
+    public function ensure_ready(): array {
+        $base = $this->basePath();
+
+        // Fail-Closed حتی اگر شیء بدون سازندهٔ این کلاس ساخته شده باشد.
+        PrivateStorageLocation::assertOutsideWebRoot( $base, 'ذخیره‌سازی فایل بالینی' );
+
+        $created = false;
+        if ( ! is_dir( $base ) ) {
+            if ( ! @mkdir( $base, 0750, true ) && ! is_dir( $base ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- failure is turned into a typed configuration error below.
+                throw new StorageConfigurationException(
+                    'CLINIC_STORAGE_NOT_WRITABLE',
+                    'ساخت پوشهٔ ذخیره‌سازی بالینی ممکن نشد (والدِ پوشه برای وب‌سرور قابل‌نوشتن نیست): ' . $base,
+                    $base
+                );
+            }
+            $created = true;
+        }
+
+        $written = [];
+        foreach ( $this->guard_files() as $name => $contents ) {
+            $path = $base . '/' . $name;
+            if ( is_file( $path ) ) {
+                continue;
+            }
+            if ( false === @file_put_contents( $path, $contents ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- typed failure is checked below.
+                throw new StorageConfigurationException(
+                    'CLINIC_STORAGE_GUARD_NOT_WRITTEN',
+                    'نوشتن فایل گارد ذخیره‌سازی ناموفق بود: ' . $path,
+                    $path
+                );
+            }
+            $written[] = $name;
+        }
+
+        // تأییدِ نوشتن — «فایل ساخته شد» بدونِ خواندنِ دوباره ادعا نمی‌شود.
+        foreach ( array_keys( $this->guard_files() ) as $name ) {
+            $path = $base . '/' . $name;
+            if ( ! is_file( $path ) || ! is_readable( $path ) ) {
+                throw new StorageConfigurationException(
+                    'CLINIC_STORAGE_GUARD_NOT_WRITTEN',
+                    'فایل گارد ذخیره‌سازی پس از نوشتن قابل‌خواندن نیست: ' . $path,
+                    $path
+                );
             }
         }
-        $ht = $this->basePath . '/.htaccess';
-        if (!is_file($ht)) {
-            @file_put_contents($ht, self::GUARD_HTACCESS);
+
+        if ( $created ) {
+            $written[] = '__dir_created__';
         }
-        $idx = $this->basePath . '/index.php';
-        if (!is_file($idx)) {
-            @file_put_contents($idx, "<?php\n// silence is golden\n");
-        }
+
+        return $written;
+    }
+
+    /**
+     * گاردهای سرور: `.htaccess` (deny) + `index.php` خالی — Idempotent.
+     *
+     * @return array<string, string>
+     */
+    public function guard_files(): array {
         // Phase 1A: تکیه بر .htaccess به تنهایی کافی نیست — nginx آن را
         // نمی‌خواند. گارد IIS و یادداشت راه‌اندازی nginx هم نوشته می‌شود.
         // این‌ها جایگزین پیکربندی وب‌سرور نیستند؛ ریسک باقی‌مانده در
         // گزارش امنیتی Phase 1 ثبت شده است.
-        $webConfig = $this->basePath . '/web.config';
-        if (!is_file($webConfig)) {
-            @file_put_contents($webConfig, self::GUARD_WEBCONFIG);
-        }
-        $readme = $this->basePath . '/README-SECURITY.txt';
-        if (!is_file($readme)) {
-            @file_put_contents($readme, self::GUARD_README);
-        }
+        return [
+            '.htaccess'           => self::GUARD_HTACCESS,
+            'index.php'           => "<?php\n// silence is golden\n",
+            'web.config'          => self::GUARD_WEBCONFIG,
+            'README-SECURITY.txt' => self::GUARD_README,
+        ];
     }
 
     /**

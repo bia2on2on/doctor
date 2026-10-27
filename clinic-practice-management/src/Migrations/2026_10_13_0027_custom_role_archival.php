@@ -30,6 +30,7 @@
 declare(strict_types=1);
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
 
 
 /** Identify only the runtimes covered by the MySQL and MariaDB integration lanes. */
@@ -46,19 +47,14 @@ $cpms_archival_database_engine = static function ( CpmsDb $db ): string {
 
     $version = $server['SERVER_VERSION'];
     $comment = $server['VERSION_COMMENT'];
-    if (
-        ( stripos( $version, 'MariaDB' ) !== false || stripos( $comment, 'MariaDB' ) !== false )
-        && preg_match(
-            '/\\A(?:10\\.11\\.\\d+|11\\.4\\.13)(?:-MariaDB)?(?:[-+][a-zA-Z0-9._-]+)?\\z/i',
-            $version
-        ) === 1
-    ) {
-        return 'mariadb';
-    }
 
-    if ( stripos( $comment, 'MySQL' ) !== false
-        && preg_match( '/\A8\.\d+\.\d+(?:[-+][a-zA-Z0-9._-]+)?\z/', $version ) === 1 ) {
-        return 'mysql';
+    // تنها منبعِ حقیقت برای مجموعهٔ مجاز: DatabaseCompatibilityGate — همان
+    // کلاسی که SystemHealthService استفاده می‌کند. پیش از این دو regex تکراری
+    // بود و گزارشِ سلامت نسخه‌هایی را «هشدار/قابل‌قبول» می‌خواند که اینجا
+    // fail-closed رد می‌شدند. رفتار عیناً یکسان است: مجموعهٔ مجاز گسترده نشد.
+    $engine = DatabaseCompatibilityGate::engine( $version, $comment );
+    if ( null !== $engine ) {
+        return $engine;
     }
 
     throw new \RuntimeException(

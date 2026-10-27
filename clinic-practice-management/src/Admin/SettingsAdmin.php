@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Bootstrap\App;
 
 /**
@@ -30,7 +31,7 @@ final class SettingsAdmin
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'فنی و لاگ',
             'فنی و لاگ',
             'cpms_config',
@@ -47,6 +48,14 @@ final class SettingsAdmin
         $version = App::migrations()->currentVersion();
         $tables = self::tableCount();
         $queue = App::queueHealth();
+        // CPMS Classic Admin UX (E) — وضعیتِ دقیقِ صف: نصبِ تازه/رویدادِ غایب/
+        // اجرای کهنه/Job شکست‌خورده از هم تفکیک می‌شوند.
+        $queue_diagnosis = null;
+        try {
+            $queue_diagnosis = App::queue_diagnosis();
+        } catch ( \Throwable ) {
+            $queue_diagnosis = null;
+        }
         global $wpdb;
         $failedRows = $wpdb->get_results(
             $wpdb->prepare(
@@ -66,10 +75,12 @@ final class SettingsAdmin
         ?>
         <div class="wrap" dir="rtl">
             <h1>CPMS — وضعیت فنی</h1>
-            <?php if ($queue['stale']) : ?>
-                <div class="notice notice-error"><p>⚠️ Queue/Cron متوقف به نظر می‌رسد — آخرین tick:
-                    <?php echo esc_html($queue['last_tick_at'] ? gmdate('Y-m-d H:i:s', (int) $queue['last_tick_at']) . ' UTC' : 'هرگز'); ?>
-                    — بررسی System Cron (ADR-0016) و `bin/cpms health`</p></div>
+            <?php if ( null !== $queue_diagnosis && 'healthy' !== (string) $queue_diagnosis['state'] ) : ?>
+                <div class="notice <?php echo esc_attr( QueueDiagnosis::severity_is_blocking( (string) $queue_diagnosis['severity'] ) ? 'notice-error' : 'notice-warning' ); ?> cpms-queue-state" data-cpms-queue-state="<?php echo esc_attr( (string) $queue_diagnosis['state'] ); ?>">
+                    <p><strong><?php echo esc_html( (string) $queue_diagnosis['label'] ); ?></strong></p>
+                    <p><?php echo esc_html( (string) $queue_diagnosis['detail'] ); ?></p>
+                    <p><a href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-system' ) ); ?>">جزئیات و ترمیم در «سلامت سیستم»</a></p>
+                </div>
             <?php endif; ?>
             <?php if ($failedRows !== []) : ?>
                 <h2>Jobهای شکست‌خورده اخیر</h2>
@@ -88,6 +99,8 @@ final class SettingsAdmin
                     </tbody>
                 </table>
             <?php endif; ?>
+            <h2>اطلاعات و تنظیمات سطح نصب</h2>
+            <p class="description">این مقادیر به هیچ درمانگاهی وابسته نیستند و در نصبِ چند‌درمانگاهی هم بدونِ انتخابِ درمانگاه خوانده می‌شوند.</p>
             <table class="form-table" role="presentation">
                 <tr><th>آخرین tick Queue</th><td><?php echo esc_html($queue['last_tick_at'] ? gmdate('Y-m-d H:i:s', (int) $queue['last_tick_at']) . ' UTC' : 'هرگز'); ?></td></tr>
                 <tr><th>Jobهای failed</th><td><?php echo esc_html((string) $queue['failed']); ?></td></tr>
@@ -97,7 +110,8 @@ final class SettingsAdmin
                 <tr><th>Retention اعلان‌ها (روز)</th><td><?php echo esc_html( (string) App::installationSettings()->getNotifArchiveDays() ); ?></td></tr>
             </table>
 
-            <h2>تنظیمات کلیدی Clinic</h2>
+            <h2>تنظیمات درمانگاه‌محور (Clinic-local)</h2>
+            <p class="description">این بخش به‌ازای هر درمانگاه جداست؛ برای دیدنِ آن باید درمانگاه را صریحاً انتخاب کنید. انتخابِ درمانگاه فقط زمینهٔ نمایش است و مجوز نمی‌سازد.</p>
             <?php AdminClinicSelector::render_selector( 'cpms-settings', 'cpms_settings_clinic', $clinic_choices, $selected_clinic_id, 'Clinic' ); ?>
             <?php if ( null === $settings ) : ?>
                 <?php if ( null !== $requested_clinic_id ) : ?>

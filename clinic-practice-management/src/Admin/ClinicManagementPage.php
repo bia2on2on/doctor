@@ -40,13 +40,14 @@ final class ClinicManagementPage {
     public static function menu(): void {
 
         add_submenu_page(
-            OrganizationManagerPage::PAGE,
+            CpmsAdminMenu::parent_slug(),
             'مدیریت درمانگاه‌ها',
             'مدیریت درمانگاه‌ها',
             'read',
             self::PAGE,
             [self::class, 'render']
         );
+        CpmsAdminMenu::hide_from_submenu( self::PAGE );
     }
 
     public static function render(): void {

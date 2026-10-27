@@ -289,24 +289,185 @@ def run_selftest():
             continue
         raise AssertionError(f"malformed reception board payload was accepted: {label}")
 
+    # Hold diagnostics: only the attempt issued after the resume marker, and only
+    # for the expected slot, may be reported as "the" hold attempt.
+    probe = BookingProbe()
+    probe.entries.extend([
+        {"route": "/clinic/v1/booking/hold", "status": 200, "code": "", "slot_id": 900},
+        {"route": "/clinic/v1/booking/quote", "status": 403, "code": "rest_cookie_invalid_nonce"},
+        {"route": "/clinic/v1/booking/hold", "status": 403, "code": "rest_cookie_invalid_nonce", "slot_id": 901},
+    ])
+    assert [e["status"] for e in probe.hold_attempts(1)] == [403]
+    assert probe.hold_attempts(0)[0]["slot_id"] == 900
+    described = probe.describe(1)
+    assert "quote http=403 code=rest_cookie_invalid_nonce" in described
+    assert "hold http=403 code=rest_cookie_invalid_nonce slot_id=901" in described
+    assert "token" not in described and "nonce=" not in described
+
     print("PASS day2-selftest — URL/route + REST envelopes + observable finance refresh readiness passed")
     return 0
 
 
-def visible_or_diagnose(page, selector, stage):
+BOOKING_ROUTES = (
+    "/clinic/v1/availability",
+    "/clinic/v1/booking/quote",
+    "/clinic/v1/booking/hold",
+    "/clinic/v1/booking/confirm",
+    "/clinic/v1/otp/request",
+    "/clinic/v1/otp/verify",
+)
+_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
+_REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
+
+
+class BookingProbe:
+    """Sanitized REST outcomes of the public-booking journey.
+
+    Every entry keeps only: the REST route, the HTTP status, an allowlisted error
+    code, and the three numeric ids the client itself posted. Tokens, nonces,
+    cookies, mobile numbers and names are never read, so a failure message can be
+    published without leaking anything. The probe exists because the previous
+    failure line (`stage=hold-countdown root_state=bookable visible=0`) could not
+    distinguish "the server rejected the hold" from "the browser never asked".
+    """
+
+    def __init__(self, page=None):
+        self.entries = []
+        if page is not None:
+            page.on("response", self._on_response)
+
+    def _on_response(self, response):
+        try:
+            route = wp_route(response.url)
+        except Exception:  # noqa: BLE001 - diagnostics must never break the journey
+            return
+        if route not in BOOKING_ROUTES:
+            return
+        entry = {"route": route, "status": int(getattr(response, "status", 0) or 0), "code": ""}
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001 - non-JSON error pages are still recorded by status
+            payload = None
+        if isinstance(payload, dict):
+            for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
+                              if isinstance(payload.get("data"), dict) else None):
+                if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
+                    entry["code"] = candidate
+                    break
+        try:
+            posted = response.request.post_data_json
+        except Exception:  # noqa: BLE001
+            posted = None
+        if isinstance(posted, dict):
+            for key in _REQUEST_ID_KEYS:
+                if key in posted:
+                    try:
+                        entry[key] = int(posted[key])
+                    except (TypeError, ValueError):
+                        continue
+        self.entries.append(entry)
+
+    def hold_attempts(self, since=0):
+        return [e for e in self.entries[since:] if e["route"].endswith("/booking/hold")]
+
+    def describe(self, since=0, limit=8):
+        rows = []
+        for entry in self.entries[since:][-limit:]:
+            bits = [entry["route"].rsplit("/", 2)[-2] + "/" + entry["route"].rsplit("/", 1)[-1],
+                    f"http={entry['status']}"]
+            if entry["code"]:
+                bits.append(f"code={entry['code']}")
+            for key in _REQUEST_ID_KEYS:
+                if key in entry:
+                    bits.append(f"{key}={entry[key]}")
+            rows.append(" ".join(bits))
+        return "; ".join(rows) if rows else "no booking REST call observed"
+
+
+def observe_hold_attempt(page, probe, expected_slot_id, since, timeout=25000):
+    """Bounded wait for the hold attempt the resume issues for the fixture slot.
+
+    "Any active hold on the slot" is explicitly NOT enough: an attempt counts only
+    if it was recorded after `since` (i.e. issued by the post-login resume) AND its
+    posted slot id equals the fixture slot. The existing 25s bound is reused; no
+    timeout is increased, and the caller keeps the original visibility gate as the
+    only pass/fail criterion — this watcher exists so a failure can name the real
+    cause instead of only "visible=0".
+    """
+    deadline = time.monotonic() + (timeout / 1000.0)
+    while time.monotonic() < deadline:
+        for attempt in probe.hold_attempts(since):
+            if expected_slot_id <= 0 or attempt.get("slot_id") == expected_slot_id:
+                return attempt
+        try:
+            if page.locator('[data-role="hold-countdown"]').is_visible():
+                return None
+        except Exception:  # noqa: BLE001 - page may be mid-navigation
+            pass
+        page.wait_for_timeout(100)
+    return None
+
+
+def hold_widget_fingerprint(page):
+    """Non-PII state of the booking continuation nodes, for honest failure lines."""
+    try:
+        return page.evaluate(
+            """() => {
+                const root = document.querySelector('.cpms-public-booking');
+                const pick = (role) => {
+                    const node = root ? root.querySelector('[data-role="' + role + '"]') : null;
+                    if (!node) { return 'absent'; }
+                    return node.hidden ? 'hidden' : 'visible';
+                };
+                const box = root ? root.querySelector('[data-role="hold-countdown"]') : null;
+                return {
+                    countdown: pick('hold-countdown'),
+                    countdown_value: box ? String((box.querySelector('[data-role="countdown-value"]') || {}).textContent || '').slice(0, 8) : '',
+                    confirm: pick('confirm-btn'),
+                    names: pick('names-form'),
+                    continue_status: (root && (root.querySelector('[data-role="continue-status"]') || {}).textContent || '').slice(0, 80),
+                };
+            }"""
+        )
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
+        return {}
+
+
+def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt=None):
     """Keep the existing visibility gate; report a bounded, non-PII failure stage."""
     try:
         page.locator(selector).wait_for(state="visible", timeout=25000)
     except Exception as exc:
         root = page.locator(".cpms-public-booking")
         state = root.get_attribute("data-state", timeout=1000) if root.count() else "missing"
-        raise AssertionError(f"public booking stage={stage} root_state={state} visible=0") from exc
+        message = f"public booking stage={stage} root_state={state} visible=0"
+        if probe is not None:
+            message += f" observed={probe.describe(since)}"
+        if stage == "hold-countdown":
+            if hold_attempt is None:
+                message += " hold_attempt=none-for-expected-slot"
+            else:
+                message += (
+                    f" hold_attempt=slot={hold_attempt.get('slot_id')}"
+                    f" http={hold_attempt['status']}"
+                    f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
+                )
+            widget = hold_widget_fingerprint(page)
+            if widget:
+                message += (
+                    f" countdown={widget.get('countdown')}"
+                    f" countdown_value={widget.get('countdown_value') or '-'}"
+                    f" confirm={widget.get('confirm')}"
+                    f" names_form={widget.get('names')}"
+                )
+        raise AssertionError(message) from exc
 
 
 def run_journey_a_public_booking(browser, cfg):
     ctx_pub = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
     page_pub = ctx_pub.new_page()
     page_pub.set_default_timeout(25000)
+    probe = BookingProbe(page_pub)
     try:
         page_pub.add_init_script(
             "(() => {"
@@ -408,13 +569,32 @@ def run_journey_a_public_booking(browser, cfg):
         db(f"UPDATE {T('cpms_otp_tokens')} SET code_hash='{digest}' WHERE id={int(trows[0][0])}")
 
         page_pub.locator('[data-role="otp-code"]').fill(KNOWN_OTP)
+        # مرزِ تشخیصی: هر تماسِ رزرو پس از این ایندکس متعلق به ادامهٔ پس از ورود است.
+        resume_marker = len(probe.entries)
         with page_pub.expect_response(lambda r: "/clinic/v1/otp/verify" in r.url, timeout=25000) as otp_ver:
             with page_pub.expect_navigation(timeout=25000):
                 page_pub.locator('[data-auth-action="otp-verify"]').click()
         assert otp_ver.value.status == 200, f"otp/verify HTTP {otp_ver.value.status}"
         page_pub.wait_for_load_state("networkidle")
 
-        visible_or_diagnose(page_pub, '[data-role="hold-countdown"]', "hold-countdown")
+        # فقط همین تلاشِ hold (پس از ورود، برای همان اسلاتِ fixture) موردانتظار است؛
+        # «هر hold فعالی روی اسلات» معیار نیست. دروازهٔ اصلی همان visible است.
+        hold_attempt = observe_hold_attempt(page_pub, probe, cfg["pub_slot_doc1_loc1"], resume_marker)
+        info(f"day2-A1-resume hold_attempts={probe.hold_attempts(resume_marker)}")
+        visible_or_diagnose(
+            page_pub,
+            '[data-role="hold-countdown"]',
+            "hold-countdown",
+            probe,
+            resume_marker,
+            hold_attempt,
+        )
+        if hold_attempt is not None and hold_attempt["status"] != 200:
+            raise AssertionError(
+                "public booking stage=hold-request — hold rejected for the fixture slot "
+                f"slot={cfg['pub_slot_doc1_loc1']} http={hold_attempt['status']}"
+                f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
+            )
         visible_or_diagnose(page_pub, '[data-role="confirm-btn"]', "confirm-btn")
 
         # First-time patient identity gate: confirm without names -> 400 CLINIC_VALIDATION_FAILED
@@ -434,6 +614,9 @@ def run_journey_a_public_booking(browser, cfg):
         page_pub.set_viewport_size({"width": 320, "height": 740})
         page_pub.wait_for_timeout(100)
         assert_no_horizontal_overflow(page_pub, "public-booking-receipt-320")
+        # شواهدِ غیر-PII از ترتیبِ واقعیِ تماس‌های REST — روی PASS هم منتشر می‌شود
+        # تا «hold ساخته شد یا نه» هرگز حدس نباشد.
+        info(f"day2-A1-rest {probe.describe(0, limit=12)}")
         ok(
             "day2-A1-otp-identity-confirm",
             "Patient Public Booking: OTP handoff + first-time identity gate + confirmed receipt + 320px receipt",

@@ -70,6 +70,8 @@ use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Application\Reports\ExportClinicDeps;
 use ClinicCore\Application\Reports\ExportService;
 use ClinicCore\Application\Reports\ReportService;
+use ClinicCore\Application\System\CronScheduleRepair;
+use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Application\Update\UpdateService;
 use ClinicCore\Application\Visits\VisitService;
@@ -126,6 +128,7 @@ use ClinicCore\Infrastructure\Sms\SmsProviderRegistry;
 use ClinicCore\Infrastructure\Storage\LocalFileStorage;
 use ClinicCore\Infrastructure\Storage\PrivateStorageLocation;
 use ClinicCore\Infrastructure\Storage\PrivateStorageMigrator;
+use ClinicCore\Infrastructure\Storage\PrivateStorageInitializer;
 use ClinicCore\Infrastructure\Update\HttpUpdateMetadataGateway;
 use ClinicCore\Migrations\MigrationRunner;
 use ClinicCore\Rest\BookingController;
@@ -180,6 +183,23 @@ final class App
     private static ?LicenseGate $licenseGate = null;
     private static ?VisitService $visitService = null;
     private static bool $booted = false;
+
+    /**
+     * CPMS Classic Admin UX (B) — کشِ **per-Clinic** برای سرویس‌هایی که
+     * پیکربندیِ Clinic-local را نگه می‌دارند.
+     *
+     * کلید: شناسهٔ Clinic (برای `UpdateService`) و `clinic:{id}`/`installation`
+     * (برای `SystemHealthService`). هیچ نمونه‌ای بین دو Clinic به اشتراک
+     * گذاشته نمی‌شود.
+     *
+     * @var array<int, UpdateService>
+     */
+    private static array $update_services = [];
+
+    /**
+     * @var array<string, SystemHealthService>
+     */
+    private static array $health_services = [];
 
     public static function boot(): void
     {
@@ -317,16 +337,41 @@ final class App
         });
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
-        add_filter('cron_schedules', static function (array $schedules): array {
-            if (!isset($schedules['cpms_minute'])) {
-                $schedules['cpms_minute'] = ['interval' => 60, 'display' => 'هر دقیقه (CPMS)'];
-            }
+        self::register_cron_schedules();
+        // CPMS Classic Admin UX (E) — ثبتِ idempotentِ رویداد در بارگذاریِ افزونه.
+        //
+        // این فراخوانی **عمداً** در `boot()` می‌ماند (همان رفتارِ main): قراردادِ
+        // fast-wake (`JobFastWakeContractRedTest::testRecurringMinuteTickRemains…`)
+        // ثابت می‌کند که پس از بارگذاریِ افزونه رویدادِ دقیقه‌ایِ صف ثبت است.
+        // حذفِ آن از boot آن قرارداد را شکست، پس برگردانده شد.
+        //
+        // هزینه: `ensure_scheduled()` فقط یک خواندنِ Optionِ autoload‌شدهٔ `cron`
+        // است و **فقط** وقتی رویداد غایب باشد می‌نویسد؛ بنابراین درخواستِ عمومیِ
+        // سالم هیچ نوشتنی در cron انجام نمی‌دهد. هیچ Jobی اجرا نمی‌شود.
+        CronScheduleRepair::ensure_scheduled();
 
-            return $schedules;
-        });
-        if (!wp_next_scheduled('cpms_jobs_tick')) {
-            wp_schedule_event(time() + 60, 'cpms_minute', 'cpms_jobs_tick');
-        }
+        // ترمیمِ خودکارِ سمتِ مدیریت (throttle‌شده، حداکثر یک‌بار در ساعت):
+        // فقط **شکست** لاگ می‌شود. ثبتِ یک «ترمیمِ موفق» در این مسیرِ خودکار
+        // نویز است: روی نصبِ تازه، `admin_init` پیش از کدِ فعال‌سازی اجرا
+        // می‌شود، رویداد را می‌سازد و هر سایتِ تازه یک ردیفِ عملیاتیِ
+        // «غیرپیش‌فرض» می‌گرفت (که مثلاً پیش‌پروازِ سایتِ یک‌بارمصرف را نقض
+        // می‌کند). مشاهده‌پذیریِ حالتِ عادی از صفحهٔ سلامت/صف می‌آید و ثبتِ
+        // موفقیت فقط در مسیرِ صریح و کاربر-آغازشدهٔ `admin_post_cpms_cron_repair`
+        // انجام می‌شود.
+        $cron_self_heal = static function (): void {
+            $result = CronScheduleRepair::self_heal_in_admin_result();
+
+            if ( CronScheduleRepair::RESULT_FAILED === $result ) {
+                $context = [
+                    'hook'       => CronScheduleRepair::HOOK,
+                    'recurrence' => CronScheduleRepair::RECURRENCE,
+                    'result'     => $result,
+                ];
+                self::op()->warning( 'CPMS_CRON_SCHEDULE_REPAIR_FAILED', $context );
+            }
+        };
+        add_action( 'admin_init', $cron_self_heal, 20 );
+
         add_action('cpms_jobs_tick', static function (): void {
             self::runTick(20);
         });
@@ -369,6 +414,7 @@ final class App
         // Admin UX — منوی Top-Level «مدیریت مطب» + داشبورد + IA (Chunk A)
         CpmsAdminMenu::register();
         CpmsAssets::register(); // Chunk F — assets اسکوپ‌شدهٔ صفحات CPMS (CSS/JS محلی، فقط در صفحات CPMS)
+        \ClinicCore\Admin\OrgManagerAssets::register(); // B-3 — stylesheet اختصاصیِ صفحاتِ مدیریت سازمان (بیرونِ allowlistِ CpmsAssets، طبق قرارداد)
         CpmsSetupWizard::register(); // Chunk B — راه‌اندازی گام‌به‌گام (self-service, resumable)
         CpmsActivationRedirect::register(); // Phase 3 — one-shot safe redirect to the wizard on the literal post-activation landing (plugins.php only)
         StaffManagementPage::register(); // Chunk C — کاربران و دسترسی‌ها (staff/user management)
@@ -400,10 +446,17 @@ final class App
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
         self::ensurePrivateStorage();
+        // C — راه‌اندازیِ صریحِ ریشه‌های **فعال** (بدونِ وابستگی به legacy و
+        // بدونِ ClinicScope). اگر میزبان اجازهٔ ساخت ندهد، خطا ثبت می‌شود و
+        // صفحهٔ سلامت آن را مسدودکننده گزارش می‌کند (نه «اختیاری»).
+        self::initialize_private_storage( true );
 
-        if (!wp_next_scheduled('cpms_jobs_tick')) {
-            wp_schedule_event(time() + 60, 'cpms_minute', 'cpms_jobs_tick');
-        }
+        // فقط زمان‌بندی — هیچ Jobی در activation اجرا نمی‌شود.
+        // بازه باید **قبل** از زمان‌بندی ثبت شود، وگرنه `cpms_minute` ناشناخته
+        // است و `wp_schedule_event()` شکست می‌خورد (پیش‌تر در `boot()` ثبت
+        // می‌شد که در درخواستِ فعال‌سازی هنوز اجرا نشده است).
+        self::register_cron_schedules();
+        CronScheduleRepair::ensure_scheduled();
 
         self::op()->info('CPMS_ACTIVATED');
         self::scheduleRecurringJobs();
@@ -420,6 +473,41 @@ final class App
         wp_clear_scheduled_hook('cpms_jobs_tick');
     }
 
+    /**
+     * بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
+     *
+     * @param array<string, array<string, mixed>> $schedules بازه‌های ثبت‌شدهٔ WordPress.
+     * @return array<string, array<string, mixed>>
+     */
+    public static function filter_cron_schedules( array $schedules ): array {
+        if ( ! isset( $schedules['cpms_minute'] ) ) {
+            $schedules['cpms_minute'] = array(
+                'interval' => 60,
+                'display'  => 'هر دقیقه (CPMS)',
+            );
+        }
+
+        return $schedules;
+    }
+
+    /**
+     * ثبتِ فیلترِ بازه — از `boot()` و `activate()` فراخوانی می‌شود.
+     *
+     * از `boot()` بیرون کشیده شد تا **فعال‌سازی** هم پیش از اولین
+     * `ensure_scheduled()` آن را ثبت کند. بدونِ این، `wp_schedule_event()` در
+     * `activate()` بازه را نمی‌شناخت، رویداد ساخته نمی‌شد و اولین بازدیدِ
+     * پیشخوان یک «ترمیم»ِ کاذب (`CPMS_CRON_SCHEDULE_REPAIRED`) روی سایتِ تازه
+     * ثبت می‌کرد — هم لاگ را آلوده می‌کرد و هم «سایت خالی نیست» را نقض می‌کرد.
+     */
+    private static function register_cron_schedules(): void {
+        // ADR-0016: the queue tick is a 60-second schedule by design (VIP's
+        // 15-minute rule does not apply to an on-premise install whose queue is
+        // driven by this event). The sniff reports on this `add_filter()` line,
+        // so the exception is scoped to exactly this statement.
+        // phpcs:ignore WordPress.WP.CronInterval.CronSchedulesInterval
+        add_filter( 'cron_schedules', array( self::class, 'filter_cron_schedules' ) );
+    }
+
     private static function ensureMigrated(): void
     {
         $lock = 'cpms_migrate_lock';
@@ -430,6 +518,9 @@ final class App
         try {
             self::migrations()->migrate();
             self::ensurePrivateStorage();
+            // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
+            // شود یا آخرین تلاش ناموفق بوده باشد کارِ واقعی انجام می‌شود.
+            self::initialize_private_storage( false );
         } finally {
             delete_transient($lock);
         }
@@ -514,6 +605,55 @@ final class App
         }
     }
 
+    /**
+     * C — راه‌اندازیِ ریشه‌های فعالِ ذخیره‌سازی خصوصی (سطح نصب).
+     *
+     * - **بدونِ ClinicScope**: `files.storage_path`/`backup.storage_path` فقط
+     *   وقتی خوانده می‌شوند که Scopeِ معتبری موجود باشد؛ در غیر این صورت
+     *   پیش‌فرض‌های امنِ سطح نصب استفاده می‌شوند. هیچ Clinic‌ای حدس زده نمی‌شود.
+     * - **بدونِ وابستگی به legacy**: نبودِ پوشهٔ قدیمی مانع ساختِ ریشهٔ فعال نیست.
+     * - `$force=true` (فعال‌سازی یا اقدامِ صریحِ مدیر) کار را همیشه انجام می‌دهد؛
+     *   `$force=false` مسیرِ ارزانِ option-guarded است.
+     */
+    public static function initialize_private_storage( bool $force = false ): array {
+        $files_root  = LocalFileStorage::defaultBasePath();
+        $backup_root = ProtectedBackupStore::defaultBasePath();
+
+        $settings = self::clinic_settings_or_null();
+        if ( null !== $settings ) {
+            try {
+                $configured_files = trim( (string) $settings->get( 'files.storage_path', '' ) );
+                if ( $configured_files !== '' ) {
+                    $files_root = $configured_files;
+                }
+            } catch ( \Throwable $e ) {
+                // خواندنِ Setting نباید راه‌اندازی را متوقف کند؛ پیش‌فرضِ امن
+                // می‌ماند و خطا فقط ثبت می‌شود (هیچ fallback بی‌صدایی به مسیر
+                // عمومی وجود ندارد).
+                unset( $e );
+                $files_root = LocalFileStorage::defaultBasePath();
+            }
+        }
+
+        $configured_backups = trim( self::installationSettings()->getBackupStoragePath() );
+        if ( $configured_backups !== '' ) {
+            // مسیر سفارشیِ داخل webroot توسط خودِ ProtectedBackupStore fail-closed رد
+            // می‌شود؛ اینجا جایگزینی انجام نمی‌شود و خطا در نتیجه گزارش می‌گردد.
+            $backup_root = $configured_backups;
+        }
+
+        $result = $force
+            ? PrivateStorageInitializer::initialize( $files_root, $backup_root )
+            : PrivateStorageInitializer::ensure_initialized( $files_root, $backup_root );
+
+        if ( ! $result['ok'] && $force ) {
+            $context = [ 'roots' => $result['roots'] ];
+            self::op()->warning( 'CPMS_PRIVATE_STORAGE_INIT_FAILED', $context );
+        }
+
+        return $result;
+    }
+
     /** مقایسهٔ نرمال‌شدهٔ دو مسیر (بدون اثر اسلش انتهایی/ویندوزی). */
     private static function samePath(string $a, string $b): bool
     {
@@ -526,52 +666,146 @@ final class App
 
     /**
      * ثبت آخرین tick (برای Health Check — ADR-0016).
+     *
+     * CPMS Classic Admin UX (E) — منبعِ معتبر (authoritative) اکنون
+     * **سطح نصب** است (`InstallationSettings`, `autoload=no`). پیش از این،
+     * heartbeat فقط به‌صورتِ Settingِ per-Clinic نوشته می‌شد و در نصبِ
+     * چند-Clinic `App::settings()` با `CLINIC_SCOPE_REQUIRED` شکست می‌خورد؛
+     * در نتیجه صفِ سالم روی نصبِ چند-Clinic همیشه «متوقف» گزارش می‌شد.
+     *
+     * نوشتنِ قبلیِ per-Clinic به‌صورتِ best-effort حفظ می‌شود تا داده/خواننده‌های
+     * موجود (از جمله تحلیلِ راه‌اندازیِ interrupted) بدون تغییر کار کنند؛ اما
+     * دیگر شرطِ ثبتِ heartbeat نیست و شکستِ آن هرگز ثبتِ سطح نصب را متوقف نمی‌کند.
      */
     public static function recordTick(): void
     {
+        $now = time();
+
         try {
-            self::settings()->set('jobs.last_tick_at', time());
-        } catch (\Throwable) {
-            // قبل از Migration ممکن است جدول نباشد
+            self::installationSettings()->set_jobs_last_tick_at( $now );
+        } catch ( \Throwable $e ) {
+            // بدون وردپرس/درایورِ Option، heartbeat سطح نصب ممکن نیست.
+            unset( $e );
         }
+
+        // سازگاریِ عقب‌رو: heartbeat قدیمیِ Clinic حفظ می‌شود (بدون Scope ⇒ رد).
+        try {
+            self::settings()->set( 'jobs.last_tick_at', $now );
+        } catch ( \Throwable $e ) {
+            // قبل از Migration / در نصبِ چند-Clinic بدون Scope — بی‌اثر
+            unset( $e );
+        }
+    }
+
+    /**
+     * شواهدِ خامِ Queue (heartbeat، شمارنده‌ها، وضعیتِ زمان‌بندی).
+     *
+     * @return array{
+     *     last_tick_at:int,
+     *     heartbeat_source:string,
+     *     queued:int,
+     *     failed:int,
+     *     has_activity:bool,
+     *     schedule_scheduled:bool|null,
+     *     next_scheduled_at:int|null
+     * }
+     */
+    public static function queue_evidence(): array
+    {
+        $last_tick = self::installationSettings()->get_jobs_last_tick_at();
+        $source    = 'installation';
+
+        if ( $last_tick <= 0 ) {
+            // سازگاریِ عقب‌رو: heartbeat قدیمیِ Clinic (تنها اگر Scopeِ معتبر
+            // موجود باشد). هیچ Clinic‌ای برای این خواندن ساخته/حدس زده نمی‌شود.
+            try {
+                $legacy = (int) self::settings()->get( 'jobs.last_tick_at', 0 );
+            } catch ( ScopeRequiredException ) {
+                $legacy = 0;
+            } catch ( \Throwable ) {
+                $legacy = 0;
+            }
+            if ( $legacy > 0 ) {
+                $last_tick = $legacy;
+                $source    = 'legacy_clinic';
+            } else {
+                $source = 'none';
+            }
+        }
+
+        $queued   = 0;
+        $failed   = 0;
+        $activity = false;
+        try {
+            $counts = self::db()->fetchAll( 'SELECT status, COUNT(*) AS c FROM ' . self::db()->table( 'cpms_jobs' ) . ' GROUP BY status' );
+            foreach ( $counts as $row ) {
+                $status = (string) $row['status'];
+                $count  = (int) $row['c'];
+                if ( $status === 'queued' ) {
+                    $queued = $count;
+                } elseif ( $status === 'failed' ) {
+                    $failed = $count;
+                }
+                $activity = true;
+            }
+        } catch ( \Throwable ) {
+            // جدول هنوز ساخته نشده (نصبِ تازه/قبل از Migration): صفر و بدون فعالیت.
+            $queued   = 0;
+            $failed   = 0;
+            $activity = false;
+        }
+
+        return [
+            'last_tick_at'       => $last_tick,
+            'heartbeat_source'   => $source,
+            'queued'             => $queued,
+            'failed'             => $failed,
+            'has_activity'       => $activity || $queued > 0 || $failed > 0,
+            'schedule_scheduled' => CronScheduleRepair::is_scheduled(),
+            'next_scheduled_at'  => CronScheduleRepair::next_scheduled_at(),
+        ];
+    }
+
+    /**
+     * تشخیصِ کاملِ Queue/WP-Cron برای UIِ مدیریت و صفحهٔ سلامت.
+     *
+     * @return array{state:string,severity:string,status:string,label:string,detail:string,guidance:string,repairable:bool}
+     */
+    public static function queue_diagnosis( int $stale_after_sec = 300 ): array {
+        $evidence = self::queue_evidence();
+        $extra    = [
+            'now'              => time(),
+            'stale_after_sec'  => $stale_after_sec,
+            'wp_cron_disabled' => defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON,
+        ];
+
+        return QueueDiagnosis::classify( array_merge( $evidence, $extra ) );
     }
 
     /**
      * Health Queue: آخرین tick، شکست‌ها، و تشخیص Stale (توقف Cron/Queue).
      *
+     * قراردادِ خروجی **بدون تغییر** است (نقطهٔ عمومیِ `/clinic/v1/health` از همین
+     * آرایه تغذیه می‌شود و کلیدِ جدیدی عمومی نمی‌شود)؛ فقط منبعِ heartbeat از
+     * Settingِ per-Clinic به سطح نصب منتقل شده و fallbackِ قبلی حفظ شده است.
+     *
      * @return array<string, mixed>
      */
-    public static function queueHealth(int $staleAfterSec = 300): array
-    {
-        // شمارنده‌های صف سطحِ نصب‌اند و به Scope نیاز ندارند؛ فقط
-        // `jobs.last_tick_at` یک Settingِ per-Clinic است. وقتی هیچ Clinicِ
-        // معتبری در دسترس نیست (مثلاً پویشِ ناشناسِ `/health` روی نصبِ
-        // چند-Clinicه)، Clinic‌ای **ساخته/حدس زده نمی‌شود**: مقدار «نامعلوم»
-        // (0 ⇒ stale) گزارش می‌شود. این جهتِ محافظه‌کارانه برای یک خواندنِ
-        // observability است و endpoint را — که باید همیشه reachable باشد —
-        // در دسترس نگه می‌دارد. رفتارِ تک‌Clinic و دارای‌Scope کاملاً همان است.
-        $lastTick = 0;
-        try {
-            $lastTick = (int) self::settings()->get('jobs.last_tick_at', 0);
-        } catch (ScopeRequiredException) {
-            $lastTick = 0;
-        }
-        $stale = $lastTick > 0 && (time() - $lastTick) > $staleAfterSec;
+    public static function queueHealth( int $staleAfterSec = 300 ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing published API name/parameter (consumed by Rest/HealthController and existing tests); renaming would break the public contract.
+        $evidence  = self::queue_evidence();
+        $last_tick = (int) $evidence['last_tick_at'];
+        // پارامترِ عمومیِ موجود نامِ تاریخیِ خود را دارد؛ این‌جا به یک متغیرِ
+        // snake_case نگاشت می‌شود تا قاعدهٔ نام‌گذاری در بدنه رعایت شود.
+        $stale_window = $staleAfterSec; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published parameter name of queueHealth().
 
-        $counts = self::db()->fetchAll(
-            'SELECT status, COUNT(*) AS c FROM ' . self::db()->table('cpms_jobs') . ' GROUP BY status'
-        );
-        $byStatus = [];
-        foreach ($counts as $row) {
-            $byStatus[(string) $row['status']] = (int) $row['c'];
-        }
+        $stale = $last_tick > 0 && ( time() - $last_tick ) > $stale_window;
 
         return [
-            'last_tick_at' => $lastTick,
-            'stale' => $lastTick === 0 ? true : $stale,
-            'stale_after_sec' => $staleAfterSec,
-            'queued' => $byStatus['queued'] ?? 0,
-            'failed' => $byStatus['failed'] ?? 0,
+            'last_tick_at'    => $last_tick,
+            'stale'           => $last_tick === 0 ? true : $stale,
+            'stale_after_sec' => $stale_window,
+            'queued'          => (int) $evidence['queued'],
+            'failed'          => (int) $evidence['failed'],
         ];
     }
 
@@ -1392,6 +1626,25 @@ final class App
     }
 
     /**
+     * پیکربندیِ Clinic-local **بدونِ الزام به Scope**.
+     *
+     * برخلاف `settings()` که در نصبِ چند-Clinic بدونِ انتخابِ صریح
+     * `CLINIC_SCOPE_REQUIRED` می‌دهد، این متد برای «عملیاتِ سطح نصب» است:
+     * اگر Scopeِ معتبری موجود باشد همان پیکربندی برمی‌گردد، وگرنه `null`
+     * (بدونِ ساخت/حدسِ Clinic). مصرف‌کننده باید `null` را «پیکربندیِ
+     * Clinic-local در این بافت خوانده نمی‌شود» تفسیر کند، نه «پیش‌فرض».
+     */
+    public static function clinic_settings_or_null(): ?Settings {
+        try {
+            return self::settings();
+        } catch ( ScopeRequiredException ) {
+            return null;
+        } catch ( \Throwable ) {
+            return null;
+        }
+    }
+
+    /**
      * کارخانهٔ `Settings` per-Clinic (§5-D-2) — نقطهٔ یکتای ساختِ پیکربندی.
      *
      * ساختنش به هیچ Clinic/Scope‌ای نیاز ندارد، پس سرویس‌هایی که آن را نگه
@@ -1527,21 +1780,40 @@ final class App
      */
     public static function updateService(): UpdateService
     {
-        static $updates = null;
-        if ($updates === null) {
-            try {
-                $serverUrl = (string) self::settings()->get('license.server_url', '');
-            } catch (\Throwable) {
-                $serverUrl = '';
-            }
-            $updates = new UpdateService(
-                self::settings(),
+        // Installation-wide update operation must not require an ambient
+        // ClinicScope: in a multi-Clinic install no Clinic is inferred.
+        $settings = self::clinic_settings_or_null();
+
+        // CPMS Classic Admin UX (B) — نمونهٔ بدونِ Scope هیچ‌گاه memo نمی‌شود؛
+        // وگرنه اولین فراخوانیِ سطحِ نصب، نمونهٔ Clinic-محورِ بعدی را می‌گیرد و
+        // کانال/بازهٔ ذخیره‌شدهٔ همان Clinic خوانده نمی‌شود.
+        if ( null === $settings ) {
+            return new UpdateService(
+                null,
                 self::licenseService(),
-                new HttpUpdateMetadataGateway(['server_url' => $serverUrl])
+                new HttpUpdateMetadataGateway( [ 'server_url' => '' ] )
             );
         }
 
-        return $updates;
+        // کلیدِ کش = Clinicِ همان Settings. پیش از این یک `static $updates`
+        // تک‌متغیره بود: در یک فرآیندِ PHP با چند Clinic (WP-CLI، تست‌ها، یا
+        // درخواستی که Scope را عوض می‌کند) نمونهٔ Clinicِ اول برای Clinicِ دوم
+        // برگردانده می‌شد — یعنی نشتِ پیکربندیِ بین‌Clinic.
+        $key = $settings->clinicId();
+        if ( ! isset( self::$update_services[ $key ] ) ) {
+            try {
+                $server_url = (string) $settings->get( 'license.server_url', '' );
+            } catch ( \Throwable ) {
+                $server_url = '';
+            }
+            self::$update_services[ $key ] = new UpdateService(
+                $settings,
+                self::licenseService(),
+                new HttpUpdateMetadataGateway( [ 'server_url' => $server_url ] )
+            );
+        }
+
+        return self::$update_services[ $key ];
     }
 
     /**
@@ -1565,23 +1837,32 @@ final class App
     /**
      * Health/سازگاری سیستم (F10 — spec §40). بدون PHI.
      */
-    public static function systemHealthService(): SystemHealthService
-        {
-            static $health = null;
-            if ($health === null) {
-                $health = new SystemHealthService(
-                    self::db(),
-                    self::settings(),
-                    self::installationSettings(),
-                    self::licenseService(),
-                    self::backupService(),
-                    self::updateService(),
-                    self::op()
-                );
-            }
+    public static function system_health_service(): SystemHealthService {
+        // Installation-wide health must be readable on a multi-Clinic install
+        // with no ambient ClinicScope. Clinic-local settings are passed only
+        // when a trusted scope already exists; no Clinic is ever inferred.
+        //
+        // کلیدِ کش = Clinicِ همان Scope (`null` ⇒ سطح نصب). یک `static` تک‌متغیره
+        // نشت می‌داد: نمونه‌ای که با Scopeِ Clinic A ساخته شد، در همان فرآیند
+        // برای Clinic B هم برگردانده می‌شد و گزارشِ سلامت پیکربندیِ Clinic اشتباه
+        // (مثلاً ریشهٔ فایل یا کانال به‌روزرسانی) را می‌خواند.
+        $settings = self::clinic_settings_or_null();
+        $key      = null === $settings ? 'installation' : 'clinic:' . $settings->clinicId();
 
-            return $health;
+        if ( ! isset( self::$health_services[ $key ] ) ) {
+            self::$health_services[ $key ] = new SystemHealthService(
+                self::db(),
+                $settings,
+                self::installationSettings(),
+                self::licenseService(),
+                self::backupService(),
+                self::updateService(),
+                self::op()
+            );
         }
+
+        return self::$health_services[ $key ];
+    }
 
     public static function dispatcher(): JobsDispatcher
     {

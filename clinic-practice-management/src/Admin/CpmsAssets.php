@@ -38,6 +38,17 @@ final class CpmsAssets
         'cpms-prescription-print',
         'cpms-patient',
         'cpms-patients',
+        // CPMS Classic Admin UX (A) — صفحاتِ ثبت‌شده‌ای که پیش از این هیچ
+        // asset اسکوپ‌شده‌ای نمی‌گرفتند (فرم‌ها/جدول‌ها/انتخاب‌گرها و
+        // confirm/validation سمتِ کلاینت بدون CSS/JS می‌ماندند).
+        'cpms-custom-roles',
+        'cpms-finance-delegation',
+        'cpms-facility-setup',
+        'cpms-shortcodes',
+        // F — صفحه‌های مدیریتِ سازمان (ADR-0031) عمداً بیرونِ این allowlist
+        // می‌مانند: قراردادِ `IranGeographyAddressFormsTest` این دو صفحه را
+        // «بدونِ کنترلِ جغرافیایی/JSِ عمومی» تعریف کرده و افزودنشان آن تست را
+        // می‌شکست. اگر روزی لازم شد، اول قراردادِ تست به‌روزرسانی شود.
     ];
 
     public static function register(): void

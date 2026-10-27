@@ -27,8 +27,15 @@ final class UpdateService
 {
     public const CACHE_PREFIX = 'cpms_update_check';
 
+    /**
+     * @param Settings|null $settings پیکربندیِ Clinic-local. `null` یعنی هیچ
+     *        ClinicScope معتبری در دسترس نیست (نصبِ چند-Clinic بدون انتخاب
+     *        صریح). در این حالت «عملیاتِ سطح نصب» (مثل `isUpdateEntitled()`)
+     *        کار می‌کند و خواندنِ پیکربندی به پیش‌فرضِ امن برمی‌گردد؛ هیچ
+     *        Clinic‌ای حدس زده نمی‌شود.
+     */
     public function __construct(
-        private readonly Settings $settings,
+        private readonly ?Settings $settings,
         private readonly LicenseService $licenses,
         private readonly UpdateMetadataGateway $gateway
     ) {
@@ -39,6 +46,10 @@ final class UpdateService
      */
     public function channel(): string
     {
+        if ( $this->settings === null ) {
+            return 'stable';
+        }
+
         try {
             $channel = (string) $this->settings->get('update.channel', 'stable');
         } catch (\Throwable) {
@@ -46,6 +57,23 @@ final class UpdateService
         }
 
         return ($channel === 'beta' || $channel === 'stable') ? $channel : 'stable';
+    }
+
+    /**
+     * بازهٔ بررسیِ به‌روزرسانی (ساعت) — پیش‌فرضِ امن ۲۴ وقتی ClinicScope موجود
+     * نیست یا مقدار قابل‌خواندن نیست. هیچ Clinic‌ای حدس زده نمی‌شود.
+     */
+    private function check_interval_hours(): int {
+        if ( $this->settings === null ) {
+            return 24;
+        }
+        try {
+            $hours = (int) $this->settings->get( 'update.check_interval_hours', 24 );
+        } catch ( \Throwable ) {
+            return 24;
+        }
+
+        return $hours > 0 ? $hours : 24;
     }
 
     /**
@@ -84,7 +112,7 @@ final class UpdateService
         // گره می‌خورد تا تصمیمِ مسدودِ قدیمی پس از تمدید باقی نماند.
         $rights    = UpdateRightsBoundary::from_claim( $this->licenses->update_rights_until() );
         $cache_key = self::CACHE_PREFIX . '_' . $channel . '_' . $rights->fingerprint();
-        $ttl       = max( 60, (int) $this->settings->get( 'update.check_interval_hours', 24 ) * 3600 );
+        $ttl       = max( 60, $this->check_interval_hours() * 3600 );
         $cached    = function_exists( 'get_transient' ) ? get_transient( $cache_key ) : false;
         if (!$force && is_array($cached) && isset($cached['checked_at']) && (time() - (int) $cached['checked_at']) < $ttl) {
             return $cached;

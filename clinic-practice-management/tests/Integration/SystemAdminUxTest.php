@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\SystemPage;
 use ClinicCore\Application\System\SystemHealthService;
+use ClinicCore\Bootstrap\App;
 use WP_UnitTestCase;
 
 /**
@@ -105,37 +106,147 @@ final class SystemAdminUxTest extends WP_UnitTestCase
         $this->assertStringContainsString('cpms_restore_apply', $html, 'فرم Restore وجود داشته باشد');
     }
 
-    public function testRenderedMariaDbUncertifiedRowShowsWarningInRowAndBanner(): void
+    /**
+     * D — ردیفِ MariaDBِ آزموده‌نشده حالا **مسدودکننده** است (نه «نیازمند تنظیم»).
+     *
+     * دلیل: دروازهٔ واقعیِ مهاجرت (migration 0027) همان نسخه را fail-closed رد
+     * می‌کند، پس نمایشِ «هشدار/نیازمند تنظیم» به اپراتور می‌گفت مشکل کوچکی است
+     * در حالی که فعال‌سازی روی آن سرور شکست می‌خورد.
+     */
+    public function testRenderedUntestedMariaDbRowIsABlockerWithMigrationGateGuidance(): void
     {
         $health = [
             'checks' => [
                 ['key' => 'php.version', 'label' => 'PHP نسخه', 'status' => SystemHealthService::PASS, 'detail' => '8.3'],
-                ['key' => 'db.mysql_version', 'label' => 'نسخهٔ سرور دیتابیس (MySQL)', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'mariadb:detected | MariaDB شناسایی شد — کفِ اعلام‌شده فقط MySQL 8.0 است و سیاستِ MariaDB اعلام نشده است'],
+                ['key' => 'db.mysql_version', 'label' => 'نسخهٔ سرور دیتابیس (MariaDB)', 'status' => SystemHealthService::FAIL, 'detail' => 'mariadb:unverified | 11.5.2-MariaDB — آزموده‌نشده'],
             ],
-            'host' => ['status' => SystemHealthService::HOST_SUPPORTED_WITH_WARNINGS, 'issues' => ['db.mysql_version']],
+            'host' => ['status' => SystemHealthService::HOST_UNSUPPORTED, 'issues' => ['db.mysql_version']],
         ];
 
         $html = $this->renderWith($health);
 
-        $this->assertStringContainsString('نیازمند تنظیم', $html, 'MariaDBِ تشخیص‌داده‌شده باید «نیازمند تنظیم» باشد.');
-        $this->assertStringContainsString('MariaDB شناسایی شد', $html, 'راهنما باید MariaDB را گزارش کند وقتی مدرک موجود است.');
-        $this->assertStringNotContainsString('مشکل ضروری', $html, 'MariaDBِ تشخیص‌داده‌شده نباید «مشکل ضروری» باشد.');
+        $this->assertStringContainsString('مسدودکننده', $html, 'ردیف باید در گروهِ مسدودکننده‌ها باشد.');
+        $this->assertStringContainsString('مشکل ضروری', $html, 'وضعیت ردیف باید «مشکل ضروری» باشد.');
+        $this->assertStringContainsString('migration 0027', $html, 'راهنما باید به دروازهٔ واقعیِ مهاجرت اشاره کند.');
+        $this->assertStringContainsString('11.4.13', $html, 'نسخهٔ آزموده‌شده باید در راهنما بیاید.');
     }
 
-    public function testRenderedGenuinelyUnknownDatabaseShowsCriticalAndNoFalseMariaDbClaim(): void
+    /**
+     * C — ریشهٔ ذخیره‌سازیِ ناموجود «اختیاری» نیست و کنترلِ راه‌اندازی وجود دارد.
+     */
+    public function testMissingStorageIsABlockerAndTheInitializationControlExists(): void
     {
         $health = [
             'checks' => [
                 ['key' => 'php.version', 'label' => 'PHP نسخه', 'status' => SystemHealthService::PASS, 'detail' => '8.3'],
-                ['key' => 'db.mysql_version', 'label' => 'نسخهٔ سرور دیتابیس (MySQL)', 'status' => SystemHealthService::UNKNOWN, 'detail' => 'نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL 8.0 تأییدپذیر نیست'],
+                ['key' => 'storage.files', 'label' => 'Storage فایل‌های پزشکی', 'status' => SystemHealthService::FAIL, 'detail' => 'ریشهٔ ذخیره‌سازی وجود ندارد: /srv/cpms-private/clinic-files'],
             ],
-            'host' => ['status' => SystemHealthService::HOST_UNSUPPORTED, 'issues' => ['db.mysql_version: نسخهٔ سرور دیتابیس در دسترس نیست یا قابل‌تشخیص نیست — برآورده‌شدنِ کفِ MySQL 8.0 تأییدپذیر نیست']],
+            'host' => ['status' => SystemHealthService::HOST_UNSUPPORTED, 'issues' => ['storage.files']],
         ];
 
         $html = $this->renderWith($health);
 
-        $this->assertStringContainsString('مشکل ضروری', $html, 'موتورِ ناشناخته باید «مشکل ضروری» باشد.');
-        $this->assertStringNotContainsString('MariaDB شناسایی شد', $html, 'بدون مدرکِ MariaDB نباید ادعای MariaDB شود.');
+        $this->assertStringContainsString('مسدودکننده', $html);
+        $this->assertStringNotContainsString('پیکربندی اختیاری', $html, 'ریشهٔ الزامیِ ذخیره‌سازی نباید در گروهِ اختیاری بیاید.');
+        // کنترلی که راهنما به آن ارجاع می‌دهد باید واقعاً رندر شود.
+        $this->assertStringContainsString('value="cpms_storage_init"', $html, 'فرم راه‌اندازی ذخیره‌سازی باید در صفحه باشد.');
+        $this->assertStringContainsString('cpms_storage_init', $html);
+    }
+
+    /**
+     * C — راهنمای ریشهٔ ذخیره‌سازی باید الزامی‌بودن را بگوید و به کنترلِ واقعیِ
+     * همین صفحه ارجاع دهد؛ «wp-content عمومی» هرگز پیشنهاد نمی‌شود.
+     */
+    public function testGuideForStorageRootsIsMandatoryAndPointsAtTheRealControl(): void
+    {
+        foreach (['storage.files', 'storage.backups'] as $key) {
+            $g = SystemPage::guide($key, SystemHealthService::FAIL);
+
+            $this->assertStringContainsString('الزامی', $g['what'], 'ریشهٔ ذخیره‌سازی الزامی است: ' . $key);
+            $this->assertStringContainsString('راه‌اندازی ریشهٔ ذخیره‌سازی', $g['action'], 'راهنما باید به دکمهٔ همین صفحه ارجاع دهد: ' . $key);
+            $this->assertStringContainsString('بیرون از DocumentRoot', $g['action'], 'راهنما باید شرطِ مسیر را بگوید: ' . $key);
+            $this->assertStringNotContainsString('chmod', $g['action'], 'راهنما نباید بازکردنِ مجوز را پیشنهاد کند: ' . $key);
+            $this->assertNotSame('', trim($g['impact']), 'اثر باید گفته شود: ' . $key);
+        }
+
+        $files = SystemPage::guide('storage.files', SystemHealthService::FAIL);
+        $this->assertStringContainsString('CPMS_PRIVATE_STORAGE_DIR', $files['action'], 'مسیرِ جایگزینِ صریح باید ذکر شود.');
+        $this->assertStringContainsString('wp-content', $files['action'], 'راهنما باید هشدارِ استفاده از پوشهٔ عمومی را بدهد.');
+        $this->assertStringContainsString('هرگز', $files['action']);
+    }
+
+    public function testStorageInitializationHandlerIsRegisteredOnlyAsAnAdminPostAction(): void
+    {
+        SystemPage::register();
+
+        $this->assertNotFalse(has_action('admin_post_cpms_storage_init'), 'هندلر باید ثبت شده باشد.');
+        $this->assertFalse(
+            has_action('admin_post_nopriv_cpms_storage_init'),
+            'کاربرِ مهمان هرگز نباید بتواند ریشهٔ ذخیره‌سازی را راه‌اندازی کند.'
+        );
+    }
+
+    public function testStorageInitializationWithoutNonceIsRejectedAndCreatesNothing(): void
+    {
+        wp_set_current_user(self::factory()->user->create(['role' => 'administrator']));
+        $before = $this->storedFileCount();
+
+        $_POST = ['action' => 'cpms_storage_init'];
+
+        $this->assertWpDiedWith('اعتبارسنجی ناموفق', static function (): void {
+            SystemPage::storage_init();
+        });
+
+        $_POST = [];
+        $this->assertSame($before, $this->storedFileCount(), 'درخواستِ بی‌Nonce نباید هیچ ردیفی بسازد.');
+    }
+
+    public function testStorageInitializationWithoutCapabilityIsRejected(): void
+    {
+        wp_set_current_user(self::factory()->user->create(['role' => 'subscriber']));
+
+        $_POST = [
+            'action'   => 'cpms_storage_init',
+            '_wpnonce' => wp_create_nonce('cpms_storage_init'),
+        ];
+
+        $this->assertWpDiedWith('اعتبارسنجی ناموفق', static function (): void {
+            SystemPage::storage_init();
+        });
+
+        $_POST = [];
+    }
+
+    /**
+     * فراخوانیِ handler باید با wp_die متوقف شود؛ چون در محیطِ تست مسیرِ موفق
+     * به `exit` می‌رسد، فقط مسیرهای ردشده بررسی می‌شوند.
+     */
+    private function assertWpDiedWith(string $needle, callable $run): void
+    {
+        $message = '';
+        $handler = static function ($msg) use (&$message): void {
+            $message = is_string($msg) ? $msg : '';
+            throw new \RuntimeException('wp_die: ' . $message);
+        };
+        $filter = static fn () => $handler;
+
+        add_filter('wp_die_handler', $filter);
+        try {
+            $run();
+            $this->fail('انتظارِ wp_die می‌رفت.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('wp_die', $e->getMessage());
+            $this->assertStringContainsString($needle, $message);
+        } finally {
+            remove_filter('wp_die_handler', $filter);
+        }
+    }
+
+    private function storedFileCount(): int
+    {
+        global $wpdb;
+
+        return (int) $wpdb->get_var('SELECT COUNT(*) FROM `' . App::db()->table('cpms_medical_attachments') . '`');
     }
 
     private function renderWith(array $health): string

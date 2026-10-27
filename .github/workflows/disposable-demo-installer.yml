@@ -6,13 +6,33 @@ name: Disposable Demo Installer (browser-only companion)
 #
 # The production plugin's own workflows are untouched; this lane never modifies
 # clinic-practice-management/**.
+#
+# Path-scoped on purpose: the lane's own guard fails whenever the production
+# subtree differs from the PR base, so running it on a PR that legitimately
+# changes clinic-practice-management/** (its whole purpose) would fail for a
+# reason that has nothing to do with this lane. It runs only when its own files
+# change; `workflow_dispatch` still allows a manual run anywhere.
 
 on:
   workflow_dispatch:
   pull_request:
     branches: [main]
+    paths:
+      - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/scripts/companion-isolation.py'
+      - '.github/actions/playwright-browsers/**'
+      - 'bin/build-demo-installer.sh'
+      - 'tools/disposable-demo-installer/**'
+      - 'docs/demo-setup-fa.md'
   push:
     branches: [main]
+    paths:
+      - '.github/workflows/disposable-demo-installer.yml'
+      - '.github/scripts/companion-isolation.py'
+      - '.github/actions/playwright-browsers/**'
+      - 'bin/build-demo-installer.sh'
+      - 'tools/disposable-demo-installer/**'
+      - 'docs/demo-setup-fa.md'
 
 permissions:
   contents: read
@@ -56,6 +76,12 @@ jobs:
 
       - name: Automated tests (authorization, preflight, ownership, OTP, credentials)
         run: php "$COMPANION_DIR/tests/run-tests.php" | tee /tmp/cpdd-tests.log
+
+      # Workflow-only edits must not be able to disable the lane's own controls:
+      # the contract/security suite (and the isolation-rule unit tests inside it)
+      # runs on every lane invocation, including changes to this file alone.
+      - name: Lane contract & isolation-rule tests
+        run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 
       - name: Build installer ZIP twice and prove reproducibility + content
         run: |
@@ -155,15 +181,22 @@ jobs:
         with:
           browsers: chromium
 
-      - name: Production subtree unchanged by this lane
+      # Isolation rule, decided by an executable, unit-tested script
+      # (.github/scripts/companion-isolation.py, pinned by
+      # .github/workflows/test_workflow_contracts.py):
+      #   production-only  -> PASS  (legitimate production development)
+      #   companion-only   -> PASS  (production untouched)
+      #   workflow-only    -> PASS  (lane plumbing; the lane's own contract and
+      #                              security checks still run below)
+      #   mixed            -> FAIL closed
+      - name: Companion/production isolation (fail closed on mixed changes)
         run: |
           set -Eeuo pipefail
           BASE="$(git rev-parse "${{ github.event.pull_request.base.sha || 'origin/main' }}")"
-          if git diff --quiet "$BASE" HEAD -- clinic-practice-management; then
-            echo 'PASS: clinic-practice-management/** unchanged'
-          else
-            echo 'FAIL: production subtree modified' >&2; exit 1
-          fi
+          git diff --name-only "$BASE" HEAD > /tmp/cpdd-changed.txt
+          wc -l < /tmp/cpdd-changed.txt | xargs echo 'changed paths:'
+          python3 "$GITHUB_WORKSPACE/.github/scripts/companion-isolation.py" \
+            --changed-files /tmp/cpdd-changed.txt
 
       - name: Build production CPMS ZIP (unmodified main-line build script)
         run: |
@@ -189,6 +222,14 @@ jobs:
           wp config set WP_DEBUG true --raw --allow-root
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          # Private clinical storage must live outside the document root and be
+          # writable by the web server (php-fpm/apache user). A real host does
+          # this once by hand; here it is provisioned explicitly so the plugin
+          # never has to fall back or log a failed initialization on a pristine site.
+          sudo mkdir -p /home/runner/cpdd-private
+          sudo chown www-data:runner /home/runner/cpdd-private
+          sudo chmod 0775 /home/runner/cpdd-private
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --type=constant --allow-root
           ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           wp core install --url="$WP_URL" --title="CPDD Acceptance" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpdd.invalid --skip-email --allow-root
           echo "WP_ADMIN_CREATED=1"
@@ -264,6 +305,17 @@ jobs:
           wp config set FS_METHOD direct --allow-root
           wp config set FS_CHMOD_DIR 0775 --raw --allow-root
           wp config set FS_CHMOD_FILE 0664 --raw --allow-root
+          # Fresh, web-server-owned private storage root. The earlier CLI stage
+          # already created files/backups-roots (0750) owned by the runner user,
+          # and this stage activates the plugin as www-data through wp-admin; a
+          # host provisions its private root once, for the web-server user.
+          # Reusing the CLI-owned tree would make activation fail its own storage
+          # guard and log a non-default operational event.
+          sudo rm -rf /home/runner/cpdd-private
+          sudo mkdir -p /home/runner/cpdd-private
+          sudo chown -R www-data:runner /home/runner/cpdd-private
+          sudo chmod 0775 /home/runner/cpdd-private
+          wp config set CPMS_PRIVATE_STORAGE_DIR /home/runner/cpdd-private --type=constant --allow-root
           ADMIN_PASS_FILE=/tmp/cpdd-ci/.admin-pass
           python3 -c 'import secrets; print(secrets.token_hex(24), end="")' > "$ADMIN_PASS_FILE"
           chmod 600 "$ADMIN_PASS_FILE"
@@ -324,6 +376,30 @@ jobs:
           rm -f "$ADMIN_PASS_FILE"
           grep -q '^CPDD_BROWSER_ACCEPTANCE=PASS' /tmp/cpdd-ci/browser-acceptance.log
 
+      # A "non-default operational event" verdict is not actionable on its own:
+      # name the row so the next run does not need another guess. Runs only when
+      # something already failed, and never changes the acceptance result.
+      - name: Diagnose non-default operational log rows (failure only)
+        if: failure()
+        run: |
+          set -Euo pipefail
+          mkdir -p /tmp/cpdd-ci
+          wp eval "
+            global \$wpdb;
+            \$baseline = array( 'MIGRATION_START', 'MIGRATION_DONE', 'MIGRATION_0011_LOCATIONS_BACKFILL', 'CPMS_ACTIVATED', 'CPMS_PRIVATE_STORAGE_MIGRATION' );
+            \$table    = \$wpdb->prefix . 'cpms_operational_logs';
+            \$placeholders = implode( ',', array_fill( 0, count( \$baseline ), '%s' ) );
+            \$params   = array_merge( array( 'info' ), \$baseline );
+            \$sql      = 'SELECT level, message, context_json, created_at FROM ' . \$table . ' WHERE NOT ( level = %s AND message IN (' . \$placeholders . ') ) ORDER BY id';
+            \$rows     = \$wpdb->get_results( \$wpdb->prepare( \$sql, \$params ), ARRAY_A );
+            foreach ( (array) \$rows as \$row ) {
+                echo 'OPLOG_NON_DEFAULT=' . wp_json_encode( \$row ) . PHP_EOL;
+            }
+            echo 'OPLOG_TOTAL=' . (int) \$wpdb->get_var( 'SELECT COUNT(*) FROM ' . \$table ) . PHP_EOL;
+            echo 'PRIVATE_STORAGE_STATE=' . wp_json_encode( get_option( 'cpms_private_storage_state' ) ) . PHP_EOL;
+            echo 'PRIVATE_STORAGE_ROOT=' . ( defined( 'CPMS_PRIVATE_STORAGE_DIR' ) ? CPMS_PRIVATE_STORAGE_DIR : '(undefined)' ) . PHP_EOL;
+          " --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/cpdd-ci/oplog-diagnosis.log
+
       - name: No credentials or OTP codes leaked into logs
         if: always()
         run: |
@@ -361,6 +437,8 @@ jobs:
             sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/post-teardown.log 2>/dev/null | tail -20 || true
             echo '--- browser-acceptance ---'
             sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/browser-acceptance.log 2>/dev/null | tail -160 || true
+            echo '--- oplog diagnosis (failure only) ---'
+            sed -E 's/\b[a-f0-9]{48}\b/<redacted>/g' /tmp/cpdd-ci/oplog-diagnosis.log 2>/dev/null | tail -40 || true
             echo '```'
           } > /tmp/cpdd-ci/pr-comment.md
           if [ -s /tmp/cpdd-ci/pr-comment.md ]; then

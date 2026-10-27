@@ -353,4 +353,58 @@ final class InstallationSettings
         }
         ($this->writeOption)(self::OPTION_BACKUP_LAST_RUN_AT, $timestamp);
     }
+
+    // ============ Cron/Queue — حالت عملیاتیِ سطح نصب (۱ کلید) ============
+
+    /**
+     * کلید Option برای heartbeat صف (آخرین tick موفق) — **سطح نصب**.
+     *
+     * ریشهٔ نقص: این heartbeat پیش از این فقط به‌صورتِ Settingِ per-Clinic
+     * (`jobs.last_tick_at`) نوشته می‌شد و `App::recordTick()` در نصبِ
+     * چند-Clinic (بدونِ ClinicScope محیطی) با `CLINIC_SCOPE_REQUIRED` شکست
+     * می‌خورد؛ نتیجه: صفِ سالم همیشه «متوقف» گزارش می‌شد. صف و Jobهای طبقهٔ S
+     * سطح نصب‌اند و کارگرِ سیستم هیچ Clinic محیطی ندارد، پس heartbeat هم باید
+     * سطح نصب باشد.
+     *
+     * مقدارِ کهنه/موجود در `jobs.last_tick_at` هر Clinic حفظ و فقط به‌عنوان
+     * fallback خوانده می‌شود (بدونِ مهاجرتِ داده و بدونِ حذف).
+     */
+    public const OPTION_JOBS_LAST_TICK_AT = 'cpms_jobs_last_tick_at';
+
+    /** پیش‌فرض: 0 (هرگز) */
+    public const DEFAULT_JOBS_LAST_TICK_AT = 0;
+
+    private const MIN_JOBS_LAST_TICK_AT = 0;
+
+    /**
+     * زمان آخرین tick موفقِ صف — **حالت عملیاتی سطح نصب**، نه پیکربندی کاربر.
+     *
+     * با `autoload=no` در wp_options ذخیره می‌شود. غایب/غیرعددی/منفی → 0.
+     */
+    public function get_jobs_last_tick_at(): int {
+        // ویژگیِ تزریق‌شدهٔ این کلاس از پیش موجود و camelCase است؛ خواندنِ
+        // داینامیک، نامِ قدیمی را دست‌نخورده نگه می‌دارد و نام‌گذاریِ متدِ جدید
+        // را استانداردِ وردپرس می‌کند.
+        $read = $this->{'readOption'};
+        $raw  = $read( self::OPTION_JOBS_LAST_TICK_AT, self::DEFAULT_JOBS_LAST_TICK_AT );
+        if ( ! is_numeric( $raw ) ) {
+            return self::DEFAULT_JOBS_LAST_TICK_AT;
+        }
+        $ts = (int) $raw;
+
+        return $ts >= self::MIN_JOBS_LAST_TICK_AT ? $ts : self::DEFAULT_JOBS_LAST_TICK_AT;
+    }
+
+    /**
+     * ثبت زمان آخرین tick — حالت عملیاتی.
+     *
+     * @throws InvalidArgumentException اگر منفی باشد (fail-closed).
+     */
+    public function set_jobs_last_tick_at( int $timestamp ): void {
+        if ( $timestamp < self::MIN_JOBS_LAST_TICK_AT ) {
+            throw new InvalidArgumentException( 'زمان آخرین tick نمی‌تواند منفی باشد.' );
+        }
+        $write = $this->{'writeOption'};
+        $write( self::OPTION_JOBS_LAST_TICK_AT, $timestamp );
+    }
 }

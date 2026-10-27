@@ -26,7 +26,7 @@ namespace ClinicCore\Admin;
  *  - Scoped to the exact post-activation landing: the redirect only fires
  *    while $pagenow === 'plugins.php' — i.e. the literal page WordPress
  *    itself returns the admin to right after clicking "Activate" (and the
- *    page where CpmsAdminMenu::onboardingNotice() deliberately never
+ *    page where CpmsAdminMenu::onboarding_notice() deliberately never
  *    renders its own notice, see its `$screen->id === 'plugins'` guard).
  *    This is a real regression fix: an earlier revision fired this redirect
  *    on ANY wp-admin page (admin_init runs long before admin_notices), so it

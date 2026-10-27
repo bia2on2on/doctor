@@ -163,7 +163,7 @@ final class RoleCapabilitiesPage
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'مجوزهای پیشرفته',
             'مجوزهای پیشرفته',
             'manage_options',

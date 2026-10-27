@@ -124,6 +124,9 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
         $GLOBALS['menu'] = [];
         $GLOBALS['submenu'] = [];
         $GLOBALS['_wp_submenu_nopriv'] = [];
+        // B-1: «پنهان از زیرمنو» یک رَجیستریِ ردیف است؛ اگر بین تست‌ها پاک نشود،
+        // گاردِ drift صفحه‌های ثبت‌شده در تستِ قبلی را به این تست نشت می‌دهد.
+        CpmsAdminMenu::reset_hidden_rows();
     }
 
     /**
@@ -182,6 +185,15 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
                 if (is_array($item) && isset($item[1], $item[2]) && is_string($item[2]) && is_string($item[1])) {
                     $found[$item[2]] = $item[1];
                 }
+            }
+        }
+        // B-1: صفحاتِ «جزئی» ثبت‌شده‌اند اما عمداً از آرایهٔ زیرمنو پنهان می‌شوند
+        // (کشف از ناوبریِ بخش‌ها/URL مستقیم). ثبت واقعیِ آن‌ها همان ردیفی است که
+        // CpmsAdminMenu هنگامِ پنهان‌کردن نگه می‌دارد — بدون آن، این assertion
+        // «ثبت» را با «نمایش» اشتباه می‌گرفت.
+        foreach (CpmsAdminMenu::hidden_submenu_rows() as $slug => $item) {
+            if (isset($item[1]) && is_string($item[1])) {
+                $found[$slug] = $item[1];
             }
         }
 
@@ -453,6 +465,11 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
                 }
             }
         }
+        // B-1: ثبت‌شده اما پنهان از زیرمنو (کشف از ناوبریِ بخش‌ها) — «ثبت» است،
+        // نه «نمایش»؛ بدون این، گارد drift در جهتِ اشتباه شلیک می‌کرد.
+        foreach (array_keys(CpmsAdminMenu::hidden_submenu_rows()) as $hidden_slug) {
+            $found[] = (string) $hidden_slug;
+        }
 
         $cpms_slugs = array_values(array_unique(array_filter(
             $found,
@@ -464,6 +481,13 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
         sort($registered);
 
         $this->assertSame($registered, $cpms_slugs, 'the registry and the CPMS page registrations must agree exactly');
+
+        // B-1: رَجیستریِ معتبرِ «کدام صفحه مالِ CPMS است» دیگر همین allowlist کوچکِ
+        // همرزیستی نیست، بلکه منوی واحد است. هر صفحه‌ای که در این تست دیده شد باید
+        // در آن رَجیستری هم باشد — وگرنه صفحه‌ای ثبت شده که هیچ‌جا قابلِ کشف نیست.
+        foreach ($cpms_slugs as $slug) {
+            $this->assertArrayHasKey($slug, CpmsAdminMenu::PAGES, "{$slug} is registered but absent from the unified menu registry");
+        }
     }
 
     // ============================ page authorization stays independent ============================

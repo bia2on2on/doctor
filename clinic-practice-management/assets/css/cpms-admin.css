@@ -403,3 +403,135 @@ body.cpms-admin .cpms-patient-portal__notification-head strong { font-size: 14px
 body.cpms-admin .cpms-patient-portal__notification.is-read .cpms-badge { background: var(--cpms-surface-alt); border: 1px solid var(--cpms-border); }
 body.cpms-admin .cpms-patient-portal__notification p { margin: 6px 0 4px; line-height: 1.7; }
 body.cpms-admin .cpms-patient-portal__notification time { display: block; font-size: 12px; }
+
+/* ---------- CPMS Classic Admin UX (C) — narrow-viewport overflow hardening ----------
+   هدف: حذفِ overflow افقی و clipping واقعی در 320px/390px بدونِ «پنهان‌کردن» محتوا.
+   هیچ قاعده‌ای این‌جا `overflow: hidden` روی متنِ تشخیصی نمی‌گذارد؛ محتوای بلند
+   می‌شکند (wrap) یا در ظرفِ خودش قابلِ‌اسکرول می‌ماند تا خوانا بماند.
+   همهٔ قواعد با body.cpms-admin اسکوپ شده‌اند (بدون اثر روی بقیهٔ wp-admin). */
+body.cpms-admin {
+  /* هیچ فرزندِ grid/flex نباید به‌خاطرِ min-content از viewport پهن‌تر شود. */
+  --cpms-min-content: 0;
+}
+body.cpms-admin .cpms-diag {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: isolate;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  background: var(--cpms-surface-alt);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  font-size: 12px;
+  line-height: 1.6;
+}
+body.cpms-admin .cpms-wrap-cell,
+body.cpms-admin .cpms-health-table td,
+body.cpms-admin .cpms-health-item {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-width: 100%;
+}
+body.cpms-admin .cpms-health-table code,
+body.cpms-admin .cpms-health-item code {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* انتخاب‌گرِ صریحِ Clinic: در عرضِ کم، انتخاب‌گر و دکمه تمام‌عرض و قابلِ لمس. */
+body.cpms-admin .cpms-clinic-selector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 14px;
+  max-width: 100%;
+  min-width: 0;
+}
+body.cpms-admin .cpms-clinic-selector label { font-weight: 600; }
+body.cpms-admin .cpms-clinic-selector select { max-width: 100%; min-width: 0; }
+body.cpms-admin .cpms-clinic-selector .description { flex-basis: 100%; margin: 0; }
+@media (max-width: 480px) {
+  body.cpms-admin .cpms-clinic-selector select,
+  body.cpms-admin .cpms-clinic-selector .button { width: 100%; }
+}
+/* فرم‌ها: هیچ کنترلِ ذاتی‌پهن نباید از کارت بیرون بزند. */
+@media (max-width: 782px) {
+  body.cpms-admin .card,
+  body.cpms-admin .cpms-card,
+  body.cpms-admin .cpms-role-preset { max-width: 100%; box-sizing: border-box; }
+  body.cpms-admin input.regular-text,
+  body.cpms-admin input.large-text,
+  body.cpms-admin textarea.large-text,
+  body.cpms-admin textarea { width: 100%; max-width: 100%; box-sizing: border-box; }
+  body.cpms-admin .notice.inline { max-width: 100%; box-sizing: border-box; }
+  /* کنترل‌های ذاتی‌پهن: `input` با عرضِ `size` (مثل امضای Base64 در صفحهٔ سیستم = ۹۶۷px)
+     و دکمهٔ با برچسبِ بلندِ فارسی (مثل «راه‌اندازی ریشهٔ ذخیره‌سازی…» = ۳۲۹px) در
+     ۳۲۰px از viewport بیرون می‌زدند. عرض سقف می‌گیرد و برچسبِ دکمه می‌شکند. */
+  body.cpms-admin input[type="text"],
+  body.cpms-admin input[type="number"],
+  body.cpms-admin input[type="url"],
+  body.cpms-admin select { max-width: 100%; box-sizing: border-box; }
+  body.cpms-admin .button { max-width: 100%; white-space: normal; height: auto; }
+}
+
+/* ---------- B-1 — ناوبریِ بخش‌ها (یک منوی واحد، صفحه‌های جزئیِ قابلِ‌کشف) ----------
+   همین نوار بالای هر صفحهٔ CPMS رندر می‌شود؛ صفحاتی که در زیرمنوی اصلی نیستند
+   از همین‌جا (و از URL مستقیم) در دسترس‌اند. RTL-first، قابلِ‌شکستن در 320px،
+   بدونِ overflow افقی، و با focus-visible برای دسترسیِ کیبوردی. */
+body.cpms-admin .cpms-sectionnav {
+  max-width: 100%;
+  box-sizing: border-box;
+  margin: 8px 0 16px;
+  padding: 10px 12px;
+  background: var(--cpms-surface);
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+}
+body.cpms-admin .cpms-sectionnav__group { margin: 0 0 8px; }
+body.cpms-admin .cpms-sectionnav__group:last-child { margin-bottom: 0; }
+body.cpms-admin .cpms-sectionnav__title {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--cpms-text-muted);
+  margin-inline-end: 6px;
+}
+body.cpms-admin .cpms-sectionnav__links {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+body.cpms-admin .cpms-sectionnav__link {
+  display: inline-block;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid var(--cpms-border);
+  border-radius: var(--cpms-radius-sm);
+  background: var(--cpms-surface-alt);
+  color: var(--cpms-primary);
+  text-decoration: none;
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+body.cpms-admin .cpms-sectionnav__link:hover { border-color: var(--cpms-primary); }
+body.cpms-admin .cpms-sectionnav__link.is-current {
+  background: var(--cpms-primary);
+  border-color: var(--cpms-primary);
+  color: #fff;
+  font-weight: 600;
+}
+body.cpms-admin .cpms-sectionnav__link:focus-visible {
+  outline: 2px solid var(--cpms-primary);
+  outline-offset: 2px;
+}
+@media (max-width: 480px) {
+  body.cpms-admin .cpms-sectionnav__links { display: flex; }
+  body.cpms-admin .cpms-sectionnav__link { min-height: 32px; }
+}

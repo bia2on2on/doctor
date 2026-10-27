@@ -42,14 +42,14 @@ final class CpmsDashboard
         $setup_complete = $setup_flag === true;
         $scope_required = $setup_flag === null;
 
-        $health = self::safe(fn () => App::systemHealthService()->run());
-        $queue = self::safe(fn () => App::queueHealth());
-        $license = self::safe(fn () => App::licenseService()->statusMeta());
-        $backups = self::safe(fn () => App::backupService()->listBackups());
-        $sms = self::safe(fn () => App::smsService()->status());
-        $todayAppointments = self::safe(fn () => self::todayAppointments());
-        $activeDoctors = self::safe(fn () => self::activeDoctors());
-        $schemaVersion = self::safe(fn () => App::migrations()->currentVersion());
+        $health             = self::safe( fn () => App::system_health_service()->run() );
+        $queue              = self::safe( fn () => App::queueHealth() );
+        $license            = self::safe( fn () => App::licenseService()->statusMeta() );
+        $backups            = self::safe( fn () => App::backupService()->listBackups() );
+        $sms                = self::safe( fn () => App::smsService()->status() );
+        $today_appointments = self::safe( fn () => self::todayAppointments() );
+        $active_doctors     = self::safe( fn () => self::activeDoctors() );
+        $schema_version     = self::safe( fn () => App::migrations()->currentVersion() );
         ?>
         <div class="wrap" dir="rtl">
             <h1>مدیریت مطب</h1>
@@ -85,14 +85,14 @@ final class CpmsDashboard
                                 <a class="button" href="<?php echo esc_url( CpmsAdminMenu::setup_url() ); ?>">ادامه راه‌اندازی</a>
                             <?php endif; ?>
                         </p>
-                        <p class="description">نسخه دیتابیس: <code><?php echo esc_html((string) ($schemaVersion ?? '—')); ?></code>؛ نسخه افزونه: <code><?php echo esc_html(defined('CPMS_VERSION') ? CPMS_VERSION : 'dev'); ?></code></p>
+                        <p class="description">نسخه دیتابیس: <code><?php echo esc_html( (string) ( $schema_version ?? '—' ) ); ?></code>؛ نسخه افزونه: <code><?php echo esc_html( defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev' ); ?></code></p>
                     </div>
                 <?php endif; ?>
 
                 <?php if (current_user_can(RolesAndCapabilities::APPT_READ)) : ?>
                     <div class="cpms-card">
                         <h2>نوبت‌های امروز</h2>
-                        <p class="cpms-big"><?php echo esc_html((string) ($todayAppointments ?? 0)); ?></p>
+                        <p class="cpms-big"><?php echo esc_html( (string) ( $today_appointments ?? 0 ) ); ?></p>
                         <p class="description">نوبت‌های امروز (در انتظار / تأییدشده)</p>
                     </div>
                 <?php endif; ?>
@@ -114,7 +114,7 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::CONFIG)) : ?>
                     <div class="cpms-card">
                         <h2>پزشکان فعال</h2>
-                        <p class="cpms-big"><?php echo esc_html((string) ($activeDoctors ?? 0)); ?></p>
+                        <p class="cpms-big"><?php echo esc_html( (string) ( $active_doctors ?? 0 ) ); ?></p>
                         <p class="description">پزشکان فعال</p>
                     </div>
                 <?php endif; ?>

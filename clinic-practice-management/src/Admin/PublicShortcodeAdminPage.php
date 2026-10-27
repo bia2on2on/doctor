@@ -25,13 +25,17 @@ final class PublicShortcodeAdminPage {
 	}
 
 	public static function menu(): void {
-		add_management_page(
+		// B-1: از «ابزارها» به «مدیریت مطب» (capability صفحه: manage_options).
+		add_submenu_page(
+			CpmsAdminMenu::parent_slug(),
 			'کدهای کوتاه و نمایش در سایت',
 			'کدهای کوتاه CPMS',
 			'manage_options',
 			self::PAGE_SLUG,
 			array( self::class, 'render' )
 		);
+		// صفحهٔ کمکی (read-only) در زیرمنو شلوغی نمی‌سازد؛ از ناوبری بخش‌ها و URL مستقیم در دسترس است.
+		CpmsAdminMenu::hide_from_submenu( self::PAGE_SLUG );
 	}
 
 	public static function render(): void {
@@ -60,7 +64,7 @@ final class PublicShortcodeAdminPage {
 			<p class="description">کد کوتاه را در محتوای برگه یا نوشتهٔ وردپرس، یا در بلوک «کد کوتاه»، قرار دهید. این ابزار برگه‌ای به‌صورت خودکار ایجاد نمی‌کند؛ محل نمایش را خودتان انتخاب کنید.</p>
 
 			<?php if ( $clinic_choices !== array() ) : ?>
-				<form method="get" action="<?php echo esc_url( admin_url( 'tools.php' ) ); ?>">
+				<form method="get" action="<?php echo esc_url( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) ); ?>">
 					<input type="hidden" name="page" value="<?php echo esc_attr( self::PAGE_SLUG ); ?>">
 					<label for="cpms_shortcode_clinic">Clinic مجاز</label>
 					<select id="cpms_shortcode_clinic" name="clinic_id" required>

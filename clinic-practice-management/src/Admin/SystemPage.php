@@ -6,6 +6,8 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Application\System\CronScheduleRepair;
+use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -42,12 +44,18 @@ final class SystemPage
         add_action('admin_post_cpms_restore_preflight', [self::class, 'restorePreflight']);
         add_action('admin_post_cpms_update_check', [self::class, 'updateCheck']);
         add_action('admin_post_cpms_update_settings', [self::class, 'updateSettings']);
+        // CPMS Classic Admin UX (E) — ترمیمِ مجاز و Nonceدارِ زمان‌بندیِ صف.
+        add_action( 'admin_post_cpms_cron_repair', [ self::class, 'cron_repair' ] );
+        // C — راه‌اندازی/بررسیِ مجاز و Nonceدارِ ریشه‌های ذخیره‌سازی خصوصی.
+        // این همان کنترلی است که متنِ بخشِ سلامت به آن ارجاع می‌دهد؛ پیش از این
+        // هیچ کنترلی وجود نداشت و راهنما به دکمه‌ای اشاره می‌کرد که نبود.
+        add_action( 'admin_post_cpms_storage_init', [ self::class, 'storage_init' ] );
     }
 
     public static function menu(): void
     {
         add_submenu_page(
-            CpmsAdminMenu::parentSlug(),
+            CpmsAdminMenu::parent_slug(),
             'سلامت سیستم',
             'سلامت سیستم',
             'cpms_config',
@@ -86,7 +94,7 @@ final class SystemPage
             $health = $health_override;
         } else {
             try {
-                $health = App::systemHealthService()->run();
+                $health = App::system_health_service()->run();
             } catch ( ScopeRequiredException ) {
                 // Multi-Clinic install: some health probes read Clinic configuration.
                 // No Clinic is inferred; the rest of the page stays available.
@@ -110,10 +118,32 @@ final class SystemPage
         $settings            = $selected_clinic_id > 0 ? App::settingsFactory()->forClinic( $selected_clinic_id ) : null;
 
         $installationSettings = App::installationSettings();
+
+        // CPMS Classic Admin UX (E) — تشخیصِ کاملِ Queue/WP-Cron (سطح نصب،
+        // مستقل از Clinic). هیچ Jobی این‌جا اجرا نمی‌شود.
+        $queue_diagnosis = null;
+        try {
+            $queue_diagnosis = App::queue_diagnosis( 300 );
+        } catch ( \Throwable $e ) {
+            $queue_diagnosis = null;
+        }
+
         $notice = get_transient(self::NOTICE_KEY);
         if ($notice !== false) {
             delete_transient(self::NOTICE_KEY);
         }
+
+        // CPMS Classic Admin UX (G) — چهار گروهِ متمایز: مسدودکننده، هشدارِ
+        // قابل‌اقدام، پیکربندیِ اختیاری، سالم. هیچ ردیفی حذف نمی‌شود.
+        $health_groups = is_array( $health ) ? SystemHealthService::group_checks( $health['checks'] ) : [];
+
+        // CPMS Classic Admin UX (E) — کلاسِ اعلانِ وضعیتِ صف بر پایهٔ شدت.
+        $queue_notice_class = match ( is_array( $queue_diagnosis ) ? (string) $queue_diagnosis['severity'] : '' ) {
+            QueueDiagnosis::SEVERITY_OK      => 'notice-success',
+            QueueDiagnosis::SEVERITY_INFO    => 'notice-info',
+            QueueDiagnosis::SEVERITY_WARNING => 'notice-warning',
+            default                          => 'notice-error',
+        };
         ?>
         <div class="wrap" dir="rtl">
             <h1>CPMS — سیستم، مجوز، بکاپ و به‌روزرسانی</h1>
@@ -142,46 +172,18 @@ final class SystemPage
                     <br><code><?php echo esc_html(implode(' | ', $health['host']['issues'])); ?></code>
                 <?php endif; ?>
             </p>
-            <?php $faults = []; $okRows = []; foreach ($health['checks'] as $c) : ?>
-                <?php ($c['status'] === SystemHealthService::PASS) ? $okRows[] = $c : $faults[] = $c; ?>
-            <?php endforeach; ?>
+                <?php self::render_health_groups( $health_groups ); ?>
 
-            <?php if ($faults !== []) : ?>
-                <h3>⚠️ موارد نیازمند توجه</h3>
-                    <?php foreach ( $faults as $c ) : ?>
-                        <?php $g = self::guide( (string) $c['key'], (string) $c['status'], (string) $c['detail'] ); ?>
-                    <div class="notice notice-warning inline" style="max-width:1000px">
-                        <p><strong><?php echo esc_html( self::statusBadge( (string) $c['status'], (string) $c['key'], (string) $c['detail'] ) ); ?> <?php echo esc_html( (string) $c['label'] ); ?></strong></p>
-                        <p>🔎 <strong>چی:</strong> <?php echo esc_html($g['what']); ?></p>
-                        <p>⚡ <strong>اثر:</strong> <?php echo esc_html($g['impact']); ?></p>
-                        <p>🛠 <strong>چه کنم:</strong> <?php echo esc_html($g['action']); ?></p>
-                        <details><summary style="cursor:pointer">جزئیات فنی</summary>
-                            <pre style="direction:ltr;text-align:left"><?php echo esc_html((string) $c['detail']); ?></pre>
-                        </details>
-                    </div>
-                <?php endforeach; ?>
-            <?php endif; ?>
-
-            <?php if ($faults === []) : ?>
-                <p class="description">✅ همهٔ بررسی‌های وضعیت سالم است.</p>
-            <?php endif; ?>
-
-            <h3>بررسی‌های سالم</h3>
-            <table class="widefat striped">
-                <thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>
-                <tbody>
-                <?php foreach ($okRows as $c) : ?>
-                    <tr>
-                        <td><?php echo esc_html($c['label']); ?></td>
-                        <td><?php echo esc_html( self::statusBadge( $c['status'], $c['key'], $c['detail'] ) ); ?></td>
-                        <td><?php echo esc_html($c['detail']); ?></td>
-                    </tr>
-                <?php endforeach; ?>
-                <?php if ($okRows === []) : ?>
-                    <tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>
+                <?php if ( [] === $health_groups['blockers'] && [] === $health_groups['warnings'] ) : ?>
+                    <p class="description">✅ هیچ مسدودکننده یا هشدار قابل‌اقدامی وجود ندارد.</p>
                 <?php endif; ?>
-                </tbody>
-            </table>
+
+                <?php self::render_storage_init_control(); ?>
+
+                <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
+
+                <h2>Queue و WP-Cron</h2>
+                <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
             <?php endif; ?>
 
             <h2>مجوز</h2>
@@ -443,6 +445,73 @@ final class SystemPage
         }
     }
 
+    /**
+     * C — راه‌اندازیِ دستی و مجازِ ریشه‌های ذخیره‌سازی خصوصی.
+     *
+     * امنیت: `cpms_config` + Nonce (`cpms_storage_init`) از طریق `guard()`.
+     * سطحِ نصب است و ClinicScope لازم ندارد (هیچ Clinic‌ای حدس زده نمی‌شود).
+     * مسیرها با همان قواعدِ فعال‌سازی بررسی می‌شوند: بیرون از DocumentRoot
+     * (realpath ⇒ symlink/`..`)، ساخت با 0750، نوشتنِ گاردها و **تأییدِ
+     * خواندنِ دوبارهٔ** آن‌ها. هیچ پوشهٔ موجودی پاک/جابه‌جا و هیچ مسیری
+     * خودکار عوض نمی‌شود و هیچ `chmod 777`ای اجرا نمی‌شود.
+     */
+    public static function storage_init(): void {
+        self::guard( 'cpms_storage_init' );
+
+        $result = App::initialize_private_storage( true );
+
+        $lines = [];
+        foreach ( $result['roots'] as $key => $root ) {
+            $label = 'files' === $key ? 'فایل‌های پزشکی' : 'بکاپ';
+            if ( $root['ok'] ) {
+                $lines[] = $label . ' ✅ ' . ( $root['created'] ? 'ساخته شد: ' : 'از قبل آماده بود: ' ) . $root['path'];
+            } else {
+                $lines[] = $label . ' ⛔ ' . ( $root['path'] !== '' ? $root['path'] . ' — ' : '' ) . $root['error'];
+            }
+        }
+
+        self::notify( implode( ' | ', $lines ), (bool) $result['ok'] );
+    }
+
+    /**
+     * CPMS Classic Admin UX (E) — ترمیمِ دستیِ زمان‌بندیِ صف.
+     *
+     * امنیت: `cpms_config` + Nonce (`cpms_cron_repair`). هیچ Jobی اجرا نمی‌شود؛
+     * فقط رویدادِ تکرارشوندهٔ WP-Cron در صورتِ نبود بازساخته می‌شود. هیچ فایل یا
+     * زمان‌بندِ میزبان تغییر نمی‌کند.
+     */
+    public static function cron_repair(): void {
+        self::guard( 'cpms_cron_repair' );
+
+        $was_scheduled = CronScheduleRepair::is_scheduled();
+        $repaired      = CronScheduleRepair::ensure_scheduled();
+
+        if ( $repaired ) {
+            $context = [
+                'hook'   => CronScheduleRepair::HOOK,
+                'source' => 'manual-admin',
+            ];
+            App::op()->info( 'CPMS_CRON_SCHEDULE_REPAIRED', $context );
+            self::notify( 'زمان‌بندی صف بازسازی شد. هیچ Jobی همین حالا اجرا نشد؛ اولین اجرا با اولین ترافیک/WP-Cron انجام می‌شود.', true );
+
+            return;
+        }
+
+        if ( true === $was_scheduled ) {
+            self::notify( 'زمان‌بندی صف از قبل موجود بود؛ تغییری لازم نبود.', true );
+
+            return;
+        }
+
+        if ( null === $was_scheduled ) {
+            self::notify( 'WP-Cron در این محیط قابل‌دسترسی نیست، بنابراین ترمیم خودکار زمان‌بندی انجام نشد. این محدودیت میزبان است، نه نتیجهٔ ترمیم.' );
+
+            return;
+        }
+
+        self::notify( 'ترمیم زمان‌بندی موفق نبود: WP-Cron رویداد را نپذیرفت. این محدودیت میزبان است؛ طبق ADR-0016 یک System Cron با `DISABLE_WP_CRON` تنظیم کنید. هیچ تغییری در فایل‌های میزبان انجام نشد.' );
+    }
+
     public static function updateCheck(): void
     {
         self::guard('cpms_update_check');
@@ -477,6 +546,147 @@ final class SystemPage
         $s->set('update.channel', in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable');
         $s->set('update.check_interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
         self::notify('تنظیمات به‌روزرسانی ذخیره شد', true);
+    }
+
+
+    /**
+     * CPMS Classic Admin UX (G) — چهار گروهِ متمایزِ سلامت (بدونِ حذفِ هیچ ردیف).
+     *
+     * @return array<string, array{title:string, notice:string, explain:string}>
+     */
+    private static function health_sections(): array {
+        return [
+            'blockers' => [
+                'title'   => '⛔ مسدودکننده‌ها',
+                'notice'  => 'notice-error',
+                'explain' => 'این موارد باید پیش از استفادهٔ عملیاتی رفع شوند.',
+            ],
+            'warnings' => [
+                'title'   => '⚠️ هشدارهای قابل‌اقدام',
+                'notice'  => 'notice-warning',
+                'explain' => 'افزونه کار می‌کند، اما این موارد باید بررسی شوند.',
+            ],
+            'optional' => [
+                'title'   => '➖ پیکربندی اختیاری',
+                'notice'  => 'notice-info',
+                'explain' => 'برای این موارد پیکربندی انجام نشده است؛ «نبود» به‌خودی‌خود خطا نیست.',
+            ],
+        ];
+    }
+
+    /**
+     * C — کنترلِ مجازِ راه‌اندازی/بررسیِ ریشه‌های ذخیره‌سازی خصوصی.
+     *
+     * چرا در گروهِ Health و نه در تنظیمات: نبودِ ریشهٔ ذخیره‌سازی یک
+     * **مسدودکنندهٔ** بالینی است، نه یک پیکربندیِ اختیاری؛ اقدامِ اصلاحی باید
+     * کنارِ همان ردیف باشد. فرم فقط با `cpms_config` + Nonce اجرا می‌شود
+     * (`storage_init()` → `guard()`).
+     */
+    private static function render_storage_init_control(): void {
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin:10px 0">';
+        wp_nonce_field( 'cpms_storage_init' );
+        echo '<input type="hidden" name="action" value="cpms_storage_init">';
+        echo '<button class="button">راه‌اندازی ریشهٔ ذخیره‌سازی (ساخت پوشه و گاردها)</button> ';
+        echo '<span class="description">مسیرهای بیرون از DocumentRoot ساخته/بررسی می‌شوند؛ هیچ فایل موجودی پاک یا جابه‌جا نمی‌شود.</span>';
+        echo '</form>';
+    }
+
+    /**
+     * @param array<string, list<array{key:string,label:string,status:string,detail:string}>> $health_groups
+     */
+    private static function render_health_groups( array $health_groups ): void {
+        foreach ( self::health_sections() as $group_key => $section ) {
+            $checks = $health_groups[ $group_key ] ?? [];
+            if ( [] === $checks ) {
+                continue;
+            }
+
+            echo '<h3>' . esc_html( $section['title'] ) . ' (' . (int) count( $checks ) . ')</h3>';
+            echo '<p class="description">' . esc_html( $section['explain'] ) . '</p>';
+
+            foreach ( $checks as $check ) {
+                self::render_health_item( $check, $section['notice'] );
+            }
+        }
+    }
+
+    /**
+     * @param array{key:string,label:string,status:string,detail:string} $check
+     */
+    private static function render_health_item( array $check, string $notice ): void {
+        $key    = (string) $check['key'];
+        $status = (string) $check['status'];
+        $detail = (string) $check['detail'];
+        $badge  = self::statusBadge( $status, $key, $detail );
+        $guide  = self::guide( $key, $status, $detail );
+
+        echo '<div class="notice ' . esc_attr( $notice ) . ' inline cpms-health-item" style="max-width:100%">';
+        echo '<p><strong>' . esc_html( $badge ) . ' ' . esc_html( (string) $check['label'] ) . '</strong></p>';
+        echo '<p>🔎 <strong>چی:</strong> ' . esc_html( $guide['what'] ) . '</p>';
+        echo '<p>⚡ <strong>اثر:</strong> ' . esc_html( $guide['impact'] ) . '</p>';
+        echo '<p>🛠 <strong>چه کنم:</strong> ' . esc_html( $guide['action'] ) . '</p>';
+        echo '<details><summary style="cursor:pointer">جزئیات فنی</summary>';
+        echo '<pre class="cpms-diag" dir="ltr">' . esc_html( $detail ) . '</pre>';
+        echo '</details>';
+        echo '</div>';
+    }
+
+    /**
+     * @param list<array{key:string,label:string,status:string,detail:string}> $checks
+     */
+    private static function render_healthy_table( array $checks ): void {
+        echo '<h3>✅ بررسی‌های سالم (' . (int) count( $checks ) . ')</h3>';
+        echo '<table class="widefat striped cpms-health-table">';
+        echo '<thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>';
+        echo '<tbody>';
+        foreach ( $checks as $check ) {
+            echo '<tr>';
+            echo '<td>' . esc_html( (string) $check['label'] ) . '</td>';
+            echo '<td>' . esc_html( self::statusBadge( (string) $check['status'], (string) $check['key'], (string) $check['detail'] ) ) . '</td>';
+            echo '<td class="cpms-wrap-cell">' . esc_html( (string) $check['detail'] ) . '</td>';
+            echo '</tr>';
+        }
+        if ( [] === $checks ) {
+            echo '<tr><td colspan="3">هیچ بررسی سالمی وجود ندارد.</td></tr>';
+        }
+        echo '</tbody>';
+        echo '</table>';
+    }
+
+    /**
+     * CPMS Classic Admin UX (E) — بخشِ «Queue و WP-Cron».
+     *
+     * هیچ Jobی این‌جا اجرا نمی‌شود؛ تنها اقدامِ ممکن، بازساختنِ idempotentِ رویدادِ
+     * زمان‌بندی با Nonce و مجوزِ `cpms_config` است.
+     *
+     * @param array<string, mixed>|null $queue_diagnosis
+     */
+    private static function render_queue_section( ?array $queue_diagnosis, string $notice_class ): void {
+        if ( null === $queue_diagnosis ) {
+            echo '<div class="notice notice-error inline"><p>⛔ وضعیت صف خوانده نشد؛ بقیهٔ صفحه مستقل از این بخش کار می‌کند.</p></div>';
+
+            return;
+        }
+
+        $state = (string) $queue_diagnosis['state'];
+
+        echo '<div class="notice ' . esc_attr( $notice_class ) . ' inline cpms-queue-state" style="max-width:100%" data-cpms-queue-state="' . esc_attr( $state ) . '">';
+        echo '<p><strong>' . esc_html( (string) $queue_diagnosis['label'] ) . '</strong></p>';
+        echo '<p>' . esc_html( (string) $queue_diagnosis['detail'] ) . '</p>';
+        echo '<p>🛠 <strong>چه کنم:</strong> ' . esc_html( (string) $queue_diagnosis['guidance'] ) . '</p>';
+        echo '</div>';
+        echo '<p class="description">' . esc_html( CronScheduleRepair::scheduler_explanation() ) . '</p>';
+
+        if ( ! (bool) $queue_diagnosis['repairable'] ) {
+            return;
+        }
+
+        echo '<form method="post" action="' . esc_url( admin_url( 'admin-post.php' ) ) . '" style="margin-bottom:12px">';
+        wp_nonce_field( 'cpms_cron_repair' );
+        echo '<input type="hidden" name="action" value="cpms_cron_repair">';
+        echo '<button class="button button-primary">ترمیم زمان‌بندی صف</button>';
+        echo '<span class="description">فقط رویدادِ زمان‌بندیِ WP-Cron بازساخته می‌شود؛ هیچ Jobی همین حالا اجرا نمی‌شود.</span>';
+        echo '</form>';
     }
 
     // ================= helpers =================
@@ -516,30 +726,72 @@ final class SystemPage
     public static function guide( string $key, string $status, string $detail = '' ): array
     {
         if ( $key === 'db.mysql_version' ) {
+            $maria = SystemHealthService::is_maria_db_compatibility_detail( $detail );
+
+            if ( $maria ) {
+                // ادعا فقط بر پایهٔ وضعیتِ واقعیِ ردیف — نه متنِ فارسی.
+                if ( $status === SystemHealthService::FAIL ) {
+                    // سه حالتِ واقعیِ FAIL را از هم جدا می‌کنیم: کهنه‌تر از مرز،
+                    // آزموده‌نشده، و نسخهٔ ناخوانا. متنِ یکسان برای هر سه،
+                    // اقدامِ درست را پنهان می‌کرد.
+                    if ( str_contains( $detail, 'mariadb:unknown_version' ) ) {
+                        return [
+                            'what'   => 'سرور MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌خواندن/تشخیص نیست.',
+                            'impact' => 'دروازهٔ مهاجرت/فعال‌سازی (migration 0027) نسخهٔ ناشناخته را Fail-Closed رد می‌کند، پس فعال‌سازی/به‌روزرسانی روی این سرور شکست می‌خورد. دادهٔ موجود حذف نمی‌شود.',
+                            'action' => 'نسخهٔ دقیق MariaDB را از پنل هاست/`SELECT VERSION()` بگیرید و میزبان را به نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' یا سریِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' منتقل کنید؛ پیش از هر تغییر بکاپ بگیرید.',
+                        ];
+                    }
+
+                    if ( str_contains( $detail, 'mariadb:unverified' ) ) {
+                        return [
+                            'what'   => 'این نسخهٔ MariaDB در CI این افزونه آزموده نشده است.',
+                            'impact' => 'دروازهٔ مهاجرت/فعال‌سازی (migration 0027) این نسخه را Fail-Closed رد می‌کند، پس فعال‌سازی/به‌روزرسانی روی این سرور شکست می‌خورد. دادهٔ موجود حذف نمی‌شود.',
+                            'action' => 'MariaDB را به نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' یا سریِ مرزِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' (وصلهٔ آزموده‌شده: ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH . ') منتقل کنید؛ پیش از هر تغییر یک بکاپ کامل بگیرید.',
+                        ];
+                    }
+
+                    return [
+                        'what'   => 'نسخهٔ MariaDB این سرور کهنه‌تر از مرزِ سازگاریِ مستندشده (' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ') است.',
+                        'impact' => 'این نسخه در CI این افزونه آزموده نشده و پشتیبانی نمی‌شود؛ ممکن است بخشی از عملیات دیتابیس رفتار متفاوت یا خطا داشته باشد. دسترسی به داده به‌صورت خودکار محدود نمی‌شود.',
+                        'action' => 'MariaDB را به سریِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' (وصلهٔ آزموده‌شده: ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY_TESTED_PATCH . ') یا نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' ارتقا دهید؛ پیش از هر تغییر یک بکاپ کامل بگیرید.',
+                    ];
+                }
+
+                if ( $status === SystemHealthService::WARNING ) {
+                    return [
+                        'what'   => 'سرور MariaDB شناسایی شد، اما این نسخهٔ مشخص در CI این افزونه آزموده نشده است.',
+                        'impact' => 'افزونه احتمالاً کار می‌کند، اما سازگاریِ کامل برای این نسخه تأیید/ادعا نمی‌شود. این وضعیت دسترسی به داده را محدود نمی‌کند.',
+                        'action' => 'اگر امکان دارد از نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' یا سریِ مرزِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' استفاده کنید؛ پیش از هر تغییر بکاپ بگیرید. MariaDB به‌عنوان MySQL ' . SystemHealthService::MIN_MYSQL_VERSION . ' سنجیده نمی‌شود.',
+                    ];
+                }
+
+                if ( $status === SystemHealthService::UNKNOWN ) {
+                    return [
+                        'what'   => 'سرور MariaDB شناسایی شد اما شمارهٔ نسخهٔ آن قابل‌خواندن/تشخیص نیست.',
+                        'impact' => 'تأییدِ سازگاری ممکن نیست (fail-closed)؛ این وضعیت دسترسی به داده را محدود نمی‌کند.',
+                        'action' => 'با میزبان/پشتیبانی هماهنگ کنید تا نسخهٔ سرور MariaDB خوانا شود، یا آن را به نسخهٔ آزموده‌شدهٔ MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . ' / سریِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' ارتقا دهید. پیش از هر تغییر بکاپ بگیرید.',
+                    ];
+                }
+
+                return [
+                    'what'   => 'سرور MariaDB در محدودهٔ سازگاریِ مستند و آزموده‌شدهٔ این افزونه است.',
+                    'impact' => 'نیازی به اقدام نیست.',
+                    'action' => 'بدون اقدام.',
+                ];
+            }
+
             if ( $status === SystemHealthService::FAIL ) {
                 return [
                     'what'   => 'نسخهٔ سرور MySQL این سایت کمتر از کفِ اعلام‌شده (8.0) است.',
                     'impact' => 'عملیات‌های وابسته به MySQL 8 ممکن است شکست بخورند یا پشتیبانی نشوند.',
-                    'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB 11.4.13 پشتیبانی‌شده استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
-                ];
-            }
-
-            // فقط وقتی مدرکِ ساختاریافتهٔ MariaDB موجود باشد، ادعا کن که
-            // MariaDB شناسایی شده است. در غیر این صورت (موتورِ ناشناخته) هیچ
-            // ادعایی دربارهٔ MariaDB نکن.
-            $maria = SystemHealthService::is_maria_db_compatibility_detail( $detail );
-            if ( ! $maria ) {
-                return [
-                    'what'   => 'موتورِ سرور دیتابیس قابل شناسایی نیست یا مدرکِ سازگاریِ آن خوانده نشد.',
-                    'impact' => 'تأییدِ سازگاری با کفِ MySQL 8.0 ممکن نیست؛ برخی عملیات ممکن است پشتیبانی نشوند. دسترسی به داده محدود نمی‌شود.',
-                    'action' => 'نسخهٔ سرور دیتابیس را بررسی کنید (SELECT VERSION()) و در صورت نیاز با پشتیبانی تماس بگیرید. پیش از هر تغییر بکاپ کامل بگیرید.',
+                    'action' => 'MySQL را به 8.0 یا بالاتر ارتقا دهید یا از MariaDB ' . SystemHealthService::MARIADB_TESTED_VERSION . '/سریِ ' . SystemHealthService::MARIADB_COMPAT_BOUNDARY . ' که آزموده شده‌اند استفاده کنید؛ پیش از تغییر بکاپ بگیرید.',
                 ];
             }
 
             return [
-                'what'   => 'سرور دیتابیس MariaDB شناسایی شد و سازگاریِ آن با کفِ MySQL 8.0 گواهی نشده است.',
-                'impact' => 'افزونه ممکن است روی این سرور کار کند، اما سازگاریِ کامل تأیید نشده است و رفتارِ برخی ویژگی‌ها ممکن است متفاوت باشد. دسترسی به داده محدود نمی‌شود.',
-                'action' => 'از MariaDB 11.4.13 یا MySQL 8.x پشتیبانی‌شده استفاده کنید؛ پیش از هر تغییر بکاپ کامل بگیرید؛ در صورت نیاز با پشتیبانی تماس بگیرید. ادعای سازگاریِ کامل نمی‌شود.',
+                'what'   => 'موتورِ سرور دیتابیس قابل شناسایی نیست یا نسخهٔ آن خوانده نشد.',
+                'impact' => 'تأییدِ سازگاری ممکن نیست؛ برخی عملیات ممکن است پشتیبانی نشوند. دسترسی به داده محدود نمی‌شود.',
+                'action' => 'نسخهٔ سرور دیتابیس را بررسی کنید (SELECT VERSION()) و در صورت نیاز با پشتیبانی تماس بگیرید. پیش از هر تغییر بکاپ کامل بگیرید.',
             ];
         }
 
@@ -581,19 +833,19 @@ final class SystemPage
                 'action' => 'راه‌اندازی (Wizard) را کامل کنید یا Migration را از سطح افزونه اجرا کنید.',
             ],
             'cron.jobs' => [
-                'what' => 'صف Cron/Jobs متوقف یا در حالت ناپایدار است.',
-                'impact' => 'یادآوری‌ها، تولید برنامه‌ها و رویدادهای زمان‌بندی‌شده اجرا نمی‌شوند (عملکرد تدریجی از بین می‌رود).',
-                'action' => 'System Cron را با DISABLE_WP_CRON فعال کنید (ADR-0016) یا WP-Cron را تنظیم کنید.',
+                'what'   => 'اجرای صف/WP-Cron نیازمند توجه است (رویدادِ زمان‌بندیِ غایب، اجرای کهنه یا Jobهای شکست‌خورده).',
+                'impact' => 'یادآوری‌ها، تولید برنامه‌ها و رویدادهای زمان‌بندی‌شده ممکن است به تأخیر بیفتند یا اجرا نشوند. تاریخچهٔ داده حذف نمی‌شود.',
+                'action' => 'در بخش «Queue و WP-Cron» همین صفحه وضعیت دقیق را ببینید؛ اگر رویدادِ زمان‌بندی غایب است دکمهٔ «ترمیم زمان‌بندی صف» را بزنید (هیچ Jobی فوراً اجرا نمی‌شود). برای اجرای قطعی و مستقل از ترافیک، System Cron را با DISABLE_WP_CRON تنظیم کنید (ADR-0016).',
             ],
             'storage.files' => [
-                'what' => 'محل ذخیرهٔ فایل‌های پزشکی در دسترس/قابل‌نوشتن نیست.',
+                'what'   => 'ریشهٔ فعالِ ذخیرهٔ فایل‌های پزشکی وجود ندارد، داخل DocumentRoot است، یا برای وب‌سرور قابل‌نوشتن نیست. این یک نیازِ بالینیِ الزامی است، نه یک پیکربندیِ اختیاری.',
                 'impact' => 'آپلود/دریافت فایل‌های پزشکی و دست‌خط شکست می‌خورد.',
-                'action' => 'مجوزهای پوشهٔ storage را برای وب‌سرور قابل‌نوشتن کنید و فضا/مسیر را بررسی کنید.',
+                'action' => 'دکمهٔ «راه‌اندازی ریشهٔ ذخیره‌سازی» را در همین صفحه بزنید (پوشه و گاردها ساخته و بررسی می‌شوند). اگر میزبان اجازهٔ ساخت نداد، والدِ پوشه را برای وب‌سرور قابل‌نوشتن کنید یا ثابت CPMS_PRIVATE_STORAGE_DIR را به مسیری بیرون از DocumentRoot تنظیم کنید؛ هرگز پوشهٔ عمومی wp-content را به‌عنوان جایگزین استفاده نکنید.',
             ],
             'storage.backups' => [
-                'what' => 'محل ذخیرهٔ بکاپ در دسترس/قابل‌نوشتن نیست.',
+                'what'   => 'ریشهٔ فعالِ ذخیرهٔ بکاپ وجود ندارد، داخل DocumentRoot است، یا برای وب‌سرور قابل‌نوشتن نیست. این الزامی است، نه اختیاری.',
                 'impact' => 'ساخت/بازیابی بکاپ ممکن نیست (ریسک از دست رفتن داده در خرابی).',
-                'action' => 'پوشهٔ بکاپ را قابل‌نوشتن کنید و مسیر در تنظیمات «بکاپ» را اصلاح کنید.',
+                'action' => 'دکمهٔ «راه‌اندازی ریشهٔ ذخیره‌سازی» را بزنید؛ اگر شکست خورد، مسیر `backup.storage_path` را به مسیری بیرون از DocumentRoot با مجوز نوشتن برای وب‌سرور اصلاح کنید.',
             ],
             'license.state' => [
                 'what' => 'وضعیت مجوز فعال/معتبر نیست.',
@@ -637,13 +889,9 @@ final class SystemPage
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
     private static function statusBadge( string $status, string $key = '', string $detail = '' ): string
     {
-        $is_maria = 'db.mysql_version' === $key
-            && SystemHealthService::UNKNOWN === $status
-            && SystemHealthService::is_maria_db_compatibility_detail( $detail );
-
-        if ( $is_maria ) {
-            return '⚠️ ' . SystemHealthService::USER_STATUS_NEEDS_SETUP;
-        }
+        // CPMS Classic Admin UX (D) — بدونِ استثنای MariaDB: نشانِ هر ردیف دقیقاً
+        // همان وضعیتِ طبقه‌بندی‌شده است (مدرکِ نامشخص ⇒ «بحرانی»، نه «نیازمند تنظیم»).
+        unset( $key, $detail );
 
         return match ( $status ) {
             'pass', SystemHealthService::PASS => '✅ ' . SystemHealthService::USER_STATUS_READY,

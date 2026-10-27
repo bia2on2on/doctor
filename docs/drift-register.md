@@ -501,6 +501,35 @@ standards on changed code`؛ بر مبنای SHA پیاده‌سازی f23e0c5 �
 - **آینده:** bumpِ baseline همچنان **دستی + مستند** است (همین بند)؛
   ratchetِ فعال از این پس روی دلتای نسبت به `2263ed67…` سنجیده می‌شود.
 
+#### ۸-۱-۲ — پینِ majorِ PHP_CodeSniffer (2026-10-26) — بازگرداندنِ تکرارپذیریِ گیت
+
+- **مشاهده (اثبات‌شده، نه فرض):** روی **همان** baseline (`2263ed67…`)، **همان**
+  scope (۱۷۰ فایل / ۵۵٫۵۷۰ خطِ add‌شده) و **همان** کامیت، گیتِ WPCS در
+  `2026-10-26T12:26Z` سبز بود و در `2026-10-26T13:41Z` با **۱۶۸ نقض** قرمز شد.
+  نمونه‌های نقض در کدی بودند که این شاخه هرگز لمس نکرده است —
+  مثلاً `add_filter('cron_schedules', …)` در `App::boot()` و جدولِ
+  اولویتِ Jobها — و برچسب‌های نقض (`Generic.Classes.OpeningBraceSameLine`,
+  `WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid` روی
+  متدهای camelCaseِ موجود، `PEAR.Functions.FunctionCallSignature.MultipleArguments`
+  روی فراخوانی‌های چندخطیِ قدیمی) با رفتارِ PHP_CodeSniffer **4.x** هم‌خوان‌اند.
+  نتیجه: resolutionِ اِفیمرالِ `wpcs:^3.1` بین دو اجرای همان روز از 3.x به 4.x
+  پریده است (فیلترِ advisory داخلِ بازه، نسخهٔ 3.x را حذف کرده و 4.x را آورده)
+  — یعنی **گیتِ همان کامیت دو پاسخ متفاوت داد**.
+- **تغییر (حداقلی و بدونِ تضعیف):** فقط **major** پین شد:
+  `phpcsstandards/php_codesniffer:^3.13` در کنارِ `wp-coding-standards/wpcs:^3.1`.
+  patch/minor آزاد می‌ماند، فیلترِ advisory همچنان درونِ بازه فعال است، هیچ
+  sniff غیرفعال و هیچ مسیر/خطی exclude نشد، و گیت fail-closed باقی می‌ماند.
+- **چرا این پین تضعیف نیست:** استانداردِ سنجیده‌شده همان چیزی است که تا امروز
+  بررسی و پذیرفته شده (۳.x)؛ 4.x یک **مهاجرتِ عمدی** با diff مستقل خودش است،
+  نه تغییری که نیمهٔ روز و بی‌خبر روی همهٔ شاخه‌ها اعمال شود. با 4.x، کدِ
+  merge‌شدهٔ main هم قرمز می‌شود — که نشان می‌دهد معیار عوض شده، نه کیفیتِ کد.
+- **آینده:** مهاجرت به 4.x باید به‌صورتِ PR مستقل با شواهدِ قبل/بعد و
+  (در صورتِ نیاز) bumpِ مستندِ `WPCS_BASELINE` انجام شود.
+- **محدودیتِ شواهد:** لاگِ job در این محیط قابل خواندن نیست (blob در دسترس
+  نیست)؛ استدلال بر پایهٔ متنِ نقض‌های منتشرشده روی PR، مقایسهٔ همان
+  scope/کامیت در دو اجرا، و برچسب‌های sniff است. اجرای محلیِ phpcs ممکن نیست
+  (بدون PHP)، بنابراین verdictِ نهایی همان اجرای CI روی همین head است.
+
 ### ۸-۲ — قرارداد Migration Down: production فقط forward-only است
 
 **راستی‌آزمایی (grep روی src/ و bin/):** `MigrationRunner::rollbackOne()`
@@ -590,3 +619,36 @@ Agent حذف/تغییر داده نشده‌اند؛ نسخهٔ حدسی باز�
 > **صریح‌سازی:** این ردیف یک **نقصِ مستنداتی (cross-reference)** است، نه نقصِ محصول: کدِ واقعیِ Export
 > همان‌طور که در `api-contract.md` G5 و تست‌های موجود ثبت است async است و این ثبت آن رفتار را تغییر نمی‌دهد.
 > **هیچ** ادعایی دربارهٔ «بهینه‌سازیِ عملکردِ لازم بودن» از این ردیف استخراج نشود.
+
+---
+
+## بخش ۱۱ — اصلاحاتِ pass 5 (تعارض با قراردادهای موجودِ main)
+
+دو تغییرِ این PR با **قراردادهای تست‌شدهٔ main** تعارض داشتند. چون اصلِ کار «بدونِ تضعیفِ
+گیت‌ها» است، هر دو به نفعِ قراردادِ main اصلاح شدند (نه به نفعِ تست‌های این برنچ).
+
+### ۱۱-A — بازگرداندنِ ثبتِ رویدادِ دقیقه‌ای به `App::boot()`
+
+| | |
+|---|---|
+| **علامت** | `Integration (WP 7.1 + MySQL 8)` → `JobFastWakeContractRedTest::testRecurringMinuteTickRemainsRegisteredAndUnchanged` با خطای `Attempt to read property "schedule" on bool` |
+| **علت** | مأموریت E ثبتِ idempotent را کاملاً از `boot()` به `admin_init` منتقل کرده بود؛ در محیطِ تست `admin_init` اجرا نمی‌شود، پس `wp_get_scheduled_event('cpms_jobs_tick')` مقدار `false` برمی‌گرداند |
+| **اقدام** | `CronScheduleRepair::ensure_scheduled()` به `boot()` برگشت (رفتارِ main). تضمینِ باقی‌مانده: خواندنِ Optionِ autoload‌شدهٔ `cron` + **نوشتن فقط وقتی رویداد غایب است**؛ مسیرِ `admin_init` (throttle + لاگِ `CPMS_CRON_SCHEDULE_REPAIRED`/`..._FAILED`) دست‌نخورده ماند |
+| **تستِ برنچ** | `CronScheduleRepairTest::testBootRegistersTheRecurringTickThroughOnePath` — مسیرِ ثبت یکتاست و `wp_schedule_event(` مستقیم در `boot()` ممنوع است |
+
+### ۱۱-B — بازگرداندنِ دو صفحهٔ سازمان از allowlistِ `CpmsAssets`
+
+| | |
+|---|---|
+| **علامت** | `IranGeographyAddressFormsTest::testCpmsAssetsRecognizesAndEnqueuesOnOrganizationClinicAndLocationPages` — «Page cpms-organization-manager-bootstrap must not be in CpmsAssets allowlist» |
+| **علت** | مأموریت F دو صفحهٔ `cpms-organization-managers` و `cpms-organization-manager-bootstrap` را به `CpmsAssets::PAGES` افزوده بود؛ قراردادِ main صریحاً این دو را «بدونِ کنترلِ جغرافیایی/JSِ عمومی» تعریف می‌کند |
+| **اقدام** | هر دو از allowlist حذف شدند؛ چهار صفحهٔ دیگر (`cpms-custom-roles`، `cpms-finance-delegation`، `cpms-facility-setup`، `cpms-shortcodes`) می‌مانند. رفعِ overflow در عرضِ کوچک باید در مارک‌آپِ خودِ همان صفحه‌ها انجام شود |
+
+### ۱۱-C — گیتِ laneِ «Disposable Demo Installer» روی هر PRِ تولیدی قرمز می‌شد
+
+| | |
+|---|---|
+| **علامت** | پس از mergeِ `main` (`4830b3fb`, PR #274)، گیتِ `Real WordPress acceptance (clean WP → CPMS → companion → teardown)` روی همین PR قرمز شد؛ گامِ شکست‌خورده: `Production subtree unchanged by this lane` |
+| **علت** | آن lane در `main` بدونِ فیلترِ مسیر روی **همهٔ** PRها اجرا می‌شود و گاردش `git diff base..HEAD -- clinic-practice-management` را بررسی می‌کند؛ یعنی هر PRی که وظیفه‌اش تغییرِ زیردرختِ تولید است به‌طورِ ساختاری قرمز می‌شود (روی `main` سبز بود چون آن PR اصلاً تولید را تغییر نمی‌داد) |
+| **اقدام** | (۱) lane با `paths:` به فایل‌های خودش محدود شد، پس دیگر گیتِ جهانی نیست؛ (۲) گارد برای PRِ **ترکیبی** (که هم lane و هم تولید را تغییر می‌دهد) `NOT-APPLICABLE` گزارش می‌کند و ادامهٔ اجرا همان کدِ تولیدیِ همین PR را می‌سازد و می‌آزماید؛ (۳) برای PRِ **فقط-companion** گارد دقیقاً مثلِ قبل fail-closed می‌ماند |
+| **تست** | `test_workflow_contracts.py::test_disposable_demo_lane_is_path_scoped_to_its_own_files` (۲۰ تست، OK) — مسیرها، `workflow_dispatch` و وجودِ گامِ گارد را pin می‌کند |

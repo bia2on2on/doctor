@@ -1142,7 +1142,20 @@ jobs:
           # اولین composer plugin در درخت پروژه — allow-plugins الزامی
           # (config اِفیمرال در CI فقط؛ composer.json پروژه دست‌نخورده)
           composer config --no-plugins allow-plugins.dealerdirect/phpcodesniffer-composer-installer true
+          # PHP_CodeSniffer **major** pinned to the reviewed 3.x line while the
+          # patch level stays free (advisory filtering still applies inside the
+          # range). Rationale — evidence, not preference: on 2026-10-26 the same
+          # baseline, the same scope (170 files / 55,570 added lines) and the same
+          # commit passed this gate at 12:26Z and failed it at 13:41Z with 168
+          # violations, including violations inside code this branch never touched
+          # (`cron_schedules` filter in App::boot, the job-priority table). That is
+          # a toolchain change (PHP_CodeSniffer 4.x resolution), not a code change:
+          # a gate whose resolution can swap majors mid-day cannot be reproduced or
+          # reviewed. 4.x is a deliberate future migration with its own diff, not an
+          # implicit one. No sniff is disabled, no path is excluded, and the gate
+          # stays fail-closed — only the parser major is pinned.
           composer require --dev wp-coding-standards/wpcs:^3.1 \
+            phpcsstandards/php_codesniffer:^3.13 \
             --no-interaction --no-progress --with-all-dependencies
           # نسخه‌های resolution فعلی — evidence پایدار برای drift-register
           vendor/bin/phpcs --version
