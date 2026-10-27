@@ -109,6 +109,34 @@ purge, if ever required by law or the owner, must be a separate audited job
 with an explicit Clinic-scoped decision — it is deliberately **not** invented
 here (pre-coding rule 2: simplicity, no speculative abstraction).
 
+## 5b. Migration head bump (coordinated, mechanical)
+
+`2026_10_27_0030` becomes the new schema head. The repository pins that head in
+unit/integration tests (`MigrationTest`, `Phase2SchemaTest`,
+`CustomRole*MigrationTest`, `Phase10*`, `FinanceAuthorizationPolicyRegressionTest`,
+`TempTableIsolationTest`, `MariaDb1011CompatibilityTest`), in the PHP upgrade
+fixture (`tests/bin/upgrade-path-fixture.php`), in the external disposable-site
+provisioner and in the PR workflows (`ci.yml`, `closure-gate.yml`,
+`pilot-gate.yml`, `first-practice-acceptance.yml`, `real-wp-acceptance.yml`,
+`disposable-site-acceptance.yml`, `mariadb-10.11-compat.yml`). Those pins were
+updated to `2026_10_27_0030` together with the migration; rollback sequences
+that enumerate versions gained the one new rollback step. A focused MariaDB
+11.4.13 CI step runs `StaffMessagingPricingMigrationTest` on a real server.
+
+**Known overlap (reported, not edited):** PR #277 (draft scoped-demo work)
+pins `2026_10_18_0029` in `.github/workflows/disposable-demo-installer.yml`,
+`tools/disposable-demo-installer/*` and its own `tests/bootstrap.php`. Those
+are another agent's files and that lane is path-scoped, so they were left
+untouched; that agent/owner must bump its supported CPMS schema pin when it
+rebases onto this migration. No file of PR #277 was modified here.
+
+The six new tables declare **no FOREIGN KEY**. Tenant integrity is enforced by
+the services (trusted Clinic/Organization/Location, participant membership,
+visit/patient chain) and by every query's own `clinic_id` predicate. This also
+keeps the DDL safe under the WordPress test-suite `CREATE TEMPORARY TABLE`
+rewrite, where InnoDB refuses foreign keys — a documented constraint in
+`tests/Integration/RealTableMigrations.php`.
+
 ## 6. Explicit non-goals
 
 No WebSocket, no WordPress comments, no new top-level admin menu, no new

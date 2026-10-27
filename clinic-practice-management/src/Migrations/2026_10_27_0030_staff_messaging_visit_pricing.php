@@ -7,7 +7,11 @@
  * their exact persisted values. DDL is deliberately portable MySQL 8 /
  * MariaDB 11.4 (InnoDB, utf8mb4, ordinary DECIMAL/BIGINT/DATETIME(3), no
  * generated columns, no CHECK, no functional index, no IF NOT EXISTS on
- * indexes). MigrationRunner wraps up() in a transaction and records the
+ * indexes). Tenant relationships are enforced by the services (and by the
+ * query's own clinic_id predicate), so no FOREIGN KEY is declared: this also
+ * keeps the DDL safe under the WordPress test-suite CREATE TEMPORARY TABLE
+ * rewrite, where InnoDB refuses foreign keys. MigrationRunner wraps up() in a
+ * transaction and records the
  * version only after a clean statement; CREATE TABLE IF NOT EXISTS keeps
  * re-runs idempotent.
  *
@@ -24,7 +28,6 @@ return [
     'version'     => '2026_10_27_0030',
     'description' => 'Iran V1: clinic-scoped staff messaging, doctor consultation fees and draft visit charges',
     'up'          => static function ( CpmsDb $db ): void {
-        $clinics     = $db->table( 'cpms_clinics' );
         $threads     = $db->table( 'cpms_message_threads' );
         $participant = $db->table( 'cpms_message_participants' );
         $messages    = $db->table( 'cpms_messages' );
@@ -46,8 +49,7 @@ return [
             PRIMARY KEY (`id`),
             KEY `idx_msg_thread_clinic` (`clinic_id`,`id`),
             KEY `idx_msg_thread_org` (`organization_id`,`clinic_id`),
-            KEY `idx_msg_thread_visit` (`visit_id`),
-            CONSTRAINT `fk_msg_thread_clinic` FOREIGN KEY (`clinic_id`) REFERENCES {$clinics} (`id`)
+            KEY `idx_msg_thread_visit` (`visit_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
 
         $db->query( "CREATE TABLE IF NOT EXISTS {$participant} (
@@ -57,8 +59,7 @@ return [
             `last_read_message_id` BIGINT UNSIGNED NOT NULL DEFAULT 0,
             `created_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`thread_id`,`wp_user_id`),
-            KEY `idx_msg_part_user` (`wp_user_id`,`thread_id`),
-            CONSTRAINT `fk_msg_part_thread` FOREIGN KEY (`thread_id`) REFERENCES {$threads} (`id`) ON DELETE CASCADE
+            KEY `idx_msg_part_user` (`wp_user_id`,`thread_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
 
         $db->query( "CREATE TABLE IF NOT EXISTS {$messages} (
@@ -70,8 +71,7 @@ return [
             `created_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`id`),
             KEY `idx_msg_thread_id` (`thread_id`,`id`),
-            KEY `idx_msg_clinic_id` (`clinic_id`,`id`),
-            CONSTRAINT `fk_msg_thread` FOREIGN KEY (`thread_id`) REFERENCES {$threads} (`id`) ON DELETE CASCADE
+            KEY `idx_msg_clinic_id` (`clinic_id`,`id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
 
         $db->query( "CREATE TABLE IF NOT EXISTS {$fees} (
@@ -85,8 +85,7 @@ return [
             `created_at` DATETIME(3) NOT NULL,
             `updated_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`id`),
-            UNIQUE KEY `u_doctor_fee` (`clinic_id`,`clinician_id`,`location_id`),
-            CONSTRAINT `fk_doctor_fee_clinic` FOREIGN KEY (`clinic_id`) REFERENCES {$clinics} (`id`)
+            UNIQUE KEY `u_doctor_fee` (`clinic_id`,`clinician_id`,`location_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
 
         $db->query( "CREATE TABLE IF NOT EXISTS {$overrides} (
@@ -98,8 +97,7 @@ return [
             `created_at` DATETIME(3) NOT NULL,
             `updated_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`visit_id`),
-            KEY `idx_visit_fee_clinic` (`clinic_id`,`visit_id`),
-            CONSTRAINT `fk_visit_fee_clinic` FOREIGN KEY (`clinic_id`) REFERENCES {$clinics} (`id`)
+            KEY `idx_visit_fee_clinic` (`clinic_id`,`visit_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
 
         $db->query( "CREATE TABLE IF NOT EXISTS {$charges} (
@@ -120,8 +118,7 @@ return [
             `updated_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`id`),
             KEY `idx_charge_visit` (`clinic_id`,`visit_id`,`removed_at`),
-            KEY `idx_charge_invoice` (`invoiced_invoice_id`),
-            CONSTRAINT `fk_charge_clinic` FOREIGN KEY (`clinic_id`) REFERENCES {$clinics} (`id`)
+            KEY `idx_charge_invoice` (`invoiced_invoice_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
     },
     'down'        => static function ( CpmsDb $db ): void {

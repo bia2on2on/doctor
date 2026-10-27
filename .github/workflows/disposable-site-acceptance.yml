@@ -261,7 +261,7 @@ jobs:
           ACTUAL="$(mysql -h 127.0.0.1 -P 3306 -uroot -proot -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME' AND table_name LIKE '${PREFIX}cpms_%';")"
           test "$ACTUAL" -ge 30
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
-          test "$SCHEMA" = '2026_10_18_0029'
+          test "$SCHEMA" = '2026_10_27_0030'
           echo "PASS: actual_cpms_tables=$ACTUAL schema=$SCHEMA prefix=$PREFIX; repeated activation created no fixture"
 
       - name: Explicit confirmation and protected-path refusals

@@ -140,7 +140,7 @@ final class Phase10StaffPortalVisitMedicalFilesRedTest extends WP_UnitTestCase
 
     private const FIXED_UTC_DATE = '2026-03-14';
     private const TZ_TEHRAN = 'Asia/Tehran';
-    private const LATEST_MIGRATION = '2026_10_18_0029';
+    private const LATEST_MIGRATION = '2026_10_27_0030';
 
     /** Live schema enums (initial migration 0001) — no new category/visibility state. */
     private const ATTACHMENT_CATEGORY_ENUM = "enum('lab_result','image','scan','document','other')";

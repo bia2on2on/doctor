@@ -33,8 +33,8 @@ try {
     $lock = cpms_ds_lock($state_path);
     $actor_id = cpms_ds_admin_id();
     $db = cpms_ds_db();
-    if (App::migrations()->currentVersion() !== '2026_10_18_0029') {
-        cpms_ds_fail('SCHEMA_VERSION', 'the verified migration set through 2026_10_18_0029 is required');
+    if (App::migrations()->currentVersion() !== '2026_10_27_0030') {
+        cpms_ds_fail('SCHEMA_VERSION', 'the verified migration set through 2026_10_27_0030 is required');
     }
 
     if (is_file($state_path)) {
