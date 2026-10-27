@@ -14,6 +14,7 @@ by `manage_options`. The old Tools URL safely redirects; if CPMS Classic is
 inactive, the page falls back to Tools without adding a top-level menu.
 
 * No REST route, no AJAX, no frontend code, no WP-CLI requirement.
+* Separate disabled-by-default scoped mode for non-empty test sites, with explicit admin authorization and fail-closed cleanup.
 * Refuses non-empty sites, extra users, further active plugins, multisite,
   non-default WordPress content and any CPMS data beyond its bootstrap rows.
 * Passwords are CSPRNG per persona and shown once in a no-store response.

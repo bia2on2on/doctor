@@ -141,17 +141,17 @@ class Preflight {
 	/**
 	 * @var Env
 	 */
-	private Env $env;
+	protected Env $env;
 
 	/**
 	 * @var Platform
 	 */
-	private Platform $platform;
+	protected Platform $platform;
 
 	/**
 	 * @var Manifest
 	 */
-	private Manifest $manifest;
+	protected Manifest $manifest;
 
 	/**
 	 * @param Env      $env Environment.
@@ -205,7 +205,7 @@ class Preflight {
 	 * @param string $detail Persian detail.
 	 * @return array{id:string,label:string,status:string,detail:string}
 	 */
-	private function result( string $id, string $label, string $status, string $detail ): array {
+	protected function result( string $id, string $label, string $status, string $detail ): array {
 		return array(
 			'id'     => $id,
 			'label'  => $label,
