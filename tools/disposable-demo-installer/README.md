@@ -11,10 +11,25 @@ needs no SSH, WP-CLI, terminal or database access.
 - **Production is untouched:** nothing under `clinic-practice-management/**` is
   modified by this branch; the companion is a separate plugin directory.
 
+## Separate scoped mode (non-empty test sites)
+
+A second, disabled-by-default wp-admin page `cpms-scoped-demo` supports evaluation on an existing non-empty WordPress test site. It is not a relaxation of the strict disposable preflight: it uses a separate `cpsd-` fixture namespace, a 128-bit fixture ID, its own HMAC-sealed manifest, explicit administrator activation, a sealed baseline snapshot, full global audit-chain verification, exact per-record ownership collection, and fail-closed teardown.
+
+The scoped teardown never deletes `cpms_audit_logs`; it preserves unrelated queue jobs, shared/global rate-limit counters, and all pre-existing WordPress/CPMS rows. Because the append-only audit table has a production foreign key to `cpms_clinics`, the three synthetic parent rows (Organization, Clinic, Locations) are archived in place as inert audit anchors instead of being physically deleted; all owned operational, clinical and financial records are removed. It verifies baseline digests and the full audit hash chain before and after cleanup. Browser-only Persian instructions are in `docs/scoped-demo/setup-fa.md`; the design and safety contract are in `docs/scoped-demo/`.
+
+Real MySQL 8 / MariaDB 11.4.13 / Chromium acceptance must be executed on the exact PR head before this mode can be claimed production-ready.
+
 ## Surface
 
-One page: **Tools → دموی یک‌بارمصرف CPMS**. No REST route, no `admin-ajax`, no
-frontend code, no shortcode, no cron, no CLI entry point.
+One page: **مدیریت مطب → دموی یک‌بارمصرف CPMS** when CPMS Classic is active.
+The page is registered under the production plugin's existing `cpms-dashboard`
+parent slug and requires `manage_options`; access to the CPMS parent menu does
+not grant access to this page or to any provisioning action. If CPMS Classic is
+inactive, the companion safely falls back to **Tools → دموی یک‌بارمصرف CPMS**
+without creating another top-level menu. When CPMS is active, the old
+`tools.php?page=cpms-disposable-demo` URL is retained as a capability-protected
+compatibility redirect, but its Tools navigation item is hidden. No REST route,
+no `admin-ajax`, no frontend code, no shortcode, no cron, no CLI entry point.
 
 Every mutating action requires, in order: POST → authenticated Administrator
 (`manage_options` **and** `install_plugins`) → action-specific nonce → the exact
@@ -121,7 +136,7 @@ container.
 ## Verification & test suites
 
 - **Unit & security negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
-  (213 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
+  (215 assertions covering CPMS-inactive Tools fallback registration, preflight refusals, capability/nonce/confirmation/site-fingerprint
   enforcement, manifest & tombstone HMAC tamper and site-transplant detection, CSPRNG credential
   generation & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider
   guardrails, concurrency lock contention, partial provisioning and interrupted teardown
@@ -137,8 +152,9 @@ container.
 - **Real-Chromium browser acceptance:** `tools/disposable-demo-installer/tests/browser-acceptance.py`
   (executed in `.github/workflows/disposable-demo-installer.yml` with Playwright Chromium against
   Apache + WordPress 7.1.3 + MySQL 8 covering `wp-admin` ZIP upload & activation, preflight UI,
-  provisioning, one-time credentials, password rotation, 6 independent persona contexts, role
-  portals, authorization denials, public booking, UI OTP issuance & verification, clinical and
+  provisioning, one-time credentials, password rotation, CPMS menu registration/navigation,
+  legacy Tools redirect, canonical and legacy direct-URL authorization denials, 6 independent
+  persona contexts, role portals, public booking, UI OTP issuance & verification, clinical and
   finance journeys, 320px/390px RTL responsiveness, diagnostics, teardown, DB verification, and
   safe plugin removal).
 
