@@ -2,7 +2,7 @@
 
 **Branch:** `arena/3c5e41b4-doctor` (Arena-fixed; no second branch was created).
 **Main merged forward:** `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8` via normal merge commit `e870023d…`, preserving preparation commit `5e951c837cbd195d483395cc6944211b9d038293`.
-**Status:** implementation and local/static evidence complete; exact-head GitHub Actions evidence is pending until the dedicated PR is opened.
+**Status:** implementation complete; dedicated exact-head GitHub Actions evidence exists for the scoped lane on both database engines (details below). Repository-wide green is still blocked by unrelated lanes, and several acceptance items remain NOT RUN.
 
 ## Stage 1 — post-merge failure
 
@@ -73,9 +73,40 @@ Strict `run-tests.php` was **NOT RUN successfully locally** because the php-wasm
 
 The Chromium script explicitly does **not** yet exercise every role-specific clinical, reception, booking, finance, OTP or cross-Clinic authorization journey. Those remain **NOT RUN** and must not be claimed as passed. Screenshot pixels are saved but not yet inspected.
 
+## Exact-head CI evidence (scoped lane)
+
+**Head:** `b11a672206ca69ef860249bdd3135e7a0fadd0c0` (PR #277, draft, base `main` @ `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8`).
+
+| Check | Result | Evidence |
+|---|---|---|
+| Static gates, unit tests and reproducible companion ZIP | **success** | [job 122184525693](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184525693) |
+| Real WordPress integration (mysql-8) | **success** | [job 122184638814](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184638814) |
+| Real WordPress integration (mariadb-11.4.13) | **success** | [job 122184638655](https://github.com/bia2on2on/doctor/actions/runs/40502823762/job/122184638655) |
+
+Inside those two jobs, the seeded non-empty integration gate exited 0 (the gate exits 1 if its JSON result is not `ok`), and the Chromium step reported:
+
+```text
+PASS admin login
+PASS strict disposable mode still refuses non-empty site
+PASS scoped admin page renders
+PASS mode activation accepted
+PASS scoped preflight passes in browser
+PASS credentials shown once / six credential rows / not persisted after reload
+PASS independent login: organization_manager, clinic_manager, doctor, receptionist, accountant, patient
+PASS teardown preview passes
+PASS authorized teardown clean
+CPSD_BROWSER_RESULT={"ok": true, "checks": 21}
+```
+
+Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at the time of writing: First-practice browser (both engines), Staging Gate, Responsive smoke, Real WP Acceptance (`clinic_`), Facility matrix (mysql), two coexistence lanes.
+
+### Unrelated failing lane on the same head
+
+`Disposable external tool (prefix clinic_)` failed ([job 122184525983](https://github.com/bia2on2on/doctor/actions/runs/40502823859/job/122184525983)) at `ERROR: RuntimeError: Generated doctor login failed`, in `tests/disposable-site/browser-acceptance.py`. That lane does not load the companion plugin and this branch contains **no** change under `tests/disposable-site/**` or `clinic-practice-management/**`. The same lane passed on `f11e596…` and `5008ccf…`; the only difference between `f11e596…` and `b11a672…` is `tests/scoped-demo/browser_scoped.py`, which that lane never reads. This is therefore classified as an **unrelated intermittent browser-login failure in a pre-existing lane**, not a scoped-mode regression. It is reported, not concealed.
+
 ## Remaining risks / honest limitations
 
-- Exact-head GitHub Actions evidence is pending; no CI PASS is claimed until the dedicated PR runs.
+- Repository-wide green is not claimed: several unrelated lanes were still running, one pre-existing disposable-site lane failed intermittently, and the `Responsive smoke` harness race described above remains open.
 - The production `cpms_audit_logs` table has a foreign key to `cpms_clinics`. Preserving the full audit chain and adding no production schema migration therefore requires retaining the three synthetic parent rows as suspended/inactive audit anchors. This is an explicit architectural limitation, not a silent residual: owned operational, clinical and financial records are removed, but the synthetic Organization/Clinic/Locations rows are archived rather than physically deleted.
 - Full six-persona role-specific workflow coverage, OTP browser journey, cross-Clinic REST authorization drill, tampered-manifest runtime test, concurrency test, interrupted provisioning/teardown fault injection, storage/audit failure injection, and repeated-teardown runtime tests are not yet implemented in the executable acceptance suite.
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
