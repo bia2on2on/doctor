@@ -29,6 +29,7 @@ Secrets (passwords and OTP codes) are held only in process memory and are never
 printed, logged, or written to results.
 """
 
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -107,6 +108,36 @@ def wp_eval(code: str, env_vars: dict | None = None) -> str:
     if proc.returncode != 0:
         raise RuntimeError(f"wp eval failed rc={proc.returncode}: {(proc.stderr or proc.stdout)[:300]}")
     return (proc.stdout or "").strip()
+
+
+def snapshot_wp_database(filename: str) -> str:
+    """Create a private, temporary snapshot for destructive plugin-state probes."""
+    os.makedirs(OUT, exist_ok=True)
+    snapshot = os.path.join(OUT, filename)
+    if os.path.exists(snapshot):
+        os.remove(snapshot)
+    wp_cli(["db", "export", snapshot])
+    check("temporary WordPress database snapshot created", os.path.isfile(snapshot) and os.path.getsize(snapshot) > 0)
+    return snapshot
+
+
+def restore_wp_database(snapshot: str) -> None:
+    """Restore the exact disposable-site state without re-running production activation hooks."""
+    wp_cli(["db", "drop", "--yes"])
+    wp_cli(["db", "create"])
+    wp_cli(["db", "import", snapshot])
+    os.remove(snapshot)
+
+
+@contextmanager
+def temporarily_deactivate_cpms(snapshot_name: str):
+    """Probe real CPMS-inactive HTTP requests, then restore the disposable DB verbatim."""
+    snapshot = snapshot_wp_database(snapshot_name)
+    try:
+        wp_cli(["plugin", "deactivate", "clinic-practice-management/clinic-practice-management.php"])
+        yield
+    finally:
+        restore_wp_database(snapshot)
 
 
 def login_wp(page, username: str, secret: str) -> bool:
@@ -287,137 +318,129 @@ def main() -> None:
             admin_page.goto(tool_url, wait_until="domcontentloaded")
             check("canonical direct URL renders the companion page", admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1)
 
-            # Deactivate CPMS in a separate WP-CLI request so the following HTTP request
-            # boots WordPress without any ClinicCore classes loaded.
-            wp_cli(["plugin", "deactivate", "clinic-practice-management/clinic-practice-management.php"])
-            inactive_state = json.loads(
-                wp_eval(
-                    r"""
-                    $env = new \CpmsDemo\Env();
-                    $manifest = new \CpmsDemo\Manifest($env);
-                    $state = (new \CpmsDemo\Preflight($env, new \CpmsDemo\Platform(), $manifest))->run();
-                    echo wp_json_encode([
-                        'cpms_loaded' => class_exists(\ClinicCore\Bootstrap\App::class),
-                        'cpms_active_plugin' => in_array('clinic-practice-management/clinic-practice-management.php', (array) get_option('active_plugins', []), true),
-                        'blocking' => $state['blocking'],
-                        'checks' => $state['checks'],
-                    ]);
-                    """
+            # Use a real WP-CLI deactivation, then restore the exact disposable-site DB snapshot.
+            # This keeps CPMS deactivation side effects from contaminating later active-path checks.
+            with temporarily_deactivate_cpms("cpdd-inactive-empty.sql"):
+                inactive_state = json.loads(
+                    wp_eval(
+                        r"""
+                        $env = new \CpmsDemo\Env();
+                        $manifest = new \CpmsDemo\Manifest($env);
+                        $state = (new \CpmsDemo\Preflight($env, new \CpmsDemo\Platform(), $manifest))->run();
+                        echo wp_json_encode([
+                            'cpms_loaded' => class_exists(\ClinicCore\Bootstrap\App::class),
+                            'cpms_active_plugin' => in_array('clinic-practice-management/clinic-practice-management.php', (array) get_option('active_plugins', []), true),
+                            'blocking' => $state['blocking'],
+                            'checks' => $state['checks'],
+                        ]);
+                        """
+                    )
                 )
-            )
-            cpms_check = next(row for row in inactive_state["checks"] if row["id"] == "cpms")
-            data_check = next(row for row in inactive_state["checks"] if row["id"] == "cpms_data")
-            check(
-                "inactive-CPMS preflight safely fails closed with no ClinicCore classes",
-                not inactive_state["cpms_loaded"] and not inactive_state["cpms_active_plugin"]
-                and "cpms" in inactive_state["blocking"] and "cpms_data" in inactive_state["blocking"]
-                and "فعال نیست" in cpms_check["detail"] and "فعال نیست" in data_check["detail"],
-                json.dumps({"cpms_loaded": inactive_state["cpms_loaded"], "cpms": cpms_check["detail"], "data": data_check["detail"]}),
-            )
-
-            fallback_url = f"{BASE}/wp-admin/tools.php?page=cpms-disposable-demo"
-            fallback_response = admin_page.goto(fallback_url, wait_until="domcontentloaded")
-            fallback_link = admin_page.locator('#adminmenu a[href*="tools.php?page=cpms-disposable-demo"]')
-            check(
-                "authorized administrator receives the Tools fallback without another top-level menu",
-                fallback_response is not None and fallback_response.status == 200
-                and admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1
-                and fallback_link.count() == 1
-                and admin_page.locator('#adminmenu > li > a[href*="page=cpms-dashboard"]').count() == 0
-                and admin_page.locator('#adminmenu > li > a[href*="cpms-disposable-demo"]').count() == 0,
-                f"HTTP {fallback_response.status if fallback_response else 'no response'}",
-            )
-            inactive_preflight_rows = admin_page.locator('[data-cpdd-preflight] tbody tr').all_inner_texts()
-            cpms_inactive_rows = [row for row in inactive_preflight_rows if "CPMS Classic" in row and "فعال نیست" in row]
-            cpms_data_inactive_rows = [row for row in cpms_inactive_rows if "دادهٔ بالینی/مالی/نوبت خالی" in row]
-            check(
-                "fallback page explains missing CPMS and blocks via visible preflight",
-                admin_page.locator('[data-cpdd-preflight="fail"]').count() == 1
-                and len(cpms_inactive_rows) == 2
-                and len(cpms_data_inactive_rows) == 1
-                and all("FAIL" in row for row in cpms_inactive_rows),
-                json.dumps(cpms_inactive_rows, ensure_ascii=False),
-            )
-
-            # A real non-admin account must not reach the Tools fallback directly.
-            subscriber_login = "cpdd-fallback-acl-" + secrets.token_hex(5)
-            subscriber_password = secrets.token_urlsafe(32)
-            subscriber_id = int(
-                wp_eval(
-                    r"""
-                    $id = wp_create_user(getenv('CPDD_TEST_LOGIN'), getenv('CPDD_TEST_PASSWORD'), getenv('CPDD_TEST_EMAIL'));
-                    if (is_wp_error($id)) { echo '0'; return; }
-                    (new WP_User((int) $id))->set_role('subscriber');
-                    echo (int) $id;
-                    """,
-                    {
-                        "CPDD_TEST_LOGIN": subscriber_login,
-                        "CPDD_TEST_PASSWORD": subscriber_password,
-                        "CPDD_TEST_EMAIL": subscriber_login + "@example.test",
-                    },
-                )
-            )
-            check("temporary subscriber fixture created for fallback authorization", subscriber_id > 0)
-            sub_context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fa-IR")
-            try:
-                sub_page = sub_context.new_page()
-                check("temporary subscriber can authenticate", login_wp(sub_page, subscriber_login, subscriber_password))
-                fallback_denial = sub_page.goto(fallback_url, wait_until="domcontentloaded")
+                cpms_check = next(row for row in inactive_state["checks"] if row["id"] == "cpms")
+                data_check = next(row for row in inactive_state["checks"] if row["id"] == "cpms_data")
                 check(
-                    "subscriber is denied direct Tools fallback URL",
-                    fallback_denial is not None and fallback_denial.status == 403
-                    and sub_page.locator('form[data-cpdd-form="provision"]').count() == 0,
-                    f"HTTP {fallback_denial.status if fallback_denial else 'no response'}",
+                    "inactive-CPMS preflight safely fails closed with no ClinicCore classes",
+                    not inactive_state["cpms_loaded"] and not inactive_state["cpms_active_plugin"]
+                    and "cpms" in inactive_state["blocking"] and "cpms_data" in inactive_state["blocking"]
+                    and "فعال نیست" in cpms_check["detail"] and "فعال نیست" in data_check["detail"],
+                    json.dumps({"cpms_loaded": inactive_state["cpms_loaded"], "cpms": cpms_check["detail"], "data": data_check["detail"]}),
                 )
-                canonical_denial = sub_page.goto(tool_url, wait_until="domcontentloaded")
+
+                fallback_url = f"{BASE}/wp-admin/tools.php?page=cpms-disposable-demo"
+                fallback_response = admin_page.goto(fallback_url, wait_until="domcontentloaded")
+                fallback_link = admin_page.locator('#adminmenu a[href*="tools.php?page=cpms-disposable-demo"]')
                 check(
-                    "subscriber is denied canonical admin.php URL while CPMS is inactive",
-                    canonical_denial is not None and canonical_denial.status == 403
-                    and sub_page.locator('form[data-cpdd-form="provision"]').count() == 0,
-                    f"HTTP {canonical_denial.status if canonical_denial else 'no response'}",
+                    "authorized administrator receives the Tools fallback without another top-level menu",
+                    fallback_response is not None and fallback_response.status == 200
+                    and admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1
+                    and fallback_link.count() == 1
+                    and admin_page.locator('#adminmenu > li > a[href*="page=cpms-dashboard"]').count() == 0
+                    and admin_page.locator('#adminmenu > li > a[href*="cpms-disposable-demo"]').count() == 0,
+                    f"HTTP {fallback_response.status if fallback_response else 'no response'}",
                 )
-            finally:
-                sub_context.close()
-                wp_cli(["user", "delete", str(subscriber_id), "--yes"])
-
-            # Even a properly authorized administrator cannot provision without CPMS.
-            fallback_provision = admin_page.locator('form[data-cpdd-form="provision"]')
-            check("fallback retains the existing provisioning confirmation form", fallback_provision.count() == 1)
-            fallback_provision.locator('input[name="cpdd_confirm"]').fill("I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE")
-            fallback_provision.locator('button[type="submit"]').click()
-            admin_page.wait_for_load_state("domcontentloaded")
-            no_cpms_fixture = json.loads(
-                wp_eval(
-                    r"""
-                    global $wpdb;
-                    echo wp_json_encode([
-                        'users' => count(get_users(['fields' => 'ID'])),
-                        'manifest' => get_option('cpdd_manifest', null) !== null,
-                        'clinics' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_clinics`"),
-                        'patients' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_patients`"),
-                        'appointments' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_appointments`"),
-                    ]);
-                    """
+                inactive_preflight_rows = admin_page.locator('[data-cpdd-preflight] tbody tr').all_inner_texts()
+                cpms_inactive_rows = [row for row in inactive_preflight_rows if "CPMS Classic" in row and "فعال نیست" in row]
+                cpms_data_inactive_rows = [row for row in cpms_inactive_rows if "دادهٔ بالینی/مالی/نوبت خالی" in row]
+                check(
+                    "fallback page explains missing CPMS and blocks via visible preflight",
+                    admin_page.locator('[data-cpdd-preflight="fail"]').count() == 1
+                    and len(cpms_inactive_rows) == 2
+                    and len(cpms_data_inactive_rows) == 1
+                    and all("FAIL" in row for row in cpms_inactive_rows),
+                    json.dumps(cpms_inactive_rows, ensure_ascii=False),
                 )
-            )
-            check(
-                "admin provisioning request fails without CPMS and leaves no fixture or extra user",
-                admin_page.locator(".notice-error").count() == 1
-                and admin_page.locator('[data-cpdd-fixture-id]').count() == 0
-                and no_cpms_fixture == {"users": 1, "manifest": False, "clinics": 1, "patients": 0, "appointments": 0},
-                json.dumps(no_cpms_fixture),
-            )
 
-            # Restore CPMS before the normal end-to-end demo workflow.
-            wp_cli(["plugin", "activate", "clinic-practice-management/clinic-practice-management.php"])
+                # A real non-admin account must not reach the Tools fallback directly.
+                subscriber_login = "cpdd-fallback-acl-" + secrets.token_hex(5)
+                subscriber_password = secrets.token_urlsafe(32)
+                subscriber_id = int(
+                    wp_eval(
+                        r"""
+                        $id = wp_create_user(getenv('CPDD_TEST_LOGIN'), getenv('CPDD_TEST_PASSWORD'), getenv('CPDD_TEST_EMAIL'));
+                        if (is_wp_error($id)) { echo '0'; return; }
+                        (new WP_User((int) $id))->set_role('subscriber');
+                        echo (int) $id;
+                        """,
+                        {
+                            "CPDD_TEST_LOGIN": subscriber_login,
+                            "CPDD_TEST_PASSWORD": subscriber_password,
+                            "CPDD_TEST_EMAIL": subscriber_login + "@example.test",
+                        },
+                    )
+                )
+                check("temporary subscriber fixture created for fallback authorization", subscriber_id > 0)
+                sub_context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fa-IR")
+                try:
+                    sub_page = sub_context.new_page()
+                    check("temporary subscriber can authenticate", login_wp(sub_page, subscriber_login, subscriber_password))
+                    fallback_denial = sub_page.goto(fallback_url, wait_until="domcontentloaded")
+                    check(
+                        "subscriber is denied direct Tools fallback URL",
+                        fallback_denial is not None and fallback_denial.status == 403
+                        and sub_page.locator('form[data-cpdd-form="provision"]').count() == 0,
+                        f"HTTP {fallback_denial.status if fallback_denial else 'no response'}",
+                    )
+                    canonical_denial = sub_page.goto(tool_url, wait_until="domcontentloaded")
+                    check(
+                        "subscriber is denied canonical admin.php URL while CPMS is inactive",
+                        canonical_denial is not None and canonical_denial.status == 403
+                        and sub_page.locator('form[data-cpdd-form="provision"]').count() == 0,
+                        f"HTTP {canonical_denial.status if canonical_denial else 'no response'}",
+                    )
+                finally:
+                    sub_context.close()
+                    wp_cli(["user", "delete", str(subscriber_id), "--yes"])
+
+                # Even a properly authorized administrator cannot provision without CPMS.
+                fallback_provision = admin_page.locator('form[data-cpdd-form="provision"]')
+                check("fallback retains the existing provisioning confirmation form", fallback_provision.count() == 1)
+                fallback_provision.locator('input[name="cpdd_confirm"]').fill("I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE")
+                fallback_provision.locator('button[type="submit"]').click()
+                admin_page.wait_for_load_state("domcontentloaded")
+                no_cpms_fixture = json.loads(
+                    wp_eval(
+                        r"""
+                        global $wpdb;
+                        echo wp_json_encode([
+                            'users' => count(get_users(['fields' => 'ID'])),
+                            'manifest' => get_option('cpdd_manifest', null) !== null,
+                            'clinics' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_clinics`"),
+                            'patients' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_patients`"),
+                            'appointments' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_appointments`"),
+                        ]);
+                        """
+                    )
+                )
+                check(
+                    "admin provisioning request fails without CPMS and leaves no fixture or extra user",
+                    admin_page.locator(".notice-error").count() == 1
+                    and admin_page.locator('[data-cpdd-fixture-id]').count() == 0
+                    and no_cpms_fixture == {"users": 1, "manifest": False, "clinics": 1, "patients": 0, "appointments": 0},
+                    json.dumps(no_cpms_fixture),
+                )
+
             admin_page.goto(tool_url, wait_until="domcontentloaded")
-            active_menu_root = admin_page.locator('#adminmenu > li > a[href*="page=cpms-dashboard"]')
-            demo_menu_link = admin_page.locator('#adminmenu a[href*="page=cpms-disposable-demo"]')
-            check("CPMS activation restores the single CPMS menu and companion submenu", active_menu_root.count() == 1 and demo_menu_link.count() == 1)
-            admin_page.goto(tool_url, wait_until="domcontentloaded")
-            check("companion admin page renders in RTL with CPMS active", admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1)
-            preflight_fails = admin_page.locator('[data-cpdd-preflight] tr:has(td.cpdd-fail)').all_inner_texts()
-            check("admin preflight status is PASS", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1, " | ".join(preflight_fails))
+            check("restored active database returns the companion to its CPMS-active state", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1)
 
             # 4 & 5. Browser-triggered provisioning + one-time credential display
             stage("4-5. Browser-triggered provisioning and one-time credential display")
@@ -460,42 +483,41 @@ def main() -> None:
                     """
                 )
             )
-            wp_cli(["plugin", "deactivate", "clinic-practice-management/clinic-practice-management.php"])
-            inactive_fixture_response = admin_page.goto(fallback_url, wait_until="domcontentloaded")
-            inactive_fixture_forms = sum(
-                admin_page.locator(f'form[data-cpdd-form="{action}"]').count()
-                for action in ("provision", "otp", "rotate", "diagnose", "teardown")
-            )
-            fixture_during_inactive = json.loads(
-                wp_eval(
-                    r"""
-                    global $wpdb;
-                    $m = get_option('cpdd_manifest');
-                    echo wp_json_encode([
-                        'fixture_id' => (string) ($m['fixture_id'] ?? ''),
-                        'clinics' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_clinics`"),
-                        'patients' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_patients`"),
-                        'appointments' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_appointments`"),
-                        'users' => count_users()['total_users'],
-                    ]);
-                    """
+            with temporarily_deactivate_cpms("cpdd-inactive-fixture.sql"):
+                inactive_fixture_response = admin_page.goto(fallback_url, wait_until="domcontentloaded")
+                inactive_fixture_forms = sum(
+                    admin_page.locator(f'form[data-cpdd-form="{action}"]').count()
+                    for action in ("provision", "otp", "rotate", "diagnose", "teardown")
                 )
-            )
-            check(
-                "loaded demo renders a safe CPMS-inactive Tools fallback without action forms",
-                inactive_fixture_response is not None and inactive_fixture_response.status == 200
-                and admin_page.locator('[data-cpdd-cpms-inactive="1"]').count() == 1
-                and inactive_fixture_forms == 0
-                and admin_page.locator('[data-cpdd-fixture-id]').inner_text() == fixture_id,
-            )
-            check(
-                "CPMS-inactive fallback leaves existing manifest, users, and CPMS rows unchanged",
-                fixture_during_inactive == fixture_before_inactive,
-                json.dumps({"before": fixture_before_inactive, "after": fixture_during_inactive}),
-            )
-            wp_cli(["plugin", "activate", "clinic-practice-management/clinic-practice-management.php"])
+                fixture_during_inactive = json.loads(
+                    wp_eval(
+                        r"""
+                        global $wpdb;
+                        $m = get_option('cpdd_manifest');
+                        echo wp_json_encode([
+                            'fixture_id' => (string) ($m['fixture_id'] ?? ''),
+                            'clinics' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_clinics`"),
+                            'patients' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_patients`"),
+                            'appointments' => (int) $wpdb->get_var("SELECT COUNT(*) FROM `{$wpdb->prefix}cpms_appointments`"),
+                            'users' => count_users()['total_users'],
+                        ]);
+                        """
+                    )
+                )
+                check(
+                    "loaded demo renders a safe CPMS-inactive Tools fallback without action forms",
+                    inactive_fixture_response is not None and inactive_fixture_response.status == 200
+                    and admin_page.locator('[data-cpdd-cpms-inactive="1"]').count() == 1
+                    and inactive_fixture_forms == 0
+                    and admin_page.locator('[data-cpdd-fixture-id]').inner_text() == fixture_id,
+                )
+                check(
+                    "CPMS-inactive fallback leaves existing manifest, users, and CPMS rows unchanged",
+                    fixture_during_inactive == fixture_before_inactive,
+                    json.dumps({"before": fixture_before_inactive, "after": fixture_during_inactive}),
+                )
             admin_page.goto(tool_url, wait_until="domcontentloaded")
-            check("reactivating CPMS restores the companion's active state", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1)
+            check("restored active database preserves the valid fixture and PASS preflight", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1 and admin_page.locator("[data-cpdd-fixture-id]").get_attribute("data-cpdd-fixture-id") == fixture_id)
 
             # Reload GET: secrets must not appear anywhere in DOM
             admin_page.goto(tool_url, wait_until="domcontentloaded")
