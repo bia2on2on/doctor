@@ -552,10 +552,13 @@ def journeys_phase(browser) -> None:
     submit_form(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
     check("the read-only diagnostic page publishes the scoped surface",
           admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")
-    check("teardown preview passes",
-          admin.locator('[data-cpsd-diagnostic="pass"]').count() == 1,
-          f"diagnostic={admin.locator('[data-cpsd-diagnostic]').count()} "
-          f"text={admin.locator('.wrap.cpdd').inner_text()[-400:] if admin.locator('.wrap.cpdd').count() else ''}")
+    diag = admin.locator("[data-cpsd-diagnostic]")
+    diag_verdict = (diag.get_attribute("data-cpsd-diagnostic") or "") if diag.count() else ""
+    diag_text = diag.inner_text() if diag.count() else ""
+    check("the read-only preview publishes a verdict", diag_verdict in ("pass", "fail"),
+          f"verdict={diag_verdict!r} text={diag_text[:400]!r}")
+    check("teardown preview passes", diag_verdict == "pass",
+          f"verdict={diag_verdict!r} problems={diag_text[:400]!r}")
     submit_form(admin, "teardown", "REMOVE_ONLY_SCOPED_DEMO_DATA")
     check("authorized teardown clean", admin.locator('[data-cpsd-teardown="clean"]').count() == 1,
           f"teardown_card={admin.locator('[data-cpsd-teardown]').count()} "
