@@ -517,7 +517,12 @@ def main() -> None:
                     json.dumps({"before": fixture_before_inactive, "after": fixture_during_inactive}),
                 )
             admin_page.goto(tool_url, wait_until="domcontentloaded")
-            check("restored active database preserves the valid fixture and PASS preflight", admin_page.locator('[data-cpdd-preflight="pass"]').count() == 1 and admin_page.locator("[data-cpdd-fixture-id]").get_attribute("data-cpdd-fixture-id") == fixture_id)
+            check(
+                "restored active database preserves the valid fixture and restores active controls",
+                admin_page.locator('[data-cpdd-cpms-inactive="1"]').count() == 0
+                and admin_page.locator("[data-cpdd-fixture-id]").get_attribute("data-cpdd-fixture-id") == fixture_id
+                and admin_page.locator('form[data-cpdd-form="teardown"]').count() == 1,
+            )
 
             # Reload GET: secrets must not appear anywhere in DOM
             admin_page.goto(tool_url, wait_until="domcontentloaded")
