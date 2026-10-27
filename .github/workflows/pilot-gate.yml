@@ -2172,12 +2172,12 @@ jobs:
           test "${BROWSER_EXIT}" -eq 0
 
       - name: Reception Apache/PHP postflight — always
-        if: always()
+        if: always() && !cancelled()
         run: |
           bash tests/bin/reception-http-probe.sh http://localhost:8080 after-browser "$WP_DIR" | tee /tmp/reception-http-after.log
 
       - name: Restore Apache wall clock after Reception acceptance
-        if: always()
+        if: always() && !cancelled()
         run: |
           if [ -s /tmp/reception-apache-envvars.original ]; then
             sudo cp /tmp/reception-apache-envvars.original /etc/apache2/envvars
@@ -2246,7 +2246,7 @@ jobs:
       # شامل A1/تعداد روز/تعداد نوبت/گذارِ وضعیت/A4 است) به PR post می‌شود.
       # کاملاً الحاقی و `always()` — هیچ معیار یا آستانهٔ گیتی تغییر نکرد.
       - name: Post responsive evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2291,7 +2291,7 @@ jobs:
       # کند، پس خلاصهٔ PASS/FAIL سفر OTP هم (فقط boolean/شناسه/تعداد) به PR
       # post می‌شود. `always()` و صرفاً الحاقی — هیچ معیارِ گیتی تغییر نکرد.
       - name: Post OTP journey evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2311,7 +2311,7 @@ jobs:
       # sandbox نمی‌تواند blob را دانلود کند، پس خلاصه PASS/FAIL هم به PR پست
       # می‌شود. فقط boolean/تعداد/شناسه — بدون نام/موبایل/nonce/cookie.
       - name: Post Slice-3 chooser evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2345,7 +2345,7 @@ jobs:
       # Phase 9 Slice 1 + Slice 2 — همان کانال شواهد برای پورتال بیمار (لغو نوبت +
       # اعلان‌های داخلی). فقط boolean/تعداد/شناسه — بدون نام/موبایل/رمز/nonce/cookie.
       - name: Post Slice-1/Slice-2 portal evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2379,7 +2379,7 @@ jobs:
       # Phase 9 Slice 4 — same channel, with status-only browser output and a safe fixture summary.
       # env کامل (رمز) هرگز cat نمی‌شود. always() تا شکستِ سفر هم قابل بازیابی باشد.
       - name: Post Slice-4 profile evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2396,7 +2396,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-profile-evidence.md
 
       - name: Post Doctor Portal evidence to PR
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2413,7 +2413,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md
 
       - name: Post Reception evidence to PR
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2438,7 +2438,7 @@ jobs:
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/reception-evidence.md
 
       - name: Post Day-2 Operational Workflows evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: always()
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -2486,7 +2486,7 @@ jobs:
           } > /tmp/debug.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && !cancelled()
         with:
           name: responsive-screenshots
           path: clinic-practice-management/pilot-screenshots/
