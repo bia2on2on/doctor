@@ -805,19 +805,22 @@ class ScopedTeardown {
 		$clinic_id  = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
 		$location   = (array) ( $manifest['ids']['location_ids'] ?? array() );
 		if ( $org_id > 0 ) {
-			$org_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $this->platform->table( 'cpms_organizations' ) . ' WHERE id = %d', $org_id ) );
+			$table      = $this->platform->table( 'cpms_organizations' );
+			$org_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $table . ' WHERE id = %d', $org_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
 			if ( 'suspended' !== (string) $org_status ) {
 				$problems[] = 'ANCHOR_ORGANIZATION_NOT_INERT';
 			}
 		}
 		if ( $clinic_id > 0 ) {
-			$clinic_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d', $clinic_id ) );
+			$table         = $this->platform->table( 'cpms_clinics' );
+			$clinic_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $table . ' WHERE id = %d', $clinic_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
 			if ( 'suspended' !== (string) $clinic_status ) {
 				$problems[] = 'ANCHOR_CLINIC_NOT_INERT';
 			}
 		}
 		foreach ( $location as $location_id ) {
-			$active = $wpdb->get_var( $wpdb->prepare( 'SELECT is_active FROM ' . $this->platform->table( 'cpms_locations' ) . ' WHERE id = %d', (int) $location_id ) );
+			$table  = $this->platform->table( 'cpms_locations' );
+			$active = $wpdb->get_var( $wpdb->prepare( 'SELECT is_active FROM ' . $table . ' WHERE id = %d', (int) $location_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
 			if ( null !== $active && 0 !== (int) $active ) {
 				$problems[] = 'ANCHOR_LOCATION_STILL_ACTIVE';
 			}

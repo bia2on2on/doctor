@@ -2,7 +2,7 @@
 
 **Branch:** `arena/3c5e41b4-doctor` (Arena-fixed; no second branch was created).
 **Main merged forward:** `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8` via normal merge commit `e870023d…`, preserving preparation commit `5e951c837cbd195d483395cc6944211b9d038293`.
-**Status:** implementation complete; dedicated exact-head GitHub Actions evidence exists for the scoped lane on both database engines (details below). Repository-wide green is still blocked by unrelated lanes, and several acceptance items remain NOT RUN.
+**Status:** implementation complete; the six-persona browser acceptance journey now runs end-to-end (58 journeys checks + 11 provisioning checks, `ok: true`) on both database engines at the exact head below. Repository-wide green is still blocked by unrelated lanes, and the items listed under *Remaining risks* remain NOT RUN.
 
 ## Stage 1 — post-merge failure
 
@@ -71,7 +71,7 @@ Strict `run-tests.php` was **NOT RUN successfully locally** because the php-wasm
 - real WordPress integration matrix on **MySQL 8** and **MariaDB 11.4.13**: seeded non-empty WP/CPMS fixture, baseline capture, six real `wp_authenticate` checks, foreign activity during demo, teardown preview/execute, baseline preservation, full audit-chain verification, and preservation of existing/foreign users/posts/comments/invoices/jobs.
 - Chromium job on both DB lanes: real wp-admin enable/provision/diagnose/teardown forms and six independent browser-context logins.
 
-The Chromium script explicitly does **not** yet exercise every role-specific clinical, reception, booking, finance, OTP or cross-Clinic authorization journey. Those remain **NOT RUN** and must not be claimed as passed. Screenshot pixels are saved but not yet inspected.
+The Chromium script drives the six personas through their real delivered surfaces: the front-end Staff Portal modules (`?page_id=…&cpms-module=reception|finance|doctor`), the patient portal page and the management portal page, calling the plugin's own REST routes from the authenticated page. OTP code issuance is still **NOT RUN** in the browser (the companion never reads or echoes a code). Screenshot pixels are saved but not inspected.
 
 ## Exact-head CI evidence (scoped lane)
 
@@ -98,6 +98,19 @@ PASS authorized teardown clean
 CPSD_BROWSER_RESULT={"ok": true, "checks": 21}
 ```
 
+### Six-persona journey evidence (current head)
+
+**Head:** `b5674bb…` (PR #277, draft). Both real-WordPress jobs are green; the journeys step printed `CPSD_BROWSER_RESULT={"ok": true, "checks": 58, "phase": "journeys"}` and `CPSD_BROWSER_PROVISION_CHECKS=11 / OK=True`.
+
+What the 58 checks prove, per persona, from that persona's own authenticated browser page:
+
+- **receptionist** — the demo Clinic appears in its reception scope; an operational Location is selected; the arrival board reads 200; a real slot is booked (appointment id returned and visible on the board); a payment void is refused with 403 `CLINIC_PERMISSION_DENIED`.
+- **doctor** — the visit record reads 200; a clinical note is written and then read back from the record; a payment capture is refused 403.
+- **accountant** — finance context exposes the Location and `can_capture_payment`; awaiting-payment board and invoice read 200; a malformed `Idempotency-Key` is refused 400; a capture against the provisioning-settled invoice is refused 409 `CLINIC_INVOICE_NOT_MODIFIABLE`; a foreign-Clinic invoice read is refused 404 `CLINIC_NOT_FOUND`; a clinical-note write is refused 403.
+- **patient** — the portal renders its own nonce; `/patient/me` answers the non-enumerating 404 `CLINIC_NOT_FOUND` and `/patient/my-records` an empty list (see limitations); staff reception/finance routes refuse it (403 board, 400 `CLINIC_SCOPE_REQUIRED` for finance, including with a valid Clinic header and no leaked finance fields).
+- **clinic_manager / organization_manager** — the management portal renders their own Clinic / Organization scope, with no denial notice.
+- **admin** — the read-only teardown preview renders `pass` with the ownership plan (appointments 2, clinical notes 3, invoices 1, payments 1, …), and the authorized teardown reports `clean`.
+
 Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at the time of writing: First-practice browser (both engines), Staging Gate, Responsive smoke, Real WP Acceptance (`clinic_`), Facility matrix (mysql), two coexistence lanes.
 
 ### Unrelated failing lane on the same head
@@ -110,7 +123,7 @@ Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at 
 - The demo patient account is **authenticated but not bound** to a patient record. The only production writer of `cpms_patient_user_links` is the mobile-OTP enrollment flow, and this companion never reads, echoes or bypasses an OTP code. The browser journey therefore asserts the fail-closed production behaviour instead of a successful read: `/patient/me` answers the non-enumerating `404 CLINIC_NOT_FOUND` and `/patient/my-records` answers `200` with an empty list. Binding the persona would require either an OTP bypass or a new production API; neither is in scope here, and no journey claims the patient can see clinical data.
 - Repository-wide green is not claimed: several unrelated lanes were still running, one pre-existing disposable-site lane failed intermittently, and the `Responsive smoke` harness race described above remains open.
 - The production `cpms_audit_logs` table has a foreign key to `cpms_clinics`. Preserving the full audit chain and adding no production schema migration therefore requires retaining the three synthetic parent rows as suspended/inactive audit anchors. This is an explicit architectural limitation, not a silent residual: owned operational, clinical and financial records are removed, but the synthetic Organization/Clinic/Locations rows are archived rather than physically deleted.
-- Full six-persona role-specific workflow coverage, OTP browser journey, cross-Clinic REST authorization drill, tampered-manifest runtime test, concurrency test, interrupted provisioning/teardown fault injection, storage/audit failure injection, and repeated-teardown runtime tests are not yet implemented in the executable acceptance suite.
+- OTP code issuance is not driven in the browser lane, and a *successful* payment capture plus idempotent replay is proven only in the PHP integration suite (`cross_clinic`, replay `idempotent_replay: true`) — the settled fixture invoice makes a second capture impossible by design, so the browser lane asserts the refusal instead. A tampered-manifest runtime test, a repeated-teardown runtime test and storage/audit failure injection remain NOT RUN.
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
 - Universal hosting compatibility is not claimed. The conservative preflight refuses multisite, persistent object cache, schema drift, unknown CPMS tables with data, dev OTP echo, and a busy queue runner.
 - Local `php-wasm` checks are syntax/unit evidence only, not real MySQL/MariaDB/WordPress/Chromium evidence.
