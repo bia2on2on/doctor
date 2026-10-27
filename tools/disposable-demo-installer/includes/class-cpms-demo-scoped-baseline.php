@@ -40,6 +40,35 @@ class ScopedBaseline {
 		'wp_media_library_mode',
 	);
 
+	/**
+	 * Queue lifecycle columns are RUNTIME state, not data.
+	 *
+	 * The CPMS queue wakes itself with a loopback tick after every enqueue, so a
+	 * job row that already existed when the baseline was sealed legitimately
+	 * moves queued -> processing -> success while the demo is being exercised.
+	 * Hashing those columns would make the owner preview fail because the site ran
+	 * its own maintenance, not because demo data drifted, so the baseline keeps
+	 * covering a job's identity (id, type, payload, priority, created_at) only.
+	 */
+	private const VOLATILE_COLUMNS = array(
+		'cpms_jobs' => array( 'status', 'attempts', 'run_after', 'locked_by', 'lock_expires_at', 'last_error', 'started_at', 'completed_at' ),
+	);
+
+	/**
+	 * Tables that hold ONLY runtime counters.
+	 *
+	 * `cpms_rate_limits` is a keyed hit counter: the queue tick, the login
+	 * throttle and the public OTP limiter increment and expire rows with no
+	 * operator action, and none of it is clinical, financial or content data. The
+	 * scoped teardown still owns and deletes the fixture's own keys through
+	 * ScopedTeardown::allowed_rate_limit_keys(); the baseline simply does not
+	 * pretend a counter is site data.
+	 */
+	private const RUNTIME_TABLES = array( 'cpms_rate_limits' );
+
+	/** Per-row digests are stored for tables up to this many rows, so a mismatch can name rows. */
+	private const ROW_MAP_LIMIT = 500;
+
 	/** @var Env */
 	private Env $env;
 
@@ -99,6 +128,9 @@ class ScopedBaseline {
 		$checked  = 0;
 		foreach ( array( 'cpms', 'wp' ) as $group ) {
 			foreach ( (array) ( $baseline[ $group ] ?? array() ) as $name => $expected ) {
+				if ( 'cpms' === $group && in_array( (string) $name, self::RUNTIME_TABLES, true ) ) {
+					continue;
+				}
 				++$checked;
 				$table = 'cpms' === $group ? $this->platform->table( (string) $name ) : ( (string) $GLOBALS['wpdb']->prefix . $name );
 				$actual = $this->snapshot_table( $table, (string) ( $expected['id_col'] ?? '' ), (int) ( $expected['max_id'] ?? 0 ) );
@@ -108,7 +140,7 @@ class ScopedBaseline {
 						continue;
 					}
 					if ( (string) ( $actual['digest'] ?? '' ) !== (string) ( $expected['digest'] ?? '' ) ) {
-						$problems[] = $group . ':' . $name . ' baseline row digest changed';
+						$problems[] = $group . ':' . $name . ' baseline row digest changed' . $this->changed_rows_note( $expected, $actual );
 					}
 					continue;
 				}
@@ -152,14 +184,16 @@ class ScopedBaseline {
 		$id_col = '' !== $force_id ? $force_id : $this->auto_increment_column( $table );
 		if ( '' !== $id_col ) {
 			$limit = $max_id >= 0 ? $max_id : (int) $wpdb->get_var( 'SELECT COALESCE(MAX(`' . $id_col . '`), 0) FROM `' . $table . '`' );
-			$digest = $this->prefix_digest( $table, $id_col, $limit );
+			$count  = $this->prefix_count( $table, $id_col, $limit );
+			$print  = $this->prefix_digest( $table, $id_col, $limit, $count <= self::ROW_MAP_LIMIT );
 
 			return array(
 				'strategy' => 'prefix',
 				'id_col'   => $id_col,
 				'max_id'   => $limit,
-				'count'    => $this->prefix_count( $table, $id_col, $limit ),
-				'digest'   => $digest,
+				'count'    => $count,
+				'digest'   => $print['digest'],
+				'rows'     => $print['rows'],
 			);
 		}
 
@@ -197,9 +231,10 @@ class ScopedBaseline {
 	 * @param string $table Full table name.
 	 * @param string $id_col ID column.
 	 * @param int $max_id Max baseline ID.
-	 * @return string
+	 * @param bool $with_rows Also return a per-row digest map so a mismatch can name rows.
+	 * @return array{digest:string,rows:array<string,string>}
 	 */
-	private function prefix_digest( string $table, string $id_col, int $max_id ): string {
+	private function prefix_digest( string $table, string $id_col, int $max_id, bool $with_rows = false ): array {
 		global $wpdb;
 		$where = '`' . $id_col . '` <= %d';
 		$params = array( $max_id );
@@ -210,6 +245,7 @@ class ScopedBaseline {
 		$where .= $this->volatile_usermeta_where( $table );
 		$offset = 0;
 		$hash   = hash_init( 'sha256' );
+		$map    = array();
 		while ( true ) {
 			$sql = 'SELECT * FROM `' . $table . '` WHERE ' . $where . ' ORDER BY `' . $id_col . '` ASC LIMIT %d OFFSET %d';
 			$rows = $wpdb->get_results( $wpdb->prepare( $sql, array_merge( $params, array( self::CHUNK, $offset ) ) ), ARRAY_A );
@@ -217,7 +253,11 @@ class ScopedBaseline {
 				break;
 			}
 			foreach ( (array) $rows as $row ) {
-				hash_update( $hash, $this->row_hash( $row, $table ) . "\n" );
+				$row_digest = $this->row_hash( $row, $table );
+				hash_update( $hash, $row_digest . "\n" );
+				if ( $with_rows ) {
+					$map[ $this->row_label( $row, $table, $id_col ) ] = $row_digest;
+				}
 			}
 			if ( count( (array) $rows ) < self::CHUNK ) {
 				break;
@@ -225,7 +265,56 @@ class ScopedBaseline {
 			$offset += self::CHUNK;
 		}
 
-		return hash_final( $hash );
+		return array( 'digest' => hash_final( $hash ), 'rows' => $map );
+	}
+
+	/**
+	 * PHI-free row label: identifiers and column/key NAMES only, never a value.
+	 *
+	 * @param array<string,mixed> $row Row.
+	 * @param string $table Full table name.
+	 * @param string $id_col ID column.
+	 * @return string
+	 */
+	private function row_label( array $row, string $table, string $id_col ): string {
+		if ( false !== strpos( $table, 'postmeta' ) || false !== strpos( $table, 'usermeta' ) ) {
+			return (string) ( $row['post_id'] ?? $row['user_id'] ?? '' ) . ':' . (string) ( $row['meta_key'] ?? '' );
+		}
+		if ( $this->is_options_table( $table ) ) {
+			return (string) ( $row['option_name'] ?? '' );
+		}
+
+		return (string) ( $row[ $id_col ] ?? '' );
+	}
+
+	/**
+	 * Name up to five rows whose digest moved, so the operator sees WHAT drifted
+	 * (ids and key names) without any row value or PHI.
+	 *
+	 * @param array<string,mixed> $expected Baseline snapshot of one table.
+	 * @param array<string,mixed> $actual Live snapshot of the same table.
+	 * @return string
+	 */
+	private function changed_rows_note( array $expected, array $actual ): string {
+		$before = (array) ( $expected['rows'] ?? array() );
+		$after  = (array) ( $actual['rows'] ?? array() );
+		if ( array() === $before || array() === $after ) {
+			return '';
+		}
+		$changed = array();
+		foreach ( $before as $label => $digest ) {
+			if ( ! isset( $after[ $label ] ) || ! hash_equals( (string) $digest, (string) $after[ $label ] ) ) {
+				$changed[] = (string) $label;
+			}
+			if ( count( $changed ) >= 5 ) {
+				break;
+			}
+		}
+		if ( array() === $changed ) {
+			return '';
+		}
+
+		return ' (changed: ' . implode( ', ', $changed ) . ')';
 	}
 
 	/**
@@ -330,6 +419,14 @@ class ScopedBaseline {
 		// prevents legitimate foreign activity from looking like baseline damage.
 		if ( false !== strpos( $table, 'term_taxonomy' ) ) {
 			unset( $row['count'] );
+		}
+		foreach ( self::VOLATILE_COLUMNS as $marker => $columns ) {
+			if ( false === strpos( $table, $marker ) ) {
+				continue;
+			}
+			foreach ( $columns as $column ) {
+				unset( $row[ $column ] );
+			}
 		}
 		ksort( $row );
 		$canonical = (string) wp_json_encode( $row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
