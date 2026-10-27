@@ -76,6 +76,7 @@ The Chromium script explicitly does **not** yet exercise every role-specific cli
 ## Remaining risks / honest limitations
 
 - Exact-head GitHub Actions evidence is pending; no CI PASS is claimed until the dedicated PR runs.
+- The production `cpms_audit_logs` table has a foreign key to `cpms_clinics`. Preserving the full audit chain and adding no production schema migration therefore requires retaining the three synthetic parent rows as suspended/inactive audit anchors. This is an explicit architectural limitation, not a silent residual: owned operational, clinical and financial records are removed, but the synthetic Organization/Clinic/Locations rows are archived rather than physically deleted.
 - Full six-persona role-specific workflow coverage, OTP browser journey, cross-Clinic REST authorization drill, tampered-manifest runtime test, concurrency test, interrupted provisioning/teardown fault injection, storage/audit failure injection, and repeated-teardown runtime tests are not yet implemented in the executable acceptance suite.
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
 - Universal hosting compatibility is not claimed. The conservative preflight refuses multisite, persistent object cache, schema drift, unknown CPMS tables with data, dev OTP echo, and a busy queue runner.
