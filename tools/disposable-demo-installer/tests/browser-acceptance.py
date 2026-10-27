@@ -293,11 +293,11 @@ def main() -> None:
             inactive_state = json.loads(
                 wp_eval(
                     r"""
-                    $env = new \\CpmsDemo\\Env();
-                    $manifest = new \\CpmsDemo\\Manifest($env);
-                    $state = (new \\CpmsDemo\\Preflight($env, new \\CpmsDemo\\Platform(), $manifest))->run();
+                    $env = new \CpmsDemo\Env();
+                    $manifest = new \CpmsDemo\Manifest($env);
+                    $state = (new \CpmsDemo\Preflight($env, new \CpmsDemo\Platform(), $manifest))->run();
                     echo wp_json_encode([
-                        'cpms_loaded' => class_exists(\\ClinicCore\\Bootstrap\\App::class),
+                        'cpms_loaded' => class_exists(\ClinicCore\Bootstrap\App::class),
                         'cpms_active_plugin' => in_array('clinic-practice-management/clinic-practice-management.php', (array) get_option('active_plugins', []), true),
                         'blocking' => $state['blocking'],
                         'checks' => $state['checks'],
