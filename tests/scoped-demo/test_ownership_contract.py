@@ -136,7 +136,7 @@ class OwnershipContractTests(unittest.TestCase):
         for table in self.known:
             self.assertIn(f"`{table}`", self.ownership_map, table)
         self.assertIn("each of the 53", self.acceptance_plan)
-        self.assertIn("DESIGNED / NOT RUN", self.acceptance_plan)
+        self.assertIn("NOT RUN", self.acceptance_plan)
 
     def test_pinned_schema_and_audit_chain_contract_exist(self) -> None:
         version_match = re.search(

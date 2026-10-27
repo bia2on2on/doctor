@@ -1,6 +1,6 @@
-# Scoped demo — executed safety acceptance plan (design, NOT RUN)
+# Scoped demo — executed safety acceptance plan
 
-This document defines the acceptance evidence required before a scoped-demo PR can be called complete. **No WordPress, MySQL, MariaDB, Chromium, or PHP test has been executed in this preparation checkpoint.** The sandbox has Python and Node only; PHP, Composer, MySQL/MariaDB server, WP-CLI, and Chromium are absent. All items below are `DESIGNED / NOT RUN`.
+This document defines the acceptance evidence required before a scoped-demo PR can be called complete. The original preparation checkpoint had no runtime execution. Since then, local static/unit/PHP-wasm evidence and a dedicated CI workflow have been added; see `implementation-status.md` for the current exact status. Most real WordPress, MySQL/MariaDB and full Chromium workflow items remain designed but **NOT RUN** until exact-head CI completes.
 
 ## 1. Source-level static contract (executable now)
 

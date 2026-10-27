@@ -1,7 +1,7 @@
 # Scoped demo on non-empty test sites — preparation checkpoint / continuation report
 
 **Date/time of live state check:** 2026-10-27T01:06:42Z (UTC).
-**Status:** `BLOCKED_BY_PR_276` — mandatory branch-isolation safety stop. No scoped-mode implementation, PR, merge, tag, release, deployment, or Phase 20 action was performed.
+**Historical status:** `BLOCKED_BY_PR_276` at the time this checkpoint was written. That dependency has since merged into `main` at `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8`; implementation continued on the same fixed session branch. See [`implementation-status.md`](implementation-status.md) and [`post-merge-failure-diagnosis.md`](post-merge-failure-diagnosis.md) for the current state. No tag, release, deployment, merge of the scoped PR, or Phase 20 action has been performed.
 
 ## 1. Live dependency and writer state
 

@@ -1,0 +1,195 @@
+<?php
+/**
+ * Unit/security tests for the separate scoped demo mode.
+ *
+ * Run: php tools/disposable-demo-installer/tests/scoped-run-tests.php
+ * These are pure in-memory tests; they are not real WordPress/database/browser
+ * acceptance evidence.
+ *
+ * @package CpmsDisposableDemo
+ */
+
+declare(strict_types=1);
+
+namespace ClinicCore\Infrastructure\Audit {
+	if ( ! class_exists( 'ClinicCore\\Infrastructure\\Audit\\HashChain' ) ) {
+		final class HashChain {
+			public const GENESIS = '0000000000000000000000000000000000000000000000000000000000000000';
+			public static function computeRowHash( string $prevHash, array $fields ): string {
+				ksort( $fields );
+				return hash( 'sha256', $prevHash . ( json_encode( $fields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) ?: '' ) );
+			}
+			public static function fieldsFor( array $row ): array {
+				$int = static fn ( $v ) => ( null === $v || '' === $v ) ? null : (int) $v;
+				$str = static fn ( $v ) => ( null === $v || '' === $v ) ? null : (string) $v;
+				return array(
+					'clinic_id'        => $int( $row['clinic_id'] ?? null ),
+					'actor_wp_user_id' => $int( $row['actor_wp_user_id'] ?? null ),
+					'actor_role'       => $str( $row['actor_role'] ?? null ),
+					'action'           => $str( $row['action'] ?? null ),
+					'resource_type'    => $str( $row['resource_type'] ?? null ),
+					'resource_id'      => $int( $row['resource_id'] ?? null ),
+					'patient_id'       => $int( $row['patient_id'] ?? null ),
+					'ip_hash'          => $str( $row['ip_hash'] ?? null ),
+					'session_id'       => $str( $row['session_id'] ?? null ),
+					'request_id'       => $str( $row['request_id'] ?? null ),
+					'created_at'       => $str( $row['created_at'] ?? null ),
+				);
+			}
+		}
+	}
+}
+
+namespace {
+	use ClinicCore\Infrastructure\Audit\HashChain;
+	use CpmsDemo\ScopedAuditGuard;
+	use CpmsDemo\ScopedManifest;
+	use CpmsDemo\ScopedRequest;
+
+	require_once __DIR__ . '/bootstrap.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-manifest.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-audit-guard.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-baseline.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
+
+	if ( ! defined( 'ARRAY_A' ) ) {
+		define( 'ARRAY_A', 'ARRAY_A' );
+	}
+	if ( ! function_exists( 'wp_enqueue_style' ) ) {
+		function wp_enqueue_style( ...$args ) { return true; }
+	}
+	if ( ! function_exists( 'add_submenu_page' ) ) {
+		function add_submenu_page( ...$args ) { return 'cpms_page_cpsd'; }
+	}
+
+	final class Cpsd_Fake_Audit_Platform extends Cpdd_Fake_Platform {
+		public array $audit_rows = array();
+		public function table( string $short ): string { return $short; }
+		public function fetch_all( string $sql, array $params = array() ): array {
+			$after = (int) ( $params[0] ?? 0 );
+			$out   = array();
+			foreach ( $this->audit_rows as $row ) {
+				if ( (int) $row['id'] > $after ) {
+					$out[] = $row;
+				}
+			}
+			usort( $out, static fn ( array $a, array $b ): int => (int) $a['id'] <=> (int) $b['id'] );
+			return array_slice( $out, 0, (int) ( $params[1] ?? 1000 ) );
+		}
+	}
+
+	function cpsd_fixture(): array {
+		$env = new Cpdd_Fake_Env();
+		$env->seed_clean_site();
+		return array( 'env' => $env, 'manifest' => new ScopedManifest( $env ) );
+	}
+
+	function cpsd_manifest_data(): array {
+		return array(
+			'fixture_id' => str_repeat( 'a', 32 ),
+			'status'     => 'active',
+			'admin_id'   => 1,
+			'ids'        => array( 'clinic_id' => 2, 'organization_id' => 2, 'user_ids' => array( 'patient' => 101 ) ),
+		);
+	}
+
+	function cpsd_post( array $ctx, string $action, array $overrides = array() ): array {
+		$request = new ScopedRequest( $ctx['env'], $ctx['manifest'] );
+		return array_merge(
+			array(
+				'cpdd_nonce'   => $request->nonce( $action ),
+				'cpdd_confirm' => $request->phrase( $action ),
+				'cpdd_site'    => $ctx['manifest']->site_fingerprint(),
+			),
+			$overrides
+		);
+	}
+
+	// 1. Scoped manifest uses a different option, format, fixture ID and HMAC.
+	$ctx = cpsd_fixture();
+	$data = cpsd_manifest_data();
+	$sealed = $ctx['manifest']->save( $data );
+	Cpdd_Test::equals( 2, (int) $sealed['format'], 'scoped manifest format is 2' );
+	Cpdd_Test::equals( 'scoped', (string) $sealed['mode'], 'scoped mode marker is stored' );
+	Cpdd_Test::equals( $sealed['fixture_id'], (string) $ctx['manifest']->load()['fixture_id'], 'sealed scoped manifest reloads' );
+	Cpdd_Test::equals( false, is_array( get_option( 'cpdd_manifest', false ) ), 'strict manifest is not written by scoped mode' );
+	Cpdd_Test::ok( 1 === preg_match( '/^[a-f0-9]{32}$/D', (string) $ctx['manifest']->fixture_id() ), 'scoped fixture ID is 128-bit hex' );
+
+	$tampered = $sealed;
+	$tampered['mac'] = str_repeat( '0', 64 );
+	update_option( 'cpsd_manifest', $tampered );
+	Cpdd_Test::refuses( static fn () => $ctx['manifest']->load(), 'MANIFEST_TAMPERED', 'tampered scoped manifest is refused' );
+
+	// 2. Mode activation is explicit, HMAC-sealed and site-bound.
+	$ctx = cpsd_fixture();
+	Cpdd_Test::equals( false, $ctx['manifest']->mode_enabled(), 'scoped mode is disabled by default' );
+	$ctx['manifest']->enable_mode( 1 );
+	Cpdd_Test::equals( true, $ctx['manifest']->mode_enabled(), 'explicit mode activation is accepted' );
+	$mode = get_option( 'cpsd_mode', array() );
+	$mode['mac'] = str_repeat( '1', 64 );
+	update_option( 'cpsd_mode', $mode );
+	Cpdd_Test::equals( false, $ctx['manifest']->mode_enabled(), 'tampered mode marker is refused' );
+	$ctx['manifest']->disable_mode();
+	Cpdd_Test::equals( false, $ctx['manifest']->mode_enabled(), 'mode can be disabled' );
+
+	// 3. Scoped request actions are distinct and enforce every gate.
+	$ctx = cpsd_fixture();
+	$request = new ScopedRequest( $ctx['env'], $ctx['manifest'] );
+	Cpdd_Test::equals( 'I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE', $request->phrase( ScopedRequest::ACTION_ENABLE ), 'distinct enable phrase' );
+	Cpdd_Test::equals( 'REMOVE_ONLY_SCOPED_DEMO_DATA', $request->phrase( ScopedRequest::ACTION_TEARDOWN ), 'distinct teardown phrase' );
+	$request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE ) );
+	Cpdd_Test::ok( true, 'valid scoped request is accepted' );
+	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_confirm' => 'WRONG' ) ) ), 'CONFIRMATION', 'wrong phrase is refused' );
+	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_nonce' => 'bad' ) ) ), 'NONCE', 'wrong nonce is refused' );
+	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_site' => 'other-site' ) ) ), 'SITE_IDENTITY', 'cross-site fingerprint is refused' );
+
+	// 4. Full audit chain verification uses the production HashChain contract.
+	$base = array(
+		'clinic_id'        => 1,
+		'actor_wp_user_id' => 1,
+		'actor_role'       => 'administrator',
+		'action'           => 'BASELINE',
+		'resource_type'    => 'clinic',
+		'resource_id'      => 1,
+		'patient_id'       => null,
+		'ip_hash'          => null,
+		'session_id'       => null,
+		'request_id'       => null,
+		'created_at'       => '2026-10-27 00:00:00.000',
+		'before_json'      => null,
+		'after_json'       => null,
+		'meta_json'        => null,
+	);
+	$row1 = array( 'id' => 1, 'prev_hash' => HashChain::GENESIS ) + $base;
+	$row1['row_hash'] = HashChain::computeRowHash( HashChain::GENESIS, HashChain::fieldsFor( $row1 ) );
+	$row2 = array( 'id' => 2, 'prev_hash' => $row1['row_hash'], 'action' => 'SECOND' ) + $base;
+	$row2['row_hash'] = HashChain::computeRowHash( $row2['prev_hash'], HashChain::fieldsFor( $row2 ) );
+	$platform = new Cpsd_Fake_Audit_Platform();
+	$platform->audit_rows = array( $row1, $row2 );
+	$guard = new ScopedAuditGuard( $platform );
+	$chain = $guard->verify_chain();
+	Cpdd_Test::equals( true, (bool) $chain['ok'], 'valid full audit chain passes' );
+	Cpdd_Test::equals( 2, (int) $chain['checked'], 'full audit chain checks both rows' );
+	Cpdd_Test::equals( $row2['row_hash'], (string) $chain['tail'], 'audit chain tail is correct' );
+	$broken = $row2;
+	$broken['row_hash'] = str_repeat( '0', 64 );
+	$platform->audit_rows = array( $row1, $broken );
+	Cpdd_Test::equals( false, (bool) $guard->verify_chain()['ok'], 'broken audit chain is refused' );
+
+	// 5. Static safety markers in the shipped scoped sources.
+	$sources = glob( CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-*.php' ) ?: array();
+	$all = '';
+	foreach ( $sources as $file ) {
+		$all .= (string) file_get_contents( $file );
+	}
+	Cpdd_Test::ok( false !== strpos( $all, 'never deletes' ) || 1 === preg_match( '/never deletes|Never deletes|عدم حذف/', $all ), 'audit preservation is documented in scoped sources' );
+	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*cpms_audit_logs|TRUNCATE TABLE|CPMS_DEV_OTP_ECHO[^;]*define/i', $all ), 'no audit delete, truncate or dev OTP define in scoped sources' );
+	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*WHERE\s+(created_at|request_id|ip_hash)/i', $all ), 'no broad time/request/IP deletion predicate' );
+
+	exit( Cpdd_Test::summary() );
+}
