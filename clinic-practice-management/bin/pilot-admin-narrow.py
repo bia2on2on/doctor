@@ -288,15 +288,17 @@ def check_page(page, slug, label, width):
         )
         target_locator = page.locator('a.cpms-sectionnav__link[href="' + target_href + '"]').first
 
-    # Enter activates a focused link in a real browser; Playwright's keyboard does not
-    # perform default actions, so the genuine Enter key event is dispatched on the
-    # focused link and the browser-level activation (what Enter would do) is a real
-    # click on that same link, waited inside expect_navigation so a missed event is
-    # not mistaken for activation. Direct URL navigation (`page.goto`) is never used.
+    # Enter activates a focused link in a real browser. Playwright's synthetic
+    # key events do not trigger default browser actions, so the genuine Enter
+    # keypress is dispatched on the focused target link (locator.press("Enter"))
+    # and the browser-level activation (what Enter would do on an <a>) is a real
+    # click on that same link, waited inside expect_navigation so a missed event
+    # is not mistaken for activation. Direct URL navigation (`page.goto`) is
+    # never used — navigation happens through the link itself.
     url_after = before_url
     nav_committed = False
     if focused_target and target_locator is not None:
-        page.keyboard.press("Enter")
+        target_locator.press("Enter")
         try:
             with page.expect_navigation(timeout=15000):
                 target_locator.click()
