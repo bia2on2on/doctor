@@ -209,10 +209,18 @@ class ScopedPreflight extends Preflight {
 				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک نوشته/برگه با پیشوند cpsd- از قبل وجود دارد.' );
 			}
 		}
-		foreach ( array( 'cpms_organizations', 'cpms_clinics', 'cpms_locations' ) as $short ) {
-			$rows = $this->platform->fetch_all( 'SELECT slug FROM `' . $this->platform->table( $short ) . '` WHERE slug LIKE %s LIMIT 1', array( 'cpsd-%' ) );
+		// A previous clean scoped teardown may leave suspended/inactive parent
+		// rows as audit FK anchors. They are inert and use an older fixture ID;
+		// only active namespace holders must block a new provisioning run.
+		$active_predicates = array(
+			'cpms_organizations' => "slug LIKE %s AND status = 'active'",
+			'cpms_clinics'       => "slug LIKE %s AND status = 'active'",
+			'cpms_locations'     => 'slug LIKE %s AND is_active = 1',
+		);
+		foreach ( $active_predicates as $short => $predicate ) {
+			$rows = $this->platform->fetch_all( 'SELECT id FROM `' . $this->platform->table( $short ) . '` WHERE ' . $predicate . ' LIMIT 1', array( 'cpsd-%' ) );
 			if ( array() !== $rows ) {
-				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک slug با پیشوند cpsd- در ' . $short . ' وجود دارد.' );
+				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک slug فعال با پیشوند cpsd- در ' . $short . ' وجود دارد.' );
 			}
 		}
 
