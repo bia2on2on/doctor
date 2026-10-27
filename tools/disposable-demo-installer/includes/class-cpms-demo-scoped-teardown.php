@@ -28,18 +28,6 @@ class ScopedTeardown {
 		'cpms_audit_logs',
 	);
 
-	/**
-	 * The append-only audit log has a foreign key to cpms_clinics. Because the
-	 * scoped mode must preserve every audit row and cannot change the production
-	 * schema, these three synthetic parent rows are archived in place as inert
-	 * audit anchors rather than physically deleted.
-	 */
-	private const PRESERVED_PARENT_TABLES = array(
-		'cpms_organizations',
-		'cpms_clinics',
-		'cpms_locations',
-	);
-
 	/** @var Env */
 	private Env $env;
 
@@ -398,13 +386,7 @@ class ScopedTeardown {
 
 		$plan = array();
 		foreach ( $scope['tables'] as $short => $ids ) {
-			if ( in_array( $short, self::PRESERVED_PARENT_TABLES, true ) ) {
-				continue;
-			}
 			$plan[] = array( 'table' => $short, 'rows' => count( $ids ) );
-		}
-		foreach ( self::PRESERVED_PARENT_TABLES as $short ) {
-			$plan[] = array( 'table' => $short . ' (preserved audit anchor)', 'rows' => count( (array) ( $scope['tables'][ $short ] ?? array() ) ) );
 		}
 		$plan[] = array( 'table' => 'cpms_jobs', 'rows' => count( $scope['jobs'] ) );
 		$plan[] = array( 'table' => 'cpms_operational_logs', 'rows' => count( $scope['operational_logs'] ) );
@@ -497,7 +479,6 @@ class ScopedTeardown {
 				'actor_id'         => $actor_id,
 				'deleted'          => $deleted,
 				'preserved_audit'  => count( (array) ( $preview['scope']['audit_logs'] ?? array() ) ),
-				'preserved_parent_anchors' => self::PRESERVED_PARENT_TABLES,
 				'baseline'         => $preview['baseline'],
 				'audit_chain'      => $preview['audit'],
 				'remaining'        => array(),
@@ -562,39 +543,12 @@ class ScopedTeardown {
 	 */
 	private function delete_table_rows( array $tables ): array {
 		$deleted = array();
-		$skip    = array_merge( self::GLOBAL_TABLES, self::PRESERVED_PARENT_TABLES );
-		$order   = array_values( array_diff( Teardown::DELETE_ORDER, $skip ) );
+		$order   = array_values( array_diff( Teardown::DELETE_ORDER, self::GLOBAL_TABLES ) );
 		foreach ( $order as $short ) {
 			$ids = (array) ( $tables[ $short ] ?? array() );
 			$deleted[ $short ] = $this->delete_ids( $short, $ids );
 		}
-		$this->archive_parent_anchors( $tables );
-		foreach ( self::PRESERVED_PARENT_TABLES as $short ) {
-			$deleted[ $short . ' (preserved audit anchor)' ] = 0;
-		}
 		return $deleted;
-	}
-
-	/**
-	 * Mark the synthetic parent rows inert without deleting audit FK targets.
-	 *
-	 * @param array<string,list<int>> $tables Owned table IDs.
-	 * @return void
-	 */
-	private function archive_parent_anchors( array $tables ): void {
-		global $wpdb;
-		$org_ids     = (array) ( $tables['cpms_organizations'] ?? array() );
-		$clinic_ids  = (array) ( $tables['cpms_clinics'] ?? array() );
-		$location_ids = (array) ( $tables['cpms_locations'] ?? array() );
-		foreach ( $org_ids as $id ) {
-			$wpdb->update( $this->platform->table( 'cpms_organizations' ), array( 'status' => 'suspended' ), array( 'id' => (int) $id ), array( '%s' ), array( '%d' ) );
-		}
-		foreach ( $clinic_ids as $id ) {
-			$wpdb->update( $this->platform->table( 'cpms_clinics' ), array( 'status' => 'suspended' ), array( 'id' => (int) $id ), array( '%s' ), array( '%d' ) );
-		}
-		foreach ( $location_ids as $id ) {
-			$wpdb->update( $this->platform->table( 'cpms_locations' ), array( 'is_active' => 0 ), array( 'id' => (int) $id ), array( '%d' ), array( '%d' ) );
-		}
 	}
 
 	/**
@@ -681,9 +635,6 @@ class ScopedTeardown {
 		}
 		$scope = $this->collect_scope( $manifest, $baseline );
 		foreach ( $scope['tables'] as $short => $ids ) {
-			if ( in_array( $short, self::PRESERVED_PARENT_TABLES, true ) ) {
-				continue;
-			}
 			if ( array() !== $ids ) {
 				$remaining[] = $short . ':' . count( $ids );
 			}

@@ -30,27 +30,27 @@ class Provisioner {
 	/**
 	 * @var Env
 	 */
-	private Env $env;
+	protected Env $env;
 
 	/**
 	 * @var Platform
 	 */
-	private Platform $platform;
+	protected Platform $platform;
 
 	/**
 	 * @var Manifest
 	 */
-	private Manifest $manifest;
+	protected Manifest $manifest;
 
 	/**
 	 * @var Preflight
 	 */
-	private Preflight $preflight;
+	protected Preflight $preflight;
 
 	/**
 	 * @var Credentials
 	 */
-	private Credentials $credentials;
+	protected Credentials $credentials;
 
 	/**
 	 * @param Env         $env Environment.
@@ -81,12 +81,13 @@ class Provisioner {
 	/**
 	 * @return array{fixture_id:string,slug:string} New fixture identity.
 	 */
-	private function new_fixture(): array {
-		$fixture = bin2hex( random_bytes( 8 ) );
+	protected function new_fixture(): array {
+		$fixture = $this->manifest->fixture_id();
+		$prefix  = $this->manifest->fixture_prefix();
 
 		return array(
 			'fixture_id' => $fixture,
-			'slug'       => 'cpdd-' . $fixture,
+			'slug'       => $prefix . $fixture,
 		);
 	}
 
@@ -117,6 +118,8 @@ class Provisioner {
 		if ( $this->manifest->exists() ) {
 			throw new Exception( 'ALREADY_PROVISIONED', 'یک دمو از قبل ثبت شده است؛ برای ساخت دموی تازه ابتدا آن را پاک‌سازی کنید.' );
 		}
+
+		$this->before_provision( $admin_id );
 
 		$preflight = $this->preflight->run();
 		if ( ! $preflight['ok'] ) {
@@ -161,7 +164,7 @@ class Provisioner {
 			$stage = 'users';
 			$index = 0;
 			foreach ( Credentials::PERSONA_ORDER as $persona ) {
-				$login = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
+				$login = $this->manifest->fixture_prefix() . $persona . '-' . $fixture['fixture_id'];
 				if ( $this->env->username_exists( $login ) ) {
 					throw new Exception( 'USER_EXISTS', 'نام کاربری آزمایشی از قبل وجود دارد؛ سایت خالی نیست.' );
 				}
@@ -379,7 +382,7 @@ class Provisioner {
 						'method'          => 'other',
 						'transaction_ref' => 'SYNTHETIC-NO-PAYMENT',
 					),
-					'cpdd-synthetic-payment-' . $fixture['fixture_id']
+					$this->manifest->fixture_prefix() . 'synthetic-payment-' . $fixture['fixture_id']
 				);
 				$manifest = $this->manifest->save( $manifest );
 				$this->platform->transition( $reception, $visit, 'check_out' );
@@ -412,7 +415,7 @@ class Provisioner {
 			$manifest          = $this->manifest->save( $manifest );
 
 			$this->platform->audit(
-				'CPDD_DEMO_PROVISIONED',
+				$this->manifest->audit_action(),
 				$admin_id,
 				$clinic_id,
 				array(
@@ -423,9 +426,12 @@ class Provisioner {
 				)
 			);
 
-			return array(
-				'manifest'    => $manifest,
-				'credentials' => $passwords,
+			return $this->after_provision(
+				array(
+					'manifest'    => $manifest,
+					'credentials' => $passwords,
+				),
+				$admin_id
 			);
 		} catch ( \Throwable $error ) {
 			$manifest['status']          = 'failed';
@@ -442,6 +448,30 @@ class Provisioner {
 			}
 			throw new Exception( 'PROVISION_FAILED', 'ساخت دمو در مرحلهٔ «' . $stage . '» ناموفق بود: ' . $error->getMessage() );
 		}
+	}
+
+	/**
+	 * Extension hook executed inside the provisioning lock before any write.
+	 * Strict mode deliberately does nothing.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return void
+	 */
+	protected function before_provision( int $admin_id ): void {
+		unset( $admin_id );
+	}
+
+	/**
+	 * Extension hook executed inside the provisioning lock after the manifest is sealed.
+	 *
+	 * @param array{manifest:array<string,mixed>,credentials:array<string,string>} $result Result.
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>}
+	 */
+	protected function after_provision( array $result, int $admin_id ): array {
+		unset( $admin_id );
+
+		return $result;
 	}
 
 	/**

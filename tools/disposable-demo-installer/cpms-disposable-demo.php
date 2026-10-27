@@ -2,7 +2,7 @@
 /**
  * Plugin Name:       CPMS Classic — Disposable Demo Installer
  * Plugin URI:        https://github.com/bia2on2on/doctor
- * Description:       سازندهٔ دموی یک‌بارمصرف CPMS Classic برای سایت آزمایشیِ خالی؛ فقط از wp-admin. افزونهٔ Production را تغییر نمی‌دهد و هیچ Demo/Backdoor/Credential دائمی ندارد.
+ * Description:       دو حالت جداگانه دمو: سایت یکبارمصرف خالی و حالت محدودشده صریح برای سایت آزمایشی غیرخالی؛ فقط از wp-admin. افزونه Production تغییر نمیکند و هیچ Demo/Backdoor/Credential دائمی ندارد.
  * Version:           1.0.0
  * Requires at least: 6.9
  * Requires PHP:      8.1
@@ -18,10 +18,12 @@
  *    plugin's source, options schema, authorization, OTP policy, booking
  *    concurrency, payment gates or license behaviour.
  *  - It exposes no REST route, no AJAX action and no frontend surface. All work
- *    happens on one wp-admin page under Tools, behind capability + nonce +
+ *    happens on two isolated wp-admin pages under the CPMS unified menu when
+ *    available (Tools fallback otherwise), behind capability + nonce +
  *    confirmation-phrase + site-identity checks.
- *  - It refuses to run on anything that is not provably a single-site,
- *    empty, disposable WordPress installation.
+ *  - The original mode refuses anything that is not a provably empty,
+ *    single-site disposable installation. The separate scoped mode is disabled
+ *    by default and requires its own explicit administrator authorization.
  */
 
 // phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned
@@ -51,6 +53,15 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-teardown.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-admin.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-manifest.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-audit-guard.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-baseline.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
 
 /**
  * Activation guard: the companion is useless — and unsafe to leave active —
@@ -77,5 +88,8 @@ function cpms_demo_activate(): void {
 }
 register_activation_hook( __FILE__, 'cpms_demo_activate' );
 
+add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'redirect_legacy_tools_url' ), 0 );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );
+add_action( 'admin_menu', array( 'CpmsDemo\\ScopedAdmin', 'register_menu' ), 11 );
+add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_assets' ) );

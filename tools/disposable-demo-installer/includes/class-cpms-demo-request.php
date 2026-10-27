@@ -72,12 +72,12 @@ class Request {
 	/**
 	 * @var Env
 	 */
-	private Env $env;
+	protected Env $env;
 
 	/**
 	 * @var Manifest
 	 */
-	private Manifest $manifest;
+	protected Manifest $manifest;
 
 	/**
 	 * @param Env      $env Environment.
@@ -93,7 +93,7 @@ class Request {
 	 * @throws Exception On unknown action.
 	 */
 	public function nonce_action( string $action ): string {
-		$actions = self::actions();
+		$actions = static::actions();
 		if ( ! isset( $actions[ $action ] ) ) {
 			throw new Exception( 'ACTION_UNKNOWN', 'عملیات ناشناخته است.' );
 		}
@@ -106,7 +106,7 @@ class Request {
 	 * @throws Exception On unknown action.
 	 */
 	public function phrase( string $action ): string {
-		$actions = self::actions();
+		$actions = static::actions();
 		if ( ! isset( $actions[ $action ] ) ) {
 			throw new Exception( 'ACTION_UNKNOWN', 'عملیات ناشناخته است.' );
 		}

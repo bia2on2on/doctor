@@ -177,10 +177,6 @@ try {
 	cpsd_int_check( null !== $wpdb->get_row( $wpdb->prepare( 'SELECT id FROM ' . $platform->table( 'cpms_invoices' ) . ' WHERE id = %d', $seeded['invoice_id'] ) ), 'existing invoice preserved', $checks );
 	cpsd_int_check( null !== $wpdb->get_row( $wpdb->prepare( 'SELECT id FROM ' . $platform->table( 'cpms_jobs' ) . ' WHERE id = %d', $seeded['job_id'] ) ), 'existing queue job preserved', $checks );
 	cpsd_int_check( null === $manifest->load(), 'scoped manifest removed after clean teardown', $checks );
-	$clinic_anchor = $wpdb->get_row( $wpdb->prepare( 'SELECT status FROM ' . $platform->table( 'cpms_clinics' ) . ' WHERE id = %d', (int) $active['ids']['clinic_id'] ) );
-	$org_anchor    = $wpdb->get_row( $wpdb->prepare( 'SELECT status FROM ' . $platform->table( 'cpms_organizations' ) . ' WHERE id = %d', (int) $active['ids']['organization_id'] ) );
-	cpsd_int_check( null !== $clinic_anchor && 'suspended' === (string) $clinic_anchor->status, 'synthetic clinic preserved as suspended audit anchor', $checks );
-	cpsd_int_check( null !== $org_anchor && 'suspended' === (string) $org_anchor->status, 'synthetic organization preserved as suspended audit anchor', $checks );
 
 	echo (string) wp_json_encode( array( 'ok' => true, 'checks' => $checks, 'fixture_id' => (string) $active['fixture_id'], 'audit_checked' => (int) $chain_after['checked'] ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES ) . PHP_EOL;
 } catch ( Throwable $error ) {

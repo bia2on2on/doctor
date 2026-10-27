@@ -30,13 +30,23 @@ class Manifest {
 	/**
 	 * @var Env
 	 */
-	private Env $env;
+	protected Env $env;
+
+	/** Storage option names and manifest format (overridable by scoped mode). */
+	protected string $option;
+	protected string $tombstone_option;
+	protected string $clean_option;
+	protected int $format;
 
 	/**
 	 * @param Env $env Environment.
 	 */
 	public function __construct( Env $env ) {
-		$this->env = $env;
+		$this->env             = $env;
+		$this->option          = self::OPTION;
+		$this->tombstone_option = self::TOMBSTONE;
+		$this->clean_option    = self::CLEAN_TEARDOWN;
+		$this->format          = self::FORMAT;
 	}
 
 	/**
@@ -72,7 +82,7 @@ class Manifest {
 	 * @return bool
 	 */
 	public function exists(): bool {
-		return is_array( $this->env->option_get( self::OPTION, false ) );
+		return is_array( $this->env->option_get( $this->option, false ) );
 	}
 
 	/**
@@ -83,18 +93,18 @@ class Manifest {
 	 * @throws Exception On tampering or site mismatch.
 	 */
 	public function load( bool $require_site_match = true ): ?array {
-		$raw = $this->env->option_get( self::OPTION, false );
+		$raw = $this->env->option_get( $this->option, false );
 		if ( ! is_array( $raw ) ) {
 			return null;
 		}
 		if ( ! $this->verify( $raw ) ) {
 			throw new Exception( 'MANIFEST_TAMPERED', 'فایل مالکیت دمو دست‌کاری شده یا معتبر نیست؛ عملیات مخرب مسدود شد.' );
 		}
-		if ( (int) ( $raw['format'] ?? 0 ) !== self::FORMAT ) {
+		if ( (int) ( $raw['format'] ?? 0 ) !== $this->format ) {
 			throw new Exception( 'MANIFEST_FORMAT', 'نسخهٔ قالب مالکیت دمو پشتیبانی نمی‌شود.' );
 		}
 		$fixture = (string) ( $raw['fixture_id'] ?? '' );
-		if ( preg_match( '/^[a-f0-9]{16}$/', $fixture ) !== 1 ) {
+		if ( preg_match( $this->fixture_pattern(), $fixture ) !== 1 ) {
 			throw new Exception( 'MANIFEST_FORMAT', 'شناسهٔ دمو در فایل مالکیت معتبر نیست.' );
 		}
 		if ( $require_site_match && (string) ( $raw['site']['fingerprint'] ?? '' ) !== $this->site_fingerprint() ) {
@@ -130,7 +140,7 @@ class Manifest {
 	 * @param array<string,mixed> $data Payload without mac.
 	 * @return string
 	 */
-	private function mac( array $data ): string {
+	protected function mac( array $data ): string {
 		return hash_hmac( 'sha256', $this->canonical( $data ), $this->env->mac_key() );
 	}
 
@@ -140,7 +150,7 @@ class Manifest {
 	 * @param mixed $value Value.
 	 * @return string
 	 */
-	private function canonical( $value ): string {
+	protected function canonical( $value ): string {
 		return (string) wp_json_encode( $this->sorted( $value ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 	}
 
@@ -148,7 +158,7 @@ class Manifest {
 	 * @param mixed $value Value.
 	 * @return mixed
 	 */
-	private function sorted( $value ) {
+	protected function sorted( $value ) {
 		if ( ! is_array( $value ) ) {
 			return $value;
 		}
@@ -171,12 +181,12 @@ class Manifest {
 	 */
 	public function save( array $data ): array {
 		unset( $data['mac'] );
-		$data['format']         = self::FORMAT;
+		$data['format']         = $this->format;
 		$data['plugin_version'] = CPMS_DEMO_VERSION;
 		$data['site']           = $this->site_block();
 		$data['updated_at']     = $this->env->now_sql();
 		$data['mac']            = $this->mac( $data );
-		$this->env->option_set( self::OPTION, $data );
+		$this->env->option_set( $this->option, $data );
 
 		return $data;
 	}
@@ -185,7 +195,7 @@ class Manifest {
 	 * @return void
 	 */
 	public function delete(): void {
-		$this->env->option_delete( self::OPTION );
+		$this->env->option_delete( $this->option );
 	}
 
 	/**
@@ -199,7 +209,7 @@ class Manifest {
 		$summary['at']   = $this->env->now_sql();
 		$summary['site'] = $this->site_fingerprint();
 		$summary['mac']  = $this->mac( $summary );
-		$this->env->option_set( self::TOMBSTONE, $summary );
+		$this->env->option_set( $this->tombstone_option, $summary );
 	}
 
 	/**
@@ -212,7 +222,7 @@ class Manifest {
 	 * @return array<string,mixed>|null
 	 */
 	public function tombstone(): ?array {
-		$raw = $this->env->option_get( self::TOMBSTONE, false );
+		$raw = $this->env->option_get( $this->tombstone_option, false );
 		if ( ! is_array( $raw ) ) {
 			return null;
 		}
@@ -244,9 +254,9 @@ class Manifest {
 				'site'       => $this->site_fingerprint(),
 			);
 			$marker['mac'] = $this->mac( $marker );
-			$this->env->option_set( self::CLEAN_TEARDOWN, $marker );
+			$this->env->option_set( $this->clean_option, $marker );
 		}
-		$this->env->option_delete( self::TOMBSTONE );
+		$this->env->option_delete( $this->tombstone_option );
 	}
 
 	/**
@@ -259,14 +269,14 @@ class Manifest {
 	 * @return bool
 	 */
 	public function had_clean_teardown(): bool {
-		$raw_tombstone = $this->env->option_get( self::TOMBSTONE, false );
+		$raw_tombstone = $this->env->option_get( $this->tombstone_option, false );
 		if ( false !== $raw_tombstone && null !== $raw_tombstone ) {
 			$verified = $this->tombstone();
 
 			return is_array( $verified ) && true === ( $verified['clean'] ?? $verified['ok'] ?? false );
 		}
 
-		$marker = $this->env->option_get( self::CLEAN_TEARDOWN, false );
+		$marker = $this->env->option_get( $this->clean_option, false );
 		if ( ! is_array( $marker ) || ! $this->verify( $marker ) ) {
 			return false;
 		}
@@ -282,5 +292,23 @@ class Manifest {
 	 */
 	public function fixture_prefix(): string {
 		return 'cpdd-';
+	}
+
+	/** Fixture-ID regex; scoped mode overrides this to 32 hex characters. */
+	public function fixture_pattern(): string {
+		return '/^[a-f0-9]{16}$/D';
+	}
+
+	/** CSPRNG fixture identity; scoped mode overrides this to 128 bits. */
+	public function fixture_id(): string {
+		return bin2hex( random_bytes( 8 ) );
+	}
+
+	public function audit_action(): string {
+		return 'CPDD_DEMO_PROVISIONED';
+	}
+
+	public function otp_audit_action(): string {
+		return 'CPDD_DEMO_OTP_REBOUND';
 	}
 }
