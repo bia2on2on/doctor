@@ -445,23 +445,8 @@ class ScopedTeardown {
 	 * @return array<string,mixed>
 	 */
 	private function do_execute( array $manifest, int $actor_id ): array {
-		// A run interrupted during provisioning never reached the point where the
-		// baseline is sealed into the manifest. Adopt the sealed pre-provisioning
-		// copy so the recovery teardown can prove what pre-existed, and persist it
-		// so a retry does not depend on the pending record any more.
-		if ( array() === (array) ( $manifest['baseline'] ?? array() ) ) {
-			$recovered = $this->resolve_baseline( $manifest );
-			if ( array() !== $recovered ) {
-				$manifest['baseline'] = $recovered;
-				if ( array() === (array) ( $manifest['host_before'] ?? array() ) ) {
-					$pending = $this->manifest->load_pending_baseline( (string) ( $manifest['fixture_id'] ?? '' ) );
-					if ( is_array( $pending ) ) {
-						$manifest['host_before'] = (array) ( $pending['host_before'] ?? array() );
-					}
-				}
-			}
-		}
-		$preview = $this->preview( $manifest );
+		$manifest = $this->adopt_recovered_baseline( $manifest );
+		$preview  = $this->preview( $manifest );
 		if ( ! $preview['ok'] ) {
 			throw new Exception( 'TEARDOWN_BLOCKED', 'پاکسازی ایمن متوقف شد: ' . implode( ' | ', array_slice( $preview['problems'], 0, 3 ) ) );
 		}
@@ -542,6 +527,36 @@ class ScopedTeardown {
 		} finally {
 			$wpdb->get_var( "SELECT RELEASE_LOCK('cpms_jobs_tick')" );
 		}
+	}
+
+	/**
+	 * Adopt the sealed pre-provisioning baseline into a manifest that never got one.
+	 *
+	 * A run interrupted during provisioning stops before the baseline is sealed
+	 * into the manifest, so the recovery teardown has to take it from the sealed
+	 * pending record. Any change to the payload invalidates the HMAC, so the
+	 * adopted manifest is re-sealed (and persisted) before it is verified again.
+	 *
+	 * @param array<string,mixed> $manifest Manifest as loaded.
+	 * @return array<string,mixed> Manifest with a sealed baseline.
+	 */
+	private function adopt_recovered_baseline( array $manifest ): array {
+		if ( array() !== (array) ( $manifest['baseline'] ?? array() ) ) {
+			return $manifest;
+		}
+		$recovered = $this->resolve_baseline( $manifest );
+		if ( array() === $recovered ) {
+			return $manifest;
+		}
+		$manifest['baseline'] = $recovered;
+		if ( array() === (array) ( $manifest['host_before'] ?? array() ) ) {
+			$pending = $this->manifest->load_pending_baseline( (string) ( $manifest['fixture_id'] ?? '' ) );
+			if ( is_array( $pending ) ) {
+				$manifest['host_before'] = (array) ( $pending['host_before'] ?? array() );
+			}
+		}
+
+		return $this->manifest->save( $manifest );
 	}
 
 	/**

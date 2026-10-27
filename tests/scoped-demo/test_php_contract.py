@@ -87,6 +87,34 @@ class ScopedPhpContractTests(unittest.TestCase):
         self.assertIn("Separate scoped mode", self.readme)
         self.assertIn("never deletes `cpms_audit_logs`", self.readme)
 
+    def test_recovered_baseline_is_resealed_before_it_is_verified(self) -> None:
+        """A manifest must never be mutated and then verified without re-sealing.
+
+        Recovery adopts a baseline that the interrupted run never sealed into the
+        manifest. Any such mutation invalidates the HMAC, so the payload has to be
+        persisted again before `preview()` runs its `verify()` call - otherwise an
+        otherwise-healthy recovery is refused as MANIFEST_TAMPERED.
+        """
+
+        teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        self.assertIn("$manifest = $this->adopt_recovered_baseline( $manifest );", teardown)
+        self.assertIn("private function adopt_recovered_baseline", teardown)
+        # The adopted payload is re-sealed, so verify() sees a matching MAC.
+        self.assertIn("return $this->manifest->save( $manifest );", teardown)
+        # Adoption runs before the preview that re-verifies the manifest.
+        execute = teardown.split("private function do_execute", 1)[1]
+        self.assertLess(
+            execute.index("adopt_recovered_baseline"),
+            execute.index("$this->preview("),
+            "recovery adoption must precede the preview that re-verifies the manifest",
+        )
+        # Nothing may assign a recovered baseline outside the adopting helper.
+        self.assertEqual(
+            1,
+            len(re.findall(r"\$manifest\['baseline'\]\s*=\s*", teardown)),
+            "exactly one place may install an adopted baseline",
+        )
+
     def test_strict_mode_classes_are_still_loaded(self) -> None:
         for name in (
             "class-cpms-demo-preflight.php",
