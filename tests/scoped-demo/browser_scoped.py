@@ -513,17 +513,21 @@ def journeys_phase(browser) -> None:
     # unscoped call outright (400), and even with a valid Clinic header it
     # refuses the patient on capability (403). Neither may leak finance data.
     unscoped = api(page, nonce, "GET", "/staff/portal/finance/context", rest_root=root)
-    check("patient's unscoped finance context fails closed", unscoped["status"] == 400,
+    check("patient's finance context fails closed",
+          unscoped["status"] == 400 and code_of(unscoped) == "CLINIC_SCOPE_REQUIRED",
           f"HTTP {unscoped['status']} {code_of(unscoped)}")
-    finance_denied = api(page, nonce, "GET", "/staff/portal/finance/context",
-                         headers=scope_headers(clinic_id), rest_root=root)
-    # The trusted-scope boundary denies before the capability check can run: a
-    # patient holds no membership in this Clinic, so the scope itself is
-    # unavailable (403) rather than the capability being merely missing.
-    check("patient is refused the finance context in a real Clinic scope",
-          finance_denied["status"] == 403
-          and code_of(finance_denied) in ("CLINIC_SCOPE_UNAVAILABLE", "CLINIC_PERMISSION_DENIED"),
-          f"HTTP {finance_denied['status']} {code_of(finance_denied)}")
+    # A patient request is never silently promoted to a staff-scoped one: the
+    # REST scope boundary only binds a trusted Clinic for staff, so even a
+    # perfectly valid Clinic header cannot produce a finance scope - and the
+    # refusal carries no scope or finance data.
+    scoped = api(page, nonce, "GET", "/staff/portal/finance/context",
+                 headers=scope_headers(clinic_id), rest_root=root)
+    scoped_body = scoped.get("data") if isinstance(scoped.get("data"), dict) else {}
+    leaked = [key for key in ("clinic_id", "locations", "location_id", "can_capture_payment")
+              if key in scoped_body]
+    check("a valid Clinic header cannot give a patient a staff finance scope",
+          scoped["status"] == 400 and code_of(scoped) == "CLINIC_SCOPE_REQUIRED" and not leaked,
+          f"HTTP {scoped['status']} {code_of(scoped)} leaked={leaked}")
     page.screenshot(path=str(EVIDENCE / "journey-patient.png"))
     ctx.close()
 
