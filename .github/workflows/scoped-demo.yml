@@ -352,16 +352,16 @@ jobs:
           path: |
             /tmp/cpsd-ci/scoped-integration.json
             /tmp/cpsd-ci/scoped-recovery.json
-            /tmp/cpsd-ci/browser-bootstrap.log
-            /tmp/cpsd-ci/browser-result-*.json
+            /tmp/cpsd-ci/browser-provision.log
+            /tmp/cpsd-ci/browser.log
             /tmp/cpsd-ci/browser/persona-targets.json
             /tmp/cpsd-ci/browser/persona-credentials.json
-            /tmp/cpsd-ci/companion-build.log
-            /tmp/cpsd-ci/release-build.log
-            /tmp/cpsd-ci/browser.log
             /tmp/cpsd-ci/browser/browser-result.json
             /tmp/cpsd-ci/browser/browser-result-*.json
             /tmp/cpsd-ci/browser/*.png
+            /tmp/cpsd-ci/browser/no-config-*.html
+            /tmp/cpsd-ci/companion-build.log
+            /tmp/cpsd-ci/release-build.log
             /tmp/cpsd-ci/php-server.log
           if-no-files-found: warn
           retention-days: 30
