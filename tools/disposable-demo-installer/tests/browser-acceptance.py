@@ -30,6 +30,7 @@ printed, logged, or written to results.
 """
 
 from contextlib import contextmanager
+from datetime import datetime, time as dt_time, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -37,6 +38,7 @@ import re
 import secrets
 import subprocess
 import sys
+import time
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -237,7 +239,51 @@ def extract_credentials_from_admin_dom(admin_page) -> dict:
     return creds
 
 
+def wait_out_local_midnight() -> None:
+    """Bounded guard so the fixture and the reception board share one local day.
+
+    Provisioning happens inside this browser flow, through an admin POST, so it
+    cannot sleep there. The synthetic slot the journey books must be strictly in
+    the future, and the appointment it produces must appear on the Staff Portal
+    reception board, which is strictly the Location's local "today"
+    (ReceptionPortalController::board -> VisitService::today plus today's booked
+    rows). In the final minutes of the Asia/Tehran day no slot satisfies both,
+    which used to surface as a 35s `sr-arrive` locator timeout - a wall-clock
+    artefact, not a product defect.
+
+    Waiting the band out is bounded (<= 13 minutes, once per local day), logged,
+    and changes no assertion: it skips nothing, retries nothing and relaxes
+    nothing. This job runs in 3-4 minutes against a 45-minute budget.
+    """
+    min_remaining_seconds = 12 * 60
+    max_wait_seconds = 13 * 60
+    try:
+        from zoneinfo import ZoneInfo
+
+        tehran = ZoneInfo("Asia/Tehran")
+    except Exception:  # pragma: no cover - tzdata missing on an exotic runner
+        # Asia/Tehran has had no DST since 2022-09-21, so +03:30 is exact.
+        tehran = timezone(timedelta(hours=3, minutes=30))
+    now = datetime.now(tehran)
+    day_end = datetime.combine(now.date() + timedelta(days=1), dt_time(0, 0), tzinfo=tehran)
+    remaining = int((day_end - now).total_seconds())
+    if remaining >= min_remaining_seconds:
+        return
+    resume_at = day_end + timedelta(seconds=30)
+    wait = int((resume_at - datetime.now(tehran)).total_seconds())
+    if wait > max_wait_seconds:
+        raise RuntimeError("the bounded local-midnight wait exceeded its cap")
+    print(
+        f"STAGE local-midnight guard (local_day_remaining={remaining}s wait={max(0, wait)}s "
+        f"resume_at={resume_at.isoformat()})",
+        flush=True,
+    )
+    if wait > 0:
+        time.sleep(wait)
+
+
 def main() -> None:
+    wait_out_local_midnight()
     os.makedirs(f"{OUT}/screenshots", exist_ok=True)
     if not ADMIN_PASS_FILE or not os.path.isfile(ADMIN_PASS_FILE):
         raise RuntimeError("ADMIN_PASS_FILE is required")

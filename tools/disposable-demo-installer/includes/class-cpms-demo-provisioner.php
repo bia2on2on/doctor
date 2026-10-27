@@ -452,31 +452,61 @@ class Provisioner {
 	 * @return list<array{date:string,time:string}>
 	 */
 	public function slot_plan(): array {
-		$tz    = new \DateTimeZone( 'Asia/Tehran' );
-		$now   = new \DateTimeImmutable( 'now', $tz );
-		$today = $now->format( 'Y-m-d' );
-		$plan  = array();
+		// The returned order is fixture ROLE order, not chronological, and that is
+		// deliberate. do_provision() books $slots[0] for the synthetic staff
+		// appointment, while the browser journey books the earliest still-available
+		// slot and then checks that appointment in on the Staff Portal reception
+		// board - which is strictly the Location's local "today"
+		// (ReceptionPortalController::board -> VisitService::today plus today's
+		// booked rows). Reserving a later-day slot for the staff appointment keeps
+		// the same-day public offer genuinely available instead of consuming it.
+		//
+		// The public block is anchored five minutes ahead on a whole-minute grid and
+		// every entry carries its OWN local date, so the block can never collapse as
+		// local midnight approaches. The previous plan anchored 45 minutes ahead and
+		// truncated DOWN to a 20-minute boundary, which silently dropped today's
+		// entries one by one (3 -> 2 -> 1 -> 0) and made this lane fail on the wall
+		// clock alone every day between ~22:55 and ~24:00 Asia/Tehran: with exactly
+		// one same-day slot the staff appointment consumed it and the browser timed
+		// out waiting for a same-day arrival row, and with none the "open future
+		// slots" bound failed. No date is hardcoded here and no production
+		// scheduling rule is bypassed - every entry is still a real strictly-future
+		// cpms_schedule_slots row with the normal 20-minute duration and capacity 1,
+		// persisted through Platform::insert_slot() and booked through the ordinary
+		// production booking service.
+		$tz  = new \DateTimeZone( 'Asia/Tehran' );
+		$now = new \DateTimeImmutable( 'now', $tz );
 
-		$start = $now->modify( '+45 minutes' );
-		$start = $start->setTime( (int) $start->format( 'H' ), (int) $start->format( 'i' ) - ( (int) $start->format( 'i' ) % 20 ), 0 );
-		foreach ( array( 0, 20, 40 ) as $offset ) {
-			$slot = $start->modify( '+' . $offset . ' minutes' );
-			if ( $slot->format( 'Y-m-d' ) === $today ) {
-				$plan[] = array(
-					'date' => $slot->format( 'Y-m-d' ),
-					'time' => $slot->format( 'H:i:00' ),
-				);
-			}
-		}
+		$upcoming = array();
 		for ( $day = 1; $day <= 2; $day++ ) {
 			foreach ( array( '09:00:00', '09:20:00', '09:40:00' ) as $time ) {
-				$plan[] = array(
+				$upcoming[] = array(
 					'date' => $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' ),
 					'time' => $time,
 				);
 			}
 		}
 
-		return $plan;
+		$anchor   = $now->modify( '+5 minutes' );
+		$anchor   = $anchor->setTime( (int) $anchor->format( 'H' ), (int) $anchor->format( 'i' ), 0 );
+		$journey  = $anchor->format( 'Y-m-d' );
+		$public   = array();
+		foreach ( array( 0, 20, 40 ) as $offset ) {
+			$slot = $anchor->modify( '+' . $offset . ' minutes' );
+			if ( $slot->format( 'Y-m-d' ) === $journey ) {
+				$public[] = array(
+					'date' => $slot->format( 'Y-m-d' ),
+					'time' => $slot->format( 'H:i:00' ),
+				);
+			}
+		}
+
+		// array_shift() cannot return null here: the loop above always fills six
+		// entries. The reserved slot is a later-day 09:00 row, so it can never
+		// collide with the anchored public block (which starts at most a few
+		// minutes ahead of "now").
+		$plan = array( array_shift( $upcoming ) );
+
+		return array_merge( $plan, $public, $upcoming );
 	}
 }

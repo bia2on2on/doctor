@@ -241,49 +241,95 @@ try {
         }
 
         $cpms_ds_stage = 'slots';
+        // ------------------------------------------------------------------
+        // Bounded local-midnight guard.
+        //
+        // The browser journey books the earliest still-available synthetic slot
+        // and then checks that appointment in on the Staff Portal reception
+        // board, which is strictly the Location's local "today"
+        // (ReceptionPortalController::board -> VisitService::today plus today's
+        // booked rows). A slot therefore has to be BOTH strictly future AND on
+        // the board's local day. In the final minutes of the Asia/Tehran day no
+        // slot can satisfy both, and this fixture used to refuse with SLOT_TIME
+        // for wall-clock reasons that have nothing to do with the product -
+        // reproducibly, every day, between ~23:10 and ~23:59 local time.
+        //
+        // Waiting the band out is bounded (<= 13 minutes, once per local day),
+        // logged, and changes no assertion: it skips nothing, retries nothing
+        // and relaxes nothing. Jobs in this lane run 2-4 minutes against a
+        // 45-minute budget, so the wait cannot push a job into its timeout.
+        // ------------------------------------------------------------------
         $local = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
-        $first_slot = $local->modify('+30 minutes');
-        if ($first_slot->format('Y-m-d') !== $local->format('Y-m-d')) {
-            $first_slot = $local->modify('+1 minute');
+        $min_local_day_seconds = 12 * 60;
+        $max_wait_seconds = 13 * 60;
+        $local_day_end = $local->setTime(0, 0, 0)->modify('+1 day');
+        $local_day_remaining = $local_day_end->getTimestamp() - $local->getTimestamp();
+        if ($local_day_remaining < $min_local_day_seconds) {
+            $resume_at = $local_day_end->modify('+30 seconds');
+            $wait_seconds = $resume_at->getTimestamp() - (new DateTimeImmutable('now', new DateTimeZone('UTC')))->getTimestamp();
+            if ($wait_seconds > $max_wait_seconds) {
+                cpms_ds_fail('SLOT_TIME', 'the bounded local-midnight wait exceeded its cap');
+            }
+            echo 'DISPOSABLE_DIAG=local-midnight-guard local_day_remaining_seconds=' . $local_day_remaining
+                . ' wait_seconds=' . max(0, $wait_seconds)
+                . ' resume_at=' . $resume_at->format('Y-m-d\TH:i:sP') . PHP_EOL;
+            if ($wait_seconds > 0) {
+                sleep($wait_seconds);
+            }
+            $local = new DateTimeImmutable('now', new DateTimeZone('Asia/Tehran'));
+            $local_day_remaining = $local->setTime(0, 0, 0)->modify('+1 day')->getTimestamp() - $local->getTimestamp();
         }
-        if ($first_slot->format('Y-m-d') !== $local->format('Y-m-d')) {
-            cpms_ds_fail('SLOT_TIME', 'a same-day future synthetic slot is required');
-        }
-        $slot_date = $first_slot->format('Y-m-d');
+        // Five-minute lead on a whole-minute grid: still strictly future once the
+        // browser reaches the public booking page, and - because of the guard
+        // above - always inside the current local day. Every slot is stamped with
+        // its OWN local date, so the 20-minute tail may run past midnight instead
+        // of being dropped. Dropping that tail is what used to leave the staff
+        // slot unset and fail the whole lane; the tail has no same-day dependency
+        // (only the publicly booked slot is checked in on the board).
+        $anchor = $local->modify('+5 minutes');
+        $first_slot = $anchor->setTime((int) $anchor->format('H'), (int) $anchor->format('i'), 0);
         $slot_id = 0;
+        $slot_date = '';
         $staff_slot_id = 0;
+        $staff_slot_date = '';
         $staff_slot_time = '';
         $now = $db->nowUtcSql();
         foreach ([0, 20, 40] as $offset) {
             $slot = $first_slot->modify('+' . $offset . ' minutes');
-            if ($slot->format('Y-m-d') !== $slot_date) {
-                continue;
-            }
+            $current_slot_date = $slot->format('Y-m-d');
             $slot_time = $slot->format('H:i:00');
             $db->query(
                 'INSERT IGNORE INTO ' . $db->table('cpms_schedule_slots')
                 . ' (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, generated_from, created_at, updated_at)'
                 . ' VALUES (%d, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s, %s)',
-                [(int) $state['clinic_id'], (int) $state['location_id'], $clinician_id, $slot_date, $slot_time, 20, 1, 'manual', $now, $now]
+                [(int) $state['clinic_id'], (int) $state['location_id'], $clinician_id, $current_slot_date, $slot_time, 20, 1, 'manual', $now, $now]
             );
             $current_slot_id = (int) $db->fetchValue(
                 'SELECT id FROM ' . $db->table('cpms_schedule_slots')
                 . ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d AND slot_date = %s AND slot_time = %s LIMIT 1',
-                [(int) $state['clinic_id'], (int) $state['location_id'], $clinician_id, $slot_date, $slot_time]
+                [(int) $state['clinic_id'], (int) $state['location_id'], $clinician_id, $current_slot_date, $slot_time]
             );
             if ($current_slot_id <= 0) {
                 cpms_ds_fail('SLOT_CREATE', 'bounded synthetic slot persistence failed');
             }
             if ($offset === 0) {
                 $slot_id = $current_slot_id;
+                $slot_date = $current_slot_date;
             }
             if ($offset === 20) {
                 $staff_slot_id = $current_slot_id;
+                $staff_slot_date = $current_slot_date;
                 $staff_slot_time = $slot_time;
             }
         }
-        if ($slot_id <= 0 || $staff_slot_id <= 0 || $staff_slot_time === '') {
-            cpms_ds_fail('SLOT_TIME', 'provision at least 50 minutes before Tehran midnight for the same-day journey');
+        // Fail closed on the two invariants the journey actually depends on:
+        // three persisted bounded slots, and the publicly bookable one on the
+        // reception board's local day. Both hold by construction after the guard.
+        if ($slot_id <= 0 || $staff_slot_id <= 0 || $staff_slot_time === '' || $staff_slot_date === '') {
+            cpms_ds_fail('SLOT_CREATE', 'bounded synthetic slot persistence failed');
+        }
+        if ($slot_date !== $local->format('Y-m-d')) {
+            cpms_ds_fail('SLOT_TIME', 'the publicly bookable synthetic slot must sit on the reception board local day');
         }
         $state['slot_id'] = $slot_id;
         $state['slot_date'] = $slot_date;
@@ -294,7 +340,7 @@ try {
             (int) $state['accounts']['receptionist']['id'],
             (int) $state['patient_id'],
             $clinician_id,
-            $slot_date,
+            $staff_slot_date,
             $staff_slot_time,
             'SYNTHETIC-' . $fixture_id,
             $staff_slot_id
