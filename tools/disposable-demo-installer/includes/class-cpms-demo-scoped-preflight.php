@@ -183,12 +183,14 @@ class ScopedPreflight extends Preflight {
 
 	/** @return array{id:string,label:string,status:string,detail:string} */
 	private function check_other_manifest(): array {
-		if ( is_array( $this->env->option_get( 'cpdd_manifest', false ) ) || false !== $this->env->option_get( 'cpdd_lock_state', false ) ) {
-			return $this->result( 'other_manifest', 'عدم تداخل با دموی یکبارمصرف', 'fail', 'یک دموی یکبارمصرف فعال یا در حال اجرا وجود دارد.' );
+		// `cpdd_lock_state` is the shared Env mutex written by *both* modes while
+		// a mutation is in progress; it is not evidence of a strict fixture.
+		if ( is_array( $this->env->option_get( 'cpdd_manifest', false ) ) ) {
+			return $this->result( 'other_manifest', 'عدم تداخل با دموی یکبارمصرف', 'fail', 'یک دموی یکبارمصرف فعال وجود دارد.' );
 		}
 		/** @var ScopedManifest $manifest */
 		$manifest = $this->manifest;
-		if ( $manifest->exists() || false !== $this->env->option_get( ScopedManifest::LOCK_OPTION, false ) ) {
+		if ( $manifest->exists() ) {
 			return $this->result( 'other_manifest', 'عدم تداخل با دموی محدودشده', 'fail', 'یک دموی محدودشده فعال یا ناتمام وجود دارد.' );
 		}
 
