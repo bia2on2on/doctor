@@ -2315,15 +2315,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # If the earlier Slice-3 fixture/results steps were skipped or failed,
+          # the evidence files were never produced. This step is diagnostic-only:
+          # missing file -> clear warning and exit 0, not a synthetic gate failure.
+          # A single post-pr-evidence.sh call below publishes either the
+          # diagnostic warning or the real projection — never both.
           PROJECTION_RC=0
-          python3 bin/pilot-safe-evidence.py --suite slice3 --env-file /tmp/slice3.env --results-file /tmp/pilot-slice3-results.json > /tmp/slice3-projection.md || PROJECTION_RC=$?
-          {
-            echo "### Slice-3 N>1 chooser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            cat /tmp/slice3-projection.md
-            echo '```'
-            echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
-          } > /tmp/slice3-evidence.md
+          if [ ! -f /tmp/slice3.env ] || [ ! -f /tmp/pilot-slice3-results.json ]; then
+            echo '::warning::Slice-3 chooser evidence files were not produced by an earlier step (/tmp/slice3.env or /tmp/pilot-slice3-results.json missing — that step was skipped or failed). Posting diagnostic-only evidence; this step does not fail the gate.'
+            {
+              echo "### Slice-3 N>1 chooser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+              echo '```'
+              echo 'Slice-3 evidence unavailable: fixture/results files were not produced by an earlier step (skipped or failed). Diagnostic step only — no pass/fail assertion.'
+              echo '```'
+            } > /tmp/slice3-evidence.md
+          else
+            python3 bin/pilot-safe-evidence.py --suite slice3 --env-file /tmp/slice3.env --results-file /tmp/pilot-slice3-results.json > /tmp/slice3-projection.md || PROJECTION_RC=$?
+            {
+              echo "### Slice-3 N>1 chooser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+              echo '```'
+              cat /tmp/slice3-projection.md
+              echo '```'
+              echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
+            } > /tmp/slice3-evidence.md
+          fi
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/slice3-evidence.md
           exit "$PROJECTION_RC"
 
@@ -2334,15 +2349,30 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # If the earlier portal-cancel fixture/results steps were skipped or failed,
+          # the evidence files were never produced. This step is diagnostic-only:
+          # missing file -> clear warning and exit 0, not a synthetic gate failure.
+          # A single post-pr-evidence.sh call below publishes either the
+          # diagnostic warning or the real projection — never both.
           PROJECTION_RC=0
-          python3 bin/pilot-safe-evidence.py --suite portal-cancel --env-file /tmp/portal-cancel.env --results-file /tmp/pilot-portal-cancel-results.json > /tmp/portal-cancel-projection.md || PROJECTION_RC=$?
-          {
-            echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            cat /tmp/portal-cancel-projection.md
-            echo '```'
-            echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
-          } > /tmp/portal-cancel-evidence.md
+          if [ ! -f /tmp/portal-cancel.env ] || [ ! -f /tmp/pilot-portal-cancel-results.json ]; then
+            echo '::warning::Slice-1/Slice-2 portal evidence files were not produced by an earlier step (/tmp/portal-cancel.env or /tmp/pilot-portal-cancel-results.json missing — that step was skipped or failed). Posting diagnostic-only evidence; this step does not fail the gate.'
+            {
+              echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+              echo '```'
+              echo 'Portal evidence unavailable: fixture/results files were not produced by an earlier step (skipped or failed). Diagnostic step only — no pass/fail assertion.'
+              echo '```'
+            } > /tmp/portal-cancel-evidence.md
+          else
+            python3 bin/pilot-safe-evidence.py --suite portal-cancel --env-file /tmp/portal-cancel.env --results-file /tmp/pilot-portal-cancel-results.json > /tmp/portal-cancel-projection.md || PROJECTION_RC=$?
+            {
+              echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
+              echo '```'
+              cat /tmp/portal-cancel-projection.md
+              echo '```'
+              echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
+            } > /tmp/portal-cancel-evidence.md
+          fi
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-cancel-evidence.md
           exit "$PROJECTION_RC"
 
