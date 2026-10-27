@@ -20,6 +20,16 @@ define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-man
 define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_18_0029' );
 
 // --- Minimal WordPress functions used by the tested code paths. -------------
+function add_action( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+	$GLOBALS['cpdd_test_hooks'][] = compact( 'hook', 'callback', 'priority', 'accepted_args' );
+	return true;
+}
+
+function add_management_page( string $page_title, string $menu_title, string $capability, string $menu_slug, $callback ): string {
+	$GLOBALS['cpdd_test_management_pages'][] = compact( 'page_title', 'menu_title', 'capability', 'menu_slug', 'callback' );
+	return 'tools_page_' . $menu_slug;
+}
+
 function wp_json_encode( $value, int $flags = 0 ) {
 	return json_encode( $value, $flags );
 }
@@ -528,6 +538,10 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function table_exists( string $short ): bool {
+		if ( ! $this->available_flag ) {
+			throw new RuntimeException( 'CPMS data must not be inspected while the plugin is inactive.' );
+		}
+
 		return array_key_exists( $short, $this->tables_data );
 	}
 

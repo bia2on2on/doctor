@@ -75,6 +75,25 @@ function cpdd_provision( array $ctx ): array {
 }
 
 // ---------------------------------------------------------------------------
+// 0. Menu fallback when CPMS Classic is not loaded in this request
+// ---------------------------------------------------------------------------
+$GLOBALS['cpdd_test_management_pages'] = array();
+$GLOBALS['cpdd_test_hooks']           = array();
+Admin::register_menu();
+$registered_page = $GLOBALS['cpdd_test_management_pages'][0] ?? array();
+Cpdd_Test::ok(
+	'cpms-disposable-demo' === ( $registered_page['menu_slug'] ?? '' )
+	&& 'manage_options' === ( $registered_page['capability'] ?? '' )
+	&& array( Admin::class, 'render' ) === ( $registered_page['callback'] ?? null ),
+	'menu fallback: CPMS-inactive page remains a manage_options Tools page with the existing slug and render callback'
+);
+Cpdd_Test::ok(
+	! function_exists( 'add_menu_page' )
+	&& in_array( 'load-tools_page_cpms-disposable-demo', array_column( $GLOBALS['cpdd_test_hooks'], 'hook' ), true ),
+	'menu fallback: no top-level menu is created and the existing dispatch hook is retained'
+);
+
+// ---------------------------------------------------------------------------
 // 1. Preflight
 // ---------------------------------------------------------------------------
 $ctx = cpdd_fixture();
@@ -217,7 +236,12 @@ Cpdd_Test::ok( in_array( 'cpms', $state['blocking'], true ), 'preflight: unsuppo
 $ctx = cpdd_fixture();
 $ctx['platform']->available_flag = false;
 $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
-Cpdd_Test::ok( in_array( 'cpms', $state['blocking'], true ), 'preflight: inactive CPMS blocks provisioning' );
+Cpdd_Test::ok(
+	in_array( 'cpms', $state['blocking'], true )
+	&& in_array( 'cpms_data', $state['blocking'], true )
+	&& str_contains( $state['checks'][9]['detail'], 'CPMS Classic فعال نیست' ),
+	'preflight: inactive CPMS fails clearly without querying unavailable CPMS tables'
+);
 
 $ctx = cpdd_fixture();
 $ctx['env']->caps[1] = array( 'manage_options' => true );

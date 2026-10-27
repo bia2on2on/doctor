@@ -13,8 +13,15 @@ needs no SSH, WP-CLI, terminal or database access.
 
 ## Surface
 
-One page: **Tools → دموی یک‌بارمصرف CPMS**. No REST route, no `admin-ajax`, no
-frontend code, no shortcode, no cron, no CLI entry point.
+One page: **مدیریت مطب → دموی یک‌بارمصرف CPMS** when CPMS Classic is active.
+The page is registered under the production plugin's existing `cpms-dashboard`
+parent slug and requires `manage_options`; access to the CPMS parent menu does
+not grant access to this page or to any provisioning action. If CPMS Classic is
+inactive, the companion safely falls back to **Tools → دموی یک‌بارمصرف CPMS**
+without creating another top-level menu. When CPMS is active, the old
+`tools.php?page=cpms-disposable-demo` URL is retained as a capability-protected
+compatibility redirect, but its Tools navigation item is hidden. No REST route,
+no `admin-ajax`, no frontend code, no shortcode, no cron, no CLI entry point.
 
 Every mutating action requires, in order: POST → authenticated Administrator
 (`manage_options` **and** `install_plugins`) → action-specific nonce → the exact
@@ -121,7 +128,7 @@ container.
 ## Verification & test suites
 
 - **Unit & security negative test suite:** `php tools/disposable-demo-installer/tests/run-tests.php`
-  (213 assertions covering preflight refusals, capability/nonce/confirmation/site-fingerprint
+  (215 assertions covering CPMS-inactive Tools fallback registration, preflight refusals, capability/nonce/confirmation/site-fingerprint
   enforcement, manifest & tombstone HMAC tamper and site-transplant detection, CSPRNG credential
   generation & rotation with complete username rendering, OTP scope/attempt/expiry/replay/provider
   guardrails, concurrency lock contention, partial provisioning and interrupted teardown
@@ -137,8 +144,9 @@ container.
 - **Real-Chromium browser acceptance:** `tools/disposable-demo-installer/tests/browser-acceptance.py`
   (executed in `.github/workflows/disposable-demo-installer.yml` with Playwright Chromium against
   Apache + WordPress 7.1.3 + MySQL 8 covering `wp-admin` ZIP upload & activation, preflight UI,
-  provisioning, one-time credentials, password rotation, 6 independent persona contexts, role
-  portals, authorization denials, public booking, UI OTP issuance & verification, clinical and
+  provisioning, one-time credentials, password rotation, CPMS menu registration/navigation,
+  legacy Tools redirect, canonical and legacy direct-URL authorization denials, 6 independent
+  persona contexts, role portals, public booking, UI OTP issuance & verification, clinical and
   finance journeys, 320px/390px RTL responsiveness, diagnostics, teardown, DB verification, and
   safe plugin removal).
 
