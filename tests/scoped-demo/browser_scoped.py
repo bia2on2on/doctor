@@ -211,10 +211,13 @@ def api(page, nonce: str, method: str, path: str, body: dict | None = None,
     script = """
     async ([method, url, body, nonce, extra]) => {
       const headers = Object.assign({
-        'X-WP-Nonce': nonce,
         'Content-Type': 'application/json',
         'Accept': 'application/json',
       }, extra || {});
+      // An EMPTY header is not "no header": WordPress treats a present but
+      // unverifiable X-WP-Nonce as a failed cookie check (403
+      // rest_cookie_invalid_nonce). Public routes must send no nonce at all.
+      if (nonce) { headers['X-WP-Nonce'] = nonce; }
       const response = await fetch(url, {
         method, headers, credentials: 'same-origin', cache: 'no-store',
         body: body === null ? undefined : body,
