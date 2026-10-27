@@ -327,10 +327,16 @@ def main() -> None:
                 and admin_page.locator('#adminmenu > li > a[href*="cpms-disposable-demo"]').count() == 0,
                 f"HTTP {fallback_response.status if fallback_response else 'no response'}",
             )
+            inactive_preflight_rows = admin_page.locator('[data-cpdd-preflight] tbody tr').all_inner_texts()
+            cpms_inactive_rows = [row for row in inactive_preflight_rows if "CPMS Classic" in row and "فعال نیست" in row]
+            cpms_data_inactive_rows = [row for row in cpms_inactive_rows if "دادهٔ بالینی/مالی/نوبت خالی" in row]
             check(
                 "fallback page explains missing CPMS and blocks via visible preflight",
                 admin_page.locator('[data-cpdd-preflight="fail"]').count() == 1
-                and admin_page.locator('[data-cpdd-preflight] tr:has(td.cpdd-fail)').filter(has_text="CPMS Classic فعال نیست").count() == 1,
+                and len(cpms_inactive_rows) == 2
+                and len(cpms_data_inactive_rows) == 1
+                and all("FAIL" in row for row in cpms_inactive_rows),
+                json.dumps(cpms_inactive_rows, ensure_ascii=False),
             )
 
             # A real non-admin account must not reach the Tools fallback directly.
