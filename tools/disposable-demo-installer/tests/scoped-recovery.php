@@ -375,7 +375,7 @@ try {
 	cpsd_rec_check( $demo_payment > 0, 'R6 the synthetic payment is recorded in the ownership map', $checks );
 	if ( $demo_payment > 0 ) {
 		$payment_row = $platform->fetch_row( 'SELECT id, invoice_id FROM `' . $platform->table( 'cpms_payments' ) . '` WHERE id = %d', array( $demo_payment ) );
-		cpsd_rec_check( null !== $payment_row && (int) $payment_row->invoice_id === $demo_invoice, 'R6 the recorded payment belongs to the synthetic invoice', $checks );
+		cpsd_rec_check( null !== $payment_row && (int) ( $payment_row['invoice_id'] ?? 0 ) === $demo_invoice, 'R6 the recorded payment belongs to the synthetic invoice', $checks );
 	}
 
 	/**
