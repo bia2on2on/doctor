@@ -241,7 +241,20 @@ def main() -> None:
 
             # 3. Admin preflight UI
             stage("3. Admin preflight UI")
-            tool_url = f"{BASE}/wp-admin/tools.php?page=cpms-disposable-demo"
+            tool_url = f"{BASE}/wp-admin/admin.php?page=cpms-disposable-demo"
+            legacy_tool_url = f"{BASE}/wp-admin/tools.php?page=cpms-disposable-demo"
+            menu_root = admin_page.locator('#adminmenu a[href*="page=cpms-dashboard"]').first
+            demo_menu_link = admin_page.locator('#adminmenu a[href*="page=cpms-disposable-demo"]')
+            check("demo link is registered in the CPMS administration menu", demo_menu_link.count() == 1, demo_menu_link.get_attribute("href") or "")
+            check("demo link is not exposed in the Tools menu", admin_page.locator('#adminmenu a[href*="tools.php?page=cpms-disposable-demo"]').count() == 0)
+            menu_root.hover()
+            with admin_page.expect_navigation(wait_until="domcontentloaded"):
+                demo_menu_link.click()
+            check("browser navigation through the CPMS menu opens the companion page", "admin.php?page=cpms-disposable-demo" in admin_page.url)
+
+            # Existing bookmarks retain a safe redirect, but Tools no longer lists the page.
+            admin_page.goto(legacy_tool_url, wait_until="domcontentloaded")
+            check("legacy Tools URL redirects to the canonical CPMS admin URL", "admin.php?page=cpms-disposable-demo" in admin_page.url)
             admin_page.goto(tool_url, wait_until="domcontentloaded")
             check("companion admin page renders in RTL", admin_page.locator('.wrap.cpdd[dir="rtl"]').count() == 1)
             preflight_fails = admin_page.locator('[data-cpdd-preflight] tr:has(td.cpdd-fail)').all_inner_texts()
@@ -355,9 +368,22 @@ def main() -> None:
                     check("clinic_manager portal scope rendered", p_page.locator(f'[data-cpms-clinic="{fixture_meta["clinic_id"]}"]').count() >= 1)
                 elif persona == "doctor":
                     check("doctor portal queue rendered", p_page.locator('[data-role="queue-list"]').count() == 1)
-                    # Verify doctor is denied access to the wp-admin companion tool
-                    p_page.goto(tool_url, wait_until="domcontentloaded")
-                    check("non-admin persona denied wp-admin companion page", p_page.locator('form[data-cpdd-form="teardown"]').count() == 0)
+                    # Parent-menu visibility is not authority: both current and legacy
+                    # direct URLs must remain unavailable to this non-admin persona.
+                    denied_response = p_page.goto(tool_url, wait_until="domcontentloaded")
+                    check(
+                        "non-admin persona denied direct canonical companion URL",
+                        denied_response is not None and denied_response.status == 403
+                        and p_page.locator('form[data-cpdd-form="teardown"]').count() == 0,
+                        f"HTTP {denied_response.status if denied_response else 'no response'}",
+                    )
+                    legacy_denied = p_page.goto(legacy_tool_url, wait_until="domcontentloaded")
+                    check(
+                        "non-admin persona denied legacy Tools URL before redirect",
+                        legacy_denied is not None and legacy_denied.status == 403
+                        and p_page.locator('form[data-cpdd-form="teardown"]').count() == 0,
+                        f"HTTP {legacy_denied.status if legacy_denied else 'no response'}",
+                    )
                 elif persona == "receptionist":
                     check("receptionist portal rendered", p_page.locator('[data-role="reception-app"]').count() == 1)
                     p_page.goto(f"{BASE}/cpms-doctor-portal/", wait_until="domcontentloaded")

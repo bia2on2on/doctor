@@ -18,8 +18,9 @@
  *    plugin's source, options schema, authorization, OTP policy, booking
  *    concurrency, payment gates or license behaviour.
  *  - It exposes no REST route, no AJAX action and no frontend surface. All work
- *    happens on one wp-admin page under Tools, behind capability + nonce +
- *    confirmation-phrase + site-identity checks.
+ *    happens on one wp-admin page under the CPMS unified menu when available
+ *    (Tools fallback otherwise), behind capability + nonce + confirmation-phrase
+ *    + site-identity checks.
  *  - It refuses to run on anything that is not provably a single-site,
  *    empty, disposable WordPress installation.
  */

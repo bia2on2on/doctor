@@ -1,6 +1,6 @@
 <?php
 /**
- * The single wp-admin surface: Tools → دموی یک‌بارمصرف CPMS.
+ * The single wp-admin surface: CPMS → دموی یک‌بارمصرف CPMS when CPMS Classic is active; Tools is the safe fallback.
  *
  * Rendering only. Every decision (capability, nonce, phrase, site identity,
  * preflight, ownership) happens in the classes this page calls, so those rules
@@ -25,9 +25,14 @@ class Admin {
 	public const ACTION = 'cpdd_action';
 
 	/**
-	 * @var string Hook suffix of the Tools page.
+	 * @var string Hook suffix of the active companion page.
 	 */
 	private static string $hook = '';
+
+	/**
+	 * @var string Hook suffix of the legacy Tools URL, when CPMS is active.
+	 */
+	private static string $legacy_hook = '';
 
 	/**
 	 * @var array{type:string,text:string}|null
@@ -100,11 +105,47 @@ class Admin {
 	}
 
 	/**
-	 * Register the page under Tools and hook the pre-render dispatcher.
+	 * Register the page under CPMS Classic when its unified menu is available;
+	 * otherwise retain a standalone Tools fallback without creating a top-level
+	 * menu. The legacy Tools URL remains registered but its menu item is hidden
+	 * and requests are redirected when CPMS is active.
 	 *
 	 * @return void
 	 */
 	public static function register_menu(): void {
+		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
+		if ( class_exists( $cpms_menu ) && is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
+			$parent = (string) call_user_func( array( $cpms_menu, 'parent_slug' ) );
+			$hook   = add_submenu_page(
+				$parent,
+				'دموی یک‌بارمصرف CPMS',
+				'دموی یک‌بارمصرف CPMS',
+				self::CAP,
+				self::PAGE,
+				array( __CLASS__, 'render' )
+			);
+			if ( is_string( $hook ) ) {
+				self::$hook = $hook;
+				add_action( 'load-' . $hook, array( __CLASS__, 'dispatch' ) );
+			}
+
+			$legacy_hook = add_management_page(
+				'دموی یک‌بارمصرف CPMS',
+				'دموی یک‌بارمصرف CPMS',
+				self::CAP,
+				self::PAGE,
+				array( __CLASS__, 'redirect_legacy_tools_url' )
+			);
+			if ( is_string( $legacy_hook ) ) {
+				self::$legacy_hook = $legacy_hook;
+				add_action( 'load-' . $legacy_hook, array( __CLASS__, 'redirect_legacy_tools_url' ) );
+			}
+			add_action( 'admin_head', array( __CLASS__, 'hide_legacy_tools_link' ), 1 );
+			return;
+		}
+
+		// CPMS is not loaded: keep the page usable, but never create a second
+		// CPMS-like top-level menu or pretend it belongs to the absent parent.
 		$hook = add_management_page(
 			'دموی یک‌بارمصرف CPMS',
 			'دموی یک‌بارمصرف CPMS',
@@ -116,6 +157,22 @@ class Admin {
 			self::$hook = $hook;
 			add_action( 'load-' . $hook, array( __CLASS__, 'dispatch' ) );
 		}
+	}
+
+	/** Hide only the old Tools navigation row; its registered URL remains routable. */
+	public static function hide_legacy_tools_link(): void {
+		if ( self::$legacy_hook !== '' ) {
+			remove_submenu_page( 'tools.php', self::PAGE );
+		}
+	}
+
+	/** Redirect the preserved legacy Tools URL after WordPress has authorized it. */
+	public static function redirect_legacy_tools_url(): void {
+		if ( ! current_user_can( self::CAP ) ) {
+			wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
+		}
+		wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE ) );
+		exit;
 	}
 
 	/**
