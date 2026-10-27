@@ -181,7 +181,25 @@ namespace {
 	$platform->audit_rows = array( $row1, $broken );
 	Cpdd_Test::equals( false, (bool) $guard->verify_chain()['ok'], 'broken audit chain is refused' );
 
-	// 5. Static safety markers in the shipped scoped sources.
+	// 5. Uninstall preserves active scoped ownership metadata and removes clean tombstones.
+	if ( ! defined( 'WP_UNINSTALL_PLUGIN' ) ) {
+		define( 'WP_UNINSTALL_PLUGIN', true );
+	}
+	$uninstall_ctx = cpsd_fixture();
+	$uninstall_manifest = $uninstall_ctx['manifest']->save( cpsd_manifest_data() );
+	unset( $uninstall_manifest );
+	$uninstall_ctx['env']->option_set( 'cpsd_tombstone', array( 'clean' => true ) );
+	require CPMS_DEMO_DIR . 'uninstall.php';
+	Cpdd_Test::ok( is_array( get_option( 'cpsd_manifest', false ) ), 'uninstall preserves active scoped manifest' );
+	Cpdd_Test::ok( is_array( get_option( 'cpdd_uninstall_blocked', false ) ), 'uninstall records recovery marker for active scoped fixture' );
+
+	$clean_ctx = cpsd_fixture();
+	$clean_ctx['env']->option_set( 'cpsd_tombstone', array( 'clean' => true ) );
+	require CPMS_DEMO_DIR . 'uninstall.php';
+	Cpdd_Test::ok( false === get_option( 'cpsd_tombstone', false ), 'clean uninstall removes scoped tombstone' );
+	Cpdd_Test::ok( false === get_option( 'cpsd_mode', false ), 'clean uninstall removes scoped mode marker' );
+
+	// 6. Static safety markers in the shipped scoped sources.
 	$sources = glob( CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-*.php' ) ?: array();
 	$all = '';
 	foreach ( $sources as $file ) {

@@ -35,16 +35,26 @@ $cpms_demo_users           = function_exists( 'get_users' )
 		)
 	)
 	: array();
-$cpms_demo_scoped_users    = function_exists( 'get_users' )
+$cpms_demo_scoped_candidates = function_exists( 'get_users' )
 	? get_users(
 		array(
 			'search'         => 'cpsd-*',
 			'search_columns' => array( 'user_login' ),
-			'fields'         => 'ID',
+			'fields'         => 'user_login',
 			'number'         => 1,
 		)
 	)
 	: array();
+$cpms_demo_scoped_users      = array();
+foreach ( (array) $cpms_demo_scoped_candidates as $cpms_demo_candidate ) {
+	$cpms_demo_login = is_array( $cpms_demo_candidate )
+		? (string) ( $cpms_demo_candidate['user_login'] ?? $cpms_demo_candidate['login'] ?? '' )
+		: (string) $cpms_demo_candidate;
+	if ( 0 === strpos( $cpms_demo_login, 'cpsd-' ) ) {
+		$cpms_demo_scoped_users[] = $cpms_demo_login;
+		break;
+	}
+}
 
 $cpms_demo_active_manifest = is_array( $cpms_demo_manifest ) ? $cpms_demo_manifest : ( is_array( $cpms_demo_scoped_manifest ) ? $cpms_demo_scoped_manifest : null );
 
