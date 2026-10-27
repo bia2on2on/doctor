@@ -634,6 +634,80 @@ echo "FIXTURE_OPERATION=" . wp_json_encode([
           and data["invoice"] == "paid" and data["payments"] >= 1, json.dumps(data))
 
 
+def iran_v1_messaging_pricing(browser, credentials, links, fixture):
+    """Iran V1 — real-Chromium RTL desktop + narrow mobile acceptance.
+
+    Proves the delivered portal modules, the doctor default consultation fee
+    (Rial), a receptionist→doctor message through the real REST boundary and
+    the doctor's polling read of that message. Screenshots are captured at a
+    360px RTL viewport; no credentials, cookies or patient data are logged.
+    """
+    stage("iran v1 messaging pricing RTL desktop and narrow mobile")
+    pricing_url = with_query(links["staff"], **{"cpms-module": "pricing"})
+    messages_url = with_query(links["staff"], **{"cpms-module": "messages"})
+    doctor_context, doctor_page = open_account(browser, credentials, "doctor")
+    reception_context, reception_page = open_account(browser, credentials, "receptionist")
+    try:
+        doctor_page.goto(pricing_url, wait_until="domcontentloaded")
+        doctor_page.wait_for_selector('[data-role="pricing-root"]')
+        check("iran v1 pricing module delivered",
+              doctor_page.locator('[data-role="pricing-root"]').count() == 1)
+        check("iran v1 pricing document RTL",
+              doctor_page.locator("html").get_attribute("dir") == "rtl")
+        assert_no_horizontal_overflow(doctor_page, "iran v1 pricing RTL desktop has no horizontal overflow")
+        doctor_page.wait_for_function(
+            '!document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("در حال")'
+        )
+        doctor_page.fill('[data-role="pricing-default-amount"]', "350000")
+        doctor_page.click('[data-role="pricing-save-default"]')
+        doctor_page.wait_for_function(
+            'document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("350000")'
+        )
+        check("iran v1 doctor default fee is labelled in Rial",
+              "ریال" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text()
+              and "350000" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text())
+
+        reception_page.goto(messages_url, wait_until="domcontentloaded")
+        reception_page.wait_for_selector('[data-role="messages-root"]')
+        check("iran v1 messaging module delivered",
+              reception_page.locator('[data-role="messages-root"]').count() == 1)
+        check("iran v1 messaging document RTL",
+              reception_page.locator("html").get_attribute("dir") == "rtl")
+        assert_no_horizontal_overflow(reception_page, "iran v1 messaging RTL desktop has no horizontal overflow")
+        reception_page.wait_for_function(
+            'document.querySelector(`[data-role="messages-counterpart"]`).options.length > 0'
+        )
+        reception_page.click('[data-role="messages-new"]')
+        reception_page.wait_for_function(
+            'document.querySelectorAll(`[data-role="messages-threads"] .cpms-msg__item`).length > 0'
+        )
+        reception_page.fill('[data-role="messages-body"]', "پیام آزمایشی پذیرش به پزشک")
+        reception_page.click('[data-role="messages-send"]')
+        reception_page.wait_for_function(
+            'document.querySelector(`[data-role="messages-list"]`).textContent.includes("پیام آزمایشی")'
+        )
+        check("iran v1 receptionist message reaches the conversation", True)
+
+        doctor_page.goto(messages_url, wait_until="domcontentloaded")
+        doctor_page.wait_for_selector('[data-role="messages-root"]')
+        doctor_page.wait_for_function(
+            'document.querySelectorAll(`[data-role="messages-threads"] .cpms-msg__item`).length > 0'
+        )
+        doctor_page.locator('[data-role="messages-threads"] .cpms-msg__item').first.click()
+        doctor_page.wait_for_function(
+            'document.querySelector(`[data-role="messages-list"]`).textContent.includes("پیام آزمایشی")'
+        )
+        check("iran v1 doctor reads the receptionist message through polling", True)
+
+        for label, page in (("doctor", doctor_page), ("receptionist", reception_page)):
+            page.set_viewport_size({"width": 360, "height": 780})
+            assert_no_horizontal_overflow(page, f"iran v1 {label} RTL 360px mobile has no horizontal overflow")
+            page.screenshot(path=f"{OUT}/screenshots/disposable-iran-v1-{label}-360.png", full_page=True)
+    finally:
+        doctor_context.close()
+        reception_context.close()
+
+
 def main():
     global LAST_FIXTURE
     fixture = protected_json(STATE_FILE)
@@ -714,6 +788,8 @@ def main():
             )
             contexts.append(reception_context)
             verify_operational_db(live_visit_id)
+
+            iran_v1_messaging_pricing(browser, credentials, links, fixture)
 
             stage("management review RTL and mobile")
             manager_context, manager = open_account(browser, credentials, "organization_manager")

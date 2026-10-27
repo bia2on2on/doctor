@@ -49,6 +49,8 @@ $cpms_doctor_mod    = StaffPortalShell::MODULE_DOCTOR === $cpms_module_id;
 $cpms_reception_mod = StaffPortalShell::MODULE_RECEPTION === $cpms_module_id;
 $cpms_finance_mod   = StaffPortalShell::MODULE_FINANCE === $cpms_module_id;
 $cpms_reports_mod   = StaffPortalShell::MODULE_REPORTS === $cpms_module_id;
+$cpms_messages_mod  = StaffPortalShell::MODULE_MESSAGES === $cpms_module_id;
+$cpms_pricing_mod   = StaffPortalShell::MODULE_PRICING === $cpms_module_id;
 
 $cpms_login_name = $cpms_logged_in ? (string) $cpms_user->display_name : '';
 if ( '' === $cpms_login_name && $cpms_logged_in ) {
@@ -86,6 +88,10 @@ if ( $cpms_doctor_mod ) {
     $cpms_header_title = 'مالی — در انتظار پرداخت';
 } elseif ( $cpms_reports_mod ) {
     $cpms_header_title = 'گزارش — میانگین زمان انتظار';
+} elseif ( $cpms_messages_mod ) {
+    $cpms_header_title = 'پیام‌های داخلی مطب';
+} elseif ( $cpms_pricing_mod ) {
+    $cpms_header_title = 'تعرفه و خدمات ویزیت';
 }
 
 // The doctor stylesheet is scoped to these existing classes; carrying them when
@@ -101,6 +107,10 @@ if ( $cpms_doctor_mod ) {
     $cpms_shell_user = 'finance';
 } elseif ( $cpms_reports_mod ) {
     $cpms_shell_user = 'reports';
+} elseif ( $cpms_messages_mod ) {
+    $cpms_shell_user = 'messaging';
+} elseif ( $cpms_pricing_mod ) {
+    $cpms_shell_user = 'pricing';
 } elseif ( $cpms_logged_in ) {
     $cpms_shell_user = 'non-doctor';
 }
@@ -221,6 +231,18 @@ echo $cpms_styles_html;
     // Phase 14 Slice 1 — read-only Average Waiting report, never wp-admin chrome.
     $cpms_staff_embed = true;
     include StaffPortalShell::reports_module_template_path();
+    ?>
+<?php elseif ( $cpms_messages_mod ) : ?>
+    <?php
+    // Iran V1 — internal Doctor/Receptionist messaging (self-contained module).
+    $cpms_staff_embed = true;
+    include StaffPortalShell::messages_module_template_path();
+    ?>
+<?php elseif ( $cpms_pricing_mod ) : ?>
+    <?php
+    // Iran V1 — doctor consultation fees and draft treatment charges.
+    $cpms_staff_embed = true;
+    include StaffPortalShell::pricing_module_template_path();
     ?>
 <?php else : ?>
     <main class="cpms-staff-portal-shell__main" role="main" data-role="portal-main">
