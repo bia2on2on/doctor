@@ -246,12 +246,18 @@ def check_page(page, slug, label, width):
     record(reached, f"{prefix} keyboard-reaches-section-nav")
 
     # Resolve the unique target link: the section-nav link whose page query param
-    # is exactly this page's slug.
+    # is exactly this page's slug. The page param is parsed with a fixed regex and
+    # compared by value (slug === m[1]) so slugs are never interpolated into a JS
+    # regular expression (no escaping pitfalls, e.g. cpms-organizations vs
+    # cpms-organization-managers).
     target = page.evaluate(
         """(slug) => {
-            const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
+            const re = /[?&]page=([^&]*)/;
             const links = Array.from(document.querySelectorAll('a.cpms-sectionnav__link'));
-            const matches = links.filter((el) => re.test(el.getAttribute('href') || ''));
+            const matches = links.filter((el) => {
+                const m = (el.getAttribute('href') || '').match(re);
+                return m && m[1] === slug;
+            });
             return { count: matches.length, href: matches[0] ? matches[0].getAttribute('href') || '' : '' };
         }""",
         slug,
@@ -270,8 +276,11 @@ def check_page(page, slug, label, width):
     if target_count == 1:
         focused_target = page.evaluate(
             """(slug) => {
-                const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
-                const el = Array.from(document.querySelectorAll('a.cpms-sectionnav__link')).find((el) => re.test(el.getAttribute('href') || ''));
+                const re = /[?&]page=([^&]*)/;
+                const el = Array.from(document.querySelectorAll('a.cpms-sectionnav__link')).find((el) => {
+                    const m = (el.getAttribute('href') || '').match(re);
+                    return m && m[1] === slug;
+                });
                 if (el) { el.focus(); return true; }
                 return false;
             }""",
@@ -308,9 +317,11 @@ def check_page(page, slug, label, width):
 
     current_ok = page.evaluate(
         """(slug) => {
-            const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
+            const re = /[?&]page=([^&]*)/;
             const cur = document.querySelector('.cpms-sectionnav__link[aria-current="page"]');
-            return !!(cur && re.test(cur.getAttribute('href') || ''));
+            if (!cur) return false;
+            const m = (cur.getAttribute('href') || '').match(re);
+            return m && m[1] === slug;
         }""",
         slug,
     )
