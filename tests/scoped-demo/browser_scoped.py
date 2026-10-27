@@ -619,7 +619,8 @@ def journeys_phase(browser) -> None:
     check("the booking returns an appointment id", booked_id > 0, f"id={booked_id}")
 
     board_after = api(page, nonce, "GET", "/staff/portal/reception/board", headers=headers, rest_root=root)
-    board_body = board_after.get("data") if isinstance(board_after.get("data"), dict) else {}
+    # The envelope is {"success":..,"data":{..}}; payload_of() unwraps it.
+    board_body = payload_of(board_after)
     board_date = str(board_body.get("date") or "")
     board_rows = board_body.get("appointments") if isinstance(board_body.get("appointments"), list) else []
     board_ids = [int(row.get("id") or 0) for row in board_rows if isinstance(row, dict)]
