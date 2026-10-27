@@ -462,6 +462,9 @@ class Preflight {
 	private function check_cpms_data(): array {
 		$id    = 'cpms_data';
 		$label = 'دادهٔ بالینی/مالی/نوبت خالی و Bootstrap دست‌نخورده';
+		if ( ! $this->platform->available() ) {
+			return $this->result( $id, $label, 'fail', 'CPMS Classic فعال نیست؛ جداول آن بررسی نشدند و هرگونه ساخت یا پاک‌سازی دمو تا فعال‌شدن نسخهٔ سازگار مسدود است.' );
+		}
 
 		foreach ( self::OPERATIONAL_TABLES as $short ) {
 			if ( ! $this->platform->table_exists( $short ) ) {
