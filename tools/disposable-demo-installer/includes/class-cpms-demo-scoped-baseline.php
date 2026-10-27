@@ -14,6 +14,9 @@ namespace CpmsDemo;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- Logical grouping is clearer than column alignment in these ownership maps.
+// phpcs:disable WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare,WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- Read-only schema introspection; table/column names come from a fixed allowlist and all variable values are prepared.
+
 /**
  * Read-only baseline capture and post-teardown preservation check.
  */

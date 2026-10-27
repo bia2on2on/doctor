@@ -13,6 +13,8 @@ namespace CpmsDemo;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- Logical grouping is clearer than column alignment in these ownership maps.
+
 /**
  * Scoped-mode admin UI and dispatch.
  */
@@ -116,6 +118,7 @@ class ScopedAdmin {
 		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
 			return;
 		}
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- ScopedRequest::authorize() verifies the action-specific nonce below.
 		$action = isset( $_POST[ self::ACTION ] ) ? sanitize_key( (string) wp_unslash( $_POST[ self::ACTION ] ) ) : '';
 		if ( '' === $action ) {
 			return;
@@ -133,6 +136,7 @@ class ScopedAdmin {
 		$teardown     = new ScopedTeardown( $env, $platform, $manifest, $audit_guard, $baseline );
 		$otp_helper   = new ScopedOtp( $env, $platform, $manifest );
 		$post         = (array) wp_unslash( $_POST );
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		try {
 			$request->authorize( $action, $post );
 			$admin_id = $env->current_user_id();

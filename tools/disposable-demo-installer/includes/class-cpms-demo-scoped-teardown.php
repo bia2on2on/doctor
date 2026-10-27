@@ -14,6 +14,8 @@ namespace CpmsDemo;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- Logical grouping is clearer than column alignment in these ownership maps.
+
 /**
  * Scoped teardown and read-only ownership preview.
  */
@@ -453,8 +455,8 @@ class ScopedTeardown {
 				$deleted = array_merge( $deleted, $this->delete_global_rows( $preview['scope'] ) );
 				$stage = 'cpms-tables';
 				$deleted = array_merge( $deleted, $this->delete_table_rows( $preview['scope']['tables'] ) );
-				$stage = 'wordpress';
-				$deleted = array_merge( $deleted, $this->delete_wordpress_records( $manifest, $user_ids ) );
+				$stage = 'wp-core';
+				$deleted = array_merge( $deleted, $this->delete_wp_records( $manifest, $user_ids ) );
 				$stage = 'post-verify';
 				$remaining = $this->post_verify( $manifest );
 				if ( array() !== $remaining ) {
@@ -569,9 +571,10 @@ class ScopedTeardown {
 	 */
 	private function delete_rate_keys( array $keys ): int {
 		$keys = array_values( array_unique( array_filter( array_map( 'strval', $keys ) ) ) );
-		$keys = array_values( array_filter( $keys, static function ( string $key ): bool {
+		$filter = static function ( string $key ): bool {
 			return 0 !== strpos( $key, 'otp-ip:' ) && 0 !== strpos( $key, 'otp-verify-ip:' ) && 0 !== strpos( $key, 'login-ip:' );
-		} ) );
+		};
+		$keys = array_values( array_filter( $keys, $filter ) );
 		if ( array() === $keys || ! $this->platform->table_exists( 'cpms_rate_limits' ) ) {
 			return 0;
 		}
@@ -584,7 +587,7 @@ class ScopedTeardown {
 	 * @param list<int> $user_ids Persona user IDs.
 	 * @return array<string,int>
 	 */
-	private function delete_wordpress_records( array $manifest, array $user_ids ): array {
+	private function delete_wp_records( array $manifest, array $user_ids ): array {
 		$deleted = array( 'wp_users' => 0, 'wp_posts' => 0 );
 		global $wpdb;
 		$page_id = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
@@ -801,12 +804,13 @@ class ScopedTeardown {
 			foreach ( $rows as $row ) {
 				$live[ (string) ( $row['window_key'] ?? '' ) ] = true;
 			}
-			$keys = array_values( array_filter( $keys, static function ( string $key ) use ( $live ): bool {
+			$live_filter = static function ( string $key ) use ( $live ): bool {
 				return isset( $live[ $key ] );
-			} ) );
+			};
+			$keys = array_values( array_filter( $keys, $live_filter ) );
 		}
 		$baseline_keys = array_keys( (array) ( $baseline['cpms']['cpms_rate_limits']['keys'] ?? array() ) );
-		$keys = array_values( array_filter( $keys, static function ( string $key ) use ( $baseline_keys ): bool {
+		$baseline_filter = static function ( string $key ) use ( $baseline_keys ): bool {
 			if ( '' === $key || 0 === strpos( $key, 'otp-ip:' ) || 0 === strpos( $key, 'otp-verify-ip:' ) || 0 === strpos( $key, 'login-ip:' ) ) {
 				return false;
 			}
@@ -816,7 +820,8 @@ class ScopedTeardown {
 				}
 			}
 			return true;
-		} ) );
+		};
+		$keys = array_values( array_filter( $keys, $baseline_filter ) );
 		return array_values( array_unique( $keys ) );
 	}
 

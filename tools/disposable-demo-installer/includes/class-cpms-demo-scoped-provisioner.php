@@ -14,6 +14,8 @@ namespace CpmsDemo;
 
 defined( 'ABSPATH' ) || exit;
 
+// phpcs:disable Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- Logical grouping is clearer than column alignment in these ownership maps.
+
 /**
  * Provisioner for existing non-empty test sites.
  */
