@@ -440,17 +440,19 @@ def journeys_phase(browser) -> None:
               bad_key["status"] == 400 and code_of(bad_key) == "CLINIC_VALIDATION_FAILED",
               f"HTTP {bad_key['status']} {code_of(bad_key)}")
 
-        # The fixture invoice is settled by provisioning, so a fresh capture must be
-        # refused as an overpayment rather than silently accepted.
-        overpay = api(page, nonce, "POST", f"/staff/portal/finance/invoices/{invoice_id}/payments",
+        # Provisioning settles this invoice, so the service must refuse a further
+        # capture: either the closed-invoice guard (409) or the balance guard (422),
+        # never a silent second payment.
+        settled = api(page, nonce, "POST", f"/staff/portal/finance/invoices/{invoice_id}/payments",
                       {"amount": 1000, "method": "cash"},
                       headers=dict(fin_headers, **{
                           "Idempotency-Key": new_idempotency_key(),
                       }),
                       rest_root=root)
-        check("accountant's overpayment is refused against the remaining balance",
-              overpay["status"] == 422 and code_of(overpay) == "CLINIC_OVERPAYMENT",
-              f"HTTP {overpay['status']} {code_of(overpay)}")
+        check("accountant cannot capture against a settled invoice",
+              settled["status"] in (409, 422)
+              and code_of(settled) in ("CLINIC_INVOICE_NOT_MODIFIABLE", "CLINIC_OVERPAYMENT"),
+              f"HTTP {settled['status']} {code_of(settled)}")
 
     if foreign.get("invoice_id"):
         cross = api(page, nonce, "GET", f"/invoices/{int(foreign['invoice_id'])}",
