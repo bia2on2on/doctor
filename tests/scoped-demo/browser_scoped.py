@@ -334,7 +334,8 @@ def journeys_phase(browser) -> None:
     check("receptionist books a real appointment", booking["status"] in (200, 201),
           f"HTTP {booking['status']} {code_of(booking)}")
     booked = payload_of(booking)
-    booked_id = int(booked.get("id") or booked.get("appointment_id") or 0)
+    appointment = booked.get("appointment") if isinstance(booked.get("appointment"), dict) else booked
+    booked_id = int(appointment.get("id") or booked.get("id") or 0)
     check("the booking returns an appointment id", booked_id > 0, f"id={booked_id}")
 
     board_after = api(page, nonce, "GET", "/staff/portal/reception/board", headers=headers, rest_root=root)
@@ -403,8 +404,10 @@ def journeys_phase(browser) -> None:
     nonce = str(cfg.get("nonce", ""))
     root = str(cfg.get("rest_root", "") or REST)
 
+    # The invoice is stamped with the Visit's Location, and the mutation route
+    # refuses a same-Clinic invoice from another Location, so select that one.
     fin_context = api(page, nonce, "GET", "/staff/portal/finance/context",
-                      headers=scope_headers(clinic_id), rest_root=root)
+                      headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("accountant reads the finance context", fin_context["status"] == 200,
           f"HTTP {fin_context['status']} {code_of(fin_context)}")
     fin_data = payload_of(fin_context)
@@ -413,7 +416,9 @@ def journeys_phase(browser) -> None:
     if not fin_location and fin_locations:
         fin_location = fin_locations[0]
     check("the accountant finance scope exposes an operational location",
-          fin_location > 0, f"locations={fin_locations}")
+          fin_location > 0, f"locations={fin_locations} selected={fin_location}")
+    check("the accountant can capture payments in this scope",
+          bool(fin_data.get("can_capture_payment")), f"can_capture_payment={fin_data.get('can_capture_payment')}")
     fin_headers = scope_headers(clinic_id, fin_location)
 
     awaiting = api(page, nonce, "GET", "/staff/portal/finance/awaiting-payment",
