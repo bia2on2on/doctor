@@ -1,0 +1,90 @@
+# Scoped demo — CPMS table ownership map (preparation checkpoint)
+
+**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_18_0029`.
+
+**Status:** source inspection and design only. No companion or production code was changed. This is not executed acceptance evidence.
+
+## Important correction to the mission wording
+
+The mission says “all 43 CPMS tables”. In this schema, `Preflight::OPERATIONAL_TABLES` has exactly **43** tables, while `Preflight::KNOWN_TABLES` has **53** tables: 43 operational + 10 system/global tables. `Teardown::DELETE_ORDER` has 50 entries. The scoped implementation and its tests must cover all **53**, with special treatment for the four global/shared surfaces called out below.
+
+Notation:
+
+- `C` — direct `clinic_id` ownership.
+- `O` — direct `organization_id` ownership.
+- `L`, `U`, `P`, `V`, etc. — direct location/user/patient/visit ownership.
+- `FK(parent)` — ownership proven through a durable parent ID.
+- `JSON` — ownership only through a verified entity ID inside a JSON payload.
+- **Never** — table must not be deleted by scoped teardown.
+
+## The 43 operational tables
+
+| # | Table | Actual ownership anchor(s) | Scoped teardown rule |
+|---:|---|---|---|
+| 1 | `cpms_clinicians` | `C`, `U`; unique `wp_user_id` | Delete only exact manifest-owned clinician IDs after verifying synthetic clinic and user. |
+| 2 | `cpms_clinic_memberships` | `C`, `U`; `FK(clinics)` | Delete only exact manifest-owned membership IDs; never alter a pre-existing membership. |
+| 3 | `cpms_organization_memberships` | `O`, `U`; `FK(organizations)` | Delete only exact manifest-owned membership IDs for the synthetic Organization. |
+| 4 | `cpms_organization_membership_capabilities` | `FK(cpms_organization_memberships.membership_id)` | Delete only children of manifest-owned Organization memberships. |
+| 5 | `cpms_membership_capabilities` | `FK(cpms_clinic_memberships.membership_id)` | Delete only children of manifest-owned Clinic memberships. |
+| 6 | `cpms_membership_locations` | `FK(membership_id)`, `FK(location_id)` | Delete only children of manifest-owned memberships; verify both parents. |
+| 7 | `cpms_clinician_locations` | `FK(clinician_id)`, `FK(location_id)` | Delete only children of manifest-owned clinician/location IDs. |
+| 8 | `cpms_custom_role_defs` | `C`; `FK(clinics)` | Delete only exact role definitions owned by the synthetic clinic. |
+| 9 | `cpms_custom_role_capabilities` | `FK(role_def_id)` | Delete only children of manifest-owned role definitions. |
+| 10 | `cpms_schedule` | `C`, `L`, `FK(clinician_id)` | Delete only exact schedule IDs for the synthetic clinic/clinician/locations. |
+| 11 | `cpms_schedule_exceptions` | `C`, nullable `L`, `FK(clinician_id)` | Delete only rows verified through synthetic clinic and manifest-owned clinician IDs. |
+| 12 | `cpms_schedule_slots` | `C`, `L`, `FK(clinician_id)` | Delete only exact slot IDs recorded in the manifest. |
+| 13 | `cpms_slot_holds` | `C`, `FK(slot_id)`, nullable `P`, `U`, mobile | Delete only exact hold IDs with a manifest-owned slot and synthetic mobile/patient. |
+| 14 | `cpms_patients` | `C`, `FK(identity_id)`, mobile | Delete only exact patient IDs; verify synthetic clinic, mobile and identity. |
+| 15 | `cpms_patient_identities` | `O`, `FK(organizations)` | Delete only exact identity IDs for the synthetic Organization. Preserve all other identities. |
+| 16 | `cpms_patient_identity_links` | `O`, `FK(identity_id)`, `U` | Delete only rows linking a manifest-owned identity and persona user. |
+| 17 | `cpms_patient_user_links` | `C`, `FK(patient_id)`, `U` | Delete only rows linking a manifest-owned patient and persona user. |
+| 18 | `cpms_patient_merges` | `C`, surviving/merged patient IDs | Delete only exact IDs with both patients manifest-owned. |
+| 19 | `cpms_appointments` | `C`, `L`, `FK(clinician_id/patient_id/slot_id)`, `U` | Delete only exact appointment IDs and all four verified parents. |
+| 20 | `cpms_visits` | `C`, `L`, `FK(clinician_id/patient_id/appointment_id)` | Delete only exact visit IDs and verified parents. |
+| 21 | `cpms_visit_status_history` | `FK(visit_id)`, actor user | Delete only children of manifest-owned visits. |
+| 22 | `cpms_clinical_notes` | `C`, `FK(visit_id/patient_id/clinician_id)` | Delete only exact clinical note IDs and verified parents. |
+| 23 | `cpms_clinical_note_versions` | `FK(note_id)` | Delete only children of manifest-owned notes. |
+| 24 | `cpms_prescriptions` | `C`, nullable `L`, `FK(visit_id/patient_id)` | Delete only exact prescription IDs and verified parents. |
+| 25 | `cpms_prescription_items` | `FK(prescription_id)`, nullable `FK(drug_ref_id)` | Delete only children of manifest-owned prescriptions. |
+| 26 | `cpms_recommendations` | `C`, `FK(visit_id/patient_id/clinician_id)` | Delete only exact IDs and verified parents. |
+| 27 | `cpms_follow_ups` | `C`, `FK(visit_id/patient_id/linked_appointment_id)` | Delete only exact IDs and verified parents. |
+| 28 | `cpms_medical_attachments` | `C`, `FK(visit_id/patient_id)` | Delete only exact IDs; verify and remove any private file by manifest-owned path. |
+| 29 | `cpms_handwriting_documents` | `C`, `FK(visit_id/patient_id/clinician_id)` | Delete only exact IDs and verified parents. |
+| 30 | `cpms_handwriting_pages` | `FK(document_id)` | Delete only children of manifest-owned documents. |
+| 31 | `cpms_handwriting_page_versions` | `FK(page_id)` | Delete only children of manifest-owned pages. |
+| 32 | `cpms_ocr_jobs` | `C`, `FK(source_page_id)` | Delete only exact IDs with a manifest-owned page. |
+| 33 | `cpms_services` | `C`, nullable `L`, `FK(clinics)` | Delete only exact service IDs for the synthetic clinic. |
+| 34 | `cpms_invoices` | `C`, nullable `L`, `FK(patient_id/visit_id)` | Delete only exact invoice IDs and verified parents; fail closed if any clinical/financial child remains. |
+| 35 | `cpms_invoice_items` | `FK(invoice_id)`, `FK(service_id)` | Delete only children of manifest-owned invoices. |
+| 36 | `cpms_payments` | `C`, nullable `L`, `FK(invoice_id/patient_id)` | Delete only exact payment IDs and verified parents; offline `other` method only. |
+| 37 | `cpms_payment_adjustments` | `FK(invoice_id)`, nullable `FK(payment_id)` | Delete only children of manifest-owned invoices/payments. |
+| 38 | `cpms_sms_messages` | `C`, recipient, context IDs | Delete only exact IDs for the synthetic clinic and reserved synthetic recipient; `log` provider only. |
+| 39 | `cpms_otp_tokens` | nullable `C` (migration 0021), mobile | Delete only exact challenge IDs with synthetic clinic **and** mobile; preserve all `NULL`/foreign clinic rows. |
+| 40 | `cpms_idempotency_keys` | `C`, `U`, key/endpoint/context | Delete only exact IDs with verified fixture clinic/user/key scope; preserve all foreign or ambiguous keys. |
+| 41 | `cpms_notifications` | `C`, nullable recipient user/patient, dedupe key | Delete only exact IDs for the synthetic clinic and manifest-owned recipients. |
+| 42 | `cpms_audit_logs` | append-only global hash chain; nullable `C`, resource/actor/meta JSON | **Never delete, update, or selectively remove any row.** Keep all demo and foreign audit entries; verify full chain and immutable baseline prefix. |
+| 43 | `cpms_drug_reference` | `C`; `FK(prescription_items.drug_ref_id)` | Delete only exact synthetic drug-reference IDs after their prescription children are gone. |
+
+## The 10 system/global tables
+
+| Table | Actual ownership / scope | Scoped teardown rule |
+|---|---|---|
+| `cpms_organizations` | Parent of all clinics; no clinic ID. Slug/status/audit marker. | Delete only the exact synthetic Organization after every child is gone. Never alter an existing Organization. |
+| `cpms_clinics` | Parent of all clinic-owned rows; `organization_id`, slug, status, first-setup marker. | Delete only the exact synthetic Clinic. Suspend it during teardown; never alter an existing Clinic. |
+| `cpms_locations` | `FK(clinic_id)`, clinic-unique slug. | Delete only exact synthetic Location IDs. Preserve every existing Location. |
+| `cpms_settings` | `C`, nullable `L`, unique `(clinic_id,key)`. | Delete only settings for the synthetic clinic; verify `sms.provider=log` and bounded booking settings. |
+| `cpms_schema_migrations` | Installation-wide migration registry. | **Never touch.** |
+| `cpms_jobs` | Installation-wide queue; `payload_json` is the only ownership hint. | Preserve recurring/global jobs and all foreign jobs. Delete only exact job IDs whose payload references the synthetic clinic or synthetic SMS message IDs. Acquire `GET_LOCK('cpms_jobs_tick', 0)` to block the runner; any `processing` owned job or unavailable lock fails closed. New fixture-owned jobs found at post-verification mean teardown is incomplete. |
+| `cpms_operational_logs` | Installation-wide append-oriented log; `context_json`, request ID and IP are shared. | Preserve all baseline and foreign rows. Delete only exact log IDs whose `context_json` carries a verified fixture entity ID or reserved synthetic marker. Never match by timestamp, request ID, IP, or 4-digit mobile suffix. |
+| `cpms_rate_limits` | Composite `(window_key,window_id)`; shared IP/global counters. | Preserve all shared `otp-ip:*`, `otp-verify-ip:*`, `login-ip:*` rows and all foreign entity keys. Delete only a closed allowlist of exact fixture-derived keys proven absent from the baseline. |
+| `cpms_license_install` | Installation-wide licensing identity. | **Never touch.** Verify byte-for-byte baseline preservation. |
+| `cpms_license_state` | Installation-wide signed license document. | **Never touch.** Verify byte-for-byte baseline preservation. |
+
+## Global invariants to enforce in code and tests
+
+1. **Audit chain:** `AuditLogger` only appends. `HashChain::verify` proves `row_hash = SHA-256(prev_hash + canonical(fields))` in ascending `id` order. Scoped teardown must omit `cpms_audit_logs` from every delete path. A full-chain verifier must check all rows in chunks, not just the last 100,000 rows. The pre-demo prefix (IDs and full-row digests) must be unchanged after teardown.
+2. **No ID-range assumptions:** never use `id > baseline_max_id`, `window_id >= 0`, timestamps, or insertion order as ownership proof. Use exact IDs, slugs, user identities, mobile values, and JSON entity references recorded in the sealed manifest, then re-verify against live rows.
+3. **Foreign activity is expected:** a non-empty site may add rows in the same tables during the demo. Such rows are preserved, not treated as a global teardown blocker; rows whose ownership cannot be proven are blockers.
+4. **FK-safe deletion:** durable logs/jobs/rate limits are evaluated first; clinical and financial children are deleted before parents; the synthetic Clinic is deleted before the synthetic Organization; WP users and the synthetic page are deleted last.
+5. **No cascade into existing data:** no parent row is deleted until all children are accounted for. A failed or interrupted teardown retains the sealed manifest with `status=teardown_failed` and an explicit residual list; repeated teardown is idempotent.
+6. **No schema migration:** record ownership in HMAC-sealed WordPress options, user meta, and post meta only. The current schema already carries the necessary `clinic_id`, `organization_id`, location, user, and JSON anchors.
