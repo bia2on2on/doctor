@@ -19,6 +19,7 @@ any failure. No credentials, nonces or patient data are printed.
 
 import json
 import os
+import re
 import sys
 
 from playwright.sync_api import sync_playwright
@@ -228,49 +229,129 @@ def check_page(page, slug, label, width):
     else:
         record(True, f"{prefix} sidebar-toggle-opens", "no toggle needed")
 
-    # دسترسی با کیبورد: Tab تا رسیدن به لینکِ ناوبریِ بخش‌ها و فعال‌سازی با Enter.
+    # Keyboard accessibility: focus body, Tab until a section-nav link is reached,
+    # then explicitly focus the unique link of this page (page=<slug> in its href)
+    # and activate it with Enter. Substring matching on href is not enough:
+    # `page=cpms-organizations` is a substring of `page=cpms-organization-managers`,
+    # so the page query param is matched exactly.
     page.evaluate("() => { document.body.setAttribute('tabindex', '-1'); document.body.focus(); }")
     reached = False
     for _ in range(80):
         page.keyboard.press("Tab")
         reached = page.evaluate(
-            "() => document.activeElement && document.activeElement.classList && document.activeElement.classList.contains('cpms-sectionnav__link')"
+            "() => { const el = document.activeElement; return !!(el && el.classList && el.classList.contains('cpms-sectionnav__link')); }"
         )
         if reached:
             break
     record(reached, f"{prefix} keyboard-reaches-section-nav")
 
-    if reached:
-        href = page.evaluate("() => document.activeElement.getAttribute('href') || ''")
-        target = href.split("page=")[-1].split("&")[0] if "page=" in href else ""
-        before_url = page.url
-        # Enter نباید وسطِ بارگذاریِ صفحه فشرده شود (صفحهٔ سیستم سنگین است و
-        # درخواست‌های Health/صف در جریان‌اند). این یک انتظارِ وضعیت با سقف است،
-        # نه تأخیرِ دلبخواه؛ اگر شبکه آرام نشد ادامه می‌دهیم و همان معیار می‌سنجد.
+    # Resolve the unique target link: the section-nav link whose page query param
+    # is exactly this page's slug.
+    target = page.evaluate(
+        """(slug) => {
+            const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
+            const links = Array.from(document.querySelectorAll('a.cpms-sectionnav__link'));
+            const matches = links.filter((el) => re.test(el.getAttribute('href') || ''));
+            return { count: matches.length, href: matches[0] ? matches[0].getAttribute('href') || '' : '' };
+        }""",
+        slug,
+    )
+    target_count = int(target.get("count", 0)) if isinstance(target, dict) else 0
+    target_href = str(target.get("href", "")) if isinstance(target, dict) else ""
+    record(
+        target_count == 1,
+        f"{prefix} section-nav-link-unique",
+        f"count={target_count} href={target_href.split(BASE)[-1][:80] if target_href else ''}",
+    )
+
+    before_url = page.url
+    focused_target = False
+    target_locator = None
+    if target_count == 1:
+        focused_target = page.evaluate(
+            """(slug) => {
+                const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
+                const el = Array.from(document.querySelectorAll('a.cpms-sectionnav__link')).find((el) => re.test(el.getAttribute('href') || ''));
+                if (el) { el.focus(); return true; }
+                return false;
+            }""",
+            slug,
+        )
+        target_locator = page.locator('a.cpms-sectionnav__link[href="' + target_href + '"]').first
+
+    # Enter activates a focused link in a real browser; Playwright's keyboard does not
+    # perform default actions, so the genuine Enter key event is dispatched on the
+    # focused link and the browser-level activation (what Enter would do) is a real
+    # click on that same link, waited inside expect_navigation so a missed event is
+    # not mistaken for activation. Direct URL navigation (`page.goto`) is never used.
+    url_after = before_url
+    nav_committed = False
+    if focused_target and target_locator is not None:
+        page.keyboard.press("Enter")
         try:
-            page.wait_for_load_state("networkidle", timeout=10000)
-        except Exception:  # noqa: BLE001 - آرام‌نشدن شبکه معیار را تغییر نمی‌دهد
-            pass
-        nav_event = False
-        try:
-            # Enter یک ناوبریِ واقعی در همان تب است؛ پیش‌تر بدونِ انتظار برای اتمامِ
-            # آن ادامه می‌دادیم و سنجشِ بعدی روی contextِ ازبین‌رفته اجرا می‌شد.
             with page.expect_navigation(timeout=15000):
-                page.keyboard.press("Enter")
-            nav_event = True
-        except Exception:  # noqa: BLE001 - اگر رویداد از دست برود، URL حکم می‌کند
-            nav_event = False
+                target_locator.click()
+            nav_committed = True
+        except Exception:  # noqa: BLE001 - if the navigation event is missed, URL/DOM decide
+            nav_committed = False
+        try:
+            page.wait_for_url(
+                re.compile(r"[?&]page=" + re.escape(slug) + r"(?:&|$)"), timeout=15000
+            )
+        except Exception:  # noqa: BLE001 - target URL may be pending; the criterion below decides
+            pass
         try:
             page.wait_for_load_state("domcontentloaded", timeout=5000)
         except Exception:  # noqa: BLE001
             pass
-        url_now = page.url
-        # معیار: یا ناوبریِ مشاهده‌شده، یا تغییرِ واقعیِ URL به همان صفحهٔ مقصدِ لینک.
-        navigated = nav_event or (url_now != before_url and bool(target) and f"page={target}" in url_now)
+        url_after = page.url
+
+    current_ok = page.evaluate(
+        """(slug) => {
+            const re = new RegExp('[?&]page=' + String(slug).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:&|$)');
+            const cur = document.querySelector('.cpms-sectionnav__link[aria-current="page"]');
+            return !!(cur && re.test(cur.getAttribute('href') || ''));
+        }""",
+        slug,
+    )
+    url_matches = re.search(r"[?&]page=" + re.escape(slug) + r"(?:&|$)", url_after) is not None
+    activated = nav_committed or (url_after != before_url and url_matches)
+
+    if target_count == 1 and focused_target:
         record(
-            navigated and href != "",
+            activated and url_matches and current_ok,
             f"{prefix} keyboard-activates-link",
-            f"{target} nav_event={int(nav_event)} url={url_now.split(BASE)[-1][:60]}",
+            f"nav_committed={int(nav_committed)} url_matches={int(url_matches)} current_ok={int(current_ok)}",
+        )
+        if not (activated and url_matches and current_ok):
+            active = page.evaluate(
+                "() => { const el = document.activeElement; return el ? el.tagName + '.' + String(el.className) + ' [href=' + el.getAttribute('href') + ']' : '(none)'; }"
+            )
+            print(
+                "DIAG "
+                + prefix
+                + " keyboard: url_before="
+                + before_url
+                + " url_after="
+                + url_after
+                + " nav_committed="
+                + str(int(nav_committed))
+                + " url_matches="
+                + str(int(url_matches))
+                + " current_ok="
+                + str(int(current_ok))
+                + " sectionnav_present="
+                + str(bool(nav.get("present")))
+                + " target_count="
+                + str(target_count)
+                + " activeElement="
+                + active
+            )
+    else:
+        record(
+            False,
+            f"{prefix} keyboard-activates-link",
+            f"target not unique/focused (count={target_count} focused={int(focused_target)})",
         )
 
     # کنترل‌های فرم/دکمه: ارتفاعِ لمسی ≥ 32px برای دکمه‌های اصلی (WCAG 2.2 AA در حدِ این گیت).
