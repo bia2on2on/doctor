@@ -1168,7 +1168,9 @@ class Platform {
 	public function record_payment( int $actor_id, int $invoice_id, array $input, string $idempotency_key ): int {
 		$result = App::financeService()->recordPayment( $actor_id, $invoice_id, $input, $idempotency_key );
 
-		return (int) ( $result['id'] ?? 0 );
+		// `paymentResult()` reports `payment_id`; asking for `id` silently yielded 0 and
+		// left the synthetic payment out of the ownership map.
+		return (int) ( $result['payment_id'] ?? $result['id'] ?? 0 );
 	}
 
 	/**

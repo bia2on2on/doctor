@@ -364,11 +364,19 @@ try {
 	$demo_reception  = (int) ( $live['ids']['user_ids']['receptionist'] ?? 0 );
 	$demo_patient    = (int) ( $live['ids']['patient_id'] ?? 0 );
 	$demo_patient_wp = (int) ( $live['ids']['user_ids']['patient'] ?? 0 );
+	$demo_payment   = (int) ( $live['ids']['payment_id'] ?? 0 );
 
 	$foreign = $platform->fetch_row( 'SELECT id, clinic_id FROM `' . $platform->table( 'cpms_invoices' ) . '` WHERE clinic_id <> %d ORDER BY id ASC LIMIT 1', array( $demo_clinic ) );
 	$foreign_patient = $platform->fetch_row( 'SELECT id, clinic_id FROM `' . $platform->table( 'cpms_patients' ) . '` WHERE clinic_id <> %d ORDER BY id ASC LIMIT 1', array( $demo_clinic ) );
 	cpsd_rec_check( null !== $foreign && null !== $foreign_patient, 'R6 a pre-existing foreign Clinic invoice and patient exist', $checks );
 	cpsd_rec_check( $demo_invoice > 0 && $demo_accountant > 0 && $demo_reception > 0 && $demo_patient > 0 && $demo_patient_wp > 0, 'R6 synthetic invoice/personas are recorded', $checks );
+	// `FinanceService::recordPayment()` reports `payment_id`; a reader that asks for
+	// `id` gets 0 and the synthetic payment silently leaves the ownership map.
+	cpsd_rec_check( $demo_payment > 0, 'R6 the synthetic payment is recorded in the ownership map', $checks );
+	if ( $demo_payment > 0 ) {
+		$payment_row = $platform->fetch_row( 'SELECT id, invoice_id FROM `' . $platform->table( 'cpms_payments' ) . '` WHERE id = %d', array( $demo_payment ) );
+		cpsd_rec_check( null !== $payment_row && (int) $payment_row->invoice_id === $demo_invoice, 'R6 the recorded payment belongs to the synthetic invoice', $checks );
+	}
 
 	/**
 	 * Dispatch a real REST request as one user and return [status, code].

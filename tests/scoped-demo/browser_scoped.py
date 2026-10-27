@@ -89,9 +89,61 @@ def persona_login(browser, username: str, password: str):
     return ctx, page
 
 
-def nonce_from(page, expression: str) -> str:
-    value = page.evaluate(expression)
-    return str(value or "")
+NONCE_JS = """
+async () => {
+  const out = { nonce: '', source: '' };
+  const ok = (value, source) => {
+    if (typeof value === 'string' && /^[0-9a-f]{10}$/.test(value.trim())) {
+      out.nonce = value.trim();
+      out.source = source;
+      return true;
+    }
+    return false;
+  };
+  // 1) Core's own REST nonce endpoint: cookie-bound, role independent.
+  try {
+    const response = await fetch('/wp-admin/admin-ajax.php?action=rest-nonce', {
+      credentials: 'same-origin', headers: { 'Accept': 'text/plain' },
+    });
+    if (response.ok && ok(await response.text(), 'admin-ajax rest-nonce')) return out;
+  } catch (e) { /* fall through to the page globals */ }
+  // 2) The plugin's own admin pages print their config inline.
+  for (const name of ['CPMS_Q', 'CPMS_DOC', 'CPMS_FIN']) {
+    const config = window[name];
+    if (config && ok(config.nonce, 'window.' + name)) return out;
+  }
+  if (window.wpApiSettings && ok(window.wpApiSettings.nonce, 'window.wpApiSettings')) return out;
+  // 3) The patient portal prints its config as a JSON script block.
+  for (const node of document.querySelectorAll('script[type="application/json"]')) {
+    try {
+      const parsed = JSON.parse(node.textContent || '{}');
+      if (parsed && ok(parsed.nonce, 'inline json config')) return out;
+    } catch (e) { /* not our config */ }
+  }
+  // 4) Last resort: any inline config on the page that carries a wp_rest nonce.
+  const match = document.documentElement.innerHTML.match(/"nonce"\s*:\s*"([0-9a-f]{10})"/);
+  if (match) ok(match[1], 'inline nonce literal');
+  return out;
+}
+"""
+
+
+def rest_nonce(page) -> str:
+    """A REST nonce bound to *this* browser session, whatever page we are on."""
+    info = page.evaluate(NONCE_JS) or {}
+    nonce = str(info.get("nonce", "") or "")
+    if not nonce:
+        detail = f"url={page.url}"
+        try:
+            snippet = page.content()[:240].replace("\n", " ")
+            (EVIDENCE / "nonce-debug.html").write_text(page.content(), encoding="utf-8")
+            detail += f" body={snippet!r}"
+        except Exception as exc:  # pragma: no cover - diagnostics only
+            detail += f" body=<unreadable: {exc}>"
+        check(f"REST nonce available for {page.url}", False, detail)
+        return ""
+    check(f"REST nonce bound to the browser session ({info.get('source')})", True, page.url)
+    return nonce
 
 
 def api(page, nonce: str, method: str, path: str, body: dict | None = None, headers: dict | None = None):
@@ -164,7 +216,7 @@ def page_journey(page, label: str, url: str, marker: str) -> None:
     body = page.content()
     denied = "دسترسی ندارید" in body or "You do not have sufficient permissions" in body
     check(f"{label}: authorised page renders", (marker in body) and not denied,
-          f"http_marker={marker in body} denied={denied}")
+          f"url={page.url} marker={marker in body} denied={denied}")
 
 
 def journeys_phase(browser) -> None:
@@ -181,8 +233,9 @@ def journeys_phase(browser) -> None:
     # ---------------- receptionist: read today's queue, book, read it back
     ctx, page = persona_login(browser, creds["receptionist"]["username"], creds["receptionist"]["password"])
     page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-queue", wait_until="domcontentloaded")
-    nonce = nonce_from(page, "window.CPMS_Q && window.CPMS_Q.nonce")
-    check("receptionist REST nonce from the plugin admin page", len(nonce) > 0)
+    check("receptionist opens the queue page", page.locator("#cpms-queue-wrap").count() == 1,
+          f"url={page.url}")
+    nonce = rest_nonce(page)
     today = api(page, nonce, "GET", f"/secretary/today?clinic_id={clinic_id}")
     check("receptionist reads today's queue", today["status"] == 200, f"HTTP {today['status']}")
     check("receptionist booking has a free synthetic slot", bool(slot.get("date")), json.dumps(slot))
@@ -204,14 +257,22 @@ def journeys_phase(browser) -> None:
     listing = api(page, nonce, "GET", f"/appointments?clinician_id={int(targets['clinician_id'])}&date={slot.get('date')}&clinic_id={clinic_id}")
     check("receptionist reads the appointment list back", listing["status"] == 200, f"HTTP {listing['status']}")
     check("the booked appointment is in the list", str(booked_id) in json.dumps(listing.get("data")), f"id={booked_id}")
+    # Capability boundary: the queue role must not reach finance surfaces.
+    finance = api(page, nonce, "GET", f"/finance/summary?clinic_id={clinic_id}")
+    check("receptionist is refused the finance summary", finance["status"] in (401, 403),
+          f"HTTP {finance['status']}")
+    invoice_read = api(page, nonce, "GET", f"/invoices/{invoice_id}?clinic_id={clinic_id}")
+    check("receptionist is refused an invoice read", invoice_read["status"] in (401, 403),
+          f"HTTP {invoice_read['status']}")
     page.screenshot(path=str(EVIDENCE / "journey-receptionist.png"))
     ctx.close()
 
     # ---------------- doctor: read the visit record, add a clinical note
     ctx, page = persona_login(browser, creds["doctor"]["username"], creds["doctor"]["password"])
     page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-doctor", wait_until="domcontentloaded")
-    nonce = nonce_from(page, "window.CPMS_DOC && window.CPMS_DOC.nonce")
-    check("doctor REST nonce from the plugin admin page", len(nonce) > 0)
+    check("doctor opens the doctor page", page.locator("#cpms-doctor-portal-shell, .cpms-doctor-portal-shell").count() >= 1,
+          f"url={page.url}")
+    nonce = rest_nonce(page)
     record = api(page, nonce, "GET", f"/visits/{visit_id}/record?clinic_id={clinic_id}")
     check("doctor reads the visit record", record["status"] == 200, f"HTTP {record['status']} {code_of(record)}")
     note = api(page, nonce, "POST", f"/visits/{visit_id}/notes", {
@@ -223,25 +284,36 @@ def journeys_phase(browser) -> None:
     check("doctor writes a clinical note", note["status"] in (200, 201), f"HTTP {note['status']} {code_of(note)}")
     notes = api(page, nonce, "GET", f"/visits/{visit_id}/notes?clinic_id={clinic_id}")
     check("doctor reads the note list back", notes["status"] == 200, f"HTTP {notes['status']}")
+    # Capability boundary: clinical roles cannot capture money.
+    payment_denied = api(page, nonce, "POST", f"/invoices/{invoice_id}/payments",
+                         {"clinic_id": clinic_id, "amount": 10, "method": "cash"},
+                         headers={"Idempotency-Key": "cpsd-doctor-boundary"})
+    check("doctor is refused a payment capture", payment_denied["status"] in (401, 403),
+          f"HTTP {payment_denied['status']} {code_of(payment_denied)}")
     page.screenshot(path=str(EVIDENCE / "journey-doctor.png"))
     ctx.close()
 
     # ---------------- accountant: invoice, void, payment, idempotent replay
     ctx, page = persona_login(browser, creds["accountant"]["username"], creds["accountant"]["password"])
     page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-finance", wait_until="domcontentloaded")
-    nonce = nonce_from(page, "window.CPMS_FIN && window.CPMS_FIN.nonce")
-    check("accountant REST nonce from the plugin admin page", len(nonce) > 0)
+    check("accountant opens the finance page", page.locator(".cpms-finance-board").count() >= 1,
+          f"url={page.url}")
+    nonce = rest_nonce(page)
     invoice = api(page, nonce, "GET", f"/invoices/{invoice_id}?clinic_id={clinic_id}")
     check("accountant reads the invoice", invoice["status"] == 200, f"HTTP {invoice['status']} {code_of(invoice)}")
-    void = api(page, nonce, "POST", f"/payments/{payment_id}/void",
-               {"clinic_id": clinic_id, "reason": "scoped demo finance journey"})
-    check("accountant voids the synthetic payment", void["status"] in (200, 201),
-          f"HTTP {void['status']} {code_of(void)}")
+    if payment_id:
+        fixture_void = api(page, nonce, "POST", f"/payments/{payment_id}/void",
+                           {"clinic_id": clinic_id, "reason": "scoped demo finance journey"})
+        check("accountant voids the fixture payment", fixture_void["status"] in (200, 201),
+              f"HTTP {fixture_void['status']} {code_of(fixture_void)}")
     idem = "cpsd-journey-" + str(targets["fixture_id"])[:16]
     payment = api(page, nonce, "POST", f"/invoices/{invoice_id}/payments",
                   {"clinic_id": clinic_id, "amount": 1000, "method": "cash", "transaction_ref": "SCPED-JOURNEY"},
                   headers={"Idempotency-Key": idem})
     check("accountant records a fresh payment", payment["status"] in (200, 201), f"HTTP {payment['status']} {code_of(payment)}")
+    payment_data = payment.get("data") or {}
+    fresh_id = int(payment_data.get("payment_id") or 0)
+    check("the new payment id is reported as payment_id", fresh_id > 0, f"payment_id={fresh_id}")
     replay = api(page, nonce, "POST", f"/invoices/{invoice_id}/payments",
                  {"clinic_id": clinic_id, "amount": 1000, "method": "cash", "transaction_ref": "SCPED-JOURNEY"},
                  headers={"Idempotency-Key": idem})
@@ -249,6 +321,11 @@ def journeys_phase(browser) -> None:
     check("the replayed payment is idempotent (HTTP 200, flagged replay)",
           replay["status"] == 200 and bool(replay_data.get("idempotent_replay")),
           f"HTTP {replay['status']} replay={replay_data.get('idempotent_replay')}")
+    if fresh_id:
+        void = api(page, nonce, "POST", f"/payments/{fresh_id}/void",
+                   {"clinic_id": clinic_id, "reason": "scoped demo finance journey"})
+        check("accountant voids the payment it just captured", void["status"] in (200, 201),
+              f"HTTP {void['status']} {code_of(void)}")
     summary = api(page, nonce, "GET", f"/finance/summary?clinic_id={clinic_id}")
     check("accountant reads the finance summary", summary["status"] == 200, f"HTTP {summary['status']}")
     if foreign.get("invoice_id"):
@@ -267,12 +344,19 @@ def journeys_phase(browser) -> None:
     )
     check("patient portal config is rendered", bool(config_text))
     portal = json.loads(config_text or "{}")
-    nonce = str(portal.get("nonce", ""))
+    nonce = str(portal.get("nonce", "")) or rest_nonce(page)
     check("patient REST nonce from the portal config", len(nonce) > 0)
     me = api(page, nonce, "GET", "/patient/me")
     check("patient reads their own portal profile", me["status"] == 200, f"HTTP {me['status']} {code_of(me)}")
     records = api(page, nonce, "GET", "/patient/my-records")
     check("patient reads their own records", records["status"] == 200, f"HTTP {records['status']} {code_of(records)}")
+    # The portal session must not open staff surfaces.
+    queue_denied = api(page, nonce, "GET", "/secretary/today")
+    check("patient is refused the staff queue", queue_denied["status"] in (401, 403),
+          f"HTTP {queue_denied['status']}")
+    finance_denied = api(page, nonce, "GET", "/finance/summary")
+    check("patient is refused the finance summary", finance_denied["status"] in (401, 403),
+          f"HTTP {finance_denied['status']}")
     page.screenshot(path=str(EVIDENCE / "journey-patient.png"))
     ctx.close()
 
@@ -306,7 +390,7 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
         "base": BASE,
         "limitations": [
             "Journeys use the plugin REST API from an authenticated browser page, not every UI form",
-            "clinic_manager/organization_manager journeys are page-level (no REST nonce on their pages)",
+            "clinic_manager/organization_manager journeys assert page renders, not REST journeys",
             "Screenshot pixels not inspected",
         ],
     }
