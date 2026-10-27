@@ -168,6 +168,42 @@ def surface_config(page, label: str) -> dict:
     return {}
 
 
+# The public booking widget publishes its own JSON config too. For an anonymous
+# visitor it deliberately carries NO nonce (only the patient continuation gets
+# one), but it always carries the REST root this install actually serves. On a
+# plain-permalink site /wp-json/ is not routed at all, so hardcoding it would
+# silently post to the front page instead of the API.
+BOOKING_CONFIG_JS = """
+(sels) => {
+  for (const s of sels) {
+    const n = document.querySelector(s);
+    if (!n) continue;
+    try {
+      const p = JSON.parse(n.textContent || '{}');
+      if (p && typeof p.rest_root === 'string') return p;
+    } catch (e) { /* not the config we are looking for */ }
+  }
+  return {};
+}
+"""
+
+
+def booking_surface_config(page) -> dict:
+    """The booking widget's own published config (rest_root + OTP paths)."""
+    return page.evaluate(BOOKING_CONFIG_JS, ["script.cpms-public-booking__config"]) or {}
+
+
+def rest_root_from(config: dict) -> str:
+    """Absolute REST root for this install, as the surface itself publishes it."""
+    return str(config.get("rest_root") or "").rstrip("/") or REST
+
+
+def is_json_response(result: dict) -> bool:
+    """True when the body parsed as JSON rather than falling through to HTML."""
+    data = result.get("data")
+    return isinstance(data, dict) and "raw" not in data
+
+
 def api(page, nonce: str, method: str, path: str, body: dict | None = None,
         headers: dict | None = None, rest_root: str = REST):
     """Call the plugin REST API from inside the authenticated page."""
@@ -341,16 +377,26 @@ def patient_otp_journey(browser, targets: dict) -> None:
     check("the anonymous visitor starts without a WordPress session",
           session_cookies(ctx) == {}, str(sorted(session_cookies(ctx))))
 
-    requested = api(page, "", "POST", "/otp/request", {
+    booking_cfg = booking_surface_config(page)
+    booking_root = rest_root_from(booking_cfg)
+    check("the booking widget publishes the REST root this install serves",
+          bool(booking_cfg.get("rest_root")), f"root={booking_cfg.get('rest_root')!r}")
+    otp_request_path = str(booking_cfg.get("otp_request_path") or "/otp/request")
+    otp_verify_path = str(booking_cfg.get("otp_verify_path") or "/otp/verify")
+    check("the anonymous widget publishes the OTP continuation paths it uses",
+          otp_request_path.endswith("/otp/request") and otp_verify_path.endswith("/otp/verify"),
+          f"request={otp_request_path} verify={otp_verify_path}")
+
+    requested = api(page, "", "POST", otp_request_path, {
         "mobile": mobile,
         "purpose": "login",
         "clinician_id": int(slot.get("clinician_id") or 0),
         "slot_id": int(slot.get("id") or 0),
         "slot_date": str(slot.get("date") or ""),
         "slot_time": str(slot.get("time") or ""),
-    })
-    check("the public OTP request accepts the persisted slot selection",
-          requested["status"] == 200,
+    }, rest_root=booking_root)
+    check("the public OTP request creates a challenge bound to the fixture Clinic",
+          requested["status"] == 200 and is_json_response(requested),
           f"HTTP {requested['status']} {code_of(requested)} "
           f"{json.dumps(requested.get('data'), ensure_ascii=False)[:200]}")
 
@@ -367,18 +413,22 @@ def patient_otp_journey(browser, targets: dict) -> None:
 
     # --------------------------------------------- wrong code fails closed
     wrong = "000000" if code != "000000" else "111111"
-    refused = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": wrong})
+    refused = api(page, "", "POST", otp_verify_path,
+                  {"mobile": mobile, "code": wrong}, rest_root=booking_root)
     check("a wrong OTP code is refused by the production verify path",
-          refused["status"] in (400, 401, 422) and code_of(refused) == "CLINIC_OTP_INVALID",
+          refused["status"] in (400, 401, 422) and is_json_response(refused)
+          and code_of(refused) == "CLINIC_OTP_INVALID",
           f"HTTP {refused['status']} {code_of(refused)}")
     check("the refused code issued no WordPress session", session_cookies(ctx) == {},
           str(sorted(session_cookies(ctx))))
 
     # --------------------------------------------------- real OTP login
-    verified = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": code})
+    verified = api(page, "", "POST", otp_verify_path,
+                   {"mobile": mobile, "code": code}, rest_root=booking_root)
     verified_data = payload_of(verified)
     check("the production verify path issues a session for the OTP code",
-          verified["status"] == 200 and verified_data.get("session_issued") is True,
+          verified["status"] == 200 and is_json_response(verified)
+          and verified_data.get("session_issued") is True,
           f"HTTP {verified['status']} {code_of(verified)} "
           f"{json.dumps(verified_data, ensure_ascii=False)[:300]}")
     check("OTP log-in reuses the existing synthetic identity (no new WP user)",
@@ -422,7 +472,8 @@ def patient_otp_journey(browser, targets: dict) -> None:
           f"foreign_patient={foreign_patient} listed={json.dumps(listed, ensure_ascii=False)[:300]}")
 
     # ------------------------------------------- replay of the consumed code
-    replay = api(page, "", "POST", "/otp/verify", {"mobile": mobile, "code": code})
+    replay = api(page, "", "POST", otp_verify_path,
+                 {"mobile": mobile, "code": code}, rest_root=booking_root)
     check("replaying the consumed OTP code is refused (single use)",
           replay["status"] in (400, 401, 422) and code_of(replay) == "CLINIC_OTP_INVALID",
           f"HTTP {replay['status']} {code_of(replay)}")
