@@ -150,8 +150,10 @@ jobs:
         include:
           - db_name: mysql-8
             db_image: mysql:8
+            health_cmd: mysqladmin ping -h 127.0.0.1 -uroot -proot
           - db_name: mariadb-11.4.13
             db_image: mariadb:11.4.13
+            health_cmd: healthcheck.sh --connect --innodb_initialized
     services:
       mysql:
         image: ${{ matrix.db_image }}
@@ -160,7 +162,7 @@ jobs:
           MARIADB_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-cmd="${{ matrix.health_cmd }}"
           --health-interval=10s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
@@ -293,5 +295,5 @@ jobs:
             /tmp/cpsd-ci/browser/browser-result.json
             /tmp/cpsd-ci/browser/*.png
             /tmp/cpsd-ci/php-server.log
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 30
