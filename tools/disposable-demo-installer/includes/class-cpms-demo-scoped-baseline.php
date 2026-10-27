@@ -66,6 +66,16 @@ class ScopedBaseline {
 	 */
 	private const RUNTIME_TABLES = array( 'cpms_rate_limits' );
 
+	/**
+	 * WordPress's own publish-scheduling markers.
+	 *
+	 * `_pingme` / `_encloseme` exist only so the publish scheduler can finish a
+	 * pending post, and `_edit_lock` is an editor TTL. Core adds and drops them on
+	 * its own schedule (the live run showed exactly 8 and 10 losing both markers),
+	 * so they are runtime state like VOLATILE_USERMETA, not site content.
+	 */
+	private const VOLATILE_POSTMETA = array( '_pingme', '_encloseme', '_edit_lock' );
+
 	/** Per-row digests are stored for tables up to this many rows, so a mismatch can name rows. */
 	private const ROW_MAP_LIMIT = 500;
 
@@ -243,6 +253,7 @@ class ScopedBaseline {
 			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
 		}
 		$where .= $this->volatile_usermeta_where( $table );
+		$where .= $this->volatile_postmeta_where( $table );
 		$offset = 0;
 		$hash   = hash_init( 'sha256' );
 		$map    = array();
@@ -331,6 +342,7 @@ class ScopedBaseline {
 			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
 		}
 		$where .= $this->volatile_usermeta_where( $table );
+		$where .= $this->volatile_postmeta_where( $table );
 
 		return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM `' . $table . '` WHERE ' . $where, array( $max_id ) ) );
 	}
@@ -403,6 +415,26 @@ class ScopedBaseline {
 		}
 		$quoted = array();
 		foreach ( self::VOLATILE_USERMETA as $meta_key ) {
+			$quoted[] = "'" . $meta_key . "'";
+		}
+
+		return ' AND meta_key NOT IN (' . implode( ',', $quoted ) . ')';
+	}
+
+	/**
+	 * Optional `AND`-fragment excluding WordPress's publish-scheduling markers
+	 * and editor locks. Shared by the digest and the count so both stay identical.
+	 *
+	 * @param string $table Full table name.
+	 * @return string
+	 */
+	private function volatile_postmeta_where( string $table ): string {
+		global $wpdb;
+		if ( ! isset( $wpdb->postmeta ) || $table !== (string) $wpdb->postmeta ) {
+			return '';
+		}
+		$quoted = array();
+		foreach ( self::VOLATILE_POSTMETA as $meta_key ) {
 			$quoted[] = "'" . $meta_key . "'";
 		}
 
