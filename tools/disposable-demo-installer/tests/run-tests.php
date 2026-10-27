@@ -236,7 +236,12 @@ Cpdd_Test::ok( in_array( 'cpms', $state['blocking'], true ), 'preflight: unsuppo
 $ctx = cpdd_fixture();
 $ctx['platform']->available_flag = false;
 $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
-Cpdd_Test::ok( in_array( 'cpms', $state['blocking'], true ), 'preflight: inactive CPMS blocks provisioning' );
+Cpdd_Test::ok(
+	in_array( 'cpms', $state['blocking'], true )
+	&& in_array( 'cpms_data', $state['blocking'], true )
+	&& str_contains( $state['checks'][9]['detail'], 'CPMS Classic فعال نیست' ),
+	'preflight: inactive CPMS fails clearly without querying unavailable CPMS tables'
+);
 
 $ctx = cpdd_fixture();
 $ctx['env']->caps[1] = array( 'manage_options' => true );

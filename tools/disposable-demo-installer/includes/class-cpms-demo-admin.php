@@ -100,6 +100,21 @@ class Admin {
 	}
 
 	/**
+	 * Return the existing CPMS unified parent slug, or null when that menu is absent.
+	 *
+	 * @return string|null
+	 */
+	private static function cpms_parent_slug(): ?string {
+		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
+		if ( ! class_exists( $cpms_menu ) || ! is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
+			return null;
+		}
+		$parent = (string) call_user_func( array( $cpms_menu, 'parent_slug' ) );
+
+		return '' !== $parent ? $parent : null;
+	}
+
+	/**
 	 * Register the page under CPMS Classic when its unified menu is available;
 	 * otherwise retain a standalone Tools fallback without creating a top-level
 	 * menu. The old Tools URL is intercepted before WordPress's admin-menu
@@ -108,9 +123,8 @@ class Admin {
 	 * @return void
 	 */
 	public static function register_menu(): void {
-		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
-		if ( class_exists( $cpms_menu ) && is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
-			$parent = (string) call_user_func( array( $cpms_menu, 'parent_slug' ) );
+		$parent = self::cpms_parent_slug();
+		if ( null !== $parent ) {
 			$hook   = add_submenu_page(
 				$parent,
 				'دموی یک‌بارمصرف CPMS',
@@ -153,18 +167,47 @@ class Admin {
 	 * @return void
 	 */
 	public static function redirect_legacy_tools_url(): void {
-		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
-		if ( ! class_exists( $cpms_menu ) || ! is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
+		if ( null === self::cpms_parent_slug() ) {
 			return;
 		}
-		if ( 'tools.php' !== basename( (string) ( $_SERVER['PHP_SELF'] ?? '' ) )
-			|| self::PAGE !== (string) ( $_GET['page'] ?? '' ) ) {
+		global $pagenow;
+		if ( ! is_admin() || 'tools.php' !== ( $pagenow ?? '' ) ) {
+			return;
+		}
+
+		// This is a read-only route selector; the exact slug is checked below and no state changes here.
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Navigation only; no state mutation or privileged action.
+		$query = isset( $_GET ) && is_array( $_GET ) ? wp_unslash( $_GET ) : array();
+		$raw_page = $query['page'] ?? '';
+		if ( ! is_string( $raw_page ) || self::PAGE !== sanitize_key( $raw_page ) || self::PAGE !== $raw_page ) {
 			return;
 		}
 		if ( ! current_user_can( self::CAP ) ) {
 			wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
 		}
-		wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE ) );
+
+		// Forward only bounded scalar arguments with conventional keys. Never forward
+		// credentials, nonce values, nested arrays, control characters or redirect targets.
+		$args = array();
+		foreach ( $query as $key => $value ) {
+			if ( 'page' === $key || ! is_string( $key ) || ! is_scalar( $value ) ) {
+				continue;
+			}
+			if ( 1 !== preg_match( '/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/D', $key ) ) {
+				continue;
+			}
+			$value = (string) $value;
+			if ( strlen( $value ) > 256 || 1 === preg_match( '/[\\x00-\\x1F\\x7F]/', $value )
+				|| 1 === preg_match( '/(?:nonce|token|secret|password|auth|redirect|url)/i', $key ) ) {
+				continue;
+			}
+			$safe_key = sanitize_key( $key );
+			if ( '' === $safe_key || isset( $args[ $safe_key ] ) ) {
+				continue;
+			}
+			$args[ $safe_key ] = sanitize_text_field( $value );
+		}
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=' . self::PAGE ) ) );
 		exit;
 	}
 
@@ -249,6 +292,9 @@ class Admin {
 
 		try {
 			$request->authorize( $action, (array) $post );
+			if ( ! $platform->available() ) {
+				throw new Exception( 'CPMS_INACTIVE', 'CPMS Classic فعال نیست یا نسخهٔ سازگار در دسترس نیست؛ هیچ عملیات دمو اجرا نشد.' );
+			}
 			$admin_id = $env->current_user_id();
 
 			switch ( $action ) {
@@ -370,8 +416,9 @@ class Admin {
 		$platform = self::platform();
 		$manifest = self::manifest( $env );
 		$request  = new Request( $env, $manifest );
-		$report   = new Preflight( $env, $platform, $manifest );
-		$state    = $report->run();
+		$report        = new Preflight( $env, $platform, $manifest );
+		$state         = $report->run();
+		$cpms_available = $platform->available();
 
 		$loaded       = null;
 		$manifest_err = '';
@@ -401,6 +448,8 @@ class Admin {
 
 		if ( null === $loaded ) {
 			self::render_form( $request, Request::ACTION_PROVISION, 'ساخت دمو', 'I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE', 'ساخت دمو فقط زمانی انجام می‌شود که همهٔ بررسی‌های بالا PASS باشند.' );
+		} elseif ( ! $cpms_available ) {
+			echo '<div class="notice notice-warning inline" data-cpdd-cpms-inactive="1"><p>CPMS Classic غیرفعال است یا نسخهٔ سازگار آن در دسترس نیست. فراداده و داده‌های دمو دست‌نخورده می‌مانند؛ برای مشاهده، تشخیص یا پاک‌سازی ایمن، ابتدا CPMS Classic سازگار را دوباره فعال کنید. در این وضعیت هیچ عملیات دمو اجرا نمی‌شود.</p></div>';
 		} else {
 			if ( 'active' === (string) ( $loaded['status'] ?? '' ) ) {
 				self::render_links( $platform, $loaded );
@@ -420,7 +469,7 @@ class Admin {
 			self::render_tombstone( $request, $tombstone );
 		}
 
-		self::render_instructions();
+		self::render_instructions( null !== self::cpms_parent_slug() );
 		self::render_limitations();
 		echo '</div>';
 	}
@@ -689,12 +738,15 @@ class Admin {
 	/**
 	 * @return void
 	 */
-	private static function render_instructions(): void {
+	private static function render_instructions( bool $cpms_menu_available ): void {
 		echo '<div class="cpdd-card"><h2>دستورالعمل فارسی</h2><ol class="cpdd-steps">';
+		$menu_step = $cpms_menu_available
+			? 'به «مدیریت مطب» → «دموی یک‌بارمصرف CPMS» بروید و همهٔ بررسی‌ها را PASS ببینید. اگر FAIL بود، دمو ساخته نمی‌شود.'
+			: 'تا وقتی CPMS Classic غیرفعال است، صفحه از مسیر Tools → «دموی یک‌بارمصرف CPMS» در دسترس می‌ماند؛ بررسی CPMS باید FAIL باشد و ساخت دمو ممکن نیست.';
 		$steps = array(
 			'یک WordPress تازه و خالی (تک‌سایتی، HTTPS) بسازید و افزونهٔ Production «Clinic Practice Management» را نصب و فعال کنید.',
 			'این افزونهٔ همراه را از Plugins → Add New → Upload Plugin نصب و فعال کنید. اگر افزونهٔ اصلی فعال نباشد، فعال‌سازی متوقف می‌شود.',
-			'به Tools → «دموی یک‌بارمصرف CPMS» بروید و همهٔ بررسی‌ها را PASS ببینید. اگر FAIL بود، دمو ساخته نمی‌شود.',
+			$menu_step,
 			'عبارت تأیید را تایپ کنید و «ساخت دمو» را بزنید. رمزها فقط در همان پاسخ نمایش داده می‌شوند؛ همان‌جا کپی کنید.',
 			'برای هر Persona یک پنجرهٔ Private/Incognito جدا باز کنید و از پیوند همان نقش وارد شوید.',
 			'رزرو عمومی را از پیوند برگهٔ رزرو آزمایش کنید: یک اسلات آزاد انتخاب، شمارهٔ ساختگی وارد و «درخواست کد» بزنید.',

@@ -538,6 +538,10 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function table_exists( string $short ): bool {
+		if ( ! $this->available_flag ) {
+			throw new RuntimeException( 'CPMS data must not be inspected while the plugin is inactive.' );
+		}
+
 		return array_key_exists( $short, $this->tables_data );
 	}
 

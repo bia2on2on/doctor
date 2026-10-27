@@ -2575,3 +2575,11 @@ Exact previous head 66dab36: unit PHP 8.1–8.5 and PHPStan PASS; WPCS FAIL with
   نصب (en_US) را می‌سنجید؛ جای آن، RTL بودنِ سند و حضورِ متنِ فارسیِ رابط سنجیده می‌شود. تاگلِ سایدبار
   نیز به‌جای خواندنِ فوریِ ۱۲۰ms با انتظارِ کران‌دار + تاییدِ «منو قابلِ مشاهده است» سنجیده می‌شود.
 
+
+### [2026-10-27 UTC] — CPMS-inactive companion fallback and redirect safety (PR #276)
+
+- **مبنای شروع:** `arena/0da76f07-doctor`, `HEAD=cd584dc0b920e6d3f8752a006589ad6f3620eb06`, PR #276 باز. شش فایلِ dirty قبلی بازبینی و حفظ شدند؛ هیچ فایلی discard/reset/clean/rebase نشد.
+- **دامنه و تغییرات:** با مجوز صریح مالک محصول، فقط پاراگراف Rule 3 برای دامنهٔ مأموریت‌محور نویسندگان Production/companion روشن شد؛ ممنوعیت تغییر Production از سوی نویسندهٔ companion، ممنوعیت PR مختلط و محدودیت‌های امنیت/Git/roadmap باقی‌اند. fallback ابزارها، fail-closed preflight و dispatch در CPMS غیرفعال، حفظ محدود و sanitizeشدهٔ queryهای legacy، دستورالعمل منوی فعال/غیرفعال و پوشش واقعیِ WordPress/Chromium افزوده/اصلاح شد. هیچ فایل `clinic-practice-management/**` تغییر نکرد.
+- **اعتبارسنجی محلی:** `python3 -m py_compile tools/disposable-demo-installer/tests/browser-acceptance.py` و `git diff --check` موفق؛ `python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v` با ۳۰ تست موفق؛ ساخت ZIP دو بار در مسیرهای موقت با SHA-256 یکسان `023846d8a7d9fc2892585f658f2908a9a731d578b8077220e9247e0467949263`، ۱۵ ورودی و `unzip -t` موفق؛ companion-isolation با ۰ فایل Production موفق. PHP/Composer/WP CLI در sandbox موجود نیستند؛ PHP lint/unit، WordPress و Chromium محلی **NOT RUN**.
+- **شواهد CIِ پیشین، نه ادعای نتیجهٔ این تغییر:** روی head پیشین، ۳۲/۳۴ check موفق بود؛ WPCS گزارش کرد `WordPress.Security.NonceVerification.Recommended` برای route legacy در کد همان head؛ Responsive smoke گزارش کرد `cpms-settings@320 keyboard-activates-link` با `nav_event=0` و URL ثابت. همان Responsive check روی commit پایهٔ `2ae07abf2e68c8ec7c9c679016915d5be4ce7034` موفق بود. کد Production یا assertionها برای رفع این مورد تغییر نکردند؛ علت ریشه‌ای این failure اثبات نشده و CI سرِ head جدید باید دوباره بررسی شود.
+- **تحویل و موارد باز:** PR #276 باز و بدون merge؛ تغییرات هنوز باید به‌صورت forward-only روی همان شاخه ثبت/ارسال شوند. GitHub Actions برای head نهایی **NOT RUN** تا این ورودی.
