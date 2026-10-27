@@ -93,7 +93,17 @@ def main() -> int:
                 page.fill("#user_pass", values["password"])
                 page.click("#wp-submit")
                 page.wait_for_load_state("domcontentloaded")
-                logged_in = "wp-admin" in page.url and page.locator("#wpbody-content").count() > 0
+                # The patient role is intentionally redirected to a front-end
+                # portal; staff roles normally land in wp-admin. Verify real
+                # authentication via the WordPress logged-in cookie rather than
+                # assuming one redirect target for every role.
+                auth_cookie = any(
+                    cookie.get("name", "").startswith("wordpress_logged_in_")
+                    for cookie in ctx.cookies()
+                )
+                no_login_error = page.locator("#login_error").count() == 0
+                left_login_page = "wp-login.php" not in page.url
+                logged_in = auth_cookie and no_login_error and left_login_page
                 check(f"independent login: {persona}", logged_in, page.url)
                 ctx.close()
 
