@@ -24,6 +24,22 @@ class ScopedBaseline {
 
 	private const CHUNK = 1000;
 
+	/**
+	 * WP core user rows that the operator's OWN authentication and wp-admin use
+	 * rewrite: session tokens rotate on login/logout and the user-settings rows
+	 * track dashboard UI state. They are WordPress runtime state, never CPMS or
+	 * demo data, so treating their churn as baseline drift would block the safe
+	 * teardown on the operator having logged in - the exact opposite of the
+	 * invariant this baseline exists to protect (unrelated DATA unchanged).
+	 */
+	private const VOLATILE_USERMETA = array(
+		'session_tokens',
+		'wp_user-settings',
+		'wp_user-settings-time',
+		'wp_dashboard_quick_press_last_post_id',
+		'wp_media_library_mode',
+	);
+
 	/** @var Env */
 	private Env $env;
 
@@ -191,6 +207,7 @@ class ScopedBaseline {
 			$where .= " AND option_name NOT LIKE '\\_transient%' AND option_name NOT LIKE '\\_site\\_transient%'";
 			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
 		}
+		$where .= $this->volatile_usermeta_where( $table );
 		$offset = 0;
 		$hash   = hash_init( 'sha256' );
 		while ( true ) {
@@ -224,6 +241,7 @@ class ScopedBaseline {
 			$where .= " AND option_name NOT LIKE '\\_transient%' AND option_name NOT LIKE '\\_site\\_transient%'";
 			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
 		}
+		$where .= $this->volatile_usermeta_where( $table );
 
 		return (int) $wpdb->get_var( $wpdb->prepare( 'SELECT COUNT(*) FROM `' . $table . '` WHERE ' . $where, array( $max_id ) ) );
 	}
@@ -280,6 +298,26 @@ class ScopedBaseline {
 	 */
 	private function is_options_table( string $table ): bool {
 		return false !== strpos( $table, 'options' );
+	}
+
+	/**
+	 * Optional `AND`-fragment excluding WP runtime user rows from the prefix
+	 * digest. Shared by the digest and the count so both stay identical.
+	 *
+	 * @param string $table Full table name.
+	 * @return string
+	 */
+	private function volatile_usermeta_where( string $table ): string {
+		global $wpdb;
+		if ( ! isset( $wpdb->usermeta ) || $table !== (string) $wpdb->usermeta ) {
+			return '';
+		}
+		$quoted = array();
+		foreach ( self::VOLATILE_USERMETA as $meta_key ) {
+			$quoted[] = "'" . $meta_key . "'";
+		}
+
+		return ' AND meta_key NOT IN (' . implode( ',', $quoted ) . ')';
 	}
 
 	/**
