@@ -25,6 +25,9 @@ $cpms_demo_manifest       = get_option( 'cpdd_manifest', null );
 $cpms_demo_lock           = get_option( 'cpdd_lock_state', null );
 $cpms_demo_scoped_manifest = get_option( 'cpsd_manifest', null );
 $cpms_demo_scoped_lock     = get_option( 'cpsd_lock_state', null );
+// A sealed pre-provisioning baseline is recovery evidence for a run that was
+// interrupted before the manifest could be sealed; it must survive uninstall.
+$cpms_demo_scoped_baseline = get_option( 'cpsd_baseline_pending', null );
 $cpms_demo_users           = function_exists( 'get_users' )
 	? get_users(
 		array(
@@ -62,6 +65,7 @@ if ( ( null !== $cpms_demo_manifest && false !== $cpms_demo_manifest )
 	|| ( null !== $cpms_demo_lock && false !== $cpms_demo_lock )
 	|| ( null !== $cpms_demo_scoped_manifest && false !== $cpms_demo_scoped_manifest )
 	|| ( null !== $cpms_demo_scoped_lock && false !== $cpms_demo_scoped_lock )
+	|| ( null !== $cpms_demo_scoped_baseline && false !== $cpms_demo_scoped_baseline )
 	|| ! empty( $cpms_demo_users )
 	|| ! empty( $cpms_demo_scoped_users )
 ) {
@@ -91,3 +95,4 @@ delete_option( 'cpsd_tombstone' );
 delete_option( 'cpsd_had_clean_teardown' );
 delete_option( 'cpsd_mode' );
 delete_option( 'cpsd_lock_state' );
+delete_option( 'cpsd_baseline_pending' );

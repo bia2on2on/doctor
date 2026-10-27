@@ -1,10 +1,16 @@
 name: Scoped demo (static + real WordPress integration)
 
 # Dedicated lane for the separate scoped demo mode on non-empty test sites.
-# It does not weaken or replace the strict disposable-demo lane. Chromium covers
-# the admin workflow and six independent persona logins; full role-specific
-# clinical/reception/finance/OTP browser journeys are NOT implemented yet and
-# must be reported separately as NOT RUN.
+# It does not weaken or replace the strict disposable-demo lane. The lane runs:
+#   * static gates + the in-memory unit/security suites,
+#   * a seeded NON-EMPTY, multi-Clinic WordPress acceptance run on MySQL 8 and
+#     MariaDB 11.4.13 (baseline/audit/anchor/invisibility evidence),
+#   * runtime safety drills (tamper, idempotent teardown, interrupted
+#     provisioning and teardown, concurrency, cross-Clinic REST isolation,
+#     SIGKILL recovery),
+#   * Chromium: admin workflow, six independent logins and one real REST journey
+#     per persona.
+# Anything still not exercised is listed in the browser result `limitations`.
 
 on:
   workflow_dispatch:
@@ -63,7 +69,7 @@ jobs:
       - name: PHP syntax (every shipped and test file)
         run: |
           set -Eeuo pipefail
-          FILES="$(git ls-files "$COMPANION_DIR" | grep -E '\.php$')"
+          FILES="$(git ls-files "$COMPANION_DIR" 'tests/scoped-demo/**' | grep -E '\.php$')"
           test -n "$FILES"
           for FILE in $FILES; do
             php -l "$FILE" >/dev/null
@@ -242,6 +248,26 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Scoped runtime safety drills (tamper, interruption, concurrency, isolation)
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/scoped-recovery.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-recovery.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-recovery.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_RECOVERY_CHECKS=' + str(len(data.get('checks', []))))
+          print('SCOPED_RECOVERY_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []):
+              print('  ' + line)
+          print('SCOPED_RECOVERY_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'unknown error'), file=sys.stderr)
+              sys.exit(1)
+          PY
+
       - name: Playwright Chromium (pinned)
         uses: ./.github/actions/playwright-browsers
         with:
@@ -263,7 +289,7 @@ jobs:
           echo 'FAIL: PHP built-in server did not become ready' >&2
           exit 1
 
-      - name: Chromium scoped admin workflow + six independent persona logins
+      - name: Chromium scoped admin workflow (provision phase)
         env:
           BASE: ${{ env.WP_URL }}
           ADMIN_USER: ${{ env.ADMIN_USER }}
@@ -271,15 +297,51 @@ jobs:
           CPSD_EVIDENCE_DIR: /tmp/cpsd-ci/browser
         run: |
           set -Eeuo pipefail
-          python3 tests/scoped-demo/browser_scoped.py | tee /tmp/cpsd-ci/browser.log
+          python3 tests/scoped-demo/browser_scoped.py provision | tee /tmp/cpsd-ci/browser-provision.log
+
+      - name: Export persona journey identifiers (read-only)
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/persona-targets.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tail -1 > /tmp/cpsd-ci/browser/persona-targets.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsd-ci/browser/persona-targets.json', encoding='utf-8').read())
+          print('PERSONA_TARGETS_OK=' + str(bool(data.get('ok'))))
+          print('PERSONA_TARGETS=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok'):
+              sys.exit(1)
+          PY
+
+      - name: Chromium six persona journeys + authorized teardown (journeys phase)
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsd-ci/browser
+          CPSD_TARGETS_FILE: /tmp/cpsd-ci/browser/persona-targets.json
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_scoped.py journeys | tee /tmp/cpsd-ci/browser.log
           python3 - <<'PY'
           import json, sys
           from pathlib import Path
-          data = json.loads(Path('/tmp/cpsd-ci/browser/browser-result.json').read_text(encoding='utf-8'))
-          print('CPSD_BROWSER_CHECKS=' + str(len(data.get('checks', []))))
-          print('CPSD_BROWSER_OK=' + str(bool(data.get('ok'))))
-          if not data.get('ok'):
-              print(data.get('error', 'unknown browser failure'), file=sys.stderr)
+          ok = True
+          for phase in ('provision', 'journeys'):
+              path = Path(f'/tmp/cpsd-ci/browser/browser-result-{phase}.json')
+              if not path.exists():
+                  print(f'FAIL missing browser result for phase {phase}', file=sys.stderr)
+                  sys.exit(1)
+              data = json.loads(path.read_text(encoding='utf-8'))
+              print(f'CPSD_BROWSER_{phase.upper()}_CHECKS=' + str(len(data.get('checks', []))))
+              print(f'CPSD_BROWSER_{phase.upper()}_OK=' + str(bool(data.get('ok'))))
+              for item in data.get('checks', []):
+                  print('  ' + ('PASS ' if item.get('ok') else 'FAIL ') + str(item.get('name')) + ' — ' + str(item.get('detail', '')))
+              if not data.get('ok'):
+                  print(data.get('error', f'phase {phase} failed'), file=sys.stderr)
+                  ok = False
+          if not ok:
               sys.exit(1)
           PY
 
@@ -289,10 +351,16 @@ jobs:
           name: cpsd-integration-${{ matrix.db_name }}-${{ github.run_id }}
           path: |
             /tmp/cpsd-ci/scoped-integration.json
+            /tmp/cpsd-ci/scoped-recovery.json
+            /tmp/cpsd-ci/browser-bootstrap.log
+            /tmp/cpsd-ci/browser-result-*.json
+            /tmp/cpsd-ci/browser/persona-targets.json
+            /tmp/cpsd-ci/browser/persona-credentials.json
             /tmp/cpsd-ci/companion-build.log
             /tmp/cpsd-ci/release-build.log
             /tmp/cpsd-ci/browser.log
             /tmp/cpsd-ci/browser/browser-result.json
+            /tmp/cpsd-ci/browser/browser-result-*.json
             /tmp/cpsd-ci/browser/*.png
             /tmp/cpsd-ci/php-server.log
           if-no-files-found: warn

@@ -46,6 +46,7 @@ class ScopedPreflight extends Preflight {
 			$this->check_cpms(),
 			$this->check_schema_tables(),
 			$this->check_unknown_tables(),
+			$this->check_host_scope(),
 			$this->check_mode(),
 			$this->check_other_manifest(),
 			$this->check_fixture_namespace(),
@@ -169,6 +170,61 @@ class ScopedPreflight extends Preflight {
 		}
 
 		return $this->result( 'unknown_tables', 'جداول ناشناخته', 'pass', 'هیچ جدول ناشناختهای دارای داده نیست.' );
+	}
+
+	/**
+	 * Fail-closed guard for the host site's implicit-Clinic scope semantics.
+	 *
+	 * The audit log has a production foreign key to `cpms_clinics`, so the three
+	 * synthetic parent rows are archived in place at teardown instead of being
+	 * deleted (audit rows must never be removed). That means `COUNT(*)` on
+	 * `cpms_clinics` stays one higher than it was before provisioning, for ever.
+	 *
+	 * Production decides "single-Clinic install" from exactly that count — not
+	 * from active status — in `SystemClinicResolver::resolve()` (the implicit
+	 * scope fallback behind `App::scope()`), in `FirstPracticeSetupService`
+	 * (first-practice setup and recovery), and in `single_clinic_display_row()`.
+	 * Leaving an inert anchor on a one-Clinic site would therefore permanently
+	 * convert a working implicit-scope install into "explicit scope required",
+	 * which is a silent, durable change to pre-existing site behaviour.
+	 *
+	 * This mode is therefore only offered where the host site is already
+	 * multi-Clinic: adding one more Clinic to a count that is already >= 2 cannot
+	 * change any `=== 1` or `=== 0` decision. A zero-Clinic site must use the
+	 * strict disposable mode instead.
+	 *
+	 * @return array{id:string,label:string,status:string,detail:string}
+	 */
+	private function check_host_scope(): array {
+		$decision = self::host_scope_decision( $this->platform->count_all( 'cpms_clinics' ) );
+
+		return $this->result( 'host_scope', 'دامنهٔ ضمنی درمانگاه میزبان', (string) $decision['status'], (string) $decision['detail'] );
+	}
+
+	/**
+	 * Pure decision table for the host implicit-scope gate.
+	 *
+	 * @param int $clinic_count Current `COUNT(*)` on `cpms_clinics`.
+	 * @return array{status:string,detail:string}
+	 */
+	public static function host_scope_decision( int $clinic_count ): array {
+		if ( $clinic_count < 1 ) {
+			return array(
+				'status' => 'fail',
+				'detail' => 'این سایت هیچ درمانگاهی ندارد؛ برای سایت خالی از حالت یک‌بارمصرف استفاده کنید.',
+			);
+		}
+		if ( 1 === $clinic_count ) {
+			return array(
+				'status' => 'fail',
+				'detail' => 'این سایت تک‌درمانگاهی است و دامنهٔ ضمنی آن به تعداد کل درمانگاه‌ها وابسته است؛ لنگرِ درمانگاه آزمایشی آن را برای همیشه تغییر می‌دهد. ابتدا یک درمانگاه واقعی دیگر بسازید یا از حالت یک‌بارمصرف استفاده کنید.',
+			);
+		}
+
+		return array(
+			'status' => 'pass',
+			'detail' => 'سایت از قبل چند‌درمانگاهی است (clinics=' . $clinic_count . ')؛ افزودن یک لنگر غیرفعال هیچ تصمیم COUNT(*)==1 را تغییر نمی‌دهد.',
+		);
 	}
 
 	/** @return array{id:string,label:string,status:string,detail:string} */

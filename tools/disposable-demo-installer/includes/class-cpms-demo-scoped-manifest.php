@@ -23,6 +23,19 @@ class ScopedManifest extends Manifest {
 	public const MODE_OPTION = 'cpsd_mode';
 	public const LOCK_OPTION = 'cpsd_lock_state';
 
+	/**
+	 * Sealed copy of the pre-provisioning baseline.
+	 *
+	 * Provisioning writes the manifest incrementally, so a run interrupted part
+	 * way through leaves a flagged `failed` manifest that has no sealed baseline
+	 * yet. Without a recorded baseline the teardown would refuse (correctly, it
+	 * cannot prove what was there before), which would turn an interrupted run
+	 * into permanently orphaned demo rows. This record is written before the
+	 * first row is created, is HMAC-sealed and site+fixture bound, and is deleted
+	 * on clean completion.
+	 */
+	public const PENDING_BASELINE_OPTION = 'cpsd_baseline_pending';
+
 	public function __construct( Env $env ) {
 		parent::__construct( $env );
 		$this->option           = 'cpsd_manifest';
@@ -112,6 +125,74 @@ class ScopedManifest extends Manifest {
 
 	public function disable_mode(): void {
 		$this->env->option_delete( self::MODE_OPTION );
+	}
+
+	/**
+	 * Seal the pre-provisioning baseline before anything is created.
+	 *
+	 * @param string $fixture_id Pending fixture identity.
+	 * @param array<string,mixed> $baseline Baseline snapshot.
+	 * @param array<string,mixed> $host_before Host counters.
+	 * @return void
+	 */
+	public function save_pending_baseline( string $fixture_id, array $baseline, array $host_before ): void {
+		$payload = array(
+			'fixture_id'  => $fixture_id,
+			'baseline'    => $baseline,
+			'host_before' => $host_before,
+			'at'          => $this->env->now_sql(),
+			'site'        => $this->site_fingerprint(),
+		);
+		$payload['mac'] = $this->mac( $payload );
+		$this->env->option_set( self::PENDING_BASELINE_OPTION, $payload );
+	}
+
+	/**
+	 * Read the sealed baseline of an interrupted provisioning run.
+	 *
+	 * Returns null for anything that is not a live, untampered record for this
+	 * exact site and fixture; every caller fails closed on null.
+	 *
+	 * @param string $fixture_id Fixture identity from the manifest.
+	 * @return array{baseline:array<string,mixed>,host_before:array<string,mixed>}|null
+	 */
+	public function load_pending_baseline( string $fixture_id ): ?array {
+		$raw = $this->env->option_get( self::PENDING_BASELINE_OPTION, false );
+		if ( ! is_array( $raw ) || '' === $fixture_id ) {
+			return null;
+		}
+		if ( ! $this->verify( $raw ) ) {
+			return null;
+		}
+		if ( (string) ( $raw['site'] ?? '' ) !== $this->site_fingerprint() ) {
+			return null;
+		}
+		if ( (string) ( $raw['fixture_id'] ?? '' ) !== $fixture_id ) {
+			return null;
+		}
+		$baseline = (array) ( $raw['baseline'] ?? array() );
+		if ( array() === $baseline ) {
+			return null;
+		}
+
+		return array(
+			'baseline'    => $baseline,
+			'host_before' => (array) ( $raw['host_before'] ?? array() ),
+		);
+	}
+
+	/**
+	 * @return void
+	 */
+	public function clear_pending_baseline(): void {
+		$this->env->option_delete( self::PENDING_BASELINE_OPTION );
+	}
+
+	/**
+	 * @return bool
+	 */
+	public function has_pending_baseline(): bool {
+		return is_array( $this->env->option_get( self::PENDING_BASELINE_OPTION, false ) );
 	}
 
 	/**

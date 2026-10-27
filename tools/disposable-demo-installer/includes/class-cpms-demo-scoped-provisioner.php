@@ -36,11 +36,43 @@ class ScopedProvisioner extends Provisioner {
 	/** @var array<string,mixed> */
 	private array $pending_baseline = array();
 
+	/** @var array<string,mixed> */
+	private array $pending_host = array();
+
 	public function __construct( Env $env, Platform $platform, ScopedManifest $manifest, ScopedPreflight $preflight, Credentials $credentials, ScopedBaseline $baseline, ScopedAuditGuard $audit_guard ) {
 		parent::__construct( $env, $platform, $manifest, $preflight, $credentials );
 		$this->scoped_manifest = $manifest;
 		$this->baseline        = $baseline;
 		$this->audit_guard     = $audit_guard;
+	}
+
+	/**
+	 * Provision, keeping the sealed pre-provisioning baseline only when a
+	 * manifest was actually written for it.
+	 *
+	 * A refusal that happens before the first synthetic row (no mode, collision,
+	 * refused preflight, concurrent operation) must not leave a stale pending
+	 * baseline behind: it is recovery evidence, and evidence without a fixture is
+	 * noise that would also block a clean uninstall.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>}
+	 */
+	public function provision( int $admin_id ): array {
+		try {
+			return parent::provision( $admin_id );
+		} catch ( \Throwable $error ) {
+			// Only refusals that are raised before any synthetic row can exist are
+			// cleared. Anything else keeps the sealed baseline: an interrupted run
+			// must stay recoverable (and visibly blocked in uninstall) rather than
+			// silently discard the only proof of what pre-existed.
+			$nothing_created = array( 'MODE_DISABLED', 'COLLISION', 'PREFLIGHT', 'CONCURRENT_OPERATION', 'ALREADY_PROVISIONED' );
+			$code            = $error instanceof Exception ? $error->demo_code() : 'PROVISION_FAILED';
+			if ( ! $this->scoped_manifest->exists() && in_array( $code, $nothing_created, true ) ) {
+				$this->scoped_manifest->clear_pending_baseline();
+			}
+			throw $error;
+		}
 	}
 
 	/**
@@ -67,7 +99,35 @@ class ScopedProvisioner extends Provisioner {
 		}
 		$this->pending_fixture_id = $this->scoped_manifest->fixture_id();
 		$this->check_collisions( $this->pending_fixture_id );
+		$this->pending_host     = $this->host_evidence();
 		$this->pending_baseline = $this->baseline->snapshot();
+		// Seal the baseline before the first row is created: if this run is
+		// interrupted, the recovery teardown can still prove what pre-existed.
+		$this->scoped_manifest->save_pending_baseline( $this->pending_fixture_id, $this->pending_baseline, $this->pending_host );
+	}
+
+	/**
+	 * Read-only evidence about the host site, sealed into the manifest so that the
+	 * teardown can prove it changed nothing but its own additive rows.
+	 *
+	 * `clinic_count` is the production implicit-scope input: the scoped preflight
+	 * refuses a site whose count is 0 or 1, so every accepted provisioning run
+	 * starts from (and must keep) multi-Clinic semantics.
+	 *
+	 * @return array<string,mixed>
+	 */
+	private function host_evidence(): array {
+		$clinic_table = $this->platform->table( 'cpms_clinics' );
+
+		return array(
+			'clinic_count'          => $this->platform->count_all( 'cpms_clinics' ),
+			'organization_count'    => $this->platform->count_all( 'cpms_organizations' ),
+			'location_count'        => $this->platform->count_all( 'cpms_locations' ),
+			'active_clinic_count'   => $this->platform->count_where( $clinic_table, 'status = %s', array( 'active' ) ),
+			'audit_max_id'          => $this->platform->max_id( 'cpms_audit_logs' ),
+			'journal_max_id'        => $this->platform->max_id( 'cpms_jobs' ),
+			'operational_max_id'    => $this->platform->max_id( 'cpms_operational_logs' ),
+		);
 	}
 
 	/**
@@ -78,8 +138,9 @@ class ScopedProvisioner extends Provisioner {
 	protected function after_provision( array $result, int $admin_id ): array {
 		unset( $admin_id );
 		$manifest = $result['manifest'];
-		$manifest['mode']     = 'scoped';
-		$manifest['baseline'] = $this->pending_baseline;
+		$manifest['mode']        = 'scoped';
+		$manifest['baseline']    = $this->pending_baseline;
+		$manifest['host_before'] = $this->pending_host;
 		$teardown = new ScopedTeardown( $this->env, $this->platform, $this->scoped_manifest, $this->audit_guard, $this->baseline );
 		$scope    = $teardown->collect_scope( $manifest, $this->pending_baseline );
 		$manifest['owned'] = array(
@@ -91,6 +152,8 @@ class ScopedProvisioner extends Provisioner {
 		);
 		$manifest['audit_chain_at_seal'] = $this->audit_guard->verify_chain();
 		$manifest = $this->scoped_manifest->save( $manifest );
+		// The baseline is now sealed inside the manifest itself.
+		$this->scoped_manifest->clear_pending_baseline();
 		$result['manifest'] = $manifest;
 		return $result;
 	}

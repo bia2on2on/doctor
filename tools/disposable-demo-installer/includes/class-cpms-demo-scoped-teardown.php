@@ -370,7 +370,7 @@ class ScopedTeardown {
 		if ( ! $this->manifest->verify( $manifest ) ) {
 			return $this->failed_preview( array( 'MANIFEST_TAMPERED' ) );
 		}
-		$baseline = (array) ( $manifest['baseline'] ?? array() );
+		$baseline = $this->resolve_baseline( $manifest );
 		if ( array() === $baseline ) {
 			return $this->failed_preview( array( 'BASELINE_MISSING' ) );
 		}
@@ -445,6 +445,22 @@ class ScopedTeardown {
 	 * @return array<string,mixed>
 	 */
 	private function do_execute( array $manifest, int $actor_id ): array {
+		// A run interrupted during provisioning never reached the point where the
+		// baseline is sealed into the manifest. Adopt the sealed pre-provisioning
+		// copy so the recovery teardown can prove what pre-existed, and persist it
+		// so a retry does not depend on the pending record any more.
+		if ( array() === (array) ( $manifest['baseline'] ?? array() ) ) {
+			$recovered = $this->resolve_baseline( $manifest );
+			if ( array() !== $recovered ) {
+				$manifest['baseline'] = $recovered;
+				if ( array() === (array) ( $manifest['host_before'] ?? array() ) ) {
+					$pending = $this->manifest->load_pending_baseline( (string) ( $manifest['fixture_id'] ?? '' ) );
+					if ( is_array( $pending ) ) {
+						$manifest['host_before'] = (array) ( $pending['host_before'] ?? array() );
+					}
+				}
+			}
+		}
 		$preview = $this->preview( $manifest );
 		if ( ! $preview['ok'] ) {
 			throw new Exception( 'TEARDOWN_BLOCKED', 'پاکسازی ایمن متوقف شد: ' . implode( ' | ', array_slice( $preview['problems'], 0, 3 ) ) );
@@ -471,11 +487,15 @@ class ScopedTeardown {
 				$this->suspend_clinic( $manifest );
 				$stage = 'global';
 				$deleted = array_merge( $deleted, $this->delete_global_rows( $preview['scope'] ) );
+				$this->env->maybe_inject_fault( 'scoped_teardown:after-global', array( 'stage' => $stage ) );
 				$stage = 'cpms-tables';
 				$deleted = array_merge( $deleted, $this->delete_table_rows( $preview['scope']['tables'] ) );
+				$this->env->maybe_inject_fault( 'scoped_teardown:after-tables', array( 'stage' => $stage ) );
 				$stage = 'wp-core';
 				$deleted = array_merge( $deleted, $this->delete_wp_records( $manifest, $user_ids ) );
+				$this->env->maybe_inject_fault( 'scoped_teardown:after-wp', array( 'stage' => $stage ) );
 				$stage = 'post-verify';
+				$this->env->maybe_inject_fault( 'scoped_teardown:before-post-verify', array( 'stage' => $stage ) );
 				$remaining = $this->post_verify( $manifest );
 				if ( array() !== $remaining ) {
 					throw new Exception( 'TEARDOWN_INCOMPLETE', 'حذف کامل اثبات نشد: ' . implode( ', ', array_slice( $remaining, 0, 5 ) ) );
@@ -500,12 +520,15 @@ class ScopedTeardown {
 				'preserved_parent_anchors' => self::PRESERVED_PARENT_TABLES,
 				'baseline'         => $preview['baseline'],
 				'audit_chain'      => $preview['audit'],
+				'host_before'      => (array) ( $manifest['host_before'] ?? array() ),
+				'host_after'       => $this->host_evidence(),
 				'remaining'        => array(),
 				'clean'            => true,
 				'ok'               => true,
 			);
 			$this->env->option_delete( ScopedManifest::LOCK_OPTION );
 			$this->env->option_delete( 'cpsd_had_clean_teardown' );
+			$this->manifest->clear_pending_baseline();
 			$this->manifest->disable_mode();
 			$this->manifest->write_tombstone( $tombstone );
 			$this->manifest->delete();
@@ -519,6 +542,41 @@ class ScopedTeardown {
 		} finally {
 			$wpdb->get_var( "SELECT RELEASE_LOCK('cpms_jobs_tick')" );
 		}
+	}
+
+	/**
+	 * Baseline for this fixture: the manifest's sealed copy, or — for a run that
+	 * was interrupted during provisioning — the sealed pre-provisioning record.
+	 *
+	 * An absent, tampered, cross-site or cross-fixture record yields an empty
+	 * array, which every caller treats as a refusal.
+	 *
+	 * @param array<string,mixed> $manifest Manifest.
+	 * @return array<string,mixed>
+	 */
+	private function resolve_baseline( array $manifest ): array {
+		$baseline = (array) ( $manifest['baseline'] ?? array() );
+		if ( array() !== $baseline ) {
+			return $baseline;
+		}
+		$pending = $this->manifest->load_pending_baseline( (string) ( $manifest['fixture_id'] ?? '' ) );
+
+		return is_array( $pending ) ? (array) ( $pending['baseline'] ?? array() ) : array();
+	}
+
+	/**
+	 * Read-only host counters recorded in the tombstone as before/after evidence.
+	 *
+	 * @return array<string,int>
+	 */
+	private function host_evidence(): array {
+		return array(
+			'clinic_count'        => $this->platform->count_all( 'cpms_clinics' ),
+			'organization_count'  => $this->platform->count_all( 'cpms_organizations' ),
+			'location_count'      => $this->platform->count_all( 'cpms_locations' ),
+			'active_clinic_count' => $this->platform->count_where( $this->platform->table( 'cpms_clinics' ), 'status = %s', array( 'active' ) ),
+			'audit_max_id'        => $this->platform->max_id( 'cpms_audit_logs' ),
+		);
 	}
 
 	/**
@@ -670,7 +728,7 @@ class ScopedTeardown {
 	 */
 	private function post_verify( array $manifest ): array {
 		$remaining = array();
-		$baseline  = (array) ( $manifest['baseline'] ?? array() );
+		$baseline  = $this->resolve_baseline( $manifest );
 		$verify    = $this->baseline->verify( $baseline );
 		if ( ! $verify['ok'] ) {
 			$remaining = array_merge( $remaining, $verify['problems'] );
@@ -707,7 +765,56 @@ class ScopedTeardown {
 			$remaining[] = 'wp_post:' . $page_id;
 		}
 		$remaining = array_merge( $remaining, $this->scan_untracked_fixture_rows( $manifest, $baseline, $scope, true ) );
+		$remaining = array_merge( $remaining, $this->verify_preserved_anchors( $manifest ) );
 		return array_values( array_unique( $remaining ) );
+	}
+
+	/**
+	 * Prove the three retained parent rows are inert and that the host site's
+	 * implicit-Clinic scope invariant still holds.
+	 *
+	 * The audit-log foreign key makes physical deletion impossible without
+	 * deleting audit rows, so teardown must be able to prove the leftovers are
+	 * unusable: Organization and Clinic `status` must be `suspended` (which is
+	 * what every production lifecycle gate reads), locations must be inactive,
+	 * and `COUNT(*)` on `cpms_clinics` must still be multi-Clinic so no
+	 * `=== 1` implicit-scope decision changed.
+	 *
+	 * @param array<string,mixed> $manifest Manifest.
+	 * @return list<string>
+	 */
+	private function verify_preserved_anchors( array $manifest ): array {
+		global $wpdb;
+		$problems   = array();
+		$org_id     = (int) ( $manifest['ids']['organization_id'] ?? 0 );
+		$clinic_id  = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
+		$location   = (array) ( $manifest['ids']['location_ids'] ?? array() );
+		if ( $org_id > 0 ) {
+			$org_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $this->platform->table( 'cpms_organizations' ) . ' WHERE id = %d', $org_id ) );
+			if ( 'suspended' !== (string) $org_status ) {
+				$problems[] = 'ANCHOR_ORGANIZATION_NOT_INERT';
+			}
+		}
+		if ( $clinic_id > 0 ) {
+			$clinic_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $this->platform->table( 'cpms_clinics' ) . ' WHERE id = %d', $clinic_id ) );
+			if ( 'suspended' !== (string) $clinic_status ) {
+				$problems[] = 'ANCHOR_CLINIC_NOT_INERT';
+			}
+		}
+		foreach ( $location as $location_id ) {
+			$active = $wpdb->get_var( $wpdb->prepare( 'SELECT is_active FROM ' . $this->platform->table( 'cpms_locations' ) . ' WHERE id = %d', (int) $location_id ) );
+			if ( null !== $active && 0 !== (int) $active ) {
+				$problems[] = 'ANCHOR_LOCATION_STILL_ACTIVE';
+			}
+		}
+		if ( $this->platform->count_all( 'cpms_clinics' ) < 2 ) {
+			// The preflight refuses a one-Clinic host, so reaching this means the
+			// host changed underneath us (rows deleted elsewhere). Report it rather
+			// than silently accepting a changed implicit-scope install.
+			$problems[] = 'HOST_SINGLE_CLINIC_SEMANTICS';
+		}
+
+		return $problems;
 	}
 
 	/**

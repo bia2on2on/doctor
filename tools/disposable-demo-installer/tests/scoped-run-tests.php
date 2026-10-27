@@ -43,7 +43,9 @@ namespace ClinicCore\Infrastructure\Audit {
 namespace {
 	use ClinicCore\Infrastructure\Audit\HashChain;
 	use CpmsDemo\ScopedAuditGuard;
+	use CpmsDemo\ScopedBaseline;
 	use CpmsDemo\ScopedManifest;
+	use CpmsDemo\ScopedPreflight;
 	use CpmsDemo\ScopedRequest;
 
 	require_once __DIR__ . '/bootstrap.php';
@@ -198,6 +200,34 @@ namespace {
 	require CPMS_DEMO_DIR . 'uninstall.php';
 	Cpdd_Test::ok( false === get_option( 'cpsd_tombstone', false ), 'clean uninstall removes scoped tombstone' );
 	Cpdd_Test::ok( false === get_option( 'cpsd_mode', false ), 'clean uninstall removes scoped mode marker' );
+
+	// 7. Fail-closed host implicit-scope gate.
+	//
+	// The audit foreign key forces the three synthetic parent rows to stay behind
+	// as suspended/inactive anchors, so `COUNT(*)` on cpms_clinics is
+	// permanently one higher after a scoped demo. Production turns that count into
+	// the implicit-Clinic decision (`=== 1` means "use the only Clinic"), so the
+	// preflight must refuse a host whose count is 0 or 1 and accept only an
+	// already multi-Clinic host, where adding one more row changes no decision.
+	Cpdd_Test::equals( 'fail', ScopedPreflight::host_scope_decision( 0 )['status'], 'zero-Clinic host is refused by the implicit-scope gate' );
+	Cpdd_Test::equals( 'fail', ScopedPreflight::host_scope_decision( 1 )['status'], 'single-Clinic host is refused by the implicit-scope gate' );
+	Cpdd_Test::equals( 'pass', ScopedPreflight::host_scope_decision( 2 )['status'], 'multi-Clinic host passes the implicit-scope gate' );
+	Cpdd_Test::equals( 'pass', ScopedPreflight::host_scope_decision( 7 )['status'], 'larger multi-Clinic host passes the implicit-scope gate' );
+
+	// 8. Interrupted provisioning keeps a sealed pre-provisioning baseline so the
+	// recovery teardown can still prove what pre-existed.
+	$recovery_ctx = cpsd_fixture();
+	$recovery_manifest = $recovery_ctx['manifest'];
+	$recovery_manifest->save_pending_baseline( str_repeat( 'b', 32 ), array( 'cpms' => array( 'cpms_clinics' => array( 'max_id' => 2 ) ), 'wp' => array() ), array( 'clinic_count' => 2 ) );
+	$pending = $recovery_manifest->load_pending_baseline( str_repeat( 'b', 32 ) );
+	Cpdd_Test::ok( is_array( $pending ) && 2 === (int) $pending['host_before']['clinic_count'], 'sealed pending baseline is readable for its own fixture' );
+	Cpdd_Test::equals( null, $recovery_manifest->load_pending_baseline( str_repeat( 'c', 32 ) ), 'pending baseline is refused for another fixture' );
+	$pending_raw = get_option( 'cpsd_baseline_pending', array() );
+	$pending_raw['host_before']['clinic_count'] = 1;
+	update_option( 'cpsd_baseline_pending', $pending_raw );
+	Cpdd_Test::equals( null, $recovery_manifest->load_pending_baseline( str_repeat( 'b', 32 ) ), 'tampered pending baseline is refused' );
+	$recovery_manifest->clear_pending_baseline();
+	Cpdd_Test::equals( false, $recovery_manifest->has_pending_baseline(), 'pending baseline is removed after a clean seal' );
 
 	// 6. Static safety markers in the shipped scoped sources.
 	$sources = glob( CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-*.php' ) ?: array();
