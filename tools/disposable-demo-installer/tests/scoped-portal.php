@@ -1,6 +1,6 @@
 <?php
 /**
- * Real-WordPress management-portal lifecycle dr\ills for the scoped demo.
+ * Real-WordPress management-portal lifecycle drills for the scoped demo.
  *
  * Run inside the disposable CI WordPress after scoped-recovery.php:
  *   wp eval-file tools/disposable-demo-installer/tests/scoped-portal.php
@@ -19,15 +19,32 @@
  *
  *   P1  lifecycle toggle -> authorized teardown completes, anchors inert,
  *       audit chain intact, every pre-existing host row byte-identical
- *   P2  a second Clinic created through the portal under the demo Organization
- *       is provably demo-owned: it and its dependents are cleaned selectively,
- *       the Clinic/Location anchors are retained inert, no foreign row is
- *       claimed, and the teardown succeeds
+ *   P2  an ADDITIONAL Clinic registered by the demo's own path (its exact slug
+ *       sealed as an intent BEFORE the row existed, its id sealed after
+ *       creation) is provably demo-owned: it and its dependents are cleaned
+ *       selectively, the Clinic/Location anchors are retained inert, no foreign
+ *       row is claimed, and the teardown succeeds
  *   P3  a Clinic that names the demo Organization but predates the sealed
  *       baseline cannot be proven demo-owned: the preview and the execution
  *       both refuse with SCOPED_OWNERSHIP_UNPROVEN before any destructive
  *       stage, deleting nothing; after the row is removed the teardown
  *       completes normally
+ *   P4  a GENUINE non-demo Clinic created under the demo Organization AFTER the
+ *       baseline was sealed (the exact case the old id/timestamp inference got
+ *       wrong) is never claimed: preview and execution refuse, nothing of it or
+ *       of the fixture is deleted, and it survives byte-identical
+ *   P5  the same for a foreign Clinic whose rows carry SYNTHETIC user ids
+ *       (clinician, membership, invoice/payment actor): an overlapping user
+ *       reference is never ownership, for the demo Organization or another one
+ *   P6  a manipulated ownership ledger (edited record, broken chain, truncated
+ *       history) is rejected with SCOPED_OWNERSHIP_LEDGER_INVALID and zero
+ *       deletions, and the untouched ledger verifies again
+ *   P7  an interrupted creation (after the sealed intent, and after the row was
+ *       created but before its id was sealed) stays recoverable: the teardown
+ *       refuses with SCOPED_OWNERSHIP_PENDING, the repair path registers the
+ *       matching row or abandons the intent from sealed evidence only, the
+ *       preview and the execution agree on the owned set, and claimed Clinics
+ *       end suspended with the ledger discarded
  *
  * @package CpmsDisposableDemo
  */

@@ -17,8 +17,9 @@
  *   1. the exact slug is sealed into the ownership ledger as an INTENT, before
  *      any row can exist, together with a random token;
  *   2. the Clinic is created by the REAL production provisioning service on
- *      behalf of a second synthetic account that the demo explicitly designates
- *      as an Organization manager (never the portal-facing persona);
+ *      behalf of the authenticated administrator who submitted the demo's own
+ *      form, after that account was designated an Organization manager through
+ *      the production service (the portal-facing persona is never promoted);
  *   3. the resulting Clinic id and its Locations are sealed back into the
  *      ledger, closing the intent.
  *
@@ -126,12 +127,16 @@ final class ScopedClinics {
 
 		try {
 			// The portal-facing Organization manager deliberately CANNOT create
-			// Clinics in scoped mode. A second synthetic account is designated as an
-			// Organization manager through the production service instead, so the
-			// Clinic is still created by real production code with real authority.
-			$this->platform->set_manager( $context['manager_id'], $org, $context['facility_id'], true );
+			// Clinics in scoped mode, so this path never borrows its authority and
+			// never weakens the DENY. The authenticated administrator who submitted
+			// this form is designated an Organization manager of the demo
+			// Organization through the production service, and the Clinic is then
+			// created by the REAL provisioning service with that account's own
+			// authority. Every persona therefore keeps its exact production role,
+			// and the membership row this adds lives inside the demo tenant.
+			$this->platform->set_manager( $context['manager_id'], $org, $admin_id, true );
 			$created = $this->platform->provision_clinic(
-				$context['facility_id'],
+				$admin_id,
 				$org,
 				self::EXTRA_NAME,
 				$slug,
@@ -307,7 +312,7 @@ final class ScopedClinics {
 	 * Validate the demo context every operation depends on.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
-	 * @return array{fixture:string,organization_id:int,manager_id:int,facility_id:int}
+	 * @return array{fixture:string,organization_id:int,manager_id:int}
 	 */
 	private function context( array $manifest ): array {
 		if ( ! $this->manifest->mode_enabled() ) {
@@ -322,8 +327,7 @@ final class ScopedClinics {
 		$fixture = (string) ( $manifest['fixture_id'] ?? '' );
 		$org     = (int) ( $ids['organization_id'] ?? 0 );
 		$manager = (int) ( $users['organization_manager'] ?? 0 );
-		$facility = (int) ( $users['clinic_manager'] ?? 0 );
-		if ( '' === $fixture || $org <= 1 || $manager <= 1 || $facility <= 1 ) {
+		if ( '' === $fixture || $org <= 1 || $manager <= 1 ) {
 			throw new Exception( 'DEMO_NOT_ACTIVE', 'شناسه‌های لازم برای ساخت درمانگاه نمایشی در فایل مالکیت نیستند.' );
 		}
 
@@ -331,7 +335,6 @@ final class ScopedClinics {
 			'fixture'         => $fixture,
 			'organization_id' => $org,
 			'manager_id'      => $manager,
-			'facility_id'     => $facility,
 		);
 	}
 }

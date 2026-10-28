@@ -403,8 +403,14 @@ class ScopedAdmin {
 		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
 			return;
 		}
-		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- a refusal needs no nonce; the action name is not a state change.
-		$action = isset( $_POST['cpms_action'] ) ? sanitize_key( (string) wp_unslash( $_POST['cpms_action'] ) ) : '';
+		// A refusal is not a state change: it writes nothing, so a nonce cannot make
+		// it legitimate, and demanding one would let a crafted POST slip past this
+		// boundary into the production controller. The value is only compared
+		// against one literal action name.
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- read-only refusal guard; nothing is written or changed.
+		$posted_action = isset( $_POST['cpms_action'] ) ? (string) wp_unslash( $_POST['cpms_action'] ) : '';
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$action = sanitize_key( $posted_action );
 		if ( 'org_create_clinic' !== $action ) {
 			return;
 		}

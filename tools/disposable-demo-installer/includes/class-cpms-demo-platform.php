@@ -928,10 +928,10 @@ class Platform {
 	 * @param int  $organization_id Organization.
 	 * @param int  $target_id       Target WordPress user.
 	 * @param bool $active          Activate or suspend.
-	 * @return array<string,mixed>
+	 * @return int Organization membership id (the production return value).
 	 */
-	public function set_manager( int $actor_id, int $organization_id, int $target_id, bool $active ): array {
-		return App::organization_clinic_provisioning_service()->set_manager( $actor_id, $organization_id, $target_id, $active );
+	public function set_manager( int $actor_id, int $organization_id, int $target_id, bool $active ): int {
+		return (int) App::organization_clinic_provisioning_service()->set_manager( $actor_id, $organization_id, $target_id, $active );
 	}
 
 	/**
