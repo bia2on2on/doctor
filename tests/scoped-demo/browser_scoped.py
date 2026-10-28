@@ -930,7 +930,18 @@ def iran_v1_phase(browser, creds: dict, targets: dict) -> None:
     modules = ((targets.get("portals") or {}).get("modules") or {})
     clinic_id = int(targets.get("clinic_id") or 0)
     private_thread = int(iran.get("private_thread") or 0)
-    threads = [int(value) for value in (iran.get("threads") or [])]
+    # persona-targets.php exports the manifest's keyed thread map, so JSON gives
+    # an OBJECT here. Read it by the fixture's documented key order instead of
+    # iterating, which would yield the keys themselves.
+    raw_threads = iran.get("threads") or {}
+    if isinstance(raw_threads, dict):
+        threads = [
+            int(raw_threads[key])
+            for key in ("doctor_receptionist", "doctor_finance", "receptionist_finance")
+            if key in raw_threads
+        ]
+    else:
+        threads = [int(value) for value in raw_threads]
     pricing_visit = int(iran.get("pricing_visit_id") or 0)
     pricing_location = int(iran.get("pricing_visit_location_id") or 0)
 
