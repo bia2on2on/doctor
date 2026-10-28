@@ -107,10 +107,23 @@ CHECKS: list[dict[str, object]] = []
 JOURNEY_EVIDENCE: dict[str, object] = {}
 
 
+def annotate(title: str, message: str) -> None:
+    """Publish a GitHub Actions annotation so a CI failure names itself.
+
+    The lane's step logs are not fetchable from this repository's tooling, so a
+    bare "process exited 1" would say nothing about which browser assertion
+    failed. `::error` lines are parsed from stdout — including through `tee` —
+    and land in the check-run annotation.
+    """
+    flat = message.replace("%", "%25").replace("\r", "").replace("\n", " ")
+    print(f"::error title={title}::{flat}", flush=True)
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     CHECKS.append({"name": name, "ok": bool(ok), "detail": detail})
     print(("PASS " if ok else "FAIL ") + name + ((" — " + detail) if detail else ""), flush=True)
     if not ok:
+        annotate("SCOPED_BROWSER", name + ((" — " + detail) if detail else ""))
         raise AssertionError(name + ": " + detail)
 
 
@@ -750,8 +763,18 @@ def tamper_phase(browser) -> None:
     """The scoped admin surface must refuse a manifest whose HMAC no longer holds."""
     ctx, admin = admin_login(browser)
     admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    # The whole body is used as the failure detail: when the page does not render
+    # its own container, the reason (a PHP fatal, a WP error screen, a redirect)
+    # is only visible in the text, and this lane's logs are not readable
+    # afterwards.
+    body_text = ""
+    try:
+        body_text = admin.locator("body").inner_text()[:600]
+    except Exception:  # noqa: BLE001 - the detail must never mask the assertion.
+        body_text = ""
     check("the scoped admin page still renders while the manifest is tampered",
-          admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")
+          admin.locator('[data-cpsd-page="1"]').count() == 1,
+          f"url={admin.url} body={body_text}")
     wrap_text = admin.locator(".wrap.cpdd").inner_text() if admin.locator(".wrap.cpdd").count() else ""
     check("the tampered manifest is surfaced with its own refusal code",
           "MANIFEST_TAMPERED" in wrap_text, wrap_text[:400])
@@ -1525,6 +1548,7 @@ def main() -> int:
         ok = False
         result = {"ok": False, "phase": phase, "checks": CHECKS, "error": f"{type(exc).__name__}: {exc}"}
         (EVIDENCE / f"browser-result-{phase}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
+        annotate("SCOPED_BROWSER", f"{phase}: {result['error']}")
         print("CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": phase, "error": result["error"]}, ensure_ascii=False),
               flush=True)
         return 1
