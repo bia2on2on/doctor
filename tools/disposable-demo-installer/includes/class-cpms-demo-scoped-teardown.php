@@ -756,10 +756,22 @@ class ScopedTeardown {
 		// Organization can be attributed to this session at all.
 		$org_owned = $org > 1 && $org > $baseline_org_max;
 
-		// The ledger is mandatory for a SEALED, active fixture: losing it loses
-		// ownership. An in-progress/failed run is still covered by the pending
-		// intents, so a missing record there is reported, not fabricated.
-		$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );
+		// The ledger is mandatory for a SEALED, STILL-LIVE fixture: losing it loses
+		// ownership. Three states are deliberately exempt, because none of them can
+		// own anything any more:
+		//   - an in-progress/failed run (status is not `active`), covered by the
+		//     pending intents instead;
+		//   - a fixture that has already been torn down (the stored manifest is
+		//     gone), which is what makes a repeated teardown idempotent;
+		//   - an unreadable/tampered manifest, which is reported as
+		//     MANIFEST_TAMPERED by the caller and never as a ledger problem.
+		$stored = null;
+		try {
+			$stored = $this->manifest->load();
+		} catch ( \Throwable $unreadable ) {
+			$stored = null;
+		}
+		$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' ) && is_array( $stored );
 		$ledger         = $this->ownership->summary( $fixture, $require_ledger );
 		$ledger_ids    = $ledger['ok'] ? (array) $ledger['clinic_ids'] : array();
 		$ledger_detail = (string) ( $ledger['detail'] ?? '' );

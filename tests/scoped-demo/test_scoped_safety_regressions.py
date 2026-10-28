@@ -302,7 +302,10 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         # The ledger is consulted for the fixture and, for a sealed active
         # fixture, its absence is itself a refusal (Stage 3 hardening).
         self.assertIn("$this->ownership->summary( $fixture, $require_ledger )", owners)
-        self.assertIn("$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );", owners)
+        self.assertIn(
+            "$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' ) && is_array( $stored );",
+            owners,
+        )
 
     def test_composite_rows_are_selected_by_parent_only(self) -> None:
         self.assertIn("private const COMPOSITE_PARENT_COLUMN", self.teardown)
@@ -727,8 +730,11 @@ class DefectKLedgerRecovery(unittest.TestCase):
         self.assertIn("public const SEAL_OPTION = 'cpsd_ownership_seal';", self.ownership)
         self.assertIn("public function inspect( string $fixture_id, bool $require_ledger = false )", self.ownership)
         self.assertIn("if ( $require_ledger || is_array( $seal ) )", self.ownership)
-        self.assertIn("$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );", self.teardown)
         self.assertIn("$this->ownership->summary( $fixture, $require_ledger )", self.teardown)
+        # Required for a sealed, STILL-LIVE fixture only: an interrupted run and an
+        # already-torn-down fixture are exempt, otherwise a repeated teardown (and
+        # every legitimate recovery path) would be blocked by a record it cleared.
+        self.assertIn("$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' ) && is_array( $stored );", self.teardown)
 
     def test_progress_seal_is_monotonic(self) -> None:
         self.assertIn("private function verify_seal(", self.ownership)
