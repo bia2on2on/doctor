@@ -251,6 +251,11 @@ jobs:
           print('SCOPED_INTEGRATION_OK=' + str(bool(data.get('ok'))))
           if not data.get('ok'):
               print(data.get('error', 'unknown error'), file=sys.stderr)
+              # Surface the failing check as a workflow annotation: job logs live
+              # on a host some review environments cannot reach, annotations do.
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
+                  print('::error title=SCOPED_INTEGRATION::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
           PY
 
@@ -271,6 +276,9 @@ jobs:
           print('SCOPED_RECOVERY_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
           if not data.get('ok'):
               print(data.get('error', 'unknown error'), file=sys.stderr)
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
+                  print('::error title=SCOPED_RECOVERY::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
           PY
 
