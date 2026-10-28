@@ -45,15 +45,15 @@ final class StaffMessagingService {
     ) {
     }
 
+    public function authorize_actor( int $actor_user_id ): void {
+        $this->context_for( $actor_user_id );
+    }
+
     /**
      * Context + eligible counterparts. Visibility only; every write re-checks.
      *
      * @return array<string, mixed>
      */
-    public function authorize_actor( int $actor_user_id ): void {
-        $this->context_for( $actor_user_id );
-    }
-
     public function context( int $actor_user_id ): array {
         $ctx = $this->context_for( $actor_user_id );
 
