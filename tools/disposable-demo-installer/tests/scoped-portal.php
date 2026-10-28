@@ -991,7 +991,9 @@ try {
 	$rest_refusal = '';
 	wp_set_current_user( $host_user );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
-	$probe = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	// A REAL, registered production route: rest_pre_dispatch runs after routing,
+	// so a fabricated path would 404 before the boundary could be consulted.
+	$probe = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$probe->set_param( 'clinic_id', $demo_clinic );
 	$answer = rest_do_request( $probe );
 	if ( is_wp_error( $answer ) ) {
@@ -1001,7 +1003,7 @@ try {
 
 	wp_set_current_user( $host_user );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $host_clinic_a;
-	$own = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	$own = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$own->set_param( 'clinic_id', $host_clinic_a );
 	$own_answer = rest_do_request( $own );
 	$own_code   = is_wp_error( $own_answer ) ? (string) $own_answer->get_error_code() : '';
@@ -1009,7 +1011,7 @@ try {
 
 	wp_set_current_user( $manager_id );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
-	$persona_probe = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	$persona_probe = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$persona_probe->set_param( 'clinic_id', $demo_clinic );
 	$persona_answer = rest_do_request( $persona_probe );
 	$persona_code   = is_wp_error( $persona_answer ) ? (string) $persona_answer->get_error_code() : '';
