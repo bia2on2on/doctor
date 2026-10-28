@@ -142,6 +142,10 @@ class ScopedTeardown {
 	 * row inside it is fixture-created; a row in ANY other tenant is never ours,
 	 * whatever ids it happens to reference.
 	 *
+	 * `cpms_locations` is listed here even though it is preserved rather than
+	 * deleted: the anchor is archived in place, so it still has to be proven owned
+	 * through the demo Clinic's boundary before anything is written to it.
+	 *
 	 * Clinic-scoped tables come first (the demo Clinic is the boundary), then the
 	 * organization-scoped tables that have no clinic_id. The classification is
 	 * explicit and complete on purpose. A production table
@@ -154,6 +158,7 @@ class ScopedTeardown {
 		'cpms_appointments' => 'clinic_id',
 		'cpms_clinic_memberships' => 'clinic_id',
 		'cpms_clinical_notes' => 'clinic_id',
+		'cpms_locations' => 'clinic_id',
 		'cpms_clinicians' => 'clinic_id',
 		'cpms_custom_role_defs' => 'clinic_id',
 		'cpms_doctor_consultation_fees' => 'clinic_id',

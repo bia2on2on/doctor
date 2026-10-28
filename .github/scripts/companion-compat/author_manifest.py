@@ -180,6 +180,7 @@ TABLE_OWNERSHIP_COLUMNS = {
 #: Deletable table -> mandatory tenant column. A row outside the demo tenant is
 #: never owned, whatever ids it references.
 TENANT_OWNERSHIP = {
+    "cpms_locations": "clinic_id",
     "cpms_appointments": "clinic_id",
     "cpms_clinic_memberships": "clinic_id",
     "cpms_clinical_notes": "clinic_id",

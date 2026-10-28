@@ -227,7 +227,7 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
                 owners.setdefault(table, []).append(kind)
         for table, kinds in owners.items():
             self.assertEqual(1, len(kinds), f"{table} has {kinds}")
-        self.assertEqual(35, len(self.state.scoped_tenant_ownership))
+        self.assertEqual(36, len(self.state.scoped_tenant_ownership))
         self.assertEqual(12, len(self.state.scoped_parent_ownership))
         self.assertEqual(3, len(self.state.scoped_composite_parent))
 

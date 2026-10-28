@@ -486,6 +486,7 @@
       "cpms_handwriting_documents": "clinic_id",
       "cpms_idempotency_keys": "clinic_id",
       "cpms_invoices": "clinic_id",
+      "cpms_locations": "clinic_id",
       "cpms_medical_attachments": "clinic_id",
       "cpms_message_threads": "clinic_id",
       "cpms_messages": "clinic_id",
