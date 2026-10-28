@@ -605,6 +605,18 @@ class Provisioner {
 
 		$this->platform->transition( $doctor, $visit, 'call', array( 'room' => 'SYNTHETIC' ) );
 		$this->platform->transition( $doctor, $visit, 'start' );
+		// Production refuses to complete a consultation without a chief-complaint
+		// note, exactly like the main fixture: the note is synthetic text and is
+		// owned by the same Clinic, so teardown covers it.
+		$manifest['ids']['pricing_note_id'] = $this->platform->add_note(
+			$doctor,
+			$visit,
+			array(
+				'category'     => 'chief_complaint',
+				'visibility'   => 'patient_visible',
+				'content_text' => 'شکایت اصلی آزمایشی برای ویزیت تعرفه — داده کاملاً فرضی.',
+			)
+		);
 		$this->platform->complete_consultation( $doctor, $visit );
 
 		// A later default change must never reprice the established Visit.
