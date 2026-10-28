@@ -245,6 +245,72 @@ class Env {
 	}
 
 	/**
+	 * Write an option and prove the value is durably stored.
+	 *
+	 * `update_option()` returns false both when the write FAILS and when the new
+	 * value equals the stored one, so its return value alone cannot tell success
+	 * from loss. Every critical companion record (sealed baseline, ownership
+	 * manifest, mode marker, teardown tombstone) is therefore written through this
+	 * helper and read back before the caller is allowed to rely on it.
+	 *
+	 * The read is forced past the options cache so a cached value cannot mask a
+	 * lost write.
+	 *
+	 * @param string $name  Option name.
+	 * @param mixed  $value Value to store.
+	 * @return bool True only when the stored value reads back equal.
+	 */
+	public function persist_verified( string $name, $value ): bool {
+		$this->maybe_inject_fault( 'option_persist:' . $name, array( 'name' => $name ) );
+		$this->option_set( $name, $value );
+		if ( function_exists( 'wp_cache_delete' ) ) {
+			wp_cache_delete( $name, 'options' );
+		}
+		$stored = $this->option_get( $name, false );
+
+		return $this->canonical_option( $stored ) === $this->canonical_option( $value );
+	}
+
+	/**
+	 * Deterministic comparison form for an option value (order-insensitive).
+	 *
+	 * @param mixed $value Option value.
+	 * @return string
+	 */
+	private function canonical_option( $value ): string {
+		$value = $this->canonical_option_value( $value );
+
+		return (string) wp_json_encode( $value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PARTIAL_OUTPUT_ON_ERROR );
+	}
+
+	/**
+	 * @param mixed $value Option value.
+	 * @return mixed
+	 */
+	private function canonical_option_value( $value ) {
+		if ( is_array( $value ) ) {
+			$sorted = array();
+			foreach ( $value as $key => $item ) {
+				$sorted[ $key ] = $this->canonical_option_value( $item );
+			}
+			ksort( $sorted );
+
+			return $sorted;
+		}
+		if ( $value instanceof \stdClass ) {
+			return $this->canonical_option_value( (array) $value );
+		}
+		if ( is_bool( $value ) || null === $value ) {
+			return $value;
+		}
+		if ( is_scalar( $value ) ) {
+			return (string) $value;
+		}
+
+		return $value;
+	}
+
+	/**
 	 * @return list<string> Active plugin basenames.
 	 */
 	public function active_plugins(): array {

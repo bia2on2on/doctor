@@ -44,6 +44,21 @@ from urllib.parse import parse_qs, urlencode, urlparse
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
+JOURNEYS = (
+    # Machine-readable registry of the journeys this harness implements; matched
+    # against the compatibility manifest by .github/scripts/companion-compat.
+    "cpdd_install_and_preflight",
+    "cpdd_provision_and_credentials",
+    "cpdd_persona_logins",
+    "cpdd_booking_and_otp",
+    "cpdd_reception_arrival",
+    "cpdd_doctor_clinical_workflow",
+    "cpdd_finance_invoice_payment",
+    "cpdd_rtl_and_mobile",
+    "cpdd_teardown_and_verify",
+)
+
+
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 WP_DIR = os.environ.get("WP_DIR", "")
 OUT = os.environ.get("OUT", "/tmp/cpdd-ci")

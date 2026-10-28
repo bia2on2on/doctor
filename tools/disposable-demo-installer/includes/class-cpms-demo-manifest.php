@@ -186,7 +186,12 @@ class Manifest {
 		$data['site']           = $this->site_block();
 		$data['updated_at']     = $this->env->now_sql();
 		$data['mac']            = $this->mac( $data );
-		$this->env->option_set( $this->option, $data );
+		if ( ! $this->env->persist_verified( $this->option, $data ) ) {
+			// Ownership state that was not durably stored is not ownership state.
+			// Callers must not proceed to create or delete rows on the strength of
+			// a manifest that reads back different from what they just wrote.
+			throw new Exception( 'OPTION_WRITE_FAILED', 'فایل مالکیت دمو ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 
 		return $data;
 	}
@@ -209,7 +214,9 @@ class Manifest {
 		$summary['at']   = $this->env->now_sql();
 		$summary['site'] = $this->site_fingerprint();
 		$summary['mac']  = $this->mac( $summary );
-		$this->env->option_set( $this->tombstone_option, $summary );
+		if ( ! $this->env->persist_verified( $this->tombstone_option, $summary ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'سند پاک‌سازی ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 	}
 
 	/**

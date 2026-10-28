@@ -50,7 +50,7 @@ $admin_id = get_current_user_id();
 
 cpdd_assert( $admin_id > 0 && user_can( $admin_id, 'manage_options' ), 'administrator session with manage_options' );
 cpdd_assert( class_exists( App::class ), 'CPMS Classic is active in the same request' );
-cpdd_assert( '2026_10_18_0029' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
+cpdd_assert( '2026_10_27_0030' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
 
 // --- 1. Preflight ----------------------------------------------------------
 $preflight = new Preflight( $env, $platform, $manifest );

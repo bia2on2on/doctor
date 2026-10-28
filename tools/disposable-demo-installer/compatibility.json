@@ -1,0 +1,2785 @@
+{
+  "auto_sync": {
+    "manual_required": [
+      "tables.<new>.teardown_class",
+      "tables.<new>.teardown_mode",
+      "tables.<new>.deletion_key",
+      "tables.<new>.ownership_columns",
+      "tables.<new>.feeds_id_set",
+      "id_sets.<new>",
+      "ownership_columns.per_table",
+      "volatile_options",
+      "critical_options",
+      "features",
+      "safety_invariants"
+    ],
+    "new_table_policy": "A table discovered in production but absent from this manifest is added with teardown_class='unclassified' and status='manual_implementation_required'. The gate then FAILS until a human states the ownership and deletion rules. Generated schema metadata is never allowed to author a deletion rule.",
+    "safe_updates": [
+      "compatibility.production_schema_head",
+      "compatibility.companion_schema_pin",
+      "compatibility.migration_count",
+      "roles_capabilities.production_roles",
+      "roles_capabilities.capabilities",
+      "roles_capabilities.production_capability_count",
+      "roles_capabilities.role_capability_templates",
+      "tables.<new>.since",
+      "tables.<new>.primary_key",
+      "tables.<new>.surrogate_id",
+      "tables.<new>.foreign_keys",
+      "tables.<new>.inventory"
+    ]
+  },
+  "compatibility": {
+    "companion_plugin_version": "1.0.0",
+    "companion_schema_pin": "2026_10_27_0030",
+    "core_plugin": "clinic-practice-management/clinic-practice-management.php",
+    "migration_count": 30,
+    "production_schema_head": "2026_10_27_0030"
+  },
+  "contract_version": 1,
+  "critical_options": {
+    "cpdd_manifest": "Strict-mode sealed ownership manifest.",
+    "cpdd_tombstone": "Strict-mode post-teardown evidence record.",
+    "cpsd_baseline_pending": "Sealed pre-provisioning baseline; the only recovery evidence for an interrupted run.",
+    "cpsd_manifest": "Sealed ownership manifest; without it teardown cannot prove what it owns.",
+    "cpsd_mode": "Scoped-mode activation marker.",
+    "cpsd_tombstone": "Post-teardown evidence record."
+  },
+  "features": [
+    {
+      "demo_required": true,
+      "gap": "Demo fixtures and browser journeys do not exist yet. Required manual work: provision a messaging fixture (doctor<->receptionist, doctor<->finance, receptionist<->finance threads) through StaffMessagingService, add recipient-level privacy assertions with two doctors and two receptionists, and add RTL desktop + narrow-mobile journeys. Teardown ownership for the three tables IS covered by this manifest.",
+      "id": "staff_messaging_private_1to1",
+      "introduced_by": "2026_10_27_0030",
+      "journeys": [],
+      "routes": [
+        "clinic/v1/staff/portal/messages/context",
+        "clinic/v1/staff/portal/messages/threads",
+        "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/messages",
+        "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/read"
+      ],
+      "status": "manual_implementation_required",
+      "tables": [
+        "cpms_message_threads",
+        "cpms_message_participants",
+        "cpms_messages"
+      ],
+      "title": "Strictly private one-to-one staff messaging"
+    },
+    {
+      "demo_required": true,
+      "gap": "Demo fixtures and browser journeys do not exist yet. Required manual work: provision a doctor consultation-fee default, a per-visit override and itemized treatment charges through VisitPricingService, then a receptionist billing + payment-collection journey including invoice issuance and payment replay idempotency. Teardown ownership for the four tables IS covered by this manifest.",
+      "id": "doctor_visit_pricing",
+      "introduced_by": "2026_10_27_0030",
+      "journeys": [],
+      "routes": [
+        "clinic/v1/staff/portal/pricing/context",
+        "clinic/v1/staff/portal/pricing/default-fee",
+        "clinic/v1/staff/portal/pricing/visits",
+        "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/billing",
+        "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/consultation-fee",
+        "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges",
+        "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges/(?P<charge_id>\\d+)"
+      ],
+      "status": "manual_implementation_required",
+      "tables": [
+        "cpms_doctor_consultation_fees",
+        "cpms_visit_consultation_fees",
+        "cpms_visit_charge_items",
+        "cpms_visit_fee_snapshot_failures"
+      ],
+      "title": "Consultation-fee defaults, per-visit overrides and itemized charges"
+    },
+    {
+      "demo_required": true,
+      "gap": "",
+      "id": "core_six_persona_demo",
+      "introduced_by": "2026_09_05_0001",
+      "journeys": [
+        "cpdd_install_and_preflight",
+        "cpdd_provision_and_credentials",
+        "cpdd_persona_logins",
+        "cpdd_booking_and_otp",
+        "cpdd_reception_arrival",
+        "cpdd_doctor_clinical_workflow",
+        "cpdd_finance_invoice_payment",
+        "cpdd_rtl_and_mobile",
+        "cpdd_teardown_and_verify",
+        "cpsd_admin_provision",
+        "cpsd_manifest_tamper_refused",
+        "cpsd_persona_receptionist",
+        "cpsd_persona_doctor",
+        "cpsd_persona_accountant",
+        "cpsd_persona_clinic_manager",
+        "cpsd_persona_organization_manager",
+        "cpsd_patient_otp_booking",
+        "cpsd_admin_teardown"
+      ],
+      "routes": [
+        "clinic/v1/appointments",
+        "clinic/v1/appointments/(?P<id>\\\\d+)/no-show",
+        "clinic/v1/appointments/(?P<id>\\d+)/cancel",
+        "clinic/v1/appointments/(?P<id>\\d+)/reschedule",
+        "clinic/v1/appointments/(?P<id>\\d+)/reschedule-options",
+        "clinic/v1/appointments/mine",
+        "clinic/v1/availability",
+        "clinic/v1/booking/confirm",
+        "clinic/v1/booking/hold",
+        "clinic/v1/booking/quote",
+        "clinic/v1/booking/resume",
+        "clinic/v1/config/schedule-exceptions",
+        "clinic/v1/config/schedule-exceptions/(?P<id>\\d+)",
+        "clinic/v1/config/schedules",
+        "clinic/v1/config/schedules/(?P<id>\\d+)",
+        "clinic/v1/config/services",
+        "clinic/v1/config/services/(?P<id>\\d+)",
+        "clinic/v1/doctor/portal/clinics",
+        "clinic/v1/doctor/portal/context",
+        "clinic/v1/doctor/portal/locations",
+        "clinic/v1/doctor/portal/prescriptions/(?P<id>\\d+)/finalize",
+        "clinic/v1/doctor/portal/prescriptions/history",
+        "clinic/v1/doctor/portal/rt/queue",
+        "clinic/v1/doctor/portal/today",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/complete",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/files",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/files/(?P<file_id>\\d+)/stream",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/follow-ups",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/medical-history",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/notes",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/prescriptions",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/prescriptions/(?P<prescription_id>\\d+)/print",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/recommendations",
+        "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/record",
+        "clinic/v1/doctor/today",
+        "clinic/v1/files",
+        "clinic/v1/files/(?P<id>\\d+)/stream",
+        "clinic/v1/finance/summary",
+        "clinic/v1/handwriting/documents",
+        "clinic/v1/handwriting/documents/(?P<id>\\d+)/pages",
+        "clinic/v1/handwriting/pages/(?P<id>\\d+)",
+        "clinic/v1/health",
+        "clinic/v1/invoices",
+        "clinic/v1/invoices/(?P<id>\\d+)",
+        "clinic/v1/invoices/(?P<id>\\d+)/adjustments",
+        "clinic/v1/invoices/(?P<id>\\d+)/payments",
+        "clinic/v1/invoices/(?P<id>\\d+)/receipt",
+        "clinic/v1/notes/(?P<id>\\d+)",
+        "clinic/v1/notifications",
+        "clinic/v1/notifications/read",
+        "clinic/v1/otp/request",
+        "clinic/v1/otp/verify",
+        "clinic/v1/patient/enroll",
+        "clinic/v1/patient/me",
+        "clinic/v1/patient/my-records",
+        "clinic/v1/patients",
+        "clinic/v1/patients/(?P<id>\\d+)",
+        "clinic/v1/patients/(?P<patient_id>\\d+)/files",
+        "clinic/v1/patients/search",
+        "clinic/v1/payments/(?P<id>\\d+)/refund",
+        "clinic/v1/payments/(?P<id>\\d+)/void",
+        "clinic/v1/prescriptions",
+        "clinic/v1/prescriptions/(?P<id>\\d+)/finalize",
+        "clinic/v1/queue",
+        "clinic/v1/reports",
+        "clinic/v1/reports/exports",
+        "clinic/v1/reports/exports/(?P<id>\\d+)/download",
+        "clinic/v1/rt/notifications",
+        "clinic/v1/rt/queue",
+        "clinic/v1/search",
+        "clinic/v1/secretary/today",
+        "clinic/v1/sms/balance",
+        "clinic/v1/sms/logs",
+        "clinic/v1/sms/providers",
+        "clinic/v1/sms/settings",
+        "clinic/v1/sms/status",
+        "clinic/v1/sms/templates",
+        "clinic/v1/sms/templates/test",
+        "clinic/v1/sms/test-connection",
+        "clinic/v1/sms/test-send",
+        "clinic/v1/staff/portal/reception/appointments",
+        "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/cancel",
+        "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/no-show",
+        "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/reschedule",
+        "clinic/v1/staff/portal/reception/arrivals",
+        "clinic/v1/staff/portal/reception/board",
+        "clinic/v1/staff/portal/reception/clinicians",
+        "clinic/v1/staff/portal/reception/context",
+        "clinic/v1/staff/portal/reception/patients",
+        "clinic/v1/staff/portal/reception/patients/search",
+        "clinic/v1/staff/portal/reception/slots",
+        "clinic/v1/staff/portal/reception/upcoming",
+        "clinic/v1/staff/portal/reception/walk-ins",
+        "clinic/v1/visits",
+        "clinic/v1/visits/(?P<id>\\d+)",
+        "clinic/v1/visits/(?P<id>\\d+)/checkout",
+        "clinic/v1/visits/(?P<id>\\d+)/complete",
+        "clinic/v1/visits/(?P<id>\\d+)/follow-ups",
+        "clinic/v1/visits/(?P<id>\\d+)/invoice",
+        "clinic/v1/visits/(?P<id>\\d+)/notes",
+        "clinic/v1/visits/(?P<id>\\d+)/prescriptions",
+        "clinic/v1/visits/(?P<id>\\d+)/recommendations",
+        "clinic/v1/visits/(?P<id>\\d+)/record",
+        "clinic/v1/visits/(?P<id>\\d+)/reopen",
+        "clinic/v1/visits/(?P<id>\\d+)/status",
+        "clinic/v1/visits/checkin",
+        "clinic/v1/visits/walk-in"
+      ],
+      "status": "demonstrable",
+      "tables": [],
+      "title": "Six-persona booking/visit/invoice demo (pre-0030 surface)"
+    }
+  ],
+  "generated_by": ".github/scripts/companion-compat/author_manifest.py",
+  "id_sets": {
+    "appointment_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_appointments"
+    },
+    "attachment_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_medical_attachments"
+    },
+    "charge_item_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_visit_charge_items"
+    },
+    "clinic_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_clinics"
+    },
+    "clinic_membership_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_clinic_memberships"
+    },
+    "clinician_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_clinicians"
+    },
+    "doctor_fee_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_doctor_consultation_fees"
+    },
+    "document_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_handwriting_documents"
+    },
+    "drug_ref_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_drug_reference"
+    },
+    "exception_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_schedule_exceptions"
+    },
+    "follow_up_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_follow_ups"
+    },
+    "hold_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_slot_holds"
+    },
+    "identity_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_patient_identities"
+    },
+    "invoice_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_invoices"
+    },
+    "location_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_locations"
+    },
+    "note_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_clinical_notes"
+    },
+    "ocr_job_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_ocr_jobs"
+    },
+    "org_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_organizations"
+    },
+    "org_membership_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_organization_memberships"
+    },
+    "otp_token_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_otp_tokens"
+    },
+    "page_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_handwriting_pages"
+    },
+    "patient_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_patients"
+    },
+    "payment_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_payments"
+    },
+    "prescription_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_prescriptions"
+    },
+    "role_def_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_custom_role_defs"
+    },
+    "schedule_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_schedule"
+    },
+    "service_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_services"
+    },
+    "slot_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_schedule_slots"
+    },
+    "sms_message_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_sms_messages"
+    },
+    "staff_message_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_messages"
+    },
+    "thread_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_message_threads"
+    },
+    "user_ids": {
+      "parent_key": "ID",
+      "parent_table": "wp_users"
+    },
+    "visit_ids": {
+      "parent_key": "id",
+      "parent_table": "cpms_visits"
+    }
+  },
+  "ownership_columns": {
+    "ambiguous_column_names": [
+      "membership_id"
+    ],
+    "global": {
+      "actor_wp_user_id": "user_ids",
+      "appointment_id": "appointment_ids",
+      "approved_by_wp_user_id": "user_ids",
+      "background_attachment_id": "attachment_ids",
+      "clinic_id": "clinic_ids",
+      "clinician_id": "clinician_ids",
+      "created_by_wp_user_id": "user_ids",
+      "document_id": "document_ids",
+      "drug_ref_id": "drug_ref_ids",
+      "exception_id": "exception_ids",
+      "follow_up_id": "follow_up_ids",
+      "hold_id": "hold_ids",
+      "holder_wp_user_id": "user_ids",
+      "identity_id": "identity_ids",
+      "invited_by_wp_user_id": "user_ids",
+      "invoice_id": "invoice_ids",
+      "invoiced_invoice_id": "invoice_ids",
+      "linked_appointment_id": "appointment_ids",
+      "location_id": "location_ids",
+      "merged_by_wp_user_id": "user_ids",
+      "merged_patient_id": "patient_ids",
+      "note_id": "note_ids",
+      "ocr_job_id": "ocr_job_ids",
+      "organization_id": "org_ids",
+      "page_id": "page_ids",
+      "patient_id": "patient_ids",
+      "payment_id": "payment_ids",
+      "prescription_id": "prescription_ids",
+      "recipient_wp_user_id": "user_ids",
+      "removed_by_wp_user_id": "user_ids",
+      "rescheduled_from": "appointment_ids",
+      "rescheduled_to": "appointment_ids",
+      "role_def_id": "role_def_ids",
+      "schedule_id": "schedule_ids",
+      "sender_wp_user_id": "user_ids",
+      "service_id": "service_ids",
+      "set_by_wp_user_id": "user_ids",
+      "slot_id": "slot_ids",
+      "source_page_id": "page_ids",
+      "status_updated_by_wp_user_id": "user_ids",
+      "surviving_patient_id": "patient_ids",
+      "thread_id": "thread_ids",
+      "token_id": "otp_token_ids",
+      "updated_by_wp_user_id": "user_ids",
+      "visit_id": "visit_ids",
+      "wp_user_id": "user_ids"
+    },
+    "per_table": {
+      "cpms_membership_capabilities": {
+        "membership_id": "clinic_membership_ids"
+      },
+      "cpms_membership_locations": {
+        "membership_id": "clinic_membership_ids"
+      },
+      "cpms_organization_membership_capabilities": {
+        "membership_id": "org_membership_ids"
+      }
+    }
+  },
+  "personas": {
+    "declared": [
+      "organization_manager",
+      "clinic_manager",
+      "doctor",
+      "receptionist",
+      "accountant",
+      "patient"
+    ],
+    "required": [
+      "organization_manager",
+      "clinic_manager",
+      "doctor",
+      "receptionist",
+      "accountant",
+      "patient"
+    ]
+  },
+  "rest_routes": {
+    "count": 118,
+    "namespace": "clinic/v1",
+    "paths": [
+      "clinic/v1/appointments",
+      "clinic/v1/appointments/(?P<id>\\\\d+)/no-show",
+      "clinic/v1/appointments/(?P<id>\\d+)/cancel",
+      "clinic/v1/appointments/(?P<id>\\d+)/reschedule",
+      "clinic/v1/appointments/(?P<id>\\d+)/reschedule-options",
+      "clinic/v1/appointments/mine",
+      "clinic/v1/availability",
+      "clinic/v1/booking/confirm",
+      "clinic/v1/booking/hold",
+      "clinic/v1/booking/quote",
+      "clinic/v1/booking/resume",
+      "clinic/v1/config/schedule-exceptions",
+      "clinic/v1/config/schedule-exceptions/(?P<id>\\d+)",
+      "clinic/v1/config/schedules",
+      "clinic/v1/config/schedules/(?P<id>\\d+)",
+      "clinic/v1/config/services",
+      "clinic/v1/config/services/(?P<id>\\d+)",
+      "clinic/v1/doctor/portal/clinics",
+      "clinic/v1/doctor/portal/context",
+      "clinic/v1/doctor/portal/locations",
+      "clinic/v1/doctor/portal/prescriptions/(?P<id>\\d+)/finalize",
+      "clinic/v1/doctor/portal/prescriptions/history",
+      "clinic/v1/doctor/portal/rt/queue",
+      "clinic/v1/doctor/portal/today",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/complete",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/files",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/files/(?P<file_id>\\d+)/stream",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/follow-ups",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/medical-history",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/notes",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/prescriptions",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/prescriptions/(?P<prescription_id>\\d+)/print",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/recommendations",
+      "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/record",
+      "clinic/v1/doctor/today",
+      "clinic/v1/files",
+      "clinic/v1/files/(?P<id>\\d+)/stream",
+      "clinic/v1/finance/summary",
+      "clinic/v1/handwriting/documents",
+      "clinic/v1/handwriting/documents/(?P<id>\\d+)/pages",
+      "clinic/v1/handwriting/pages/(?P<id>\\d+)",
+      "clinic/v1/health",
+      "clinic/v1/invoices",
+      "clinic/v1/invoices/(?P<id>\\d+)",
+      "clinic/v1/invoices/(?P<id>\\d+)/adjustments",
+      "clinic/v1/invoices/(?P<id>\\d+)/payments",
+      "clinic/v1/invoices/(?P<id>\\d+)/receipt",
+      "clinic/v1/notes/(?P<id>\\d+)",
+      "clinic/v1/notifications",
+      "clinic/v1/notifications/read",
+      "clinic/v1/otp/request",
+      "clinic/v1/otp/verify",
+      "clinic/v1/patient/enroll",
+      "clinic/v1/patient/me",
+      "clinic/v1/patient/my-records",
+      "clinic/v1/patients",
+      "clinic/v1/patients/(?P<id>\\d+)",
+      "clinic/v1/patients/(?P<patient_id>\\d+)/files",
+      "clinic/v1/patients/search",
+      "clinic/v1/payments/(?P<id>\\d+)/refund",
+      "clinic/v1/payments/(?P<id>\\d+)/void",
+      "clinic/v1/prescriptions",
+      "clinic/v1/prescriptions/(?P<id>\\d+)/finalize",
+      "clinic/v1/queue",
+      "clinic/v1/reports",
+      "clinic/v1/reports/exports",
+      "clinic/v1/reports/exports/(?P<id>\\d+)/download",
+      "clinic/v1/rt/notifications",
+      "clinic/v1/rt/queue",
+      "clinic/v1/search",
+      "clinic/v1/secretary/today",
+      "clinic/v1/sms/balance",
+      "clinic/v1/sms/logs",
+      "clinic/v1/sms/providers",
+      "clinic/v1/sms/settings",
+      "clinic/v1/sms/status",
+      "clinic/v1/sms/templates",
+      "clinic/v1/sms/templates/test",
+      "clinic/v1/sms/test-connection",
+      "clinic/v1/sms/test-send",
+      "clinic/v1/staff/portal/messages/context",
+      "clinic/v1/staff/portal/messages/threads",
+      "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/messages",
+      "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/read",
+      "clinic/v1/staff/portal/pricing/context",
+      "clinic/v1/staff/portal/pricing/default-fee",
+      "clinic/v1/staff/portal/pricing/visits",
+      "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/billing",
+      "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges",
+      "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges/(?P<charge_id>\\d+)",
+      "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/consultation-fee",
+      "clinic/v1/staff/portal/reception/appointments",
+      "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/cancel",
+      "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/no-show",
+      "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/reschedule",
+      "clinic/v1/staff/portal/reception/arrivals",
+      "clinic/v1/staff/portal/reception/board",
+      "clinic/v1/staff/portal/reception/clinicians",
+      "clinic/v1/staff/portal/reception/context",
+      "clinic/v1/staff/portal/reception/patients",
+      "clinic/v1/staff/portal/reception/patients/search",
+      "clinic/v1/staff/portal/reception/slots",
+      "clinic/v1/staff/portal/reception/upcoming",
+      "clinic/v1/staff/portal/reception/walk-ins",
+      "clinic/v1/visits",
+      "clinic/v1/visits/(?P<id>\\d+)",
+      "clinic/v1/visits/(?P<id>\\d+)/checkout",
+      "clinic/v1/visits/(?P<id>\\d+)/complete",
+      "clinic/v1/visits/(?P<id>\\d+)/follow-ups",
+      "clinic/v1/visits/(?P<id>\\d+)/invoice",
+      "clinic/v1/visits/(?P<id>\\d+)/notes",
+      "clinic/v1/visits/(?P<id>\\d+)/prescriptions",
+      "clinic/v1/visits/(?P<id>\\d+)/recommendations",
+      "clinic/v1/visits/(?P<id>\\d+)/record",
+      "clinic/v1/visits/(?P<id>\\d+)/reopen",
+      "clinic/v1/visits/(?P<id>\\d+)/status",
+      "clinic/v1/visits/checkin",
+      "clinic/v1/visits/walk-in"
+    ]
+  },
+  "roles_capabilities": {
+    "capabilities": [
+      "cpms_appt_cancel",
+      "cpms_appt_confirm",
+      "cpms_appt_create",
+      "cpms_appt_no_show",
+      "cpms_appt_read",
+      "cpms_appt_reschedule",
+      "cpms_audit_read",
+      "cpms_config",
+      "cpms_consult_complete",
+      "cpms_consult_reopen",
+      "cpms_consult_start",
+      "cpms_export",
+      "cpms_file_read",
+      "cpms_file_upload",
+      "cpms_finance_read",
+      "cpms_invoice_adjust",
+      "cpms_invoice_create",
+      "cpms_invoice_read",
+      "cpms_invoice_void",
+      "cpms_medical_read",
+      "cpms_note_create",
+      "cpms_note_update",
+      "cpms_patient_archive",
+      "cpms_patient_create",
+      "cpms_patient_merge",
+      "cpms_patient_read",
+      "cpms_patient_update",
+      "cpms_payment_create",
+      "cpms_payment_refund",
+      "cpms_payment_void",
+      "cpms_private_note_create",
+      "cpms_private_note_read",
+      "cpms_private_note_update",
+      "cpms_queue_advance",
+      "cpms_queue_call",
+      "cpms_queue_checkin",
+      "cpms_queue_checkout",
+      "cpms_queue_read",
+      "cpms_rec_create",
+      "cpms_report_read",
+      "cpms_rx_create",
+      "cpms_rx_read",
+      "cpms_rx_void",
+      "cpms_search",
+      "cpms_sms_config",
+      "cpms_visit_read"
+    ],
+    "demo_supported_roles": [
+      "cpms_accountant",
+      "cpms_doctor",
+      "cpms_manager",
+      "cpms_patient",
+      "cpms_secretary"
+    ],
+    "production_capability_count": 46,
+    "production_roles": [
+      "cpms_accountant",
+      "cpms_doctor",
+      "cpms_manager",
+      "cpms_patient",
+      "cpms_secretary"
+    ],
+    "role_capability_templates": {
+      "accountant": [
+        "cpms_export",
+        "cpms_finance_read",
+        "cpms_invoice_adjust",
+        "cpms_invoice_create",
+        "cpms_invoice_read",
+        "cpms_invoice_void",
+        "cpms_payment_create",
+        "cpms_payment_refund",
+        "cpms_payment_void",
+        "cpms_report_read",
+        "cpms_search"
+      ],
+      "doctor": [
+        "cpms_appt_cancel",
+        "cpms_appt_confirm",
+        "cpms_appt_create",
+        "cpms_appt_no_show",
+        "cpms_appt_read",
+        "cpms_appt_reschedule",
+        "cpms_consult_complete",
+        "cpms_consult_reopen",
+        "cpms_consult_start",
+        "cpms_file_read",
+        "cpms_file_upload",
+        "cpms_finance_read",
+        "cpms_invoice_create",
+        "cpms_invoice_read",
+        "cpms_medical_read",
+        "cpms_note_create",
+        "cpms_note_update",
+        "cpms_patient_read",
+        "cpms_patient_update",
+        "cpms_payment_refund",
+        "cpms_payment_void",
+        "cpms_private_note_create",
+        "cpms_private_note_read",
+        "cpms_private_note_update",
+        "cpms_queue_call",
+        "cpms_queue_read",
+        "cpms_rec_create",
+        "cpms_report_read",
+        "cpms_rx_create",
+        "cpms_rx_read",
+        "cpms_rx_void",
+        "cpms_search",
+        "cpms_visit_read"
+      ],
+      "manager": [
+        "cpms_config",
+        "cpms_patient_read",
+        "cpms_report_read",
+        "cpms_search",
+        "cpms_sms_config"
+      ],
+      "secretary": [
+        "cpms_appt_cancel",
+        "cpms_appt_confirm",
+        "cpms_appt_create",
+        "cpms_appt_no_show",
+        "cpms_appt_read",
+        "cpms_appt_reschedule",
+        "cpms_file_read",
+        "cpms_file_upload",
+        "cpms_finance_read",
+        "cpms_invoice_adjust",
+        "cpms_invoice_create",
+        "cpms_invoice_read",
+        "cpms_invoice_void",
+        "cpms_patient_create",
+        "cpms_patient_read",
+        "cpms_patient_update",
+        "cpms_payment_create",
+        "cpms_queue_advance",
+        "cpms_queue_checkin",
+        "cpms_queue_checkout",
+        "cpms_queue_read",
+        "cpms_search",
+        "cpms_visit_read"
+      ]
+    }
+  },
+  "safety_invariants": [
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-manifest.php",
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-manifest.php",
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php",
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-provisioner.php"
+      ],
+      "id": "verified_option_persistence",
+      "requires": [
+        "persist_verified",
+        "OPTION_WRITE_FAILED"
+      ],
+      "why": "Defect D: save()/write_tombstone()/save_pending_baseline() ignored the return value of update_option(), and teardown cleared the sealed pending baseline before the tombstone was durably stored. A failed write left synthetic rows with no recoverable ownership state."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-provisioner.php",
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+      ],
+      "id": "pending_baseline_cleared_last",
+      "order": [
+        {
+          "after": "clear_pending_baseline",
+          "before": "write_tombstone",
+          "file": "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+        },
+        {
+          "after": "clear_pending_baseline",
+          "before": "->save( $manifest )",
+          "file": "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-provisioner.php"
+        }
+      ],
+      "requires": [
+        "clear_pending_baseline"
+      ],
+      "why": "Defect D: the pending baseline must survive until the replacement manifest is durably stored AND read back verified."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-baseline.php"
+      ],
+      "id": "narrow_volatile_option_normalisation",
+      "requires": [
+        "VOLATILE_OPTIONS"
+      ],
+      "why": "Defect E: only the two justified heartbeat options may be normalised. A blanket exemption for shared options would hide unauthorised changes to preexisting records."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+      ],
+      "id": "foreign_identity_link_guard",
+      "requires": [
+        "FOREIGN_IDENTITY_LINK",
+        "cpms_patient_user_links"
+      ],
+      "why": "Defect F: a synthetic WordPress user must not be deleted while a foreign-owned patient-user link or OTP record still depends on it."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php",
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-audit-guard.php"
+      ],
+      "id": "audit_chain_preserved",
+      "requires": [
+        "verify_chain",
+        "PRESERVED_PARENT_TABLES"
+      ],
+      "why": "Defect G: the append-only audit hash chain is verified end to end and never deleted; only the three inert parent anchors are retained."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+      ],
+      "id": "composite_key_teardown",
+      "requires": [
+        "COMPOSITE_KEY_TABLES",
+        "delete_composite_rows"
+      ],
+      "why": "Defect B: tables without an `id` column were skipped entirely, so their fixture rows were neither collected, deleted, nor detected as remaining."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+      ],
+      "forbids": [
+        "'membership_id'                 => 'membership_ids'"
+      ],
+      "id": "membership_id_namespaced",
+      "requires": [
+        "clinic_membership_ids",
+        "org_membership_ids",
+        "TABLE_OWNERSHIP_COLUMNS"
+      ],
+      "why": "Defect A: one shared membership_ids set let a clinic-membership id delete foreign organization-membership capability rows on auto-increment overlap."
+    }
+  ],
+  "sources": {
+    "browser_journeys": [
+      "tools/disposable-demo-installer/tests/browser-acceptance.py",
+      "tests/scoped-demo/browser_scoped.py"
+    ],
+    "companion": "tools/disposable-demo-installer",
+    "companion_bootstrap": "tools/disposable-demo-installer/cpms-disposable-demo.php",
+    "companion_preflight": "tools/disposable-demo-installer/includes/class-cpms-demo-preflight.php",
+    "companion_scoped_teardown": "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php",
+    "companion_teardown": "tools/disposable-demo-installer/includes/class-cpms-demo-teardown.php",
+    "migrations": "clinic-practice-management/src/Migrations",
+    "production_plugin": "clinic-practice-management",
+    "rest_controllers": "clinic-practice-management/src/Rest",
+    "roles_and_capabilities": "clinic-practice-management/src/Auth/RolesAndCapabilities.php"
+  },
+  "tables": {
+    "cpms_appointments": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "appointment_ids",
+      "foreign_keys": [
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        },
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        },
+        {
+          "column": "slot_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_schedule_slots"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "rescheduled_from": {
+          "set": "appointment_ids",
+          "via": "global"
+        },
+        "rescheduled_to": {
+          "set": "appointment_ids",
+          "via": "global"
+        },
+        "slot_id": {
+          "set": "slot_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_audit_logs": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "actor_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Append-only audit hash chain; teardown verifies it, never deletes it.",
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "global_never",
+      "teardown_mode": "never"
+    },
+    "cpms_clinic_memberships": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "clinic_membership_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "invited_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0012",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_clinical_note_versions": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "note_id": {
+          "set": "note_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_clinical_notes": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "note_ids",
+      "foreign_keys": [
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        },
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        },
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "updated_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_clinician_locations": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "clinician_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        },
+        {
+          "column": "location_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_locations"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "location_id": {
+          "set": "location_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0012",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_clinicians": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "clinician_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_clinics": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "clinic_ids",
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {
+        "organization_id": {
+          "set": "org_ids",
+          "via": "global"
+        },
+        "status_updated_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Audit-log FK target: archived in place as an inert anchor.",
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "preserved_anchor",
+      "teardown_mode": "never"
+    },
+    "cpms_custom_role_capabilities": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "role_def_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_custom_role_defs"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "role_def_id": {
+          "set": "role_def_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_10_0024",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_custom_role_defs": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "role_def_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_10_0024",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_doctor_consultation_fees": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "doctor_fee_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "location_id": {
+          "set": "location_ids",
+          "via": "global"
+        },
+        "updated_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_drug_reference": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "drug_ref_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_follow_ups": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "follow_up_ids",
+      "foreign_keys": [
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        },
+        {
+          "column": "linked_appointment_id",
+          "on_delete": "SET NULL",
+          "references_column": "id",
+          "references_table": "cpms_appointments"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "linked_appointment_id": {
+          "set": "appointment_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_handwriting_documents": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "document_ids",
+      "foreign_keys": [
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_handwriting_page_versions": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "page_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_handwriting_pages"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "page_id": {
+          "set": "page_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_handwriting_pages": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "page_ids",
+      "foreign_keys": [
+        {
+          "column": "document_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_handwriting_documents"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "background_attachment_id": {
+          "set": "attachment_ids",
+          "via": "global"
+        },
+        "document_id": {
+          "set": "document_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_idempotency_keys": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_invoice_items": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "invoice_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_invoices"
+        },
+        {
+          "column": "service_id",
+          "on_delete": "SET NULL",
+          "references_column": "id",
+          "references_table": "cpms_services"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "invoice_id": {
+          "set": "invoice_ids",
+          "via": "global"
+        },
+        "service_id": {
+          "set": "service_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_invoices": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "invoice_ids",
+      "foreign_keys": [
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        },
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_jobs": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Shared queue; only fixture-owned job ids from the closed allowlist are deleted.",
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "global_selective",
+      "teardown_mode": "dedicated_allowlist"
+    },
+    "cpms_license_install": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Install-level licence identity, not tenant data.",
+      "since": "2026_09_07_0008",
+      "surrogate_id": true,
+      "teardown_class": "global_never",
+      "teardown_mode": "never"
+    },
+    "cpms_license_state": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Install-level licence runtime state, not tenant data.",
+      "since": "2026_09_07_0008",
+      "surrogate_id": true,
+      "teardown_class": "global_never",
+      "teardown_mode": "never"
+    },
+    "cpms_locations": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "location_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "system",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Audit-log FK target: deactivated in place as an inert anchor.",
+      "since": "2026_09_09_0011",
+      "surrogate_id": true,
+      "teardown_class": "preserved_anchor",
+      "teardown_mode": "never"
+    },
+    "cpms_medical_attachments": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "attachment_ids",
+      "foreign_keys": [
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        },
+        {
+          "column": "visit_id",
+          "on_delete": "SET NULL",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_membership_capabilities": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "membership_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinic_memberships"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "membership_id": {
+          "set": "clinic_membership_ids",
+          "via": "declared"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0012",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_membership_locations": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "membership_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_clinic_memberships"
+        },
+        {
+          "column": "location_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_locations"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "location_id": {
+          "set": "location_ids",
+          "via": "global"
+        },
+        "membership_id": {
+          "set": "clinic_membership_ids",
+          "via": "declared"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0012",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_message_participants": {
+      "deletion_key": [
+        "thread_id",
+        "wp_user_id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "thread_id": {
+          "set": "thread_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "thread_id",
+        "wp_user_id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": false,
+      "teardown_class": "deletable",
+      "teardown_mode": "composite_key"
+    },
+    "cpms_message_threads": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "thread_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "location_id": {
+          "set": "location_ids",
+          "via": "global"
+        },
+        "organization_id": {
+          "set": "org_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_messages": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "staff_message_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "sender_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "thread_id": {
+          "set": "thread_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_notifications": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "recipient_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_ocr_jobs": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "ocr_job_ids",
+      "foreign_keys": [
+        {
+          "column": "source_page_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_handwriting_pages"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "source_page_id": {
+          "set": "page_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_operational_logs": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Shared log; only rows whose context matches the fixture are deleted.",
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "global_selective",
+      "teardown_mode": "dedicated_allowlist"
+    },
+    "cpms_organization_membership_capabilities": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "membership_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_organization_memberships"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "membership_id": {
+          "set": "org_membership_ids",
+          "via": "declared"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_18_0028",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_organization_memberships": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "org_membership_ids",
+      "foreign_keys": [
+        {
+          "column": "organization_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_organizations"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "organization_id": {
+          "set": "org_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_18_0028",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_organizations": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "org_ids",
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Audit-log FK target: archived in place as an inert anchor.",
+      "since": "2026_09_09_0010",
+      "surrogate_id": true,
+      "teardown_class": "preserved_anchor",
+      "teardown_mode": "never"
+    },
+    "cpms_otp_tokens": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "otp_token_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_patient_identities": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "identity_ids",
+      "foreign_keys": [
+        {
+          "column": "organization_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_organizations"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "organization_id": {
+          "set": "org_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0018",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_patient_identity_links": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "organization_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_organizations"
+        },
+        {
+          "column": "identity_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_patient_identities"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "identity_id": {
+          "set": "identity_ids",
+          "via": "global"
+        },
+        "organization_id": {
+          "set": "org_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_09_0019",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_patient_merges": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "merged_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "merged_patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "surviving_patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_patient_user_links": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_patients": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "patient_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "identity_id": {
+          "set": "identity_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_payment_adjustments": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "invoice_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_invoices"
+        },
+        {
+          "column": "payment_id",
+          "on_delete": "SET NULL",
+          "references_column": "id",
+          "references_table": "cpms_payments"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "approved_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "invoice_id": {
+          "set": "invoice_ids",
+          "via": "global"
+        },
+        "payment_id": {
+          "set": "payment_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_payments": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "payment_ids",
+      "foreign_keys": [
+        {
+          "column": "invoice_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_invoices"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "invoice_id": {
+          "set": "invoice_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_prescription_items": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "prescription_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_prescriptions"
+        },
+        {
+          "column": "drug_ref_id",
+          "on_delete": "SET NULL",
+          "references_column": "id",
+          "references_table": "cpms_drug_reference"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "drug_ref_id": {
+          "set": "drug_ref_ids",
+          "via": "global"
+        },
+        "ocr_job_id": {
+          "set": "ocr_job_ids",
+          "via": "global"
+        },
+        "prescription_id": {
+          "set": "prescription_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_prescriptions": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "prescription_ids",
+      "foreign_keys": [
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        },
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_rate_limits": {
+      "deletion_key": [
+        "window_key",
+        "window_id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "window_key",
+        "window_id"
+      ],
+      "rationale": "Shared keyed counters; only fixture-derived window keys are deleted.",
+      "since": "2026_09_05_0001",
+      "surrogate_id": false,
+      "teardown_class": "global_selective",
+      "teardown_mode": "dedicated_allowlist"
+    },
+    "cpms_recommendations": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [
+        {
+          "column": "visit_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_visits"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_schedule": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "schedule_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        },
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_schedule_exceptions": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "exception_ids",
+      "foreign_keys": [
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_schedule_slots": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "slot_ids",
+      "foreign_keys": [
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_schema_migrations": {
+      "deletion_key": [
+        "version"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "primary_key": [
+        "version"
+      ],
+      "rationale": "Migration bookkeeping written by MigrationRunner; always preserved.",
+      "since": "MigrationRunner.php",
+      "surrogate_id": false,
+      "teardown_class": "runner_managed",
+      "teardown_mode": "never"
+    },
+    "cpms_services": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "service_ids",
+      "foreign_keys": [
+        {
+          "column": "clinic_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinics"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_settings": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "updated_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_slot_holds": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "hold_ids",
+      "foreign_keys": [
+        {
+          "column": "slot_id",
+          "on_delete": "CASCADE",
+          "references_column": "id",
+          "references_table": "cpms_schedule_slots"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "holder_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "slot_id": {
+          "set": "slot_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_sms_messages": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "sms_message_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0003",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_visit_charge_items": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "charge_item_ids",
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "created_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "invoiced_invoice_id": {
+          "set": "invoice_ids",
+          "via": "global"
+        },
+        "removed_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "updated_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_visit_consultation_fees": {
+      "deletion_key": [
+        "visit_id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "set_by_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "visit_id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": false,
+      "teardown_class": "deletable",
+      "teardown_mode": "composite_key"
+    },
+    "cpms_visit_fee_snapshot_failures": {
+      "deletion_key": [
+        "visit_id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "visit_id"
+      ],
+      "since": "2026_10_27_0030",
+      "surrogate_id": false,
+      "teardown_class": "deletable",
+      "teardown_mode": "composite_key"
+    },
+    "cpms_visit_status_history": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {
+        "actor_wp_user_id": {
+          "set": "user_ids",
+          "via": "global"
+        },
+        "visit_id": {
+          "set": "visit_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    },
+    "cpms_visits": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": "visit_ids",
+      "foreign_keys": [
+        {
+          "column": "clinician_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_clinicians"
+        },
+        {
+          "column": "patient_id",
+          "on_delete": "RESTRICT",
+          "references_column": "id",
+          "references_table": "cpms_patients"
+        },
+        {
+          "column": "appointment_id",
+          "on_delete": "",
+          "references_column": "id",
+          "references_table": "cpms_appointments"
+        }
+      ],
+      "inventory": "operational",
+      "ownership_columns": {
+        "appointment_id": {
+          "set": "appointment_ids",
+          "via": "global"
+        },
+        "clinic_id": {
+          "set": "clinic_ids",
+          "via": "global"
+        },
+        "clinician_id": {
+          "set": "clinician_ids",
+          "via": "global"
+        },
+        "patient_id": {
+          "set": "patient_ids",
+          "via": "global"
+        }
+      },
+      "primary_key": [
+        "id"
+      ],
+      "since": "2026_09_05_0001",
+      "surrogate_id": true,
+      "teardown_class": "deletable",
+      "teardown_mode": "surrogate_id"
+    }
+  },
+  "volatile_options": {
+    "cpms_backup_last_run_at": "Backup heartbeat rewritten by each scheduled backup run.",
+    "cpms_jobs_last_tick_at": "Queue heartbeat rewritten by every successful queue tick (autoload=no)."
+  }
+}

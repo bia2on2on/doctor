@@ -40,6 +40,159 @@ class ScopedTeardown {
 		'cpms_locations',
 	);
 
+	/**
+	 * Global ownership columns whose relation is unambiguous across the schema.
+	 *
+	 * Each name below resolves to exactly one foreign-key parent, so a single
+	 * rule is safe for every table that carries it.
+	 *
+	 * `membership_id` is deliberately ABSENT. It names two different parents
+	 * (`cpms_clinic_memberships` and `cpms_organization_memberships`), so one
+	 * global rule let a clinic-membership id select foreign organization
+	 * membership capability rows whenever the two auto-increment sequences
+	 * overlapped, and the teardown deleted them. Ambiguous names are resolved
+	 * per table in TABLE_OWNERSHIP_COLUMNS.
+	 *
+	 * @var array<string,string>
+	 */
+	private const OWNERSHIP_COLUMNS = array(
+		'actor_wp_user_id' => 'user_ids',
+		'appointment_id' => 'appointment_ids',
+		'approved_by_wp_user_id' => 'user_ids',
+		'background_attachment_id' => 'attachment_ids',
+		'clinic_id' => 'clinic_ids',
+		'clinician_id' => 'clinician_ids',
+		'created_by_wp_user_id' => 'user_ids',
+		'document_id' => 'document_ids',
+		'drug_ref_id' => 'drug_ref_ids',
+		'exception_id' => 'exception_ids',
+		'follow_up_id' => 'follow_up_ids',
+		'hold_id' => 'hold_ids',
+		'holder_wp_user_id' => 'user_ids',
+		'identity_id' => 'identity_ids',
+		'invited_by_wp_user_id' => 'user_ids',
+		'invoice_id' => 'invoice_ids',
+		'invoiced_invoice_id' => 'invoice_ids',
+		'linked_appointment_id' => 'appointment_ids',
+		'location_id' => 'location_ids',
+		'merged_by_wp_user_id' => 'user_ids',
+		'merged_patient_id' => 'patient_ids',
+		'note_id' => 'note_ids',
+		'ocr_job_id' => 'ocr_job_ids',
+		'organization_id' => 'org_ids',
+		'page_id' => 'page_ids',
+		'patient_id' => 'patient_ids',
+		'payment_id' => 'payment_ids',
+		'prescription_id' => 'prescription_ids',
+		'recipient_wp_user_id' => 'user_ids',
+		'removed_by_wp_user_id' => 'user_ids',
+		'rescheduled_from' => 'appointment_ids',
+		'rescheduled_to' => 'appointment_ids',
+		'role_def_id' => 'role_def_ids',
+		'schedule_id' => 'schedule_ids',
+		'sender_wp_user_id' => 'user_ids',
+		'service_id' => 'service_ids',
+		'set_by_wp_user_id' => 'user_ids',
+		'slot_id' => 'slot_ids',
+		'source_page_id' => 'page_ids',
+		'status_updated_by_wp_user_id' => 'user_ids',
+		'surviving_patient_id' => 'patient_ids',
+		'thread_id' => 'thread_ids',
+		'token_id' => 'otp_token_ids',
+		'updated_by_wp_user_id' => 'user_ids',
+		'visit_id' => 'visit_ids',
+		'wp_user_id' => 'user_ids',
+	);
+
+	/**
+	 * Authoritative per-table resolution for column names that are not globally
+	 * unambiguous. Verified against the production schema's declared foreign keys:
+	 *
+	 *   cpms_membership_capabilities.membership_id              -> cpms_clinic_memberships.id
+	 *   cpms_membership_locations.membership_id                 -> cpms_clinic_memberships.id
+	 *   cpms_organization_membership_capabilities.membership_id -> cpms_organization_memberships.id
+	 *
+	 * @var array<string,array<string,string>>
+	 */
+	private const TABLE_OWNERSHIP_COLUMNS = array(
+		'cpms_membership_capabilities' => array( 'membership_id' => 'clinic_membership_ids' ),
+		'cpms_membership_locations' => array( 'membership_id' => 'clinic_membership_ids' ),
+		'cpms_organization_membership_capabilities' => array( 'membership_id' => 'org_membership_ids' ),
+	);
+
+	/**
+	 * Tables whose ownership must NOT be inferred from the global column map.
+	 *
+	 * Both link tables are tenant-scoped, so a FOREIGN row can reference one of
+	 * the demo's synthetic WordPress users. Matching on `wp_user_id` alone would
+	 * delete that foreign link; only the tenant columns prove ownership here.
+	 *
+	 * @var array<string,list<string>>
+	 */
+	private const TABLE_OWNERSHIP_ONLY = array(
+		'cpms_patient_user_links'     => array( 'clinic_id', 'patient_id' ),
+		'cpms_patient_identity_links' => array( 'organization_id', 'identity_id' ),
+	);
+
+	/**
+	 * Table -> id-set that receives the ids collected for it. A table may only
+	 * feed the set whose parent it is, which is what keeps clinic-membership ids
+	 * out of the organization-membership namespace.
+	 *
+	 * @var array<string,string>
+	 */
+	private const TABLE_FEEDS_SET = array(
+		'cpms_appointments' => 'appointment_ids',
+		'cpms_clinic_memberships' => 'clinic_membership_ids',
+		'cpms_clinical_notes' => 'note_ids',
+		'cpms_clinicians' => 'clinician_ids',
+		'cpms_clinics' => 'clinic_ids',
+		'cpms_custom_role_defs' => 'role_def_ids',
+		'cpms_doctor_consultation_fees' => 'doctor_fee_ids',
+		'cpms_drug_reference' => 'drug_ref_ids',
+		'cpms_follow_ups' => 'follow_up_ids',
+		'cpms_handwriting_documents' => 'document_ids',
+		'cpms_handwriting_pages' => 'page_ids',
+		'cpms_invoices' => 'invoice_ids',
+		'cpms_locations' => 'location_ids',
+		'cpms_medical_attachments' => 'attachment_ids',
+		'cpms_message_threads' => 'thread_ids',
+		'cpms_messages' => 'staff_message_ids',
+		'cpms_ocr_jobs' => 'ocr_job_ids',
+		'cpms_organization_memberships' => 'org_membership_ids',
+		'cpms_organizations' => 'org_ids',
+		'cpms_otp_tokens' => 'otp_token_ids',
+		'cpms_patient_identities' => 'identity_ids',
+		'cpms_patients' => 'patient_ids',
+		'cpms_payments' => 'payment_ids',
+		'cpms_prescriptions' => 'prescription_ids',
+		'cpms_schedule' => 'schedule_ids',
+		'cpms_schedule_exceptions' => 'exception_ids',
+		'cpms_schedule_slots' => 'slot_ids',
+		'cpms_services' => 'service_ids',
+		'cpms_slot_holds' => 'hold_ids',
+		'cpms_sms_messages' => 'sms_message_ids',
+		'cpms_visit_charge_items' => 'charge_item_ids',
+		'cpms_visits' => 'visit_ids',
+	);
+
+	/**
+	 * Tables with NO surrogate `id` column, deleted by an explicit verified key.
+	 *
+	 * These tables were previously skipped entirely (`id` was required), so their
+	 * fixture rows were never collected, never deleted, and never detected as
+	 * residue: the teardown could report a clean result while leaving orphans.
+	 * A row is now matched and removed by this key only; a numeric coincidence is
+	 * never treated as ownership.
+	 *
+	 * @var array<string,list<string>>
+	 */
+	private const COMPOSITE_KEY_TABLES = array(
+		'cpms_message_participants' => array( 'thread_id', 'wp_user_id' ),
+		'cpms_visit_consultation_fees' => array( 'visit_id' ),
+		'cpms_visit_fee_snapshot_failures' => array( 'visit_id' ),
+	);
+
 	/** @var Env */
 	private Env $env;
 
@@ -100,7 +253,8 @@ class ScopedTeardown {
 			'payment_ids'       => isset( $ids['payment_id'] ) ? array( (int) $ids['payment_id'] ) : array(),
 			'service_ids'       => isset( $ids['service_id'] ) ? array( (int) $ids['service_id'] ) : array(),
 			'follow_up_ids'     => isset( $ids['follow_up_id'] ) ? array( (int) $ids['follow_up_id'] ) : array(),
-			'membership_ids'    => array(),
+			'clinic_membership_ids' => array(),
+			'org_membership_ids'    => array(),
 			'role_def_ids'      => array(),
 			'document_ids'      => array(),
 			'page_ids'          => array(),
@@ -111,82 +265,10 @@ class ScopedTeardown {
 			'ocr_job_ids'       => array(),
 			'hold_ids'          => array(),
 			'exception_ids'     => array(),
-		);
-
-		$column_map = array(
-			'clinic_id'                  => 'clinic_ids',
-			'organization_id'            => 'org_ids',
-			'location_id'                => 'location_ids',
-			'patient_id'                 => 'patient_ids',
-			'identity_id'                => 'identity_ids',
-			'clinician_id'               => 'clinician_ids',
-			'schedule_id'                => 'schedule_ids',
-			'slot_id'                    => 'slot_ids',
-			'appointment_id'             => 'appointment_ids',
-			'linked_appointment_id'      => 'appointment_ids',
-			'rescheduled_from'           => 'appointment_ids',
-			'rescheduled_to'             => 'appointment_ids',
-			'visit_id'                   => 'visit_ids',
-			'note_id'                    => 'note_ids',
-			'prescription_id'            => 'prescription_ids',
-			'invoice_id'                 => 'invoice_ids',
-			'payment_id'                 => 'payment_ids',
-			'service_id'                 => 'service_ids',
-			'follow_up_id'               => 'follow_up_ids',
-			'membership_id'              => 'membership_ids',
-			'role_def_id'                => 'role_def_ids',
-			'document_id'                => 'document_ids',
-			'page_id'                    => 'page_ids',
-			'source_page_id'             => 'page_ids',
-			'message_id'                 => 'sms_message_ids',
-			'token_id'                   => 'otp_token_ids',
-			'drug_ref_id'                => 'drug_ref_ids',
-			'background_attachment_id'   => 'attachment_ids',
-			'ocr_job_id'                 => 'ocr_job_ids',
-			'hold_id'                    => 'hold_ids',
-			'exception_id'               => 'exception_ids',
-			'surviving_patient_id'       => 'patient_ids',
-			'merged_patient_id'          => 'patient_ids',
-			'wp_user_id'                 => 'user_ids',
-			'actor_wp_user_id'           => 'user_ids',
-			'created_by_wp_user_id'      => 'user_ids',
-			'updated_by_wp_user_id'      => 'user_ids',
-			'approved_by_wp_user_id'     => 'user_ids',
-			'merged_by_wp_user_id'       => 'user_ids',
-			'invited_by_wp_user_id'      => 'user_ids',
-			'holder_wp_user_id'          => 'user_ids',
-			'recipient_wp_user_id'       => 'user_ids',
-			'status_updated_by_wp_user_id' => 'user_ids',
-		);
-
-		$table_to_set = array(
-			'cpms_organizations'                     => 'org_ids',
-			'cpms_clinics'                           => 'clinic_ids',
-			'cpms_locations'                         => 'location_ids',
-			'cpms_patients'                          => 'patient_ids',
-			'cpms_patient_identities'                => 'identity_ids',
-			'cpms_clinicians'                        => 'clinician_ids',
-			'cpms_schedule'                          => 'schedule_ids',
-			'cpms_schedule_slots'                    => 'slot_ids',
-			'cpms_appointments'                      => 'appointment_ids',
-			'cpms_visits'                            => 'visit_ids',
-			'cpms_clinical_notes'                    => 'note_ids',
-			'cpms_prescriptions'                     => 'prescription_ids',
-			'cpms_invoices'                          => 'invoice_ids',
-			'cpms_payments'                          => 'payment_ids',
-			'cpms_services'                          => 'service_ids',
-			'cpms_follow_ups'                        => 'follow_up_ids',
-			'cpms_clinic_memberships'                => 'membership_ids',
-			'cpms_custom_role_defs'                  => 'role_def_ids',
-			'cpms_handwriting_documents'             => 'document_ids',
-			'cpms_handwriting_pages'                 => 'page_ids',
-			'cpms_sms_messages'                      => 'sms_message_ids',
-			'cpms_otp_tokens'                        => 'otp_token_ids',
-			'cpms_drug_reference'                    => 'drug_ref_ids',
-			'cpms_medical_attachments'               => 'attachment_ids',
-			'cpms_ocr_jobs'                          => 'ocr_job_ids',
-			'cpms_slot_holds'                        => 'hold_ids',
-			'cpms_schedule_exceptions'               => 'exception_ids',
+			'thread_ids'        => array(),
+			'staff_message_ids' => array(),
+			'charge_item_ids'   => array(),
+			'doctor_fee_ids'    => array(),
 		);
 
 		$baseline_max = array();
@@ -194,7 +276,8 @@ class ScopedTeardown {
 			$baseline_max[ $short ] = (int) ( $info['max_id'] ?? 0 );
 		}
 
-		$owned_tables = array();
+		$owned_tables    = array();
+		$owned_composite = array();
 		for ( $pass = 0; $pass < 7; $pass++ ) {
 			$changed = false;
 			foreach ( Preflight::KNOWN_TABLES as $short ) {
@@ -203,13 +286,26 @@ class ScopedTeardown {
 				}
 				$full = $this->platform->table( $short );
 				$cols = $this->platform->columns( $full );
+
+				// Tables with no surrogate `id` are torn down by an explicit verified
+				// composite key. They used to be skipped here, which is why their
+				// fixture rows were never collected, deleted, or detected as residue.
+				$composite_key = self::COMPOSITE_KEY_TABLES[ $short ] ?? array();
+				if ( array() !== $composite_key ) {
+					if ( $this->collect_composite_rows( $short, $full, $cols, $composite_key, $sets, $owned_composite ) ) {
+						$changed = true;
+					}
+					continue;
+				}
+
 				if ( ! in_array( 'id', $cols, true ) ) {
 					continue;
 				}
 				$clauses = array();
 				$params  = array();
-				foreach ( $column_map as $column => $set_key ) {
-					if ( ! in_array( $column, $cols, true ) || array() === ( $sets[ $set_key ] ?? array() ) ) {
+				foreach ( $cols as $column ) {
+					$set_key = $this->resolve_ownership_set( $short, (string) $column );
+					if ( '' === $set_key || array() === ( $sets[ $set_key ] ?? array() ) ) {
 						continue;
 					}
 					$values = array_values( array_unique( array_filter( array_map( 'intval', $sets[ $set_key ] ) ) ) );
@@ -247,7 +343,7 @@ class ScopedTeardown {
 					}
 					$owned_tables[ $short ][ $row_id ] = true;
 					$changed = true;
-					$set_key = $table_to_set[ $short ] ?? '';
+					$set_key = self::TABLE_FEEDS_SET[ $short ] ?? '';
 					if ( '' !== $set_key ) {
 						$sets[ $set_key ][] = $row_id;
 						$sets[ $set_key ] = array_values( array_unique( $sets[ $set_key ] ) );
@@ -349,6 +445,7 @@ class ScopedTeardown {
 			'organization_id'  => $org_id,
 			'user_ids'         => $user_ids,
 			'tables'           => $tables,
+			'composite'        => $owned_composite,
 			'jobs'             => $jobs,
 			'processing_jobs'  => $processing_jobs,
 			'operational_logs' => $oplogs,
@@ -357,6 +454,98 @@ class ScopedTeardown {
 			'shared_keys'      => $shared_keys,
 			'entity_ids'       => array_map( 'intval', array_keys( $entity_ids ) ),
 		);
+	}
+
+	/**
+	 * Which id-set proves ownership of one column of one table.
+	 *
+	 * Resolution order matters and is the fix for the membership-id defect:
+	 *   1. TABLE_OWNERSHIP_ONLY restricts the table to its tenant columns, so a
+	 *      foreign row that merely references a synthetic user is never claimed;
+	 *   2. TABLE_OWNERSHIP_COLUMNS resolves a column name that is ambiguous
+	 *      schema-wide by looking at the table that carries it;
+	 *   3. OWNERSHIP_COLUMNS applies only to names with exactly one FK parent.
+	 *
+	 * @param string $short  Short table name.
+	 * @param string $column Column name.
+	 * @return string Id-set name, or '' when the column proves nothing.
+	 */
+	private function resolve_ownership_set( string $short, string $column ): string {
+		$only = self::TABLE_OWNERSHIP_ONLY[ $short ] ?? array();
+		if ( array() !== $only && ! in_array( $column, $only, true ) ) {
+			return '';
+		}
+		$per_table = self::TABLE_OWNERSHIP_COLUMNS[ $short ] ?? array();
+		if ( isset( $per_table[ $column ] ) ) {
+			return (string) $per_table[ $column ];
+		}
+
+		return (string) ( self::OWNERSHIP_COLUMNS[ $column ] ?? '' );
+	}
+
+	/**
+	 * Collect rows of a table that has no surrogate `id`, by its verified key.
+	 *
+	 * Ownership is proven by the same id-sets as everywhere else (never by a
+	 * numeric coincidence), but the row is identified by the full composite key so
+	 * the later delete can address exactly the rows that were proven owned.
+	 *
+	 * @param string             $short  Short table name.
+	 * @param string             $full   Full table name.
+	 * @param list<string>       $cols   Table columns.
+	 * @param list<string>       $key    Verified key columns.
+	 * @param array<string,list<int>> $sets Owned id-sets (read-only).
+	 * @param array<string,array<string,list<int|string>>> $owned Collected keys.
+	 * @return bool Whether anything new was collected.
+	 */
+	private function collect_composite_rows( string $short, string $full, array $cols, array $key, array $sets, array &$owned ): bool {
+		foreach ( $key as $column ) {
+			if ( ! in_array( $column, $cols, true ) ) {
+				// Fail closed: a key column that does not exist proves nothing.
+				return false;
+			}
+		}
+		$clauses = array();
+		$params  = array();
+		foreach ( $cols as $column ) {
+			$set_key = $this->resolve_ownership_set( $short, (string) $column );
+			if ( '' === $set_key || array() === ( $sets[ $set_key ] ?? array() ) ) {
+				continue;
+			}
+			$values = array_values( array_unique( array_filter( array_map( 'intval', $sets[ $set_key ] ) ) ) );
+			if ( array() === $values ) {
+				continue;
+			}
+			$ph        = implode( ',', array_fill( 0, count( $values ), '%d' ) );
+			$clauses[] = '`' . $column . '` IN (' . $ph . ')';
+			$params    = array_merge( $params, $values );
+		}
+		if ( array() === $clauses ) {
+			return false;
+		}
+		$select = implode( ',', array_map( static fn ( $c ): string => '`' . $c . '`', $key ) );
+		$rows   = $this->platform->fetch_all(
+			'SELECT ' . $select . ' FROM `' . $full . '` WHERE (' . implode( ' OR ', $clauses ) . ')',
+			$params
+		);
+		$changed = false;
+		foreach ( $rows as $row ) {
+			$tuple     = array();
+			$signature = array();
+			foreach ( $key as $column ) {
+				$value       = $row[ $column ] ?? '';
+				$signature[] = (string) $value;
+				$tuple[]     = ctype_digit( (string) $value ) ? (int) $value : (string) $value;
+			}
+			$fingerprint = implode( '|', $signature );
+			if ( '' === $fingerprint || isset( $owned[ $short ][ $fingerprint ] ) ) {
+				continue;
+			}
+			$owned[ $short ][ $fingerprint ] = $tuple;
+			$changed                         = true;
+		}
+
+		return $changed;
 	}
 
 	/**
@@ -402,6 +591,9 @@ class ScopedTeardown {
 				continue;
 			}
 			$plan[] = array( 'table' => $short, 'rows' => count( $ids ) );
+		}
+		foreach ( $scope['composite'] as $short => $keys ) {
+			$plan[] = array( 'table' => $short . ' (composite key)', 'rows' => count( $keys ) );
 		}
 		foreach ( self::PRESERVED_PARENT_TABLES as $short ) {
 			$plan[] = array( 'table' => $short . ' (preserved audit anchor)', 'rows' => count( (array) ( $scope['tables'][ $short ] ?? array() ) ) );
@@ -474,7 +666,7 @@ class ScopedTeardown {
 				$deleted = array_merge( $deleted, $this->delete_global_rows( $preview['scope'] ) );
 				$this->env->maybe_inject_fault( 'scoped_teardown:after-global', array( 'stage' => $stage ) );
 				$stage = 'cpms-tables';
-				$deleted = array_merge( $deleted, $this->delete_table_rows( $preview['scope']['tables'] ) );
+				$deleted = array_merge( $deleted, $this->delete_table_rows( $preview['scope'] ) );
 				$this->env->maybe_inject_fault( 'scoped_teardown:after-tables', array( 'stage' => $stage ) );
 				$stage = 'wp-core';
 				$deleted = array_merge( $deleted, $this->delete_wp_records( $manifest, $user_ids ) );
@@ -511,11 +703,20 @@ class ScopedTeardown {
 				'clean'            => true,
 				'ok'               => true,
 			);
-			$this->env->option_delete( ScopedManifest::LOCK_OPTION );
-			$this->env->option_delete( 'cpsd_had_clean_teardown' );
+			// Ordering is a safety property, not a style choice.
+			//
+			// The tombstone is the durable proof that this fixture was torn down
+			// completely. It is written through a verified helper FIRST, so a lost
+			// write aborts before any recovery evidence is discarded. Only then is
+			// the sealed pending baseline cleared: that record is the sole way an
+			// interrupted run can still prove what pre-existed, so clearing it
+			// before the replacement record is durable would destroy the ability to
+			// recover safely.
+			$this->manifest->write_tombstone( $tombstone );
 			$this->manifest->clear_pending_baseline();
 			$this->manifest->disable_mode();
-			$this->manifest->write_tombstone( $tombstone );
+			$this->env->option_delete( ScopedManifest::LOCK_OPTION );
+			$this->env->option_delete( 'cpsd_had_clean_teardown' );
 			$this->manifest->delete();
 
 			return array(
@@ -630,16 +831,27 @@ class ScopedTeardown {
 	}
 
 	/**
-	 * @param array<string,list<int>> $tables Owned table IDs.
+	 * @param array<string,mixed> $scope Ownership scope.
 	 * @return array<string,int>
 	 */
-	private function delete_table_rows( array $tables ): array {
+	private function delete_table_rows( array $scope ): array {
+		$tables  = (array) ( $scope['tables'] ?? array() );
 		$deleted = array();
 		$skip    = array_merge( self::GLOBAL_TABLES, self::PRESERVED_PARENT_TABLES );
 		$order   = array_values( array_diff( Teardown::DELETE_ORDER, $skip ) );
 		foreach ( $order as $short ) {
+			if ( isset( self::COMPOSITE_KEY_TABLES[ $short ] ) ) {
+				continue; // handled below, by verified composite key
+			}
 			$ids = (array) ( $tables[ $short ] ?? array() );
 			$deleted[ $short ] = $this->delete_ids( $short, $ids );
+		}
+		foreach ( self::COMPOSITE_KEY_TABLES as $short => $key ) {
+			$deleted[ $short ] = $this->delete_composite_rows(
+				$short,
+				(array) $key,
+				(array) ( $scope['composite'][ $short ] ?? array() )
+			);
 		}
 		$this->archive_parent_anchors( $tables );
 		foreach ( self::PRESERVED_PARENT_TABLES as $short ) {
@@ -685,6 +897,40 @@ class ScopedTeardown {
 	}
 
 	/**
+	 * Delete exactly the rows whose verified composite key was collected.
+	 *
+	 * Each row is addressed by an explicit ``col = value AND col = value``
+	 * predicate built from the key columns that were proven owned. Row
+	 * constructors are avoided deliberately: an equality predicate per proven
+	 * tuple is the same set of rows, is portable across MySQL 8 and MariaDB, and
+	 * cannot degrade into a partial match the way an unqualified `IN` could.
+	 *
+	 * @param string                         $short Short table name.
+	 * @param list<string>                   $key   Verified key columns.
+	 * @param array<string,list<int|string>> $keys  Collected key tuples, keyed by signature.
+	 * @return int Rows deleted.
+	 */
+	private function delete_composite_rows( string $short, array $key, array $keys ): int {
+		if ( array() === $keys || ! $this->platform->table_exists( $short ) ) {
+			return 0;
+		}
+		$table   = $this->platform->table( $short );
+		$deleted = 0;
+		foreach ( $keys as $tuple ) {
+			$clauses = array();
+			$params  = array();
+			foreach ( $key as $index => $column ) {
+				$value     = $tuple[ $index ] ?? '';
+				$clauses[] = '`' . $column . '` = ' . ( is_int( $value ) ? '%d' : '%s' );
+				$params[]  = $value;
+			}
+			$deleted += $this->platform->delete_where( $table, implode( ' AND ', $clauses ), $params );
+		}
+
+		return $deleted;
+	}
+
+	/**
 	 * @param list<string> $keys Exact fixture-owned rate-limit keys.
 	 * @return int
 	 */
@@ -699,6 +945,63 @@ class ScopedTeardown {
 		}
 		$ph = implode( ',', array_fill( 0, count( $keys ), '%s' ) );
 		return $this->platform->delete_where( $this->platform->table( 'cpms_rate_limits' ), 'window_key IN (' . $ph . ')', $keys );
+	}
+
+	/**
+	 * Refuse to delete a synthetic WordPress user while a FOREIGN identity link
+	 * still depends on it.
+	 *
+	 * `cpms_patient_user_links` is Clinic-scoped and `cpms_patient_identity_links`
+	 * is Organization-scoped. Either can hold a row that points at one of the
+	 * demo's synthetic users while belonging to a real Clinic/Organization that
+	 * pre-existed. Deleting the user would silently break that patient's access
+	 * path and any OTP flow built on it, so the teardown fails closed instead.
+	 *
+	 * Demo-owned link rows are already removed by this point: the tenant columns
+	 * (clinic_id / patient_id / organization_id / identity_id) prove ownership,
+	 * and `wp_user_id` alone is deliberately NOT accepted as proof for these two
+	 * tables (see TABLE_OWNERSHIP_ONLY).
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param int                 $user_id  Synthetic user under consideration.
+	 * @return void
+	 * @throws Exception When a foreign link depends on the user.
+	 */
+	private function assert_user_not_foreign_linked( array $manifest, int $user_id ): void {
+		$ids       = (array) ( $manifest['ids'] ?? array() );
+		$clinic_id = (int) ( $ids['clinic_id'] ?? 0 );
+		$org_id    = (int) ( $ids['organization_id'] ?? 0 );
+
+		$checks = array(
+			'cpms_patient_user_links'     => array( 'tenant' => 'clinic_id', 'owned' => $clinic_id ),
+			'cpms_patient_identity_links' => array( 'tenant' => 'organization_id', 'owned' => $org_id ),
+		);
+		foreach ( $checks as $short => $spec ) {
+			if ( ! $this->platform->table_exists( $short ) ) {
+				continue;
+			}
+			$full = $this->platform->table( $short );
+			$cols = $this->platform->columns( $full );
+			if ( ! in_array( 'wp_user_id', $cols, true ) ) {
+				continue;
+			}
+			$tenant = (string) $spec['tenant'];
+			$owned  = (int) $spec['owned'];
+			$rows   = in_array( $tenant, $cols, true )
+				? $this->platform->fetch_all(
+					'SELECT `' . $tenant . '` FROM `' . $full . '` WHERE `wp_user_id` = %d',
+					array( $user_id )
+				)
+				: array();
+			foreach ( $rows as $row ) {
+				if ( (int) ( $row[ $tenant ] ?? 0 ) !== $owned ) {
+					throw new Exception(
+						'FOREIGN_IDENTITY_LINK',
+						'پیوند هویت متعلق به درمانگاه/سازمان دیگری به کاربر ساختگی وابسته است؛ حذف کاربر متوقف شد.'
+					);
+				}
+			}
+		}
 	}
 
 	/**
@@ -729,6 +1032,7 @@ class ScopedTeardown {
 			if ( 0 !== strpos( $login, 'cpsd-' ) || false === strpos( $login, (string) $manifest['fixture_id'] ) ) {
 				throw new Exception( 'OWNERSHIP_UNPROVEN', 'یک حساب هدف با شناسه دمو همخوان نیست.' );
 			}
+			$this->assert_user_not_foreign_linked( $manifest, $user_id );
 			$wpdb->delete( $wpdb->usermeta, array( 'user_id' => $user_id ), array( '%d' ) );
 			if ( $this->env->delete_user( $user_id ) ) {
 				++$deleted['wp_users'];
@@ -759,6 +1063,11 @@ class ScopedTeardown {
 			}
 			if ( array() !== $ids ) {
 				$remaining[] = $short . ':' . count( $ids );
+			}
+		}
+		foreach ( $scope['composite'] as $short => $keys ) {
+			if ( array() !== $keys ) {
+				$remaining[] = $short . ':' . count( $keys );
 			}
 		}
 		if ( array() !== $scope['jobs'] || array() !== $scope['processing_jobs'] ) {
@@ -867,6 +1176,27 @@ class ScopedTeardown {
 			}
 			$full = $this->platform->table( $short );
 			$cols = $this->platform->columns( $full );
+			if ( array() !== ( self::COMPOSITE_KEY_TABLES[ $short ] ?? array() ) ) {
+				// No surrogate id to bound by: scan the whole (small) table for the
+				// fixture marker. Proven ownership is already excluded via $owned.
+				$rows = $this->platform->fetch_all( 'SELECT * FROM `' . $full . '`' );
+				foreach ( $rows as $row ) {
+					$signature = array();
+					foreach ( self::COMPOSITE_KEY_TABLES[ $short ] as $column ) {
+						$signature[] = (string) ( $row[ $column ] ?? '' );
+					}
+					if ( isset( $owned[ $short ][ implode( '|', $signature ) ] ) ) {
+						continue;
+					}
+					foreach ( $row as $column => $value ) {
+						if ( is_string( $value ) && '' !== $fixture && false !== strpos( $value, $fixture ) ) {
+							$problems[] = 'UNTRACKED_FIXTURE_ROW:' . $short;
+							break 2;
+						}
+					}
+				}
+				continue;
+			}
 			if ( ! in_array( 'id', $cols, true ) ) {
 				continue;
 			}

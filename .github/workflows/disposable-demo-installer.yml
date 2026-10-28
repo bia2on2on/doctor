@@ -80,6 +80,12 @@ jobs:
       # Workflow-only edits must not be able to disable the lane's own controls:
       # the contract/security suite (and the isolation-rule unit tests inside it)
       # runs on every lane invocation, including changes to this file alone.
+      - name: Companion compatibility gate (schema/table/ownership contract)
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s tests/companion-compat -p 'test_*.py'
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+
       - name: Lane contract & isolation-rule tests
         run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 

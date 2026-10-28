@@ -152,7 +152,17 @@ class ScopedProvisioner extends Provisioner {
 		);
 		$manifest['audit_chain_at_seal'] = $this->audit_guard->verify_chain();
 		$manifest = $this->scoped_manifest->save( $manifest );
-		// The baseline is now sealed inside the manifest itself.
+
+		// Prove the sealed baseline actually survived the write before discarding
+		// the pending copy. save() already reads the record back, but the baseline
+		// is the one field the recovery path cannot reconstruct, so it is asserted
+		// explicitly on a fresh load (which also re-verifies the HMAC and the site
+		// fingerprint).
+		$reloaded = $this->scoped_manifest->load();
+		if ( ! is_array( $reloaded ) || array() === (array) ( $reloaded['baseline'] ?? array() ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'پایهٔ مرجع در فایل مالکیت تأیید نشد؛ عملیات متوقف شد.' );
+		}
+		// Only now is the pending copy redundant.
 		$this->scoped_manifest->clear_pending_baseline();
 		$result['manifest'] = $manifest;
 		return $result;

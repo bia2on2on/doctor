@@ -47,6 +47,22 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
+JOURNEYS = (
+    # Machine-readable registry of the journeys this harness implements. The
+    # companion compatibility evaluator (.github/scripts/companion-compat)
+    # matches manifest `features[].journeys` against these identifiers, so a
+    # feature cannot claim coverage that no harness provides.
+    "cpsd_admin_provision",
+    "cpsd_manifest_tamper_refused",
+    "cpsd_persona_receptionist",
+    "cpsd_persona_doctor",
+    "cpsd_persona_accountant",
+    "cpsd_persona_clinic_manager",
+    "cpsd_persona_organization_manager",
+    "cpsd_patient_otp_booking",
+    "cpsd_admin_teardown",
+)
+
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 ADMIN_USER = os.environ.get("ADMIN_USER", "cpsd_admin")
 ADMIN_PASS = os.environ["ADMIN_PASS"]

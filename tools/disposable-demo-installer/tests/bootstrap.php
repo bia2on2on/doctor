@@ -17,7 +17,7 @@ define( 'CPMS_DEMO_FILE', __DIR__ . '/../cpms-disposable-demo.php' );
 define( 'CPMS_DEMO_DIR', __DIR__ . '/../' );
 define( 'CPMS_DEMO_URL', 'https://example.test/wp-content/plugins/cpms-disposable-demo/' );
 define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-management.php' );
-define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_18_0029' );
+define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
 
 // --- Minimal WordPress functions used by the tested code paths. -------------
 function add_action( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
@@ -458,7 +458,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public array $tables_data = array();
 	public array $calls       = array();
 	public bool $available_flag = true;
-	public string $schema     = '2026_10_18_0029';
+	public string $schema     = '2026_10_27_0030';
 	public array $settings    = array();
 	public int $fake_clinic_id = 0;
 	public string $fake_patient_mobile = '';
@@ -491,7 +491,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				),
 			),
 			'cpms_schema_migrations' => array(
-				array( 'version' => '2026_10_18_0029', 'description' => 'baseline' ),
+				array( 'version' => '2026_10_27_0030', 'description' => 'baseline' ),
 			),
 			'cpms_license_install'   => array(
 				array( 'id' => 1, 'install_id' => '0123456789abcdef0123456789abcdef', 'environment' => 'production' ),
@@ -588,6 +588,16 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'cpms_audit_logs'                           => array( 'id', 'clinic_id', 'action', 'resource_type', 'resource_id', 'actor_wp_user_id', 'meta_json', 'request_id', 'ip_hash' ),
 			'cpms_rate_limits'                          => array( 'window_key', 'window_id', 'hits' ),
 			'cpms_drug_reference'                       => array( 'id', 'clinic_id', 'generic_name' ),
+			// Schema 2026_10_27_0030. The three messaging/pricing tables without a
+			// surrogate `id` are modelled explicitly so composite-key teardown is
+			// exercised rather than silently skipped.
+			'cpms_message_threads'                      => array( 'id', 'clinic_id', 'organization_id', 'location_id', 'patient_id', 'visit_id', 'created_by_wp_user_id' ),
+			'cpms_message_participants'                 => array( 'thread_id', 'wp_user_id', 'staff_class', 'last_read_message_id' ),
+			'cpms_messages'                             => array( 'id', 'clinic_id', 'thread_id', 'sender_wp_user_id', 'body' ),
+			'cpms_doctor_consultation_fees'             => array( 'id', 'clinic_id', 'clinician_id', 'location_id', 'fee' ),
+			'cpms_visit_consultation_fees'              => array( 'visit_id', 'clinic_id', 'clinician_id', 'fee', 'set_by_wp_user_id' ),
+			'cpms_visit_charge_items'                   => array( 'id', 'clinic_id', 'visit_id', 'clinician_id', 'description', 'unit_amount', 'invoiced_invoice_id' ),
+			'cpms_visit_fee_snapshot_failures'          => array( 'visit_id', 'clinic_id', 'failed_at' ),
 		);
 
 		return $map[ $short ] ?? array( 'id', 'clinic_id' );
@@ -753,8 +763,12 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	 * @return list<array<string,mixed>>
 	 */
 	private function matches( string $short, string $where, array $params ): array {
-		$rows = $this->tables_data[ $short ] ?? array();
-		$out  = array();
+		// Production SQL quotes identifiers with backticks; the rules below are
+		// written without them, so quoting is normalised away once here instead of
+		// being duplicated into every predicate shape.
+		$where = str_replace( '`', '', $where );
+		$rows  = $this->tables_data[ $short ] ?? array();
+		$out   = array();
 		if ( '1 = 0' === $where ) {
 			return array();
 		}
@@ -886,9 +900,54 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				}
 				continue;
 			}
+			if ( str_contains( $where, ' OR ' ) && str_contains( $where, ' IN (' ) ) {
+				// Compound OR-of-INs issued by ScopedTeardown::collect_composite_rows().
+				$cursor = 0;
+				$hit    = false;
+				foreach ( explode( ' OR ', $where ) as $part ) {
+					if ( preg_match( '/^([a-z_]+) IN \(([^()]*)\)$/', trim( $part ), $pm ) !== 1 ) {
+						throw new RuntimeException( 'unsupported test predicate: ' . $where . ' on ' . $short );
+					}
+					$counted = substr_count( $pm[2], ',' ) + 1;
+					$slice   = array_slice( $params, $cursor, $counted );
+					$cursor += $counted;
+					if ( in_array( (int) ( $row[ $pm[1] ] ?? -1 ), array_map( 'intval', $slice ), true ) ) {
+						$hit = true;
+						break;
+					}
+				}
+				if ( $hit ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
 			if ( preg_match( '/^([a-z_]+) IN \((.*)\)$/', $where, $m ) === 1 ) {
 				$values = array_map( 'intval', $params );
 				if ( in_array( (int) ( $row[ $m[1] ] ?? -1 ), $values, true ) ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			// Generic chained equality: `col` = %d AND `col` = %s [AND ...].
+			// Used by ScopedTeardown::delete_composite_rows(), which addresses a
+			// table without a surrogate `id` by its full verified primary key.
+			if ( preg_match( '/^(?:[a-z_]+ = %[ds])(?: AND [a-z_]+ = %[ds])*$/', $where ) === 1 ) {
+				$pairs = array();
+				preg_match_all( '/([a-z_]+) = %([ds])/', $where, $pairs, PREG_SET_ORDER );
+				$matched_row = true;
+				foreach ( $pairs as $position => $pair ) {
+					$expected = $params[ $position ] ?? null;
+					$actual   = $row[ $pair[1] ] ?? null;
+					$is_int   = 'd' === $pair[2];
+					$equal    = $is_int
+						? (int) $actual === (int) $expected
+						: (string) $actual === (string) $expected;
+					if ( ! $equal ) {
+						$matched_row = false;
+						break;
+					}
+				}
+				if ( $matched_row ) {
 					$out[ $index ] = $row;
 				}
 				continue;
@@ -930,6 +989,9 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function fetch_all( string $sql, array $params = array() ): array {
+		// Compare against a backtick-free copy so identifier quoting in production
+		// SQL does not change which shape is recognised.
+		$probe = str_replace( '`', '', $sql );
 		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id = %d AND mobile = %s' ) ) {
 			return $this->matches( 'cpms_otp_tokens', 'clinic_id = %d AND mobile = %s', $params );
 		}
@@ -939,13 +1001,22 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		if ( str_contains( $sql, "FROM wp_cpms_sms_messages WHERE clinic_id = %d AND recipient LIKE '0900%%'" ) ) {
 			return $this->matches( 'cpms_sms_messages', "clinic_id = %d AND recipient LIKE '0900%%'", $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' IN (' . $m[3] . ')', $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) ORDER BY id/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE \((.+)\)$/', $probe, $m ) === 1 && str_contains( $m[2], ' IN (' ) ) {
+			// Compound OR-of-INs used by ScopedTeardown::collect_composite_rows().
+			return $this->matches( $m[1], $m[2], $params );
+		}
+		if ( preg_match( '/FROM wp_([a-z_]+)$/', trim( $probe ), $m ) === 1 ) {
+			// Unfiltered scan of a table without a surrogate `id`
+			// (ScopedTeardown::scan_untracked_fixture_rows()).
+			return $this->tables_data[ $m[1] ] ?? array();
+		}
+		if ( preg_match( '/FROM wp_([a-z_]+) ORDER BY id/', $probe, $m ) === 1 ) {
 			return $this->tables_data[ $m[1] ] ?? array();
 		}
 		throw new RuntimeException( 'unsupported test query: ' . $sql );

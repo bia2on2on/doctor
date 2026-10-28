@@ -1,0 +1,119 @@
+name: Companion compatibility gate
+
+# Fail-closed compatibility gate between the production plugin and the demo
+# companion (tools/disposable-demo-installer).
+#
+# Security model
+# --------------
+# * Runs on `pull_request` (never `pull_request_target`), so a fork PR executes
+#   with a read-only token and no secrets.
+# * `permissions:` is read-only. Nothing in this workflow can write to the
+#   repository or to a pull request.
+# * No repository secrets are referenced.
+#
+# The workflow only DERIVES facts from the checked-out sources; it never builds
+# a release artifact and never mutates the tree.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'clinic-practice-management/**'
+      - 'tools/disposable-demo-installer/**'
+      - 'tests/companion-compat/**'
+      - 'tests/scoped-demo/**'
+      - '.github/scripts/companion-compat/**'
+      - '.github/workflows/companion-compat.yml'
+      - 'docs/scoped-demo/**'
+  push:
+    branches: [main]
+    paths:
+      - 'clinic-practice-management/**'
+      - 'tools/disposable-demo-installer/**'
+      - '.github/scripts/companion-compat/**'
+      - '.github/workflows/companion-compat.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: companion-compat-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  compatibility:
+    name: Compatibility gate (fail closed)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Gate unit and regression tests
+        run: python3 -m unittest discover -s tests/companion-compat -p 'test_*.py' -v
+
+      - name: Scoped-demo static contract tests
+        run: python3 -m unittest discover -s tests/scoped-demo -p 'test_*.py' -v
+
+      - name: Compatibility gate — blockers must be zero
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/companion-compat/evaluate.py \
+            --root . --gate compatibility --report /tmp/compat.json | tee /tmp/compat.log
+
+      - name: Demo coverage — declared gaps are reported, never hidden
+        # `--gate all` also fails while a demo-required feature has no journey.
+        # The step is allowed to fail so the reported status stays honest instead
+        # of turning a known, declared gap into a red unrelated check; the
+        # `compatibility_complete` flag below is what a release gate must read.
+        continue-on-error: true
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/companion-compat/evaluate.py \
+            --root . --gate all --report /tmp/compat-all.json >> /tmp/compat.log 2>&1 || true
+          echo '--- demo coverage detail ---'
+          python3 - <<'PY'
+          import json, pathlib
+          report = json.loads(pathlib.Path('/tmp/compat-all.json').read_text())
+          for finding in report['findings']:
+              if finding['severity'] == 'gap':
+                  print(f"GAP {finding['check']}: {finding['message']}")
+          print(f"compatibility_complete={report['compatibility_complete']}")
+          PY
+
+      - name: Sync would be required?
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/companion-compat/generate.py --root . --check \
+            --report /tmp/sync-plan.json || true
+          cat /tmp/sync-plan.json
+
+      - name: Write job summary
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          {
+            echo '## Companion compatibility'
+            echo '```'
+            cat /tmp/compat.log 2>/dev/null || echo 'no report'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-compat-report
+          path: |
+            /tmp/compat.json
+            /tmp/compat-all.json
+            /tmp/sync-plan.json
+          if-no-files-found: warn
+          retention-days: 30

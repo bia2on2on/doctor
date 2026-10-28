@@ -65,6 +65,15 @@ jobs:
           coverage: none
           tools: composer:v2
 
+      # A release artifact must not be published for a schema the demo companion
+      # has not declared compatible: the disposable demo is the documented way to
+      # evaluate a release, so an undetected mismatch would ship a release nobody
+      # can exercise or safely tear down.
+      - name: Companion compatibility gate (blocks publication on mismatch)
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+
       - name: Build release ZIP (whitelist-only)
         run: bash bin/build-release.sh
 

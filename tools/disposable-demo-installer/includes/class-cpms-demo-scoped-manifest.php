@@ -101,7 +101,9 @@ class ScopedManifest extends Manifest {
 			'site'     => $this->site_fingerprint(),
 		);
 		$payload['mac'] = $this->mac( $payload );
-		$this->env->option_set( self::MODE_OPTION, $payload );
+		if ( ! $this->env->persist_verified( self::MODE_OPTION, $payload ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'نشانگر حالت محدودشده ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 	}
 
 	/**
@@ -144,7 +146,11 @@ class ScopedManifest extends Manifest {
 			'site'        => $this->site_fingerprint(),
 		);
 		$payload['mac'] = $this->mac( $payload );
-		$this->env->option_set( self::PENDING_BASELINE_OPTION, $payload );
+		if ( ! $this->env->persist_verified( self::PENDING_BASELINE_OPTION, $payload ) ) {
+			// Provisioning must not create a single synthetic row when the recovery
+			// evidence it depends on was not durably stored.
+			throw new Exception( 'OPTION_WRITE_FAILED', 'پایهٔ مرجع پیش از راه‌اندازی ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 	}
 
 	/**

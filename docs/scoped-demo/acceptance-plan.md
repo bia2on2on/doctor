@@ -8,10 +8,10 @@ A standard-library Python test under `tests/scoped-demo/` must parse the compani
 
 - `Preflight::OPERATIONAL_TABLES` has exactly 43 entries.
 - `Preflight::SYSTEM_TABLES` has exactly 10 entries.
-- `Preflight::KNOWN_TABLES` has exactly 53 entries and is the union of operational + system.
+- `Preflight::KNOWN_TABLES` has exactly 60 entries (schema `2026_10_27_0030`) and is the union of operational + system.
 - `Teardown::DELETE_ORDER` has 50 entries, all known.
 - `CPMS_DEMO_SCHEMA_VERSION` equals the latest migration `2026_10_18_0029`.
-- `docs/scoped-demo/ownership-map.md` mentions every one of the 53 tables.
+- `docs/scoped-demo/ownership-map.md` mentions every one of the 60 tables.
 - The production `HashChain` and `AuditLogger` contracts still exist.
 - The strict disposable preflight constants are unchanged.
 
@@ -38,7 +38,7 @@ Minimum seed:
 
 Before installing/activating the companion in the acceptance run, take a non-secret baseline:
 
-For each WordPress core table (`users`, `usermeta`, `posts`, `postmeta`, `comments`, `commentmeta`, `terms`, `term_taxonomy`, `term_relationships`, `options`, and any custom WP prefix equivalents) and each of the 53 `cpms_*` tables:
+For each WordPress core table (`users`, `usermeta`, `posts`, `postmeta`, `comments`, `commentmeta`, `terms`, `term_taxonomy`, `term_relationships`, `options`, and any custom WP prefix equivalents) and each of the 60 `cpms_*` tables:
 
 - row count;
 - stable primary/composite key list, in deterministic order;

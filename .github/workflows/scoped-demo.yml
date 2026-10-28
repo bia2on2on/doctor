@@ -85,6 +85,12 @@ jobs:
       - name: Source ownership and safety contract
         run: python3 -m unittest discover -s tests/scoped-demo -p 'test_*.py' -v
 
+      - name: Companion compatibility gate (schema/table/ownership contract)
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s tests/companion-compat -p 'test_*.py'
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+
       - name: Workflow contract tests
         run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 

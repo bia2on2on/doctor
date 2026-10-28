@@ -1,12 +1,14 @@
 # Scoped demo — CPMS table ownership map (preparation checkpoint)
 
-**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_18_0029`.
+**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_27_0030`.
 
 **Status:** source inspection and design only. No companion or production code was changed. This is not executed acceptance evidence.
 
 ## Important correction to the mission wording
 
-The mission says “all 43 CPMS tables”. In this schema, `Preflight::OPERATIONAL_TABLES` has exactly **43** tables, while `Preflight::KNOWN_TABLES` has **53** tables: 43 operational + 10 system/global tables. `Teardown::DELETE_ORDER` has 50 entries. The scoped implementation and its tests must cover all **53**, with special treatment for the four global/shared surfaces called out below.
+The mission says “all 43 CPMS tables”. That count is from a pre-0030 schema. At schema `2026_10_27_0030`, `Preflight::OPERATIONAL_TABLES` has exactly **50** tables and `Preflight::KNOWN_TABLES` has **60** tables (50 operational + 10 system/global). `Teardown::DELETE_ORDER` has 57 entries. The scoped implementation and its tests must cover all **60**, with special treatment for the shared/global surfaces called out below.
+
+The declarative source of truth for every rule below is `tools/disposable-demo-installer/compatibility.json`, and `.github/scripts/companion-compat/evaluate.py` is the gate that proves the companion still satisfies it.
 
 Notation:
 
@@ -17,7 +19,7 @@ Notation:
 - `JSON` — ownership only through a verified entity ID inside a JSON payload.
 - **Never** — table must not be deleted by scoped teardown.
 
-## The 43 operational tables
+## The 43 operational tables present before schema 0030
 
 | # | Table | Actual ownership anchor(s) | Scoped teardown rule |
 |---:|---|---|---|
@@ -88,3 +90,47 @@ Notation:
 4. **FK-safe deletion:** durable logs/jobs/rate limits are evaluated first; clinical and financial children are deleted before parents; the synthetic Clinic is deleted before the synthetic Organization; WP users and the synthetic page are deleted last.
 5. **No cascade into existing data:** no parent row is deleted until all children are accounted for. A failed or interrupted teardown retains the sealed manifest with `status=teardown_failed` and an explicit residual list; repeated teardown is idempotent.
 6. **No schema migration:** record ownership in HMAC-sealed WordPress options, user meta, and post meta only. The current schema already carries the necessary `clinic_id`, `organization_id`, location, user, and JSON anchors.
+
+## Schema `2026_10_27_0030` additions — staff messaging and visit pricing
+
+Migration `2026_10_27_0030_staff_messaging_visit_pricing` adds seven operational
+tables. It declares **no** `FOREIGN KEY` constraints (tenant relationships are
+enforced by the services and by each query's own `clinic_id` predicate), so
+ownership for these tables is proven by the same id-sets as everywhere else and
+never by a column name alone.
+
+| Table | Primary key | Ownership anchors used by scoped teardown | Teardown rule |
+|---|---|---|---|
+| `cpms_message_threads` | `id` | `clinic_id`, `organization_id`, `location_id`, `patient_id`, `visit_id`, `created_by_wp_user_id` | Delete only exact manifest-owned thread IDs; feeds `thread_ids`. |
+| `cpms_message_participants` | `(thread_id, wp_user_id)` — **no `id` column** | `thread_id`, `wp_user_id` | Deleted by its **composite key** only. Previously skipped entirely because it has no `id` column, so fixture rows survived teardown undetected. |
+| `cpms_messages` | `id` | `clinic_id`, `thread_id`, `sender_wp_user_id` | Delete only exact manifest-owned message IDs; feeds `staff_message_ids`. Append-only messaging history is preserved for the demo Clinic's lifetime and removed only by this fixture-owned teardown. |
+| `cpms_doctor_consultation_fees` | `id`; unique `(clinic_id, clinician_id, location_id)` | `clinic_id`, `clinician_id`, `location_id`, `updated_by_wp_user_id` | Delete only exact manifest-owned fee-default IDs; feeds `doctor_fee_ids`. |
+| `cpms_visit_consultation_fees` | `(visit_id)` — **no `id` column** | `visit_id`, `clinic_id`, `clinician_id`, `set_by_wp_user_id` | Deleted by its **composite key** (`visit_id`) only. |
+| `cpms_visit_charge_items` | `id` | `clinic_id`, `visit_id`, `clinician_id`, `invoiced_invoice_id`, `created_by_wp_user_id`, `updated_by_wp_user_id`, `removed_by_wp_user_id` | Delete only exact manifest-owned charge-item IDs; feeds `charge_item_ids`. |
+| `cpms_visit_fee_snapshot_failures` | `(visit_id)` — **no `id` column** | `visit_id`, `clinic_id` | Deleted by its **composite key** (`visit_id`) only. |
+
+### Why the membership id-sets were split
+
+`membership_id` is the only column name in the schema with **two distinct
+foreign-key parents**:
+
+- `cpms_membership_capabilities.membership_id` → `cpms_clinic_memberships.id`
+- `cpms_membership_locations.membership_id` → `cpms_clinic_memberships.id`
+- `cpms_organization_membership_capabilities.membership_id` → `cpms_organization_memberships.id`
+
+A single global `membership_id => membership_ids` rule fed by
+`cpms_clinic_memberships.id` therefore selected **organization** capability rows
+whose unrelated auto-increment id happened to overlap, and the teardown deleted
+them. The sets are now `clinic_membership_ids` and `org_membership_ids`, and the
+ambiguous column is resolved per table in
+`ScopedTeardown::TABLE_OWNERSHIP_COLUMNS`. `membership_id` is deliberately absent
+from the global map.
+
+### Identity links are tenant-scoped, never user-scoped
+
+`cpms_patient_user_links` (Clinic-scoped) and `cpms_patient_identity_links`
+(Organization-scoped) must not be claimed merely because they reference one of
+the demo's synthetic users: a foreign row can do that. `ScopedTeardown::
+TABLE_OWNERSHIP_ONLY` restricts ownership to the tenant columns, and
+`assert_user_not_foreign_linked()` refuses to delete a synthetic user while any
+foreign-owned link still points at it.

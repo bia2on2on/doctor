@@ -40,7 +40,7 @@ define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-man
  * Schema version this installer was written and verified against.
  * Any other version fails closed instead of guessing table/column contracts.
  */
-define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_18_0029' );
+define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
 
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';

@@ -7,6 +7,7 @@ design still matches the pinned companion/production source constants.
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -21,6 +22,7 @@ HASH_CHAIN = ROOT / "clinic-practice-management" / "src" / "Infrastructure" / "A
 AUDIT_LOGGER = ROOT / "clinic-practice-management" / "src" / "Infrastructure" / "Audit" / "AuditLogger.php"
 OWNERSHIP_MAP = ROOT / "docs" / "scoped-demo" / "ownership-map.md"
 ACCEPTANCE_PLAN = ROOT / "docs" / "scoped-demo" / "acceptance-plan.md"
+MANIFEST = COMPANION / "compatibility.json"
 
 GLOBAL_TABLES = {
     "cpms_audit_logs",
@@ -111,18 +113,61 @@ class OwnershipContractTests(unittest.TestCase):
         cls.known = php_const_array(cls.preflight, "KNOWN_TABLES")
         cls.delete_order = php_const_array(cls.teardown, "DELETE_ORDER")
 
-    def test_pinned_schema_table_counts_and_union(self) -> None:
-        self.assertEqual(43, len(self.operational))
-        self.assertEqual(10, len(self.system))
-        self.assertEqual(53, len(self.known))
-        self.assertEqual(50, len(self.delete_order))
+    def test_companion_inventory_matches_the_compatibility_manifest(self) -> None:
+        """Counts and membership are derived from the manifest, never hardcoded.
+
+        The previous version of this test pinned literal counts (43/10/53/50).
+        That made the schema-0030 drift invisible to anyone who simply updated the
+        numbers, and it turned every legitimate growth into an unrelated failure.
+        The manifest is now the single declarative source of truth, and the
+        evaluator (.github/scripts/companion-compat) is the gate that proves the
+        companion still satisfies it.
+        """
+        manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
+        tables = manifest["tables"]
+        self.assertEqual(60, len(tables))
+        self.assertEqual(
+            sorted(tables), sorted(self.known), "KNOWN_TABLES must equal the manifest inventory"
+        )
+        self.assertEqual(
+            sorted(t for t, e in tables.items() if e["inventory"] == "operational"),
+            sorted(self.operational),
+        )
+        self.assertEqual(
+            sorted(t for t, e in tables.items() if e["inventory"] == "system"),
+            sorted(self.system),
+        )
         self.assertEqual(set(self.known), set(self.operational) | set(self.system))
-        self.assertTrue(set(self.delete_order).issubset(set(self.known)))
         self.assertEqual(set(), set(self.operational) & set(self.system))
 
-    def test_strict_operational_table_list_is_unchanged(self) -> None:
-        # The strict disposable-site preflight must not be weakened by scoped work.
-        self.assertEqual(list(STRICT_OPERATIONAL_FINGERPRINT), self.operational)
+        # DELETE_ORDER is the STRICT lane's order and also removes the parent
+        # tables, so it is a superset of the scoped `deletable` class. The exact
+        # strict/scoped relationship is proven by the compatibility evaluator
+        # (tests/companion-compat), not duplicated here.
+        deletable = {t for t, e in tables.items() if e["teardown_class"] == "deletable"}
+        self.assertTrue(deletable.issubset(set(self.delete_order)), sorted(deletable - set(self.delete_order)))
+        self.assertTrue(set(self.delete_order).issubset(set(self.known)))
+
+    def test_strict_operational_list_is_not_weakened(self) -> None:
+        """Growth is allowed; dropping a table the strict preflight already guards is not.
+
+        The strict disposable-site lane must never be weakened by scoped work, so
+        every table in the pre-0030 fingerprint must still be required and empty.
+        """
+        self.assertTrue(
+            set(STRICT_OPERATIONAL_FINGERPRINT).issubset(set(self.operational)),
+            "the strict preflight must still require every table it required before",
+        )
+        for table in (
+            "cpms_message_threads",
+            "cpms_message_participants",
+            "cpms_messages",
+            "cpms_doctor_consultation_fees",
+            "cpms_visit_consultation_fees",
+            "cpms_visit_charge_items",
+            "cpms_visit_fee_snapshot_failures",
+        ):
+            self.assertIn(table, self.operational, f"schema-0030 table {table} must be guarded")
 
     def test_global_surfaces_are_identified(self) -> None:
         self.assertTrue(GLOBAL_TABLES.issubset(set(self.known)))
@@ -135,7 +180,7 @@ class OwnershipContractTests(unittest.TestCase):
     def test_design_documents_cover_all_known_tables(self) -> None:
         for table in self.known:
             self.assertIn(f"`{table}`", self.ownership_map, table)
-        self.assertIn("each of the 53", self.acceptance_plan)
+        self.assertIn("each of the 60", self.acceptance_plan)
         self.assertIn("NOT RUN", self.acceptance_plan)
 
     def test_pinned_schema_and_audit_chain_contract_exist(self) -> None:
@@ -145,7 +190,10 @@ class OwnershipContractTests(unittest.TestCase):
         )
         self.assertIsNotNone(version_match)
         version = version_match.group(1) if version_match else ""
-        self.assertTrue((MIGRATIONS / f"{version}_clinic_lifecycle.php").is_file())
+        self.assertTrue(
+            list(MIGRATIONS.glob(f"{version}_*.php")),
+            f"no migration file implements the pinned schema version {version}",
+        )
         latest_versions = sorted(
             "_".join(p.stem.split("_")[:4])
             for p in MIGRATIONS.glob("*.php")
