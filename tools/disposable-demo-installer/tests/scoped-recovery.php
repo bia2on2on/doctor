@@ -310,6 +310,7 @@ function cpsd_rec_delete( string $table, int $id ): void {
 function cpsd_rec_foreign_digest( Platform $platform, int $clinic_id, int $org_id ): string {
 	$digest = array();
 	$clinic_tables = array(
+		'cpms_locations',
 		'cpms_clinicians',
 		'cpms_clinic_memberships',
 		'cpms_patients',
@@ -381,6 +382,7 @@ function cpsd_rec_foreign_digest( Platform $platform, int $clinic_id, int $org_i
 function cpsd_rec_foreign_ids( Platform $platform, int $clinic_id, int $org_id ): array {
 	$ids  = array();
 	$spec = array(
+		'cpms_locations'              => 'clinic_id',
 		'cpms_clinicians'             => 'clinic_id',
 		'cpms_clinic_memberships'     => 'clinic_id',
 		'cpms_patients'               => 'clinic_id',
@@ -426,17 +428,20 @@ function cpsd_rec_foreign_ids( Platform $platform, int $clinic_id, int $org_id )
  * @param int $clinic_id Foreign Clinic.
  * @param int $patient_id Foreign patient.
  * @param int $clinician_id Foreign clinician.
+ * @param int $location_id Foreign Location (`cpms_visits.location_id` is NOT NULL
+ *                         with a foreign key, so a real Location is required).
  * @param int $demo_user Synthetic demo account to implicate.
  * @param string $tag Unique tag for nullable unique columns.
  * @return callable Deletes the rows again, in foreign-key order.
  */
-function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patient_id, int $clinician_id, int $demo_user, string $tag ): callable {
+function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patient_id, int $clinician_id, int $location_id, int $demo_user, string $tag ): callable {
 	$now  = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$full = static fn ( string $short ): string => $platform->table( $short );
 	$visit = cpsd_rec_insert(
 		$full( 'cpms_visits' ),
 		array(
 			'clinic_id'              => $clinic_id,
+			'location_id'            => $location_id,
 			'clinician_id'           => $clinician_id,
 			'patient_id'             => $patient_id,
 			'source'                 => 'walk_in',
@@ -935,6 +940,19 @@ try {
 	$frn_now = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$frn_tag = 'recovery-frn-' . bin2hex( random_bytes( 3 ) );
 	$frn     = static fn ( string $short ): string => $platform->table( $short );
+	$frn_location = cpsd_rec_insert(
+		$frn( 'cpms_locations' ),
+		array(
+			'clinic_id'  => $foreign_clinic,
+			'name'       => 'Foreign Location ' . $frn_tag,
+			'slug'       => $frn_tag . '-loc',
+			'timezone'   => 'Asia/Tehran',
+			'is_primary' => 1,
+			'is_active'  => 1,
+			'created_at' => $frn_now,
+			'updated_at' => $frn_now,
+		)
+	);
 	$frn_staff = cpsd_rec_insert(
 		$frn( 'cpms_clinicians' ),
 		array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => 1, 'full_name' => 'Foreign Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
@@ -956,6 +974,7 @@ try {
 		$frn( 'cpms_visits' ),
 		array(
 			'clinic_id'    => $foreign_clinic,
+			'location_id'  => $frn_location,
 			'clinician_id' => $frn_staff,
 			'patient_id'   => $frn_patient,
 			'source'       => 'walk_in',
@@ -1088,7 +1107,7 @@ try {
 		$frn_synthetic = cpsd_rec_synthetic_users( $env );
 
 		$frn_cleanup = $frn_inject( $frn_users );
-		$frn_graph   = cpsd_rec_foreign_graph( $platform, $foreign_clinic, $frn_patient, $frn_staff, (int) $frn_users['doctor'], $frn_tag );
+		$frn_graph   = cpsd_rec_foreign_graph( $platform, $foreign_clinic, $frn_patient, $frn_staff, $frn_location, (int) $frn_users['doctor'], $frn_tag );
 		$frn_dirty   = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
 		cpsd_rec_check( $frn_dirty !== $frn_baseline_digest, 'R9 ' . $frn_label . ': the foreign tenant now depends on a synthetic demo user', $checks );
 
