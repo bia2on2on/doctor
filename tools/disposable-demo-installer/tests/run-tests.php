@@ -378,7 +378,7 @@ $ctx    = cpdd_fixture();
 $post   = cpdd_provision( $ctx );
 $before = $ctx['env']->passwords;
 $new    = ( new Credentials( $ctx['env'] ) )->rotate( $post['manifest'] );
-Cpdd_Test::equals( 6, count( $new ), 'credentials: rotation returns six new passwords' );
+Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $new ), 'credentials: rotation returns one new password per persona' );
 Cpdd_Test::ok( $before[ $post['manifest']['ids']['user_ids']['doctor'] ] !== $new['doctor'], 'credentials: rotation actually changes the stored hash' );
 Cpdd_Test::ok( 0 === $ctx['env']->sessions[ $post['manifest']['ids']['user_ids']['doctor'] ], 'credentials: rotation invalidates existing sessions' );
 
@@ -388,8 +388,8 @@ Cpdd_Test::ok( 0 === $ctx['env']->sessions[ $post['manifest']['ids']['user_ids']
 $ctx  = cpdd_fixture();
 $post = cpdd_provision( $ctx );
 Cpdd_Test::equals( 'active', $post['manifest']['status'], 'provisioning: manifest is sealed as active' );
-Cpdd_Test::equals( 6, count( $post['manifest']['ids']['user_ids'] ), 'provisioning: six personas created' );
-Cpdd_Test::equals( 6, count( $post['credentials'] ), 'provisioning: six independent credentials returned' );
+Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['manifest']['ids']['user_ids'] ), 'provisioning: one account per persona created' );
+Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['credentials'] ), 'provisioning: independent credentials returned for every persona' );
 Cpdd_Test::equals( 2, count( $post['manifest']['ids']['location_ids'] ), 'provisioning: two locations created' );
 Cpdd_Test::ok( count( $post['manifest']['ids']['slot_ids'] ) >= 6, 'provisioning: enough future public-booking slots' );
 $expected_shortcode = '[cpms_public_booking clinic_id="' . (int) $post['manifest']['ids']['clinic_id'] . '"]';
@@ -402,7 +402,7 @@ Cpdd_Test::ok( in_array( 'create_prescription', $ctx['platform']->calls, true ) 
 
 $patient_id = (int) $post['manifest']['ids']['user_ids']['patient'];
 Cpdd_Test::ok( in_array( 'cpms_patient', $ctx['env']->users[ $patient_id ]['roles'], true ), 'provisioning: patient persona uses the CPMS patient role' );
-foreach ( array( 'clinic_manager', 'doctor', 'receptionist', 'accountant', 'organization_manager' ) as $persona ) {
+foreach ( array( 'clinic_manager', 'doctor', 'doctor_second', 'receptionist', 'receptionist_second', 'accountant', 'organization_manager' ) as $persona ) {
 	$id = (int) $post['manifest']['ids']['user_ids'][ $persona ];
 	Cpdd_Test::ok( ! in_array( 'administrator', $ctx['env']->users[ $id ]['roles'], true ), 'provisioning: persona ' . $persona . ' is not an Administrator' );
 }

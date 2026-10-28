@@ -172,21 +172,78 @@ class GateBehaviour(unittest.TestCase):
         self.assertEqual(0, result["counts"]["blocker"])
 
     def test_declared_demo_gaps_block_the_full_gate(self) -> None:
-        result = evaluate.evaluate(ROOT, gate="all")
+        """A demo-required feature without a harness journey is a GAP, and a GAP
+        fails `--gate all` while `--gate compatibility` still passes.
+
+        The repository itself is expected to be complete, so the gap is injected
+        rather than borrowed from whatever state the manifest happens to be in:
+        the check must stay a real check even after every feature is covered.
+        """
+        root = self._root_with_manifest(self._without_journeys("doctor_visit_pricing"))
+        result = evaluate.evaluate(root, gate="all")
         self.assertFalse(result["ok"])
         self.assertFalse(result["compatibility_complete"])
         gap_ids = {
-            feature
+            finding["message"]
             for finding in result["findings"]
             if finding["severity"] == "gap" and finding["check"] == "demo_coverage"
-            for feature in ("staff_messaging_private_1to1", "doctor_visit_pricing")
-            if feature in finding["message"]
         }
-        self.assertEqual({"staff_messaging_private_1to1", "doctor_visit_pricing"}, gap_ids)
+        self.assertTrue(
+            any("doctor_visit_pricing" in message for message in gap_ids),
+            json.dumps(sorted(gap_ids)),
+        )
+        self.assertEqual(0, evaluate.main(["--root", str(root), "--gate", "compatibility", "--quiet"]))
+        self.assertEqual(1, evaluate.main(["--root", str(root), "--gate", "all", "--quiet"]))
+
+    def test_repository_is_complete_for_both_gates(self) -> None:
+        """The committed companion really covers every demo-required feature."""
+        result = evaluate.evaluate(ROOT, gate="all")
+        self.assertTrue(result["ok"], json.dumps(result["findings"])[:2000])
+        self.assertTrue(result["compatibility_complete"])
+        self.assertEqual([], result["summary"]["demo_required_features_without_journeys"])
 
     def test_entrypoint_exit_codes(self) -> None:
         self.assertEqual(0, evaluate.main(["--root", str(ROOT), "--gate", "compatibility", "--quiet"]))
-        self.assertEqual(1, evaluate.main(["--root", str(ROOT), "--gate", "all", "--quiet"]))
+        self.assertEqual(0, evaluate.main(["--root", str(ROOT), "--gate", "all", "--quiet"]))
+
+    # -- helpers ---------------------------------------------------------
+
+    @staticmethod
+    def _without_journeys(feature_id: str):
+        def mutate(manifest: dict) -> dict:
+            for feature in manifest.get("features") or []:
+                if feature.get("id") == feature_id:
+                    feature["journeys"] = []
+            return manifest
+
+        return mutate
+
+    def _root_with_manifest(self, mutate) -> Path:
+        """A throwaway repository root whose only difference is the manifest."""
+        import shutil
+        import tempfile
+
+        root = Path(tempfile.mkdtemp(prefix="cpdd-gate-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        (root / "clinic-practice-management").symlink_to(PLUGIN, target_is_directory=True)
+        (root / "tests").symlink_to(ROOT / "tests", target_is_directory=True)
+        # The schema-pin scan reads the workflow files, so the throwaway root
+        # needs them too; everything else about the checkout is shared.
+        (root / ".github").symlink_to(ROOT / ".github", target_is_directory=True)
+        companion = root / "tools" / "disposable-demo-installer"
+        companion.mkdir(parents=True)
+        for entry in sorted(COMPANION.iterdir()):
+            if entry.name == "compatibility.json":
+                continue
+            (companion / entry.name).symlink_to(
+                entry, target_is_directory=entry.is_dir()
+            )
+        manifest = mutate(load_manifest())
+        (companion / "compatibility.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        return root
 
     def test_manifest_is_deterministic(self) -> None:
         """The committed manifest must equal a fresh derivation, byte for byte.

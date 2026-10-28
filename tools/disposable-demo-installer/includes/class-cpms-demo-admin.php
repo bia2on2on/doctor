@@ -320,7 +320,7 @@ class Admin {
 					self::$credentials = $credentials->rotate( $loaded );
 					self::$notice      = array(
 						'type' => 'success',
-						'text' => 'رمزهای هر شش حساب چرخانده شد و نشست‌های قبلی آن‌ها باطل شد.',
+						'text' => 'رمزهای همهٔ حساب‌های دمو چرخانده شد و نشست‌های قبلی آن‌ها باطل شد.',
 					);
 					break;
 
@@ -454,7 +454,7 @@ class Admin {
 			if ( 'active' === (string) ( $loaded['status'] ?? '' ) ) {
 				self::render_links( $platform, $loaded );
 				self::render_form( $request, Request::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_DEMO_OTP', 'پس از زدن «درخواست کد» در برگهٔ رزرو عمومی بیمار، این دکمه کد یک‌بارمصرف همان چالش را فقط در همین پاسخ نمایش می‌دهد.' );
-				self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای شش حساب', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
+				self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای همهٔ حساب‌های دمو', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
 			} else {
 				self::render_recovery_card( $loaded );
 			}
@@ -618,7 +618,9 @@ class Admin {
 			'organization_manager' => 'Management Portal — انتخاب سازمان ساختگی',
 			'clinic_manager'       => 'Management Portal — انتخاب درمانگاه ساختگی',
 			'doctor'               => 'Staff Portal — ماژول doctor (مسیر كانونیکال)',
+			'doctor_second'        => 'Staff Portal — ماژول pricing (تعرفهٔ پزشک دوم)',
 			'receptionist'         => 'Staff Portal — ماژول reception',
+			'receptionist_second'  => 'Staff Portal — ماژول messages (پذیرش دوم)',
 			'accountant'           => 'Staff Portal — ماژول finance',
 			'patient'              => 'Patient Portal',
 		);
@@ -637,10 +639,14 @@ class Admin {
 				$url = $url . ( str_contains( $url, '?' ) ? '&' : '?' ) . 'cpms-org=' . $org . '&cpms-clinic=' . $clinic;
 			} elseif ( 'receptionist' === $persona ) {
 				$url = (string) ( $links['receptionist'] ?? $links['reception'] ?? '' );
+			} elseif ( 'receptionist_second' === $persona ) {
+				$url = (string) ( $links['messages'] ?? '' );
 			} elseif ( 'accountant' === $persona ) {
 				$url = (string) ( $links['accountant'] ?? $links['finance'] ?? '' );
 			} elseif ( 'doctor' === $persona ) {
 				$url = (string) ( $links['doctor'] ?? '' );
+			} elseif ( 'doctor_second' === $persona ) {
+				$url = (string) ( $links['pricing'] ?? '' );
 			}
 			echo '<tr><td>' . esc_html( Credentials::personas()[ $persona ]['label'] ) . '</td><td>' . esc_html( $page ) . '</td><td>';
 			if ( '' !== $url ) {
@@ -768,7 +774,7 @@ class Admin {
 			'این ابزار دموی نمایشی می‌سازد؛ Production، مجوز (License)، مجوزدهی، سقف OTP، هم‌زمانی رزرو و دروازه‌های پرداخت تغییر نمی‌کنند.',
 			'کد OTP نمایشی فقط Hash یک چالش زندهٔ همین بیمار ساختگی را بازنویسی می‌کند؛ تمدید اعتبار، بازنشانی تلاش‌ها یا دورزدن Verify انجام نمی‌شود.',
 			'پرداخت‌ها فقط آفلاین با روش other ثبت می‌شوند و هیچ درگاه یا پیامک واقعی فعال نمی‌شود.',
-			'همهٔ شش حساب رمز مستقل دارند و هیچ حساب Administrator ساخته نمی‌شود؛ حساب مدیر شما هرگز در محدودهٔ حذف قرار نمی‌گیرد.',
+			'هر حساب دمو رمز مستقل دارد و هیچ حساب Administrator ساخته نمی‌شود؛ حساب مدیر شما هرگز در محدودهٔ حذف قرار نمی‌گیرد.',
 			'پاک‌سازی فقط وقتی انجام می‌شود که مالکیت همهٔ ردیف‌ها اثبات شود؛ در غیر این صورت مسدود می‌شود و گزارش تشخیص نشان داده می‌شود.',
 		);
 		foreach ( $items as $item ) {

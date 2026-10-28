@@ -334,6 +334,11 @@ class Teardown {
 				$synthetic_sms,
 				(array) ( $snapshot['sms_message_ids'] ?? array() )
 			),
+			'thread_ids'                      => $merge_ints(
+				$clinic_id > 1 ? $this->ids_by_clinic( 'cpms_message_threads', $clinic_id ) : array(),
+				(array) ( $snapshot['thread_ids'] ?? array() ),
+				array_values( (array) ( $m_ids['message_thread_ids'] ?? array() ) )
+			),
 			'otp_token_ids'                   => $otp_token_ids,
 		);
 
@@ -438,6 +443,17 @@ class Teardown {
 				return $this->in_clause( 'page_id', (array) ( $scope['hw_page_ids'] ?? array() ) );
 			case 'cpms_clinician_locations':
 				return $this->in_clause( 'clinician_id', (array) ( $scope['clinician_ids'] ?? array() ) );
+			case 'cpms_message_participants':
+				// `cpms_message_participants` has NO clinic_id/organization_id, so
+				// the generic tenant fallback below could never own a row: with a
+				// real messaging fixture every participant row would have been
+				// reported as "foreign" and blocked teardown. A participant row is
+				// owned exactly when its thread is owned, and thread ownership is
+				// proven by cpms_message_threads.clinic_id (an authoritative tenant
+				// column written by StaffMessagingService). Matching on wp_user_id
+				// is deliberately NOT used: that would delete a foreign thread's
+				// participant row for a synthetic user.
+				return $this->in_clause( 'thread_id', (array) ( $scope['thread_ids'] ?? array() ) );
 			case 'cpms_membership_locations':
 			case 'cpms_membership_capabilities':
 				return $this->in_clause( 'membership_id', (array) ( $scope['clinic_membership_ids'] ?? array() ) );

@@ -1,6 +1,6 @@
 <?php
 /**
- * Independent CSPRNG credentials for the six synthetic personas.
+ * Independent CSPRNG credentials for the eight synthetic personas.
  *
  * Passwords exist only in the response of the request that generated them.
  * They are never written to the manifest, an option, a transient, a log, a file,
@@ -24,10 +24,23 @@ class Credentials {
 		'organization_manager',
 		'clinic_manager',
 		'doctor',
+		'doctor_second',
 		'receptionist',
+		'receptionist_second',
 		'accountant',
 		'patient',
 	);
+
+	/**
+	 * The two personas that exist twice so that strictly-private one-to-one
+	 * messaging can be demonstrated: a second doctor and a second receptionist
+	 * are both real, active members of the synthetic Clinic, so "the colleague
+	 * who is NOT in the thread can neither see it nor be counted for it" is a
+	 * genuine pairwise property rather than a missing-user artefact.
+	 */
+	public const SECOND_DOCTOR = 'doctor_second';
+
+	public const SECOND_RECEPTIONIST = 'receptionist_second';
 
 	/**
 	 * Persona definitions. `wp_role` is the WordPress role; CPMS authority comes
@@ -52,10 +65,20 @@ class Credentials {
 				'wp_role' => 'subscriber',
 				'scope'   => 'Clinician + عضویت پزشک و دسترسی هر دو شعبهٔ ساختگی',
 			),
+			'doctor_second' => array(
+				'label'   => 'پزشک دوم',
+				'wp_role' => 'subscriber',
+				'scope'   => 'Clinician دوم + عضویت پزشک؛ برای اثبات اینکه گفتگوهای خصوصی پزشک دیگر و تعرفهٔ ویزیت او در دسترس نیست',
+			),
 			'receptionist' => array(
 				'label'   => 'پذیرش',
 				'wp_role' => 'subscriber',
 				'scope'   => 'عضویت cpms_secretary در درمانگاه/شعبهٔ ساختگی',
+			),
+			'receptionist_second' => array(
+				'label'   => 'پذیرش دوم',
+				'wp_role' => 'subscriber',
+				'scope'   => 'عضویت cpms_secretary در همان درمانگاه؛ همکار مجاز ولی غیرعضو گفتگو',
 			),
 			'accountant' => array(
 				'label'   => 'حسابدار',
@@ -104,7 +127,7 @@ class Credentials {
 	}
 
 	/**
-	 * Rotate all six passwords: WP user password is replaced and every existing
+	 * Rotate all eight passwords: WP user password is replaced and every existing
 	 * session of that persona is invalidated. Nothing is returned to storage.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.

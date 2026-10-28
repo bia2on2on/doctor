@@ -168,7 +168,16 @@ try {
 					'reception' => $module_url( $staff_portal['url'], StaffPortalShell::MODULE_RECEPTION ),
 					'finance'   => $module_url( $staff_portal['url'], StaffPortalShell::MODULE_FINANCE ),
 					'doctor'    => $module_url( $staff_portal['url'], StaffPortalShell::MODULE_DOCTOR ),
+					'messages'  => $module_url( $staff_portal['url'], StaffPortalShell::MODULE_MESSAGES ),
+					'pricing'   => $module_url( $staff_portal['url'], StaffPortalShell::MODULE_PRICING ),
 				),
+			),
+			'iran_v1'      => array(
+				'private_thread'      => (int) ( $live['ids']['message_thread_ids']['doctor_receptionist'] ?? 0 ),
+				'threads'             => array_map( 'intval', (array) ( $live['ids']['message_thread_ids'] ?? array() ) ),
+				'pricing_visit_id'    => (int) ( $live['ids']['visit_id_pricing'] ?? 0 ),
+				'doctor_second_id'    => (int) ( $live['ids']['user_ids']['doctor_second'] ?? 0 ),
+				'reception_second_id' => (int) ( $live['ids']['user_ids']['receptionist_second'] ?? 0 ),
 			),
 			'foreign'      => array(
 				'invoice_id' => null === $foreign_invoice ? null : (int) $foreign_invoice->id,

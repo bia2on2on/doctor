@@ -8,7 +8,7 @@
  * This is not a Chromium/browser test. It seeds a genuinely non-empty,
  * multi-Clinic site (real-looking users, posts, comments and two pre-existing
  * CPMS organizations/Clinics with patients, appointments, visits, invoices and
- * payments), provisions the scoped demo, verifies six real WP authentications,
+ * payments), provisions the scoped demo, verifies real WP authentication per persona,
  * interleaves foreign activity, tears down, then proves:
  *
  *  - the sealed baseline of every pre-existing row is byte-identical,
@@ -248,7 +248,7 @@ try {
 	$result = $provisioner->provision( $admin_id );
 	$active = $manifest->load();
 	cpsd_int_check( is_array( $active ) && 'active' === (string) $active['status'], 'scoped fixture is active', $checks );
-	cpsd_int_check( 6 === count( (array) $active['ids']['user_ids'] ), 'six personas are recorded', $checks );
+	cpsd_int_check( count( Credentials::PERSONA_ORDER ) === count( (array) $active['ids']['user_ids'] ), 'one account per persona is recorded', $checks );
 	cpsd_int_check( isset( $active['host_before']['clinic_count'] ) && (int) $active['host_before']['clinic_count'] === $host_before['clinics'], 'manifest seals host counters read before provisioning', $checks );
 	foreach ( Credentials::PERSONA_ORDER as $persona ) {
 		$login = $manifest->fixture_prefix() . $persona . '-' . (string) $active['fixture_id'];
@@ -264,6 +264,16 @@ try {
 	$anchor_org    = (int) $active['ids']['organization_id'];
 	cpsd_int_check( $anchor_clinic !== (int) $seeded['clinic_a']['clinic_id'] && $anchor_clinic !== (int) $seeded['clinic_b']['clinic_id'], 'synthetic Clinic is a distinct row from both pre-existing Clinics', $checks );
 	cpsd_int_check( $platform->count_where( $platform->table( 'cpms_clinics' ), 'status = %s', array( 'active' ) ) === $host_before['active_clinics'] + 1, 'exactly one active Clinic was added during the demo', $checks );
+
+	// Iran V1 (schema 0030) demo-required features, exercised on the sealed
+	// fixture BEFORE teardown so their rows are subject to the ownership proof.
+	require_once __DIR__ . '/features-messaging-pricing.php';
+	try {
+		$report['features'] = cpdd_feature_suite( $platform, $active, 'scoped' );
+		cpsd_int_check( true, 'iran-v1 feature suite passed (messaging privacy + visit pricing)', $checks );
+	} catch ( Throwable $feature_error ) {
+		cpsd_int_check( false, 'iran-v1 feature suite: ' . $feature_error->getMessage(), $checks );
+	}
 
 	// Interleave legitimate foreign activity during the demo.
 	$foreign_user = wp_insert_user( array( 'user_login' => $seeded['foreign_marker'] . '-foreign', 'user_pass' => wp_generate_password( 24 ), 'user_email' => $seeded['foreign_marker'] . '-foreign@example.test', 'role' => 'subscriber' ) );

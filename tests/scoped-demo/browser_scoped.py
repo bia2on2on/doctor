@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Chromium acceptance for the scoped demo: admin workflow, six logins, and one
-real role-specific journey per persona.
+"""Chromium acceptance for the scoped demo: admin workflow, independent logins for
+every persona, and one real role-specific journey per persona.
 
 Phases (the CI lane runs them in this order so PHP can export identifiers in
 between):
@@ -10,7 +10,7 @@ between):
   tamper     the sealed manifest is broken out of band (by
              tests/scoped-demo/tamper-manifest.php) and this phase proves the
              scoped admin page refuses it and offers no action at all
-  journeys   six independent Chromium logins, then one real workflow per
+  journeys   independent Chromium logins, then one real workflow per
              persona through the production REST stack, from inside the page so
              the cookies and REST nonce are the browser's own; then a real
              OTP login of the demo patient (challenge -> sanctioned code ->
@@ -60,6 +60,8 @@ JOURNEYS = (
     "cpsd_persona_clinic_manager",
     "cpsd_persona_organization_manager",
     "cpsd_patient_otp_booking",
+    "cpsd_staff_messaging_privacy",
+    "cpsd_visit_pricing_invoice",
     "cpsd_admin_teardown",
 )
 
@@ -128,8 +130,12 @@ def persona_login(browser, username: str, password: str):
 #   staff portal reception       script#cpms-staff-reception-config
 #   staff portal finance         script#cpms-finance-board-config
 #   staff portal reports         script#cpms-reports-board-config
+#   staff portal messages        script#cpms-messages-config
+#   staff portal pricing         script#cpms-pricing-config
 #   patient portal               script.cpms-patient-portal__config
 CONFIG_SELECTORS = (
+    "script#cpms-messages-config",
+    "script#cpms-pricing-config",
     "script.cpms-doctor-portal__config",
     "script#cpms-staff-reception-config",
     "script#cpms-finance-board-config",

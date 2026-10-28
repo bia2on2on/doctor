@@ -223,7 +223,7 @@ class ScopedAdmin {
 		} elseif ( ! $manifest->mode_enabled() ) {
 			self::render_form( $request, ScopedRequest::ACTION_ENABLE, 'فعالسازی حالت محدودشده', 'I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE', 'این دکمه فقط یک نشانگر HMACشده مینویسد و هیچ کاربر یا رکورد CPMS نمیسازد.' );
 		} elseif ( null === $loaded ) {
-			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و شش حساب کاملاً ساختگی ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
+			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و حساب‌های کاملاً ساختگی دمو ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
 		} else {
 			$status = (string) ( $loaded['status'] ?? 'unknown' );
 			if ( 'active' === $status ) {
@@ -372,7 +372,7 @@ class ScopedAdmin {
 		echo '<li>ابتدا یک پشتیبان کامل و قابل بازیابی از سایت آزمایشی بگیرید.</li>';
 		echo '<li>دو ZIP جداگانه CPMS Classic و companion را از wp-admin نصب و فعال کنید.</li>';
 		echo '<li>حالت محدودشده را با عبارت <code dir="ltr">I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE</code> فعال کنید.</li>';
-		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای شش شخصیت را همان لحظه ذخیره کنید.</li>';
+		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای همهٔ شخصیت‌ها را همان لحظه ذخیره کنید.</li>';
 		echo '<li>هر شخصیت را در یک پنجره خصوصی جداگانه وارد کرده و جریانهای رزرو، پذیرش، بالینی و مالی را انجام دهید.</li>';
 		echo '<li>پیشنمایش پاکسازی را بررسی کنید، سپس با عبارت <code dir="ltr">REMOVE_ONLY_SCOPED_DEMO_DATA</code> فقط دادههای دمو را حذف کنید.</li>';
 		echo '<li>نتیجه حفظ baseline و زنجیره حسابرسی را بررسی کنید؛ در صورت هشدار ناقص، دوباره پاکسازی را اجرا کنید.</li>';

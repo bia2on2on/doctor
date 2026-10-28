@@ -1290,6 +1290,8 @@ class Platform {
 		$links['accountant']   = $links['finance'];
 		$links['doctor']       = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_DOCTOR, $links['staff'] );
 		$links['reports']      = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_REPORTS, $links['staff'] );
+		$links['messages']     = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_MESSAGES, $links['staff'] );
+		$links['pricing']      = add_query_arg( 'cpms-module', StaffPortalShell::MODULE_PRICING, $links['staff'] );
 
 		return $links;
 	}
@@ -1302,8 +1304,231 @@ class Platform {
 		return '[' . PublicBookingShortcode::TAG . ' clinic_id="' . $clinic_id . '"]';
 	}
 
+	// =====================================================================
+	// Iran V1 (schema 0030): private staff messaging + doctor visit pricing.
+	//
+	// Every call below goes through the production service the Staff Portal
+	// calls. The adapter adds no authority of its own: it only forwards the
+	// acting WordPress user, because both services re-derive the Clinic scope,
+	// the membership, the capability set and (for pricing) the durable
+	// clinician identity from the database on every call.
+	// =====================================================================
+
 	/**
-	 * @return list<string> CPMS role keys used by the six personas.
+	 * Create a strictly-private one-to-one thread through StaffMessagingService.
+	 *
+	 * @param int      $actor_id     Acting staff WordPress user.
+	 * @param int      $recipient_id Counterpart WordPress user.
+	 * @param int|null $patient_id   Optional patient (requires $visit_id).
+	 * @param int|null $visit_id     Optional visit (requires $patient_id).
+	 * @return int Thread id.
+	 */
+	public function message_thread( int $actor_id, int $recipient_id, ?int $patient_id = null, ?int $visit_id = null ): int {
+		$input = array( 'recipient_wp_user_id' => $recipient_id );
+		if ( null !== $patient_id && null !== $visit_id ) {
+			$input['patient_id'] = $patient_id;
+			$input['visit_id']   = $visit_id;
+		}
+		$thread = App::staff_messaging_service()->create_thread( $actor_id, $input );
+		$id     = (int) ( $thread['id'] ?? 0 );
+		if ( $id <= 0 ) {
+			throw new Exception( 'MESSAGE_THREAD_CREATE', 'ساخت گفتگوی آزمایشی ناموفق بود.' );
+		}
+
+		return $id;
+	}
+
+	/**
+	 * @param int    $actor_id  Sender.
+	 * @param int    $thread_id Thread.
+	 * @param string $body      Plain message text.
+	 * @return int Message id.
+	 */
+	public function send_message( int $actor_id, int $thread_id, string $body ): int {
+		$message = App::staff_messaging_service()->send( $actor_id, $thread_id, $body );
+		$id      = (int) ( $message['id'] ?? 0 );
+		if ( $id <= 0 ) {
+			throw new Exception( 'MESSAGE_SEND', 'ارسال پیام آزمایشی ناموفق بود.' );
+		}
+
+		return $id;
+	}
+
+	/**
+	 * @param int $actor_id Actor.
+	 * @return array<string,mixed>
+	 */
+	public function message_context( int $actor_id ): array {
+		return App::staff_messaging_service()->context( $actor_id );
+	}
+
+	/**
+	 * @param int $actor_id Actor.
+	 * @return array<string,mixed>
+	 */
+	public function message_threads( int $actor_id ): array {
+		return App::staff_messaging_service()->threads( $actor_id );
+	}
+
+	/**
+	 * @param int $actor_id  Actor.
+	 * @param int $thread_id Thread.
+	 * @param int $since_id  Incremental cursor.
+	 * @return array<string,mixed>
+	 */
+	public function message_list( int $actor_id, int $thread_id, int $since_id = 0 ): array {
+		return App::staff_messaging_service()->messages( $actor_id, $thread_id, $since_id, 50 );
+	}
+
+	/**
+	 * @param int $actor_id  Actor.
+	 * @param int $thread_id Thread.
+	 * @return array<string,mixed>
+	 */
+	public function mark_thread_read( int $actor_id, int $thread_id ): array {
+		return App::staff_messaging_service()->mark_read( $actor_id, $thread_id );
+	}
+
+	/**
+	 * Doctor default consultation fee for the acting doctor at one Location.
+	 *
+	 * @param int      $actor_id    Doctor WordPress user.
+	 * @param int|null $location_id Location, or null for the Clinic-wide default.
+	 * @param int      $amount      Amount in IRR.
+	 * @return array<string,mixed>
+	 */
+	public function set_default_consultation_fee( int $actor_id, ?int $location_id, int $amount ): array {
+		return App::visit_pricing_service()->set_default_fee( $actor_id, $location_id, $amount );
+	}
+
+	/**
+	 * @param int $actor_id    Doctor WordPress user.
+	 * @param int $location_id Location (0 = Clinic-wide).
+	 * @return array<string,mixed>
+	 */
+	public function pricing_context( int $actor_id, int $location_id = 0 ): array {
+		return App::visit_pricing_service()->context( $actor_id, $location_id );
+	}
+
+	/**
+	 * @param int $actor_id Doctor WordPress user.
+	 * @param int $visit_id Visit.
+	 * @param int $amount   Amount in IRR.
+	 * @return array<string,mixed>
+	 */
+	public function set_visit_consultation_fee( int $actor_id, int $visit_id, int $amount ): array {
+		return App::visit_pricing_service()->set_visit_consultation_fee( $actor_id, $visit_id, $amount );
+	}
+
+	/**
+	 * @param int                 $actor_id Doctor WordPress user.
+	 * @param int                 $visit_id Visit.
+	 * @param array<string,mixed> $input    Charge fields.
+	 * @return int Charge id.
+	 */
+	public function add_visit_charge( int $actor_id, int $visit_id, array $input ): int {
+		$result = App::visit_pricing_service()->add_charge( $actor_id, $visit_id, $input );
+		$id     = (int) ( $result['charge_id'] ?? 0 );
+		if ( $id <= 0 ) {
+			throw new Exception( 'VISIT_CHARGE_CREATE', 'افزودن قلم درمانی آزمایشی ناموفق بود.' );
+		}
+
+		return $id;
+	}
+
+	/**
+	 * @param int                 $actor_id  Doctor WordPress user.
+	 * @param int                 $visit_id  Visit.
+	 * @param int                 $charge_id Charge.
+	 * @param array<string,mixed> $input     Replacement fields.
+	 * @return array<string,mixed>
+	 */
+	public function update_visit_charge( int $actor_id, int $visit_id, int $charge_id, array $input ): array {
+		return App::visit_pricing_service()->update_charge( $actor_id, $visit_id, $charge_id, $input );
+	}
+
+	/**
+	 * Itemized billing projection (doctor or receptionist with invoice read).
+	 *
+	 * @param int $actor_id Actor WordPress user.
+	 * @param int $visit_id Visit.
+	 * @return array<string,mixed>
+	 */
+	public function visit_billing( int $actor_id, int $visit_id ): array {
+		return App::visit_pricing_service()->billing_for_visit( $actor_id, $visit_id );
+	}
+
+	/**
+	 * Issue an invoice from the doctor's pricing through the EXISTING finance
+	 * engine (no second billing implementation).
+	 *
+	 * @param int $actor_id Actor with invoice-create authority.
+	 * @param int $visit_id Visit.
+	 * @return int Invoice id.
+	 */
+	public function issue_invoice_from_pricing( int $actor_id, int $visit_id ): int {
+		$result = App::financeService()->issue_invoice_from_pricing( $actor_id, $visit_id );
+		$id     = (int) ( $result['id'] ?? $result['invoice_id'] ?? 0 );
+		if ( $id <= 0 ) {
+			throw new Exception( 'INVOICE_PRICING_ISSUE', 'صدور فاکتور از تعرفهٔ پزشک ناموفق بود.' );
+		}
+
+		return $id;
+	}
+
+	/**
+	 * Read-only invoice state for fixture assertions.
+	 *
+	 * @param int $invoice_id Invoice.
+	 * @return array<string,mixed>|null
+	 */
+	public function invoice_row( int $invoice_id ): ?array {
+		return $this->fetch_row(
+			'SELECT id, visit_id, clinic_id, status, subtotal, total, paid_amount, balance, currency FROM '
+			. $this->db()->table( 'cpms_invoices' ) . ' WHERE id = %d',
+			array( $invoice_id )
+		);
+	}
+
+	/**
+	 * @param int $invoice_id Invoice.
+	 * @return list<array<string,mixed>>
+	 */
+	public function invoice_items( int $invoice_id ): array {
+		return $this->fetch_all(
+			'SELECT id, description, quantity, unit_price, amount FROM '
+			. $this->db()->table( 'cpms_invoice_items' ) . ' WHERE invoice_id = %d ORDER BY id ASC',
+			array( $invoice_id )
+		);
+	}
+
+	/**
+	 * @param int $invoice_id Invoice.
+	 * @return list<array<string,mixed>>
+	 */
+	public function invoice_payments( int $invoice_id ): array {
+		return $this->fetch_all(
+			'SELECT id, amount, method, status, idempotency_key FROM '
+			. $this->db()->table( 'cpms_payments' ) . ' WHERE invoice_id = %d ORDER BY id ASC',
+			array( $invoice_id )
+		);
+	}
+
+	/**
+	 * @param int $visit_id Visit.
+	 * @return string Visit status.
+	 */
+	public function visit_status( int $visit_id ): string {
+		$row = $this->fetch_row(
+			'SELECT status FROM ' . $this->db()->table( 'cpms_visits' ) . ' WHERE id = %d',
+			array( $visit_id )
+		);
+
+		return null === $row ? '' : (string) ( $row['status'] ?? '' );
+	}
+
+	/**
+	 * @return list<string> CPMS role keys used by the demo personas.
 	 */
 	public function role_keys(): array {
 		return array(

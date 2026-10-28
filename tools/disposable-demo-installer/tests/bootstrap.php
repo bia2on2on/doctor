@@ -463,6 +463,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public int $fake_clinic_id = 0;
 	public string $fake_patient_mobile = '';
 	public ?string $fail_delete_on = null;
+	public array $pricing_state = array( 'default_fee' => null, 'snapshot_fee' => null, 'override_fee' => null );
 	private array $last_scope = array();
 
 	public function available(): bool {
@@ -1264,13 +1265,20 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 
 	public function walk_in( int $actor_id, int $patient_id, int $clinician_id, array $input ): int {
 		$this->calls[] = 'walk_in';
+		// The production VisitService snapshots the doctor's consultation fee
+		// INSIDE the check-in transaction; the double captures it here so the
+		// provisioner's "a later default change must not reprice" assertion is
+		// exercised offline exactly as it is against the real database.
+		$this->pricing_state['snapshot_fee'] = $this->pricing_state['default_fee'];
+		$id            = $this->max_id( 'cpms_visits' ) + 1;
 		$this->tables_data['cpms_visits'][] = array(
-			'id'         => 1,
-			'clinic_id'  => $this->fake_clinic_id,
-			'patient_id' => $patient_id,
+			'id'          => $id,
+			'clinic_id'   => $this->fake_clinic_id,
+			'patient_id'  => $patient_id,
+			'clinician_id' => $clinician_id,
 		);
 
-		return 1;
+		return $id;
 	}
 
 	public function transition( int $actor_id, int $visit_id, string $event, array $extra = array() ): void {
@@ -1331,6 +1339,175 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		return 1;
 	}
 
+	// ---------------------------------------------------------------------
+	// Iran V1 (schema 0030) — messaging + visit pricing.
+	//
+	// The double mirrors the real adapter's call surface so the offline suite
+	// proves the PROVISIONER/ TEARDOWN contract without a database. It
+	// deliberately returns the same projection keys the production services
+	// return, because the provisioner asserts the fee-snapshot rule on them.
+	// ---------------------------------------------------------------------
+
+	public function message_thread( int $actor_id, int $recipient_id, ?int $patient_id = null, ?int $visit_id = null ): int {
+		unset( $patient_id, $visit_id );
+		$this->calls[] = 'message_thread';
+		$id            = $this->max_id( 'cpms_message_threads' ) + 1;
+		$this->tables_data['cpms_message_threads'][] = array(
+			'id'         => $id,
+			'clinic_id'  => $this->fake_clinic_id,
+			'created_by_wp_user_id' => $actor_id,
+		);
+		$this->tables_data['cpms_message_participants'][] = array( 'thread_id' => $id, 'wp_user_id' => $actor_id );
+		$this->tables_data['cpms_message_participants'][] = array( 'thread_id' => $id, 'wp_user_id' => $recipient_id );
+
+		return $id;
+	}
+
+	public function send_message( int $actor_id, int $thread_id, string $body ): int {
+		$this->calls[] = 'send_message';
+		$id            = $this->max_id( 'cpms_messages' ) + 1;
+		$this->tables_data['cpms_messages'][] = array(
+			'id'                 => $id,
+			'clinic_id'          => $this->fake_clinic_id,
+			'thread_id'          => $thread_id,
+			'sender_wp_user_id'  => $actor_id,
+			'body_length'        => strlen( $body ),
+		);
+
+		return $id;
+	}
+
+	public function message_context( int $actor_id ): array {
+		unset( $actor_id );
+
+		return array( 'staff_class' => 'doctor', 'counterparts' => array(), 'unread_total' => 0 );
+	}
+
+	public function message_threads( int $actor_id ): array {
+		unset( $actor_id );
+
+		return array( 'threads' => array(), 'unread_total' => 0 );
+	}
+
+	public function message_list( int $actor_id, int $thread_id, int $since_id = 0 ): array {
+		unset( $actor_id, $thread_id, $since_id );
+
+		return array( 'messages' => array(), 'unread_count' => 0 );
+	}
+
+	public function mark_thread_read( int $actor_id, int $thread_id ): array {
+		unset( $actor_id, $thread_id );
+
+		return array( 'unread_count' => 0, 'unread_total' => 0 );
+	}
+
+	public function set_default_consultation_fee( int $actor_id, ?int $location_id, int $amount ): array {
+		$this->calls[]                = 'set_default_consultation_fee';
+		$this->pricing_state['default_fee'] = $amount;
+		unset( $actor_id, $location_id );
+
+		return array( 'default_fee' => $amount );
+	}
+
+	public function pricing_context( int $actor_id, int $location_id = 0 ): array {
+		unset( $actor_id, $location_id );
+
+		return array( 'default_fee' => $this->pricing_state['default_fee'] );
+	}
+
+	public function set_visit_consultation_fee( int $actor_id, int $visit_id, int $amount ): array {
+		unset( $actor_id, $visit_id );
+		$this->calls[]                        = 'set_visit_consultation_fee';
+		$this->pricing_state['override_fee']  = $amount;
+
+		return array( 'override_fee' => $amount );
+	}
+
+	public function add_visit_charge( int $actor_id, int $visit_id, array $input ): int {
+		unset( $actor_id );
+		$this->calls[] = 'add_visit_charge';
+		$id            = $this->max_id( 'cpms_visit_charge_items' ) + 1;
+		$this->tables_data['cpms_visit_charge_items'][] = array(
+			'id'           => $id,
+			'clinic_id'    => $this->fake_clinic_id,
+			'visit_id'     => $visit_id,
+			'description'  => (string) ( $input['description'] ?? '' ),
+			'unit_amount'  => (int) ( $input['amount'] ?? 0 ),
+			'quantity'     => (float) ( $input['quantity'] ?? 1 ),
+		);
+
+		return $id;
+	}
+
+	public function update_visit_charge( int $actor_id, int $visit_id, int $charge_id, array $input ): array {
+		unset( $actor_id );
+		$this->calls[] = 'update_visit_charge';
+
+		return array( 'charge_id' => $charge_id, 'visit_id' => $visit_id, 'input' => $input );
+	}
+
+	/**
+	 * The check-in snapshot is immutable by contract: the provisioner proves
+	 * that a LATER default change does not reprice the established Visit, so
+	 * this projection keeps returning the value captured at walk-in.
+	 *
+	 * @param int $actor_id Actor.
+	 * @param int $visit_id Visit.
+	 * @return array<string,mixed>
+	 */
+	public function visit_billing( int $actor_id, int $visit_id ): array {
+		unset( $actor_id );
+		$this->calls[] = 'visit_billing';
+		$snapshot      = $this->pricing_state['snapshot_fee'];
+
+		return array(
+			'visit_id'      => $visit_id,
+			'default_fee'   => $this->pricing_state['default_fee'],
+			'snapshot_fee'  => $snapshot,
+			'override_fee'  => null,
+			'effective_fee' => $snapshot,
+			'fee_source'    => 'checkin_snapshot',
+			'charges'       => array(),
+			'charges_total' => 0,
+			'expected_total' => $snapshot,
+		);
+	}
+
+	public function issue_invoice_from_pricing( int $actor_id, int $visit_id ): int {
+		unset( $actor_id );
+		$this->calls[] = 'issue_invoice_from_pricing';
+
+		return $this->issue_invoice( 0, array( 'visit_id' => $visit_id, 'items' => array() ) );
+	}
+
+	public function invoice_row( int $invoice_id ): ?array {
+		foreach ( $this->tables_data['cpms_invoices'] as $row ) {
+			if ( (int) $row['id'] === $invoice_id ) {
+				return $row;
+			}
+		}
+
+		return null;
+	}
+
+	public function invoice_items( int $invoice_id ): array {
+		unset( $invoice_id );
+
+		return array();
+	}
+
+	public function invoice_payments( int $invoice_id ): array {
+		unset( $invoice_id );
+
+		return array();
+	}
+
+	public function visit_status( int $visit_id ): string {
+		unset( $visit_id );
+
+		return 'consultation_completed';
+	}
+
 	public function audit( string $action, int $actor_id, int $clinic_id, array $meta ): void {
 		$this->calls[] = 'audit:' . $action;
 		$this->tables_data['cpms_audit_logs'][] = array(
@@ -1349,6 +1526,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'finance'    => 'https://demo.test/cpms-staff-portal/?cpms-module=finance',
 			'doctor'     => 'https://demo.test/cpms-staff-portal/?cpms-module=doctor',
 			'reports'    => 'https://demo.test/cpms-staff-portal/?cpms-module=reports',
+			'messages'   => 'https://demo.test/cpms-staff-portal/?cpms-module=messages',
+			'pricing'    => 'https://demo.test/cpms-staff-portal/?cpms-module=pricing',
 		);
 	}
 

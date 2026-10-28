@@ -294,7 +294,7 @@ def build(root: pathlib.Path) -> dict:
             "title": "Strictly private one-to-one staff messaging",
             "introduced_by": "2026_10_27_0030",
             "demo_required": True,
-            "status": "manual_implementation_required",
+            "status": "demonstrable",
             "routes": [
                 "clinic/v1/staff/portal/messages/context",
                 "clinic/v1/staff/portal/messages/threads",
@@ -306,22 +306,18 @@ def build(root: pathlib.Path) -> dict:
                 "cpms_message_participants",
                 "cpms_messages",
             ],
-            "journeys": [],
-            "gap": (
-                "Demo fixtures and browser journeys do not exist yet. Required manual work: "
-                "provision a messaging fixture (doctor<->receptionist, doctor<->finance, "
-                "receptionist<->finance threads) through StaffMessagingService, add "
-                "recipient-level privacy assertions with two doctors and two receptionists, "
-                "and add RTL desktop + narrow-mobile journeys. Teardown ownership for the "
-                "three tables IS covered by this manifest."
-            ),
+            "journeys": [
+                "cpdd_staff_messaging_privacy",
+                "cpsd_staff_messaging_privacy",
+            ],
+            "gap": "",
         },
         {
             "id": "doctor_visit_pricing",
             "title": "Consultation-fee defaults, per-visit overrides and itemized charges",
             "introduced_by": "2026_10_27_0030",
             "demo_required": True,
-            "status": "manual_implementation_required",
+            "status": "demonstrable",
             "routes": [
                 "clinic/v1/staff/portal/pricing/context",
                 "clinic/v1/staff/portal/pricing/default-fee",
@@ -337,19 +333,15 @@ def build(root: pathlib.Path) -> dict:
                 "cpms_visit_charge_items",
                 "cpms_visit_fee_snapshot_failures",
             ],
-            "journeys": [],
-            "gap": (
-                "Demo fixtures and browser journeys do not exist yet. Required manual work: "
-                "provision a doctor consultation-fee default, a per-visit override and "
-                "itemized treatment charges through VisitPricingService, then a "
-                "receptionist billing + payment-collection journey including invoice "
-                "issuance and payment replay idempotency. Teardown ownership for the four "
-                "tables IS covered by this manifest."
-            ),
+            "journeys": [
+                "cpdd_visit_pricing_invoice",
+                "cpsd_visit_pricing_invoice",
+            ],
+            "gap": "",
         },
         {
             "id": "core_six_persona_demo",
-            "title": "Six-persona booking/visit/invoice demo (pre-0030 surface)",
+            "title": "Booking/visit/invoice demo across every demo persona (pre-0030 surface)",
             "introduced_by": "2026_09_05_0001",
             "demo_required": True,
             "status": "demonstrable",
@@ -363,6 +355,8 @@ def build(root: pathlib.Path) -> dict:
                 "cpdd_reception_arrival",
                 "cpdd_doctor_clinical_workflow",
                 "cpdd_finance_invoice_payment",
+                "cpdd_staff_messaging_privacy",
+                "cpdd_visit_pricing_invoice",
                 "cpdd_rtl_and_mobile",
                 "cpdd_teardown_and_verify",
                 "cpsd_admin_provision",
@@ -373,6 +367,8 @@ def build(root: pathlib.Path) -> dict:
                 "cpsd_persona_clinic_manager",
                 "cpsd_persona_organization_manager",
                 "cpsd_patient_otp_booking",
+                "cpsd_staff_messaging_privacy",
+                "cpsd_visit_pricing_invoice",
                 "cpsd_admin_teardown",
             ],
             "gap": "",
@@ -381,8 +377,8 @@ def build(root: pathlib.Path) -> dict:
 
     # Every production route must be claimed by exactly one feature, otherwise the
     # gate cannot tell an undescribed new surface from a described one. The
-    # pre-0030 staff-portal surface is covered by the existing six-persona
-    # journeys, so it is claimed here rather than left as an unattributed route.
+    # pre-0030 staff-portal surface is covered by the existing persona journeys,
+    # so it is claimed here rather than left as an unattributed route.
     claimed = {route for feature in features for route in feature["routes"]}
     features[-1]["routes"] = sorted(surface.route_paths() - claimed)
 
@@ -416,7 +412,9 @@ def build(root: pathlib.Path) -> dict:
                 "organization_manager",
                 "clinic_manager",
                 "doctor",
+                "doctor_second",
                 "receptionist",
+                "receptionist_second",
                 "accountant",
                 "patient",
             ],

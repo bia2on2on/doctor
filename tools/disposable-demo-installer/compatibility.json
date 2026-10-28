@@ -48,17 +48,20 @@
   "features": [
     {
       "demo_required": true,
-      "gap": "Demo fixtures and browser journeys do not exist yet. Required manual work: provision a messaging fixture (doctor<->receptionist, doctor<->finance, receptionist<->finance threads) through StaffMessagingService, add recipient-level privacy assertions with two doctors and two receptionists, and add RTL desktop + narrow-mobile journeys. Teardown ownership for the three tables IS covered by this manifest.",
+      "gap": "",
       "id": "staff_messaging_private_1to1",
       "introduced_by": "2026_10_27_0030",
-      "journeys": [],
+      "journeys": [
+        "cpdd_staff_messaging_privacy",
+        "cpsd_staff_messaging_privacy"
+      ],
       "routes": [
         "clinic/v1/staff/portal/messages/context",
         "clinic/v1/staff/portal/messages/threads",
         "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/messages",
         "clinic/v1/staff/portal/messages/threads/(?P<id>\\d+)/read"
       ],
-      "status": "manual_implementation_required",
+      "status": "demonstrable",
       "tables": [
         "cpms_message_threads",
         "cpms_message_participants",
@@ -68,10 +71,13 @@
     },
     {
       "demo_required": true,
-      "gap": "Demo fixtures and browser journeys do not exist yet. Required manual work: provision a doctor consultation-fee default, a per-visit override and itemized treatment charges through VisitPricingService, then a receptionist billing + payment-collection journey including invoice issuance and payment replay idempotency. Teardown ownership for the four tables IS covered by this manifest.",
+      "gap": "",
       "id": "doctor_visit_pricing",
       "introduced_by": "2026_10_27_0030",
-      "journeys": [],
+      "journeys": [
+        "cpdd_visit_pricing_invoice",
+        "cpsd_visit_pricing_invoice"
+      ],
       "routes": [
         "clinic/v1/staff/portal/pricing/context",
         "clinic/v1/staff/portal/pricing/default-fee",
@@ -81,7 +87,7 @@
         "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges",
         "clinic/v1/staff/portal/pricing/visits/(?P<id>\\d+)/charges/(?P<charge_id>\\d+)"
       ],
-      "status": "manual_implementation_required",
+      "status": "demonstrable",
       "tables": [
         "cpms_doctor_consultation_fees",
         "cpms_visit_consultation_fees",
@@ -103,6 +109,8 @@
         "cpdd_reception_arrival",
         "cpdd_doctor_clinical_workflow",
         "cpdd_finance_invoice_payment",
+        "cpdd_staff_messaging_privacy",
+        "cpdd_visit_pricing_invoice",
         "cpdd_rtl_and_mobile",
         "cpdd_teardown_and_verify",
         "cpsd_admin_provision",
@@ -113,6 +121,8 @@
         "cpsd_persona_clinic_manager",
         "cpsd_persona_organization_manager",
         "cpsd_patient_otp_booking",
+        "cpsd_staff_messaging_privacy",
+        "cpsd_visit_pricing_invoice",
         "cpsd_admin_teardown"
       ],
       "routes": [
@@ -226,7 +236,7 @@
       ],
       "status": "demonstrable",
       "tables": [],
-      "title": "Six-persona booking/visit/invoice demo (pre-0030 surface)"
+      "title": "Booking/visit/invoice demo across every demo persona (pre-0030 surface)"
     }
   ],
   "generated_by": ".github/scripts/companion-compat/author_manifest.py",
@@ -433,7 +443,9 @@
       "organization_manager",
       "clinic_manager",
       "doctor",
+      "doctor_second",
       "receptionist",
+      "receptionist_second",
       "accountant",
       "patient"
     ],
@@ -441,7 +453,9 @@
       "organization_manager",
       "clinic_manager",
       "doctor",
+      "doctor_second",
       "receptionist",
+      "receptionist_second",
       "accountant",
       "patient"
     ]

@@ -9,7 +9,7 @@ Verifies all 20 browser acceptance criteria end-to-end in real Chromium:
   5. One-time credential display (and absence on subsequent GET reload).
   6. Password rotation (complete usernames with fixture_id, old password rejected,
      new passwords accepted, absence on subsequent GET reload).
-  7. Six independent persona logins in separate BrowserContexts.
+  7. Independent persona logins in separate BrowserContexts.
   8. Role-specific portal navigation.
   9. Authorization denials (patient -> staff, receptionist/accountant -> doctor,
      doctor -> wp-admin companion tool).
@@ -54,6 +54,8 @@ JOURNEYS = (
     "cpdd_reception_arrival",
     "cpdd_doctor_clinical_workflow",
     "cpdd_finance_invoice_payment",
+    "cpdd_staff_messaging_privacy",
+    "cpdd_visit_pricing_invoice",
     "cpdd_rtl_and_mobile",
     "cpdd_teardown_and_verify",
 )
@@ -71,7 +73,9 @@ PERSONAS = (
     "organization_manager",
     "clinic_manager",
     "doctor",
+    "doctor_second",
     "receptionist",
+    "receptionist_second",
     "accountant",
     "patient",
 )
@@ -181,6 +185,19 @@ def open_persona_context(browser, credentials: dict, key: str):
 
 def with_query(url: str, **params) -> str:
     return url + ("&" if "?" in url else "?") + urlencode(params)
+
+
+def staff_module_url(link: str, module: str) -> str:
+    """Point an existing Staff Portal link at a different delivered module.
+
+    The module query parameter is a selector only; it grants no authority, and
+    the portal falls back to the actor's default eligible module. Replacing the
+    value (instead of appending a duplicate) keeps the URL unambiguous.
+    """
+    parsed = urlparse(link)
+    query = {key: list(value) for key, value in parse_qs(parsed.query).items()}
+    query["cpms-module"] = [module]
+    return parsed._replace(query=urlencode(query, doseq=True)).geturl()
 
 
 def assert_rtl_and_no_overflow(page, label: str, widths=(320, 390)) -> None:
@@ -295,6 +312,379 @@ def wait_out_local_midnight() -> None:
     )
     if wait > 0:
         time.sleep(wait)
+
+
+def journey_staff_messaging_privacy(browser, rotated_creds: dict, links: dict, fixture_meta: dict, contexts: list) -> None:
+    """`cpdd_staff_messaging_privacy` — strictly private one-to-one staff messaging.
+
+    Both doctors and both receptionists are real active members of the same
+    Clinic, so "the colleague who is not in the thread cannot read it" is a
+    pairwise privacy property, not a permissions-denial rehearsal. The two
+    non-participants must see an empty list and no unread badge, and a guessed
+    thread id must return the same non-revealing 404 the production service
+    returns for a thread that does not exist.
+    """
+    stage("15b. Private staff messaging — participants, privacy, guessed ids, RTL")
+    meta = json.loads(
+        wp_eval(
+            r"""
+            $m = get_option('cpdd_manifest');
+            echo wp_json_encode([
+                'private_thread' => (int) $m['ids']['message_thread_ids']['doctor_receptionist'],
+                'thread_ids'     => array_map('intval', array_values((array) $m['ids']['message_thread_ids'])),
+                'rest_root'      => untrailingslashit(rest_url('clinic/v1')),
+            ]);
+            """
+        )
+    )
+    private_thread = int(meta["private_thread"])
+    thread_ids = [int(value) for value in meta.get("thread_ids") or []]
+    rest_root = str(meta["rest_root"])
+    check("the sealed manifest records the three private fixture threads", private_thread > 0 and len(thread_ids) == 3, json.dumps(thread_ids))
+
+    msg_ctx, msg_page = open_persona_context(browser, rotated_creds, "doctor")
+    contexts.append(msg_ctx)
+    msg_page.goto(staff_module_url(links["doctor"], "messages"), wait_until="domcontentloaded")
+    msg_page.locator('[data-role="messages-root"]').wait_for(state="visible")
+    thread_items = msg_page.locator('[data-role="messages-threads"] li button')
+    thread_items.first.wait_for(state="visible", timeout=35000)
+    check(
+        "the doctor sees exactly the three private threads in the real UI",
+        thread_items.count() == len(thread_ids),
+        f"rendered={thread_items.count()} manifest={len(thread_ids)}",
+    )
+    check(
+        "the unread badge is rendered for the doctor",
+        msg_page.locator('[data-role="messages-unread-total"]').is_visible(),
+    )
+
+    thread_items.first.click()
+    bubbles = msg_page.locator('[data-role="messages-list"] .cpms-msg__bubble')
+    bubbles.first.wait_for(state="visible", timeout=35000)
+    seeded = bubbles.count()
+    check("opening a conversation shows its seeded messages", seeded >= 2, str(seeded))
+
+    msg_page.fill('[data-role="messages-body"]', "پیام آزمایشی از مرورگر — داده کاملاً فرضی")
+    msg_page.locator('[data-role="messages-form"]').evaluate("f => f.requestSubmit()")
+    msg_page.wait_for_function(
+        "n => document.querySelectorAll('[data-role=\"messages-list\"] .cpms-msg__bubble').length > n",
+        arg=seeded,
+        timeout=35000,
+    )
+    check("the doctor sends a message through the real Staff Portal form", True, "bubble appended")
+
+    assert_rtl_and_no_overflow(msg_page, "Staff portal messaging")
+    msg_page.set_viewport_size({"width": 1280, "height": 900})
+
+    nonce = msg_page.evaluate(
+        "() => { const el = document.getElementById('cpms-messages-config');"
+        " return el ? String((JSON.parse(el.textContent) || {}).nonce || '') : ''; }"
+    )
+    check("the messages module publishes its own REST nonce", len(str(nonce)) >= 8, str(len(nonce)))
+    guessed = msg_page.evaluate(
+        """async ([url, nonce]) => {
+            const res = await fetch(url, {
+                headers: {'X-WP-Nonce': String(nonce), 'Accept': 'application/json'},
+                credentials: 'same-origin', cache: 'no-store'
+            });
+            let body = {};
+            try { body = await res.json(); } catch (e) { body = {}; }
+            return {status: res.status, code: String((body && body.code) || '')};
+        }""",
+        [
+            f"{rest_root}/staff/portal/messages/threads/{max(thread_ids) + 9000}/messages",
+            str(nonce),
+        ],
+    )
+    check(
+        "a guessed thread id is refused with the non-revealing 404 in the browser",
+        guessed.get("status") == 404 and guessed.get("code") == "CLINIC_NOT_FOUND",
+        json.dumps(guessed),
+    )
+    msg_ctx.close()
+    contexts.remove(msg_ctx)
+
+    for intruder in ("receptionist_second", "doctor_second"):
+        intruder_ctx, intruder_page = open_persona_context(browser, rotated_creds, intruder)
+        contexts.append(intruder_ctx)
+        intruder_page.goto(staff_module_url(links["doctor"], "messages"), wait_until="domcontentloaded")
+        intruder_page.locator('[data-role="messages-root"]').wait_for(state="visible")
+        intruder_page.locator('[data-role="messages-threads"]').wait_for(state="visible", timeout=35000)
+        empty_hint = intruder_page.locator('[data-role="messages-threads"] li.cpms-msg__hint')
+        empty_hint.wait_for(state="visible", timeout=35000)
+        visible_threads = intruder_page.locator('[data-role="messages-threads"] li button').count()
+        badge_visible = intruder_page.locator('[data-role="messages-unread-total"]').is_visible()
+        check(
+            f"{intruder} (a real member of the Clinic) sees no private conversation and no unread badge",
+            visible_threads == 0 and not badge_visible and "هنوز گفتگویی وجود ندارد" in (empty_hint.inner_text() or ""),
+            f"threads={visible_threads} badge_visible={badge_visible}",
+        )
+        intruder_ctx.close()
+        contexts.remove(intruder_ctx)
+
+
+def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fixture_meta: dict, contexts: list) -> None:
+    """`cpdd_visit_pricing_invoice` — doctor-managed pricing through to collection.
+
+    Doctor: per-visit fee override plus an itemized treatment charge that is
+    then edited. Receptionist: the same breakdown read-only, the invoice issued
+    by the existing finance engine, a partial payment, then full settlement.
+    Afterwards the finalized visit is frozen in the doctor UI.
+    """
+    stage("15c. Doctor visit pricing — override, charges, breakdown, invoice, payments")
+    meta = json.loads(
+        wp_eval(
+            r"""
+            $m = get_option('cpdd_manifest');
+            echo wp_json_encode([
+                'pricing_visit' => (int) $m['ids']['visit_id_pricing'],
+                'location_id'   => (int) ($m['ids']['location_ids'][0] ?? 0),
+            ]);
+            """
+        )
+    )
+    pricing_visit = int(meta["pricing_visit"])
+    pricing_location = int(meta["location_id"]) or int(fixture_meta["location_id"])
+    check("the pricing fixture visit is recorded in the sealed manifest", pricing_visit > 0, str(pricing_visit))
+
+    # ---- doctor: override + itemized charge
+    doctor_ctx, doctor_page = open_persona_context(browser, rotated_creds, "doctor_second")
+    contexts.append(doctor_ctx)
+    doctor_page.goto(staff_module_url(links["doctor"], "pricing"), wait_until="domcontentloaded")
+    doctor_page.locator('[data-role="pricing-root"]').wait_for(state="visible")
+    doctor_page.locator('[data-role="pricing-context-label"]').wait_for(state="visible", timeout=35000)
+    doctor_page.wait_for_function(
+        "() => !document.querySelector('[data-role=\"pricing-context-label\"]').textContent.includes('در حال دریافت')",
+        timeout=35000,
+    )
+    check(
+        "the pricing module binds its context to the signed-in doctor",
+        "دکتر دوم" in (doctor_page.locator('[data-role="pricing-context-label"]').inner_text() or ""),
+        (doctor_page.locator('[data-role="pricing-context-label"]').inner_text() or "")[:120],
+    )
+
+    visit_button = doctor_page.locator(
+        '[data-role="pricing-visits"] li button', has_text=re.compile(rf"ویزیت {pricing_visit}\s*$")
+    )
+    visit_button.wait_for(state="visible", timeout=35000)
+    visit_button.click()
+    doctor_page.locator('[data-role="pricing-billing"]').wait_for(state="visible", timeout=35000)
+    doctor_page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-visit-title\"]').textContent.includes('صورتحساب')",
+        timeout=35000,
+    )
+    stats_text = doctor_page.locator('[data-role="pricing-stats"]').inner_text() or ""
+    check(
+        "the projection shows the check-in snapshot fee and states the no-reprice policy",
+        "تعرفه ثبت‌شده هنگام پذیرش" in stats_text
+        and "سیاست تعرفه" in stats_text
+        and "تغییر تعرفه پیش‌فرض" in stats_text,
+        stats_text[:200],
+    )
+
+    charge_rows = doctor_page.locator('[data-role="pricing-charges"] tr')
+    check("no treatment charge exists yet", charge_rows.count() == 1, str(charge_rows.count()))
+    doctor_page.fill('[data-role="pricing-charge-description"]', "خدمت درمانی آزمایشی مرورگر")
+    doctor_page.fill('[data-role="pricing-charge-amount"]', "200000")
+    doctor_page.fill('[data-role="pricing-charge-quantity"]', "1")
+    doctor_page.locator('[data-role="pricing-charge-form"]').evaluate("f => f.requestSubmit()")
+    doctor_page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-charges\"]').textContent.includes('خدمت درمانی آزمایشی مرورگر')",
+        timeout=35000,
+    )
+    check("the doctor adds an itemized treatment charge through the real form", True, "row rendered")
+
+    # Editing a charge is a genuine UI action: the module collects the three new
+    # values with window.prompt(), so the journey answers the dialogs.
+    prompt_answers = ["خدمت درمانی آزمایشی مرورگر (اصلاح‌شده)", "200000", "2"]
+
+    def answer_prompt(dialog) -> None:
+        if dialog.type == "prompt" and prompt_answers:
+            dialog.accept(prompt_answers.pop(0))
+        else:
+            dialog.accept()
+
+    doctor_page.on("dialog", answer_prompt)
+    doctor_page.locator('[data-role="pricing-charges"] tr').first.locator("button", has_text="اصلاح").click()
+    doctor_page.wait_for_function(
+        "() => { const t = document.querySelector('[data-role=\"pricing-charges\"]');"
+        " return !!t && t.textContent.includes('اصلاح‌شده'); }",
+        timeout=35000,
+    )
+    doctor_page.wait_for_function(
+        "() => { const rows = document.querySelectorAll('[data-role=\"pricing-charges\"] tr');"
+        " if (rows.length !== 1) return false;"
+        " const cells = rows[0].querySelectorAll('td');"
+        " return cells.length > 2 && cells[2].textContent.trim() === '2'; }",
+        timeout=35000,
+    )
+    check("the doctor edits the charge quantity through the real UI", True, "quantity cell is 2")
+    doctor_page.remove_listener("dialog", answer_prompt)
+
+    doctor_page.fill('[data-role="pricing-override-amount"]', "620000")
+    doctor_page.locator('[data-role="pricing-override-form"]').evaluate("f => f.requestSubmit()")
+    doctor_page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-stats\"]').textContent.includes('تعرفه اختصاصی پزشک')",
+        timeout=35000,
+    )
+    check("the doctor applies a per-visit fee override through the real form", True, "fee_source=visit_override")
+    assert_rtl_and_no_overflow(doctor_page, "Staff portal pricing")
+    doctor_page.set_viewport_size({"width": 1280, "height": 900})
+    doctor_ctx.close()
+    contexts.remove(doctor_ctx)
+
+    # ---- receptionist: read-only breakdown, invoice, partial then full payment
+    desk_ctx, desk_page = open_persona_context(browser, rotated_creds, "receptionist")
+    contexts.append(desk_ctx)
+    desk_page.goto(links["accountant"], wait_until="domcontentloaded")
+    desk_page.locator('[data-role="finance-root"]').wait_for(state="visible")
+    location_select = desk_page.locator('[data-role="finance-location"]')
+    desk_page.locator(f'[data-role="finance-location"] option[value="{pricing_location}"]').wait_for(
+        state="attached", timeout=30000
+    )
+    if location_select.input_value() != str(pricing_location):
+        location_select.select_option(str(pricing_location))
+
+    billing_open = desk_page.locator(f'[data-role="finance-billing-open"][data-visit-id="{pricing_visit}"]')
+    billing_open.wait_for(state="visible", timeout=45000)
+    billing_open.click()
+    desk_page.locator('[data-role="finance-billing"]').wait_for(state="visible", timeout=35000)
+    desk_page.wait_for_function(
+        "() => document.querySelector('[data-role=\"finance-billing-charges\"]').textContent.includes('اصلاح‌شده')",
+        timeout=35000,
+    )
+    breakdown = desk_page.locator('[data-role="finance-billing"]').inner_text() or ""
+    check(
+        "the receptionist sees the doctor's override fee and the itemized charge",
+        "تعرفه اختصاصی ویزیت" in breakdown and "اصلاح‌شده" in breakdown,
+        breakdown[:220],
+    )
+
+    issue_button = desk_page.locator('[data-role="finance-billing-auto"]')
+    check("the receptionist may issue the invoice from the doctor pricing", issue_button.is_visible())
+    issue_button.click()
+    desk_page.wait_for_function(
+        "() => document.querySelector('[data-role=\"finance-billing-items\"]').textContent.includes('ویزیت و مشاوره')",
+        timeout=45000,
+    )
+    invoice_lines = desk_page.locator('[data-role="finance-billing-items"]').inner_text() or ""
+    check(
+        "the finance engine's invoice carries both the consultation and the treatment line",
+        "ویزیت و مشاوره" in invoice_lines and "اصلاح‌شده" in invoice_lines,
+        invoice_lines[:220],
+    )
+
+    invoice_state = json.loads(
+        wp_eval(
+            r"""
+            $db = \ClinicCore\Bootstrap\App::db();
+            $row = $db->fetchRow(
+                'SELECT id, status, total, paid_amount, balance FROM ' . $db->table('cpms_invoices')
+                . ' WHERE visit_id = %d ORDER BY id DESC LIMIT 1',
+                [(int) getenv('VID')]
+            );
+            echo wp_json_encode([
+                'id'     => $row ? (int) $row['id'] : 0,
+                'status' => $row ? (string) $row['status'] : '',
+                'total'  => $row ? (int) round((float) $row['total']) : 0,
+                'paid'   => $row ? (int) round((float) $row['paid_amount']) : 0,
+                'balance' => $row ? (int) round((float) $row['balance']) : 0,
+            ]);
+            """,
+            {"VID": str(pricing_visit)},
+        )
+    )
+    pricing_invoice = int(invoice_state["id"])
+    check("the browser-issued pricing invoice persisted in the database", pricing_invoice > 0, json.dumps(invoice_state))
+    check(
+        "the invoice total is the override fee plus the edited charge (620000 + 400000)",
+        invoice_state["total"] == 1020000 and invoice_state["paid"] == 0,
+        json.dumps(invoice_state),
+    )
+
+    pay_open = desk_page.locator(f'[data-role="finance-pay-open"][data-invoice-id="{pricing_invoice}"]')
+    pay_open.wait_for(state="visible", timeout=45000)
+    pay_open.click()
+    desk_page.fill('[data-role="finance-pay-amount"]', "300000")
+    desk_page.select_option('[data-role="finance-pay-method"]', "cash")
+    desk_page.fill('[data-role="finance-pay-ref"]', "SYNTHETIC-BROWSER-PARTIAL")
+    desk_page.locator('[data-role="finance-pay-form"]').evaluate("f => f.requestSubmit()")
+
+    def read_invoice() -> dict:
+        return json.loads(
+            wp_eval(
+                r"""
+                $db = \ClinicCore\Bootstrap\App::db();
+                $row = $db->fetchRow(
+                    'SELECT status, total, paid_amount, balance FROM ' . $db->table('cpms_invoices') . ' WHERE id = %d',
+                    [(int) getenv('IID')]
+                );
+                echo wp_json_encode([
+                    'status'  => (string) ($row['status'] ?? ''),
+                    'total'   => (int) round((float) ($row['total'] ?? 0)),
+                    'paid'    => (int) round((float) ($row['paid_amount'] ?? 0)),
+                    'balance' => (int) round((float) ($row['balance'] ?? 0)),
+                ]);
+                """,
+                {"IID": str(pricing_invoice)},
+            )
+        )
+
+    for _ in range(30):
+        partial_state = read_invoice()
+        if partial_state["paid"] == 300000:
+            break
+        desk_page.wait_for_timeout(500)
+    check(
+        "the partial payment is persisted against the pricing invoice",
+        partial_state["paid"] == 300000 and partial_state["balance"] == invoice_state["total"] - 300000,
+        json.dumps(partial_state),
+    )
+
+    pay_open.wait_for(state="visible", timeout=45000)
+    pay_open.click()
+    desk_page.fill('[data-role="finance-pay-amount"]', str(partial_state["balance"]))
+    desk_page.select_option('[data-role="finance-pay-method"]', "card_pos")
+    desk_page.fill('[data-role="finance-pay-ref"]', "SYNTHETIC-BROWSER-FINAL")
+    desk_page.locator('[data-role="finance-pay-form"]').evaluate("f => f.requestSubmit()")
+    for _ in range(30):
+        final_state = read_invoice()
+        if final_state["balance"] == 0:
+            break
+        desk_page.wait_for_timeout(500)
+    check(
+        "the invoice is fully settled and reaches the paid state",
+        final_state["balance"] == 0
+        and final_state["status"] == "paid"
+        and final_state["paid"] == final_state["total"] == invoice_state["total"],
+        json.dumps(final_state),
+    )
+    desk_ctx.close()
+    contexts.remove(desk_ctx)
+
+    # ---- the finalized pricing is frozen in the doctor UI
+    frozen_ctx, frozen_page = open_persona_context(browser, rotated_creds, "doctor_second")
+    contexts.append(frozen_ctx)
+    frozen_page.goto(staff_module_url(links["doctor"], "pricing"), wait_until="domcontentloaded")
+    frozen_page.locator('[data-role="pricing-root"]').wait_for(state="visible")
+    frozen_page.locator(
+        '[data-role="pricing-visits"] li button', has_text=re.compile(rf"ویزیت {pricing_visit}\s*$")
+    ).click()
+    frozen_page.locator('[data-role="pricing-billing"]').wait_for(state="visible", timeout=35000)
+    frozen_page.wait_for_function(
+        "() => { const b = document.querySelector('[data-role=\"pricing-charge-add\"]');"
+        " return !!b && b.disabled === true; }",
+        timeout=35000,
+    )
+    add_disabled = frozen_page.locator('[data-role="pricing-charge-add"]').is_disabled()
+    override_disabled = frozen_page.locator('[data-role="pricing-override-save"]').is_disabled()
+    check(
+        "the finalized visit pricing is read-only in the doctor UI",
+        add_disabled and override_disabled,
+        f"add_disabled={add_disabled} override_disabled={override_disabled}",
+    )
+    frozen_ctx.close()
+    contexts.remove(frozen_ctx)
 
 
 def main() -> None:
@@ -522,8 +912,8 @@ def main() -> None:
 
             initial_creds = extract_credentials_from_admin_dom(admin_page)
             check(
-                "six unique CSPRNG secrets displayed once on provision",
-                len({ initial_creds[p]["secret"] for p in PERSONAS }) == 6
+                "one unique CSPRNG secret per persona displayed once on provision",
+                len({ initial_creds[p]["secret"] for p in PERSONAS }) == len(PERSONAS)
                 and all(re.fullmatch(r"[a-f0-9]{48}", initial_creds[p]["secret"]) for p in PERSONAS)
                 and all(initial_creds[p]["username"] == f"cpdd-{p}-{fixture_id}" for p in PERSONAS),
             )
@@ -609,8 +999,8 @@ def main() -> None:
                 json.dumps({p: rotated_creds[p]["username"] for p in PERSONAS}),
             )
             check(
-                "rotation generated six new CSPRNG secrets distinct from initial secrets",
-                len({ rotated_creds[p]["secret"] for p in PERSONAS }) == 6
+                "rotation generated fresh CSPRNG secrets distinct from initial secrets",
+                len({ rotated_creds[p]["secret"] for p in PERSONAS }) == len(PERSONAS)
                 and all(re.fullmatch(r"[a-f0-9]{48}", rotated_creds[p]["secret"]) for p in PERSONAS)
                 and all(rotated_creds[p]["secret"] != initial_creds[p]["secret"] for p in PERSONAS),
             )
@@ -655,8 +1045,8 @@ def main() -> None:
                 )
             )
 
-            # 7, 8, 9. Six independent persona logins, role-specific portals, and authorization denials
-            stage("7-9. Six independent persona logins, portals, and authorization denials")
+            # 7, 8, 9. Independent persona logins, role-specific portals, and authorization denials
+            stage("7-9. Independent persona logins, portals, and authorization denials")
             for persona in PERSONAS:
                 p_ctx, p_page = open_persona_context(browser, rotated_creds, persona)
                 contexts.append(p_ctx)
@@ -945,6 +1335,13 @@ def main() -> None:
                 and journey_db["payments"] >= 1,
                 json.dumps(journey_db),
             )
+
+            # 15b. Iran V1 — strictly private one-to-one staff messaging.
+            journey_staff_messaging_privacy(browser, rotated_creds, links, fixture_meta, contexts)
+
+            # 15c. Iran V1 — doctor-managed consultation pricing and collection.
+            journey_visit_pricing_invoice(browser, rotated_creds, links, fixture_meta, contexts)
+
 
             # Also check management portal RTL at 320px and 390px
             mgr_ctx, mgr_page = open_persona_context(browser, rotated_creds, "organization_manager")
