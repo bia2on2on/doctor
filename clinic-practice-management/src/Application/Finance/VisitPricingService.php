@@ -166,28 +166,20 @@ final class VisitPricingService {
         $ctx       = $this->context_for( $actor_user_id, true );
         $clinician = $this->require_doctor( $ctx, $actor_user_id );
         $target    = $location_id === null ? 0 : $location_id;
-        if ( $target === 0 ) {
-            $this->assert_clinic_wide_pricing_allowed( $ctx, $actor_user_id );
-        } else {
-            $this->assert_location_allowed( $ctx, $actor_user_id, $target );
-        }
+        $this->assert_default_fee_target( $ctx, $actor_user_id, $target );
         $fee = $this->amount( $amount );
 
         $change = $this->db->transactional(
             function () use ( $ctx, $actor_user_id, $clinician, $target, $fee ): array {
                 // Re-check identity and permission after entering the write transaction.
-                $fresh_ctx = $this->context_for( $actor_user_id, true );
+                $fresh_ctx       = $this->context_for( $actor_user_id, true );
                 $fresh_clinician = $this->require_doctor( $fresh_ctx, $actor_user_id );
                 if ( $fresh_ctx['clinic_id'] !== $ctx['clinic_id']
                     || (int) $fresh_clinician['id'] !== (int) $clinician['id']
                 ) {
                     throw FinanceException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی پزشک هنگام تغییر تعرفه تغییر کرده است', 403 );
                 }
-                if ( $target === 0 ) {
-                    $this->assert_clinic_wide_pricing_allowed( $ctx, $actor_user_id, true );
-                } else {
-                    $this->assert_location_allowed( $ctx, $actor_user_id, $target, true );
-                }
+                $this->assert_default_fee_target( $ctx, $actor_user_id, $target, true );
                 $result = $this->pricing->set_default_fee(
                     $ctx['clinic_id'],
                     (int) $clinician['id'],
@@ -232,7 +224,7 @@ final class VisitPricingService {
             function () use ( $ctx, $actor_user_id, $clinician, $visit_id, $fee ): void {
                 // Finance writers and invoice issuance acquire locks in this
                 // order: Visit first, then finance rows, then the audit row.
-                $visit = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
+                $visit  = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
                 $before = $this->pricing->visit_fee_row( $visit_id );
                 $this->pricing->set_visit_override( $visit_id, $ctx['clinic_id'], (int) $clinician['id'], $fee, $actor_user_id );
                 $this->audit->log(
@@ -264,7 +256,7 @@ final class VisitPricingService {
         $charge_id = $this->db->transactional(
             function () use ( $ctx, $actor_user_id, $clinician, $visit_id, $fields ): int {
                 $visit = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
-                $id = $this->pricing->insert_charge(
+                $id    = $this->pricing->insert_charge(
                     [
                         'clinic_id'             => $ctx['clinic_id'],
                         'visit_id'              => $visit_id,
@@ -310,7 +302,7 @@ final class VisitPricingService {
 
         $this->db->transactional(
             function () use ( $ctx, $actor_user_id, $clinician, $visit_id, $charge_id, $input ): void {
-                $visit = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
+                $visit  = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
                 $charge = $this->require_charge( $ctx, $visit_id, $charge_id );
                 $fields = $this->charge_input(
                     [
@@ -369,7 +361,7 @@ final class VisitPricingService {
 
         $this->db->transactional(
             function () use ( $ctx, $actor_user_id, $clinician, $visit_id, $charge_id ): void {
-                $visit = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
+                $visit  = $this->locked_visit_for_write( $ctx, $actor_user_id, $visit_id, $clinician );
                 $charge = $this->require_charge( $ctx, $visit_id, $charge_id );
                 $this->pricing->update_charge(
                     $charge_id,
@@ -425,7 +417,7 @@ final class VisitPricingService {
                 ['visit_id' => $visit_id]
             );
         }
-        $fee     = $fee_row !== null ? (int) $fee_row['fee'] : null;
+        $fee = $fee_row !== null ? (int) $fee_row['fee'] : null;
         if ( $fee !== null && $fee <= 0 ) {
             $fee = null; // no zero-priced consultation line
         }
@@ -494,7 +486,7 @@ final class VisitPricingService {
 
     /** Persist a safe marker when the ancillary check-in snapshot could not be saved. */
     public function mark_fee_snapshot_failed( array $visit ): void {
-        $visit_id = (int) ( $visit['id'] ?? 0 );
+        $visit_id  = (int) ( $visit['id'] ?? 0 );
         $clinic_id = (int) ( $visit['clinic_id'] ?? 0 );
         $this->pricing->mark_fee_snapshot_failed( $visit_id, $clinic_id );
         $this->audit->log(
@@ -784,9 +776,9 @@ final class VisitPricingService {
             && App::authorization_service()->can( $actor_user_id, $clinic_id, self::WRITE_CAP );
         // Snapshot creation is performed only by a Visit-locked transaction
         // in billing_for_visit(), pricing writes, check-in, or invoice issue.
-        $fee_row      = $this->pricing->visit_fee_row( $visit_id );
+        $fee_row         = $this->pricing->visit_fee_row( $visit_id );
         $snapshot_failed = $this->pricing->fee_snapshot_failed( $visit_id );
-        $fees         = $this->fee_components( $visit, $fee_row, $can_edit && ! $snapshot_failed );
+        $fees            = $this->fee_components( $visit, $fee_row, $can_edit && ! $snapshot_failed );
         if ( $snapshot_failed && $fee_row === null ) {
             $fees['source'] = 'snapshot_failed';
         }
@@ -957,6 +949,32 @@ final class VisitPricingService {
         }
 
         return array_values( array_map( 'intval', $this->memberships->location_ids_for( (int) $membership['id'] ) ) );
+    }
+
+    /**
+     * Validate the business fee target independently of REST scope parsing.
+     * Location 0 is a clinic-wide policy target; positive ids must be active
+     * Locations belonging to the trusted Clinic and within the actor's grant.
+     *
+     * @param array{clinic_id: int, organization_id: int|null} $ctx
+     */
+    private function assert_default_fee_target( array $ctx, int $actor_user_id, int $target, bool $for_update = false ): void {
+        if ( $target === 0 ) {
+            $this->assert_clinic_wide_pricing_allowed( $ctx, $actor_user_id, $for_update );
+
+            return;
+        }
+        if ( $target < 0 ) {
+            throw FinanceException::of( 'CLINIC_VALIDATION_FAILED', 'موقعیت تعرفه نامعتبر است', 422 );
+        }
+        $location = $this->db->fetchRow(
+            'SELECT clinic_id, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
+            [$target]
+        );
+        if ( $location === null || (int) $location['clinic_id'] !== $ctx['clinic_id'] || (int) $location['is_active'] !== 1 ) {
+            throw FinanceException::of( 'CLINIC_NOT_FOUND', 'موقعیت عملیاتی یافت نشد', 404 );
+        }
+        $this->assert_location_allowed( $ctx, $actor_user_id, $target, $for_update );
     }
 
     /**

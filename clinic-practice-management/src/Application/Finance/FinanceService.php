@@ -33,6 +33,9 @@ use DomainException;
  */
 final class FinanceService
 {
+    /** Internal-only signal set by issue_invoice_from_pricing(). */
+    private bool $issuing_pricing_invoice = false;
+
     private const PAYMENT_METHODS = ['cash', 'card_pos', 'online', 'other'];
 
     public function __construct(
@@ -253,12 +256,6 @@ final class FinanceService
      */
     public function issueInvoice(int $actorUserId, array $input): array
     {
-        return $this->issueInvoiceInternal($actorUserId, $input, false);
-    }
-
-    /** @param array<string, mixed> $input */
-    private function issueInvoiceInternal(int $actorUserId, array $input, bool $pricingAdapter): array
-    {
         $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
         $clinicId = $this->requireTrustedClinicId();
         $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
@@ -274,7 +271,7 @@ final class FinanceService
             throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'تخفیف/مالیات باید عدد صحیح غیرمنفی باشد', 422);
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $visitId, $itemsIn, $discount, $tax, $pricingAdapter): array {
+        return $this->db->transactional(function () use ($actorUserId, $visitId, $itemsIn, $discount, $tax): array {
             $visit = $this->visits->findForUpdate($visitId);
             if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
@@ -295,19 +292,19 @@ final class FinanceService
                     ['visit_id' => $visitId]
                 );
             }
-            if (!$pricingAdapter) {
-                $pendingCharges = (int) $this->db->fetchValue(
-                    'SELECT COUNT(*) FROM ' . $this->db->table('cpms_visit_charge_items')
+            if ( ! $this->issuing_pricing_invoice ) {
+                $pending_charges = (int) $this->db->fetchValue(
+                    'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_visit_charge_items' )
                     . ' WHERE clinic_id = %d AND visit_id = %d'
                     . ' AND invoiced_invoice_id IS NULL AND removed_at IS NULL',
-                    [(int) $visit['clinic_id'], $visitId]
+                    [(int) $visit['clinic_id'], (int) $visit['id']]
                 );
-                if ($pendingCharges > 0) {
+                if ( $pending_charges > 0 ) {
                     throw FinanceException::of(
                         'CLINIC_POLICY_VIOLATION',
                         'ویزیت دارای اقلام درمانی ثبت‌شده است؛ برای جلوگیری از حذف قلم از فاکتور، از مسیر صدور فاکتور تعرفه استفاده کنید',
                         409,
-                        ['visit_id' => $visitId]
+                        ['visit_id' => (int) $visit['id']]
                     );
                 }
             }
@@ -461,15 +458,20 @@ final class FinanceService
                     throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409 );
                 }
 
-                $built   = $this->pricing->build_invoice_items( $visit );
-                $invoice = $this->issueInvoiceInternal(
-                    $actor_user_id,
-                    [
-                        'visit_id' => $visit_id,
-                        'items'    => $built['items'],
-                    ],
-                    true
-                );
+                $built                  = $this->pricing->build_invoice_items( $visit );
+                $previous_pricing_issue = $this->issuing_pricing_invoice;
+                $this->issuing_pricing_invoice = true;
+                try {
+                    $invoice = $this->issueInvoice(
+                        $actor_user_id,
+                        [
+                            'visit_id' => $visit_id,
+                            'items'    => $built['items'],
+                        ]
+                    );
+                } finally {
+                    $this->issuing_pricing_invoice = $previous_pricing_issue;
+                }
                 $this->pricing->stamp_charges_invoiced( $built['charge_ids'], (int) $invoice['id'], $clinic_id );
 
                 return $invoice;

@@ -28,13 +28,13 @@ return [
     'version'     => '2026_10_27_0030',
     'description' => 'Iran V1: clinic-scoped staff messaging, doctor consultation fees and draft visit charges',
     'up'          => static function ( CpmsDb $db ): void {
-        $threads     = $db->table( 'cpms_message_threads' );
-        $participant = $db->table( 'cpms_message_participants' );
-        $messages    = $db->table( 'cpms_messages' );
-        $fees        = $db->table( 'cpms_doctor_consultation_fees' );
-        $overrides   = $db->table( 'cpms_visit_consultation_fees' );
-        $charges     = $db->table( 'cpms_visit_charge_items' );
-        $snapshotFailures = $db->table( 'cpms_visit_fee_snapshot_failures' );
+        $threads           = $db->table( 'cpms_message_threads' );
+        $participant       = $db->table( 'cpms_message_participants' );
+        $messages          = $db->table( 'cpms_messages' );
+        $fees              = $db->table( 'cpms_doctor_consultation_fees' );
+        $overrides         = $db->table( 'cpms_visit_consultation_fees' );
+        $charges           = $db->table( 'cpms_visit_charge_items' );
+        $snapshot_failures = $db->table( 'cpms_visit_fee_snapshot_failures' );
 
         $db->query(
             "CREATE TABLE IF NOT EXISTS {$threads} (
@@ -135,7 +135,7 @@ return [
         );
 
         $db->query(
-            "CREATE TABLE IF NOT EXISTS {$snapshotFailures} (
+            "CREATE TABLE IF NOT EXISTS {$snapshot_failures} (
             `visit_id` BIGINT UNSIGNED NOT NULL,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `failed_at` DATETIME(3) NOT NULL,
