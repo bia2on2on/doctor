@@ -355,8 +355,8 @@ Cpdd_Test::refuses( static fn () => $ctx['manifest']->load(), 'MANIFEST_TAMPERED
 $ctx         = cpdd_fixture();
 $credentials = new Credentials( $ctx['env'] );
 $passwords   = $credentials->generate_all();
-Cpdd_Test::equals( 6, count( $passwords ), 'credentials: one password per persona' );
-Cpdd_Test::equals( 6, count( array_unique( array_values( $passwords ) ) ), 'credentials: all passwords are distinct' );
+Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $passwords ), 'credentials: one password per persona' );
+Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( array_unique( array_values( $passwords ) ) ), 'credentials: all passwords are distinct' );
 $shortest = 100;
 foreach ( $passwords as $password ) {
 	$shortest = min( $shortest, strlen( $password ) );
@@ -621,7 +621,7 @@ require CPMS_DEMO_DIR . 'uninstall.php';
 Cpdd_Test::ok( is_array( $ctx['env']->option_get( Manifest::OPTION, null ) ), 's1: uninstall with active fixture preserves cpdd_manifest' );
 Cpdd_Test::ok( is_array( $ctx['env']->option_get( 'cpdd_uninstall_blocked', null ) ), 's1: uninstall with active fixture records cpdd_uninstall_blocked recovery marker' );
 Cpdd_Test::equals( 2, count( $ctx['platform']->tables_data['cpms_clinics'] ), 's1: uninstall never auto-deletes clinic or clinical records' );
-Cpdd_Test::equals( 7, count( $ctx['env']->users ), 's1: uninstall never auto-deletes WordPress users' );
+Cpdd_Test::equals( 1 + count( Credentials::PERSONA_ORDER ), count( $ctx['env']->users ), 's1: uninstall never auto-deletes WordPress users' );
 
 // Reinstall & recover: Teardown::execute() succeeds and clears cpdd_uninstall_blocked.
 $res_after_reinstall = ( new Teardown( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->execute( $ctx['manifest']->load(), 1 );

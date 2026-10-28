@@ -65,6 +65,20 @@ JOURNEYS = (
     "cpsd_admin_teardown",
 )
 
+# The personas the scoped fixture provisions and provisions credentials for. The
+# credential card is asserted against this list, so adding a persona can never
+# silently shrink the proof.
+PERSONAS = (
+    "organization_manager",
+    "clinic_manager",
+    "doctor",
+    "doctor_second",
+    "receptionist",
+    "receptionist_second",
+    "accountant",
+    "patient",
+)
+
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 ADMIN_USER = os.environ.get("ADMIN_USER", "cpsd_admin")
 ADMIN_PASS = os.environ["ADMIN_PASS"]
@@ -317,7 +331,7 @@ def provision_phase(browser) -> None:
     credentials_card = admin.locator('[data-cpsd-secret="credentials"]')
     check("credentials shown once", credentials_card.count() == 1)
     rows = credentials_card.locator("tr[data-cpsd-persona]")
-    check("six credential rows", rows.count() == 6, f"rows={rows.count()}")
+    check("one credential row per persona", rows.count() == len(PERSONAS), f"rows={rows.count()}")
     creds: dict[str, dict[str, str]] = {}
     for i in range(rows.count()):
         row = rows.nth(i)
@@ -325,7 +339,9 @@ def provision_phase(browser) -> None:
         username = row.locator("td").nth(1).inner_text().strip()
         password = row.locator("textarea.cpdd-pass-field").input_value().strip()
         creds[persona] = {"username": username, "password": password}
-    check("all six credentials non-empty", all(v["username"] and v["password"] for v in creds.values()))
+    check("all credentials non-empty", all(v["username"] and v["password"] for v in creds.values()))
+    check("every declared persona received credentials",
+          sorted(creds.keys()) == sorted(PERSONAS), json.dumps(sorted(creds.keys())))
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-provisioned.png"))
     CREDENTIALS_FILE.write_text(json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
 
