@@ -216,6 +216,12 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
             $db->query('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', [$clinician]);
         }
 
+        // The upgrade simulation's real DDL performed an implicit COMMIT, so
+        // the WP test transaction no longer exists. These DELETEs now live in a
+        // fresh implicit transaction; commit them explicitly or WP tearDown's
+        // ROLLBACK would resurrect the durable rows and pollute later tests.
+        // This raw COMMIT is test-only cleanup, never production code.
+        $db->query('COMMIT');
         $this->upgradeRows = [];
     }
 }

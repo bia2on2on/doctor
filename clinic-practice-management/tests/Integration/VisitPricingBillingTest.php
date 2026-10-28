@@ -477,6 +477,7 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
             $patient,
             (int) $world['clinician']
         );
+        $this->iv1_complete_consultation($visit);
         $snapshot = $wpdb->get_row(
             $wpdb->prepare(
                 'SELECT fee, set_by_wp_user_id FROM ' . $wpdb->prefix . 'cpms_visit_consultation_fees WHERE visit_id = %d',
@@ -555,6 +556,7 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
             $patient,
             (int) $world['clinician']
         );
+        $this->iv1_complete_consultation($visit);
 
         wp_set_current_user((int) $world['doctor']);
         $override = $this->iv1_scope($clinic, fn (): array => App::visit_pricing_service()->set_visit_consultation_fee((int) $world['doctor'], $visit, 750000));

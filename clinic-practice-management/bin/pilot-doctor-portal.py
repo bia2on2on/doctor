@@ -460,13 +460,34 @@ ROLE_SWITCH_MARKERS = ("role-switcher", "role_switcher", "switch-role", "switch_
 
 
 def assert_staff_shell(page):
-    """Doctor shell plus the existing-capability Finance and Reports read modules."""
+    """Doctor shell plus existing and Iran V1 modules, all accessibly linked.
+
+    The established doctor/finance/reports deep links stay first. Iran V1
+    messaging and pricing are appended only when the doctor is eligible; this
+    assertion keeps the old order, rejects unknown/duplicate modules and checks
+    every appended link is visible with an accessible name (no coverage loss).
+    """
     if page.locator("html").get_attribute("data-cpms-staff-portal-shell") != "v1":
         raise RuntimeError("shared Staff Portal shell root missing")
     modules = page.locator('[data-role="staff-module-link"]')
     ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
-    if ids != ["doctor", "finance", "reports"]:
-        raise RuntimeError(f"staff navigation must expose doctor + authorized finance + reports modules, got {ids}")
+    established = ["doctor", "finance", "reports"]
+    iran_v1 = ["messages", "pricing"]
+    if ids[: len(established)] != established:
+        raise RuntimeError(f"staff navigation must keep doctor + authorized finance + reports deep links first, got {ids}")
+    appended = ids[len(established) :]
+    if (
+        appended != sorted(appended)
+        or len(set(appended)) != len(appended)
+        or any(module_id not in iran_v1 for module_id in appended)
+    ):
+        raise RuntimeError(f"staff navigation may append only unique authorized Iran V1 modules, got {appended}")
+    if "messages" not in appended:
+        raise RuntimeError("Iran V1 messaging module navigation is missing for an authorized doctor")
+    for offset, module_id in enumerate(appended):
+        link = modules.nth(len(established) + offset)
+        if not link.is_visible() or not (link.inner_text() or "").strip():
+            raise RuntimeError(f"Iran V1 {module_id} navigation link is not accessible")
     if not modules.first.is_visible():
         raise RuntimeError("doctor module navigation entry is not visible")
     if page.locator('script[type="application/json"][class*="__config"]').count() != 1:

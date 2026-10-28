@@ -141,6 +141,23 @@ trait IranV1Fixture
     }
 
     /**
+     * Mark a real walk-in Visit as a completed consultation for billing tests.
+     *
+     * This is a fixture-only status projection: invoice issuance legitimately
+     * requires `consultation_completed`, while the check-in fee snapshot must
+     * already have been captured by VisitService::createVisit() before it.
+     */
+    protected function iv1_complete_consultation(int $visit_id): void
+    {
+        global $wpdb;
+        $wpdb->update(
+            $wpdb->prefix . 'cpms_visits',
+            ['status' => 'consultation_completed', 'active' => 0],
+            ['id' => $visit_id]
+        );
+    }
+
+    /**
      * Create a checked-in Visit through the real VisitService so the Iran V1
      * fee-snapshot hook runs inside the production atomic transaction.
      */
