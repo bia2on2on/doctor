@@ -263,9 +263,36 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         self.assertEqual(3, self.teardown.count("'SCOPED_FOREIGN_DEPENDENCY'"))
         # The per-user guard must run before the WordPress account is deleted.
         self.assertLess(
-            self.teardown.index("$this->assert_user_not_foreign_dependent( $manifest, $user_id );"),
+            self.teardown.index("$this->assert_user_not_foreign_dependent( $manifest, $user_id, $anchors );"),
             self.teardown.index("$this->env->delete_user( $user_id )"),
         )
+
+    def test_preserved_anchors_are_owned_by_identity_not_by_absence(self) -> None:
+        """Stage 1 defect: a preserved anchor is archived in place, so it is not in
+        the collected row sets. Classifying it by membership in those sets made the
+        live-only scan call the demo Clinic foreign once a lifecycle writer stamped
+        `status_updated_by_wp_user_id`. Identity is the proof.
+        """
+        self.assertIn("private function owned_tenants(", self.teardown)
+        self.assertIn("'unproven_clinics' => $tenants['unproven']", self.teardown)
+        self.assertIn("'anchors'          => array(", self.teardown)
+        body = self.teardown[self.teardown.index("private function is_demo_owned_row("):]
+        body = body[: body.index("$key = self::COMPOSITE_KEY_TABLES[ $short ] ?? array();")]
+        self.assertIn("$scope['anchors'][ $short ]", body)
+        self.assertIn("if ( $live_only ) {", body)
+        # The live-only path must resolve anchors first and only then call
+        # everything else foreign - never the other way round.
+        self.assertLess(body.index("$scope['anchors'][ $short ]"), body.index("if ( $live_only ) {"))
+
+    def test_unproven_ownership_refuses_before_any_destructive_stage(self) -> None:
+        self.assertIn("SCOPED_OWNERSHIP_UNPROVEN", self.teardown)
+        preview = self.teardown[self.teardown.index("public function preview("):]
+        preview = preview[: preview.index("public function execute(")]
+        self.assertIn("$tenants = $this->owned_tenants( $manifest, $baseline );", preview)
+        self.assertIn("SCOPED_OWNERSHIP_UNPROVEN", preview)
+        # A Clinic is claimed only when the Organization itself is provably
+        # demo-created AND the Clinic postdates the sealed baseline.
+        self.assertIn("$org_owned && $id > $baseline_max", self.teardown)
 
     def test_composite_rows_are_selected_by_parent_only(self) -> None:
         self.assertIn("private const COMPOSITE_PARENT_COLUMN", self.teardown)

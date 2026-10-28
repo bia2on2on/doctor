@@ -523,6 +523,7 @@ def build(root: pathlib.Path) -> dict:
                 "cpsd_persona_accountant",
                 "cpsd_persona_clinic_manager",
                 "cpsd_persona_organization_manager",
+                "cpsd_org_manager_clinic_lifecycle",
                 "cpsd_patient_otp_booking",
                 "cpsd_staff_messaging_privacy",
                 "cpsd_visit_pricing_invoice",

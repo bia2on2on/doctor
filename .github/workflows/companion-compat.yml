@@ -68,31 +68,67 @@ jobs:
           python3 .github/scripts/companion-compat/evaluate.py \
             --root . --gate compatibility --report /tmp/compat.json | tee /tmp/compat.log
 
-      - name: Demo coverage — declared gaps are reported, never hidden
-        # `--gate all` also fails while a demo-required feature has no journey.
-        # The step is allowed to fail so the reported status stays honest instead
-        # of turning a known, declared gap into a red unrelated check; the
-        # `compatibility_complete` flag below is what a release gate must read.
-        continue-on-error: true
+      - name: Demo coverage gate — a declared gap fails this required check
+        # `--gate all` fails while ANY demo-required feature, route or journey
+        # has no declared coverage, or while any table lacks an ownership rule.
+        # It is a REQUIRED check: no failure-tolerance key, no shell-level
+        # escape, nothing may neutralise it. A gap must turn this job red, because
+        # `compatibility_complete=false` is exactly the state a release must not
+        # ship from. The full report is still written before the failure so the
+        # annotations below can say which gap caused it.
         run: |
           set -Eeuo pipefail
+          status=0
           python3 .github/scripts/companion-compat/evaluate.py \
-            --root . --gate all --report /tmp/compat-all.json >> /tmp/compat.log 2>&1 || true
+            --root . --gate all --report /tmp/compat-all.json >> /tmp/compat.log 2>&1 || status=$?
           echo '--- demo coverage detail ---'
           python3 - <<'PY'
-          import json, pathlib
-          report = json.loads(pathlib.Path('/tmp/compat-all.json').read_text())
+          import json, pathlib, sys
+          path = pathlib.Path('/tmp/compat-all.json')
+          if not path.exists():
+              print('::error title=COMPANION_COMPAT::the --gate all report was not produced')
+              sys.exit(0)
+          report = json.loads(path.read_text())
+          shown = 0
           for finding in report['findings']:
-              if finding['severity'] == 'gap':
-                  print(f"GAP {finding['check']}: {finding['message']}")
+              severity = finding['severity']
+              line = f"{severity.upper()} {finding['check']}: {finding['message']}"
+              if severity == 'gap':
+                  print('GAP ' + finding['check'] + ': ' + finding['message'])
+              if severity in ('blocker', 'gap') and shown < 20:
+                  shown += 1
+                  print('::error title=COMPANION_COMPAT_' + severity.upper() + '::'
+                        + line.replace('%', '%25').replace('\r', '').replace('\n', ' '))
           print(f"compatibility_complete={report['compatibility_complete']}")
+          print(f"blocker={report['counts']['blocker']} gap={report['counts']['gap']} info={report['counts']['info']}")
+          if not report['compatibility_complete']:
+              print('::error title=COMPANION_COMPAT::--gate all reports compatibility_complete=false '
+                    '(demo coverage is incomplete; a release must not ship from this state)')
+          PY
+          if [ "$status" -ne 0 ]; then
+            echo "::error title=COMPANION_COMPAT::--gate all exited $status"
+            exit "$status"
+          fi
+          # Defence in depth: even if evaluate.py regressed to exit 0 with gaps,
+          # the job itself reads the report and fails.
+          python3 - <<'PY'
+          import json, pathlib, sys
+          report = json.loads(pathlib.Path('/tmp/compat-all.json').read_text())
+          if report['counts']['blocker'] or report['counts']['gap'] or not report['compatibility_complete']:
+              print('::error title=COMPANION_COMPAT::fail-closed recheck: blockers or gaps remain')
+              sys.exit(1)
+          sys.exit(0)
           PY
 
-      - name: Sync would be required?
+      - name: Manifest is in sync with the production sources
+        # `--check` fails when the checked-in manifest does not match the sources.
+        # It is not allowed to pass silently: the companion-sync workflow opens
+        # the reviewable sync PR, and this gate is what proves the PR is needed
+        # rather than optional. Nothing here writes to the repository or merges.
         run: |
           set -Eeuo pipefail
           python3 .github/scripts/companion-compat/generate.py --root . --check \
-            --report /tmp/sync-plan.json || true
+            --report /tmp/sync-plan.json
           cat /tmp/sync-plan.json
 
       - name: Write job summary

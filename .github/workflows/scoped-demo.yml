@@ -282,6 +282,29 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Management-portal lifecycle drills on the real database
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/scoped-portal.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-portal.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-portal.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_PORTAL_CHECKS=' + str(len(data.get('checks', []))))
+          print('SCOPED_PORTAL_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []):
+              print('  ' + line)
+          print('SCOPED_PORTAL_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'unknown error'), file=sys.stderr)
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
+                  print('::error title=SCOPED_PORTAL::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
       - name: Playwright Chromium (pinned)
         uses: ./.github/actions/playwright-browsers
         with:
@@ -419,6 +442,7 @@ jobs:
           path: |
             /tmp/cpsd-ci/scoped-integration.json
             /tmp/cpsd-ci/scoped-recovery.json
+            /tmp/cpsd-ci/scoped-portal.json
             /tmp/cpsd-ci/scoped-tamper.json
             /tmp/cpsd-ci/scoped-tamper-restore.json
             /tmp/cpsd-ci/browser-tamper.log

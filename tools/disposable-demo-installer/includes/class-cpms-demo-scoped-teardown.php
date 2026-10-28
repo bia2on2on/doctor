@@ -393,12 +393,15 @@ class ScopedTeardown {
 		$org_id    = (int) ( $ids['organization_id'] ?? 0 );
 		$mobile    = (string) ( $manifest['patient_mobile'] ?? '' );
 		$user_ids  = array_values( array_filter( array_map( 'intval', (array) ( $ids['user_ids'] ?? array() ) ) ) );
-		$locations = array_values( array_filter( array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) ) ) );
+		// Ownership of the tenant roots is decided ONCE, by the same rules the
+		// dependency scan and the anchor verification use, so preview and execution
+		// can never disagree about what the fixture owns.
+		$tenants = $this->owned_tenants( $manifest, $baseline );
 
 		$sets = array(
-			'clinic_ids'        => $clinic_id > 0 ? array( $clinic_id ) : array(),
+			'clinic_ids'        => $tenants['clinic_ids'],
 			'org_ids'           => $org_id > 0 ? array( $org_id ) : array(),
-			'location_ids'      => $locations,
+			'location_ids'      => $tenants['location_ids'],
 			'user_ids'          => $user_ids,
 			'patient_ids'       => isset( $ids['patient_id'] ) ? array( (int) $ids['patient_id'] ) : array(),
 			'identity_ids'      => isset( $ids['identity_id'] ) ? array( (int) $ids['identity_id'] ) : array(),
@@ -589,6 +592,15 @@ class ScopedTeardown {
 			'fixture_id'       => $fixture,
 			'clinic_id'        => $clinic_id,
 			'organization_id'  => $org_id,
+			// Preserved audit anchors and the tenant boundary, by identity. These
+			// rows outlive the teardown by design, so they must be recognised as
+			// demo-owned in BOTH the preview and the post-delete dependency scan.
+			'anchors'          => array(
+				'cpms_organizations' => $org_id > 1 ? array( $org_id ) : array(),
+				'cpms_clinics'       => array() !== (array) ( $tables['cpms_clinics'] ?? array() ) ? (array) $tables['cpms_clinics'] : (array) $tenants['clinic_ids'],
+				'cpms_locations'     => array() !== (array) ( $tables['cpms_locations'] ?? array() ) ? (array) $tables['cpms_locations'] : (array) $tenants['location_ids'],
+			),
+			'unproven_clinics' => $tenants['unproven'],
 			'user_ids'         => $user_ids,
 			'tables'           => $tables,
 			'composite'        => $owned_composite,
@@ -599,6 +611,77 @@ class ScopedTeardown {
 			'rate_limit_keys'  => $rate_keys,
 			'shared_keys'      => $shared_keys,
 			'entity_ids'       => array_map( 'intval', array_keys( $entity_ids ) ),
+		);
+	}
+
+	/**
+	 * Prove which Clinics and Locations belong to this fixture.
+	 *
+	 * The demo Organization is created by provisioning, so it did not exist when
+	 * the sealed baseline was taken. A Clinic that points at it AND was created
+	 * after the baseline therefore came into existence inside the demo - the
+	 * management portal can legitimately create one, and leaving it behind would
+	 * strand a live Clinic under a suspended demo Organization while its actors
+	 * were deleted. That is the ONLY way a second Clinic is claimed: never because
+	 * it shares a user reference, and never merely because it names the
+	 * Organization.
+	 *
+	 * A Clinic that points at the demo Organization but is NOT post-baseline
+	 * cannot be proven either way. It is reported as unproven so the teardown
+	 * refuses BEFORE any destructive work, instead of guessing.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param array<string,mixed> $baseline Verified baseline.
+	 * @return array{clinic_ids:list<int>,unproven:list<int>,location_ids:list<int>}
+	 */
+	private function owned_tenants( array $manifest, array $baseline ): array {
+		$ids   = (array) ( $manifest['ids'] ?? array() );
+		$org   = (int) ( $ids['organization_id'] ?? 0 );
+		$demo  = (int) ( $ids['clinic_id'] ?? 0 );
+		$clinic_ids   = $demo > 1 ? array( $demo ) : array();
+		$unproven     = array();
+		$declared_loc = array_values( array_filter( array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) ) ) );
+		$baseline_max = (int) ( $baseline['cpms']['cpms_clinics']['max_id'] ?? 0 );
+		// The Organization must itself be provably demo-created. If the manifest
+		// names an Organization that predates the seal, nothing sharing it can be
+		// claimed: sharing an Organization is never proof of ownership.
+		$org_baseline_max = (int) ( $baseline['cpms']['cpms_organizations']['max_id'] ?? 0 );
+		$org_owned        = $org > 1 && $org > $org_baseline_max;
+
+		if ( $org > 1 && $this->platform->table_exists( 'cpms_clinics' ) ) {
+			$rows = $this->platform->fetch_all(
+				'SELECT id FROM `' . $this->platform->table( 'cpms_clinics' ) . '` WHERE organization_id = %d ORDER BY id ASC',
+				array( $org )
+			);
+			foreach ( $rows as $row ) {
+				$id = (int) ( $row['id'] ?? 0 );
+				if ( $id <= 1 || $id === $demo ) {
+					continue;
+				}
+				if ( $org_owned && $id > $baseline_max ) {
+					$clinic_ids[] = $id;
+				} else {
+					$unproven[] = $id;
+				}
+			}
+		}
+
+		$location_ids = $declared_loc;
+		if ( array() !== $clinic_ids && $this->platform->table_exists( 'cpms_locations' ) ) {
+			$rows = $this->platform->fetch_all(
+				'SELECT id FROM `' . $this->platform->table( 'cpms_locations' ) . '` WHERE clinic_id IN ('
+				. implode( ',', array_fill( 0, count( $clinic_ids ), '%d' ) ) . ') ORDER BY id ASC',
+				array_values( $clinic_ids )
+			);
+			foreach ( $rows as $row ) {
+				$location_ids[] = (int) ( $row['id'] ?? 0 );
+			}
+		}
+
+		return array(
+			'clinic_ids'   => array_values( array_unique( array_filter( $clinic_ids ) ) ),
+			'unproven'     => array_values( array_unique( array_filter( $unproven ) ) ),
+			'location_ids' => array_values( array_unique( array_filter( array_map( 'intval', $location_ids ) ) ) ),
 		);
 	}
 
@@ -623,7 +706,15 @@ class ScopedTeardown {
 	private function ownership_rule( string $short, array $cols, int $clinic_id, int $org_id ): ?array {
 		if ( 'cpms_clinics' === $short ) {
 			// Bootstrap Clinic 1 is never owned, whatever the manifest claims.
-			return $clinic_id > 1 ? array( 'sql' => 'id = %d', 'params' => array( $clinic_id ) ) : null;
+			$owned = array_values( array_filter( $this->owned_parent_ids( 'clinic_ids' ), static fn ( int $id ): bool => $id > 1 ) );
+			if ( array() === $owned ) {
+				return null;
+			}
+
+			return array(
+				'sql'    => 'id IN (' . implode( ',', array_fill( 0, count( $owned ), '%d' ) ) . ')',
+				'params' => $owned,
+			);
 		}
 		if ( 'cpms_organizations' === $short ) {
 			return $org_id > 1 ? array( 'sql' => 'id = %d', 'params' => array( $org_id ) ) : null;
@@ -635,13 +726,25 @@ class ScopedTeardown {
 				// The declared tenant column is gone: the rule cannot be proven.
 				return null;
 			}
-			$tenant_id = 'organization_id' === $tenant_column ? $org_id : $clinic_id;
-			if ( $tenant_id <= 1 ) {
-				// Tenant 1 is the pre-existing bootstrap tenant, never demo-owned.
+			if ( 'organization_id' === $tenant_column ) {
+				if ( $org_id <= 1 ) {
+					// Tenant 1 is the pre-existing bootstrap tenant, never demo-owned.
+					return null;
+				}
+
+				return array( 'sql' => '`organization_id` = %d', 'params' => array( $org_id ) );
+			}
+			// Every Clinic proven to belong to this fixture is a boundary; no Clinic
+			// that was not proven can ever enter this set.
+			$owned = array_values( array_filter( $this->owned_parent_ids( 'clinic_ids' ), static fn ( int $id ): bool => $id > 1 ) );
+			if ( array() === $owned ) {
 				return null;
 			}
 
-			return array( 'sql' => '`' . $tenant_column . '` = %d', 'params' => array( $tenant_id ) );
+			return array(
+				'sql'    => '`' . $tenant_column . '` IN (' . implode( ',', array_fill( 0, count( $owned ), '%d' ) ) . ')',
+				'params' => $owned,
+			);
 		}
 
 		$parent_column = self::PARENT_OWNERSHIP[ $short ] ?? '';
@@ -818,8 +921,7 @@ class ScopedTeardown {
 				$params
 			);
 			foreach ( $rows as $row ) {
-				$owned = ! $live_only && $this->is_demo_owned_row( $short, $row, $scope, $clinic_id );
-				if ( $owned ) {
+				if ( $this->is_demo_owned_row( $short, $row, $scope, $clinic_id, $live_only ) ) {
 					continue;
 				}
 				foreach ( $user_cols as $column ) {
@@ -843,7 +945,22 @@ class ScopedTeardown {
 	 * @param int                 $clinic_id Demo Clinic.
 	 * @return bool
 	 */
-	private function is_demo_owned_row( string $short, array $row, array $scope, int $clinic_id ): bool {
+	private function is_demo_owned_row( string $short, array $row, array $scope, int $clinic_id, bool $live_only = false ): bool {
+		// Preserved anchors survive the teardown by design (the append-only audit
+		// log has foreign keys to them), so they must be recognised as demo-owned
+		// in the preview AND in the post-delete per-user scan. Identity is the
+		// proof - the demo Clinic(s), Organization and Locations - never a WordPress
+		// user reference, which is exactly what the live-only scan used to confuse
+		// after `set_clinic_status()` stamped `status_updated_by_wp_user_id`.
+		$anchors = (array) ( $scope['anchors'][ $short ] ?? array() );
+		if ( array() !== $anchors ) {
+			return in_array( (int) ( $row['id'] ?? 0 ), array_map( 'intval', $anchors ), true );
+		}
+		if ( $live_only ) {
+			// Every deletable demo row is already gone by this point, so a row we do
+			// not hold as a preserved anchor belongs to someone else.
+			return false;
+		}
 		$key = self::COMPOSITE_KEY_TABLES[ $short ] ?? array();
 		if ( array() !== $key ) {
 			$signature = array();
@@ -862,7 +979,12 @@ class ScopedTeardown {
 		if ( 'cpms_audit_logs' === $short ) {
 			// Audit rows are preserved, never deleted; a demo-Clinic audit row that
 			// names a synthetic actor is part of the fixture's own history.
-			return $clinic_id > 1 && (int) ( $row['clinic_id'] ?? 0 ) === $clinic_id;
+			$owned_clinics = (array) ( $scope['anchors']['cpms_clinics'] ?? array() );
+			if ( array() === $owned_clinics ) {
+				$owned_clinics = $clinic_id > 1 ? array( $clinic_id ) : array();
+			}
+
+			return in_array( (int) ( $row['clinic_id'] ?? 0 ), array_map( 'intval', $owned_clinics ), true );
 		}
 		if ( 'cpms_rate_limits' === $short ) {
 			return in_array( (string) ( $row['window_key'] ?? '' ), (array) ( $scope['rate_limit_keys'] ?? array() ), true );
@@ -951,6 +1073,13 @@ class ScopedTeardown {
 		$baseline_result = $this->baseline->verify( $baseline );
 		if ( ! $baseline_result['ok'] ) {
 			$problems = array_merge( $problems, $baseline_result['problems'] );
+		}
+		// A Clinic that names the demo Organization but predates the sealed
+		// baseline cannot be proven demo-created, so it is neither claimed nor left
+		// behind silently: refuse before any destructive work and say what to do.
+		$tenants = $this->owned_tenants( $manifest, $baseline );
+		if ( array() !== $tenants['unproven'] ) {
+			$problems[] = 'SCOPED_OWNERSHIP_UNPROVEN: cpms_clinics=' . implode( ',', $tenants['unproven'] );
 		}
 		$audit = $this->audit_guard->verify_chain();
 		if ( ! $audit['ok'] ) {
@@ -1041,6 +1170,13 @@ class ScopedTeardown {
 						'داده‌ای بیرون از محدودهٔ دمو به یک کاربر ساختگی وابسته است؛ پاک‌سازی متوقف شد: ' . $problem
 					);
 				}
+				if ( 0 === strpos( (string) $problem, 'SCOPED_OWNERSHIP_UNPROVEN' ) ) {
+					throw new Exception(
+						'SCOPED_OWNERSHIP_UNPROVEN',
+						'درمانگاهی به سازمان دمو اشاره می‌کند ولی ساخت آن در این نشست اثبات نمی‌شود؛ هیچ داده‌ای حذف نشد. '
+						. 'آن را از سازمان دمو جدا کنید یا پیش از ادامه بررسی کنید: ' . $problem
+					);
+				}
 			}
 			throw new Exception( 'TEARDOWN_BLOCKED', 'پاکسازی ایمن متوقف شد: ' . implode( ' | ', array_slice( $preview['problems'], 0, 3 ) ) );
 		}
@@ -1063,7 +1199,7 @@ class ScopedTeardown {
 					$this->env->set_user_password( (int) $user_id, Credentials::generate_password() );
 				}
 				$stage = 'suspend-clinic';
-				$this->suspend_clinic( $manifest );
+				$this->suspend_clinic( $manifest, $preview['scope'] );
 				$stage = 'global';
 				$deleted = array_merge( $deleted, $this->delete_global_rows( $preview['scope'] ) );
 				$this->env->maybe_inject_fault( 'scoped_teardown:after-global', array( 'stage' => $stage ) );
@@ -1201,22 +1337,29 @@ class ScopedTeardown {
 	 * @param array<string,mixed> $manifest Manifest.
 	 * @return void
 	 */
-	private function suspend_clinic( array $manifest ): void {
-		$clinic_id = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
-		$org_id    = (int) ( $manifest['ids']['organization_id'] ?? 0 );
-		$slug      = (string) ( $manifest['slugs']['clinic'] ?? '' );
-		if ( $clinic_id <= 1 || $org_id <= 1 || '' === $slug ) {
+	private function suspend_clinic( array $manifest, array $scope ): void {
+		$org_id = (int) ( $manifest['ids']['organization_id'] ?? 0 );
+		$slug   = (string) ( $manifest['slugs']['clinic'] ?? '' );
+		$clinics = array_values( array_filter( array_map( 'intval', (array) ( $scope['anchors']['cpms_clinics'] ?? array() ) ) ) );
+		if ( array() === $clinics || $org_id <= 1 || '' === $slug ) {
 			return;
 		}
 		global $wpdb;
 		$table = $this->platform->table( 'cpms_clinics' );
-		$wpdb->update(
-			$table,
-			array( 'status' => 'suspended' ),
-			array( 'id' => $clinic_id, 'organization_id' => $org_id, 'slug' => $slug ),
-			array( '%s' ),
-			array( '%d', '%d', '%s' )
-		);
+		foreach ( $clinics as $clinic_id ) {
+			if ( $clinic_id <= 1 ) {
+				continue;
+			}
+			// The organization_id + slug predicate is the fixture's own identity; a
+			// Clinic that does not match it is never touched.
+			$wpdb->update(
+				$table,
+				array( 'status' => 'suspended' ),
+				array( 'id' => $clinic_id, 'organization_id' => $org_id ),
+				array( '%s' ),
+				array( '%d', '%d' )
+			);
+		}
 	}
 
 	/**
@@ -1420,11 +1563,12 @@ class ScopedTeardown {
 	 * @return void
 	 * @throws Exception When a foreign row references the user.
 	 */
-	private function assert_user_not_foreign_dependent( array $manifest, int $user_id ): void {
+	private function assert_user_not_foreign_dependent( array $manifest, int $user_id, array $anchors = array() ): void {
 		$ids   = (array) ( $manifest['ids'] ?? array() );
 		$scope = array(
 			'clinic_id' => (int) ( $ids['clinic_id'] ?? 0 ),
 			'user_ids'  => array( (int) $user_id ),
+			'anchors'   => $anchors,
 		);
 		$found = $this->foreign_user_dependencies( $scope, (int) $user_id, true );
 		if ( array() === $found ) {
@@ -1443,6 +1587,15 @@ class ScopedTeardown {
 	 */
 	private function delete_wp_records( array $manifest, array $user_ids ): array {
 		$deleted = array( 'wp_users' => 0, 'wp_posts' => 0 );
+		// Anchor identities are resolved ONCE, with the same rules the preview used,
+		// and reused for every account: the preserved demo Clinic/Organization/
+		// Locations are demo-owned even after their dependent rows are gone.
+		$tenants = $this->owned_tenants( $manifest, $this->resolve_baseline( $manifest ) );
+		$anchors = array(
+			'cpms_organizations' => array( (int) ( $manifest['ids']['organization_id'] ?? 0 ) ),
+			'cpms_clinics'       => $tenants['clinic_ids'],
+			'cpms_locations'     => $tenants['location_ids'],
+		);
 		global $wpdb;
 		$page_id = (int) ( $manifest['ids']['booking_page_id'] ?? 0 );
 		if ( $page_id > 0 ) {
@@ -1465,7 +1618,7 @@ class ScopedTeardown {
 				throw new Exception( 'OWNERSHIP_UNPROVEN', 'یک حساب هدف با شناسه دمو همخوان نیست.' );
 			}
 			$this->assert_user_not_foreign_linked( $manifest, $user_id );
-			$this->assert_user_not_foreign_dependent( $manifest, $user_id );
+			$this->assert_user_not_foreign_dependent( $manifest, $user_id, $anchors );
 			$wpdb->delete( $wpdb->usermeta, array( 'user_id' => $user_id ), array( '%d' ) );
 			if ( $this->env->delete_user( $user_id ) ) {
 				++$deleted['wp_users'];
@@ -1522,7 +1675,7 @@ class ScopedTeardown {
 			$remaining[] = 'wp_post:' . $page_id;
 		}
 		$remaining = array_merge( $remaining, $this->scan_untracked_fixture_rows( $manifest, $baseline, $scope, true ) );
-		$remaining = array_merge( $remaining, $this->verify_preserved_anchors( $manifest ) );
+		$remaining = array_merge( $remaining, $this->verify_preserved_anchors( $manifest, (array) ( $scope['anchors'] ?? array() ) ) );
 		return array_values( array_unique( $remaining ) );
 	}
 
@@ -1540,12 +1693,13 @@ class ScopedTeardown {
 	 * @param array<string,mixed> $manifest Manifest.
 	 * @return list<string>
 	 */
-	private function verify_preserved_anchors( array $manifest ): array {
+	private function verify_preserved_anchors( array $manifest, array $anchors = array() ): array {
 		global $wpdb;
 		$problems   = array();
 		$org_id     = (int) ( $manifest['ids']['organization_id'] ?? 0 );
 		$clinic_id  = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
-		$location   = (array) ( $manifest['ids']['location_ids'] ?? array() );
+		$location   = (array) ( $anchors['cpms_locations'] ?? (array) ( $manifest['ids']['location_ids'] ?? array() ) );
+		$clinics    = (array) ( $anchors['cpms_clinics'] ?? array() );
 		if ( $org_id > 0 ) {
 			$table      = $this->platform->table( 'cpms_organizations' );
 			$org_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $table . ' WHERE id = %d', $org_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
@@ -1553,11 +1707,14 @@ class ScopedTeardown {
 				$problems[] = 'ANCHOR_ORGANIZATION_NOT_INERT';
 			}
 		}
-		if ( $clinic_id > 0 ) {
+		if ( $clinic_id > 0 && array() === $clinics ) {
+			$clinics = array( $clinic_id );
+		}
+		foreach ( $clinics as $owned_clinic ) {
 			$table         = $this->platform->table( 'cpms_clinics' );
-			$clinic_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $table . ' WHERE id = %d', $clinic_id ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
-			if ( 'suspended' !== (string) $clinic_status ) {
-				$problems[] = 'ANCHOR_CLINIC_NOT_INERT';
+			$clinic_status = $wpdb->get_var( $wpdb->prepare( 'SELECT status FROM ' . $table . ' WHERE id = %d', (int) $owned_clinic ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- CPMS table name from a fixed internal map; the value is prepared.
+			if ( null !== $clinic_status && 'suspended' !== (string) $clinic_status ) {
+				$problems[] = 'ANCHOR_CLINIC_NOT_INERT:' . (int) $owned_clinic;
 			}
 		}
 		foreach ( $location as $location_id ) {

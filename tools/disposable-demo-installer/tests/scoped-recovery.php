@@ -25,12 +25,16 @@
  *       flagged, and the recovery teardown completes
  *   R8  every pre-existing host row is byte-identical after all drills
  *   R9  a foreign tenant that depends on a synthetic demo user is refused with
- *       SCOPED_FOREIGN_DEPENDENCY - five separate vectors (clinician, clinic
+ *       SCOPED_FOREIGN_DEPENDENCY - five SELF-CONTAINED vectors (clinician, clinic
  *       membership, organization membership, indirect actor columns and a
- *       composite-key participant row), each proven with a byte-identical
- *       foreign fingerprint, an empty foreign intersection with the demo
- *       deletion graph, an intact audit chain, and an authorized teardown once
- *       only the foreign dependency is removed
+ *       composite-key participant row). Each vector uses its own synthetic
+ *       persona, asserts that the dependency it created really references that
+ *       exact user (the clinician vector also asserts its UPDATE affected one
+ *       row), and adds no actor reference of its own elsewhere - so it can only
+ *       pass on its own dependency. Every vector then proves a byte-identical
+ *       foreign fingerprint, an empty foreign intersection with the demo deletion
+ *       graph, a refusal BEFORE any destructive stage, an intact audit chain and
+ *       an authorized teardown once only its dependency is removed
  *
  * @package CpmsDisposableDemo
  */
@@ -417,99 +421,103 @@ function cpsd_rec_foreign_ids( Platform $platform, int $clinic_id, int $org_id )
 }
 
 /**
- * Post-baseline clinical/financial rows inside a FOREIGN Clinic that name a
- * synthetic demo user.
+ * Legitimate post-baseline clinical/financial rows inside a FOREIGN Clinic.
  *
- * This is the exact shape of the reported attack: the rows belong to a real
- * Clinic, so matching their `wp_user_id`-family columns must never make them
- * demo-owned - and deleting the account underneath them must never happen.
+ * The actors are the real site Administrator, never a synthetic demo account:
+ * a vector's dependency must be the ONE thing it injects, so this graph must not
+ * create actor references of its own. Every row belongs to the foreign tenant, so
+ * matching them by user id must never make them demo-owned either.
  *
- * @param Platform $platform Adapter.
- * @param int $clinic_id Foreign Clinic.
- * @param int $patient_id Foreign patient.
- * @param int $clinician_id Foreign clinician.
- * @param int $location_id Foreign Location (`cpms_visits.location_id` is NOT NULL
- *                         with a foreign key, so a real Location is required).
- * @param int $demo_user Synthetic demo account to implicate.
- * @param string $tag Unique tag for nullable unique columns.
- * @return callable Deletes the rows again, in foreign-key order.
+ * @param Platform $platform     Adapter.
+ * @param int      $clinic_id    Foreign Clinic.
+ * @param int      $patient_id   Foreign patient.
+ * @param int      $clinician_id Foreign clinician.
+ * @param int      $location_id  Foreign Location.
+ * @param string   $tag          Unique tag for nullable unique columns.
+ * @return array{ids:array<string,int>,cleanup:callable}
  */
-function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patient_id, int $clinician_id, int $location_id, int $demo_user, string $tag ): callable {
-	$now  = gmdate( 'Y-m-d H:i:s' ) . '.000';
-	$full = static fn ( string $short ): string => $platform->table( $short );
+function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patient_id, int $clinician_id, int $location_id, string $tag ): array {
+	$now   = gmdate( 'Y-m-d H:i:s' ) . '.000';
+	$full  = static fn ( string $short ): string => $platform->table( $short );
+	$actor = 1; // The real Administrator; never a synthetic demo account.
 	$visit = cpsd_rec_insert(
 		$full( 'cpms_visits' ),
 		array(
-			'clinic_id'              => $clinic_id,
-			'location_id'            => $location_id,
-			'clinician_id'           => $clinician_id,
-			'patient_id'             => $patient_id,
-			'source'                 => 'walk_in',
-			'status'                 => 'paid',
-			'visit_date'             => gmdate( 'Y-m-d' ),
-			'check_in_at'            => $now,
-			'cancelled_by_wp_user_id' => $demo_user,
-			'recall_count'           => 0,
-			'active'                 => 1,
-			'created_at'             => $now,
-			'updated_at'             => $now,
+			'clinic_id'    => $clinic_id,
+			'location_id'  => $location_id,
+			'clinician_id' => $clinician_id,
+			'patient_id'   => $patient_id,
+			'source'       => 'walk_in',
+			'status'       => 'paid',
+			'visit_date'   => gmdate( 'Y-m-d' ),
+			'check_in_at'  => $now,
+			'recall_count' => 0,
+			'active'       => 1,
+			'created_at'   => $now,
+			'updated_at'   => $now,
 		)
 	);
 	$note = cpsd_rec_insert(
 		$full( 'cpms_clinical_notes' ),
 		array(
-			'clinic_id'              => $clinic_id,
-			'visit_id'               => $visit,
-			'patient_id'             => $patient_id,
-			'clinician_id'           => $clinician_id,
-			'content_text'           => 'foreign note ' . $tag,
-			'created_by_wp_user_id'  => $demo_user,
-			'updated_by_wp_user_id'  => $demo_user,
-			'created_at'             => $now,
-			'updated_at'             => $now,
+			'clinic_id'             => $clinic_id,
+			'visit_id'              => $visit,
+			'patient_id'            => $patient_id,
+			'clinician_id'          => $clinician_id,
+			'content_text'          => 'foreign note ' . $tag,
+			'created_by_wp_user_id' => $actor,
+			'created_at'            => $now,
+			'updated_at'            => $now,
 		)
 	);
 	$invoice = cpsd_rec_insert(
 		$full( 'cpms_invoices' ),
 		array(
-			'clinic_id'             => $clinic_id,
-			'invoice_number'        => 'INV' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
-			'patient_id'            => $patient_id,
-			'visit_id'              => $visit,
-			'status'                => 'open',
-			'subtotal'              => 10000,
-			'total'                 => 10000,
-			'balance'               => 10000,
-			'issued_by_wp_user_id'  => $demo_user,
-			'created_at'            => $now,
-			'updated_at'            => $now,
+			'clinic_id'            => $clinic_id,
+			'invoice_number'       => 'INV' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
+			'patient_id'           => $patient_id,
+			'visit_id'             => $visit,
+			'status'               => 'open',
+			'subtotal'             => 10000,
+			'total'                => 10000,
+			'balance'              => 10000,
+			'issued_by_wp_user_id' => $actor,
+			'created_at'           => $now,
+			'updated_at'           => $now,
 		)
 	);
 	$payment = cpsd_rec_insert(
 		$full( 'cpms_payments' ),
 		array(
-			'clinic_id'             => $clinic_id,
-			'payment_number'        => 'PAY' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
-			'invoice_id'            => $invoice,
-			'patient_id'            => $patient_id,
-			'amount'                => 10000,
-			'method'                => 'cash',
-			'idempotency_key'       => $tag . '-' . bin2hex( random_bytes( 3 ) ),
-			'status'                => 'captured',
-			'paid_at'               => $now,
-			'received_by_wp_user_id' => $demo_user,
-			'created_at'            => $now,
+			'clinic_id'              => $clinic_id,
+			'payment_number'         => 'PAY' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
+			'invoice_id'             => $invoice,
+			'patient_id'             => $patient_id,
+			'amount'                 => 10000,
+			'method'                 => 'cash',
+			'idempotency_key'        => $tag . '-' . bin2hex( random_bytes( 3 ) ),
+			'status'                 => 'captured',
+			'paid_at'                => $now,
+			'received_by_wp_user_id' => $actor,
+			'created_at'             => $now,
 		)
 	);
 
-	return static function () use ( $platform, $payment, $invoice, $note, $visit ): void {
-		cpsd_rec_delete( $platform->table( 'cpms_payments' ), $payment );
-		cpsd_rec_delete( $platform->table( 'cpms_invoices' ), $invoice );
-		cpsd_rec_delete( $platform->table( 'cpms_clinical_notes' ), $note );
-		cpsd_rec_delete( $platform->table( 'cpms_visits' ), $visit );
-	};
+	return array(
+		'ids'     => array(
+			'visit'   => $visit,
+			'note'    => $note,
+			'invoice' => $invoice,
+			'payment' => $payment,
+		),
+		'cleanup' => static function () use ( $platform, $payment, $invoice, $note, $visit ): void {
+			cpsd_rec_delete( $platform->table( 'cpms_payments' ), $payment );
+			cpsd_rec_delete( $platform->table( 'cpms_invoices' ), $invoice );
+			cpsd_rec_delete( $platform->table( 'cpms_clinical_notes' ), $note );
+			cpsd_rec_delete( $platform->table( 'cpms_visits' ), $visit );
+		},
+	);
 }
-
 $checks = array();
 $report = array();
 try {
@@ -926,9 +934,14 @@ try {
 	// The defect: `collect_scope()` OR-connected every resolvable ownership
 	// column, so a FOREIGN Clinic row that merely named a synthetic demo user was
 	// claimed as demo-owned. Its id then entered the clinician/membership sets and
-	// the next pass claimed foreign visits, notes, invoices and payments - which
-	// the teardown then deleted. Every vector below builds that shape for real and
-	// requires a refusal plus byte-identical foreign rows.
+	// the next pass claimed foreign visits, notes, invoices and payments.
+	//
+	// Each vector below creates ONE dependency, proves it exists, proves the
+	// teardown refuses with that exact table.column reported, proves nothing was
+	// deleted on either side, then removes only that dependency and proves the
+	// teardown completes. Vectors never share a synthetic persona and the foreign
+	// clinical/financial graph is built with real actors, so a vector can only
+	// pass on its own dependency.
 	$foreign_clinic = (int) ( $host['clinic_b_id'] ?? 0 );
 	$foreign_org    = (int) ( $host['org_b_id'] ?? 0 );
 	cpsd_rec_check(
@@ -941,6 +954,20 @@ try {
 	$frn_now = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$frn_tag = 'recovery-frn-' . bin2hex( random_bytes( 3 ) );
 	$frn     = static fn ( string $short ): string => $platform->table( $short );
+
+	/**
+	 * Scalar read used to prove a specific dependency exists.
+	 *
+	 * @param Platform $platform Adapter.
+	 * @param string   $sql      Prepared SQL.
+	 * @param list<int> $params  Params.
+	 * @return mixed
+	 */
+	$frn_scalar = static function ( string $sql, array $params = array() ) use ( $platform ) {
+		global $wpdb;
+		return $params === array() ? $wpdb->get_var( $sql ) : $wpdb->get_var( $wpdb->prepare( $sql, $params ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared when params are supplied.
+	};
+
 	$frn_location = cpsd_rec_insert(
 		$frn( 'cpms_locations' ),
 		array(
@@ -971,138 +998,125 @@ try {
 			'updated_at' => $frn_now,
 		)
 	);
-	$frn_visit = cpsd_rec_insert(
-		$frn( 'cpms_visits' ),
-		array(
-			'clinic_id'    => $foreign_clinic,
-			'location_id'  => $frn_location,
-			'clinician_id' => $frn_staff,
-			'patient_id'   => $frn_patient,
-			'source'       => 'walk_in',
-			'status'       => 'consultation_completed',
-			'visit_date'   => gmdate( 'Y-m-d' ),
-			'check_in_at'  => $frn_now,
-			'recall_count' => 0,
-			'active'       => 1,
-			'created_at'   => $frn_now,
-			'updated_at'   => $frn_now,
-		)
-	);
-	$frn_note = cpsd_rec_insert(
-		$frn( 'cpms_clinical_notes' ),
-		array(
-			'clinic_id'             => $foreign_clinic,
-			'visit_id'              => $frn_visit,
-			'patient_id'            => $frn_patient,
-			'clinician_id'          => $frn_staff,
-			'content_text'          => 'legitimate foreign note ' . $frn_tag,
-			'created_by_wp_user_id' => 1,
-			'created_at'            => $frn_now,
-			'updated_at'            => $frn_now,
-		)
-	);
-	$frn_invoice = cpsd_rec_insert(
-		$frn( 'cpms_invoices' ),
-		array(
-			'clinic_id'            => $foreign_clinic,
-			'invoice_number'       => 'FRN' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
-			'patient_id'           => $frn_patient,
-			'visit_id'             => $frn_visit,
-			'status'               => 'open',
-			'subtotal'             => 25000,
-			'total'                => 25000,
-			'balance'              => 25000,
-			'issued_by_wp_user_id' => 1,
-			'created_at'           => $frn_now,
-			'updated_at'           => $frn_now,
-		)
-	);
-	$frn_payment = cpsd_rec_insert(
-		$frn( 'cpms_payments' ),
-		array(
-			'clinic_id'              => $foreign_clinic,
-			'payment_number'         => 'FRNP' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
-			'invoice_id'             => $frn_invoice,
-			'patient_id'             => $frn_patient,
-			'amount'                 => 25000,
-			'method'                 => 'cash',
-			'idempotency_key'        => $frn_tag . '-legit',
-			'status'                 => 'captured',
-			'paid_at'                => $frn_now,
-			'received_by_wp_user_id' => 1,
-			'created_at'             => $frn_now,
-		)
-	);
-	$frn_org_membership = cpsd_rec_insert(
-		$frn( 'cpms_organization_memberships' ),
-		array( 'organization_id' => $foreign_org, 'wp_user_id' => 1, 'role_key' => 'organization_manager', 'status' => 'active', 'created_at' => $frn_now, 'updated_at' => $frn_now )
-	);
+	$frn_graph   = cpsd_rec_foreign_graph( $platform, $foreign_clinic, $frn_patient, $frn_staff, $frn_location, $frn_tag );
+	$frn_seed    = $frn_graph['ids'];
 	$frn_baseline_digest = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
 	$checks[]            = 'INFO R9 foreign tenant clinic=' . $foreign_clinic . ' org=' . $foreign_org . ' digest=' . substr( $frn_baseline_digest, 0, 16 );
 
 	$frn_vectors = array(
-		// (1) A synthetic demo account enrolled as a clinician IN the foreign
-		// Clinic. `cpms_clinicians.wp_user_id` carries a global UNIQUE index
-		// (`u_clinician_user`), so enrollment binds the foreign Clinic's own
-		// clinician row rather than creating a second one for the same account.
-		'cpms_clinicians'          => static function ( array $users ) use ( $platform, $frn_staff ): callable {
-			global $wpdb;
-			$wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => (int) $users['doctor'] ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
-			return static function () use ( $platform, $frn_staff ): void {
+		// (1) A synthetic account bound as a clinician IN the foreign Clinic.
+		// `cpms_clinicians.wp_user_id` is globally UNIQUE (`u_clinician_user`), so
+		// the vector uses a persona that has no clinician binding of its own and
+		// binds the foreign Clinic's existing row instead of inserting a second.
+		'cpms_clinicians' => array(
+			'persona' => 'accountant',
+			'inject'  => static function ( int $user ) use ( $platform, $frn_staff, $frn_scalar ): array {
 				global $wpdb;
-				$wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => null ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
-			};
-		},
-		// (2) A synthetic demo account given a membership in the foreign Clinic.
-		'cpms_clinic_memberships'  => static function ( array $users ) use ( $platform, $foreign_clinic, $frn_now ): callable {
-			$id = cpsd_rec_insert(
-				$platform->table( 'cpms_clinic_memberships' ),
-				array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => (int) $users['receptionist'], 'role_key' => 'receptionist', 'scope_mode' => 'clinic', 'status' => 'active', 'is_primary' => 0, 'created_at' => $frn_now, 'updated_at' => $frn_now )
-			);
-			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_clinic_memberships' ), $id );
-		},
-		// (3) A synthetic demo account given a membership in the foreign Organization.
-		'cpms_organization_memberships' => static function ( array $users ) use ( $platform, $foreign_org, $frn_now ): callable {
-			$id = cpsd_rec_insert(
-				$platform->table( 'cpms_organization_memberships' ),
-				array( 'organization_id' => $foreign_org, 'wp_user_id' => (int) $users['organization_manager'], 'role_key' => 'organization_manager', 'status' => 'active', 'created_at' => $frn_now, 'updated_at' => $frn_now )
-			);
-			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_organization_memberships' ), $id );
-		},
+				$existing = (int) $frn_scalar( 'SELECT COUNT(*) FROM `' . $platform->table( 'cpms_clinicians' ) . '` WHERE wp_user_id = %d', array( $user ) );
+				if ( 0 !== $existing ) {
+					throw new RuntimeException( 'R9 clinician vector chose a persona that is already a clinician (' . $user . ')' );
+				}
+				$updated = $wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => $user ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
+				if ( 1 !== (int) $updated ) {
+					throw new RuntimeException( 'R9 clinician vector: the UPDATE did not affect exactly one row (' . (string) $updated . ')' );
+				}
+				return array(
+					'exists'   => (int) $frn_scalar( 'SELECT wp_user_id FROM `' . $platform->table( 'cpms_clinicians' ) . '` WHERE id = %d', array( $frn_staff ) ) === $user,
+					'expected' => 'cpms_clinicians.wp_user_id=' . $user,
+					'cleanup'  => static function () use ( $platform, $frn_staff ): void {
+						global $wpdb;
+						$wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => null ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
+					},
+				);
+			},
+		),
+		// (2) A synthetic account given a membership in the foreign Clinic.
+		'cpms_clinic_memberships' => array(
+			'persona' => 'clinic_manager',
+			'inject'  => static function ( int $user ) use ( $platform, $foreign_clinic, $frn_now, $frn_scalar ): array {
+				$id = cpsd_rec_insert(
+					$platform->table( 'cpms_clinic_memberships' ),
+					array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => $user, 'role_key' => 'clinic_manager', 'scope_mode' => 'clinic', 'status' => 'active', 'is_primary' => 0, 'created_at' => $frn_now, 'updated_at' => $frn_now )
+				);
+				return array(
+					'exists'   => $id > 0 && (int) $frn_scalar( 'SELECT wp_user_id FROM `' . $platform->table( 'cpms_clinic_memberships' ) . '` WHERE id = %d', array( $id ) ) === $user,
+					'expected' => 'cpms_clinic_memberships.wp_user_id=' . $user,
+					'cleanup'  => static fn () => cpsd_rec_delete( $platform->table( 'cpms_clinic_memberships' ), $id ),
+				);
+			},
+		),
+		// (3) A synthetic account given a membership in the foreign Organization.
+		'cpms_organization_memberships' => array(
+			'persona' => 'organization_manager',
+			'inject'  => static function ( int $user ) use ( $platform, $foreign_org, $frn_now, $frn_scalar ): array {
+				$id = cpsd_rec_insert(
+					$platform->table( 'cpms_organization_memberships' ),
+					array( 'organization_id' => $foreign_org, 'wp_user_id' => $user, 'role_key' => 'organization_manager', 'status' => 'active', 'created_at' => $frn_now, 'updated_at' => $frn_now )
+				);
+				return array(
+					'exists'   => $id > 0 && (int) $frn_scalar( 'SELECT wp_user_id FROM `' . $platform->table( 'cpms_organization_memberships' ) . '` WHERE id = %d', array( $id ) ) === $user,
+					'expected' => 'cpms_organization_memberships.wp_user_id=' . $user,
+					'cleanup'  => static fn () => cpsd_rec_delete( $platform->table( 'cpms_organization_memberships' ), $id ),
+				);
+			},
+		),
 		// (4) An INDIRECT actor reference: no enrollment row at all, only the
-		// foreign tenant's own records naming the synthetic account.
-		'actor_columns'            => static function ( array $users ) use ( $platform, $frn_note, $frn_invoice ): callable {
-			global $wpdb;
-			$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => (int) $users['doctor'] ), array( 'id' => $frn_note ), array( '%d' ), array( '%d' ) );
-			$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => (int) $users['accountant'] ), array( 'id' => $frn_invoice ), array( '%d' ), array( '%d' ) );
-			return static function () use ( $platform, $frn_note, $frn_invoice ): void {
+		// foreign tenant's own clinical/financial records naming the account.
+		'actor_columns' => array(
+			'persona' => 'doctor',
+			'inject'  => static function ( int $user ) use ( $platform, $frn_seed, $frn_scalar ): array {
 				global $wpdb;
-				$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => null ), array( 'id' => $frn_note ), array( '%d' ), array( '%d' ) );
-				$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => 1 ), array( 'id' => $frn_invoice ), array( '%d' ), array( '%d' ) );
-			};
-		},
+				$note    = (int) $frn_seed['note'];
+				$invoice = (int) $frn_seed['invoice'];
+				$first   = $wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => $user ), array( 'id' => $note ), array( '%d' ), array( '%d' ) );
+				$second  = $wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => $user ), array( 'id' => $invoice ), array( '%d' ), array( '%d' ) );
+				if ( 1 !== (int) $first || 1 !== (int) $second ) {
+					throw new RuntimeException( 'R9 actor vector: an UPDATE did not affect exactly one row (' . (string) $first . ',' . (string) $second . ')' );
+				}
+				return array(
+					'exists'   => (int) $frn_scalar( 'SELECT updated_by_wp_user_id FROM `' . $platform->table( 'cpms_clinical_notes' ) . '` WHERE id = %d', array( $note ) ) === $user
+						&& (int) $frn_scalar( 'SELECT issued_by_wp_user_id FROM `' . $platform->table( 'cpms_invoices' ) . '` WHERE id = %d', array( $invoice ) ) === $user,
+					'expected' => 'cpms_clinical_notes.updated_by_wp_user_id=' . $user,
+					'cleanup'  => static function () use ( $platform, $note, $invoice ): void {
+						global $wpdb;
+						$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => 1 ), array( 'id' => $note ), array( '%d' ), array( '%d' ) );
+						$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => 1 ), array( 'id' => $invoice ), array( '%d' ), array( '%d' ) );
+					},
+				);
+			},
+		),
 		// (5) The composite-key table: a foreign thread whose participant row
-		// names the synthetic account. The old OR-predicate deleted this row.
-		'cpms_message_participants' => static function ( array $users ) use ( $platform, $foreign_clinic, $foreign_org, $frn_now, $frn_tag ): callable {
-			$thread = cpsd_rec_insert(
-				$platform->table( 'cpms_message_threads' ),
-				array( 'clinic_id' => $foreign_clinic, 'organization_id' => $foreign_org, 'created_by_wp_user_id' => 1, 'last_message_id' => 0, 'created_at' => $frn_now )
-			);
-			global $wpdb;
-			$wpdb->insert(
-				$platform->table( 'cpms_message_participants' ),
-				array( 'thread_id' => $thread, 'wp_user_id' => (int) $users['doctor'], 'staff_class' => 'doctor', 'last_read_message_id' => 0, 'created_at' => $frn_now )
-			);
-			return static function () use ( $platform, $thread, $users ): void {
+		// names the account. The old OR-predicate deleted exactly this row.
+		'cpms_message_participants' => array(
+			'persona' => 'doctor_second',
+			'inject'  => static function ( int $user ) use ( $platform, $foreign_clinic, $foreign_org, $frn_now, $frn_scalar ): array {
 				global $wpdb;
-				$wpdb->delete( $platform->table( 'cpms_message_participants' ), array( 'thread_id' => $thread, 'wp_user_id' => (int) $users['doctor'] ), array( '%d', '%d' ) );
-				cpsd_rec_delete( $platform->table( 'cpms_message_threads' ), $thread );
-			};
-		},
+				$thread = cpsd_rec_insert(
+					$platform->table( 'cpms_message_threads' ),
+					array( 'clinic_id' => $foreign_clinic, 'organization_id' => $foreign_org, 'created_by_wp_user_id' => 1, 'last_message_id' => 0, 'created_at' => $frn_now )
+				);
+				$ok = $wpdb->insert(
+					$platform->table( 'cpms_message_participants' ),
+					array( 'thread_id' => $thread, 'wp_user_id' => $user, 'staff_class' => 'doctor', 'last_read_message_id' => 0, 'created_at' => $frn_now )
+				);
+				if ( false === $ok || '' !== (string) $wpdb->last_error ) {
+					throw new RuntimeException( 'R9 participant vector: insert failed: ' . (string) $wpdb->last_error );
+				}
+				return array(
+					'exists'   => 1 === (int) $frn_scalar( 'SELECT COUNT(*) FROM `' . $platform->table( 'cpms_message_participants' ) . '` WHERE thread_id = %d AND wp_user_id = %d', array( $thread, $user ) ),
+					'expected' => 'cpms_message_participants.wp_user_id=' . $user,
+					'cleanup'  => static function () use ( $platform, $thread, $user ): void {
+						global $wpdb;
+						$wpdb->delete( $platform->table( 'cpms_message_participants' ), array( 'thread_id' => $thread, 'wp_user_id' => $user ), array( '%d', '%d' ) );
+						cpsd_rec_delete( $platform->table( 'cpms_message_threads' ), $thread );
+					},
+				);
+			},
+		),
 	);
 
 	$frn_report = array();
-	foreach ( $frn_vectors as $frn_label => $frn_inject ) {
+	foreach ( $frn_vectors as $frn_label => $frn_spec ) {
 		// R6 impersonated personas through the real REST stack, so the current user
 		// is not the Administrator any more. Restore it before an operation that
 		// checks capabilities, exactly as the admin page would.
@@ -1112,13 +1126,19 @@ try {
 		$frn_live = $manifest->load();
 		cpsd_rec_check( is_array( $frn_live ) && 'active' === (string) $frn_live['status'], 'R9 ' . $frn_label . ': fixture provisioned on a non-empty site', $checks );
 		$frn_users     = (array) ( $frn_live['ids']['user_ids'] ?? array() );
+		$frn_persona   = (int) ( $frn_users[ $frn_spec['persona'] ] ?? 0 );
 		$frn_counts    = cpsd_rec_fixture_row_counts( $platform, $frn_live );
 		$frn_synthetic = cpsd_rec_synthetic_users( $env );
+		cpsd_rec_check( $frn_persona > 0, 'R9 ' . $frn_label . ': the synthetic persona ' . $frn_spec['persona'] . ' exists', $checks );
 
-		$frn_cleanup = $frn_inject( $frn_users );
-		$frn_graph   = cpsd_rec_foreign_graph( $platform, $foreign_clinic, $frn_patient, $frn_staff, $frn_location, (int) $frn_users['doctor'], $frn_tag );
-		$frn_dirty   = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
-		cpsd_rec_check( $frn_dirty !== $frn_baseline_digest, 'R9 ' . $frn_label . ': the foreign tenant now depends on a synthetic demo user', $checks );
+		$frn_injected = $frn_spec['inject']( $frn_persona );
+		cpsd_rec_check(
+			true === (bool) $frn_injected['exists'],
+			'R9 ' . $frn_label . ': the foreign dependency now references exactly synthetic user ' . $frn_persona,
+			$checks
+		);
+		$frn_dirty = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
+		cpsd_rec_check( $frn_dirty !== $frn_baseline_digest, 'R9 ' . $frn_label . ': the foreign tenant row set changed, so the vector really landed', $checks );
 
 		$frn_scope  = $services['teardown']->collect_scope( $frn_live, (array) $frn_live['baseline'] );
 		$frn_leaked = array();
@@ -1134,16 +1154,36 @@ try {
 			'R9 ' . $frn_label . ': not one foreign id enters the demo deletion graph' . ( array() === $frn_leaked ? '' : ' (' . implode( ',', array_slice( $frn_leaked, 0, 3 ) ) . ')' ),
 			$checks
 		);
+		// The preserved anchors must be recognised as demo-owned in the SAME scope,
+		// which is what the post-delete per-user scan relies on.
+		cpsd_rec_check(
+			in_array( (int) $frn_live['ids']['clinic_id'], array_map( 'intval', (array) ( $frn_scope['anchors']['cpms_clinics'] ?? array() ) ), true ),
+			'R9 ' . $frn_label . ': the demo Clinic anchor is classified demo-owned in the scope',
+			$checks
+		);
 
-		$frn_code = '';
+		$frn_code    = '';
+		$frn_message = '';
 		try {
 			$services['teardown']->execute( $manifest->load(), $admin_id );
 		} catch ( DemoException $error ) {
-			$frn_code = $error->demo_code();
+			$frn_code    = $error->demo_code();
+			$frn_message = $error->getMessage();
 		} catch ( Throwable $error ) {
 			$frn_code = 'UNEXPECTED:' . get_class( $error );
 		}
 		cpsd_rec_check( 'SCOPED_FOREIGN_DEPENDENCY' === $frn_code, 'R9 ' . $frn_label . ': teardown refused with SCOPED_FOREIGN_DEPENDENCY (' . ( '' === $frn_code ? 'no refusal' : $frn_code ) . ')', $checks );
+		cpsd_rec_check(
+			false !== strpos( $frn_message, $frn_injected['expected'] ),
+			'R9 ' . $frn_label . ': the refusal names ' . $frn_injected['expected'],
+			$checks
+		);
+		$frn_after = $manifest->load();
+		cpsd_rec_check(
+			is_array( $frn_after ) && 'active' === (string) $frn_after['status'],
+			'R9 ' . $frn_label . ': the refusal happened before any destructive stage (status=' . ( is_array( $frn_after ) ? (string) $frn_after['status'] : 'missing' ) . ')',
+			$checks
+		);
 		cpsd_rec_check(
 			cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_dirty,
 			'R9 ' . $frn_label . ': every foreign row is byte-identical after the refusal',
@@ -1158,23 +1198,24 @@ try {
 		$frn_chain = $audit_guard->verify_chain();
 		cpsd_rec_check( true === (bool) $frn_chain['ok'], 'R9 ' . $frn_label . ': the audit hash chain is intact after the refusal', $checks );
 
-		// Remove ONLY the foreign dependency; the fixture itself is untouched.
-		$frn_graph();
-		$frn_cleanup();
+		// Remove ONLY this vector's dependency; the fixture itself is untouched.
+		$frn_injected['cleanup']();
 		cpsd_rec_check(
 			cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_baseline_digest,
-			'R9 ' . $frn_label . ': the foreign tenant returns to its pre-enrollment state',
+			'R9 ' . $frn_label . ': removing only this dependency restores the foreign tenant',
 			$checks
 		);
 
 		wp_set_current_user( $admin_id );
 		$frn_clean = $services['teardown']->execute( $manifest->load(), $admin_id );
-		cpsd_rec_check( true === (bool) $frn_clean['ok'], 'R9 ' . $frn_label . ': authorized teardown completes once the foreign dependency is gone', $checks );
+		cpsd_rec_check( true === (bool) $frn_clean['ok'], 'R9 ' . $frn_label . ': authorized teardown completes once the dependency is gone', $checks );
 		cpsd_rec_check( null === $manifest->load(), 'R9 ' . $frn_label . ': the manifest is released after the authorized teardown', $checks );
 		cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R9 ' . $frn_label . ': no synthetic account survives the authorized teardown', $checks );
 		$frn_chain_after = $audit_guard->verify_chain();
 		cpsd_rec_check( true === (bool) $frn_chain_after['ok'], 'R9 ' . $frn_label . ': audit chain valid after the authorized teardown', $checks );
 		$frn_report[ $frn_label ] = array(
+			'persona'         => $frn_spec['persona'],
+			'dependency'      => $frn_injected['expected'],
 			'refusal'         => $frn_code,
 			'deleted_total'   => cpsd_rec_deleted_total( $frn_clean ),
 			'foreign_digest'  => substr( $frn_dirty, 0, 16 ),
@@ -1187,14 +1228,10 @@ try {
 	// The drill seeded a real foreign tenant to attack. Remove exactly that seed
 	// and prove the foreign tenant is byte-identical to how it was found: R8 then
 	// asserts the same property for every pre-existing host row.
-	cpsd_rec_delete( $platform->table( 'cpms_payments' ), $frn_payment );
-	cpsd_rec_delete( $platform->table( 'cpms_invoices' ), $frn_invoice );
-	cpsd_rec_delete( $platform->table( 'cpms_clinical_notes' ), $frn_note );
-	cpsd_rec_delete( $platform->table( 'cpms_visits' ), $frn_visit );
+	$frn_graph['cleanup']();
 	cpsd_rec_delete( $platform->table( 'cpms_patients' ), $frn_patient );
 	cpsd_rec_delete( $platform->table( 'cpms_clinicians' ), $frn_staff );
 	cpsd_rec_delete( $platform->table( 'cpms_locations' ), $frn_location );
-	cpsd_rec_delete( $platform->table( 'cpms_organization_memberships' ), $frn_org_membership );
 	cpsd_rec_check(
 		cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_pristine_digest,
 		'R9 the foreign tenant is byte-identical to how the drill found it',

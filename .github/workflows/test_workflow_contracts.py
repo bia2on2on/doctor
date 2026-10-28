@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -588,6 +589,126 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
         self.assertEqual(summary, "")
+
+
+class CompanionCompatibilityGateContractTests(unittest.TestCase):
+    """The demo-coverage gate must be a REQUIRED, fail-closed check.
+
+    The defect these tests pin: the `--gate all` step carried
+    `continue-on-error: true` and a shell `|| true`, so a declared demo GAP - the
+    exact state `compatibility_complete=false` describes - left the required pull
+    request check green. A release could then ship from an incomplete companion
+    while every check looked healthy.
+    """
+
+    FILE = "companion-compat.yml"
+
+    def step_containing(self, text: str, needle: str) -> str:
+        """Return the YAML step block that contains `needle`."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if needle in line:
+                start = index
+                break
+        self.assertIsNotNone(start, f"no step contains {needle!r}")
+        begin = start
+        while begin > 0 and not lines[begin].lstrip().startswith("- name:"):
+            begin -= 1
+        end = start + 1
+        while end < len(lines):
+            stripped = lines[end]
+            if stripped.lstrip().startswith("- name:") or (
+                stripped.strip() and not stripped.startswith(" " * 7) and not stripped.startswith(" " * 6)
+            ):
+                break
+            end += 1
+        return "\n".join(lines[begin:end])
+
+    def test_demo_coverage_step_cannot_be_ignored(self):
+        text = workflow(self.FILE)
+        self.assertNotRegex(
+            text,
+            r"(?m)^\s*continue-on-error:\s*true\s*$",
+            "a required gate must not be allowed to fail quietly",
+        )
+        block = self.step_containing(text, "--gate all")
+        self.assertNotIn("|| true", block, block)
+        self.assertIn("status=$?", block, block)  # the code is captured, then re-raised below
+        self.assertIn('if [ "$status" -ne 0 ]', block, block)
+        self.assertIn('exit "$status"', block, block)
+        self.assertIn("::error title=COMPANION_COMPAT", block, block)
+
+    def test_gate_all_step_rechecks_the_report_itself(self):
+        """Defence in depth: even a regressed exit code cannot turn a GAP green."""
+        block = self.step_containing(workflow(self.FILE), "--gate all")
+        self.assertIn("report['counts']['blocker']", block, block)
+        self.assertIn("report['counts']['gap']", block, block)
+        self.assertIn("compatibility_complete", block, block)
+        self.assertIn("sys.exit(1)", block, block)
+
+    def test_manifest_sync_check_is_not_swallowed(self):
+        text = workflow(self.FILE)
+        block = self.step_containing(text, "generate.py --root . --check")
+        self.assertNotIn("|| true", block, block)
+        self.assertIn("--check", block, block)
+
+    def test_the_gate_command_fails_on_an_injected_gap(self):
+        """Executable negative contract: the gate the workflow runs fails on a GAP.
+
+        A temporary root is assembled by symlinking the real sources and copying
+        the manifest with one demo-required feature stripped of its journeys. The
+        same evaluator the workflow calls must then exit non-zero for `--gate all`
+        while `--gate compatibility` still passes - so the failure really is the
+        demo-coverage gap, not a broken tree.
+        """
+        evaluator = ROOT / ".github" / "scripts" / "companion-compat" / "evaluate.py"
+        manifest_path = ROOT / "tools" / "disposable-demo-installer" / "compatibility.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        feature = next(f for f in manifest["features"] if f.get("journeys"))
+        stripped = dict(feature)
+        stripped["journeys"] = []
+        manifest["features"] = [stripped if f is feature else f for f in manifest["features"]]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            # The heavy production tree is only READ, so it is symlinked; the
+            # companion tree is copied so its manifest can be mutated.
+            for name in ("clinic-practice-management", ".github", "tests", "docs"):
+                target = ROOT / name
+                if target.exists():
+                    os.symlink(target, root / name)
+            shutil.copytree(ROOT / "tools", root / "tools", symlinks=False)
+            (root / "tools" / "disposable-demo-installer" / "compatibility.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+
+            report = Path(tmp) / "report.json"
+            all_result = subprocess.run(
+                [sys.executable, str(evaluator), "--root", str(root), "--gate", "all", "--report", str(report)],
+                capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(1, all_result.returncode, all_result.stdout + all_result.stderr)
+            self.assertRegex(all_result.stdout, r"compatibility_complete: (false|False)")
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertFalse(data["compatibility_complete"])
+            self.assertGreaterEqual(data["counts"]["gap"], 1)
+            compat = subprocess.run(
+                [sys.executable, str(evaluator), "--root", str(root), "--gate", "compatibility", "--quiet"],
+                capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(0, compat.returncode, compat.stdout + compat.stderr)
+
+    def test_auto_sync_opens_a_reviewable_pr_and_never_merges(self):
+        text = workflow("companion-sync.yml")
+        self.assertIn("gh pr create", text)
+        for forbidden in ("gh pr merge", "--auto", "--admin", "git tag", "gh release create"):
+            self.assertNotIn(forbidden, text, forbidden)
+        self.assertIn("not** auto-merged", text)
+        events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertNotIn("pull_request_target", events)
+        self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
 if __name__ == "__main__":

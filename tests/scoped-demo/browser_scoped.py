@@ -32,8 +32,11 @@ Honest scope notes (do not overclaim):
     patient portal's own OTP form (which multi-Clinic installs refuse with
     CLINIC_SCOPE_REQUIRED by design) are not driven.
   * clinic_manager and organization_manager prove the portal renders *and* that
-    their fixture membership (not a WordPress role) grants the surface. No REST
-    call is claimed for them.
+    their fixture membership (not a WordPress role) grants the surface. The
+    organization manager additionally drives the portal's own lifecycle form
+    (activate/deactivate) and its create-Clinic form; those are real form
+    submissions through the production controller. No REST call is claimed for
+    either persona.
   * Screenshot pixels are not inspected.
 """
 
@@ -60,6 +63,7 @@ JOURNEYS = (
     "cpsd_persona_accountant",
     "cpsd_persona_clinic_manager",
     "cpsd_persona_organization_manager",
+    "cpsd_org_manager_clinic_lifecycle",
     "cpsd_patient_otp_booking",
     "cpsd_staff_messaging_privacy",
     "cpsd_visit_pricing_invoice",
@@ -91,6 +95,9 @@ TARGETS_FILE = Path(os.environ.get("CPSD_TARGETS_FILE", str(EVIDENCE / "persona-
 REST = BASE + "/wp-json/clinic/v1"
 
 CHECKS: list[dict[str, object]] = []
+# Browser-side evidence collected by individual journeys, published in the result
+# file so a reviewer never has to trust a log line alone.
+JOURNEY_EVIDENCE: dict[str, object] = {}
 
 
 def check(name: str, ok: bool, detail: str = "") -> None:
@@ -421,6 +428,93 @@ def management_journey(page, label: str, url: str, expected: str) -> None:
           f"text={page.locator('.cpms-mgmt-shell').inner_text()[:300] if page.locator('.cpms-mgmt-shell').count() else ''}")
     check(f"{label}: portal shows their own scope", bool(expected) and expected in body,
           f"expected={expected!r} present={expected in body}")
+
+
+def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) -> dict:
+    """The synthetic Organization manager drives the portal's own lifecycle forms.
+
+    This is the browser half of the reported defect: the Organization manager
+    deactivates and reactivates the demo Clinic through the production
+    `org_clinic_status` form (which stamps `status_updated_by_wp_user_id` with
+    that synthetic account), then creates a SECOND Clinic under the demo
+    Organization through the production `org_create_clinic` form. The admin
+    teardown that follows in this same phase must still complete, which is
+    exactly what used to fail with SCOPED_FOREIGN_DEPENDENCY.
+    """
+    clinic_id = int(targets.get("clinic_id") or 0)
+    organization_id = int(targets.get("organization_id") or 0)
+    check("lifecycle: the demo Clinic and Organization ids are known",
+          clinic_id > 1 and organization_id > 1, f"clinic={clinic_id} org={organization_id}")
+
+    evidence: dict[str, object] = {"clinic_id": clinic_id, "organization_id": organization_id}
+    ctx, page = persona_login(browser, creds["organization_manager"]["username"],
+                              creds["organization_manager"]["password"])
+    try:
+        url = management_url
+        check("lifecycle: the management portal renders for the Organization manager", bool(url), url or "no portal url")
+        page.goto(url, wait_until="domcontentloaded")
+        body = page.content()
+        check("lifecycle: the Organization manager is not denied the portal",
+              MANAGEMENT_DENIED not in body and "دسترسی ندارید" not in body, url)
+
+        status_form = page.locator(
+            'form.cpms-mgmt-form'
+            f':has(input[name="cpms_action"][value="org_clinic_status"])'
+            f':has(input[name="clinic_id"][value="{clinic_id}"])'
+        )
+        check("lifecycle: the portal renders the demo Clinic's lifecycle form",
+              status_form.count() == 1, f"forms={status_form.count()}")
+        deactivate = status_form.locator('input[name="active"]')
+        check("lifecycle: the lifecycle form offers deactivation of an active Clinic",
+              deactivate.count() == 1 and deactivate.get_attribute("value") == "0",
+              f"active={deactivate.get_attribute('value') if deactivate.count() else None}")
+        status_form.locator("button[type=submit]").click()
+        page.wait_for_load_state("domcontentloaded")
+        after = page.content()
+        check("lifecycle: the production controller deactivated the demo Clinic",
+              "درمانگاه غیرفعال شد" in after, page.url)
+        reactivate_form = page.locator(
+            'form.cpms-mgmt-form'
+            f':has(input[name="cpms_action"][value="org_clinic_status"])'
+            f':has(input[name="clinic_id"][value="{clinic_id}"])'
+        )
+        check("lifecycle: the portal now offers reactivation",
+              reactivate_form.count() == 1
+              and reactivate_form.locator('input[name="active"]').get_attribute("value") == "1",
+              f"forms={reactivate_form.count()}")
+        reactivate_form.locator("button[type=submit]").click()
+        page.wait_for_load_state("domcontentloaded")
+        check("lifecycle: the production controller reactivated the demo Clinic",
+              "درمانگاه فعال شد" in page.content(), page.url)
+        evidence["status_round_trip"] = True
+
+        # ---------------- a second Clinic created through the portal form
+        slug = "cpsd-lifecycle-" + uuid.uuid4().hex[:10]
+        create_form = page.locator(
+            'form.cpms-mgmt-form:has(input[name="cpms_action"][value="org_create_clinic"])'
+        )
+        check("lifecycle: the portal renders the create-Clinic form", create_form.count() == 1,
+              f"forms={create_form.count()}")
+        create_form.locator('input[name="cpms_entity_name"]').fill("درمانگاه دوم چرخهٔ عمر")
+        create_form.locator('input[name="slug"]').fill(slug)
+        if create_form.locator('input[name="timezone"]').count():
+            create_form.locator('input[name="timezone"]').fill("Asia/Tehran")
+        if create_form.locator('input[name="location_name"]').count():
+            create_form.locator('input[name="location_name"]').fill("شعبهٔ دوم چرخهٔ عمر")
+        if create_form.locator('input[name="phone"]').count():
+            create_form.locator('input[name="phone"]').fill("02100000000")
+        create_form.locator("button[type=submit]").click()
+        page.wait_for_load_state("domcontentloaded")
+        created_body = page.content()
+        check("lifecycle: the production controller created a second Clinic under the demo Organization",
+              "درمانگاه ایجاد شد" in created_body, page.url)
+        check("lifecycle: the new Clinic is listed in the portal",
+              "درمانگاه دوم چرخهٔ عمر" in created_body, slug)
+        evidence["second_clinic_slug"] = slug
+        page.screenshot(path=str(EVIDENCE / "journey-org-manager-lifecycle.png"))
+    finally:
+        ctx.close()
+    return evidence
 
 
 def patient_otp_journey(browser, targets: dict) -> None:
@@ -937,6 +1031,14 @@ def journeys_phase(browser) -> None:
     iran_v1_phase(browser, creds, targets)
     rtl_mobile_phase(browser, creds, targets)
 
+    # ---------------- Organization manager: portal lifecycle + a second Clinic
+    # Driven BEFORE the teardown below, so the teardown proves the reported
+    # defect is gone: a lifecycle stamp naming a synthetic account must not make
+    # the preserved demo Clinic look like a foreign dependency.
+    JOURNEY_EVIDENCE["org_manager_lifecycle"] = lifecycle_phase(
+        browser, creds, targets, management_url
+    )
+
     # ---------------- admin: read-only diagnostic then authorised teardown
     ctx, admin = admin_login(browser)
     admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
@@ -1350,6 +1452,8 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
     }
     if extra:
         result.update(extra)
+    if JOURNEY_EVIDENCE:
+        result["journey_evidence"] = JOURNEY_EVIDENCE
     phase = str(result.get("phase", ""))
     (EVIDENCE / f"browser-result-{phase}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     (EVIDENCE / "browser-result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
