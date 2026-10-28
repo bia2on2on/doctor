@@ -199,10 +199,21 @@ try {
 	$host_location_a  = cpsd_pt_insert( $table( 'cpms_locations' ), array( 'clinic_id' => $host_clinic_a, 'name' => 'Host Location A', 'slug' => $tag . '-loc-a', 'timezone' => 'Asia/Tehran', 'is_primary' => 1, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now ) );
 	$host_location_b  = cpsd_pt_insert( $table( 'cpms_locations' ), array( 'clinic_id' => $host_clinic_b, 'name' => 'Host Location B', 'slug' => $tag . '-loc-b', 'timezone' => 'Asia/Tehran', 'is_primary' => 1, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now ) );
 	$host_patient_b   = cpsd_pt_insert( $table( 'cpms_patients' ), array( 'clinic_id' => $host_clinic_b, 'mrn' => $tag . '-mrn-b', 'first_name' => 'Host', 'last_name' => 'Patient B', 'mobile' => '0912000' . (string) random_int( 1000, 9999 ), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now ) );
+	// A pre-existing Clinic with an explicit high id creates free ids BELOW the
+	// sealed baseline `max_id`. P3 needs exactly that: a Clinic row that names the
+	// demo Organization but cannot be post-baseline.
+	$host_org_c    = cpsd_pt_insert( $table( 'cpms_organizations' ), array( 'name' => 'Host Org C ' . $tag, 'slug' => $tag . '-org-c', 'status' => 'active', 'created_at' => $now, 'updated_at' => $now ) );
+	$gap_id        = 1000;
+	cpsd_pt_check( null === cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $gap_id ) ), 'host id ' . $gap_id . ' is free before the gap Clinic is seeded', $checks );
+	$wpdb->insert(
+		$table( 'cpms_clinics' ),
+		array( 'id' => $gap_id, 'organization_id' => $host_org_c, 'name' => 'Host Clinic C ' . $tag, 'slug' => $tag . '-c', 'timezone' => 'Asia/Tehran', 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
+	);
+	cpsd_pt_check( '' === (string) $wpdb->last_error, 'the pre-existing gap Clinic was seeded at id ' . $gap_id, $checks );
 	cpsd_pt_check( $host_clinic_a > 1 && $host_clinic_b > 1 && $host_clinic_a !== $host_clinic_b, 'host has two pre-existing Clinics', $checks );
 	cpsd_pt_check( 2 <= $platform->count_all( 'cpms_clinics' ), 'host has multi-Clinic semantics', $checks );
 
-	$host_clinics      = array( $host_clinic_a, $host_clinic_b );
+	$host_clinics      = array( $host_clinic_a, $host_clinic_b, $gap_id );
 	$host_digest       = cpsd_pt_host_digest( $platform, $host_clinics );
 	$report['host']    = array( 'clinics' => $host_clinics, 'digest' => substr( $host_digest, 0, 16 ) );
 
@@ -218,6 +229,16 @@ try {
 	$demo_org    = (int) $live['ids']['organization_id'];
 	$manager_id  = (int) $live['ids']['user_ids']['organization_manager'];
 	cpsd_pt_check( $demo_clinic > 1 && $demo_org > 1 && $manager_id > 1, 'P1 demo ids and the synthetic Organization manager are known', $checks );
+
+	// Evidence, not assertion: record the production capability decisions the
+	// portal will make, so a refusal names the missing capability.
+	$organizations_service = App::organization_clinic_provisioning_service();
+	foreach ( array( 'cpms_org_clinic_create', 'cpms_org_clinic_profile_update', 'cpms_org_clinic_lifecycle' ) as $capability ) {
+		$can = $organizations_service->can( $manager_id, $demo_org, $capability );
+		$checks[] = 'INFO P1 capability ' . $capability . '=' . ( $can ? 'granted' : 'denied' ) . ' for the synthetic Organization manager';
+	}
+	$manager_clinics = $organizations_service->clinics_for_organization( $manager_id, $demo_org );
+	$checks[] = 'INFO P1 clinics_for_organization=' . count( $manager_clinics );
 
 	$deny = ManagementPortalController::dispatch( $host_user, 'org_clinic_status', array( 'organization_id' => $demo_org, 'clinic_id' => $demo_clinic, 'active' => false ) );
 	cpsd_pt_check( false === (bool) $deny['ok'], 'P1 an unauthorized account cannot change the demo Clinic lifecycle (portal refused)', $checks );
@@ -416,5 +437,7 @@ try {
 		),
 		JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
 	) . PHP_EOL;
-	exit( 1 );
+	// The JSON verdict is the report: the workflow parses it and fails the check
+	// itself, so the annotation names the failing assertion instead of only
+	// "process exited 1".
 }

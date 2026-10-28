@@ -300,8 +300,9 @@ jobs:
           if not data.get('ok'):
               print(data.get('error', 'unknown error'), file=sys.stderr)
               failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
-              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
-                  print('::error title=SCOPED_PORTAL::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              trail = [str(line) for line in data.get('checks', [])][-6:]
+              detail = ' || '.join(failed[-3:] or trail + [str(data.get('error', 'unknown error'))])
+              print('::error title=SCOPED_PORTAL::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
           PY
 
