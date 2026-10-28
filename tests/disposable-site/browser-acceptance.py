@@ -740,6 +740,19 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
         )
         check("iran v1 doctor reads the receptionist message through polling", True)
 
+        iran_v1_step("finance_message_recipients")
+        finance_page.goto(messages_url, wait_until="domcontentloaded")
+        finance_page.wait_for_selector('[data-role="messages-root"]')
+        finance_page.wait_for_function(
+            'document.querySelector(`[data-role="messages-counterpart"]`).options.length > 0'
+        )
+        finance_recipient_labels = finance_page.locator('[data-role="messages-counterpart"]').evaluate(
+            "select => Array.from(select.options).map(option => option.textContent || '')"
+        )
+        check("iran v1 finance staff can select doctor and receptionist recipients",
+              any("پزشک" in label for label in finance_recipient_labels)
+              and any("پذیرش" in label for label in finance_recipient_labels))
+
         # Plain-permalink regression: the disposable site uses ?page_id= and
         # ?rest_route=. Every Iran V1 REST call must keep exactly one query
         # separator, route under /clinic/v1/staff/portal/, and stay authorized.
