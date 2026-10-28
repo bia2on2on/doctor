@@ -470,10 +470,21 @@ try {
 	$summary = $ownership->summary( $fixture );
 	cpsd_pt_check( in_array( $second_clinic, array_map( 'intval', (array) $summary['clinic_ids'] ), true ), 'P2 the created Clinic id is sealed in the ownership ledger', $checks );
 	cpsd_pt_check( array() === (array) $summary['pending'], 'P2 the pre-committed intent is closed by the sealed id', $checks );
-	$kinds = array_map( static fn ( array $entry ): string => (string) ( $entry['kind'] ?? '' ), (array) $ownership->inspect( $fixture )['entries'] );
-	cpsd_pt_check( array( 'open', 'intent', 'clinic' ) === array_slice( $kinds, 0, 3 ), 'P2 the ledger records open -> intent -> clinic in that order', $checks );
-	$intent_entry = (array) $ownership->inspect( $fixture )['entries'][1];
+	$entries = (array) $ownership->inspect( $fixture )['entries'];
+	$kinds   = array_map( static fn ( array $entry ): string => (string) ( $entry['kind'] ?? '' ), $entries );
+	// open -> intent -> (explicit registrations of the rows the path itself wrote)
+	// -> clinic. The registrations are the durable ownership evidence for rows no
+	// structural rule can prove, and they are sealed BEFORE the Clinic exists.
+	cpsd_pt_check( 'open' === ( $kinds[0] ?? '' ) && 'intent' === ( $kinds[1] ?? '' ) && 'clinic' === (string) end( $kinds ), 'P2 the ledger records open -> intent -> ... -> clinic in that order (' . implode( ',', $kinds ) . ')', $checks );
+	$intent_entry = (array) ( $entries[1] ?? array() );
 	cpsd_pt_check( (string) ( $intent_entry['payload']['slug'] ?? '' ) === (string) $extra['slug'], 'P2 the intent sealed the exact slug of the created Clinic', $checks );
+	$registered_membership = false;
+	foreach ( $entries as $entry ) {
+		if ( 'rows' === (string) ( $entry['kind'] ?? '' ) && 'cpms_organization_memberships' === (string) ( $entry['payload']['table'] ?? '' ) ) {
+			$registered_membership = array() !== (array) ( $entry['payload']['ids'] ?? array() );
+		}
+	}
+	cpsd_pt_check( $registered_membership, 'P2 the Organization membership written for the acting administrator is explicitly registered', $checks );
 
 	// A dependent row inside the additional Clinic, created by a synthetic
 	// account: it must be cleaned selectively with the Clinic, never left as
