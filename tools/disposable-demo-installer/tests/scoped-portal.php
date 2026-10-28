@@ -222,7 +222,7 @@ function cpsd_pt_plant_foreign( Platform $platform, int $org_id, string $tag, st
 	);
 	$ids['visit'] = cpsd_pt_insert(
 		$t( 'cpms_visits' ),
-		array( 'clinic_id' => $ids['clinic'], 'clinician_id' => $ids['clinician'], 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
+		array( 'clinic_id' => $ids['clinic'], 'location_id' => $ids['location'], 'clinician_id' => $ids['clinician'], 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
 	);
 	$ids['invoice'] = cpsd_pt_insert(
 		$t( 'cpms_invoices' ),
