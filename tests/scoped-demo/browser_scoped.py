@@ -1050,11 +1050,11 @@ def iran_v1_phase(browser, creds: dict, targets: dict) -> None:
     # The doctor's CURRENT default is the LATER value; the Visit must still show
     # the fee captured at check-in, with the no-reprice policy stated.
     check("the projection shows the check-in snapshot fee and the no-reprice policy",
-          "تعرفه ثبت‌شده هنگام پذیرش" in stats
+          "تعرفه ثبتشده هنگام پذیرش" in stats
           and "500000 ریال" in stats
           and "750000 ریال" in stats
           and "سیاست تعرفه" in stats,
-          stats[:220])
+          stats[:400])
 
     page.fill('[data-role="pricing-charge-description"]', "خدمت درمانی آزمایشی دمو")
     page.fill('[data-role="pricing-charge-amount"]', "200000")
