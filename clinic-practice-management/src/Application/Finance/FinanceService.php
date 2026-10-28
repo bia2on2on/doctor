@@ -297,7 +297,7 @@ final class FinanceService
                     'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_visit_charge_items' )
                     . ' WHERE clinic_id = %d AND visit_id = %d'
                     . ' AND invoiced_invoice_id IS NULL AND removed_at IS NULL',
-                    [(int) $visit['clinic_id'], (int) $visit['id']]
+                    [ (int) $visit['clinic_id'], (int) $visit['id'] ]
                 );
                 if ( $pending_charges > 0 ) {
                     throw FinanceException::of(
@@ -458,8 +458,8 @@ final class FinanceService
                     throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409 );
                 }
 
-                $built                  = $this->pricing->build_invoice_items( $visit );
-                $previous_pricing_issue = $this->issuing_pricing_invoice;
+                $built                          = $this->pricing->build_invoice_items( $visit );
+                $previous_pricing_issue         = $this->issuing_pricing_invoice;
                 $this->issuing_pricing_invoice = true;
                 try {
                     $invoice = $this->issueInvoice(
