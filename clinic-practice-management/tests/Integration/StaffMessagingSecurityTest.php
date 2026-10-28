@@ -8,6 +8,7 @@ use ClinicCore\Application\Messaging\MessagingException;
 use ClinicCore\Application\Messaging\StaffMessagingService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Tests\Integration\Fixtures\IranV1Fixture;
 use WP_UnitTestCase;
 
@@ -355,6 +356,11 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         $this->iv1_membership($finance1, (int) $world['clinic'], RolesAndCapabilities::ROLE_ACCOUNTANT);
         $finance2 = $this->iv1_user(RolesAndCapabilities::ROLE_ACCOUNTANT, 'cash2');
         $this->iv1_membership($finance2, (int) $world['clinic'], RolesAndCapabilities::ROLE_ACCOUNTANT);
+        self::assertTrue(StaffPortalShell::messages_module_eligible((int) $world['doctor']));
+        self::assertTrue(StaffPortalShell::messages_module_eligible((int) $world['secretary']));
+        self::assertTrue(StaffPortalShell::messages_module_eligible($finance1));
+        $admin = self::factory()->user->create(['role' => 'administrator']);
+        self::assertFalse(StaffPortalShell::messages_module_eligible($admin), 'WordPress admin status alone is not sufficient');
 
         $pairs = [
             [(int) $world['doctor'], (int) $world['secretary']],

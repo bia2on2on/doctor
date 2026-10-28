@@ -216,9 +216,9 @@ final class StaffMessagingService {
                     $patient_fk,
                     null,
                     [
-							'thread_id'   => $id,
-							'visit_id'    => $visit_fk,
-							'location_id' => $location_fk,
+                        'thread_id'   => $id,
+                        'visit_id'    => $visit_fk,
+                        'location_id' => $location_fk,
                     ],
                     ['clinic_id' => $ctx['clinic_id'], 'organization_id' => $ctx['organization_id']]
 				);

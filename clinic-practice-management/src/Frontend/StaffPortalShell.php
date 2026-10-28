@@ -101,17 +101,7 @@ final class StaffPortalShell {
 	/** Plugin-owned pricing module template (embed mode). */
 	public const PRICING_TEMPLATE_REL = 'templates/staff-pricing.php';
 
-	/**
-	 * Existing capabilities the messaging module relies on: visit read in one
-	 * Clinic plus at least one operational staff class capability. No new
-	 * capability is introduced for messaging.
-	 *
-	 * @var list<string>
-	 */
-	public const MESSAGES_MODULE_CAPS = array(
-		RolesAndCapabilities::VISIT_READ,
-	);
-
+	/** The messaging module relies on existing class-specific scoped capabilities. */
 	/**
 	 * Existing capabilities the pricing module relies on. The doctor identity
 	 * is additionally derived from a durable clinician profile by the service.
@@ -508,9 +498,9 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Messaging module VISIBILITY (Iran V1). Mirrors the REST boundary: one
-	 * ACTIVE Clinic must grant visit read AND at least one operational staff
-	 * class capability. Visibility only; every REST call re-authorizes.
+	 * Messaging module visibility from active CPMS membership capabilities.
+	 * Finance staff do not need clinical visit-read permission merely to use
+	 * private, unlinked staff messaging. Every REST request re-authorizes.
 	 */
 	public static function messages_module_eligible( int $user_id ): bool {
 		if ( $user_id <= 0 ) {
@@ -523,12 +513,16 @@ final class StaffPortalShell {
 		$auth = App::authorization_service();
 		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
 			$clinic_id = (int) $clinic_id;
-			if ( ! self::clinic_grants_all( $auth, $user_id, $clinic_id, self::MESSAGES_MODULE_CAPS ) ) {
-				continue;
-			}
 			if (
 				$auth->can( $user_id, $clinic_id, RolesAndCapabilities::CONSULT_COMPLETE )
 				|| $auth->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_CHECKIN )
+				|| (
+					$auth->can( $user_id, $clinic_id, RolesAndCapabilities::FINANCE_READ )
+					&& (
+						$auth->can( $user_id, $clinic_id, RolesAndCapabilities::PAYMENT_CREATE )
+						|| $auth->can( $user_id, $clinic_id, RolesAndCapabilities::INVOICE_CREATE )
+					)
+				)
 			) {
 				return true;
 			}
