@@ -120,8 +120,8 @@ def admin_login(browser, width: int = 1280, height: int = 900):
     return ctx, page
 
 
-def persona_login(browser, username: str, password: str):
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+def persona_login(browser, username: str, password: str, width: int = 1280, height: int = 900):
+    ctx = browser.new_context(viewport={"width": width, "height": height})
     page = ctx.new_page()
     page.goto(f"{BASE}/wp-login.php", wait_until="domcontentloaded")
     page.fill("#user_login", username)
@@ -311,6 +311,51 @@ def scope_headers(clinic_id: int, location_id: int = 0) -> dict:
     if location_id:
         headers["X-CPMS-Location-Id"] = str(int(location_id))
     return headers
+
+
+def rtl_mobile_check(page, selector: str, label: str, width: int) -> dict:
+    """Assert a Persian module is right-to-left and does not overflow a phone.
+
+    The demo is shown to Users on phones, so the two widths the design targets
+    (320px and 390px) are measured for real: document direction, document-level
+    horizontal overflow, the module root's own overflow, and the root's painted
+    box inside the viewport. A horizontally scrolled inner table is fine and is
+    not what this measures.
+    """
+    metrics = page.evaluate(
+        """(sel) => {
+            const el = document.querySelector(sel);
+            const rect = el ? el.getBoundingClientRect() : null;
+            const wide = Array.from(document.querySelectorAll('body *'))
+                .filter((node) => node.getBoundingClientRect().width > window.innerWidth + 1)
+                .slice(0, 3)
+                .map((node) => node.tagName.toLowerCase() + '.' + (typeof node.className === 'string' ? node.className : ''));
+            return {
+                dir: getComputedStyle(document.documentElement).direction,
+                bodyDir: getComputedStyle(document.body).direction,
+                docScroll: document.documentElement.scrollWidth,
+                inner: window.innerWidth,
+                rootScroll: el ? el.scrollWidth : 0,
+                rootClient: el ? el.clientWidth : 0,
+                left: rect ? rect.left : null,
+                right: rect ? rect.right : null,
+                wide: wide,
+            };
+        }""",
+        selector,
+    )
+    check(f"{label} @{width}px renders right-to-left",
+          metrics["dir"] == "rtl" and metrics["bodyDir"] == "rtl", str(metrics["dir"]))
+    check(f"{label} @{width}px does not scroll horizontally",
+          int(metrics["docScroll"]) <= int(metrics["inner"]) + 1,
+          f"scrollWidth={metrics['docScroll']} viewport={metrics['inner']} wide={metrics['wide']}")
+    check(f"{label} @{width}px keeps its module inside the viewport",
+          int(metrics["rootScroll"]) <= int(metrics["rootClient"]) + 1
+          and metrics["left"] is not None
+          and float(metrics["left"]) >= -1
+          and float(metrics["right"]) <= int(metrics["inner"]) + 1,
+          f"root={metrics['rootScroll']}/{metrics['rootClient']} box={metrics['left']}..{metrics['right']} wide={metrics['wide']}")
+    return metrics
 
 
 def provision_phase(browser) -> None:
@@ -890,6 +935,7 @@ def journeys_phase(browser) -> None:
 
     # ---------------- Iran V1 (schema 0030): private staff messaging + visit pricing
     iran_v1_phase(browser, creds, targets)
+    rtl_mobile_phase(browser, creds, targets)
 
     # ---------------- admin: read-only diagnostic then authorised teardown
     ctx, admin = admin_login(browser)
@@ -1249,6 +1295,43 @@ def iran_v1_phase(browser, creds: dict, targets: dict) -> None:
           and page.locator('[data-role="pricing-override-save"]').is_disabled(),
           "charge-add and override-save disabled")
     ctx.close()
+
+
+def rtl_mobile_phase(browser, creds: dict, targets: dict) -> None:
+    """320px and 390px, right-to-left, no horizontal overflow.
+
+    Runs against the two schema-0030 modules the demo is judged on, in a real
+    browser at the two widths the templates declare breakpoints for.
+    """
+    modules = ((targets.get("portals") or {}).get("modules") or {})
+    evidence: dict = {}
+    for width in (320, 390):
+        for persona, module_key, selector, label in (
+            ("doctor", "messages", '[data-role="messages-root"]', "staff messaging"),
+            ("doctor_second", "pricing", '[data-role="pricing-root"]', "visit pricing"),
+        ):
+            url = str(modules.get(module_key) or "")
+            check(f"the fixture exposes the {label} module URL for the {width}px check", bool(url), url)
+            ctx, page = persona_login(
+                browser, creds[persona]["username"], creds[persona]["password"],
+                width=width, height=800,
+            )
+            page.goto(url, wait_until="domcontentloaded")
+            check(f"{label} root renders at {width}px",
+                  page.locator(selector).count() == 1, f"url={page.url}")
+            page.locator(selector).wait_for(state="visible", timeout=45000)
+            metrics = rtl_mobile_check(page, selector, label, width)
+            page.screenshot(path=str(EVIDENCE / f"rtl-{module_key}-{width}.png"))
+            evidence[f"{module_key}@{width}"] = {
+                "dir": metrics["dir"],
+                "viewport": metrics["inner"],
+                "doc_scroll": metrics["docScroll"],
+            }
+            ctx.close()
+    (EVIDENCE / "rtl-mobile.json").write_text(
+        json.dumps({"ok": True, "widths": [320, 390], "evidence": evidence}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
 
 
 def write_result(ok: bool, extra: dict | None = None) -> None:

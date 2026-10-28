@@ -45,6 +45,23 @@
     "cpsd_mode": "Scoped-mode activation marker.",
     "cpsd_tombstone": "Post-teardown evidence record."
   },
+  "demo_relevant_route_prefixes": [
+    "/staff/portal/",
+    "/doctor/portal/",
+    "/secretary/",
+    "/patient/",
+    "/booking/",
+    "/availability",
+    "/otp/",
+    "/queue",
+    "/rt/",
+    "/visits/",
+    "/invoices/",
+    "/payments/",
+    "/prescriptions",
+    "/notes/",
+    "/handwriting/"
+  ],
   "features": [
     {
       "demo_required": true,
@@ -132,17 +149,43 @@
         "clinic/v1/appointments/(?P<id>\\d+)/reschedule",
         "clinic/v1/appointments/(?P<id>\\d+)/reschedule-options",
         "clinic/v1/appointments/mine",
-        "clinic/v1/availability",
-        "clinic/v1/booking/confirm",
-        "clinic/v1/booking/hold",
-        "clinic/v1/booking/quote",
-        "clinic/v1/booking/resume",
         "clinic/v1/config/schedule-exceptions",
         "clinic/v1/config/schedule-exceptions/(?P<id>\\d+)",
         "clinic/v1/config/schedules",
         "clinic/v1/config/schedules/(?P<id>\\d+)",
         "clinic/v1/config/services",
         "clinic/v1/config/services/(?P<id>\\d+)",
+        "clinic/v1/doctor/today",
+        "clinic/v1/files",
+        "clinic/v1/files/(?P<id>\\d+)/stream",
+        "clinic/v1/finance/summary",
+        "clinic/v1/health",
+        "clinic/v1/invoices",
+        "clinic/v1/notifications",
+        "clinic/v1/notifications/read",
+        "clinic/v1/patients",
+        "clinic/v1/patients/(?P<id>\\d+)",
+        "clinic/v1/patients/(?P<patient_id>\\d+)/files",
+        "clinic/v1/patients/search",
+        "clinic/v1/reports",
+        "clinic/v1/reports/exports",
+        "clinic/v1/reports/exports/(?P<id>\\d+)/download",
+        "clinic/v1/search",
+        "clinic/v1/sms/balance",
+        "clinic/v1/sms/logs",
+        "clinic/v1/sms/providers",
+        "clinic/v1/sms/settings",
+        "clinic/v1/sms/status",
+        "clinic/v1/sms/templates",
+        "clinic/v1/sms/templates/test",
+        "clinic/v1/sms/test-connection",
+        "clinic/v1/sms/test-send",
+        "clinic/v1/visits",
+        "clinic/v1/availability",
+        "clinic/v1/booking/confirm",
+        "clinic/v1/booking/hold",
+        "clinic/v1/booking/quote",
+        "clinic/v1/booking/resume",
         "clinic/v1/doctor/portal/clinics",
         "clinic/v1/doctor/portal/context",
         "clinic/v1/doctor/portal/locations",
@@ -160,52 +203,27 @@
         "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/prescriptions/(?P<prescription_id>\\d+)/print",
         "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/recommendations",
         "clinic/v1/doctor/portal/visits/(?P<id>\\d+)/record",
-        "clinic/v1/doctor/today",
-        "clinic/v1/files",
-        "clinic/v1/files/(?P<id>\\d+)/stream",
-        "clinic/v1/finance/summary",
         "clinic/v1/handwriting/documents",
         "clinic/v1/handwriting/documents/(?P<id>\\d+)/pages",
         "clinic/v1/handwriting/pages/(?P<id>\\d+)",
-        "clinic/v1/health",
-        "clinic/v1/invoices",
         "clinic/v1/invoices/(?P<id>\\d+)",
         "clinic/v1/invoices/(?P<id>\\d+)/adjustments",
         "clinic/v1/invoices/(?P<id>\\d+)/payments",
         "clinic/v1/invoices/(?P<id>\\d+)/receipt",
         "clinic/v1/notes/(?P<id>\\d+)",
-        "clinic/v1/notifications",
-        "clinic/v1/notifications/read",
         "clinic/v1/otp/request",
         "clinic/v1/otp/verify",
         "clinic/v1/patient/enroll",
         "clinic/v1/patient/me",
         "clinic/v1/patient/my-records",
-        "clinic/v1/patients",
-        "clinic/v1/patients/(?P<id>\\d+)",
-        "clinic/v1/patients/(?P<patient_id>\\d+)/files",
-        "clinic/v1/patients/search",
         "clinic/v1/payments/(?P<id>\\d+)/refund",
         "clinic/v1/payments/(?P<id>\\d+)/void",
         "clinic/v1/prescriptions",
         "clinic/v1/prescriptions/(?P<id>\\d+)/finalize",
         "clinic/v1/queue",
-        "clinic/v1/reports",
-        "clinic/v1/reports/exports",
-        "clinic/v1/reports/exports/(?P<id>\\d+)/download",
         "clinic/v1/rt/notifications",
         "clinic/v1/rt/queue",
-        "clinic/v1/search",
         "clinic/v1/secretary/today",
-        "clinic/v1/sms/balance",
-        "clinic/v1/sms/logs",
-        "clinic/v1/sms/providers",
-        "clinic/v1/sms/settings",
-        "clinic/v1/sms/status",
-        "clinic/v1/sms/templates",
-        "clinic/v1/sms/templates/test",
-        "clinic/v1/sms/test-connection",
-        "clinic/v1/sms/test-send",
         "clinic/v1/staff/portal/reception/appointments",
         "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/cancel",
         "clinic/v1/staff/portal/reception/appointments/(?P<id>\\d+)/no-show",
@@ -219,7 +237,6 @@
         "clinic/v1/staff/portal/reception/slots",
         "clinic/v1/staff/portal/reception/upcoming",
         "clinic/v1/staff/portal/reception/walk-ins",
-        "clinic/v1/visits",
         "clinic/v1/visits/(?P<id>\\d+)",
         "clinic/v1/visits/(?P<id>\\d+)/checkout",
         "clinic/v1/visits/(?P<id>\\d+)/complete",
@@ -379,26 +396,20 @@
       "membership_id"
     ],
     "global": {
-      "actor_wp_user_id": "user_ids",
       "appointment_id": "appointment_ids",
-      "approved_by_wp_user_id": "user_ids",
       "background_attachment_id": "attachment_ids",
       "clinic_id": "clinic_ids",
       "clinician_id": "clinician_ids",
-      "created_by_wp_user_id": "user_ids",
       "document_id": "document_ids",
       "drug_ref_id": "drug_ref_ids",
       "exception_id": "exception_ids",
       "follow_up_id": "follow_up_ids",
       "hold_id": "hold_ids",
-      "holder_wp_user_id": "user_ids",
       "identity_id": "identity_ids",
-      "invited_by_wp_user_id": "user_ids",
       "invoice_id": "invoice_ids",
       "invoiced_invoice_id": "invoice_ids",
       "linked_appointment_id": "appointment_ids",
       "location_id": "location_ids",
-      "merged_by_wp_user_id": "user_ids",
       "merged_patient_id": "patient_ids",
       "note_id": "note_ids",
       "ocr_job_id": "ocr_job_ids",
@@ -407,24 +418,17 @@
       "patient_id": "patient_ids",
       "payment_id": "payment_ids",
       "prescription_id": "prescription_ids",
-      "recipient_wp_user_id": "user_ids",
-      "removed_by_wp_user_id": "user_ids",
       "rescheduled_from": "appointment_ids",
       "rescheduled_to": "appointment_ids",
       "role_def_id": "role_def_ids",
       "schedule_id": "schedule_ids",
-      "sender_wp_user_id": "user_ids",
       "service_id": "service_ids",
-      "set_by_wp_user_id": "user_ids",
       "slot_id": "slot_ids",
       "source_page_id": "page_ids",
-      "status_updated_by_wp_user_id": "user_ids",
       "surviving_patient_id": "patient_ids",
       "thread_id": "thread_ids",
       "token_id": "otp_token_ids",
-      "updated_by_wp_user_id": "user_ids",
-      "visit_id": "visit_ids",
-      "wp_user_id": "user_ids"
+      "visit_id": "visit_ids"
     },
     "per_table": {
       "cpms_membership_capabilities": {
@@ -437,6 +441,99 @@
         "membership_id": "org_membership_ids"
       }
     }
+  },
+  "ownership_rules": {
+    "composite_parent": {
+      "cpms_message_participants": "thread_id",
+      "cpms_visit_consultation_fees": "visit_id",
+      "cpms_visit_fee_snapshot_failures": "visit_id"
+    },
+    "foreign_dependency_code": "SCOPED_FOREIGN_DEPENDENCY",
+    "never_owned": {
+      "cpms_license_install": "install-level licence identity",
+      "cpms_license_state": "install-level licence runtime state",
+      "cpms_schema_migrations": "runner-owned migration bookkeeping"
+    },
+    "parent": {
+      "cpms_clinical_note_versions": "note_id",
+      "cpms_clinician_locations": "clinician_id",
+      "cpms_custom_role_capabilities": "role_def_id",
+      "cpms_handwriting_page_versions": "page_id",
+      "cpms_handwriting_pages": "document_id",
+      "cpms_invoice_items": "invoice_id",
+      "cpms_membership_capabilities": "membership_id",
+      "cpms_membership_locations": "membership_id",
+      "cpms_organization_membership_capabilities": "membership_id",
+      "cpms_payment_adjustments": "invoice_id",
+      "cpms_prescription_items": "prescription_id",
+      "cpms_visit_status_history": "visit_id"
+    },
+    "rule_priority": [
+      "never_owned",
+      "tenant",
+      "parent",
+      "composite_parent"
+    ],
+    "tenant": {
+      "cpms_appointments": "clinic_id",
+      "cpms_clinic_memberships": "clinic_id",
+      "cpms_clinical_notes": "clinic_id",
+      "cpms_clinicians": "clinic_id",
+      "cpms_custom_role_defs": "clinic_id",
+      "cpms_doctor_consultation_fees": "clinic_id",
+      "cpms_drug_reference": "clinic_id",
+      "cpms_follow_ups": "clinic_id",
+      "cpms_handwriting_documents": "clinic_id",
+      "cpms_idempotency_keys": "clinic_id",
+      "cpms_invoices": "clinic_id",
+      "cpms_medical_attachments": "clinic_id",
+      "cpms_message_threads": "clinic_id",
+      "cpms_messages": "clinic_id",
+      "cpms_notifications": "clinic_id",
+      "cpms_ocr_jobs": "clinic_id",
+      "cpms_organization_memberships": "organization_id",
+      "cpms_otp_tokens": "clinic_id",
+      "cpms_patient_identities": "organization_id",
+      "cpms_patient_identity_links": "organization_id",
+      "cpms_patient_merges": "clinic_id",
+      "cpms_patient_user_links": "clinic_id",
+      "cpms_patients": "clinic_id",
+      "cpms_payments": "clinic_id",
+      "cpms_prescriptions": "clinic_id",
+      "cpms_recommendations": "clinic_id",
+      "cpms_schedule": "clinic_id",
+      "cpms_schedule_exceptions": "clinic_id",
+      "cpms_schedule_slots": "clinic_id",
+      "cpms_services": "clinic_id",
+      "cpms_settings": "clinic_id",
+      "cpms_slot_holds": "clinic_id",
+      "cpms_sms_messages": "clinic_id",
+      "cpms_visit_charge_items": "clinic_id",
+      "cpms_visits": "clinic_id"
+    },
+    "unclassified_table_code": "OWNERSHIP_RULE_MISSING",
+    "user_reference_columns": [
+      "actor_wp_user_id",
+      "approved_by_wp_user_id",
+      "cancelled_by_wp_user_id",
+      "changed_by_wp_user_id",
+      "created_by_wp_user_id",
+      "holder_wp_user_id",
+      "invited_by_wp_user_id",
+      "issued_by_wp_user_id",
+      "merged_by_wp_user_id",
+      "received_by_wp_user_id",
+      "recipient_wp_user_id",
+      "removed_by_wp_user_id",
+      "reviewed_by_wp_user_id",
+      "sender_wp_user_id",
+      "set_by_wp_user_id",
+      "status_updated_by_wp_user_id",
+      "updated_by_wp_user_id",
+      "uploaded_by_wp_user_id",
+      "voided_by_wp_user_id",
+      "wp_user_id"
+    ]
   },
   "personas": {
     "declared": [
@@ -806,6 +903,30 @@
       "files": [
         "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
       ],
+      "forbids": [
+        "'wp_user_id' => 'user_ids'",
+        "'actor_wp_user_id' => 'user_ids'",
+        "'sender_wp_user_id' => 'user_ids'",
+        "WHERE (' . implode( ' OR ', $clauses ) . ') AND id > %d"
+      ],
+      "id": "tenant_boundary_never_user_reference",
+      "requires": [
+        "TENANT_OWNERSHIP",
+        "PARENT_OWNERSHIP",
+        "COMPOSITE_PARENT_COLUMN",
+        "USER_REFERENCE_COLUMNS",
+        "SCOPED_FOREIGN_DEPENDENCY",
+        "OWNERSHIP_RULE_MISSING",
+        "ownership_rule(",
+        "foreign_user_dependencies(",
+        "assert_user_not_foreign_dependent("
+      ],
+      "why": "The scoped teardown OR-connected every resolvable ownership column, so a post-baseline row of a FOREIGN Clinic that merely named a synthetic demo WordPress user was claimed as demo-owned. Its id entered the clinician/membership id-sets and the next collection pass used those ids to claim foreign visits, clinical records, invoices and payments, which were then deleted. Ownership is now one mandatory rule per table - the demo tenant boundary, or the declared parent of a tenant-less table - and a WordPress user id is only ever a dependency signal."
+    },
+    {
+      "files": [
+        "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+      ],
       "id": "composite_key_teardown",
       "requires": [
         "COMPOSITE_KEY_TABLES",
@@ -903,11 +1024,11 @@
         "slot_id": {
           "set": "slot_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -925,10 +1046,6 @@
       "foreign_keys": [],
       "inventory": "operational",
       "ownership_columns": {
-        "actor_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
@@ -937,6 +1054,10 @@
           "set": "patient_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "global_never"
       },
       "primary_key": [
         "id"
@@ -965,15 +1086,11 @@
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
-        },
-        "invited_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -995,6 +1112,10 @@
           "set": "note_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "note_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -1039,22 +1160,18 @@
           "set": "clinician_ids",
           "via": "global"
         },
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "patient_id": {
           "set": "patient_ids",
-          "via": "global"
-        },
-        "updated_by_wp_user_id": {
-          "set": "user_ids",
           "via": "global"
         },
         "visit_id": {
           "set": "visit_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1094,6 +1211,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinician_id",
+        "kind": "parent"
+      },
       "primary_key": [
         "id"
       ],
@@ -1120,11 +1241,11 @@
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1145,11 +1266,11 @@
         "organization_id": {
           "set": "org_ids",
           "via": "global"
-        },
-        "status_updated_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "preserved_anchor"
       },
       "primary_key": [
         "id"
@@ -1180,6 +1301,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "role_def_id",
+        "kind": "parent"
+      },
       "primary_key": [
         "id"
       ],
@@ -1208,6 +1333,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1235,11 +1364,11 @@
         "location_id": {
           "set": "location_ids",
           "via": "global"
-        },
-        "updated_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1261,6 +1390,10 @@
           "set": "clinic_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1312,6 +1445,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1352,6 +1489,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1379,6 +1520,10 @@
           "set": "page_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "page_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -1412,6 +1557,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "document_id",
+        "kind": "parent"
+      },
       "primary_key": [
         "id"
       ],
@@ -1431,11 +1580,11 @@
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1474,6 +1623,10 @@
           "set": "service_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "invoice_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -1517,6 +1670,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1533,6 +1690,9 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "dedicated_allowlist"
+      },
       "primary_key": [
         "id"
       ],
@@ -1550,6 +1710,10 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "install-level licence identity"
+      },
       "primary_key": [
         "id"
       ],
@@ -1567,6 +1731,10 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "install-level licence runtime state"
+      },
       "primary_key": [
         "id"
       ],
@@ -1595,6 +1763,10 @@
           "set": "clinic_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "preserved_anchor"
       },
       "primary_key": [
         "id"
@@ -1639,6 +1811,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1666,6 +1842,10 @@
           "set": "clinic_membership_ids",
           "via": "declared"
         }
+      },
+      "ownership_rule": {
+        "column": "membership_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -1705,6 +1885,10 @@
           "via": "declared"
         }
       },
+      "ownership_rule": {
+        "column": "membership_id",
+        "kind": "parent"
+      },
       "primary_key": [
         "id"
       ],
@@ -1725,11 +1909,11 @@
         "thread_id": {
           "set": "thread_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "thread_id",
+        "kind": "composite_parent"
       },
       "primary_key": [
         "thread_id",
@@ -1752,10 +1936,6 @@
           "set": "clinic_ids",
           "via": "global"
         },
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "location_id": {
           "set": "location_ids",
           "via": "global"
@@ -1772,6 +1952,10 @@
           "set": "visit_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1793,14 +1977,14 @@
           "set": "clinic_ids",
           "via": "global"
         },
-        "sender_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "thread_id": {
           "set": "thread_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1821,11 +2005,11 @@
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
-        },
-        "recipient_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1859,6 +2043,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -1875,6 +2063,9 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "dedicated_allowlist"
+      },
       "primary_key": [
         "id"
       ],
@@ -1899,14 +2090,14 @@
       ],
       "inventory": "operational",
       "ownership_columns": {
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "membership_id": {
           "set": "org_membership_ids",
           "via": "declared"
         }
+      },
+      "ownership_rule": {
+        "column": "membership_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -1931,18 +2122,14 @@
       ],
       "inventory": "operational",
       "ownership_columns": {
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "organization_id": {
           "set": "org_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "organization_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -1960,6 +2147,10 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "preserved_anchor"
+      },
       "primary_key": [
         "id"
       ],
@@ -1981,6 +2172,10 @@
           "set": "clinic_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2009,6 +2204,10 @@
           "set": "org_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "organization_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2046,11 +2245,11 @@
         "organization_id": {
           "set": "org_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "organization_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2072,10 +2271,6 @@
           "set": "clinic_ids",
           "via": "global"
         },
-        "merged_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "merged_patient_id": {
           "set": "patient_ids",
           "via": "global"
@@ -2084,6 +2279,10 @@
           "set": "patient_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2115,11 +2314,11 @@
         "patient_id": {
           "set": "patient_ids",
           "via": "global"
-        },
-        "wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2153,6 +2352,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2182,10 +2385,6 @@
       ],
       "inventory": "operational",
       "ownership_columns": {
-        "approved_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "invoice_id": {
           "set": "invoice_ids",
           "via": "global"
@@ -2194,6 +2393,10 @@
           "set": "payment_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "invoice_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -2230,6 +2433,10 @@
           "set": "patient_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2272,6 +2479,10 @@
           "set": "prescription_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "prescription_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -2319,6 +2530,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2336,6 +2551,9 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "dedicated_allowlist"
+      },
       "primary_key": [
         "window_key",
         "window_id"
@@ -2378,6 +2596,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2416,6 +2638,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2446,11 +2672,11 @@
         "clinician_id": {
           "set": "clinician_ids",
           "via": "global"
-        },
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2484,6 +2710,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2500,6 +2730,10 @@
       "foreign_keys": [],
       "inventory": "system",
       "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "runner-owned migration bookkeeping"
+      },
       "primary_key": [
         "version"
       ],
@@ -2529,6 +2763,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
+      },
       "primary_key": [
         "id"
       ],
@@ -2548,11 +2786,11 @@
         "clinic_id": {
           "set": "clinic_ids",
           "via": "global"
-        },
-        "updated_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2581,14 +2819,14 @@
           "set": "clinic_ids",
           "via": "global"
         },
-        "holder_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "slot_id": {
           "set": "slot_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2610,6 +2848,10 @@
           "set": "clinic_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2635,26 +2877,18 @@
           "set": "clinician_ids",
           "via": "global"
         },
-        "created_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "invoiced_invoice_id": {
           "set": "invoice_ids",
-          "via": "global"
-        },
-        "removed_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
-        "updated_by_wp_user_id": {
-          "set": "user_ids",
           "via": "global"
         },
         "visit_id": {
           "set": "visit_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"
@@ -2680,14 +2914,14 @@
           "set": "clinician_ids",
           "via": "global"
         },
-        "set_by_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "visit_id": {
           "set": "visit_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "visit_id",
+        "kind": "composite_parent"
       },
       "primary_key": [
         "visit_id"
@@ -2714,6 +2948,10 @@
           "via": "global"
         }
       },
+      "ownership_rule": {
+        "column": "visit_id",
+        "kind": "composite_parent"
+      },
       "primary_key": [
         "visit_id"
       ],
@@ -2730,14 +2968,14 @@
       "foreign_keys": [],
       "inventory": "operational",
       "ownership_columns": {
-        "actor_wp_user_id": {
-          "set": "user_ids",
-          "via": "global"
-        },
         "visit_id": {
           "set": "visit_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "visit_id",
+        "kind": "parent"
       },
       "primary_key": [
         "id"
@@ -2790,6 +3028,10 @@
           "set": "patient_ids",
           "via": "global"
         }
+      },
+      "ownership_rule": {
+        "column": "clinic_id",
+        "kind": "tenant"
       },
       "primary_key": [
         "id"

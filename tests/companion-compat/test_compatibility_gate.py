@@ -202,6 +202,49 @@ class GateBehaviour(unittest.TestCase):
         self.assertTrue(result["compatibility_complete"])
         self.assertEqual([], result["summary"]["demo_required_features_without_journeys"])
 
+    def test_unclaimed_patient_portal_route_is_a_gap(self) -> None:
+        """Demo-relevant detection is not limited to the staff portal.
+
+        Dropping the patient portal route from every feature must be reported as
+        a GAP, the same as a staff-portal route would be.
+        """
+
+        def mutate(manifest: dict) -> dict:
+            for feature in manifest.get("features") or []:
+                feature["routes"] = [
+                    route for route in feature.get("routes") or []
+                    if "patient/my-records" not in route
+                ]
+            return manifest
+
+        root = self._root_with_manifest(mutate)
+        result = evaluate.evaluate(root, gate="all")
+        self.assertFalse(result["ok"])
+        messages = " ".join(
+            finding["message"]
+            for finding in result["findings"]
+            if finding["severity"] == "gap" and finding["check"] == "feature_surface"
+        )
+        self.assertIn("patient/my-records", messages)
+
+    def test_unclaimed_booking_route_is_a_gap(self) -> None:
+        def mutate(manifest: dict) -> dict:
+            for feature in manifest.get("features") or []:
+                feature["routes"] = [
+                    route for route in feature.get("routes") or []
+                    if "booking/confirm" not in route
+                ]
+            return manifest
+
+        root = self._root_with_manifest(mutate)
+        result = evaluate.evaluate(root, gate="all")
+        messages = " ".join(
+            finding["message"]
+            for finding in result["findings"]
+            if finding["severity"] == "gap" and finding["check"] == "feature_surface"
+        )
+        self.assertIn("booking/confirm", messages)
+
     def test_entrypoint_exit_codes(self) -> None:
         self.assertEqual(0, evaluate.main(["--root", str(ROOT), "--gate", "compatibility", "--quiet"]))
         self.assertEqual(0, evaluate.main(["--root", str(ROOT), "--gate", "all", "--quiet"]))
@@ -300,6 +343,64 @@ class DetectorsStillFail(unittest.TestCase):
                 any(table in message for message in blocked),
                 f"{table} must be reported when its composite-key rule is missing",
             )
+
+    def test_actor_column_as_ownership_is_rejected(self) -> None:
+        """Defect H: a WordPress user id was accepted as proof of ownership.
+
+        This is the exact regression. Re-adding one actor column to the global
+        ownership map must fail the gate, because a foreign Clinic row can name
+        a synthetic demo account and would then be claimed and deleted.
+        """
+        state = cs.load(COMPANION)
+        state.scoped_column_map = dict(state.scoped_column_map)
+        state.scoped_column_map["actor_wp_user_id"] = "user_ids"
+        report = self._report()
+        evaluate.check_ownership_rule_agreement(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "ownership_rules" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(
+            any("actor_wp_user_id" in message for message in blocked),
+            f"an actor column mapped to user_ids must be a blocker, got {blocked}",
+        )
+
+    def test_actor_column_in_a_costume_table_rule_is_rejected(self) -> None:
+        """Defect H, second shape: per-table actor ownership."""
+        state = cs.load(COMPANION)
+        state.scoped_table_ownership = {
+            "cpms_clinicians": {"wp_user_id": "user_ids"},
+        }
+        report = self._report()
+        evaluate.check_ownership_rule_agreement(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "ownership_rules" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(any("cpms_clinicians.wp_user_id" in message for message in blocked), blocked)
+
+    def test_missing_tenant_boundary_is_rejected(self) -> None:
+        """A deletable table with no rule must fail closed, not be skipped."""
+        state = cs.load(COMPANION)
+        state.scoped_tenant_ownership = dict(state.scoped_tenant_ownership)
+        del state.scoped_tenant_ownership["cpms_clinicians"]
+        report = self._report()
+        evaluate.check_ownership_rule_agreement(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "ownership_rules" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(any("cpms_clinicians" in message for message in blocked), blocked)
+
+    def test_dropped_user_reference_column_is_rejected(self) -> None:
+        """The dependency scan surface must match the reviewed declaration."""
+        state = cs.load(COMPANION)
+        state.scoped_user_references = [
+            column for column in state.scoped_user_references if column != "issued_by_wp_user_id"
+        ]
+        report = self._report()
+        evaluate.check_ownership_rule_agreement(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "ownership_rules" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(any("issued_by_wp_user_id" in message for message in blocked), blocked)
 
     def test_undeclared_volatile_option_is_rejected(self) -> None:
         """Defect E: broad exemption of shared options hid unauthorised changes."""

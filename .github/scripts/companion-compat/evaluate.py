@@ -614,10 +614,13 @@ def check_features(root: Path, surface: pf.FeatureSurface, manifest: dict, repor
     for route in sorted(surface.route_paths()):
         if route in claimed:
             continue
-        # Only the demo-relevant staff-portal surface is required to be claimed;
-        # the rest is reported as informational so the manifest stays honest
-        # without demanding a journey for every administrative endpoint.
-        if any(part in route for part in ("/staff/portal/",)):
+        # Every demo-relevant surface - staff portal, patient portal, doctor and
+        # secretary management portals, public booking - must be claimed by a
+        # feature that names the journeys proving it. The rest is informational so
+        # the manifest stays honest without demanding a journey for every
+        # administrative endpoint.
+        prefixes = tuple(manifest.get("demo_relevant_route_prefixes") or ())
+        if any(part in route for part in prefixes):
             report.add(
                 "feature_surface",
                 GAP,
@@ -742,6 +745,216 @@ def check_ownership_map_agreement(state: cs.CompanionState, manifest: dict, repo
                 )
 
 
+TENANT_COLUMNS = ("clinic_id", "organization_id")
+
+
+def check_ownership_rule_agreement(
+    schema: ps.ProductionSchema, state: cs.CompanionState, manifest: dict, report: Report
+) -> None:
+    """The teardown's declarative ownership rules must match the reviewed manifest.
+
+    This is the anti-regression check for the foreign-tenant leak. The defect was
+    not a missing rule; it was a rule SET that accepted any resolvable column,
+    including WordPress actor columns, as proof of ownership. Those columns can
+    never be equal to an id-set here, and every deletable table must have exactly
+    one reviewed reason to be deleted.
+    """
+    rules = manifest.get("ownership_rules") or {}
+    if not rules:
+        report.add(
+            "ownership_rules",
+            BLOCKER,
+            "the manifest declares no `ownership_rules` block",
+            "the reviewed rule set is the evidence that ownership is not inferred from user ids",
+        )
+        return
+
+    pairs = (
+        ("tenant", state.scoped_tenant_ownership),
+        ("parent", state.scoped_parent_ownership),
+        ("composite_parent", state.scoped_composite_parent),
+    )
+    for key, companion_map in pairs:
+        declared = {str(k): str(v) for k, v in (rules.get(key) or {}).items()}
+        for name in sorted(set(declared) - set(companion_map)):
+            report.add(
+                "ownership_rules",
+                BLOCKER,
+                f"manifest declares {key} ownership for `{name}` but the companion has no such rule",
+                "a declared rule that the teardown does not implement is overstated coverage",
+            )
+        for name, column in sorted(companion_map.items()):
+            expected = declared.get(name)
+            if expected is None:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"the companion resolves {key} ownership for `{name}` via `{column}` "
+                    "but the manifest does not declare it",
+                )
+            elif expected != column:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"`{name}` {key} column: companion `{column}` vs manifest `{expected}`",
+                )
+
+    declared_never = {str(k): str(v) for k, v in (rules.get("never_owned") or {}).items()}
+    companion_never = dict(state.scoped_never_owned)
+    for name in sorted(set(declared_never) ^ set(companion_never)):
+        report.add(
+            "ownership_rules",
+            BLOCKER,
+            f"`{name}` is declared never-owned on only one side",
+            "an unowned table on one side and deletable on the other is a data-loss shape",
+        )
+    for name in sorted(set(declared_never) & set(companion_never)):
+        if not declared_never[name].strip():
+            report.add("ownership_rules", BLOCKER, f"never-owned table `{name}` has no reason")
+    for name in sorted(set(companion_never) & set(state.delete_order)):
+        report.add(
+            "ownership_rules",
+            BLOCKER,
+            f"`{name}` is declared never-owned but appears in DELETE_ORDER",
+            "a never-owned table must not be deletable",
+        )
+
+    # --- WordPress user columns are actor references, never ownership -------
+    declared_users = {str(c) for c in (rules.get("user_reference_columns") or [])}
+    companion_users = set(state.scoped_user_references)
+    for column in sorted(declared_users ^ companion_users):
+        report.add(
+            "ownership_rules",
+            BLOCKER,
+            f"user-reference column `{column}` is declared on only one side",
+            "the dependency scan and the manifest must agree on the actor surface",
+        )
+    for column in sorted(companion_users):
+        if column not in state.scoped_column_map:
+            continue
+        report.add(
+            "ownership_rules",
+            BLOCKER,
+            f"WordPress actor column `{column}` resolves to ownership set "
+            f"`{state.scoped_column_map[column]}`",
+            "a user id can never prove that a row belongs to the fixture",
+        )
+    for table, columns in sorted(state.scoped_table_ownership.items()):
+        for column, set_name in sorted(columns.items()):
+            if column in companion_users:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"`{table}.{column}` maps to ownership set `{set_name}`",
+                    "a user id can never prove that a row belongs to the fixture",
+                )
+    for column, set_name in sorted((manifest.get("ownership_columns") or {}).get("global", {}).items()):
+        if column in declared_users:
+            report.add(
+                "ownership_rules",
+                BLOCKER,
+                f"manifest maps actor column `{column}` to `{set_name}` as global ownership",
+            )
+
+    # --- exactly one mandatory rule per deletable table ---------------------
+    live = schema.live_tables()
+    deletable = set(state.delete_order) - set(state.scoped_constants.get("GLOBAL_TABLES", []))
+    deletable -= set(state.scoped_constants.get("PRESERVED_PARENT_TABLES", []))
+    for name in sorted(deletable & live):
+        hits = [
+            key
+            for key, source in (
+                ("tenant", state.scoped_tenant_ownership),
+                ("parent", state.scoped_parent_ownership),
+                ("composite_parent", state.scoped_composite_parent),
+            )
+            if name in source
+        ]
+        if len(hits) != 1:
+            report.add(
+                "ownership_rules",
+                BLOCKER,
+                f"`{name}` has {len(hits)} ownership rules ({', '.join(hits) or 'none'})",
+                "exactly one mandatory rule keeps ownership fail-closed and auditable",
+            )
+    for name, column in sorted(state.scoped_tenant_ownership.items()):
+        table = schema.tables.get(name)
+        if table is None:
+            report.add("ownership_rules", BLOCKER, f"tenant rule names unknown table `{name}`")
+            continue
+        if column not in TENANT_COLUMNS:
+            report.add(
+                "ownership_rules",
+                BLOCKER,
+                f"`{name}` declares tenant column `{column}`",
+                "only clinic_id / organization_id are tenant boundaries",
+            )
+        if column not in table.column_set():
+            report.add("ownership_rules", BLOCKER, f"`{name}` has no `{column}` column")
+    for key, source in (
+        ("parent", state.scoped_parent_ownership),
+        ("composite_parent", state.scoped_composite_parent),
+    ):
+        for name, column in sorted(source.items()):
+            table = schema.tables.get(name)
+            if table is None:
+                report.add("ownership_rules", BLOCKER, f"{key} rule names unknown table `{name}`")
+                continue
+            if column not in table.column_set():
+                report.add("ownership_rules", BLOCKER, f"`{name}` has no `{column}` column")
+            if name in state.scoped_tenant_ownership:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"`{name}` declares both a tenant and a {key} rule",
+                )
+    for name in sorted(state.scoped_tenant_ownership):
+        table = schema.tables.get(name)
+        if table is None:
+            continue
+        for column in sorted(set(state.scoped_user_references) & table.column_set()):
+            report.add(
+                "ownership_rules",
+                INFO,
+                f"`{name}.{column}` is scanned as a foreign dependency",
+                "a surviving row that names a synthetic user blocks the teardown",
+            )
+
+    # --- the manifest's per-table rule must agree with the maps ------------
+    per_table = {
+        "tenant": state.scoped_tenant_ownership,
+        "parent": state.scoped_parent_ownership,
+        "composite_parent": state.scoped_composite_parent,
+    }
+    for name, entry in sorted((manifest.get("tables") or {}).items()):
+        rule = entry.get("ownership_rule") or {}
+        kind = str(rule.get("kind") or "")
+        if not kind:
+            report.add("ownership_rules", BLOCKER, f"`{name}` has no declared ownership_rule")
+            continue
+        if kind in per_table:
+            expected_column = per_table[kind].get(name)
+            if expected_column is None:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"`{name}` declares a {kind} rule that the companion does not implement",
+                )
+            elif str(rule.get("column") or "") != expected_column:
+                report.add(
+                    "ownership_rules",
+                    BLOCKER,
+                    f"`{name}` rule column `{rule.get('column')}` vs declared `{expected_column}`",
+                )
+        elif kind == "unclassified":
+            report.add(
+                "ownership_rules",
+                BLOCKER,
+                f"`{name}` is unclassified",
+                "an unclassified table may be deleted without a reviewed reason",
+            )
+
+
 def check_safety_invariants(root: Path, manifest: dict, report: Report) -> None:
     for invariant in manifest.get("safety_invariants") or []:
         invariant_id = str(invariant.get("id", ""))
@@ -860,6 +1073,7 @@ def evaluate(root: Path, gate: str = "all") -> Dict[str, object]:
     check_features(root, surface, manifest, report)
     check_stale_workflow_pins(schema, manifest, report, root)
     check_ownership_map_agreement(state, manifest, report)
+    check_ownership_rule_agreement(schema, state, manifest, report)
     check_volatile_options(state, manifest, report)
     check_safety_invariants(root, manifest, report)
     check_personas(state, manifest, report)

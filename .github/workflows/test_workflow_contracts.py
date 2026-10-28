@@ -191,6 +191,51 @@ class CompanionIsolationTests(unittest.TestCase):
         result = self._run(["docs/demo-setup-fa.md"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_compatibility_automation_counts_as_the_lane_side(self):
+        """A gate that is rewritten together with production proves nothing.
+
+        The companion-compat scripts, the scoped-demo tests and the lane
+        workflows are executable evidence about the same boundary, so they are
+        classified rather than silently ignored.
+        """
+        for path in (
+            ".github/scripts/companion-compat/evaluate.py",
+            "tests/companion-compat/test_compatibility_gate.py",
+            "tests/scoped-demo/test_scoped_safety_regressions.py",
+            "tests/disposable-site/test_x.py",
+        ):
+            result = self._run([path, "clinic-practice-management/src/Bootstrap/App.php"])
+            self.assertEqual(result.returncode, 1, path + ": " + result.stdout)
+            self.assertIn("mixed change", result.stdout)
+
+    def test_compatibility_automation_alone_is_allowed(self):
+        result = self._run([
+            ".github/scripts/companion-compat/evaluate.py",
+            "tests/scoped-demo/test_scoped_safety_regressions.py",
+        ])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("compatibility files: 2", result.stdout)
+
+    def test_lane_workflows_are_classified(self):
+        result = self._run([".github/workflows/scoped-demo.yml", ".github/workflows/companion-compat.yml"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("lane files: 2", result.stdout)
+
+    def test_scoped_demo_documentation_is_classified(self):
+        result = self._run(["docs/scoped-demo/ownership-map.md"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("documentation files: 1", result.stdout)
+
+    def test_unclassified_lane_file_fails_closed(self):
+        result = self._run(["tools/some-new-lane-tool.sh"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("unclassified lane file", result.stdout)
+        mixed = self._run([
+            "tools/some-new-lane-tool.sh",
+            "clinic-practice-management/src/Bootstrap/App.php",
+        ])
+        self.assertEqual(mixed.returncode, 1, mixed.stdout + mixed.stderr)
+
     def test_persian_wc_diagnosis_is_named_and_acceptance_requires_stage_b(self):
         text = workflow("persian-coexistence.yml")
         self.assertIn(

@@ -46,6 +46,16 @@ class ScopedTeardown {
 	 * Each name below resolves to exactly one foreign-key parent, so a single
 	 * rule is safe for every table that carries it.
 	 *
+	 * EVERY WordPress-user column is deliberately ABSENT, and that is the Iran V1
+	 * fix: a synthetic user id is an ACTOR reference, never proof that the row
+	 * belongs to the fixture. Post-baseline a real administrator can enroll a
+	 * synthetic account as a clinician/member of a FOREIGN Clinic, and an
+	 * OR-connected ownership predicate then claimed that foreign row, fed its id
+	 * into the clinician/membership sets, and transitively deleted unrelated
+	 * foreign appointments, visits, invoices, payments and clinical records.
+	 * User references are now used ONLY to detect foreign dependencies
+	 * (USER_REFERENCE_COLUMNS) and to refuse the teardown.
+	 *
 	 * `membership_id` is deliberately ABSENT. It names two different parents
 	 * (`cpms_clinic_memberships` and `cpms_organization_memberships`), so one
 	 * global rule let a clinic-membership id select foreign organization
@@ -56,26 +66,20 @@ class ScopedTeardown {
 	 * @var array<string,string>
 	 */
 	private const OWNERSHIP_COLUMNS = array(
-		'actor_wp_user_id' => 'user_ids',
 		'appointment_id' => 'appointment_ids',
-		'approved_by_wp_user_id' => 'user_ids',
 		'background_attachment_id' => 'attachment_ids',
 		'clinic_id' => 'clinic_ids',
 		'clinician_id' => 'clinician_ids',
-		'created_by_wp_user_id' => 'user_ids',
 		'document_id' => 'document_ids',
 		'drug_ref_id' => 'drug_ref_ids',
 		'exception_id' => 'exception_ids',
 		'follow_up_id' => 'follow_up_ids',
 		'hold_id' => 'hold_ids',
-		'holder_wp_user_id' => 'user_ids',
 		'identity_id' => 'identity_ids',
-		'invited_by_wp_user_id' => 'user_ids',
 		'invoice_id' => 'invoice_ids',
 		'invoiced_invoice_id' => 'invoice_ids',
 		'linked_appointment_id' => 'appointment_ids',
 		'location_id' => 'location_ids',
-		'merged_by_wp_user_id' => 'user_ids',
 		'merged_patient_id' => 'patient_ids',
 		'note_id' => 'note_ids',
 		'ocr_job_id' => 'ocr_job_ids',
@@ -84,24 +88,17 @@ class ScopedTeardown {
 		'patient_id' => 'patient_ids',
 		'payment_id' => 'payment_ids',
 		'prescription_id' => 'prescription_ids',
-		'recipient_wp_user_id' => 'user_ids',
-		'removed_by_wp_user_id' => 'user_ids',
 		'rescheduled_from' => 'appointment_ids',
 		'rescheduled_to' => 'appointment_ids',
 		'role_def_id' => 'role_def_ids',
 		'schedule_id' => 'schedule_ids',
-		'sender_wp_user_id' => 'user_ids',
 		'service_id' => 'service_ids',
-		'set_by_wp_user_id' => 'user_ids',
 		'slot_id' => 'slot_ids',
 		'source_page_id' => 'page_ids',
-		'status_updated_by_wp_user_id' => 'user_ids',
 		'surviving_patient_id' => 'patient_ids',
 		'thread_id' => 'thread_ids',
 		'token_id' => 'otp_token_ids',
-		'updated_by_wp_user_id' => 'user_ids',
 		'visit_id' => 'visit_ids',
-		'wp_user_id' => 'user_ids',
 	);
 
 	/**
@@ -132,6 +129,153 @@ class ScopedTeardown {
 	private const TABLE_OWNERSHIP_ONLY = array(
 		'cpms_patient_user_links'     => array( 'clinic_id', 'patient_id' ),
 		'cpms_patient_identity_links' => array( 'organization_id', 'identity_id' ),
+	);
+
+
+	/**
+	 * MANDATORY tenant boundary per deletable table.
+	 *
+	 * A row of one of these tables belongs to the fixture only when its tenant
+	 * column equals the demo Clinic/Organization. This is the whole rule: no
+	 * OR-alternative, no parent id, and above all no WordPress-user reference
+	 * can widen it. Because the demo tenant is created by provisioning, every
+	 * row inside it is fixture-created; a row in ANY other tenant is never ours,
+	 * whatever ids it happens to reference.
+	 *
+	 * Clinic-scoped tables come first (the demo Clinic is the boundary), then the
+	 * organization-scoped tables that have no clinic_id. The classification is
+	 * explicit and complete on purpose. A production table
+	 * that gains a tenant column without being listed here fails the teardown
+	 * closed (OWNERSHIP_RULE_MISSING) instead of being silently ignored.
+	 *
+	 * @var array<string,string>
+	 */
+	private const TENANT_OWNERSHIP = array(
+		'cpms_appointments' => 'clinic_id',
+		'cpms_clinic_memberships' => 'clinic_id',
+		'cpms_clinical_notes' => 'clinic_id',
+		'cpms_clinicians' => 'clinic_id',
+		'cpms_custom_role_defs' => 'clinic_id',
+		'cpms_doctor_consultation_fees' => 'clinic_id',
+		'cpms_drug_reference' => 'clinic_id',
+		'cpms_follow_ups' => 'clinic_id',
+		'cpms_handwriting_documents' => 'clinic_id',
+		'cpms_idempotency_keys' => 'clinic_id',
+		'cpms_invoices' => 'clinic_id',
+		'cpms_medical_attachments' => 'clinic_id',
+		'cpms_message_threads' => 'clinic_id',
+		'cpms_messages' => 'clinic_id',
+		'cpms_notifications' => 'clinic_id',
+		'cpms_ocr_jobs' => 'clinic_id',
+		'cpms_otp_tokens' => 'clinic_id',
+		'cpms_patient_merges' => 'clinic_id',
+		'cpms_patient_user_links' => 'clinic_id',
+		'cpms_patients' => 'clinic_id',
+		'cpms_payments' => 'clinic_id',
+		'cpms_prescriptions' => 'clinic_id',
+		'cpms_recommendations' => 'clinic_id',
+		'cpms_schedule' => 'clinic_id',
+		'cpms_schedule_exceptions' => 'clinic_id',
+		'cpms_schedule_slots' => 'clinic_id',
+		'cpms_services' => 'clinic_id',
+		'cpms_settings' => 'clinic_id',
+		'cpms_slot_holds' => 'clinic_id',
+		'cpms_sms_messages' => 'clinic_id',
+		'cpms_visit_charge_items' => 'clinic_id',
+		'cpms_visits' => 'clinic_id',
+		'cpms_organization_memberships' => 'organization_id',
+		'cpms_patient_identities' => 'organization_id',
+		'cpms_patient_identity_links' => 'organization_id',
+	);
+
+	/**
+	 * Parent-based ownership for tenant-less tables.
+	 *
+	 * These tables carry no clinic_id/organization_id, so ownership is proven by
+	 * their DECLARED parent key only, and that parent must itself have been
+	 * proven owned inside the demo tenant. The value is the parent column; the
+	 * id-set is resolved from the column maps above, so the two can never drift.
+	 * Any other column of the table (including every WordPress-user reference) is
+	 * ignored for ownership.
+	 *
+	 * @var array<string,string>
+	 */
+	private const PARENT_OWNERSHIP = array(
+		'cpms_clinical_note_versions' => 'note_id',
+		'cpms_clinician_locations' => 'clinician_id',
+		'cpms_custom_role_capabilities' => 'role_def_id',
+		'cpms_handwriting_page_versions' => 'page_id',
+		'cpms_handwriting_pages' => 'document_id',
+		'cpms_invoice_items' => 'invoice_id',
+		'cpms_membership_capabilities' => 'membership_id',
+		'cpms_membership_locations' => 'membership_id',
+		'cpms_organization_membership_capabilities' => 'membership_id',
+		'cpms_payment_adjustments' => 'invoice_id',
+		'cpms_prescription_items' => 'prescription_id',
+		'cpms_visit_status_history' => 'visit_id',
+	);
+
+	/**
+	 * The parent key of each composite-key table (no surrogate `id`).
+	 *
+	 * Attendance/consultation rows are owned when their THREAD/VISIT is owned.
+	 * `cpms_message_participants.wp_user_id` is a participant reference, not
+	 * ownership: a foreign thread that merely names a synthetic user must never
+	 * be selected, which is exactly what the previous OR-predicate did.
+	 *
+	 * @var array<string,string>
+	 */
+	private const COMPOSITE_PARENT_COLUMN = array(
+		'cpms_message_participants' => 'thread_id',
+		'cpms_visit_consultation_fees' => 'visit_id',
+		'cpms_visit_fee_snapshot_failures' => 'visit_id',
+	);
+
+	/**
+	 * Every column that stores a WordPress user id.
+	 *
+	 * These are ACTOR/PARTICIPANT references. They never prove ownership; they
+	 * are the dependency surface scanned before a synthetic user is deleted, so
+	 * a foreign tenant that references a demo account fails the teardown closed
+	 * (SCOPED_FOREIGN_DEPENDENCY) instead of losing the user underneath it.
+	 *
+	 * @var list<string>
+	 */
+	private const USER_REFERENCE_COLUMNS = array(
+		'actor_wp_user_id',
+		'approved_by_wp_user_id',
+		'cancelled_by_wp_user_id',
+		'changed_by_wp_user_id',
+		'created_by_wp_user_id',
+		'holder_wp_user_id',
+		'invited_by_wp_user_id',
+		'issued_by_wp_user_id',
+		'merged_by_wp_user_id',
+		'received_by_wp_user_id',
+		'recipient_wp_user_id',
+		'removed_by_wp_user_id',
+		'reviewed_by_wp_user_id',
+		'sender_wp_user_id',
+		'set_by_wp_user_id',
+		'status_updated_by_wp_user_id',
+		'updated_by_wp_user_id',
+		'uploaded_by_wp_user_id',
+		'voided_by_wp_user_id',
+		'wp_user_id',
+	);
+
+	/**
+	 * Tables that must never be claimed or deleted, with the reason.
+	 *
+	 * License bookkeeping is install-level and migration bookkeeping is written
+	 * by MigrationRunner; none of it is tenant data, so none of it can be owned.
+	 *
+	 * @var array<string,string>
+	 */
+	private const NEVER_OWNED_TABLES = array(
+		'cpms_license_install'   => 'install-level licence identity',
+		'cpms_license_state'     => 'install-level licence runtime state',
+		'cpms_schema_migrations' => 'runner-owned migration bookkeeping',
 	);
 
 	/**
@@ -208,6 +352,17 @@ class ScopedTeardown {
 	/** @var ScopedBaseline */
 	private ScopedBaseline $baseline;
 
+	/**
+	 * Id-sets proven owned during the CURRENT collection pass.
+	 *
+	 * Parent-based rules read from here and nowhere else: they see only ids that
+	 * a tenant boundary already proved, so no foreign id can be laundered into a
+	 * transitive set.
+	 *
+	 * @var array<string,list<int>>
+	 */
+	private array $current_sets = array();
+
 	public function __construct( Env $env, Platform $platform, ScopedManifest $manifest, ScopedAuditGuard $audit_guard, ScopedBaseline $baseline ) {
 		$this->env         = $env;
 		$this->platform    = $platform;
@@ -278,6 +433,9 @@ class ScopedTeardown {
 
 		$owned_tables    = array();
 		$owned_composite = array();
+		// Alias, not copy: parent-based rules must see ids collected a moment ago
+		// in the SAME pass, and the alias keeps the view live.
+		$this->current_sets = &$sets;
 		for ( $pass = 0; $pass < 7; $pass++ ) {
 			$changed = false;
 			foreach ( Preflight::KNOWN_TABLES as $short ) {
@@ -301,40 +459,23 @@ class ScopedTeardown {
 				if ( ! in_array( 'id', $cols, true ) ) {
 					continue;
 				}
-				$clauses = array();
-				$params  = array();
-				foreach ( $cols as $column ) {
-					$set_key = $this->resolve_ownership_set( $short, (string) $column );
-					if ( '' === $set_key || array() === ( $sets[ $set_key ] ?? array() ) ) {
-						continue;
-					}
-					$values = array_values( array_unique( array_filter( array_map( 'intval', $sets[ $set_key ] ) ) ) );
-					if ( array() === $values ) {
-						continue;
-					}
-					$ph         = implode( ',', array_fill( 0, count( $values ), '%d' ) );
-					$clauses[]  = '`' . $column . '` IN (' . $ph . ')';
-					$params     = array_merge( $params, $values );
-				}
-				if ( 'cpms_organizations' === $short && $org_id > 1 ) {
-					$clauses[] = 'id = %d';
-					$params[]  = $org_id;
-				}
-				if ( 'cpms_clinics' === $short && $clinic_id > 1 ) {
-					$clauses[] = 'id = %d';
-					$params[]  = $clinic_id;
-				}
-				if ( 'cpms_locations' === $short && array() !== $locations ) {
-					$ph        = implode( ',', array_fill( 0, count( $locations ), '%d' ) );
-					$clauses[] = 'id IN (' . $ph . ')';
-					$params    = array_merge( $params, $locations );
-				}
-				if ( array() === $clauses ) {
+				// FAIL-CLOSED OWNERSHIP: exactly ONE mandatory rule per table.
+				//
+				// The previous version OR-ed every resolvable column of the row, so a
+				// post-baseline FOREIGN-clinic row that merely named a synthetic
+				// WordPress user was claimed as demo-owned. Its id then entered the
+				// clinician/membership id-sets, and the next pass used those ids to
+				// claim foreign visits, appointments, invoices, payments and clinical
+				// records. Ownership is now a tenant boundary (or the declared parent
+				// of a tenant-less table); user ids are never ownership.
+				$rule = $this->ownership_rule( $short, $cols, $clinic_id, $org_id );
+				if ( null === $rule ) {
 					continue;
 				}
-				$max    = (int) ( $baseline_max[ $short ] ?? 0 );
+				$max      = (int) ( $baseline_max[ $short ] ?? 0 );
+				$params   = $rule['params'];
 				$params[] = $max;
-				$sql = 'SELECT id FROM `' . $full . '` WHERE (' . implode( ' OR ', $clauses ) . ') AND id > %d ORDER BY id ASC';
+				$sql = 'SELECT id FROM `' . $full . '` WHERE (' . $rule['sql'] . ') AND id > %d ORDER BY id ASC';
 				$rows = $this->platform->fetch_all( $sql, $params );
 				foreach ( $rows as $row ) {
 					$row_id = (int) ( $row['id'] ?? 0 );
@@ -457,20 +598,95 @@ class ScopedTeardown {
 	}
 
 	/**
-	 * Which id-set proves ownership of one column of one table.
+	 * The ONE mandatory ownership rule of a table, or null (never owned).
 	 *
-	 * Resolution order matters and is the fix for the membership-id defect:
-	 *   1. TABLE_OWNERSHIP_ONLY restricts the table to its tenant columns, so a
-	 *      foreign row that merely references a synthetic user is never claimed;
-	 *   2. TABLE_OWNERSHIP_COLUMNS resolves a column name that is ambiguous
-	 *      schema-wide by looking at the table that carries it;
-	 *   3. OWNERSHIP_COLUMNS applies only to names with exactly one FK parent.
+	 * Resolution order is a safety property:
+	 *   1. the three audit anchors are owned by their own id;
+	 *   2. a table with a tenant column is owned ONLY inside the demo tenant —
+	 *      this is the boundary that stops foreign-tenant rows from being claimed
+	 *      through a synthetic-user or parent reference;
+	 *   3. a tenant-less table is owned ONLY by its declared parent key, and that
+	 *      parent set is itself tenant-derived;
+	 *   4. anything else is not owned. Never a WordPress-user reference.
+	 *
+	 * @param string        $short     Short table name.
+	 * @param list<string>  $cols      Table columns.
+	 * @param int           $clinic_id Demo Clinic.
+	 * @param int           $org_id    Demo Organization.
+	 * @return array{sql:string,params:list<int>}|null
+	 */
+	private function ownership_rule( string $short, array $cols, int $clinic_id, int $org_id ): ?array {
+		if ( 'cpms_clinics' === $short ) {
+			// Bootstrap Clinic 1 is never owned, whatever the manifest claims.
+			return $clinic_id > 1 ? array( 'sql' => 'id = %d', 'params' => array( $clinic_id ) ) : null;
+		}
+		if ( 'cpms_organizations' === $short ) {
+			return $org_id > 1 ? array( 'sql' => 'id = %d', 'params' => array( $org_id ) ) : null;
+		}
+
+		$tenant_column = self::TENANT_OWNERSHIP[ $short ] ?? '';
+		if ( '' !== $tenant_column ) {
+			if ( ! in_array( $tenant_column, $cols, true ) ) {
+				// The declared tenant column is gone: the rule cannot be proven.
+				return null;
+			}
+			$tenant_id = 'organization_id' === $tenant_column ? $org_id : $clinic_id;
+			if ( $tenant_id <= 1 ) {
+				// Tenant 1 is the pre-existing bootstrap tenant, never demo-owned.
+				return null;
+			}
+
+			return array( 'sql' => '`' . $tenant_column . '` = %d', 'params' => array( $tenant_id ) );
+		}
+
+		$parent_column = self::PARENT_OWNERSHIP[ $short ] ?? '';
+		if ( '' !== $parent_column ) {
+			return $this->parent_rule( $short, $parent_column, $cols );
+		}
+
+		return null;
+	}
+
+	/**
+	 * Ownership of a tenant-less table: its declared parent key must be owned.
+	 *
+	 * The parent id-set is resolved from the same column maps the manifest
+	 * declares, so a table can never be pointed at the wrong namespace, and a
+	 * WordPress-user column can never resolve to a set (those are removed from
+	 * the maps entirely).
+	 *
+	 * @param string       $short  Short table name.
+	 * @param string       $column Declared parent column.
+	 * @param list<string> $cols   Table columns.
+	 * @return array{sql:string,params:list<int>}|null
+	 */
+	private function parent_rule( string $short, string $column, array $cols, ?array $sets = null ): ?array {
+		if ( ! in_array( $column, $cols, true ) ) {
+			return null;
+		}
+		$set_key = $this->declared_set( $short, $column );
+		if ( '' === $set_key || 'user_ids' === $set_key ) {
+			return null;
+		}
+		$ids = $this->owned_parent_ids( $set_key, $sets );
+		if ( array() === $ids ) {
+			return null;
+		}
+
+		return array(
+			'sql'    => '`' . $column . '` IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ')',
+			'params' => $ids,
+		);
+	}
+
+	/**
+	 * The id-set a column of a table feeds, from the declared maps only.
 	 *
 	 * @param string $short  Short table name.
-	 * @param string $column Column name.
-	 * @return string Id-set name, or '' when the column proves nothing.
+	 * @param string $column Column.
+	 * @return string
 	 */
-	private function resolve_ownership_set( string $short, string $column ): string {
+	private function declared_set( string $short, string $column ): string {
 		$only = self::TABLE_OWNERSHIP_ONLY[ $short ] ?? array();
 		if ( array() !== $only && ! in_array( $column, $only, true ) ) {
 			return '';
@@ -484,11 +700,181 @@ class ScopedTeardown {
 	}
 
 	/**
+	 * Parent ids proven owned so far (tenant-derived, never user-derived).
+	 *
+	 * @param string $set_key Id-set name.
+	 * @return list<int>
+	 */
+	private function owned_parent_ids( string $set_key, ?array $sets = null ): array {
+		$values = (array) ( ( $sets ?? $this->current_sets )[ $set_key ] ?? array() );
+
+		return array_values( array_unique( array_filter( array_map( 'intval', $values ) ) ) );
+	}
+
+	/**
+	 * Fail-closed classification gate: every existing table must have an
+	 * explicit, reviewable ownership rule (or be explicitly never-owned).
+	 *
+	 * This is what makes the new rule set self-defending. If production adds a
+	 * tenant column to a table that this class does not classify, the teardown
+	 * refuses (OWNERSHIP_RULE_MISSING) instead of silently ignoring rows it
+	 * cannot prove - and silently ignoring is how residue appears.
+	 *
+	 * @return list<string>
+	 */
+	public function ownership_rule_problems(): array {
+		$problems = array();
+		foreach ( Preflight::KNOWN_TABLES as $short ) {
+			if ( in_array( $short, self::GLOBAL_TABLES, true ) ) {
+				continue;
+			}
+			if ( isset( self::NEVER_OWNED_TABLES[ $short ] ) ) {
+				continue;
+			}
+			if ( ! $this->platform->table_exists( $short ) ) {
+				continue;
+			}
+			$cols = $this->platform->columns( $this->platform->table( $short ) );
+			$classified = isset( self::TENANT_OWNERSHIP[ $short ] )
+				|| isset( self::PARENT_OWNERSHIP[ $short ] )
+				|| isset( self::COMPOSITE_PARENT_COLUMN[ $short ] )
+				|| in_array( $short, self::PRESERVED_PARENT_TABLES, true );
+			if ( ! $classified ) {
+				$problems[] = 'OWNERSHIP_RULE_MISSING:' . $short;
+				continue;
+			}
+			$tenant_column = self::TENANT_OWNERSHIP[ $short ] ?? '';
+			if ( '' !== $tenant_column && ! in_array( $tenant_column, $cols, true ) ) {
+				$problems[] = 'OWNERSHIP_RULE_STALE:' . $short;
+				continue;
+			}
+			$parent_column = self::PARENT_OWNERSHIP[ $short ] ?? self::COMPOSITE_PARENT_COLUMN[ $short ] ?? '';
+			if ( '' !== $parent_column && ! in_array( $parent_column, $cols, true ) ) {
+				$problems[] = 'OWNERSHIP_RULE_STALE:' . $short;
+			}
+		}
+
+		return $problems;
+	}
+
+	/**
+	 * Foreign-tenant rows that depend on a synthetic WordPress user.
+	 *
+	 * A synthetic account is deleted at the end of a teardown. If a row that the
+	 * fixture does NOT own still references it - a clinician/membership row in a
+	 * real Clinic, an invoice issued_by, a note created_by, a participant row of
+	 * a real thread - deleting the account would silently break that tenant's
+	 * history. The teardown therefore refuses with SCOPED_FOREIGN_DEPENDENCY.
+	 *
+	 * @param array<string,mixed> $scope       Ownership scope (proven-owned rows).
+	 * @param int                 $only_user   Restrict to one synthetic user (0 = all).
+	 * @param bool                $live_only   True when every surviving reference is foreign
+	 *                                         (used after the fixture rows are already gone).
+	 * @return list<string> Human-readable `table.column=user` descriptors.
+	 */
+	private function foreign_user_dependencies( array $scope, int $only_user = 0, bool $live_only = false ): array {
+		$user_ids = (array) ( $scope['user_ids'] ?? array() );
+		if ( $only_user > 0 ) {
+			$user_ids = array( $only_user );
+		}
+		$user_ids = array_values( array_unique( array_filter( array_map( 'intval', $user_ids ) ) ) );
+		if ( array() === $user_ids ) {
+			return array();
+		}
+
+		$clinic_id = (int) ( $scope['clinic_id'] ?? 0 );
+		$found     = array();
+		foreach ( Preflight::KNOWN_TABLES as $short ) {
+			if ( ! $this->platform->table_exists( $short ) ) {
+				continue;
+			}
+			// The append-only audit log is never deleted (it is preserved by
+			// contract) and it has no foreign key to wp_users, so a historical actor
+			// reference there is evidence, not a dependency: deleting the account
+			// cannot damage it. Scanning it would permanently block a teardown that
+			// has nothing left to remove.
+			if ( 'cpms_audit_logs' === $short ) {
+				continue;
+			}
+			$full       = $this->platform->table( $short );
+			$cols       = $this->platform->columns( $full );
+			$user_cols  = array_values( array_intersect( self::USER_REFERENCE_COLUMNS, $cols ) );
+			if ( array() === $user_cols ) {
+				continue;
+			}
+			$clauses = array();
+			$params  = array();
+			foreach ( $user_cols as $column ) {
+				$clauses[] = '`' . $column . '` IN (' . implode( ',', array_fill( 0, count( $user_ids ), '%d' ) ) . ')';
+				$params    = array_merge( $params, $user_ids );
+			}
+			$rows = $this->platform->fetch_all(
+				'SELECT * FROM `' . $full . '` WHERE (' . implode( ' OR ', $clauses ) . ')',
+				$params
+			);
+			foreach ( $rows as $row ) {
+				$owned = ! $live_only && $this->is_demo_owned_row( $short, $row, $scope, $clinic_id );
+				if ( $owned ) {
+					continue;
+				}
+				foreach ( $user_cols as $column ) {
+					$value = (int) ( $row[ $column ] ?? 0 );
+					if ( in_array( $value, $user_ids, true ) ) {
+						$found[] = $short . '.' . $column . '=' . $value;
+					}
+				}
+			}
+		}
+
+		return array_values( array_unique( $found ) );
+	}
+
+	/**
+	 * Is this concrete row inside the proven demo scope?
+	 *
+	 * @param string              $short     Short table name.
+	 * @param array<string,mixed> $row       Row.
+	 * @param array<string,mixed> $scope     Scope.
+	 * @param int                 $clinic_id Demo Clinic.
+	 * @return bool
+	 */
+	private function is_demo_owned_row( string $short, array $row, array $scope, int $clinic_id ): bool {
+		$key = self::COMPOSITE_KEY_TABLES[ $short ] ?? array();
+		if ( array() !== $key ) {
+			$signature = array();
+			foreach ( $key as $column ) {
+				$signature[] = (string) ( $row[ $column ] ?? '' );
+			}
+
+			return isset( $scope['composite'][ $short ][ implode( '|', $signature ) ] );
+		}
+		if ( 'cpms_jobs' === $short ) {
+			return in_array( (int) ( $row['id'] ?? 0 ), (array) ( $scope['jobs'] ?? array() ), true );
+		}
+		if ( 'cpms_operational_logs' === $short ) {
+			return in_array( (int) ( $row['id'] ?? 0 ), (array) ( $scope['operational_logs'] ?? array() ), true );
+		}
+		if ( 'cpms_audit_logs' === $short ) {
+			// Audit rows are preserved, never deleted; a demo-Clinic audit row that
+			// names a synthetic actor is part of the fixture's own history.
+			return $clinic_id > 1 && (int) ( $row['clinic_id'] ?? 0 ) === $clinic_id;
+		}
+		if ( 'cpms_rate_limits' === $short ) {
+			return in_array( (string) ( $row['window_key'] ?? '' ), (array) ( $scope['rate_limit_keys'] ?? array() ), true );
+		}
+		$id = (int) ( $row['id'] ?? 0 );
+
+		return $id > 0 && in_array( $id, (array) ( $scope['tables'][ $short ] ?? array() ), true );
+	}
+
+	/**
 	 * Collect rows of a table that has no surrogate `id`, by its verified key.
 	 *
-	 * Ownership is proven by the same id-sets as everywhere else (never by a
-	 * numeric coincidence), but the row is identified by the full composite key so
-	 * the later delete can address exactly the rows that were proven owned.
+	 * Ownership is proven by the table's DECLARED PARENT only (a thread or a
+	 * visit that is already proven owned through its tenant). The other key
+	 * columns are used to ADDRESS the row for deletion, never to select it: an
+	 * OR-predicate over `wp_user_id` selected a foreign thread's participant row
+	 * for a synthetic user and then deleted it.
 	 *
 	 * @param string             $short  Short table name.
 	 * @param string             $full   Full table name.
@@ -505,28 +891,15 @@ class ScopedTeardown {
 				return false;
 			}
 		}
-		$clauses = array();
-		$params  = array();
-		foreach ( $cols as $column ) {
-			$set_key = $this->resolve_ownership_set( $short, (string) $column );
-			if ( '' === $set_key || array() === ( $sets[ $set_key ] ?? array() ) ) {
-				continue;
-			}
-			$values = array_values( array_unique( array_filter( array_map( 'intval', $sets[ $set_key ] ) ) ) );
-			if ( array() === $values ) {
-				continue;
-			}
-			$ph        = implode( ',', array_fill( 0, count( $values ), '%d' ) );
-			$clauses[] = '`' . $column . '` IN (' . $ph . ')';
-			$params    = array_merge( $params, $values );
-		}
-		if ( array() === $clauses ) {
+		$parent_column      = self::COMPOSITE_PARENT_COLUMN[ $short ] ?? '';
+		$rule               = '' === $parent_column ? null : $this->parent_rule( $short, $parent_column, $cols, $sets );
+		if ( null === $rule ) {
 			return false;
 		}
-		$select = implode( ',', array_map( static fn ( $c ): string => '`' . $c . '`', $key ) );
+		$select = implode( ',', array_map( static fn ( string $c ): string => '`' . $c . '`', $key ) );
 		$rows   = $this->platform->fetch_all(
-			'SELECT ' . $select . ' FROM `' . $full . '` WHERE (' . implode( ' OR ', $clauses ) . ')',
-			$params
+			'SELECT ' . $select . ' FROM `' . $full . '` WHERE (' . $rule['sql'] . ')',
+			$rule['params']
 		);
 		$changed = false;
 		foreach ( $rows as $row ) {
@@ -559,6 +932,13 @@ class ScopedTeardown {
 		if ( ! $this->manifest->verify( $manifest ) ) {
 			return $this->failed_preview( array( 'MANIFEST_TAMPERED' ) );
 		}
+		// Fail closed when the rule set no longer describes the live schema. An
+		// unclassified table is never "probably fine": it is residue we cannot
+		// prove, and proving is the whole contract of this teardown.
+		$rule_problems = $this->ownership_rule_problems();
+		if ( array() !== $rule_problems ) {
+			return $this->failed_preview( $rule_problems );
+		}
 		$baseline = $this->resolve_baseline( $manifest );
 		if ( array() === $baseline ) {
 			return $this->failed_preview( array( 'BASELINE_MISSING' ) );
@@ -584,6 +964,15 @@ class ScopedTeardown {
 			$problems[] = 'QUEUE_RUNNER_ACTIVE';
 		}
 		$problems = array_merge( $problems, $this->scan_untracked_fixture_rows( $manifest, $baseline, $scope, false ) );
+
+		// Nothing is deleted while a row we do NOT own still references a synthetic
+		// account. This is the whole point of the fix: a post-baseline row that
+		// names a demo user is evidence of a foreign tenant, not evidence of
+		// ownership.
+		$foreign = $this->foreign_user_dependencies( $scope );
+		if ( array() !== $foreign ) {
+			$problems[] = 'SCOPED_FOREIGN_DEPENDENCY: ' . implode( ', ', array_slice( $foreign, 0, 5 ) );
+		}
 
 		$plan = array();
 		foreach ( $scope['tables'] as $short => $ids ) {
@@ -640,6 +1029,14 @@ class ScopedTeardown {
 		$manifest = $this->adopt_recovered_baseline( $manifest );
 		$preview  = $this->preview( $manifest );
 		if ( ! $preview['ok'] ) {
+			foreach ( (array) $preview['problems'] as $problem ) {
+				if ( 0 === strpos( (string) $problem, 'SCOPED_FOREIGN_DEPENDENCY' ) ) {
+					throw new Exception(
+						'SCOPED_FOREIGN_DEPENDENCY',
+						'داده‌ای بیرون از محدودهٔ دمو به یک کاربر ساختگی وابسته است؛ پاک‌سازی متوقف شد: ' . $problem
+					);
+				}
+			}
 			throw new Exception( 'TEARDOWN_BLOCKED', 'پاکسازی ایمن متوقف شد: ' . implode( ' | ', array_slice( $preview['problems'], 0, 3 ) ) );
 		}
 		global $wpdb;
@@ -1005,6 +1402,36 @@ class ScopedTeardown {
 	}
 
 	/**
+	 * Refuse to delete a synthetic account that a foreign-tenant row references.
+	 *
+	 * Runs immediately before the WordPress user is deleted, when every fixture
+	 * row has already been removed. Any surviving row that names this account -
+	 * in ANY of the twenty user-reference columns, on ANY table - therefore
+	 * belongs to something other than this fixture, and deleting the account
+	 * would break a real tenant's clinical, financial or access history.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param int                 $user_id  Synthetic user under consideration.
+	 * @return void
+	 * @throws Exception When a foreign row references the user.
+	 */
+	private function assert_user_not_foreign_dependent( array $manifest, int $user_id ): void {
+		$ids   = (array) ( $manifest['ids'] ?? array() );
+		$scope = array(
+			'clinic_id' => (int) ( $ids['clinic_id'] ?? 0 ),
+			'user_ids'  => array( (int) $user_id ),
+		);
+		$found = $this->foreign_user_dependencies( $scope, (int) $user_id, true );
+		if ( array() === $found ) {
+			return;
+		}
+		throw new Exception(
+			'SCOPED_FOREIGN_DEPENDENCY',
+			'رکوردهای بیرون از محدودهٔ دمو به این کاربر ساختگی وابسته‌اند؛ حذف کاربر متوقف شد: ' . implode( ', ', array_slice( $found, 0, 5 ) )
+		);
+	}
+
+	/**
 	 * @param array<string,mixed> $manifest Manifest.
 	 * @param list<int> $user_ids Persona user IDs.
 	 * @return array<string,int>
@@ -1033,6 +1460,7 @@ class ScopedTeardown {
 				throw new Exception( 'OWNERSHIP_UNPROVEN', 'یک حساب هدف با شناسه دمو همخوان نیست.' );
 			}
 			$this->assert_user_not_foreign_linked( $manifest, $user_id );
+			$this->assert_user_not_foreign_dependent( $manifest, $user_id );
 			$wpdb->delete( $wpdb->usermeta, array( 'user_id' => $user_id ), array( '%d' ) );
 			if ( $this->env->delete_user( $user_id ) ) {
 				++$deleted['wp_users'];
@@ -1166,6 +1594,13 @@ class ScopedTeardown {
 		$owned = array();
 		foreach ( (array) ( $scope['tables'] ?? array() ) as $short => $ids ) {
 			$owned[ $short ] = array_fill_keys( array_map( 'intval', (array) $ids ), true );
+		}
+		// Composite-key tables are tracked by their key fingerprint, not by an id.
+		// Mixing the two key spaces made every proven composite row look untracked.
+		foreach ( (array) ( $scope['composite'] ?? array() ) as $short => $keys ) {
+			foreach ( (array) $keys as $fingerprint => $tuple ) {
+				$owned[ $short ][ is_int( $fingerprint ) ? implode( '|', array_map( 'strval', (array) $tuple ) ) : (string) $fingerprint ] = true;
+			}
 		}
 		foreach ( Preflight::KNOWN_TABLES as $short ) {
 			if ( 'cpms_audit_logs' === $short && $after_teardown ) {

@@ -199,6 +199,16 @@ class CompanionState:
     scoped_table_to_set: Dict[str, str] = field(default_factory=dict)
     #: Tables torn down by an explicit composite key -> key columns.
     composite_key_tables: Dict[str, List[str]] = field(default_factory=dict)
+    #: Table -> MANDATORY tenant column (clinic_id / organization_id).
+    scoped_tenant_ownership: Dict[str, str] = field(default_factory=dict)
+    #: Tenant-less table -> the parent column that proves ownership.
+    scoped_parent_ownership: Dict[str, str] = field(default_factory=dict)
+    #: Composite-key table -> the parent column that proves ownership.
+    scoped_composite_parent: Dict[str, str] = field(default_factory=dict)
+    #: Every column that stores a WordPress user id (actor references only).
+    scoped_user_references: List[str] = field(default_factory=list)
+    #: Tables that can never be owned, with the reason.
+    scoped_never_owned: Dict[str, str] = field(default_factory=dict)
     #: Legitimate volatile wp_options normalised by the baseline, with reason.
     baseline_volatile_options: Dict[str, str] = field(default_factory=dict)
     scoped_constants: Dict[str, List[str]] = field(default_factory=dict)
@@ -293,6 +303,27 @@ def load(companion_dir: Path) -> CompanionState:
     value, error = const_value(scoped, "COMPOSITE_KEY_TABLES")
     if error is None:
         state.composite_key_tables = _map_of_lists(value)
+
+    # Declarative ownership rules. These four constants are what makes the
+    # teardown auditable: tenant boundary, declared parent, composite parent and
+    # the actor-reference surface are all readable, so the gate can prove that
+    # no WordPress-user column is treated as ownership.
+    for name, attribute in (
+        ("TENANT_OWNERSHIP", "scoped_tenant_ownership"),
+        ("PARENT_OWNERSHIP", "scoped_parent_ownership"),
+        ("COMPOSITE_PARENT_COLUMN", "scoped_composite_parent"),
+        ("NEVER_OWNED_TABLES", "scoped_never_owned"),
+    ):
+        value, error = const_value(scoped, name)
+        if error is None:
+            setattr(state, attribute, _map_of_strings(value))
+        else:
+            state.unparsed.append(f"{SCOPED_TEARDOWN}:{name} ({error})")
+    value, error = const_value(scoped, "USER_REFERENCE_COLUMNS")
+    if error is None:
+        state.scoped_user_references = _list_of_strings(value)
+    else:
+        state.unparsed.append(f"{SCOPED_TEARDOWN}:USER_REFERENCE_COLUMNS ({error})")
 
     # Pre-refactor shape: the maps lived inside collect_scope(). Read them only
     # when the declarative constants are absent, and say so explicitly.

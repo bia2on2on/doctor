@@ -2,7 +2,7 @@
 
 **Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_27_0030`.
 
-**Status:** source inspection and design only. No companion or production code was changed. This is not executed acceptance evidence.
+**Status:** implemented in the companion and covered by real-database runtime drills (`tools/disposable-demo-installer/tests/scoped-recovery.php`, R1–R9). The tables below remain a design reference; the enforceable rules are the declarative constants listed in the correction section.
 
 ## Important correction to the mission wording
 
@@ -19,13 +19,39 @@ Notation:
 - `JSON` — ownership only through a verified entity ID inside a JSON payload.
 - **Never** — table must not be deleted by scoped teardown.
 
+## Normative correction: a WordPress user id is never ownership
+
+An earlier revision of this document listed `U` ("direct user ownership") as an
+ownership anchor. That was wrong, and it was the cause of a real defect: the
+teardown OR-connected every resolvable column, so a post-baseline row of a
+**foreign** Clinic that merely named a synthetic demo account was claimed as
+demo-owned. The claimed clinician/membership row then fed the clinician and
+membership id-sets, and the next collection pass used those ids to claim foreign
+visits, clinical records, invoices and payments, which were deleted.
+
+The rule set is now declarative, exactly one rule per table, and enforced
+fail-closed by the teardown itself (`.github/scripts/companion-compat/evaluate.py`
+proves the two sides agree):
+
+| Constant (in `class-cpms-demo-scoped-teardown.php`) | Meaning |
+|---|---|
+| `TENANT_OWNERSHIP` | Mandatory tenant boundary: `clinic_id` = demo Clinic, or `organization_id` = demo Organization. Nothing widens it. |
+| `PARENT_OWNERSHIP` | For tables with no tenant column: the declared parent column, whose id-set is itself tenant-derived. |
+| `COMPOSITE_PARENT_COLUMN` | Parent column that proves ownership of a composite-key table; the other key columns only address the row for deletion. |
+| `USER_REFERENCE_COLUMNS` | The 20 WordPress actor columns. **Dependency evidence only** — a surviving foreign row that names a synthetic account blocks the teardown with `SCOPED_FOREIGN_DEPENDENCY`. |
+| `NEVER_OWNED_TABLES` | Install/runner bookkeeping that can never be owned. |
+
+A table that is deletable but unclassified makes the teardown refuse with
+`OWNERSHIP_RULE_MISSING` rather than guess. Everywhere this document says `U`,
+read "actor reference that is never used to prove ownership".
+
 ## The 43 operational tables present before schema 0030
 
 | # | Table | Actual ownership anchor(s) | Scoped teardown rule |
 |---:|---|---|---|
-| 1 | `cpms_clinicians` | `C`, `U`; unique `wp_user_id` | Delete only exact manifest-owned clinician IDs after verifying synthetic clinic and user. |
-| 2 | `cpms_clinic_memberships` | `C`, `U`; `FK(clinics)` | Delete only exact manifest-owned membership IDs; never alter a pre-existing membership. |
-| 3 | `cpms_organization_memberships` | `O`, `U`; `FK(organizations)` | Delete only exact manifest-owned membership IDs for the synthetic Organization. |
+| 1 | `cpms_clinicians` | `C` (mandatory boundary); `U` is an actor reference; unique `wp_user_id` | Delete only exact manifest-owned clinician IDs after verifying synthetic clinic and user. |
+| 2 | `cpms_clinic_memberships` | `C` (mandatory boundary); `U` is an actor reference; `FK(clinics)` | Delete only exact manifest-owned membership IDs; never alter a pre-existing membership. |
+| 3 | `cpms_organization_memberships` | `O` (mandatory boundary); `U` is an actor reference; `FK(organizations)` | Delete only exact manifest-owned membership IDs for the synthetic Organization. |
 | 4 | `cpms_organization_membership_capabilities` | `FK(cpms_organization_memberships.membership_id)` | Delete only children of manifest-owned Organization memberships. |
 | 5 | `cpms_membership_capabilities` | `FK(cpms_clinic_memberships.membership_id)` | Delete only children of manifest-owned Clinic memberships. |
 | 6 | `cpms_membership_locations` | `FK(membership_id)`, `FK(location_id)` | Delete only children of manifest-owned memberships; verify both parents. |
@@ -62,7 +88,7 @@ Notation:
 | 37 | `cpms_payment_adjustments` | `FK(invoice_id)`, nullable `FK(payment_id)` | Delete only children of manifest-owned invoices/payments. |
 | 38 | `cpms_sms_messages` | `C`, recipient, context IDs | Delete only exact IDs for the synthetic clinic and reserved synthetic recipient; `log` provider only. |
 | 39 | `cpms_otp_tokens` | nullable `C` (migration 0021), mobile | Delete only exact challenge IDs with synthetic clinic **and** mobile; preserve all `NULL`/foreign clinic rows. |
-| 40 | `cpms_idempotency_keys` | `C`, `U`, key/endpoint/context | Delete only exact IDs with verified fixture clinic/user/key scope; preserve all foreign or ambiguous keys. |
+| 40 | `cpms_idempotency_keys` | `C` (mandatory boundary); `U` is an actor reference, key/endpoint/context | Delete only exact IDs with verified fixture clinic/user/key scope; preserve all foreign or ambiguous keys. |
 | 41 | `cpms_notifications` | `C`, nullable recipient user/patient, dedupe key | Delete only exact IDs for the synthetic clinic and manifest-owned recipients. |
 | 42 | `cpms_audit_logs` | append-only global hash chain; nullable `C`, resource/actor/meta JSON | **Never delete, update, or selectively remove any row.** Keep all demo and foreign audit entries; verify full chain and immutable baseline prefix. |
 | 43 | `cpms_drug_reference` | `C`; `FK(prescription_items.drug_ref_id)` | Delete only exact synthetic drug-reference IDs after their prescription children are gone. |

@@ -23,6 +23,14 @@
  *   R6  cross-Clinic isolation through the real REST stack (four directions)
  *   R7  SIGKILL during provisioning: the lock is released, the state is
  *       flagged, and the recovery teardown completes
+ *   R8  every pre-existing host row is byte-identical after all drills
+ *   R9  a foreign tenant that depends on a synthetic demo user is refused with
+ *       SCOPED_FOREIGN_DEPENDENCY - five separate vectors (clinician, clinic
+ *       membership, organization membership, indirect actor columns and a
+ *       composite-key participant row), each proven with a byte-identical
+ *       foreign fingerprint, an empty foreign intersection with the demo
+ *       deletion graph, an intact audit chain, and an authorized teardown once
+ *       only the foreign dependency is removed
  *
  * @package CpmsDisposableDemo
  */
@@ -273,6 +281,228 @@ function cpsd_rec_deleted_total( array $result ): int {
 	}
 
 	return $total;
+}
+
+/**
+ * Delete one seeded row by primary key.
+ *
+ * @param string $table Full table name.
+ * @param int $id Row id.
+ * @return void
+ */
+function cpsd_rec_delete( string $table, int $id ): void {
+	global $wpdb;
+	$wpdb->delete( $table, array( 'id' => $id ), array( '%d' ) );
+}
+
+/**
+ * Row-level fingerprint of ONE non-demo tenant (a real Clinic + Organization).
+ *
+ * The drill's claim is "every foreign row is byte-identical", so the fingerprint
+ * is the full row content, ordered, for every tenant-scoped table the attack
+ * touches - not a row count.
+ *
+ * @param Platform $platform Adapter.
+ * @param int $clinic_id Foreign Clinic.
+ * @param int $org_id Foreign Organization.
+ * @return string sha256.
+ */
+function cpsd_rec_foreign_digest( Platform $platform, int $clinic_id, int $org_id ): string {
+	$digest = array();
+	$clinic_tables = array(
+		'cpms_clinicians',
+		'cpms_clinic_memberships',
+		'cpms_patients',
+		'cpms_patient_user_links',
+		'cpms_visits',
+		'cpms_visit_consultation_fees',
+		'cpms_visit_charge_items',
+		'cpms_clinical_notes',
+		'cpms_invoices',
+		'cpms_invoice_items',
+		'cpms_payments',
+		'cpms_message_threads',
+		'cpms_messages',
+		'cpms_sms_messages',
+		'cpms_settings',
+	);
+	foreach ( $clinic_tables as $short ) {
+		if ( ! $platform->table_exists( $short ) ) {
+			continue;
+		}
+		$full = $platform->table( $short );
+		$cols = $platform->columns( $full );
+		if ( ! in_array( 'clinic_id', $cols, true ) || ! in_array( 'id', $cols, true ) ) {
+			continue;
+		}
+		$digest[ $short ] = (array) $platform->fetch_all( 'SELECT * FROM `' . $full . '` WHERE clinic_id = %d ORDER BY id ASC', array( $clinic_id ) );
+	}
+	$digest['cpms_organizations'] = (array) $platform->fetch_all(
+		'SELECT * FROM `' . $platform->table( 'cpms_organizations' ) . '` WHERE id = %d',
+		array( $org_id )
+	);
+	foreach ( array( 'cpms_organization_memberships', 'cpms_patient_identities', 'cpms_patient_identity_links' ) as $short ) {
+		if ( ! $platform->table_exists( $short ) ) {
+			continue;
+		}
+		$full = $platform->table( $short );
+		$cols = $platform->columns( $full );
+		if ( ! in_array( 'organization_id', $cols, true ) || ! in_array( 'id', $cols, true ) ) {
+			continue;
+		}
+		$digest[ $short ] = (array) $platform->fetch_all( 'SELECT * FROM `' . $full . '` WHERE organization_id = %d ORDER BY id ASC', array( $org_id ) );
+	}
+	// Participant rows have no surrogate id: fingerprint them by their thread.
+	$threads = array_map( 'intval', array_column( $digest['cpms_message_threads'] ?? array(), 'id' ) );
+	$participants = array();
+	if ( array() !== $threads && $platform->table_exists( 'cpms_message_participants' ) ) {
+		$participants = (array) $platform->fetch_all(
+			'SELECT * FROM `' . $platform->table( 'cpms_message_participants' ) . '` WHERE thread_id IN ('
+			. implode( ',', array_fill( 0, count( $threads ), '%d' ) ) . ') ORDER BY thread_id ASC, wp_user_id ASC',
+			$threads
+		);
+	}
+	$digest['cpms_message_participants'] = $participants;
+
+	return hash( 'sha256', (string) wp_json_encode( $digest ) );
+}
+
+/**
+ * Every row id that belongs to the foreign tenant, per table.
+ *
+ * Used to prove that not one foreign id entered the demo ownership graph - the
+ * defect being that a synthetic user id dragged foreign ids in with it.
+ *
+ * @param Platform $platform Adapter.
+ * @param int $clinic_id Foreign Clinic.
+ * @param int $org_id Foreign Organization.
+ * @return array<string,list<int>>
+ */
+function cpsd_rec_foreign_ids( Platform $platform, int $clinic_id, int $org_id ): array {
+	$ids  = array();
+	$spec = array(
+		'cpms_clinicians'             => 'clinic_id',
+		'cpms_clinic_memberships'     => 'clinic_id',
+		'cpms_patients'               => 'clinic_id',
+		'cpms_patient_user_links'     => 'clinic_id',
+		'cpms_visits'                 => 'clinic_id',
+		'cpms_clinical_notes'         => 'clinic_id',
+		'cpms_invoices'               => 'clinic_id',
+		'cpms_payments'               => 'clinic_id',
+		'cpms_message_threads'        => 'clinic_id',
+		'cpms_messages'               => 'clinic_id',
+		'cpms_organization_memberships' => 'organization_id',
+		'cpms_patient_identities'     => 'organization_id',
+		'cpms_patient_identity_links' => 'organization_id',
+	);
+	foreach ( $spec as $short => $column ) {
+		if ( ! $platform->table_exists( $short ) ) {
+			continue;
+		}
+		$full  = $platform->table( $short );
+		$cols  = $platform->columns( $full );
+		$value = 'organization_id' === $column ? $org_id : $clinic_id;
+		if ( ! in_array( $column, $cols, true ) || ! in_array( 'id', $cols, true ) ) {
+			continue;
+		}
+		$ids[ $short ] = array_map(
+			'intval',
+			array_column( (array) $platform->fetch_all( 'SELECT id FROM `' . $full . '` WHERE `' . $column . '` = %d', array( $value ) ), 'id' )
+		);
+	}
+
+	return $ids;
+}
+
+/**
+ * Post-baseline clinical/financial rows inside a FOREIGN Clinic that name a
+ * synthetic demo user.
+ *
+ * This is the exact shape of the reported attack: the rows belong to a real
+ * Clinic, so matching their `wp_user_id`-family columns must never make them
+ * demo-owned - and deleting the account underneath them must never happen.
+ *
+ * @param Platform $platform Adapter.
+ * @param int $clinic_id Foreign Clinic.
+ * @param int $patient_id Foreign patient.
+ * @param int $clinician_id Foreign clinician.
+ * @param int $demo_user Synthetic demo account to implicate.
+ * @param string $tag Unique tag for nullable unique columns.
+ * @return callable Deletes the rows again, in foreign-key order.
+ */
+function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patient_id, int $clinician_id, int $demo_user, string $tag ): callable {
+	$now  = gmdate( 'Y-m-d H:i:s' ) . '.000';
+	$full = static fn ( string $short ): string => $platform->table( $short );
+	$visit = cpsd_rec_insert(
+		$full( 'cpms_visits' ),
+		array(
+			'clinic_id'              => $clinic_id,
+			'clinician_id'           => $clinician_id,
+			'patient_id'             => $patient_id,
+			'source'                 => 'walk_in',
+			'status'                 => 'paid',
+			'visit_date'             => gmdate( 'Y-m-d' ),
+			'check_in_at'            => $now,
+			'cancelled_by_wp_user_id' => $demo_user,
+			'recall_count'           => 0,
+			'active'                 => 1,
+			'created_at'             => $now,
+			'updated_at'             => $now,
+		)
+	);
+	$note = cpsd_rec_insert(
+		$full( 'cpms_clinical_notes' ),
+		array(
+			'clinic_id'              => $clinic_id,
+			'visit_id'               => $visit,
+			'patient_id'             => $patient_id,
+			'clinician_id'           => $clinician_id,
+			'content_text'           => 'foreign note ' . $tag,
+			'created_by_wp_user_id'  => $demo_user,
+			'updated_by_wp_user_id'  => $demo_user,
+			'created_at'             => $now,
+			'updated_at'             => $now,
+		)
+	);
+	$invoice = cpsd_rec_insert(
+		$full( 'cpms_invoices' ),
+		array(
+			'clinic_id'             => $clinic_id,
+			'invoice_number'        => $tag . '-I' . bin2hex( random_bytes( 2 ) ),
+			'patient_id'            => $patient_id,
+			'visit_id'              => $visit,
+			'status'                => 'open',
+			'subtotal'              => 10000,
+			'total'                 => 10000,
+			'balance'               => 10000,
+			'issued_by_wp_user_id'  => $demo_user,
+			'created_at'            => $now,
+			'updated_at'            => $now,
+		)
+	);
+	$payment = cpsd_rec_insert(
+		$full( 'cpms_payments' ),
+		array(
+			'clinic_id'             => $clinic_id,
+			'payment_number'        => $tag . '-P' . bin2hex( random_bytes( 2 ) ),
+			'invoice_id'            => $invoice,
+			'patient_id'            => $patient_id,
+			'amount'                => 10000,
+			'method'                => 'cash',
+			'idempotency_key'       => $tag . '-' . bin2hex( random_bytes( 3 ) ),
+			'status'                => 'captured',
+			'paid_at'               => $now,
+			'received_by_wp_user_id' => $demo_user,
+			'created_at'            => $now,
+		)
+	);
+
+	return static function () use ( $platform, $payment, $invoice, $note, $visit ): void {
+		cpsd_rec_delete( $platform->table( 'cpms_payments' ), $payment );
+		cpsd_rec_delete( $platform->table( 'cpms_invoices' ), $invoice );
+		cpsd_rec_delete( $platform->table( 'cpms_clinical_notes' ), $note );
+		cpsd_rec_delete( $platform->table( 'cpms_visits' ), $visit );
+	};
 }
 
 $checks = array();
@@ -686,6 +916,244 @@ try {
 		cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R7 no synthetic account survives the kill recovery', $checks );
 		$report['sigkill'] = array( 'exit_code' => $exit_code, 'stderr_bytes' => strlen( $child_err ) );
 	}
+
+	// ------------------------- R9 foreign-tenant dependency must fail closed
+	// The defect: `collect_scope()` OR-connected every resolvable ownership
+	// column, so a FOREIGN Clinic row that merely named a synthetic demo user was
+	// claimed as demo-owned. Its id then entered the clinician/membership sets and
+	// the next pass claimed foreign visits, notes, invoices and payments - which
+	// the teardown then deleted. Every vector below builds that shape for real and
+	// requires a refusal plus byte-identical foreign rows.
+	$foreign_clinic = (int) ( $host['clinic_b_id'] ?? 0 );
+	$foreign_org    = (int) ( $host['org_b_id'] ?? 0 );
+	cpsd_rec_check(
+		$foreign_clinic > 0 && $foreign_org > 0 && $foreign_clinic !== (int) ( $host['clinic_a_id'] ?? 0 ),
+		'R9 a pre-existing foreign Clinic and Organization exist',
+		$checks
+	);
+
+	$frn_now = gmdate( 'Y-m-d H:i:s' ) . '.000';
+	$frn_tag = 'recovery-frn-' . bin2hex( random_bytes( 3 ) );
+	$frn     = static fn ( string $short ): string => $platform->table( $short );
+	$frn_staff = cpsd_rec_insert(
+		$frn( 'cpms_clinicians' ),
+		array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => 1, 'full_name' => 'Foreign Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
+	);
+	$frn_patient = cpsd_rec_insert(
+		$frn( 'cpms_patients' ),
+		array(
+			'clinic_id'  => $foreign_clinic,
+			'mrn'        => 'FRN' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
+			'first_name' => 'Foreign',
+			'last_name'  => 'Patient ' . $frn_tag,
+			'mobile'     => sprintf( '09%09d', random_int( 0, 999999999 ) ),
+			'status'     => 'active',
+			'created_at' => $frn_now,
+			'updated_at' => $frn_now,
+		)
+	);
+	$frn_visit = cpsd_rec_insert(
+		$frn( 'cpms_visits' ),
+		array(
+			'clinic_id'    => $foreign_clinic,
+			'clinician_id' => $frn_staff,
+			'patient_id'   => $frn_patient,
+			'source'       => 'walk_in',
+			'status'       => 'consultation_completed',
+			'visit_date'   => gmdate( 'Y-m-d' ),
+			'check_in_at'  => $frn_now,
+			'recall_count' => 0,
+			'active'       => 1,
+			'created_at'   => $frn_now,
+			'updated_at'   => $frn_now,
+		)
+	);
+	$frn_note = cpsd_rec_insert(
+		$frn( 'cpms_clinical_notes' ),
+		array(
+			'clinic_id'             => $foreign_clinic,
+			'visit_id'              => $frn_visit,
+			'patient_id'            => $frn_patient,
+			'clinician_id'          => $frn_staff,
+			'content_text'          => 'legitimate foreign note ' . $frn_tag,
+			'created_by_wp_user_id' => 1,
+			'created_at'            => $frn_now,
+			'updated_at'            => $frn_now,
+		)
+	);
+	$frn_invoice = cpsd_rec_insert(
+		$frn( 'cpms_invoices' ),
+		array(
+			'clinic_id'            => $foreign_clinic,
+			'invoice_number'       => 'FRN' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
+			'patient_id'           => $frn_patient,
+			'visit_id'             => $frn_visit,
+			'status'               => 'open',
+			'subtotal'             => 25000,
+			'total'                => 25000,
+			'balance'              => 25000,
+			'issued_by_wp_user_id' => 1,
+			'created_at'           => $frn_now,
+			'updated_at'           => $frn_now,
+		)
+	);
+	$frn_payment = cpsd_rec_insert(
+		$frn( 'cpms_payments' ),
+		array(
+			'clinic_id'              => $foreign_clinic,
+			'payment_number'         => 'FRNP' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
+			'invoice_id'             => $frn_invoice,
+			'patient_id'             => $frn_patient,
+			'amount'                 => 25000,
+			'method'                 => 'cash',
+			'idempotency_key'        => $frn_tag . '-legit',
+			'status'                 => 'captured',
+			'paid_at'                => $frn_now,
+			'received_by_wp_user_id' => 1,
+			'created_at'             => $frn_now,
+		)
+	);
+	$frn_org_membership = cpsd_rec_insert(
+		$frn( 'cpms_organization_memberships' ),
+		array( 'organization_id' => $foreign_org, 'wp_user_id' => 1, 'role_key' => 'organization_manager', 'status' => 'active', 'created_at' => $frn_now, 'updated_at' => $frn_now )
+	);
+	$frn_baseline_digest = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
+	$checks[]            = 'INFO R9 foreign tenant clinic=' . $foreign_clinic . ' org=' . $foreign_org . ' digest=' . substr( $frn_baseline_digest, 0, 16 );
+
+	$frn_vectors = array(
+		// (1) A synthetic demo account enrolled as staff IN the foreign Clinic.
+		'cpms_clinicians'          => static function ( array $users ) use ( $platform, $foreign_clinic, $frn_now, $frn_tag ): callable {
+			$id = cpsd_rec_insert(
+				$platform->table( 'cpms_clinicians' ),
+				array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => (int) $users['doctor'], 'full_name' => 'Enrolled Demo Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
+			);
+			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_clinicians' ), $id );
+		},
+		// (2) A synthetic demo account given a membership in the foreign Clinic.
+		'cpms_clinic_memberships'  => static function ( array $users ) use ( $platform, $foreign_clinic, $frn_now ): callable {
+			$id = cpsd_rec_insert(
+				$platform->table( 'cpms_clinic_memberships' ),
+				array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => (int) $users['receptionist'], 'role_key' => 'receptionist', 'scope_mode' => 'clinic', 'status' => 'active', 'is_primary' => 0, 'created_at' => $frn_now, 'updated_at' => $frn_now )
+			);
+			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_clinic_memberships' ), $id );
+		},
+		// (3) A synthetic demo account given a membership in the foreign Organization.
+		'cpms_organization_memberships' => static function ( array $users ) use ( $platform, $foreign_org, $frn_now ): callable {
+			$id = cpsd_rec_insert(
+				$platform->table( 'cpms_organization_memberships' ),
+				array( 'organization_id' => $foreign_org, 'wp_user_id' => (int) $users['organization_manager'], 'role_key' => 'organization_manager', 'status' => 'active', 'created_at' => $frn_now, 'updated_at' => $frn_now )
+			);
+			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_organization_memberships' ), $id );
+		},
+		// (4) An INDIRECT actor reference: no enrollment row at all, only the
+		// foreign tenant's own records naming the synthetic account.
+		'actor_columns'            => static function ( array $users ) use ( $platform, $frn_note, $frn_invoice ): callable {
+			global $wpdb;
+			$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => (int) $users['doctor'] ), array( 'id' => $frn_note ), array( '%d' ), array( '%d' ) );
+			$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => (int) $users['accountant'] ), array( 'id' => $frn_invoice ), array( '%d' ), array( '%d' ) );
+			return static function () use ( $platform, $frn_note, $frn_invoice ): void {
+				global $wpdb;
+				$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => null ), array( 'id' => $frn_note ), array( '%d' ), array( '%d' ) );
+				$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => 1 ), array( 'id' => $frn_invoice ), array( '%d' ), array( '%d' ) );
+			};
+		},
+		// (5) The composite-key table: a foreign thread whose participant row
+		// names the synthetic account. The old OR-predicate deleted this row.
+		'cpms_message_participants' => static function ( array $users ) use ( $platform, $foreign_clinic, $foreign_org, $frn_now, $frn_tag ): callable {
+			$thread = cpsd_rec_insert(
+				$platform->table( 'cpms_message_threads' ),
+				array( 'clinic_id' => $foreign_clinic, 'organization_id' => $foreign_org, 'created_by_wp_user_id' => 1, 'last_message_id' => 0, 'created_at' => $frn_now )
+			);
+			global $wpdb;
+			$wpdb->insert(
+				$platform->table( 'cpms_message_participants' ),
+				array( 'thread_id' => $thread, 'wp_user_id' => (int) $users['doctor'], 'staff_class' => 'doctor', 'last_read_message_id' => 0, 'created_at' => $frn_now )
+			);
+			return static function () use ( $platform, $thread, $users ): void {
+				global $wpdb;
+				$wpdb->delete( $platform->table( 'cpms_message_participants' ), array( 'thread_id' => $thread, 'wp_user_id' => (int) $users['doctor'] ), array( '%d', '%d' ) );
+				cpsd_rec_delete( $platform->table( 'cpms_message_threads' ), $thread );
+			};
+		},
+	);
+
+	$frn_report = array();
+	foreach ( $frn_vectors as $frn_label => $frn_inject ) {
+		$manifest->enable_mode( $admin_id );
+		$services['provisioner']->provision( $admin_id );
+		$frn_live = $manifest->load();
+		cpsd_rec_check( is_array( $frn_live ) && 'active' === (string) $frn_live['status'], 'R9 ' . $frn_label . ': fixture provisioned on a non-empty site', $checks );
+		$frn_users     = (array) ( $frn_live['ids']['user_ids'] ?? array() );
+		$frn_counts    = cpsd_rec_fixture_row_counts( $platform, $frn_live );
+		$frn_synthetic = cpsd_rec_synthetic_users( $env );
+
+		$frn_cleanup = $frn_inject( $frn_users );
+		$frn_graph   = cpsd_rec_foreign_graph( $platform, $foreign_clinic, $frn_patient, $frn_staff, (int) $frn_users['doctor'], $frn_tag );
+		$frn_dirty   = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
+		cpsd_rec_check( $frn_dirty !== $frn_baseline_digest, 'R9 ' . $frn_label . ': the foreign tenant now depends on a synthetic demo user', $checks );
+
+		$frn_scope  = $services['teardown']->collect_scope( $frn_live, (array) $frn_live['baseline'] );
+		$frn_leaked = array();
+		foreach ( cpsd_rec_foreign_ids( $platform, $foreign_clinic, $foreign_org ) as $frn_short => $frn_ids ) {
+			foreach ( (array) ( $frn_scope['tables'][ $frn_short ] ?? array() ) as $frn_owned ) {
+				if ( in_array( (int) $frn_owned, $frn_ids, true ) ) {
+					$frn_leaked[] = $frn_short . ':' . (int) $frn_owned;
+				}
+			}
+		}
+		cpsd_rec_check(
+			array() === $frn_leaked,
+			'R9 ' . $frn_label . ': not one foreign id enters the demo deletion graph' . ( array() === $frn_leaked ? '' : ' (' . implode( ',', array_slice( $frn_leaked, 0, 3 ) ) . ')' ),
+			$checks
+		);
+
+		$frn_code = '';
+		try {
+			$services['teardown']->execute( $manifest->load(), $admin_id );
+		} catch ( DemoException $error ) {
+			$frn_code = $error->demo_code();
+		} catch ( Throwable $error ) {
+			$frn_code = 'UNEXPECTED:' . get_class( $error );
+		}
+		cpsd_rec_check( 'SCOPED_FOREIGN_DEPENDENCY' === $frn_code, 'R9 ' . $frn_label . ': teardown refused with SCOPED_FOREIGN_DEPENDENCY (' . ( '' === $frn_code ? 'no refusal' : $frn_code ) . ')', $checks );
+		cpsd_rec_check(
+			cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_dirty,
+			'R9 ' . $frn_label . ': every foreign row is byte-identical after the refusal',
+			$checks
+		);
+		cpsd_rec_check(
+			cpsd_rec_fixture_row_counts( $platform, $frn_live ) === $frn_counts,
+			'R9 ' . $frn_label . ': the refused teardown deleted no demo row either',
+			$checks
+		);
+		cpsd_rec_check( cpsd_rec_synthetic_users( $env ) === $frn_synthetic, 'R9 ' . $frn_label . ': no synthetic account was deleted by the refusal', $checks );
+		$frn_chain = $audit_guard->verify_chain();
+		cpsd_rec_check( true === (bool) $frn_chain['ok'], 'R9 ' . $frn_label . ': the audit hash chain is intact after the refusal', $checks );
+
+		// Remove ONLY the foreign dependency; the fixture itself is untouched.
+		$frn_graph();
+		$frn_cleanup();
+		cpsd_rec_check(
+			cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_baseline_digest,
+			'R9 ' . $frn_label . ': the foreign tenant returns to its pre-enrollment state',
+			$checks
+		);
+
+		$frn_clean = $services['teardown']->execute( $manifest->load(), $admin_id );
+		cpsd_rec_check( true === (bool) $frn_clean['ok'], 'R9 ' . $frn_label . ': authorized teardown completes once the foreign dependency is gone', $checks );
+		cpsd_rec_check( null === $manifest->load(), 'R9 ' . $frn_label . ': the manifest is released after the authorized teardown', $checks );
+		cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R9 ' . $frn_label . ': no synthetic account survives the authorized teardown', $checks );
+		$frn_chain_after = $audit_guard->verify_chain();
+		cpsd_rec_check( true === (bool) $frn_chain_after['ok'], 'R9 ' . $frn_label . ': audit chain valid after the authorized teardown', $checks );
+		$frn_report[ $frn_label ] = array(
+			'refusal'         => $frn_code,
+			'deleted_total'   => cpsd_rec_deleted_total( $frn_clean ),
+			'foreign_digest'  => substr( $frn_dirty, 0, 16 ),
+			'baseline_digest' => substr( $frn_baseline_digest, 0, 16 ),
+		);
+		wp_cache_flush();
+	}
+	$report['foreign_tenant_vectors'] = $frn_report;
 
 	// ------------------------------------------------------ final host invariant
 	// Every drill above (provisioning, four tamper vectors, three teardowns,

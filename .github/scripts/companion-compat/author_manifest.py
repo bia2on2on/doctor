@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
+from typing import Any, Dict
 
 HERE = pathlib.Path(__file__).resolve()
 ROOT = HERE.parents[3]
@@ -76,8 +77,47 @@ ID_SETS = {
     "user_ids": {"parent_table": "wp_users", "parent_key": "ID"},
 }
 
+# Route surfaces the disposable demo actually exercises and must therefore claim.
+#
+# The previous rule only looked at `/staff/portal/`, so the patient portal, the
+# doctor/secretary management portals and the public booking portal could grow
+# without any coverage decision. Detection is now driven by this list: a route
+# matching one of these fragments and claimed by no feature is a GAP, and the
+# catch-all feature deliberately does NOT swallow it.
+DEMO_RELEVANT_ROUTE_PREFIXES = (
+    "/staff/portal/",
+    "/doctor/portal/",
+    "/secretary/",
+    "/patient/",
+    "/booking/",
+    "/availability",
+    "/otp/",
+    "/queue",
+    "/rt/",
+    "/visits/",
+    "/invoices/",
+    "/payments/",
+    "/prescriptions",
+    "/notes/",
+    "/handwriting/",
+)
+
+
+def is_demo_relevant_route(route: str) -> bool:
+    """True when the demo relies on this route being exercised end to end."""
+    return any(fragment in route for fragment in DEMO_RELEVANT_ROUTE_PREFIXES)
+
+
 # Columns whose relation is unambiguous across the whole schema, so one global
 # rule is safe. Verified: each has at most one distinct foreign-key parent.
+#
+# WORDPRESS USER COLUMNS ARE DELIBERATELY ABSENT. Ownership maps answer "does
+# this row belong to the fixture?", and a WordPress user id cannot answer that:
+# a real Clinic's staff row can reference a synthetic demo account. Mapping
+# `token_wp_user_id`-style columns to `user_ids` is what let `collect_scope()`
+# OR a foreign-tenant row into the demo's deletion graph. Those columns are now
+# declared separately in USER_REFERENCE_COLUMNS, where they are treated as
+# dependency evidence (the row depends on the account) rather than as proof.
 GLOBAL_OWNERSHIP_COLUMNS = {
     "clinic_id": "clinic_ids",
     "organization_id": "org_ids",
@@ -112,20 +152,6 @@ GLOBAL_OWNERSHIP_COLUMNS = {
     "surviving_patient_id": "patient_ids",
     "merged_patient_id": "patient_ids",
     "thread_id": "thread_ids",
-    # WordPress actor columns.
-    "wp_user_id": "user_ids",
-    "actor_wp_user_id": "user_ids",
-    "created_by_wp_user_id": "user_ids",
-    "updated_by_wp_user_id": "user_ids",
-    "approved_by_wp_user_id": "user_ids",
-    "merged_by_wp_user_id": "user_ids",
-    "invited_by_wp_user_id": "user_ids",
-    "holder_wp_user_id": "user_ids",
-    "recipient_wp_user_id": "user_ids",
-    "status_updated_by_wp_user_id": "user_ids",
-    "sender_wp_user_id": "user_ids",
-    "set_by_wp_user_id": "user_ids",
-    "removed_by_wp_user_id": "user_ids",
 }
 
 # Per-table overrides for column names that are NOT globally unambiguous, plus
@@ -141,6 +167,112 @@ TABLE_OWNERSHIP_COLUMNS = {
     "cpms_membership_capabilities": {"membership_id": "clinic_membership_ids"},
     "cpms_membership_locations": {"membership_id": "clinic_membership_ids"},
     "cpms_organization_membership_capabilities": {"membership_id": "org_membership_ids"},
+}
+
+# ---------------------------------------------------------------------------
+# Ownership rules (mirror of the companion's declarative constants)
+# ---------------------------------------------------------------------------
+# The teardown resolves ownership with exactly ONE mandatory rule per table.
+# These maps are the reviewed declaration of that rule set; `evaluate.py`
+# requires them to equal the companion's constants exactly, so the generator can
+# never quietly invent a rule and the companion can never quietly drop one.
+
+#: Deletable table -> mandatory tenant column. A row outside the demo tenant is
+#: never owned, whatever ids it references.
+TENANT_OWNERSHIP = {
+    "cpms_appointments": "clinic_id",
+    "cpms_clinic_memberships": "clinic_id",
+    "cpms_clinical_notes": "clinic_id",
+    "cpms_clinicians": "clinic_id",
+    "cpms_custom_role_defs": "clinic_id",
+    "cpms_doctor_consultation_fees": "clinic_id",
+    "cpms_drug_reference": "clinic_id",
+    "cpms_follow_ups": "clinic_id",
+    "cpms_handwriting_documents": "clinic_id",
+    "cpms_idempotency_keys": "clinic_id",
+    "cpms_invoices": "clinic_id",
+    "cpms_medical_attachments": "clinic_id",
+    "cpms_message_threads": "clinic_id",
+    "cpms_messages": "clinic_id",
+    "cpms_notifications": "clinic_id",
+    "cpms_ocr_jobs": "clinic_id",
+    "cpms_organization_memberships": "organization_id",
+    "cpms_otp_tokens": "clinic_id",
+    "cpms_patient_identities": "organization_id",
+    "cpms_patient_identity_links": "organization_id",
+    "cpms_patient_merges": "clinic_id",
+    "cpms_patient_user_links": "clinic_id",
+    "cpms_patients": "clinic_id",
+    "cpms_payments": "clinic_id",
+    "cpms_prescriptions": "clinic_id",
+    "cpms_recommendations": "clinic_id",
+    "cpms_schedule": "clinic_id",
+    "cpms_schedule_exceptions": "clinic_id",
+    "cpms_schedule_slots": "clinic_id",
+    "cpms_services": "clinic_id",
+    "cpms_settings": "clinic_id",
+    "cpms_slot_holds": "clinic_id",
+    "cpms_sms_messages": "clinic_id",
+    "cpms_visit_charge_items": "clinic_id",
+    "cpms_visits": "clinic_id",
+}
+
+#: Tenant-less table -> the parent column that proves ownership. The parent must
+#: itself be proven owned inside the demo tenant.
+PARENT_OWNERSHIP = {
+    "cpms_clinical_note_versions": "note_id",
+    "cpms_clinician_locations": "clinician_id",
+    "cpms_custom_role_capabilities": "role_def_id",
+    "cpms_handwriting_page_versions": "page_id",
+    "cpms_handwriting_pages": "document_id",
+    "cpms_invoice_items": "invoice_id",
+    "cpms_membership_capabilities": "membership_id",
+    "cpms_membership_locations": "membership_id",
+    "cpms_organization_membership_capabilities": "membership_id",
+    "cpms_payment_adjustments": "invoice_id",
+    "cpms_prescription_items": "prescription_id",
+    "cpms_visit_status_history": "visit_id",
+}
+
+#: Composite-key table -> the parent column that proves ownership. The remaining
+#: key columns address the row for deletion; they never select it.
+COMPOSITE_PARENT_COLUMN = {
+    "cpms_message_participants": "thread_id",
+    "cpms_visit_consultation_fees": "visit_id",
+    "cpms_visit_fee_snapshot_failures": "visit_id",
+}
+
+#: Every column that stores a WordPress user id. These are ACTOR/PARTICIPANT
+#: references: proof that a row depends on a synthetic account, never proof that
+#: the row is ours. No column in this list may resolve to an id-set.
+USER_REFERENCE_COLUMNS = [
+    "actor_wp_user_id",
+    "approved_by_wp_user_id",
+    "cancelled_by_wp_user_id",
+    "changed_by_wp_user_id",
+    "created_by_wp_user_id",
+    "holder_wp_user_id",
+    "invited_by_wp_user_id",
+    "issued_by_wp_user_id",
+    "merged_by_wp_user_id",
+    "received_by_wp_user_id",
+    "recipient_wp_user_id",
+    "removed_by_wp_user_id",
+    "reviewed_by_wp_user_id",
+    "sender_wp_user_id",
+    "set_by_wp_user_id",
+    "status_updated_by_wp_user_id",
+    "updated_by_wp_user_id",
+    "uploaded_by_wp_user_id",
+    "voided_by_wp_user_id",
+    "wp_user_id",
+]
+
+#: Tables that can never be owned, with the reason.
+NEVER_OWNED_TABLES = {
+    "cpms_license_install": "install-level licence identity",
+    "cpms_license_state": "install-level licence runtime state",
+    "cpms_schema_migrations": "runner-owned migration bookkeeping",
 }
 
 # Tables that feed a set with their own primary key.
@@ -228,6 +360,29 @@ CRITICAL_OPTIONS = {
 }
 
 
+def _ownership_rule(name: str, teardown_class: str) -> Dict[str, Any]:
+    """The ONE mandatory rule the teardown applies to this table.
+
+    Kept as a single decision, not a list of OR-able clauses: the previous
+    design accepted any resolvable column as proof, which is exactly how a
+    foreign-tenant row entered the deletion graph.
+    """
+    if name in NEVER_OWNED_TABLES or teardown_class in ("global_never", "runner_managed", "preserved_anchor"):
+        return {"kind": "never", "reason": NEVER_OWNED_TABLES.get(name, teardown_class)}
+    if name in TENANT_OWNERSHIP:
+        return {"kind": "tenant", "column": TENANT_OWNERSHIP[name]}
+    if name in COMPOSITE_PARENT_COLUMN:
+        return {"kind": "composite_parent", "column": COMPOSITE_PARENT_COLUMN[name]}
+    if name in PARENT_OWNERSHIP:
+        return {"kind": "parent", "column": PARENT_OWNERSHIP[name]}
+    if teardown_class == "global_selective":
+        return {"kind": "dedicated_allowlist"}
+    # Not reached for a reviewed tree: `evaluate.py` fails the gate when a
+    # deletable live table has no rule, so this value is a loud signal, not a
+    # silent default.
+    return {"kind": "unclassified"}
+
+
 def build(root: pathlib.Path) -> dict:
     schema = ps.load(root / "clinic-practice-management")
     state = cs.load(root / "tools" / "disposable-demo-installer")
@@ -276,6 +431,7 @@ def build(root: pathlib.Path) -> dict:
             "surrogate_id": table.surrogate_id,
             "feeds_id_set": TABLE_FEEDS_SET.get(name),
             "ownership_columns": ownership,
+            "ownership_rule": _ownership_rule(name, teardown_class),
             "foreign_keys": [
                 {
                     "column": fk.column,
@@ -379,8 +535,17 @@ def build(root: pathlib.Path) -> dict:
     # gate cannot tell an undescribed new surface from a described one. The
     # pre-0030 staff-portal surface is covered by the existing persona journeys,
     # so it is claimed here rather than left as an unattributed route.
+    # The persona feature owns the patient, management and public portal surface
+    # the demo drives. Claiming it explicitly (instead of letting the catch-all
+    # absorb it) is what makes `check_features` able to report a NEW demo-relevant
+    # route that nobody has decided to cover.
+    demo_routes = {route for route in surface.route_paths() if is_demo_relevant_route(route)}
     claimed = {route for feature in features for route in feature["routes"]}
-    features[-1]["routes"] = sorted(surface.route_paths() - claimed)
+    features[-1]["routes"] = sorted(set(features[-1]["routes"]) | (demo_routes - claimed))
+    claimed = {route for feature in features for route in feature["routes"]}
+    features[-1]["routes"] = sorted(
+        route for route in (surface.route_paths() - claimed) if not is_demo_relevant_route(route)
+    ) + sorted(route for route in features[-1]["routes"] if is_demo_relevant_route(route))
 
     return {
         "contract_version": CONTRACT_VERSION,
@@ -427,11 +592,26 @@ def build(root: pathlib.Path) -> dict:
             "capabilities": list(surface.capabilities),
             "role_capability_templates": {k: list(v) for k, v in sorted(surface.role_caps.items())},
         },
+        "demo_relevant_route_prefixes": list(DEMO_RELEVANT_ROUTE_PREFIXES),
         "id_sets": ID_SETS,
         "ownership_columns": {
             "global": GLOBAL_OWNERSHIP_COLUMNS,
             "per_table": TABLE_OWNERSHIP_COLUMNS,
             "ambiguous_column_names": ["membership_id"],
+        },
+        # The reviewed rule set. `user_reference_columns` are deliberately NOT
+        # ownership: they only prove that a row elsewhere depends on a synthetic
+        # account, which is a reason to refuse a teardown, never a reason to
+        # delete someone else's row.
+        "ownership_rules": {
+            "tenant": dict(sorted(TENANT_OWNERSHIP.items())),
+            "parent": dict(sorted(PARENT_OWNERSHIP.items())),
+            "composite_parent": dict(sorted(COMPOSITE_PARENT_COLUMN.items())),
+            "user_reference_columns": sorted(USER_REFERENCE_COLUMNS),
+            "never_owned": dict(sorted(NEVER_OWNED_TABLES.items())),
+            "rule_priority": ["never_owned", "tenant", "parent", "composite_parent"],
+            "foreign_dependency_code": "SCOPED_FOREIGN_DEPENDENCY",
+            "unclassified_table_code": "OWNERSHIP_RULE_MISSING",
         },
         "tables": tables,
         "volatile_options": VOLATILE_OPTIONS,
@@ -512,6 +692,43 @@ def build(root: pathlib.Path) -> dict:
                     "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-audit-guard.php",
                 ],
                 "requires": ["verify_chain", "PRESERVED_PARENT_TABLES"],
+            },
+            {
+                "id": "tenant_boundary_never_user_reference",
+                "why": (
+                    "The scoped teardown OR-connected every resolvable ownership column, so a "
+                    "post-baseline row of a FOREIGN Clinic that merely named a synthetic demo "
+                    "WordPress user was claimed as demo-owned. Its id entered the "
+                    "clinician/membership id-sets and the next collection pass used those ids to "
+                    "claim foreign visits, clinical records, invoices and payments, which were "
+                    "then deleted. Ownership is now one mandatory rule per table - the demo "
+                    "tenant boundary, or the declared parent of a tenant-less table - and a "
+                    "WordPress user id is only ever a dependency signal."
+                ),
+                "files": [
+                    "tools/disposable-demo-installer/includes/class-cpms-demo-scoped-teardown.php"
+                ],
+                "requires": [
+                    "TENANT_OWNERSHIP",
+                    "PARENT_OWNERSHIP",
+                    "COMPOSITE_PARENT_COLUMN",
+                    "USER_REFERENCE_COLUMNS",
+                    "SCOPED_FOREIGN_DEPENDENCY",
+                    "OWNERSHIP_RULE_MISSING",
+                    "ownership_rule(",
+                    "foreign_user_dependencies(",
+                    "assert_user_not_foreign_dependent(",
+                ],
+                "forbids": [
+                    "'wp_user_id' => 'user_ids'",
+                    "'actor_wp_user_id' => 'user_ids'",
+                    "'sender_wp_user_id' => 'user_ids'",
+                    # The historical ownership SELECT itself: an OR over resolved
+                    # columns, bounded only by the baseline max id. The dependency
+                    # scan may still OR *user* columns - that is dependency
+                    # detection, and it deletes nothing.
+                    "WHERE (' . implode( ' OR ', $clauses ) . ') AND id > %d",
+                ],
             },
             {
                 "id": "composite_key_teardown",

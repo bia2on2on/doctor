@@ -164,14 +164,116 @@ class DefectCSchema0030Coverage(unittest.TestCase):
         self.assertTrue(self.TABLES.issubset(set(self.state.delete_order)))
 
     def test_new_columns_have_ownership_rules(self) -> None:
-        for column in (
-            "thread_id",
-            "sender_wp_user_id",
-            "set_by_wp_user_id",
-            "removed_by_wp_user_id",
-            "invoiced_invoice_id",
-        ):
+        """Parent/tenant columns need a rule; actor columns must NOT have one.
+
+        This test used to require `sender_wp_user_id`, `set_by_wp_user_id` and
+        `removed_by_wp_user_id` to appear in the global ownership map. That
+        expectation WAS the foreign-tenant leak: it made a WordPress user id a
+        proof of ownership. The contract now separates the two surfaces.
+        """
+        for column in ("thread_id", "invoiced_invoice_id"):
             self.assertIn(column, self.state.scoped_column_map, f"{column} needs an ownership rule")
+        for column in ("sender_wp_user_id", "set_by_wp_user_id", "removed_by_wp_user_id"):
+            self.assertIn(
+                column,
+                self.state.scoped_user_references,
+                f"{column} must be declared as an actor reference",
+            )
+            self.assertNotIn(
+                column,
+                self.state.scoped_column_map,
+                f"{column} must never prove ownership",
+            )
+
+    def test_schema_0030_tables_declare_one_mandatory_rule(self) -> None:
+        rules = {
+            **{name: "tenant" for name in self.state.scoped_tenant_ownership},
+            **{name: "parent" for name in self.state.scoped_parent_ownership},
+            **{name: "composite_parent" for name in self.state.scoped_composite_parent},
+        }
+        for table in self.TABLES:
+            self.assertIn(table, rules, f"{table} has no ownership rule")
+        # The messaging tables are clinic-scoped; the fee and charge tables are
+        # tenant-less and owned through their parent only.
+        self.assertEqual("clinic_id", self.state.scoped_tenant_ownership["cpms_message_threads"])
+        self.assertEqual("thread_id", self.state.scoped_composite_parent["cpms_message_participants"])
+        self.assertEqual("visit_id", self.state.scoped_composite_parent["cpms_visit_consultation_fees"])
+
+
+class DefectHForeignTenantOwnership(unittest.TestCase):
+    """H: a synthetic user id must never make a foreign-tenant row demo-owned.
+
+    `collect_scope()` used to OR every resolvable ownership column, so one
+    post-baseline row in a real Clinic that named a synthetic demo account was
+    enough to claim it - and its id then pulled foreign visits, notes, invoices
+    and payments into the deletion graph. These assertions pin the replacement
+    rule set at source level; the real-database drill (scoped-recovery R9) proves
+    the behaviour.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        cls.state = cs.load(COMPANION)
+
+    def test_every_table_has_exactly_one_mandatory_rule(self) -> None:
+        owners: dict = {}
+        for kind, table_map in (
+            ("tenant", self.state.scoped_tenant_ownership),
+            ("parent", self.state.scoped_parent_ownership),
+            ("composite_parent", self.state.scoped_composite_parent),
+        ):
+            for table in table_map:
+                owners.setdefault(table, []).append(kind)
+        for table, kinds in owners.items():
+            self.assertEqual(1, len(kinds), f"{table} has {kinds}")
+        self.assertEqual(35, len(self.state.scoped_tenant_ownership))
+        self.assertEqual(12, len(self.state.scoped_parent_ownership))
+        self.assertEqual(3, len(self.state.scoped_composite_parent))
+
+    def test_tenant_columns_are_tenant_boundaries_only(self) -> None:
+        for table, column in self.state.scoped_tenant_ownership.items():
+            self.assertIn(column, ("clinic_id", "organization_id"), f"{table} -> {column}")
+
+    def test_no_wordpress_user_column_proves_ownership(self) -> None:
+        self.assertTrue(self.state.scoped_user_references)
+        for column in self.state.scoped_user_references:
+            self.assertNotIn(column, self.state.scoped_column_map, f"{column} must not be an ownership rule")
+            for table, columns in self.state.scoped_table_ownership.items():
+                self.assertNotIn(column, columns, f"{table}.{column} must not be an ownership rule")
+
+    def test_ownership_select_is_not_an_or_of_columns(self) -> None:
+        # The historical shape: an OR over every resolved column, bounded only by
+        # the baseline id. It must not come back.
+        self.assertNotIn("WHERE (' . implode( ' OR ', $clauses ) . ') AND id > %d", self.teardown)
+        self.assertIn("$this->ownership_rule( $short, $cols, $clinic_id, $org_id )", self.teardown)
+        self.assertIn("private function ownership_rule(", self.teardown)
+
+    def test_unclassified_table_fails_closed(self) -> None:
+        self.assertIn("public function ownership_rule_problems(", self.teardown)
+        self.assertIn("OWNERSHIP_RULE_MISSING", self.teardown)
+        self.assertIn("OWNERSHIP_RULE_STALE", self.teardown)
+        self.assertIn("$rule_problems = $this->ownership_rule_problems();", self.teardown)
+
+    def test_foreign_dependency_fails_the_teardown(self) -> None:
+        self.assertIn("private function foreign_user_dependencies(", self.teardown)
+        self.assertIn("private function assert_user_not_foreign_dependent(", self.teardown)
+        # Three throw sites: the preview problem, the execute() code and the
+        # per-user guard that runs immediately before the account is deleted.
+        self.assertEqual(3, self.teardown.count("'SCOPED_FOREIGN_DEPENDENCY'"))
+        # The per-user guard must run before the WordPress account is deleted.
+        self.assertLess(
+            self.teardown.index("$this->assert_user_not_foreign_dependent( $manifest, $user_id );"),
+            self.teardown.index("$this->env->delete_user( $user_id )"),
+        )
+
+    def test_composite_rows_are_selected_by_parent_only(self) -> None:
+        self.assertIn("private const COMPOSITE_PARENT_COLUMN", self.teardown)
+        self.assertEqual("thread_id", self.state.scoped_composite_parent["cpms_message_participants"])
+        body = self.teardown[self.teardown.index("private function collect_composite_rows("):]
+        body = body[: body.index("return $changed;")]
+        self.assertIn("$rule['sql']", body)
+        self.assertNotIn("' OR '", body)
 
 
 class DefectDVerifiedPersistence(unittest.TestCase):
