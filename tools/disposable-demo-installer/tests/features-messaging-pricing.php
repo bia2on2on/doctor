@@ -22,6 +22,18 @@
 defined( 'ABSPATH' ) || exit;
 
 /**
+ * Evidence lines captured by cpdd_feature_check().
+ *
+ * The scoped harness prints ONE JSON document on stdout and is parsed as JSON
+ * by its workflow, so the suite must never echo: a single stray line would make
+ * the whole report unparseable. The lines are kept here and returned inside the
+ * evidence instead.
+ *
+ * @var list<string>
+ */
+$GLOBALS['cpdd_feature_lines'] = array();
+
+/**
  * Assert one property. Throws so the caller's report names the first failure.
  *
  * @param bool   $ok    Condition.
@@ -33,7 +45,16 @@ function cpdd_feature_check( bool $ok, string $label ): void {
 	if ( ! $ok ) {
 		throw new RuntimeException( $label );
 	}
-	echo 'PASS ' . $label . PHP_EOL;
+	$GLOBALS['cpdd_feature_lines'][] = 'PASS ' . $label;
+}
+
+/**
+ * The PASS lines captured so far (evidence only; the suite never prints).
+ *
+ * @return list<string>
+ */
+function cpdd_feature_lines(): array {
+	return (array) $GLOBALS['cpdd_feature_lines'];
 }
 
 /**
@@ -108,6 +129,7 @@ function cpdd_feature_suite( \CpmsDemo\Platform $platform, array $fixture, strin
 
 	$evidence = array(
 		'mode'    => $mode,
+		'lines'   => array(),
 		'clinic_id' => $clinic_id,
 		'visit_id_pricing' => $visit_pricing,
 		'threads' => array_map( 'intval', $threads ),
@@ -410,6 +432,8 @@ function cpdd_feature_suite( \CpmsDemo\Platform $platform, array $fixture, strin
 	} finally {
 		$platform->restore_scope( $previous );
 	}
+
+	$evidence['lines'] = cpdd_feature_lines();
 
 	return $evidence;
 }

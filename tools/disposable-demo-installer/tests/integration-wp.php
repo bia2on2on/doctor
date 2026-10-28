@@ -387,10 +387,19 @@ foreach ( $passwords as $pw ) {
 cpdd_assert( ! $leaked_pw, 'subsequent admin page render omits one-time persona secrets' );
 
 // --- 5b. Iran V1 (schema 0030) demo-required features, on the live fixture --
-require_once CPMS_DEMO_DIR . 'tests/features-messaging-pricing.php';
+// The suite lives beside this harness in the repository checkout. It is NOT
+// part of the installable companion ZIP, so CPMS_DEMO_DIR (the installed plugin
+// directory) does not contain it: __DIR__ is the only path that is correct in
+// both places.
+$feature_file     = __DIR__ . '/features-messaging-pricing.php';
 $feature_evidence = array();
+cpdd_assert( is_file( $feature_file ), 'iran-v1 feature suite is present beside the integration harness' );
+require_once $feature_file;
 try {
 	$feature_evidence = cpdd_feature_suite( $platform, $fixture, 'strict' );
+	foreach ( (array) ( $feature_evidence['lines'] ?? array() ) as $feature_line ) {
+		echo (string) $feature_line . PHP_EOL;
+	}
 	cpdd_assert( true, 'iran-v1 feature suite passed on real MySQL (messaging privacy + visit pricing)' );
 } catch ( \Throwable $feature_error ) {
 	cpdd_assert( false, 'iran-v1 feature suite: ' . $feature_error->getMessage() );

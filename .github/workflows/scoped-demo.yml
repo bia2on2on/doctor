@@ -254,6 +254,27 @@ jobs:
               sys.exit(1)
           PY
 
+      # TEMPORARY DIAGNOSTIC (to be removed): the scoped report is published as
+      # a JSON artifact, which is not readable from here, so a failing check
+      # would otherwise be undiagnosable. Only failing check labels and the
+      # error string are published.
+      - name: Diagnostic — publish scoped integration failure (temporary)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          PR="${{ github.event.pull_request.number }}"
+          FILE=/tmp/cpsd-ci/scoped-integration.json
+          [ -f "$FILE" ] || { echo 'no scoped report'; exit 0; }
+          {
+            echo '### Scoped integration failure (temporary diagnostic)'
+            echo '```'
+            tail -1 "$FILE" | jq -r '"ok=\(.ok) error=\(.error // "")", (.checks[]? | select(.ok == false) | tostring)' | head -40 || tail -5 "$FILE"
+            echo '```'
+          } > /tmp/cpsd-ci/diag.md || true
+          if [ -n "$PR" ] && [ -s /tmp/cpsd-ci/diag.md ]; then gh pr comment "$PR" --body-file /tmp/cpsd-ci/diag.md || true; fi
+
       - name: Scoped runtime safety drills (tamper, interruption, concurrency, isolation)
         run: |
           set -Eeuo pipefail
