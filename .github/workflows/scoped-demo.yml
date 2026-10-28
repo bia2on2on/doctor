@@ -440,7 +440,16 @@ jobs:
           {
             echo '### Scoped browser journeys (temporary diagnostic)'
             echo '```'
-            grep -E '^(PASS|FAIL)|^CPSD_BROWSER|Error|error' "$FILE" | tail -40 || true
+            echo '--- FAIL lines ---'
+            grep -n '^FAIL' "$FILE" | tail -20 || true
+            echo '--- raw tail ---'
+            tail -25 "$FILE" || true
+            echo '--- results ---'
+            for result in /tmp/cpsd-ci/browser/browser-result-*.json; do
+              [ -f "$result" ] || continue
+              echo "$result"
+              jq -r '"ok=\(.ok) error=\(.error // "")", (.checks[]? | select(.ok == false) | "FAILED " + (.name|tostring) + " — " + (.detail|tostring))' "$result" | tail -20 || true
+            done
             echo '```'
           } > /tmp/cpsd-ci/journey-diag.md || true
           if [ -n "$PR" ] && [ -s /tmp/cpsd-ci/journey-diag.md ]; then gh pr comment "$PR" --body-file /tmp/cpsd-ci/journey-diag.md || true; fi
