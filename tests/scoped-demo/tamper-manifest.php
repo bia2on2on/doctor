@@ -102,6 +102,37 @@ try {
 		if ( ! $refused ) {
 			throw new RuntimeException( 'the tampered manifest was NOT refused on load' );
 		}
+		// A tampered manifest must fail CLOSED, not fail LOUD: the write recorder
+		// hooks `init`, and a login POST is a write request, so an exception
+		// escaping here would fatal every form submission of the site — including
+		// the login the operator needs to repair the fixture. Both entry points
+		// are exercised on the real database with the real tampered payload.
+		$_SERVER['REQUEST_METHOD'] = 'POST';
+		$recorder_error            = '';
+		try {
+			CpmsDemo\ScopedTenantGuard::begin_request();
+		} catch ( Throwable $error ) {
+			$recorder_error = get_class( $error ) . ': ' . $error->getMessage();
+		}
+		unset( $_SERVER['REQUEST_METHOD'] );
+		$verdict_error = '';
+		try {
+			$verdict = CpmsDemo\ScopedTenantGuard::write_verdict( 'POST', array( 'clinic_id' => (int) $live['ids']['clinic_id'] ) );
+		} catch ( Throwable $error ) {
+			$verdict = null;
+			$verdict_error = get_class( $error ) . ': ' . $error->getMessage();
+		}
+		$evidence['write_recorder_survives_tamper'] = '' === $recorder_error;
+		$evidence['write_verdict_survives_tamper']  = '' === $verdict_error && true === $verdict;
+		if ( '' !== $recorder_error ) {
+			throw new RuntimeException( 'the write recorder exploded on a tampered manifest: ' . $recorder_error );
+		}
+		if ( '' !== $verdict_error ) {
+			throw new RuntimeException( 'the tenant boundary exploded on a tampered manifest: ' . $verdict_error );
+		}
+		if ( true !== $verdict ) {
+			throw new RuntimeException( 'the tenant boundary must stand down, not guess, on a tampered manifest' );
+		}
 	} else {
 		if ( ! is_file( $cpsd_file ) ) {
 			throw new RuntimeException( 'no pristine manifest copy at ' . $cpsd_file );

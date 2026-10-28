@@ -708,6 +708,26 @@ class DefectIRealUserDataInDemoTenants(unittest.TestCase):
         self.assertIn("register_rows(", self.guard)
         self.assertIn("'source' => 'demo-request'", self.guard)
 
+    def test_an_unverifiable_manifest_never_breaks_an_ordinary_request(self) -> None:
+        # `init` runs on EVERY request, and a login POST is a write request, so
+        # an uncaught MANIFEST_TAMPERED in the recorder fatals the very form the
+        # operator would use to sign in — the browser tamper drill caught exactly
+        # that. The manifest must be read through one total reader, and there may
+        # be exactly one raw read (inside it).
+        self.assertEqual(self.guard.count("$loaded = $manifest->load();"), 1, "only verified_manifest() may load")
+        self.assertIn("private static function verified_manifest(", self.guard)
+        self.assertIn("} catch ( \\Throwable $error ) {", self.guard)
+        for call in ("begin_request", "write_verdict", "manifest_ids"):
+            body = self.guard[self.guard.index(f"function {call}("):]
+            body = body[: body.index("\n\t}")]
+            self.assertIn("self::verified_manifest( $manifest )", body, call)
+        # The portal refusal reads the manifest on a POST too; it must not fatal.
+        admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        portal = admin[admin.index("public static function guard_portal_clinic_creation()"):]
+        portal = portal[: portal.index("private static function render_credentials(")]
+        self.assertIn("} catch ( \\Throwable $error ) {", portal)
+        self.assertLess(portal.index("} catch ( \\Throwable $error ) {"), portal.index("'active' !== (string) ( $loaded['status'] ?? '' )"))
+
 
 class DefectJPortalGuardScope(unittest.TestCase):
     """J: the portal refusal must not touch foreign Organizations (Stage 2)."""

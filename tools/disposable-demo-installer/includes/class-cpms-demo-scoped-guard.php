@@ -75,17 +75,11 @@ final class ScopedTenantGuard {
 		}
 		$env      = new Env();
 		$manifest = new ScopedManifest( $env );
-		if ( ! $manifest->mode_enabled() ) {
-			return;
-		}
-		$loaded = $manifest->load();
-		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+		$loaded   = self::verified_manifest( $manifest );
+		if ( null === $loaded ) {
 			return;
 		}
 		$fixture = (string) ( $loaded['fixture_id'] ?? '' );
-		if ( '' === $fixture ) {
-			return;
-		}
 		// Only a synthetic fixture account can create REGISTRABLE demo data; any
 		// other actor is either refused below or (anonymous) protected by the
 		// teardown's attribution rules. Taking the snapshot only when it can be
@@ -178,11 +172,8 @@ final class ScopedTenantGuard {
 		}
 		$env      = new Env();
 		$manifest = new ScopedManifest( $env );
-		if ( ! $manifest->mode_enabled() ) {
-			return true;
-		}
-		$loaded = $manifest->load();
-		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+		$loaded   = self::verified_manifest( $manifest );
+		if ( null === $loaded ) {
 			return true;
 		}
 		if ( ! self::targets_demo_tenant( $loaded, $params ) ) {
@@ -265,9 +256,48 @@ final class ScopedTenantGuard {
 	 * @return array<string,mixed>
 	 */
 	private static function manifest_ids( ScopedManifest $manifest ): array {
-		$loaded = $manifest->load();
+		$loaded = self::verified_manifest( $manifest );
 
-		return is_array( $loaded ) ? $loaded : array();
+		return null === $loaded ? array() : $loaded;
+	}
+
+	/**
+	 * The verified, active fixture manifest — or null when there is none.
+	 *
+	 * This is the ONE place that reads the manifest for the hooks below, and it
+	 * is deliberately total: a manifest that fails verification (a tampered or
+	 * foreign payload) is not an error to propagate here. These hooks run on
+	 * ordinary requests — a login POST is a write request too — so letting the
+	 * exception escape would turn a tampered manifest into a fatal error on
+	 * every form submission of the site, including the one that would log the
+	 * operator in.
+	 *
+	 * Standing down is the safe answer, not a weakening of the fail-closed
+	 * policy: with no verified fixture there is no fixture identity to register
+	 * rows against and no demo tenant this process can prove, so nothing new can
+	 * become deletable — the teardown refuses every row it cannot attribute, and
+	 * it refuses to run at all while the manifest does not verify.
+	 *
+	 * @param ScopedManifest $manifest Manifest reader.
+	 * @return array<string,mixed>|null
+	 */
+	private static function verified_manifest( ScopedManifest $manifest ): ?array {
+		try {
+			if ( ! $manifest->mode_enabled() ) {
+				return null;
+			}
+			$loaded = $manifest->load();
+		} catch ( \Throwable $error ) {
+			return null;
+		}
+		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+			return null;
+		}
+		if ( '' === (string) ( $loaded['fixture_id'] ?? '' ) ) {
+			return null;
+		}
+
+		return $loaded;
 	}
 
 	/**

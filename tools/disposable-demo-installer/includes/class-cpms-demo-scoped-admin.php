@@ -424,7 +424,19 @@ class ScopedAdmin {
 		if ( ! $manifest->mode_enabled() ) {
 			return;
 		}
-		$loaded = $manifest->load();
+		try {
+			$loaded = $manifest->load();
+		} catch ( \Throwable $error ) {
+			// A manifest that does not verify identifies no fixture, so no actor
+			// can be shown to be the demo's synthetic manager. Refusing here
+			// would either hit the wrong person or (worse) fatal on a form POST
+			// that has nothing to do with the demo; standing down keeps
+			// production behaviour intact. Nothing becomes silently deletable:
+			// the teardown refuses to run at all while the manifest is
+			// unverifiable, so a Clinic created in that window stays unproven
+			// and needs an explicit human decision.
+			return;
+		}
 		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
 			// No live fixture: this request cannot belong to a demo session, so a
 			// leftover mode marker must not restrict anybody.
