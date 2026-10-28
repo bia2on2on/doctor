@@ -348,9 +348,11 @@ def journey_staff_messaging_privacy(browser, rotated_creds: dict, links: dict, f
     msg_page.locator('[data-role="messages-root"]').wait_for(state="visible")
     thread_items = msg_page.locator('[data-role="messages-threads"] li button')
     thread_items.first.wait_for(state="visible", timeout=35000)
+    # Three private threads exist; the doctor is a participant of two of them
+    # (the third is receptionist <-> finance). Exactly two rows may render.
     check(
-        "the doctor sees exactly the three private threads in the real UI",
-        thread_items.count() == len(thread_ids),
+        "the doctor sees exactly their two private threads in the real UI",
+        len(thread_ids) == 3 and thread_items.count() == 2,
         f"rendered={thread_items.count()} manifest={len(thread_ids)}",
     )
     check(

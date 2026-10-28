@@ -126,8 +126,24 @@ function cpdd_feature_suite( \CpmsDemo\Platform $platform, array $fixture, strin
 			static fn ( array $row ): int => (int) ( $row['id'] ?? 0 ),
 			(array) ( $doctor_threads['threads'] ?? array() )
 		);
-		cpdd_feature_check( 3 === count( $doctor_ids ), 'messaging: the doctor is a participant of exactly the three fixture threads' );
-		cpdd_feature_check( array() === array_diff( array_map( 'intval', $threads ), $doctor_ids ), 'messaging: all three fixture threads are visible to the doctor' );
+		// Three threads exist, but the doctor is a participant of exactly TWO of
+		// them: the third is receptionist <-> finance. That asymmetry is the
+		// whole point, so it is asserted rather than glossed over.
+		cpdd_feature_check( 2 === count( $doctor_ids ), 'messaging: the doctor is a participant of exactly two of the three fixture threads' );
+		cpdd_feature_check(
+			array( (int) $threads['doctor_receptionist'], (int) $threads['doctor_finance'] ) === $doctor_ids
+			|| array( (int) $threads['doctor_finance'], (int) $threads['doctor_receptionist'] ) === $doctor_ids,
+			'messaging: the doctor sees exactly the doctor<->receptionist and doctor<->finance threads'
+		);
+		cpdd_feature_check( ! in_array( (int) $threads['receptionist_finance'], $doctor_ids, true ), 'messaging: the receptionist<->finance thread is NOT visible to the doctor' );
+		cpdd_feature_check(
+			2 === count( (array) ( $platform->message_threads( $accountant )['threads'] ?? array() ) ),
+			'messaging: the finance user sees exactly the two threads they participate in'
+		);
+		cpdd_feature_check(
+			2 === count( (array) ( $platform->message_threads( $reception )['threads'] ?? array() ) ),
+			'messaging: the receptionist sees exactly the two threads they participate in'
+		);
 
 		// The thread is strictly two-person, proven from the database.
 		$participant_rows = $platform->fetch_all(
