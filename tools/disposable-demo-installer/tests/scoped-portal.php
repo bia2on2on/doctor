@@ -954,7 +954,9 @@ try {
 	);
 	$real_appointment = cpsd_pt_insert(
 		$table( 'cpms_appointments' ),
-		array( 'clinic_id' => $demo_clinic, 'patient_id' => $real_patient, 'clinician_id' => $clinician, 'slot_date' => gmdate( 'Y-m-d' ), 'slot_time' => '10:00:00', 'status' => 'confirmed', 'booked_at' => $now, 'created_at' => $now, 'updated_at' => $now )
+		// A slot is REQUIRED (fk_appt_slot / fk_appt_location, migration 0013), so
+		// the booking reuses one of the demo Clinic's own slots.
+		array( 'clinic_id' => $demo_clinic, 'location_id' => $location, 'slot_id' => (int) ( $live['ids']['slot_ids'][0] ?? 0 ), 'patient_id' => $real_patient, 'clinician_id' => $clinician, 'slot_date' => gmdate( 'Y-m-d' ), 'slot_time' => '10:00:00', 'status' => 'confirmed', 'booked_at' => $now, 'created_at' => $now, 'updated_at' => $now )
 	);
 	cpsd_pt_check( $real_patient > 1 && $real_appointment > 1, 'P8 a real patient booking exists inside the demo Clinic', $checks );
 
