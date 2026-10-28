@@ -168,6 +168,9 @@ try {
 	}
 	$admin_id = 1;
 	wp_set_current_user( $admin_id );
+	// `wp eval-file` runs this file inside a function scope, so the database
+	// handle must be imported explicitly.
+	global $wpdb;
 	$env         = new Env();
 	$platform    = new Platform();
 	$manifest    = new ScopedManifest( $env );
