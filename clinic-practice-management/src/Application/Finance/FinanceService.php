@@ -458,8 +458,8 @@ final class FinanceService
                     throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409 );
                 }
 
-                $built                          = $this->pricing->build_invoice_items( $visit );
-                $previous_pricing_issue         = $this->issuing_pricing_invoice;
+                $built                         = $this->pricing->build_invoice_items( $visit );
+                $previous_pricing_issue        = $this->issuing_pricing_invoice;
                 $this->issuing_pricing_invoice = true;
                 try {
                     $invoice = $this->issueInvoice(
