@@ -689,16 +689,16 @@ final class VisitPricingService {
         $visit_id     = (int) $visit['id'];
         $clinician_id = (int) $visit['clinician_id'];
         $location_id  = (int) ( $visit['location_id'] ?? 0 );
-        $can_edit      = $this->draft_editable( $ctx, $visit );
+        $can_edit     = $this->draft_editable( $ctx, $visit );
         // A draft's first read captures its applicable fee; established
         // Visits keep that snapshot even when the doctor's default later moves.
-        $fee_row = $can_edit
+        $fee_row      = $can_edit
             ? $this->ensure_fee_snapshot( $visit, 'first_pricing_read' )
             : $this->pricing->visit_fee_row( $visit_id );
-        $fees          = $this->fee_components( $visit, $fee_row, $can_edit );
-        $default_fee   = $fees['default_fee'];
-        $override_fee  = $fees['override_fee'];
-        $effective     = $fees['effective_fee'];
+        $fees         = $this->fee_components( $visit, $fee_row, $can_edit );
+        $default_fee  = $fees['default_fee'];
+        $override_fee = $fees['override_fee'];
+        $effective    = $fees['effective_fee'];
 
         $charges       = [];
         $charges_total = 0;

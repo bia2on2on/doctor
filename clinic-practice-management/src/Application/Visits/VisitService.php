@@ -1174,6 +1174,7 @@ final class VisitService
         // Iran V1: capture the consultation fee while the Visit is established
         // so later doctor-default changes cannot reprice it. Ancillary failure
         // is logged without aborting the atomic visit creation.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- established PSR-style createVisit locals; security, SQL, i18n and escaping sniffs stay active.
         try {
             App::visit_pricing_service()->snapshot_visit_fee_on_check_in([
                 'id' => $visitId,
@@ -1187,6 +1188,7 @@ final class VisitService
                 ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $e->getMessage()]
             );
         }
+        // phpcs:enable
 
         // D-6: رابطه دوطرفه — active_visit_id روی Appointment
         if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
