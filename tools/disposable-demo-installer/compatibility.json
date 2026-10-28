@@ -815,6 +815,14 @@
       "why": "Defect A: one shared membership_ids set let a clinic-membership id delete foreign organization-membership capability rows on auto-increment overlap."
     }
   ],
+  "schema_pin_scan": {
+    "allowed_historical_versions": [],
+    "files": [
+      ".github/workflows/scoped-demo.yml",
+      ".github/workflows/disposable-demo-installer.yml"
+    ],
+    "why": "Both companion lanes assert the production schema head in a shell test. When production advanced to 2026_10_27_0030 those assertions went stale, and because the lanes' path filters exclude clinic-practice-management/** they failed only on the next companion PR. Scanning them here turns that latent breakage into an evaluated fact."
+  },
   "sources": {
     "browser_journeys": [
       "tools/disposable-demo-installer/tests/browser-acceptance.py",

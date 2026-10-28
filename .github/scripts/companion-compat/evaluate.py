@@ -651,6 +651,43 @@ def check_volatile_options(state: cs.CompanionState, manifest: dict, report: Rep
         )
 
 
+_SCHEMA_LITERAL = re.compile(r"\b(20\d{2}_\d{2}_\d{2}_\d{4})\b")
+
+
+def check_stale_workflow_pins(schema: ps.ProductionSchema, manifest: dict, report: Report, root: Path) -> None:
+    """CI workflows must not assert a schema head other than the derived one.
+
+    A shell `test "$SCHEMA" = '…'` inside a lane is a hard assertion about
+    production. Lanes whose path filters do not include the production subtree
+    only run when the companion changes, so a stale assertion is invisible until
+    an unrelated companion PR turns red.
+    """
+    scan = manifest.get("schema_pin_scan") or {}
+    files = list(scan.get("files") or [])
+    allowed = set(scan.get("allowed_historical_versions") or [])
+    if not files:
+        return
+    for relpath in files:
+        path = root / str(relpath)
+        if not path.is_file():
+            report.add("schema_pin", BLOCKER, f"schema pin scan target is missing: {relpath}")
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as error:
+            report.add("schema_pin", BLOCKER, f"cannot read {relpath}: {error}")
+            continue
+        for found in sorted(set(_SCHEMA_LITERAL.findall(text))):
+            if found == schema.head or found in allowed:
+                continue
+            report.add(
+                "schema_pin",
+                BLOCKER,
+                f"{relpath} asserts schema head `{found}` but production head is `{schema.head}`",
+                str(scan.get("why", "")),
+            )
+
+
 def check_ownership_map_agreement(state: cs.CompanionState, manifest: dict, report: Report) -> None:
     """The companion's ownership maps must equal the manifest's verified rules."""
     ownership = manifest.get("ownership_columns") or {}
@@ -821,6 +858,7 @@ def evaluate(root: Path, gate: str = "all") -> Dict[str, object]:
     check_ownership_rules(schema, state, manifest, report)
     check_roles_capabilities(surface, manifest, report)
     check_features(root, surface, manifest, report)
+    check_stale_workflow_pins(schema, manifest, report, root)
     check_ownership_map_agreement(state, manifest, report)
     check_volatile_options(state, manifest, report)
     check_safety_invariants(root, manifest, report)

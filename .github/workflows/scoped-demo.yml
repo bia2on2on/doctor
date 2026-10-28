@@ -231,7 +231,7 @@ jobs:
           wp plugin install "$GITHUB_WORKSPACE/$CPMS_ZIP" --activate --path="$WP_DIR" --allow-root
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
-          test "$SCHEMA" = '2026_10_18_0029'
+          test "$SCHEMA" = '2026_10_27_0030'
           echo "SCHEMA=$SCHEMA"
           OUT_DIR=/tmp/cpsd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpsd-ci/companion-build.log
           wp plugin install /tmp/cpsd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root

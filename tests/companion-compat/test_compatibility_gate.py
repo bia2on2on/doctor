@@ -285,6 +285,46 @@ class DetectorsStillFail(unittest.TestCase):
             )
         )
 
+    def test_stale_workflow_schema_pin_is_rejected(self) -> None:
+        """A lane's hardcoded schema assertion must match the derived head.
+
+        Both companion lanes asserted `2026_10_18_0029` long after production
+        moved to `2026_10_27_0030`. Because their path filters exclude the
+        production subtree they only ran on a companion change, so the staleness
+        surfaced as a red lane on an unrelated pull request instead of being
+        evaluated here.
+        """
+        manifest = load_manifest()
+        scan = manifest["schema_pin_scan"]
+        self.assertTrue(scan["files"])
+        report = self._report()
+        evaluate.check_stale_workflow_pins(self.schema, manifest, report, ROOT)
+        self.assertEqual(
+            [], [f.message for f in report.findings], "the committed workflows must be current"
+        )
+
+        stale = json.loads(json.dumps(manifest))
+        stale["schema_pin_scan"]["allowed_historical_versions"] = []
+        stale["schema_pin_scan"]["files"] = [
+            rel for rel in scan["files"] if rel.endswith("scoped-demo.yml")
+        ]
+        target = ROOT / stale["schema_pin_scan"]["files"][0]
+        original = target.read_text(encoding="utf-8")
+        try:
+            target.write_text(
+                original.replace("2026_10_27_0030", "2026_10_18_0029").replace(
+                    "2026_10_27_0030", "2026_10_18_0029"
+                ),
+                encoding="utf-8",
+            )
+            report = self._report()
+            evaluate.check_stale_workflow_pins(self.schema, stale, report, ROOT)
+            messages = " ".join(f.message for f in report.findings)
+            self.assertIn("2026_10_18_0029", messages)
+            self.assertTrue(any(f.severity == evaluate.BLOCKER for f in report.findings))
+        finally:
+            target.write_text(original, encoding="utf-8")
+
     def test_unimplemented_safety_invariant_is_rejected(self) -> None:
         manifest = json.loads(json.dumps(self.manifest))
         for invariant in manifest["safety_invariants"]:

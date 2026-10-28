@@ -574,6 +574,20 @@ def build(root: pathlib.Path) -> dict:
                 "Generated schema metadata is never allowed to author a deletion rule."
             ),
         },
+        "schema_pin_scan": {
+            "files": [
+                ".github/workflows/scoped-demo.yml",
+                ".github/workflows/disposable-demo-installer.yml",
+            ],
+            "why": (
+                "Both companion lanes assert the production schema head in a shell "
+                "test. When production advanced to 2026_10_27_0030 those assertions "
+                "went stale, and because the lanes' path filters exclude "
+                "clinic-practice-management/** they failed only on the next companion "
+                "PR. Scanning them here turns that latent breakage into an evaluated fact."
+            ),
+            "allowed_historical_versions": [],
+        },
         "rest_routes": {
             "count": len(surface.routes),
             "namespace": "clinic/v1",
