@@ -488,9 +488,9 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
     stats_text = doctor_page.locator('[data-role="pricing-stats"]').inner_text() or ""
     check(
         "the projection shows the check-in snapshot fee and states the no-reprice policy",
-        "تعرفه ثبت‌شده هنگام پذیرش" in stats_text
+        "تعرفه ثبتشده هنگام پذیرش" in stats_text
         and "سیاست تعرفه" in stats_text
-        and "تغییر تعرفه پیش‌فرض" in stats_text,
+        and "تغییر تعرفه پیشفرض" in stats_text,
         stats_text[:200],
     )
 
