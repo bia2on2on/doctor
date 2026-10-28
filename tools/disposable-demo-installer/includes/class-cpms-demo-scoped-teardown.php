@@ -1131,15 +1131,19 @@ class ScopedTeardown {
 		if ( '' !== (string) $tenants['ledger_code'] ) {
 			$problems[] = $tenants['ledger_code'] . ': ' . (string) $tenants['ledger_detail'];
 		}
-		if ( array() !== $tenants['unproven'] ) {
-			$problems[] = 'SCOPED_OWNERSHIP_UNPROVEN: cpms_clinics=' . implode( ',', $tenants['unproven'] );
-		}
+		// A pending intent is reported BEFORE the unproven set it explains: an
+		// interrupted registration leaves a Clinic that no sealed record names yet,
+		// so both conditions hold, and the actionable one is the repair - not the
+		// symptom. The refusal therefore surfaces as SCOPED_OWNERSHIP_PENDING.
 		if ( array() !== $tenants['pending'] ) {
 			$tokens = array();
 			foreach ( $tenants['pending'] as $intent ) {
 				$tokens[] = (string) ( $intent['token'] ?? '' );
 			}
 			$problems[] = 'SCOPED_OWNERSHIP_PENDING: ' . implode( ',', array_filter( $tokens ) );
+		}
+		if ( array() !== $tenants['unproven'] ) {
+			$problems[] = 'SCOPED_OWNERSHIP_UNPROVEN: cpms_clinics=' . implode( ',', $tenants['unproven'] );
 		}
 		$audit = $this->audit_guard->verify_chain();
 		if ( ! $audit['ok'] ) {
