@@ -432,6 +432,13 @@ jobs:
               if not data.get('ok'):
                   print(data.get('error', f'phase {phase} failed'), file=sys.stderr)
                   ok = False
+                  failed = [item for item in data.get('checks', []) if not item.get('ok')]
+                  detail = ' || '.join(
+                      str(item.get('name')) + ' — ' + str(item.get('detail', ''))[:240]
+                      for item in failed[-3:]
+                  ) or str(data.get('error', f'phase {phase} failed'))
+                  print('::error title=CPSD_BROWSER_' + phase.upper() + '::'
+                        + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
           if not ok:
               sys.exit(1)
           PY

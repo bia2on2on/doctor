@@ -450,10 +450,17 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
     ctx, page = persona_login(browser, creds["organization_manager"]["username"],
                               creds["organization_manager"]["password"])
     try:
-        url = management_url
-        check("lifecycle: the management portal renders for the Organization manager", bool(url), url or "no portal url")
+        # The Organization overview is an explicitly selected surface: the portal
+        # reads `cpms-org` from the query string (ManagementPortalShell::ORG_PARAM),
+        # so the forms only exist on that URL.
+        sep = "&" if "?" in management_url else "?"
+        url = f"{management_url}{sep}cpms-org={organization_id}"
+        check("lifecycle: the management portal renders for the Organization manager", bool(management_url),
+              management_url or "no portal url")
         page.goto(url, wait_until="domcontentloaded")
         body = page.content()
+        check("lifecycle: the Organization overview rendered for the manager",
+              "cpms-mgmt-shell" in body and MANAGEMENT_DENIED not in body, page.url)
         check("lifecycle: the Organization manager is not denied the portal",
               MANAGEMENT_DENIED not in body and "دسترسی ندارید" not in body, url)
 
@@ -473,6 +480,7 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
         after = page.content()
         check("lifecycle: the production controller deactivated the demo Clinic",
               "درمانگاه غیرفعال شد" in after, page.url)
+        page.goto(url, wait_until="domcontentloaded")
         reactivate_form = page.locator(
             'form.cpms-mgmt-form'
             f':has(input[name="cpms_action"][value="org_clinic_status"])'
@@ -487,6 +495,7 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
         check("lifecycle: the production controller reactivated the demo Clinic",
               "درمانگاه فعال شد" in page.content(), page.url)
         evidence["status_round_trip"] = True
+        page.goto(url, wait_until="domcontentloaded")
 
         # ---------------- a second Clinic created through the portal form
         slug = "cpsd-lifecycle-" + uuid.uuid4().hex[:10]
@@ -508,8 +517,9 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
         created_body = page.content()
         check("lifecycle: the production controller created a second Clinic under the demo Organization",
               "درمانگاه ایجاد شد" in created_body, page.url)
+        page.goto(url, wait_until="domcontentloaded")
         check("lifecycle: the new Clinic is listed in the portal",
-              "درمانگاه دوم چرخهٔ عمر" in created_body, slug)
+              "درمانگاه دوم چرخهٔ عمر" in page.content(), slug)
         evidence["second_clinic_slug"] = slug
         page.screenshot(path=str(EVIDENCE / "journey-org-manager-lifecycle.png"))
     finally:
