@@ -80,6 +80,31 @@ function cpsd_pt_check( bool $ok, string $label, array &$checks ): void {
 }
 
 /**
+ * Reduce a real REST dispatch to [status, code].
+ *
+ * `WP_REST_Server::dispatch()` converts a WP_Error into a `WP_REST_Response`
+ * envelope *before* returning, so a refused request is a normal response whose
+ * body carries the machine-readable `code` — never a WP_Error. Reading only
+ * `is_wp_error()` would therefore report every refusal as "not refused".
+ *
+ * @param mixed $answer Result of rest_do_request().
+ * @return array{status:int,code:string}
+ */
+function cpsd_pt_rest_answer( $answer ): array {
+	if ( is_wp_error( $answer ) ) {
+		return array( 'status' => 0, 'code' => (string) $answer->get_error_code() );
+	}
+	if ( $answer instanceof WP_HTTP_Response ) {
+		$data = $answer->get_data();
+		$code = is_array( $data ) && isset( $data['code'] ) ? (string) $data['code'] : '';
+
+		return array( 'status' => (int) $answer->get_status(), 'code' => $code );
+	}
+
+	return array( 'status' => 0, 'code' => 'unexpected:' . gettype( $answer ) );
+}
+
+/**
  * @param string $table Table.
  * @param array<string,mixed> $data Row.
  * @return int Insert id.
@@ -987,35 +1012,32 @@ try {
 	cpsd_pt_check( cpsd_pt_synthetic_users() === $users_before, 'P8 the refusal deleted no synthetic account', $checks );
 	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P8 audit chain intact after the refusal', $checks );
 
-	// (b) the tenant write boundary, exercised through real REST dispatch.
-	$rest_refusal = '';
+	// (b) the tenant write boundary, exercised through real REST dispatch of a
+	// REAL production route (`POST /clinic/v1/booking/hold`). `rest_pre_dispatch`
+	// runs before route matching, so the boundary itself is what has to answer;
+	// a fabricated path would still reach it but would prove nothing about the
+	// routes real users actually call.
 	wp_set_current_user( $host_user );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
-	// A REAL, registered production route: rest_pre_dispatch runs after routing,
-	// so a fabricated path would 404 before the boundary could be consulted.
 	$probe = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$probe->set_param( 'clinic_id', $demo_clinic );
-	$answer = rest_do_request( $probe );
-	if ( is_wp_error( $answer ) ) {
-		$rest_refusal = (string) $answer->get_error_code();
-	}
-	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' === $rest_refusal, 'P8 a real (non-fixture) account cannot POST into the demo Clinic over REST (' . ( '' === $rest_refusal ? 'not refused' : $rest_refusal ) . ')', $checks );
+	$refused = cpsd_pt_rest_answer( rest_do_request( $probe ) );
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' === $refused['code'], 'P8 a real (non-fixture) account cannot POST into the demo Clinic over REST (HTTP ' . $refused['status'] . ', code ' . ( '' === $refused['code'] ? 'none' : $refused['code'] ) . ')', $checks );
+	cpsd_pt_check( 403 === $refused['status'], 'P8 the REST refusal is a 403 (HTTP ' . $refused['status'] . ')', $checks );
 
 	wp_set_current_user( $host_user );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $host_clinic_a;
 	$own = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$own->set_param( 'clinic_id', $host_clinic_a );
-	$own_answer = rest_do_request( $own );
-	$own_code   = is_wp_error( $own_answer ) ? (string) $own_answer->get_error_code() : '';
-	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $own_code, 'P8 the same real account writing into its OWN Clinic is not restricted by the demo (' . $own_code . ')', $checks );
+	$own_answer = cpsd_pt_rest_answer( rest_do_request( $own ) );
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $own_answer['code'], 'P8 the same real account writing into its OWN Clinic is not restricted by the demo (HTTP ' . $own_answer['status'] . ', code ' . ( '' === $own_answer['code'] ? 'none' : $own_answer['code'] ) . ')', $checks );
 
 	wp_set_current_user( $manager_id );
 	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
 	$persona_probe = new WP_REST_Request( 'POST', '/clinic/v1/booking/hold' );
 	$persona_probe->set_param( 'clinic_id', $demo_clinic );
-	$persona_answer = rest_do_request( $persona_probe );
-	$persona_code   = is_wp_error( $persona_answer ) ? (string) $persona_answer->get_error_code() : '';
-	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $persona_code, 'P8 a synthetic fixture persona may still write into the demo Clinic (' . $persona_code . ')', $checks );
+	$persona_answer = cpsd_pt_rest_answer( rest_do_request( $persona_probe ) );
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $persona_answer['code'], 'P8 a synthetic fixture persona may still write into the demo Clinic (HTTP ' . $persona_answer['status'] . ', code ' . ( '' === $persona_answer['code'] ? 'none' : $persona_answer['code'] ) . ')', $checks );
 	unset( $_SERVER['HTTP_X_CPMS_CLINIC_ID'] );
 
 	// The operator resolves the real row out of band; only then may the demo be
@@ -1029,7 +1051,7 @@ try {
 	cpsd_pt_check( true === (bool) $p8_result['ok'], 'P8 the demo teardown completes afterwards', $checks );
 	cpsd_pt_check( cpsd_pt_host_digest( $platform, $host_clinics ) === $host_digest, 'P8 every pre-existing host row is byte-identical', $checks );
 	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P8 audit chain intact after the teardown', $checks );
-	$report['P8'] = array( 'real_patient' => $real_patient, 'rest_refusal' => $rest_refusal );
+	$report['P8'] = array( 'real_patient' => $real_patient, 'rest_refusal' => $refused['code'], 'rest_status' => $refused['status'] );
 
 	// ================================================================ scenario P9
 	// The ownership ledger cannot be lost silently: deleting it, truncating it,

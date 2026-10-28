@@ -469,6 +469,26 @@ class PortalLifecycleDrillsAreSelfConsistent(unittest.TestCase):
         self.assertIn("tests/scoped-portal.php", workflow)
         self.assertIn("SCOPED_PORTAL", workflow)
 
+    def test_the_rest_boundary_probe_reads_the_response_envelope(self) -> None:
+        # `WP_REST_Server::dispatch()` converts a WP_Error (including the
+        # barrier's own 403) into a WP_REST_Response before returning, so a probe
+        # that only inspects `is_wp_error()` reports every refusal as
+        # "not refused". The drill must read the machine-readable `code` from the
+        # envelope, through the one helper that knows this.
+        self.assertIn("function cpsd_pt_rest_answer(", self.source)
+        self.assertIn("$data['code']", self.source)
+        probes = re.findall(
+            r"\$(\w+)\s*=\s*cpsd_pt_rest_answer\(\s*rest_do_request\(", self.source
+        )
+        self.assertEqual(
+            sorted(probes), ["own_answer", "persona_answer", "refused"], probes
+        )
+        # No probe may fall back to the bare WP_Error reading anywhere but inside
+        # the helper itself, and the evidence record must use the envelope code.
+        self.assertNotIn("is_wp_error( $own_answer )", self.source)
+        self.assertNotIn("is_wp_error( $persona_answer )", self.source)
+        self.assertNotIn("'rest_refusal' => $rest_refusal", self.source)
+
 
 class DefectDVerifiedPersistence(unittest.TestCase):
     """D: a failed option write must stop the operation, not be assumed to work."""
