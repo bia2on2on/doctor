@@ -160,3 +160,46 @@ the demo's synthetic users: a foreign row can do that. `ScopedTeardown::
 TABLE_OWNERSHIP_ONLY` restricts ownership to the tenant columns, and
 `assert_user_not_foreign_linked()` refuses to delete a synthetic user while any
 foreign-owned link still points at it.
+
+### Preserved anchors are owned by identity, not by absence
+
+`cpms_organizations`, `cpms_clinics` and `cpms_locations` are archived in place:
+they are **not** part of the deletable row sets, so "is this row in the collected
+set?" can never classify them. Deciding that way was a real defect. A synthetic
+Organization manager can legitimately change the demo Clinic's lifecycle status
+through the production management portal
+(`ManagementPortalController::dispatch( …, 'org_clinic_status', … )` →
+`OrganizationClinicProvisioningService::set_clinic_status()`), which stamps
+`cpms_clinics.status_updated_by_wp_user_id` with that synthetic account. The
+post-delete per-user scan then saw a Clinic row naming a synthetic user, could not
+find it in the deletable sets, and declared the demo anchor foreign →
+`SCOPED_FOREIGN_DEPENDENCY` halfway through a teardown that had already deleted
+rows.
+
+`ScopedTeardown::owned_tenants()` now decides the tenant roots **once**, by
+identity, and the same decision feeds `collect_scope()`, `preview()`, the delete
+phase and `assert_user_not_foreign_dependent()`:
+
+| Anchor | Proof of ownership |
+|---|---|
+| `cpms_organizations` | the manifest's demo Organization id, and only when it postdates the sealed baseline |
+| `cpms_clinics` | the manifest's demo Clinic **plus** every Clinic that names a provably demo-created Organization *and* postdates the sealed baseline |
+| `cpms_locations` | every Location of an owned Clinic (plus the manifest's declared Locations) |
+| `cpms_audit_logs` | rows whose `clinic_id` is an owned Clinic — preserved, never deleted, never treated as a dependency |
+
+Everything else in the live-only scan is foreign: a row that is not a preserved
+anchor must not name a synthetic account. A WordPress user reference still proves
+nothing, and sharing an Organization is not proof of ownership either — the
+Organization itself must be post-baseline.
+
+### A Clinic that cannot be proven is refused, never guessed
+
+A Clinic that names the demo Organization but predates the sealed baseline cannot
+be shown to be demo-created (for example an id recycled below the baseline
+`max_id`). It is neither claimed nor silently left behind: `preview()` reports
+`SCOPED_OWNERSHIP_UNPROVEN: cpms_clinics=<ids>` and `execute()` raises
+`SCOPED_OWNERSHIP_UNPROVEN` **before any destructive stage**, deleting nothing and
+leaving the fixture active and recoverable. Removing or re-homing that Clinic makes
+the same teardown pass, which is what
+`tools/disposable-demo-installer/tests/scoped-portal.php` (P1/P2/P3) proves against
+a real database on MySQL 8 and MariaDB 11.4.
