@@ -65,6 +65,10 @@ jobs:
           coverage: none
           tools: composer:v2
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       # A release artifact must not be published for a schema the demo companion
       # has not declared compatible: the disposable demo is the documented way to
       # evaluate a release, so an undetected mismatch would ship a release nobody
@@ -72,7 +76,12 @@ jobs:
       - name: Companion compatibility gate (blocks publication on mismatch)
         run: |
           set -Eeuo pipefail
-          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+          python3 --version
+          if ! python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility; then
+            code=$?
+            echo "::error::companion compatibility gate failed with exit ${code}"
+            exit "${code}"
+          fi
 
       - name: Build release ZIP (whitelist-only)
         run: bash bin/build-release.sh

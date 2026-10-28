@@ -38,6 +38,7 @@ import ast
 import json
 import re
 import sys
+import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -880,7 +881,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         result = evaluate(root, gate=args.gate)
     except OSError as error:
-        print(f"companion-compat: FAIL (cannot read sources: {error})")
+        # A gate that cannot read its inputs must fail, and must say why.
+        traceback.print_exc()
+        print(f"companion-compat: FAIL (cannot read sources: {type(error).__name__}: {error})")
+        return 2
+    except Exception as error:  # noqa: BLE001 - never fail silently, never hide the cause
+        traceback.print_exc()
+        print(f"companion-compat: FAIL (unexpected {type(error).__name__}: {error})")
         return 2
 
     if args.report:
