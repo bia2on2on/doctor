@@ -414,6 +414,38 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         );
         self::assertSame(200, $inbox->get_status());
         self::assertSame('پیام خصوصی مالی', $inbox->get_data()['data']['messages'][0]['body']);
+        $finance_reply = $this->iv1_dispatch(
+            'POST', '/clinic/v1/staff/portal/messages/threads/' . $rest_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic']), ['body' => 'پاسخ خصوصی مالی']
+        );
+        self::assertSame(201, $finance_reply->get_status());
+        wp_set_current_user((int) $world['doctor']);
+        $doctor_inbox = $this->iv1_dispatch(
+            'GET', '/clinic/v1/staff/portal/messages/threads/' . $rest_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic'])
+        );
+        self::assertSame(200, $doctor_inbox->get_status());
+        self::assertSame('پاسخ خصوصی مالی', $doctor_inbox->get_data()['data']['messages'][1]['body']);
+
+        wp_set_current_user((int) $world['secretary']);
+        $reception_thread = $this->iv1_dispatch(
+            'POST', self::THREADS, [], $this->iv1_headers((int) $world['clinic']),
+            ['recipient_wp_user_id' => $finance1]
+        );
+        self::assertSame(201, $reception_thread->get_status());
+        $reception_thread_id = (int) $reception_thread->get_data()['data']['id'];
+        $reception_send = $this->iv1_dispatch(
+            'POST', '/clinic/v1/staff/portal/messages/threads/' . $reception_thread_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic']), ['body' => 'پیام خصوصی پذیرش و مالی']
+        );
+        self::assertSame(201, $reception_send->get_status());
+        wp_set_current_user($finance1);
+        $finance_reception_inbox = $this->iv1_dispatch(
+            'GET', '/clinic/v1/staff/portal/messages/threads/' . $reception_thread_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic'])
+        );
+        self::assertSame(200, $finance_reception_inbox->get_status());
+        self::assertSame('پیام خصوصی پذیرش و مالی', $finance_reception_inbox->get_data()['data']['messages'][0]['body']);
 
         $audit_meta = (string) App::db()->fetchValue(
             'SELECT meta_json FROM ' . App::db()->table('cpms_audit_logs')
