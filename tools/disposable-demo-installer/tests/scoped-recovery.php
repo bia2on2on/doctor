@@ -1068,6 +1068,10 @@ try {
 				global $wpdb;
 				$note    = (int) $frn_seed['note'];
 				$invoice = (int) $frn_seed['invoice'];
+				// The pre-vector values are captured, not assumed: the vector must
+				// restore the foreign tenant byte-for-byte, including NULLs.
+				$note_before    = $wpdb->get_var( $wpdb->prepare( 'SELECT updated_by_wp_user_id FROM `' . $platform->table( 'cpms_clinical_notes' ) . '` WHERE id = %d', $note ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- table from a fixed map, id prepared.
+				$invoice_before = $wpdb->get_var( $wpdb->prepare( 'SELECT issued_by_wp_user_id FROM `' . $platform->table( 'cpms_invoices' ) . '` WHERE id = %d', $invoice ) ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- table from a fixed map, id prepared.
 				$first   = $wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => $user ), array( 'id' => $note ), array( '%d' ), array( '%d' ) );
 				$second  = $wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => $user ), array( 'id' => $invoice ), array( '%d' ), array( '%d' ) );
 				if ( 1 !== (int) $first || 1 !== (int) $second ) {
@@ -1077,10 +1081,10 @@ try {
 					'exists'   => (int) $frn_scalar( 'SELECT updated_by_wp_user_id FROM `' . $platform->table( 'cpms_clinical_notes' ) . '` WHERE id = %d', array( $note ) ) === $user
 						&& (int) $frn_scalar( 'SELECT issued_by_wp_user_id FROM `' . $platform->table( 'cpms_invoices' ) . '` WHERE id = %d', array( $invoice ) ) === $user,
 					'expected' => 'cpms_clinical_notes.updated_by_wp_user_id=' . $user,
-					'cleanup'  => static function () use ( $platform, $note, $invoice ): void {
+					'cleanup'  => static function () use ( $platform, $note, $invoice, $note_before, $invoice_before ): void {
 						global $wpdb;
-						$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => 1 ), array( 'id' => $note ), array( '%d' ), array( '%d' ) );
-						$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => 1 ), array( 'id' => $invoice ), array( '%d' ), array( '%d' ) );
+						$wpdb->update( $platform->table( 'cpms_clinical_notes' ), array( 'updated_by_wp_user_id' => null === $note_before ? null : (int) $note_before ), array( 'id' => $note ), array( '%d' ), array( '%d' ) );
+						$wpdb->update( $platform->table( 'cpms_invoices' ), array( 'issued_by_wp_user_id' => null === $invoice_before ? null : (int) $invoice_before ), array( 'id' => $invoice ), array( '%d' ), array( '%d' ) );
 					},
 				);
 			},
