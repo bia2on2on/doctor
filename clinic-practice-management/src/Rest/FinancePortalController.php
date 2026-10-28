@@ -225,6 +225,37 @@ final class FinancePortalController extends RestBase {
 			)
 		);
 
+		// Iran V1 — read-only itemized billing projection for the CURRENT trusted
+		// Location Visit: doctor consultation fee, per-visit override, treatment
+		// charges, invoice items, paid amount, balance and payment status. No
+		// mutation and no second totals engine (delegates to VisitPricingService).
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/visits/(?P<id>\d+)/billing',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::READABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->billing( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request ),
+				),
+			)
+		);
+
+		// Iran V1 — first issuance from the doctor's persisted pricing. The
+		// mutation delegates to the EXISTING FinanceService::issueInvoice()
+		// through issue_invoice_from_pricing(); no duplicate billing engine.
+		register_rest_route(
+			self::NS,
+			'/staff/portal/finance/visits/(?P<id>\d+)/invoice/auto',
+			array(
+				array(
+					'methods'             => \WP_REST_Server::CREATABLE,
+					'callback'            => fn( WP_REST_Request $request ) => $this->issue_auto( $request ),
+					'permission_callback' => fn( WP_REST_Request $request ) => $this->permission( $request, array( self::WRITE_CAP ) ),
+				),
+			)
+		);
+
 		register_rest_route(
 			self::NS,
 			'/staff/portal/finance/reconciliation',
@@ -923,6 +954,90 @@ final class FinancePortalController extends RestBase {
 		// existing 200 + CLINIC_IDEMPOTENCY_REPLAY contract and never creates a
 		// second payment.
 		return $this->success( $result, empty( $result['idempotent_replay'] ) ? 201 : 200 );
+	}
+
+	/**
+	 * Iran V1 — itemized billing read. The Visit id is a selector only: the
+	 * persisted row must belong to the trusted Clinic AND the CURRENT trusted
+	 * Location before any pricing/invoice data is projected.
+	 */
+	private function billing( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$visit = $this->billing_visit_in_current_location( $request );
+		if ( $visit instanceof WP_Error ) {
+			return $visit;
+		}
+
+		try {
+			return $this->success( App::visit_pricing_service()->billing_for_visit( (int) get_current_user_id(), (int) $visit['id'] ) );
+		} catch ( FinanceException $exception ) {
+			return $this->error( $exception->errorCode, $exception->httpStatus, $exception->getMessage(), $exception->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established FinanceException contract.
+		} catch ( Throwable $exception ) {
+			error_log( '[CPMS][FinancePortalController] billing unexpected: ' . get_class( $exception ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention.
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+	}
+
+	/**
+	 * Iran V1 — automatic first issuance from the persisted doctor fee +
+	 * per-visit override + draft charges. Delegates to the existing
+	 * FinanceService contract; the invoice id is never supplied by the client.
+	 */
+	private function issue_auto( WP_REST_Request $request ): WP_REST_Response|WP_Error {
+		$visit = $this->billing_visit_in_current_location( $request );
+		if ( $visit instanceof WP_Error ) {
+			return $visit;
+		}
+		if ( 'consultation_completed' !== (string) $visit['status'] ) {
+			return $this->error( 'CLINIC_INVALID_TRANSITION', 409, 'فاکتور فقط برای ویزیت پایان‌یافته قابل صدور است' );
+		}
+
+		try {
+			return $this->success(
+				App::financeService()->issue_invoice_from_pricing( (int) get_current_user_id(), (int) $visit['id'] ),
+				201
+			);
+		} catch ( FinanceException $exception ) {
+			return $this->error( $exception->errorCode, $exception->httpStatus, $exception->getMessage(), $exception->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established FinanceException contract.
+		} catch ( VisitException $exception ) {
+			return $this->error( $exception->errorCode, $exception->httpStatus, $exception->getMessage(), $exception->data ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established VisitException contract.
+		} catch ( Throwable $exception ) {
+			error_log( '[CPMS][FinancePortalController] auto issue unexpected: ' . get_class( $exception ) ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- established controller convention.
+			return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
+		}
+	}
+
+	/**
+	 * Shared tenant guard for the two Iran V1 finance reads/writes above.
+	 *
+	 * @return array<string, mixed>|WP_Error
+	 */
+	private function billing_visit_in_current_location( WP_REST_Request $request ): array|WP_Error {
+		$scope = $this->trusted_scope();
+		if ( $scope instanceof WP_Error ) {
+			return $scope;
+		}
+		$clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- established ClinicScope contract.
+		$locations = $this->eligible_locations( $clinic_id, (int) get_current_user_id() );
+		if ( $locations instanceof WP_Error ) {
+			return $locations;
+		}
+		if ( array() === $locations ) {
+			return $this->error( 'CLINIC_SCOPE_UNAVAILABLE', 403, 'موقعیت عملیاتی معتبر نیست.', array( 'reason' => 'location' ) );
+		}
+		$current = $this->current_location( $scope, $locations );
+		if ( $current instanceof WP_Error ) {
+			return $current;
+		}
+		$visit = $this->visits->find( (int) $request['id'] );
+		if (
+			null === $visit
+			|| $clinic_id !== (int) $visit['clinic_id']
+			|| (int) $current['location_id'] !== (int) ( $visit['location_id'] ?? 0 )
+		) {
+			return $this->error( 'CLINIC_NOT_FOUND', 404, 'ویزیت یافت نشد' );
+		}
+
+		return $visit;
 	}
 
 	/**

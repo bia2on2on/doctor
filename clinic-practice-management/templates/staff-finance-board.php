@@ -103,6 +103,11 @@ if ( empty( $cpms_staff_embed ) ) {
 }
 /* Print isolation: only the receipt surface is printed; the portal chrome and
     every other panel are masked while the browser print dialog is active. */
+/* Iran V1 — itemized billing projection (receptionist). */
+.cpms-finance-board__billing-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 8px; margin: 10px 0; }
+.cpms-finance-board__billing-stat { padding: 10px; border: 1px solid var(--cpms-border); border-radius: 8px; background: #f8fafc; display: grid; gap: 3px; }
+.cpms-finance-board__billing-stat span { color: var(--cpms-muted); font-size: .82rem; }
+.cpms-finance-board__billing-stat strong { font-size: 1rem; overflow-wrap: anywhere; }
 @media print {
     body.cpms-finance-printing { background: #fff; }
     body.cpms-finance-printing * { visibility: hidden !important; }
@@ -163,6 +168,30 @@ if ( empty( $cpms_staff_embed ) ) {
             </table>
         </div>
     </section>
+    <section class="cpms-finance-board__panel" data-role="finance-billing" aria-label="صورتحساب تفصیلی ویزیت" hidden>
+        <h2 class="cpms-finance-board__heading">صورتحساب تفصیلی ویزیت <span data-role="finance-billing-visit"></span></h2>
+        <p class="cpms-finance-board__hint">همه مبالغ به ریال است. تعرفه ویزیت پزشک، تعرفه اختصاصی بیمار و خدمات درمانی اضافی جداگانه نمایش داده میشوند. فاکتور نهایی و پرداختهای ثبتشده تغییر نمیکنند.</p>
+        <div class="cpms-finance-board__billing-stats" data-role="finance-billing-stats"></div>
+        <h3 class="cpms-finance-board__heading">خدمات درمانی اضافی</h3>
+        <div class="cpms-finance-board__table-wrap">
+            <table class="cpms-finance-board__table">
+                <thead><tr><th>شرح</th><th>مبلغ واحد (ریال)</th><th>تعداد</th><th>جمع (ریال)</th><th>توضیح</th></tr></thead>
+                <tbody data-role="finance-billing-charges"></tbody>
+            </table>
+        </div>
+        <h3 class="cpms-finance-board__heading" style="margin-top:12px">اقلام فاکتور</h3>
+        <div class="cpms-finance-board__table-wrap">
+            <table class="cpms-finance-board__table">
+                <thead><tr><th>شرح</th><th>تعداد</th><th>مبلغ واحد (ریال)</th><th>مبلغ (ریال)</th></tr></thead>
+                <tbody data-role="finance-billing-items"></tbody>
+            </table>
+        </div>
+        <div class="cpms-finance-board__form-actions" style="margin-top:12px">
+            <button type="button" class="cpms-finance-board__submit" data-role="finance-billing-auto" hidden>صدور فاکتور با تعرفه پزشک</button>
+            <button type="button" class="cpms-finance-board__action" data-role="finance-billing-close">بستن</button>
+        </div>
+    </section>
+
     <section class="cpms-finance-board__panel" data-role="finance-payment" aria-label="ثبت دستی پرداخت" hidden>
         <h2 class="cpms-finance-board__heading">ثبت پرداخت</h2>
         <p class="cpms-finance-board__hint">پرداخت دریافت‌شده به‌صورت دستی ثبت می‌شود؛ مبلغ بیش از باقی‌ماندهٔ سرور پذیرفته نمی‌شود و ثبت کامل، فاکتور را تسویه می‌کند.</p>
@@ -264,7 +293,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], mutating: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '' };
+    var state = { clinicId: null, locationId: null, locations: [], mutating: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '', billingVisitId: null };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
@@ -296,6 +325,12 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var reconSummaryNode = document.querySelector('[data-role="finance-recon-summary"]');
     var reconTableWrap = document.querySelector('[data-role="finance-recon-table-wrap"]');
     var reconRowsNode = document.querySelector('[data-role="finance-recon-rows"]');
+    var billingPanel = document.querySelector('[data-role="finance-billing"]');
+    var billingStatsNode = document.querySelector('[data-role="finance-billing-stats"]');
+    var billingChargesNode = document.querySelector('[data-role="finance-billing-charges"]');
+    var billingItemsNode = document.querySelector('[data-role="finance-billing-items"]');
+    var billingVisitNode = document.querySelector('[data-role="finance-billing-visit"]');
+    var billingAutoNode = document.querySelector('[data-role="finance-billing-auto"]');
     var formNode = document.querySelector('[data-role="finance-issue-form"]');
     var targetNode = document.querySelector('[data-role="finance-issue-target"]');
     var descriptionInput = document.querySelector('[data-role="finance-issue-description"]');
@@ -464,7 +499,8 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                     esc(visit.clinician_name),
                     operationalStamp(visit),
                     'مشاوره تمام‌شده',
-                    '<button type="button" class="cpms-finance-board__action" data-role="finance-issue-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '">صدور فاکتور</button>'
+                    '<button type="button" class="cpms-finance-board__action" data-role="finance-issue-open" data-visit-id="' + Number(visit.visit_id) + '" data-patient="' + esc(visit.patient_name) + '">صدور فاکتور</button>' +
+                    '<button type="button" class="cpms-finance-board__action" data-role="finance-billing-open" data-visit-id="' + Number(visit.visit_id) + '">جزئیات صورتحساب</button>'
                 ];
                 return '<tr>' + values.map(function (value, index) {
                     return '<td data-label="' + eligibleLabels[index] + '">' + value + '</td>';
@@ -491,6 +527,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                         ' data-remaining="' + esc(visit.invoice.remaining) + '"' +
                         ' data-currency="' + esc(visit.invoice.currency) + '">ثبت پرداخت</button>';
                 }
+                invoiceCell += '<button type="button" class="cpms-finance-board__action" data-role="finance-billing-open" data-visit-id="' + Number(visit.visit_id) + '">جزئیات صورتحساب</button>';
                 var values = [
                     '<span class="cpms-finance-board__patient">' + esc(visit.patient_name) + '</span>',
                     esc(visit.clinician_name),
@@ -690,6 +727,75 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             });
         });
     }
+    function rial(value) {
+        return String(value === null || value === undefined ? '—' : value) + ' ریال';
+    }
+    function billingStat(label, value) {
+        return '<div class="cpms-finance-board__billing-stat"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
+    }
+    function feeSourceLabel(source) {
+        if (source === 'visit_override') return 'تعرفه اختصاصی پزشک';
+        if (source === 'checkin_snapshot') return 'تعرفه ثبتشده هنگام پذیرش';
+        if (source === 'snapshot_failed') return 'ثبت تعرفه هنگام پذیرش ناموفق بود؛ تعیین دستی لازم است';
+        if (source === 'doctor_default') return 'پیشفرض پزشک';
+        return 'تنظیم نشده';
+    }
+    function renderBilling(data) {
+        if (!billingPanel || !billingVisitNode || !billingStatsNode || !billingChargesNode || !billingItemsNode || !billingAutoNode) return;
+        billingPanel.hidden = false;
+        billingVisitNode.textContent = '— ' + (data.patient_name || '') + ' (ویزیت ' + Number(data.visit_id) + ')';
+        billingStatsNode.innerHTML = [
+            billingStat('تعرفه پیشفرض پزشک', data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee)),
+            billingStat('تعرفه ثبتشده هنگام پذیرش', data.snapshot_fee === null ? 'ثبت نشده' : rial(data.snapshot_fee)),
+            billingStat('تعرفه اختصاصی ویزیت', data.override_fee === null ? 'بدون تغییر' : rial(data.override_fee)),
+            billingStat('تعرفه ویزیت اعمالشده', rial(data.effective_fee === null ? 0 : data.effective_fee)),
+            billingStat('منبع تعرفه', feeSourceLabel(data.fee_source)),
+            billingStat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد'),
+            billingStat('جمع خدمات اضافی', rial(data.charges_total)),
+            billingStat('جمع کل اقلام', rial(data.expected_total)),
+            billingStat('مبلغ پرداختشده', rial(data.paid_amount)),
+            billingStat('مانده بدهی', rial(data.remaining_balance)),
+            billingStat('وضعیت پرداخت', data.payment_status_label)
+        ].join('');
+        var charges = Array.isArray(data.charges) ? data.charges : [];
+        billingChargesNode.innerHTML = charges.length ? charges.map(function (charge) {
+            return '<tr>' +
+                '<td data-label="شرح">' + esc(charge.description) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(charge.unit_amount) + '</td>' +
+                '<td data-label="تعداد">' + esc(charge.quantity) + '</td>' +
+                '<td data-label="جمع (ریال)">' + esc(charge.line_total) + '</td>' +
+                '<td data-label="توضیح">' + esc(charge.note || '—') + '</td>' +
+                '</tr>';
+        }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="5">خدمت اضافی ثبت نشده است.</td></tr>';
+        var items = data.invoice && Array.isArray(data.invoice.items) ? data.invoice.items : [];
+        billingItemsNode.innerHTML = items.length ? items.map(function (item) {
+            return '<tr>' +
+                '<td data-label="شرح">' + esc(item.description) + '</td>' +
+                '<td data-label="تعداد">' + esc(item.quantity) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(item.unit_price) + '</td>' +
+                '<td data-label="مبلغ (ریال)">' + esc(item.amount) + '</td>' +
+                '</tr>';
+        }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="4">فاکتوری صادر نشده است.</td></tr>';
+        billingAutoNode.hidden = !(state.canIssue && !data.invoice && data.effective_fee !== null);
+    }
+    function loadBilling(visitId) {
+        if (!visitId) return Promise.resolve();
+        return request('/staff/portal/finance/visits/' + Number(visitId) + '/billing').then(function (result) {
+            if (!result.ok) { setStatus(showError(result, 'دریافت صورتحساب ناموفق بود.'), 'error'); return; }
+            renderBilling(payload(result));
+            setStatus('', '');
+        }).catch(function () { setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error'); });
+    }
+    function openBilling(visitId) {
+        state.billingVisitId = Number(visitId) || null;
+        if (!state.billingVisitId) return;
+        loadBilling(state.billingVisitId);
+    }
+    function closeBilling() {
+        state.billingVisitId = null;
+        if (billingPanel) billingPanel.hidden = true;
+    }
+
     function loadEligible() {
         if (!state.canIssue) return Promise.resolve();
         if (state.locations.length > 1 && !state.locationId) return Promise.resolve();
@@ -928,6 +1034,35 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (!trigger) return;
         openIssueForm(Number(trigger.getAttribute('data-visit-id')), String(trigger.getAttribute('data-patient') || ''));
     });
+    function billingClick(event) {
+        var trigger = event.target && event.target.closest ? event.target.closest('[data-role="finance-billing-open"]') : null;
+        if (!trigger) return;
+        openBilling(Number(trigger.getAttribute('data-visit-id')));
+    }
+    if (eligibleRowsNode) eligibleRowsNode.addEventListener('click', billingClick);
+    if (rowsNode) rowsNode.addEventListener('click', billingClick);
+    var billingCloseNode = document.querySelector('[data-role="finance-billing-close"]');
+    if (billingCloseNode) billingCloseNode.addEventListener('click', closeBilling);
+    if (billingAutoNode) billingAutoNode.addEventListener('click', function () {
+        if (!state.billingVisitId || state.mutating) return;
+        state.mutating = true;
+        billingAutoNode.disabled = true;
+        request('/staff/portal/finance/visits/' + state.billingVisitId + '/invoice/auto', 'POST', {}).then(function (result) {
+            if (!result.ok) { setStatus(showError(result, 'صدور فاکتور ناموفق بود.'), 'error'); return null; }
+            setStatus('فاکتور بر اساس تعرفه پزشک و خدمات ویزیت صادر شد.', '');
+            return refreshAll().then(function () { return loadBilling(state.billingVisitId); });
+        }).catch(function () {
+            setStatus('ارتباط با سرویس مالی برقرار نشد.', 'error');
+        }).then(function () {
+            state.mutating = false;
+            billingAutoNode.disabled = false;
+        });
+    });
+    window.setInterval(function () {
+        if (document.visibilityState !== 'visible' || !state.billingVisitId) return;
+        loadBilling(state.billingVisitId);
+    }, 15000);
+
     formNode.addEventListener('submit', function (event) {
         event.preventDefault();
         submitIssue();
@@ -942,6 +1077,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         closePayForm();
         closeCheckoutForm();
         closeReceipt();
+        closeBilling();
         resetReconciliation();
         refreshAll();
     });

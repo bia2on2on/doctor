@@ -445,10 +445,27 @@ with sync_playwright() as playwright:
         # carries only the selector id it posts to.
         capture_controls = board.locator('[data-role="finance-pay-open"]')
         require(capture_controls.count() == 2, f"{label}: exactly one capture control per invoice-bearing row")
+        # Iran V1 — every awaiting-payment row exposes one read-only itemized
+        # billing action. It never captures or voids a payment; that remains
+        # the two explicit capture controls above.
+        billing_controls = board.locator('[data-role="finance-billing-open"]')
+        require(billing_controls.count() == 3, f"{label}: exactly one billing-details control per awaiting-payment row")
         require(
-            board.locator("button, input, form, select").count() == 2,
-            f"{label}: the board itself stays free of other mutation controls",
+            board.locator("button, input, form, select").count() == 5,
+            f"{label}: the board exposes only the two capture controls and three read-only billing controls",
         )
+        # Iran V1 fee-snapshot policy is visible in the read-only billing
+        # projection at every responsive Persian RTL viewport.
+        billing_controls.first.click()
+        billing_panel = page.locator('[data-role="finance-billing"]')
+        billing_panel.wait_for(state="visible", timeout=20000)
+        stats_text = page.locator('[data-role="finance-billing-stats"]').inner_text()
+        require("تعرفه ثبتشده هنگام پذیرش" in stats_text, f"{label}: billing panel exposes the check-in fee snapshot")
+        require("سیاست تعرفه" in stats_text, f"{label}: billing panel states the audited fee-snapshot policy")
+        require("ریال" in stats_text, f"{label}: billing panel labels Rial amounts")
+        require(page.locator('[data-role="finance-billing-auto"]').is_hidden(), f"{label}: settled rows keep issuance hidden")
+        page.locator('[data-role="finance-billing-close"]').click()
+        require(billing_panel.is_hidden(), f"{label}: read-only billing panel closes without a mutation")
         selectors = capture_controls.evaluate_all("els => els.map(e => Number(e.getAttribute('data-invoice-id')))")
         require(
             all(isinstance(value, int) and value > 0 for value in selectors),
@@ -582,13 +599,14 @@ with sync_playwright() as playwright:
         require(receipt_panel.is_hidden(), f"{label}: closing the receipt leaves the board unchanged")
 
         dimensions = page.evaluate(
-            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width, paid: document.querySelector('[data-role=finance-paid]').getBoundingClientRect().width})"
+            "({width: innerWidth, scroll: document.documentElement.scrollWidth, board: document.querySelector('[data-role=finance-board]').getBoundingClientRect().width, eligible: document.querySelector('[data-role=finance-eligible]').getBoundingClientRect().width, payment: document.querySelector('[data-role=finance-payment]').getBoundingClientRect().width, paid: document.querySelector('[data-role=finance-paid]').getBoundingClientRect().width, billing: document.querySelector('[data-role=finance-billing]').getBoundingClientRect().width})"
         )
         require(dimensions["scroll"] <= dimensions["width"] + 1, f"{label}: no horizontal viewport overflow")
         require(dimensions["board"] <= dimensions["width"] + 1, f"{label}: board fits viewport width")
         require(dimensions["eligible"] <= dimensions["width"] + 1, f"{label}: first-issuance panel fits viewport width")
         require(dimensions["payment"] <= dimensions["width"] + 1, f"{label}: capture panel fits viewport width")
         require(dimensions["paid"] <= dimensions["width"] + 1, f"{label}: paid panel fits viewport width")
+        require(dimensions["billing"] <= dimensions["width"] + 1, f"{label}: itemized billing panel fits viewport width")
         require("/wp-admin/" not in urlparse(page.url).path, f"{label}: remains in independent front-end Staff Portal")
         page.screenshot(path=str(OUT / f"finance-board-{label}.png"), full_page=True)
         print(f"INFO screenshot captured: {label} viewport={width}x{height}")

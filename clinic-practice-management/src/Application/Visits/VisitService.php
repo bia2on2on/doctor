@@ -1171,6 +1171,38 @@ final class VisitService
             'request_id' => null,
         ]);
 
+        // Iran V1: capture the consultation fee while the Visit is established
+        // so later doctor-default changes cannot reprice it. Ancillary failure
+        // is logged without aborting the atomic visit creation.
+        // phpcs:disable PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.CloseBracketLine,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis -- established PSR-style createVisit locals; security, SQL, i18n and escaping sniffs stay active.
+        try {
+            App::visit_pricing_service()->snapshot_visit_fee_on_check_in([
+                'id' => $visitId,
+                'clinic_id' => $clinic_id,
+                'clinician_id' => $clinicianId,
+                'location_id' => $locationIdForDate,
+            ]);
+        } catch (\Throwable $e) {
+            // Preserve check-in availability, but durably prevent a later read
+            // from substituting a fee default that may have changed meanwhile.
+            try {
+                App::visit_pricing_service()->mark_fee_snapshot_failed([
+                    'id' => $visitId,
+                    'clinic_id' => $clinic_id,
+                ]);
+            } catch (\Throwable $marker_error) {
+                $this->opLog?->error(
+                    'visit.fee_snapshot_failure_marker_failed',
+                    ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $marker_error->getMessage()]
+                );
+            }
+            $this->opLog?->warning(
+                'visit.fee_snapshot_failed',
+                ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $e->getMessage()]
+            );
+        }
+        // phpcs:enable
+
         // D-6: رابطه دوطرفه — active_visit_id روی Appointment
         if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->appointments->updateStatus($appointmentId, ['active_visit_id' => $visitId]);

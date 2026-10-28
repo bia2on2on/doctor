@@ -355,6 +355,33 @@ jobs:
               sys.exit('All migration tests must execute on MariaDB 11.4.13 without skips or failures.')
           PY
 
+      # Iran V1 — the additive messaging/pricing migration is exercised on a
+      # real MariaDB 11.4.13 server, not only on the MySQL 8 full suite.
+      - name: Run focused Iran V1 messaging/pricing migration on MariaDB 11.4.13
+        env:
+          WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
+        run: |
+          set -o pipefail
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/iran-v1-mariadb-junit.xml \
+            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php 2>&1 | tee /tmp/iran-v1-mariadb.log
+          if ! grep -qE '^(OK \(|OK, but)' /tmp/iran-v1-mariadb.log; then
+            echo '::error::Iran V1 migration suite did not finish with a passing PHPUnit summary.'
+            exit 1
+          fi
+          python3 - <<'PYIRAN'
+          import sys
+          import xml.etree.ElementTree as ET
+
+          cases = ET.parse('/tmp/iran-v1-mariadb-junit.xml').getroot().findall('.//testcase')
+          skipped = sum(case.find('skipped') is not None for case in cases)
+          failures = sum(case.find('failure') is not None for case in cases)
+          errors = sum(case.find('error') is not None for case in cases)
+          print(f'Iran V1 migration MariaDB JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) < 2 or skipped or failures or errors:
+              sys.exit('All Iran V1 migration tests must execute on MariaDB 11.4.13 without skips or failures.')
+          PYIRAN
+
       - name: Run focused first-practice onboarding on MariaDB 11.4.13
         env:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
@@ -449,6 +476,8 @@ jobs:
             /tmp/first-practice-mariadb-junit.xml
             /tmp/heartbeat-recovery-*.log
             /tmp/heartbeat-recovery-*-junit.xml
+            /tmp/iran-v1-mariadb.log
+            /tmp/iran-v1-mariadb-junit.xml
             /tmp/heartbeat-recovery-junit-summary.txt
           if-no-files-found: warn
 

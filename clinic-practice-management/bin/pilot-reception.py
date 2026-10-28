@@ -600,8 +600,18 @@ def assert_reception_shell(page):
         page.locator('[data-role="staff-module-link"]').nth(i).get_attribute("data-cpms-staff-module")
         for i in range(page.locator('[data-role="staff-module-link"]').count())
     ]
-    if nav_ids != ["reception", "finance"]:
-        raise RuntimeError(f"staff navigation must expose authorized reception + finance modules, got {nav_ids}")
+    established = ["reception", "finance"]
+    if nav_ids[: len(established)] != established:
+        raise RuntimeError(f"staff navigation must keep authorized reception + finance modules first, got {nav_ids}")
+    appended = nav_ids[len(established) :]
+    # Iran V1 messaging may be appended for this receptionist; it must be the
+    # only extra module (pricing is doctor/clinician-only) and be accessible.
+    if len(set(appended)) != len(appended) or any(module_id != "messages" for module_id in appended):
+        raise RuntimeError(f"staff navigation exposes unexpected modules, got {appended}")
+    for offset, module_id in enumerate(appended):
+        link = page.locator('[data-role="staff-module-link"]').nth(len(established) + offset)
+        if not link.is_visible() or not (link.inner_text() or "").strip():
+            raise RuntimeError(f"Iran V1 {module_id} navigation link is not accessible")
     if not page.locator('[data-role="staff-module-link"]').first.is_visible():
         raise RuntimeError("reception module navigation entry is not visible")
     if page.locator('[data-role="reception-app"]').count() != 1:

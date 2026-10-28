@@ -30,6 +30,7 @@
 | T-22 | **Mass Assignment** (Tampering) | Mutation | L | Whitelist فیلدها در Repository | L | TP-10 |
 | T-23 | **Timing Attack** روی OTP (Spoofing) | احراز | L | `hash_equals` | L | Code Review |
 | T-24 | **No-Show غلط/Complete دوباره** (Integrity) | Integrity | M | State Machine + Lock (J-1) | L | TP-03 |
+| T-25 | **تغییر گذشتهنگر تعرفه ویزیتهای پذیرششده** (Tampering/Financial Integrity) | مالی | **H** | ثبت تصویر تعرفه هنگام Check-in در `cpms_visit_consultation_fees` با actor سیستمی و Audit `VISIT_FEE_SNAPSHOT`؛ تغییرات بعدی پیشفرض پزشک فقط ردیف پیشفرض را تغییر میدهد؛ override صریح پزشک only draft؛ اقلام/جمع فاکتور نهایی Immutable | L | `VisitPricingBillingTest` (Iran V1 fee-snapshot) |
 
 ## 2. Trust Boundaries
 ```

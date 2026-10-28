@@ -89,6 +89,31 @@ final class StaffPortalShell {
 	/** Phase 14 Slice 1 — read-only Average Waiting report for one explicit date. */
 	public const MODULE_REPORTS = 'reports';
 
+	/** Iran V1 — internal Doctor/Receptionist messaging (Clinic-scoped). */
+	public const MODULE_MESSAGES = 'messages';
+
+	/** Iran V1 — doctor consultation fee + draft treatment charges. */
+	public const MODULE_PRICING = 'pricing';
+
+	/** Plugin-owned messaging module template (embed mode). */
+	public const MESSAGES_TEMPLATE_REL = 'templates/staff-messages.php';
+
+	/** Plugin-owned pricing module template (embed mode). */
+	public const PRICING_TEMPLATE_REL = 'templates/staff-pricing.php';
+
+	/** The messaging module relies on existing class-specific scoped capabilities. */
+	/**
+	 * Existing capabilities the pricing module relies on. The doctor identity
+	 * is additionally derived from a durable clinician profile by the service.
+	 *
+	 * @var list<string>
+	 */
+	public const PRICING_MODULE_CAPS = array(
+		RolesAndCapabilities::INVOICE_READ,
+		RolesAndCapabilities::INVOICE_CREATE,
+		RolesAndCapabilities::CONSULT_COMPLETE,
+	);
+
 	/** Plugin-owned Reports module template (embed mode). */
 	public const REPORTS_TEMPLATE_REL = 'templates/staff-reports-avg-waiting.php';
 
@@ -290,6 +315,16 @@ final class StaffPortalShell {
 		return self::plugin_dir() . '/' . self::FINANCE_TEMPLATE_REL;
 	}
 
+	/** Absolute path of the mounted Messaging module template (Iran V1). */
+	public static function messages_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::MESSAGES_TEMPLATE_REL;
+	}
+
+	/** Absolute path of the mounted Pricing module template (Iran V1). */
+	public static function pricing_module_template_path(): string {
+		return self::plugin_dir() . '/' . self::PRICING_TEMPLATE_REL;
+	}
+
 	/**
 	 * Suppress the admin bar on the operational surface.
 	 *
@@ -367,6 +402,16 @@ final class StaffPortalShell {
 				'id'    => self::MODULE_REPORTS,
 				'title' => 'گزارش — میانگین زمان انتظار',
 			),
+			// Iran V1 modules are APPENDED: the established doctor/reception/
+			// finance default module order and deep links stay unchanged.
+			array(
+				'id'    => self::MODULE_MESSAGES,
+				'title' => 'پیامهای داخلی',
+			),
+			array(
+				'id'    => self::MODULE_PRICING,
+				'title' => 'تعرفه و خدمات ویزیت',
+			),
 		);
 	}
 
@@ -380,7 +425,7 @@ final class StaffPortalShell {
 	public static function requested_module(): string {
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only view selector, no state change.
 		$raw = isset( $_GET[ self::MODULE_PARAM ] ) ? sanitize_key( (string) wp_unslash( $_GET[ self::MODULE_PARAM ] ) ) : '';
-		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE, self::MODULE_REPORTS ), true ) ) {
+		if ( in_array( $raw, array( self::MODULE_DOCTOR, self::MODULE_RECEPTION, self::MODULE_FINANCE, self::MODULE_REPORTS, self::MODULE_MESSAGES, self::MODULE_PRICING ), true ) ) {
 			return $raw;
 		}
 		return '';
@@ -442,6 +487,80 @@ final class StaffPortalShell {
 		}
 		if ( self::MODULE_REPORTS === $module_id ) {
 			return self::reports_module_eligible( $user_id );
+		}
+		if ( self::MODULE_MESSAGES === $module_id ) {
+			return self::messages_module_eligible( $user_id );
+		}
+		if ( self::MODULE_PRICING === $module_id ) {
+			return self::pricing_module_eligible( $user_id );
+		}
+		return false;
+	}
+
+	/**
+	 * Messaging module visibility from active CPMS membership capabilities.
+	 * Finance staff do not need clinical visit-read permission merely to use
+	 * private, unlinked staff messaging. Every REST request re-authorizes.
+	 */
+	public static function messages_module_eligible( int $user_id ): bool {
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return false;
+		}
+		$auth = App::authorization_service();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			$clinic_id = (int) $clinic_id;
+			if (
+				$auth->can( $user_id, $clinic_id, RolesAndCapabilities::CONSULT_COMPLETE )
+				|| $auth->can( $user_id, $clinic_id, RolesAndCapabilities::QUEUE_CHECKIN )
+				|| (
+					$auth->can( $user_id, $clinic_id, RolesAndCapabilities::FINANCE_READ )
+					&& (
+						$auth->can( $user_id, $clinic_id, RolesAndCapabilities::PAYMENT_CREATE )
+						|| $auth->can( $user_id, $clinic_id, RolesAndCapabilities::INVOICE_CREATE )
+					)
+				)
+			) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Pricing module VISIBILITY (Iran V1). A durable active clinician profile
+	 * participating in an ACTIVE Clinic is required in addition to ALL module
+	 * capabilities in that SAME Clinic; the REST service re-derives ownership.
+	 */
+	public static function pricing_module_eligible( int $user_id ): bool {
+		if ( $user_id <= 0 ) {
+			return false;
+		}
+		$user = get_userdata( $user_id );
+		if ( false === $user || ! $user->exists() ) {
+			return false;
+		}
+		$clinicians = new \ClinicCore\Infrastructure\Repository\ClinicianRepository( App::db() );
+		$clinician  = $clinicians->find_by_wp_user( $user_id );
+		if ( null === $clinician || 1 !== (int) ( $clinician['is_active'] ?? 0 ) ) {
+			return false;
+		}
+		$memberships = new \ClinicCore\Infrastructure\Repository\MembershipRepository( App::db() );
+		$auth        = App::authorization_service();
+		foreach ( App::membership_service()->active_clinic_ids_for_user( $user_id ) as $clinic_id ) {
+			$clinic_id = (int) $clinic_id;
+			if ( ! self::clinic_is_operational( $clinic_id ) ) {
+				continue;
+			}
+			if ( ! $memberships->clinician_participates_in( (int) $clinician['id'], $clinic_id ) ) {
+				continue;
+			}
+			if ( self::clinic_grants_all( $auth, $user_id, $clinic_id, self::PRICING_MODULE_CAPS ) ) {
+				return true;
+			}
 		}
 		return false;
 	}

@@ -33,6 +33,9 @@ use DomainException;
  */
 final class FinanceService
 {
+    /** Internal-only signal set by issue_invoice_from_pricing(). */
+    private bool $issuing_pricing_invoice = false;
+
     private const PAYMENT_METHODS = ['cash', 'card_pos', 'online', 'other'];
 
     public function __construct(
@@ -43,7 +46,8 @@ final class FinanceService
         private readonly VisitRepository $visits,
         private readonly VisitService $visitService,
         private readonly PatientRepository $patients,
-        private readonly AuditLogger $audit
+        private readonly AuditLogger $audit,
+        private readonly VisitPricingService $pricing
     ) {
     }
 
@@ -288,6 +292,22 @@ final class FinanceService
                     ['visit_id' => $visitId]
                 );
             }
+            if ( ! $this->issuing_pricing_invoice ) {
+                $pending_charges = (int) $this->db->fetchValue(
+                    'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_visit_charge_items' )
+                    . ' WHERE clinic_id = %d AND visit_id = %d'
+                    . ' AND invoiced_invoice_id IS NULL AND removed_at IS NULL',
+                    [ (int) $visit['clinic_id'], (int) $visit['id'] ]
+                );
+                if ( $pending_charges > 0 ) {
+                    throw FinanceException::of(
+                        'CLINIC_POLICY_VIOLATION',
+                        'ویزیت دارای اقلام درمانی ثبت‌شده است؛ برای جلوگیری از حذف قلم از فاکتور، از مسیر صدور فاکتور تعرفه استفاده کنید',
+                        409,
+                        ['visit_id' => (int) $visit['id']]
+                    );
+                }
+            }
 
             $calcItems = [];
             $rows = [];
@@ -407,6 +427,56 @@ final class FinanceService
 
             return $this->invoiceView($invoiceId);
         });
+    }
+
+    /**
+     * Iran V1 — صدور فاکتور از تعرفه پزشک + اقلام خدمات پیش‌نویس ویزیت.
+     *
+     * ONLY an adapter: items are built from the persisted doctor fee/override
+     * and draft charges, then handed to the existing issueInvoice() contract
+     * (same InvoiceCalc, invoice numbering, Visit transition, audit trail).
+     * Charge rows are stamped with the new invoice id in the SAME transaction,
+     * so a settled invoice can never be silently mutated afterwards.
+     *
+     * @return array<string, mixed>
+     */
+    public function issue_invoice_from_pricing( int $actor_user_id, int $visit_id ): array {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue' );
+        $clinic_id = $this->requireTrustedClinicId();
+        $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue' );
+        if ( $visit_id <= 0 ) {
+            throw FinanceException::of( 'CLINIC_VALIDATION_FAILED', 'شناسه ویزیت نامعتبر است', 422 );
+        }
+
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $visit_id, $clinic_id ): array {
+                $visit = $this->visits->findForUpdate( $visit_id );
+                if ( $visit === null || ! $this->rowBelongsToTrustedClinic( $visit ) ) {
+                    throw FinanceException::of( 'CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404 );
+                }
+                if ( $this->invoices->activeForVisit( $visit_id ) !== null ) {
+                    throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409 );
+                }
+
+                $built                         = $this->pricing->build_invoice_items( $visit );
+                $previous_pricing_issue        = $this->issuing_pricing_invoice;
+                $this->issuing_pricing_invoice = true;
+                try {
+                    $invoice = $this->issueInvoice(
+                        $actor_user_id,
+                        [
+                            'visit_id' => $visit_id,
+                            'items'    => $built['items'],
+                        ]
+                    );
+                } finally {
+                    $this->issuing_pricing_invoice = $previous_pricing_issue;
+                }
+                $this->pricing->stamp_charges_invoiced( $built['charge_ids'], (int) $invoice['id'], $clinic_id );
+
+                return $invoice;
+            }
+        );
     }
 
     // ================= D13 — ثبت پرداخت =================
