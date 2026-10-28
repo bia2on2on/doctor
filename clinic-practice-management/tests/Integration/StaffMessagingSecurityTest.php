@@ -556,7 +556,8 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
             'GET', '/clinic/v1/staff/portal/messages/threads/' . $thread_id . '/messages', [], $headers
         );
         self::assertSame(403, $admin_response->get_status());
-        self::assertSame('CLINIC_PERMISSION_DENIED', $this->iv1_code($admin_response));
+        self::assertSame('CLINIC_SCOPE_UNAVAILABLE', $this->iv1_code($admin_response));
+        self::assertStringNotContainsString((string) $thread_id, wp_json_encode($admin_response->get_data()));
     }
     public function testPatientLinkedThreadRequiresSelectedDoctorOnVisitCareTeam(): void
     {
@@ -639,11 +640,15 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
         $membership = App::membership_service()->membership_for((int) $world['clinic'], (int) $world['secretary']);
         self::assertNotNull($membership);
-        App::membership_service()->set_capability(
-            (int) $membership['id'],
+        foreach ([
             RolesAndCapabilities::QUEUE_CHECKIN,
-            'deny'
-        );
+            RolesAndCapabilities::FINANCE_READ,
+            RolesAndCapabilities::PAYMENT_CREATE,
+            RolesAndCapabilities::INVOICE_CREATE,
+        ] as $capability) {
+            App::membership_service()->set_capability((int) $membership['id'], $capability, 'deny');
+        }
+        self::assertFalse(StaffPortalShell::messages_module_eligible((int) $world['secretary']));
 
         $this->assertDenied(
             fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->messages(
