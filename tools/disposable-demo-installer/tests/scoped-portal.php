@@ -245,13 +245,13 @@ try {
 
 	$deny = ManagementPortalController::dispatch( $host_user, 'org_clinic_status', array( 'organization_id' => $demo_org, 'clinic_id' => $demo_clinic, 'active' => false ) );
 	cpsd_pt_check( false === (bool) $deny['ok'], 'P1 an unauthorized account cannot change the demo Clinic lifecycle (portal refused)', $checks );
-	cpsd_pt_check( 'active' === (string) cpsd_pt_scalar( 'cpms_clinics', 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) ), 'P1 the refused attempt left the demo Clinic active', $checks );
+	cpsd_pt_check( 'active' === (string) cpsd_pt_scalar( 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) ), 'P1 the refused attempt left the demo Clinic active', $checks );
 
 	$deactivate = ManagementPortalController::dispatch( $manager_id, 'org_clinic_status', array( 'organization_id' => $demo_org, 'clinic_id' => $demo_clinic, 'active' => false ) );
 	cpsd_pt_check( true === (bool) $deactivate['ok'], 'P1 the synthetic Organization manager deactivated the demo Clinic through the real portal', $checks );
-	$stamped = cpsd_pt_scalar( 'cpms_clinics', 'SELECT status_updated_by_wp_user_id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) );
+	$stamped = cpsd_pt_scalar( 'SELECT status_updated_by_wp_user_id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) );
 	cpsd_pt_check( (int) $stamped === $manager_id, 'P1 the lifecycle writer stamped status_updated_by_wp_user_id with the synthetic manager (' . (string) $stamped . ')', $checks );
-	cpsd_pt_check( 'suspended' === (string) cpsd_pt_scalar( 'cpms_clinics', 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) ), 'P1 the demo Clinic is suspended after the portal action', $checks );
+	cpsd_pt_check( 'suspended' === (string) cpsd_pt_scalar( 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $demo_clinic ) ), 'P1 the demo Clinic is suspended after the portal action', $checks );
 	$reactivate = ManagementPortalController::dispatch( $manager_id, 'org_clinic_status', array( 'organization_id' => $demo_org, 'clinic_id' => $demo_clinic, 'active' => true ) );
 	cpsd_pt_check( true === (bool) $reactivate['ok'], 'P1 the synthetic Organization manager reactivated the demo Clinic', $checks );
 	$report['P1']['stamped_by'] = $manager_id;
@@ -305,10 +305,10 @@ try {
 	);
 	cpsd_pt_check( true === (bool) $created['ok'], 'P2 the synthetic Organization manager created a second Clinic under the demo Organization', $checks );
 	global $wpdb;
-	$second_clinic = (int) cpsd_pt_scalar( 'cpms_clinics', 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE slug = %s', array( $tag . '-second' ) );
+	$second_clinic = (int) cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE slug = %s', array( $tag . '-second' ) );
 	cpsd_pt_check( $second_clinic > $demo_clinic, 'P2 the second Clinic is a distinct post-baseline row (' . $second_clinic . ')', $checks );
 	cpsd_pt_check(
-		(string) cpsd_pt_scalar( 'cpms_clinics', 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $second_clinic ) ) === 'active',
+		(string) cpsd_pt_scalar( 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $second_clinic ) ) === 'active',
 		'P2 the second Clinic starts active',
 		$checks
 	);
@@ -336,19 +336,19 @@ try {
 	$p2_result = $teardown->execute( $manifest->load(), $admin_id );
 	cpsd_pt_check( true === (bool) $p2_result['ok'], 'P2 authorized teardown completes with two demo Clinics', $checks );
 	cpsd_pt_check(
-		null === cpsd_pt_scalar( 'cpms_patients', 'SELECT id FROM `' . $table( 'cpms_patients' ) . '` WHERE id = %d', array( $second_patient ) ),
+		null === cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_patients' ) . '` WHERE id = %d', array( $second_patient ) ),
 		'P2 the second Clinic\'s dependent row was deleted',
 		$checks
 	);
 	cpsd_pt_check(
-		'suspended' === (string) cpsd_pt_scalar( 'cpms_clinics', 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $second_clinic ) ),
+		'suspended' === (string) cpsd_pt_scalar( 'SELECT status FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $second_clinic ) ),
 		'P2 the second Clinic is retained as an inert suspended anchor',
 		$checks
 	);
 	$second_clinic_locations = $wpdb->get_col( $wpdb->prepare( 'SELECT id FROM `' . $table( 'cpms_locations' ) . '` WHERE clinic_id = %d', $second_clinic ) );
 	$inactive = 0;
 	foreach ( (array) $second_clinic_locations as $location_id ) {
-		if ( 0 === (int) cpsd_pt_scalar( 'cpms_locations', 'SELECT is_active FROM `' . $table( 'cpms_locations' ) . '` WHERE id = %d', array( (int) $location_id ) ) ) {
+		if ( 0 === (int) cpsd_pt_scalar( 'SELECT is_active FROM `' . $table( 'cpms_locations' ) . '` WHERE id = %d', array( (int) $location_id ) ) ) {
 			++$inactive;
 		}
 	}
@@ -374,7 +374,7 @@ try {
 
 	$planted_id = 0;
 	for ( $candidate = 2; $candidate <= $baseline_clinic_max; $candidate++ ) {
-		if ( null === cpsd_pt_scalar( 'cpms_clinics', 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $candidate ) ) ) {
+		if ( null === cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( $candidate ) ) ) {
 			$planted_id = $candidate;
 			break;
 		}

@@ -303,6 +303,50 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         self.assertNotIn("' OR '", body)
 
 
+class PortalLifecycleDrillsAreSelfConsistent(unittest.TestCase):
+    """The real-database portal drill must be statically sound.
+
+    A drill that only fails in CI is expensive: each cycle costs a full
+    real-WordPress lane. These checks catch the mechanical slips (a helper called
+    with its old argument list, a missing `global $wpdb`, a hard exit that hides
+    the failing assertion) before the lane runs.
+    """
+
+    PORTAL = COMPANION / "tests" / "scoped-portal.php"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = cls.PORTAL.read_text(encoding="utf-8")
+
+    def test_helper_calls_match_their_signatures(self) -> None:
+        # cpsd_pt_scalar() takes (string $sql, array $params = []).
+        for call in re.findall(r"cpsd_pt_scalar\(([^;]*?)\)\s*[),;]", self.source, re.S):
+            self.assertNotIn("$platform", call, call)
+            # The first argument must be the SQL string, never a bare table name.
+            self.assertIsNone(re.match(r"\s*'cpms_", call), call)
+
+    def test_database_handle_is_imported(self) -> None:
+        # `wp eval-file` runs the file in a function scope.
+        self.assertIn("global $wpdb;", self.source)
+
+    def test_the_drill_reports_instead_of_exiting(self) -> None:
+        # The runner parses the JSON verdict and fails the check, so the failing
+        # assertion survives into the annotation.
+        self.assertNotIn("exit( 1 )", self.source)
+        self.assertIn("'ok'       => false", self.source.replace("'ok'      => false", "'ok'       => false"))
+
+    def test_the_drill_drives_the_real_production_portal(self) -> None:
+        self.assertIn("ManagementPortalController::dispatch(", self.source)
+        for action in ("org_clinic_status", "org_create_clinic"):
+            self.assertIn("'" + action + "'", self.source)
+        self.assertIn("SCOPED_OWNERSHIP_UNPROVEN", self.source)
+
+    def test_the_lane_runs_the_drill(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "scoped-demo.yml").read_text(encoding="utf-8")
+        self.assertIn("tests/scoped-portal.php", workflow)
+        self.assertIn("SCOPED_PORTAL", workflow)
+
+
 class DefectDVerifiedPersistence(unittest.TestCase):
     """D: a failed option write must stop the operation, not be assumed to work."""
 
