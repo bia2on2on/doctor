@@ -3449,8 +3449,19 @@ def _assert_no_doctor_module(page, label, allow_reception=False):
     modules = page.locator('[data-role="staff-module-link"]')
     ids = [modules.nth(i).get_attribute("data-cpms-staff-module") for i in range(modules.count())]
     if allow_reception:
-        if ids != ["reception", "finance"]:
-            raise RuntimeError(f"{label} must expose reception + authorized finance modules, got {ids}")
+        established = ["reception", "finance"]
+        if ids[: len(established)] != established:
+            raise RuntimeError(f"{label} must keep reception + authorized finance modules first, got {ids}")
+        appended = ids[len(established) :]
+        # Iran V1 messaging is the only extra module a receptionist can be
+        # eligible for; it must be unique and accessibly linked. Pricing stays
+        # doctor/clinician-only and must never appear on this surface.
+        if len(set(appended)) != len(appended) or any(module_id != "messages" for module_id in appended):
+            raise RuntimeError(f"{label} exposes unexpected Staff Portal modules, got {appended}")
+        for offset, module_id in enumerate(appended):
+            link = modules.nth(len(established) + offset)
+            if not link.is_visible() or not (link.inner_text() or "").strip():
+                raise RuntimeError(f"{label} Iran V1 {module_id} navigation link is not accessible")
     elif ids:
         raise RuntimeError(f"{label} exposes Staff Portal navigation modules {ids}")
     if page.locator("#cpms-doctor-portal-app").count() != 0:
