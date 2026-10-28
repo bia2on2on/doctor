@@ -45,6 +45,9 @@ class ScopedPhpContractTests(unittest.TestCase):
             # ledger, and the only path that creates an additional demo Clinic.
             "class-cpms-demo-scoped-ownership.php",
             "class-cpms-demo-scoped-clinics.php",
+            # Stage 1/2 of the tenant-safety work: the server-side tenant write
+            # barrier and the recorder of demo-created rows.
+            "class-cpms-demo-scoped-guard.php",
         }
         actual = {p.name for p in SCOPED}
         self.assertEqual(expected, actual)

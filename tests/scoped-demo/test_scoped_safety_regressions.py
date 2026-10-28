@@ -299,7 +299,10 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         owners = self.teardown[self.teardown.index("private function owned_tenants("):]
         owners = owners[: owners.index("private function ownership_rule(")]
         self.assertNotIn("$id > $baseline_max", owners)
-        self.assertIn("$this->ownership->summary( $fixture )", owners)
+        # The ledger is consulted for the fixture and, for a sealed active
+        # fixture, its absence is itself a refusal (Stage 3 hardening).
+        self.assertIn("$this->ownership->summary( $fixture, $require_ledger )", owners)
+        self.assertIn("$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );", owners)
 
     def test_composite_rows_are_selected_by_parent_only(self) -> None:
         self.assertIn("private const COMPOSITE_PARENT_COLUMN", self.teardown)
@@ -610,3 +613,140 @@ class DefectGAuditChainPreserved(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class DefectIRealUserDataInDemoTenants(unittest.TestCase):
+    """I: a real user's rows inside a demo tenant are never silently deleted.
+
+    The tenant boundary alone said "this row names the demo Clinic, so it is
+    demo-owned". A real patient booking into the demo Clinic, or a real member of
+    staff writing there, satisfies that and nothing else - so every candidate row
+    must now be attributed to a POSITIVE fixture artifact, and attribution must
+    fail closed.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        cls.guard = read(COMPANION / "includes" / "class-cpms-demo-scoped-guard.php")
+
+    def test_attribution_map_exists_and_covers_patient_data(self) -> None:
+        self.assertIn("private const ATTRIBUTION", self.teardown)
+        for table in (
+            "cpms_patients",
+            "cpms_appointments",
+            "cpms_visits",
+            "cpms_invoices",
+            "cpms_payments",
+            "cpms_clinical_notes",
+            "cpms_prescriptions",
+            "cpms_otp_tokens",
+            "cpms_slot_holds",
+            "cpms_clinic_memberships",
+            "cpms_organization_memberships",
+        ):
+            self.assertIn(f"'{table}' =>", self.teardown, table)
+
+    def test_attribution_gate_refuses_before_any_destructive_stage(self) -> None:
+        preview = self.teardown[self.teardown.index("public function preview("):]
+        preview = preview[: preview.index("public function execute(")]
+        self.assertIn("$attribution = $this->attribution_problems(", preview)
+        self.assertIn("(array) $attribution['problems']", preview)
+        execute = self.teardown[self.teardown.index("private function do_execute("):]
+        self.assertIn("'SCOPED_FOREIGN_TENANT_ROW'", execute)
+
+    def test_uncertain_rows_are_refused_not_guessed(self) -> None:
+        self.assertIn("SCOPED_FOREIGN_TENANT_ROW:", self.teardown)
+        self.assertIn("SCOPED_FOREIGN_TENANT_ROW_TOTAL:", self.teardown)
+        body = self.teardown[self.teardown.index("private function row_is_attributed("):]
+        body = body[: body.index("private function normalize_mobile(")]
+        # A row that names a real (non-fixture, non-operator) WordPress user can
+        # never be attributed by tenant or parent evidence.
+        self.assertIn("! in_array( $value, (array) $context['users'], true )", body)
+        self.assertIn("return false;", body)
+
+    def test_tenant_write_boundary_is_server_side_and_scoped_to_the_fixture(self) -> None:
+        # The barrier runs inside REST dispatch, not in the UI, and it exempts the
+        # fixture's own accounts, the site administrator and every foreign tenant.
+        self.assertIn("add_filter( 'rest_pre_dispatch'", self.guard)
+        self.assertIn("SCOPED_DEMO_TENANT_WRITE_REFUSED", self.guard)
+        self.assertIn("self::is_fixture_actor( $loaded )", self.guard)
+        self.assertIn("current_user_can( 'manage_options' )", self.guard)
+        self.assertIn("private static function targets_demo_tenant(", self.guard)
+        # Anonymous public booking stays possible; its data is protected by the
+        # attribution gate instead of by a refusal.
+        self.assertIn("0 === get_current_user_id()", self.guard)
+
+    def test_demo_writes_are_registered_before_any_teardown(self) -> None:
+        # A demo persona's own rows get durable, explicit ownership evidence: a
+        # before/after diff of the demo tenant, sealed into the ownership ledger.
+        self.assertIn("public static function begin_request(", self.guard)
+        self.assertIn("public static function finish_request(", self.guard)
+        self.assertIn("register_rows(", self.guard)
+        self.assertIn("'source' => 'demo-request'", self.guard)
+
+
+class DefectJPortalGuardScope(unittest.TestCase):
+    """J: the portal refusal must not touch foreign Organizations (Stage 2)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+
+    def test_guard_requires_an_active_fixture(self) -> None:
+        body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
+        body = body[: body.index("private static function render_credentials(")]
+        self.assertIn("'active' !== (string) ( $loaded['status'] ?? '' )", body)
+        self.assertIn("return;", body)
+
+    def test_guard_is_scoped_to_the_demo_organization_and_manager(self) -> None:
+        body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
+        body = body[: body.index("private static function render_credentials(")]
+        self.assertIn("(int) ( $loaded['ids']['organization_id'] ?? 0 )", body)
+        self.assertIn("(int) ( $loaded['ids']['user_ids']['organization_manager'] ?? 0 )", body)
+        self.assertIn("get_current_user_id() !== $manager", body)
+        self.assertIn("$posted_org !== $demo_org", body)
+
+    def test_guard_is_not_a_global_action_block(self) -> None:
+        # Only the exact production action is refused, and only after all three
+        # scoping conditions hold.
+        body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
+        body = body[: body.index("private static function render_credentials(")]
+        self.assertEqual(body.count("if ( 'org_create_clinic' !== $action )"), 1)
+
+
+class DefectKLedgerRecovery(unittest.TestCase):
+    """K: losing or rolling back the ledger must fail closed (Stage 3)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ownership = read(COMPANION / "includes" / "class-cpms-demo-scoped-ownership.php")
+        cls.teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+
+    def test_missing_ledger_is_refused_for_an_active_fixture(self) -> None:
+        self.assertIn("public const SEAL_OPTION = 'cpsd_ownership_seal';", self.ownership)
+        self.assertIn("public function inspect( string $fixture_id, bool $require_ledger = false )", self.ownership)
+        self.assertIn("if ( $require_ledger || is_array( $seal ) )", self.ownership)
+        self.assertIn("$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );", self.teardown)
+        self.assertIn("$this->ownership->summary( $fixture, $require_ledger )", self.teardown)
+
+    def test_progress_seal_is_monotonic(self) -> None:
+        self.assertIn("private function verify_seal(", self.ownership)
+        self.assertIn("'count'      => count( $entries ),", self.ownership)
+        self.assertIn("'head'       => (string) ( $record['head'] ?? '' ),", self.ownership)
+        self.assertIn("$this->env->persist_verified( self::SEAL_OPTION, $seal )", self.ownership)
+        # A shorter/older chain is refused, not accepted as history.
+        self.assertIn("$this->env->option_delete( self::SEAL_OPTION )", self.ownership)
+
+    def test_interrupted_recovery_survives_the_hardening(self) -> None:
+        clinics = read(COMPANION / "includes" / "class-cpms-demo-scoped-clinics.php")
+        self.assertIn("public function resolve( array $manifest, string $token, bool $claim )", clinics)
+        self.assertIn("$this->ownership->append(", clinics)
+        self.assertIn("'abandon'", clinics)
+
+    def test_uninstall_preserves_and_then_clears_both_records(self) -> None:
+        uninstall = read(COMPANION / "uninstall.php")
+        self.assertIn("$cpms_demo_scoped_ledger   = get_option( 'cpsd_ownership_ledger', null );", uninstall)
+        self.assertIn("$cpms_demo_scoped_seal     = get_option( 'cpsd_ownership_seal', null );", uninstall)
+        self.assertIn("delete_option( 'cpsd_ownership_ledger' );", uninstall)
+        self.assertIn("delete_option( 'cpsd_ownership_seal' );", uninstall)

@@ -141,6 +141,20 @@ class ScopedProvisioner extends Provisioner {
 		$manifest['mode']        = 'scoped';
 		$manifest['baseline']    = $this->pending_baseline;
 		$manifest['host_before'] = $this->pending_host;
+		// Ownership of the fixture is recorded explicitly, never inferred later
+		// from "it names the demo Organization and has a higher id". The ledger is
+		// opened FIRST, because the scope collected below must already see it: a
+		// sealed, active fixture is only trustworthy while its ledger exists.
+		$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
+		$ownership->open(
+			(string) $manifest['fixture_id'],
+			(int) ( $manifest['ids']['organization_id'] ?? 0 ),
+			(int) ( $manifest['ids']['clinic_id'] ?? 0 )
+		);
+		$this->env->maybe_inject_fault(
+			'scoped_ownership:after-open',
+			array( 'fixture_id' => (string) $manifest['fixture_id'] )
+		);
 		$teardown = new ScopedTeardown( $this->env, $this->platform, $this->scoped_manifest, $this->audit_guard, $this->baseline );
 		$scope    = $teardown->collect_scope( $manifest, $this->pending_baseline );
 		$manifest['owned'] = array(
@@ -165,20 +179,6 @@ class ScopedProvisioner extends Provisioner {
 		// Only now is the pending copy redundant.
 		$this->scoped_manifest->clear_pending_baseline();
 
-		// Ownership of the fixture is recorded explicitly, never inferred later
-		// from "it names the demo Organization and has a higher id". The ledger is
-		// opened for exactly the two tenant roots this run created; any additional
-		// Clinic is registered by ScopedClinics at creation time.
-		$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
-		$ownership->open(
-			(string) $manifest['fixture_id'],
-			(int) ( $manifest['ids']['organization_id'] ?? 0 ),
-			(int) ( $manifest['ids']['clinic_id'] ?? 0 )
-		);
-		$this->env->maybe_inject_fault(
-			'scoped_ownership:after-open',
-			array( 'fixture_id' => (string) $manifest['fixture_id'] )
-		);
 		$this->enforce_portal_clinic_policy( $manifest );
 
 		$result['manifest'] = $manifest;

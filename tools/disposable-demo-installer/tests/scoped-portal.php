@@ -480,7 +480,11 @@ try {
 	// residue and never mistaken for a foreign row.
 	$second_patient = cpsd_pt_insert(
 		$table( 'cpms_patients' ),
-		array( 'clinic_id' => $second_clinic, 'mrn' => 'P2-' . strtoupper( bin2hex( random_bytes( 3 ) ) ), 'first_name' => 'دوم', 'last_name' => 'بیمار ' . $tag, 'mobile' => '0912' . (string) random_int( 1000000, 9999999 ), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
+		// The fixture's own patient, re-registered by a demo workflow inside the
+		// second demo Clinic. It carries the SEALED mobile (uniqueness is per
+		// Clinic), which is what attributes the row to the demo: a real patient's
+		// mobile would not be attributable and would refuse the teardown.
+		array( 'clinic_id' => $second_clinic, 'mrn' => 'P2-' . strtoupper( bin2hex( random_bytes( 3 ) ) ), 'first_name' => 'دوم', 'last_name' => 'بیمار ' . $tag, 'mobile' => (string) $live['patient_mobile'], 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
 	);
 
 	$preview = $teardown->preview( $manifest->load() );
@@ -910,6 +914,185 @@ try {
 	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P7 audit chain intact after the repair and teardown', $checks );
 	cpsd_pt_check( false === $ownership->exists(), 'P7 the ledger is gone after the clean teardown', $checks );
 	$report['P7'] = array( 'repaired_clinic' => $pending_clinic, 'anchors' => $anchors );
+
+	// ================================================================ scenario P8
+	// REAL-USER DATA INSIDE A DEMO TENANT IS NEVER SILENTLY DELETED.
+	//
+	// Two independent proofs:
+	//   (a) a real patient books into the demo Clinic (the production public flow,
+	//       simulated with the rows that flow creates). Nothing about that row is
+	//       attributable to the fixture, so the teardown REFUSES and deletes
+	//       nothing - it is not enough that the Clinic is "the demo's".
+	//   (b) a real member of staff cannot write into the demo tenant at all: the
+	//       server-side REST boundary refuses the request (403), while the same
+	//       request against their OWN Clinic is untouched.
+	wp_set_current_user( $admin_id );
+	$manifest->enable_mode( $admin_id );
+	$provisioner->provision( $admin_id );
+	$live        = $manifest->load();
+	$demo_clinic = (int) $live['ids']['clinic_id'];
+	$demo_org    = (int) $live['ids']['organization_id'];
+	$manager_id  = (int) $live['ids']['user_ids']['organization_manager'];
+	$clinician   = (int) $live['ids']['clinician_id'];
+	$location    = (int) ( $live['ids']['location_ids'][0] ?? 0 );
+
+	$real_mobile  = '0912' . str_pad( (string) random_int( 0, 9999999 ), 7, '0', STR_PAD_LEFT );
+	$real_patient = cpsd_pt_insert(
+		$table( 'cpms_patients' ),
+		array( 'clinic_id' => $demo_clinic, 'mrn' => 'REAL-' . strtoupper( bin2hex( random_bytes( 3 ) ) ), 'first_name' => 'واقعی', 'last_name' => 'بیمار', 'mobile' => $real_mobile, 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
+	);
+	$real_appointment = cpsd_pt_insert(
+		$table( 'cpms_appointments' ),
+		array( 'clinic_id' => $demo_clinic, 'patient_id' => $real_patient, 'clinician_id' => $clinician, 'slot_date' => gmdate( 'Y-m-d' ), 'slot_time' => '10:00:00', 'status' => 'confirmed', 'booked_at' => $now, 'created_at' => $now, 'updated_at' => $now )
+	);
+	cpsd_pt_check( $real_patient > 1 && $real_appointment > 1, 'P8 a real patient booking exists inside the demo Clinic', $checks );
+
+	$fixture_counts_before = cpsd_pt_fixture_counts( $platform, array( $demo_clinic ) );
+	$users_before          = cpsd_pt_synthetic_users();
+	$real_rows_before      = array(
+		'patient'     => cpsd_pt_scalar( 'SELECT CONCAT(mobile) FROM `' . $table( 'cpms_patients' ) . '` WHERE id = %d', array( $real_patient ) ),
+		'appointment' => cpsd_pt_scalar( 'SELECT CONCAT(status) FROM `' . $table( 'cpms_appointments' ) . '` WHERE id = %d', array( $real_appointment ) ),
+	);
+
+	$preview  = $teardown->preview( $manifest->load() );
+	$problems = implode( ' | ', (array) $preview['problems'] );
+	cpsd_pt_check( false === (bool) $preview['ok'], 'P8 the preview refuses while a real patient row sits in the demo Clinic', $checks );
+	cpsd_pt_check( false !== strpos( $problems, 'SCOPED_FOREIGN_TENANT_ROW' ), 'P8 the preview names the unattributable row: ' . $problems, $checks );
+	cpsd_pt_check( false !== strpos( $problems, 'cpms_patients:' . $real_patient ), 'P8 the diagnostic names the real patient row (' . $real_patient . ')', $checks );
+	$code = '';
+	try {
+		$teardown->execute( $manifest->load(), $admin_id );
+	} catch ( DemoException $error ) {
+		$code = $error->demo_code();
+	} catch ( Throwable $error ) {
+		$code = 'UNEXPECTED:' . get_class( $error );
+	}
+	cpsd_pt_check( 'SCOPED_FOREIGN_TENANT_ROW' === $code, 'P8 the execution refuses with SCOPED_FOREIGN_TENANT_ROW (' . ( '' === $code ? 'no refusal' : $code ) . ')', $checks );
+	cpsd_pt_check( $real_patient === (int) cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_patients' ) . '` WHERE id = %d', array( $real_patient ) ) && (string) cpsd_pt_scalar( 'SELECT CONCAT(mobile) FROM `' . $table( 'cpms_patients' ) . '` WHERE id = %d', array( $real_patient ) ) === (string) $real_rows_before['patient'], 'P8 the real patient row is untouched', $checks );
+	cpsd_pt_check( null !== cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_appointments' ) . '` WHERE id = %d', array( $real_appointment ) ), 'P8 the real appointment is untouched', $checks );
+	cpsd_pt_check( cpsd_pt_fixture_counts( $platform, array( $demo_clinic ) ) === $fixture_counts_before, 'P8 the refusal deleted no demo row', $checks );
+	cpsd_pt_check( cpsd_pt_synthetic_users() === $users_before, 'P8 the refusal deleted no synthetic account', $checks );
+	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P8 audit chain intact after the refusal', $checks );
+
+	// (b) the tenant write boundary, exercised through real REST dispatch.
+	$rest_refusal = '';
+	wp_set_current_user( $host_user );
+	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
+	$probe = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	$probe->set_param( 'clinic_id', $demo_clinic );
+	$answer = rest_do_request( $probe );
+	if ( is_wp_error( $answer ) ) {
+		$rest_refusal = (string) $answer->get_error_code();
+	}
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' === $rest_refusal, 'P8 a real (non-fixture) account cannot POST into the demo Clinic over REST (' . ( '' === $rest_refusal ? 'not refused' : $rest_refusal ) . ')', $checks );
+
+	wp_set_current_user( $host_user );
+	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $host_clinic_a;
+	$own = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	$own->set_param( 'clinic_id', $host_clinic_a );
+	$own_answer = rest_do_request( $own );
+	$own_code   = is_wp_error( $own_answer ) ? (string) $own_answer->get_error_code() : '';
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $own_code, 'P8 the same real account writing into its OWN Clinic is not restricted by the demo (' . $own_code . ')', $checks );
+
+	wp_set_current_user( $manager_id );
+	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
+	$persona_probe = new WP_REST_Request( 'POST', '/cpms/v1/cpsd-probe' );
+	$persona_probe->set_param( 'clinic_id', $demo_clinic );
+	$persona_answer = rest_do_request( $persona_probe );
+	$persona_code   = is_wp_error( $persona_answer ) ? (string) $persona_answer->get_error_code() : '';
+	cpsd_pt_check( 'SCOPED_DEMO_TENANT_WRITE_REFUSED' !== $persona_code, 'P8 a synthetic fixture persona may still write into the demo Clinic (' . $persona_code . ')', $checks );
+	unset( $_SERVER['HTTP_X_CPMS_CLINIC_ID'] );
+
+	// The operator resolves the real row out of band; only then may the demo be
+	// cleaned, and the demo teardown must still be exact.
+	wp_set_current_user( $admin_id );
+	cpsd_pt_delete( $table( 'cpms_appointments' ), $real_appointment );
+	cpsd_pt_delete( $table( 'cpms_patients' ), $real_patient );
+	$preview = $teardown->preview( $manifest->load() );
+	cpsd_pt_check( true === (bool) $preview['ok'], 'P8 preview passes once the real rows are gone (' . implode( ' | ', (array) $preview['problems'] ) . ')', $checks );
+	$p8_result = $teardown->execute( $manifest->load(), $admin_id );
+	cpsd_pt_check( true === (bool) $p8_result['ok'], 'P8 the demo teardown completes afterwards', $checks );
+	cpsd_pt_check( cpsd_pt_host_digest( $platform, $host_clinics ) === $host_digest, 'P8 every pre-existing host row is byte-identical', $checks );
+	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P8 audit chain intact after the teardown', $checks );
+	$report['P8'] = array( 'real_patient' => $real_patient, 'rest_refusal' => $rest_refusal );
+
+	// ================================================================ scenario P9
+	// The ownership ledger cannot be lost silently: deleting it, truncating it,
+	// replacing it with an older (still perfectly sealed) copy, or deleting both
+	// the ledger and its progress seal all refuse with zero deletions, and an
+	// interrupted registration stays recoverable throughout.
+	wp_set_current_user( $admin_id );
+	$manifest->enable_mode( $admin_id );
+	$provisioner->provision( $admin_id );
+	$live      = $manifest->load();
+	$org_fix   = (string) $live['fixture_id'];
+	$ownership = new ScopedOwnership( $env, $manifest );
+	$extra_svc = new ScopedClinics( $env, $platform, $manifest, $ownership );
+	$older     = get_option( ScopedOwnership::OPTION );
+	$older_seal = get_option( ScopedOwnership::SEAL_OPTION );
+	cpsd_pt_check( is_array( $older ) && is_array( $older_seal ), 'P9 the ledger and its progress seal exist after provisioning', $checks );
+
+	$refusal_of = static function () use ( $teardown, $manifest, $admin_id ): string {
+		try {
+			$teardown->execute( $manifest->load(), $admin_id );
+		} catch ( DemoException $error ) {
+			return (string) $error->demo_code();
+		} catch ( Throwable $error ) {
+			return 'UNEXPECTED:' . get_class( $error );
+		}
+
+		return '';
+	};
+
+	// (a) deleted outright, manifest still active.
+	delete_option( ScopedOwnership::OPTION );
+	$preview  = $teardown->preview( $manifest->load() );
+	$problems = implode( ' | ', (array) $preview['problems'] );
+	cpsd_pt_check( false === (bool) $preview['ok'] && false !== strpos( $problems, 'SCOPED_OWNERSHIP_LEDGER_INVALID' ), 'P9 a DELETED ledger refuses the preview: ' . $problems, $checks );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a deleted ledger refuses the execution', $checks );
+
+	// (b) truncated.
+	$truncated = $older;
+	array_pop( $truncated['entries'] );
+	update_option( ScopedOwnership::OPTION, $truncated );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a truncated ledger refuses the execution', $checks );
+
+	// (c) replaced by an older, internally valid copy (the seal must catch it).
+	update_option( ScopedOwnership::OPTION, $older );
+	$extra = $extra_svc->create( $manifest->load(), $admin_id );
+	cpsd_pt_check( (int) $extra['clinic_id'] > 1, 'P9 an additional demo Clinic was registered after the older copy was taken', $checks );
+	$current      = get_option( ScopedOwnership::OPTION );
+	$current_seal = get_option( ScopedOwnership::SEAL_OPTION );
+	cpsd_pt_check( is_array( $current ) && is_array( $current_seal ) && count( (array) $current['entries'] ) > count( (array) $older['entries'] ), 'P9 the live ledger advanced past the older copy', $checks );
+	update_option( ScopedOwnership::OPTION, $older );
+	$preview  = $teardown->preview( $manifest->load() );
+	$problems = implode( ' | ', (array) $preview['problems'] );
+	cpsd_pt_check( false === (bool) $preview['ok'] && false !== strpos( $problems, 'SCOPED_OWNERSHIP_LEDGER_INVALID' ), 'P9 a REPLACED (rolled back) ledger refuses the preview: ' . $problems, $checks );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a rolled-back ledger refuses the execution', $checks );
+
+	// (d) the progress seal alone, then the ledger alone, then both.
+	update_option( ScopedOwnership::OPTION, $current );
+	delete_option( ScopedOwnership::SEAL_OPTION );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a missing progress seal refuses the execution', $checks );
+	update_option( ScopedOwnership::SEAL_OPTION, $current_seal );
+	delete_option( ScopedOwnership::OPTION );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a missing ledger (seal intact) refuses the execution', $checks );
+	delete_option( ScopedOwnership::SEAL_OPTION );
+	cpsd_pt_check( 'SCOPED_OWNERSHIP_LEDGER_INVALID' === $refusal_of(), 'P9 a missing ledger AND seal refuses the execution', $checks );
+	cpsd_pt_check( null !== cpsd_pt_scalar( 'SELECT id FROM `' . $table( 'cpms_clinics' ) . '` WHERE id = %d', array( (int) $extra['clinic_id'] ) ), 'P9 none of those refusals deleted the additional Clinic', $checks );
+
+	// (e) restored exactly: the teardown proceeds, so an interruption is
+	// recoverable instead of merely blocked.
+	update_option( ScopedOwnership::OPTION, $current );
+	update_option( ScopedOwnership::SEAL_OPTION, $current_seal );
+	$preview = $teardown->preview( $manifest->load() );
+	cpsd_pt_check( true === (bool) $preview['ok'], 'P9 the restored ledger verifies and the preview passes (' . implode( ' | ', (array) $preview['problems'] ) . ')', $checks );
+	$p9_result = $teardown->execute( $manifest->load(), $admin_id );
+	cpsd_pt_check( true === (bool) $p9_result['ok'], 'P9 the teardown completes after the restore', $checks );
+	cpsd_pt_check( false === $ownership->exists(), 'P9 the ledger is discarded after the clean teardown', $checks );
+	cpsd_pt_check( cpsd_pt_host_digest( $platform, $host_clinics ) === $host_digest, 'P9 every pre-existing host row is byte-identical', $checks );
+	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P9 audit chain intact after the teardown', $checks );
+	$report['P9'] = array( 'extra_clinic' => (int) $extra['clinic_id'], 'refusals' => 5 );
 
 	echo (string) wp_json_encode(
 		array(

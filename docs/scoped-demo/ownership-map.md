@@ -263,3 +263,86 @@ P4–P7 prove each case against a real MySQL 8 / MariaDB 11.4 database: a foreig
 post-baseline Clinic under the demo Organization, a foreign tenant whose rows carry
 synthetic user ids, a manipulated/truncated ledger, and an interrupted
 creation/registration that is repaired from sealed evidence.
+
+## Mission F — real-user data inside demo tenants
+
+The tenant boundary answers *where* a row lives. It never answered *who* created
+it, and that gap is a data-safety hole: a real patient can book into the demo
+Clinic through the public booking page, and a real member of staff can be given
+access to it. Both create rows that name the demo Clinic and nothing else, and the
+old rule would have deleted them as "demo data".
+
+### Positive attribution (Stage 1)
+
+Every candidate row — one that sits inside the demo tenant — must now be explained
+by a POSITIVE fixture artifact from `ScopedTeardown::ATTRIBUTION`:
+
+| Artifact | Meaning |
+|---|---|
+| sealed id | the manifest names this exact row (provisioning sealed it) |
+| `@patient` | the row names a patient that is itself attributable |
+| `@visit` / `@thread` | the row names an attributable visit / demo message thread |
+| `@mobile` | the row carries the fixture's sealed mobile number |
+| `@user` | the row names one of the fixture's synthetic accounts |
+| `@recipient` | a queue row bound to an attributable patient (or none) |
+| `@fixture` | the row carries the fixture id in a text column |
+| ledger registration | the demo registered this exact row in the sealed ledger |
+| `@tenant` | pure configuration of the demo Clinic (settings, services, opening hours, generated slots, taxonomy rows). This is a *positive* claim only because a real actor cannot write into a demo tenant at all — see the barrier below |
+
+A row that matches none of them — including **every row that names a real
+WordPress user** other than the fixture's own accounts and the administrator who
+created the demo — is refused:
+
+```
+SCOPED_FOREIGN_TENANT_ROW:cpms_patients:41
+SCOPED_FOREIGN_TENANT_ROW_TOTAL: cpms_patients=1, cpms_appointments=1
+```
+
+and `execute()` throws `SCOPED_FOREIGN_TENANT_ROW` **before any destructive
+stage**. Refusing is always safe; guessing is not.
+
+### Explicit registration of demo-created rows
+
+Structural rules cannot prove a row a demo persona typed at the front desk. Those
+rows get durable, explicit ownership: `ScopedOwnership::register_rows()` appends a
+sealed `rows` record. Two producers:
+
+1. the demo's own workflows (for example the Organization membership the extra-Clinic
+   path adds for the acting administrator);
+2. `ScopedTenantGuard` — for every state-changing request made by a synthetic
+   fixture account it snapshots the demo tenant before dispatch and diffs it at
+   `shutdown`, sealing exactly the rows that appeared. The teardown therefore never
+   has to guess what a demo persona created.
+
+### Server-side tenant write barrier (Stage 2)
+
+While a fixture is active, `ScopedTenantGuard` refuses a state-changing REST
+request (and the equivalent portal write) that targets the demo tenant when the
+actor is an authenticated user who is neither a fixture account nor a site
+administrator: HTTP 403, `SCOPED_DEMO_TENANT_WRITE_REFUSED`, Persian message.
+Anonymous public requests stay allowed — that is the demo's public journey — and
+anything they create for a real patient is refused by the attribution gate instead.
+
+Consequence, stated plainly: the barrier is what makes `@tenant` a positive claim,
+and the attribution gate is what protects the site if the barrier is ever bypassed
+(direct service call, CLI, a plugin that writes without REST). Neither relies on
+the other being perfect.
+
+### The portal refusal is scoped to the fixture (Stage 2)
+
+`ScopedAdmin::guard_portal_clinic_creation()` now refuses `org_create_clinic` only
+when **all** of these hold: scoped mode is on, a *verified active* manifest exists,
+the POST names the demo Organization, and the actor **is** the fixture's synthetic
+Organization manager. A legitimate manager of a foreign Organization — or any other
+account — keeps normal clinic-creation behaviour while a demo runs.
+
+### The ledger cannot disappear silently (Stage 3)
+
+`cpsd_ownership_ledger` is now mandatory for a sealed, active fixture: absent,
+it is `SCOPED_OWNERSHIP_LEDGER_INVALID` and nothing is deleted. A monotonic
+companion record, `cpsd_ownership_seal`, commits the ledger's `count` and `head`;
+it is written after every append and verified before every append and every
+teardown. Deleting the ledger, truncating it, replacing it with an older (still
+perfectly sealed) copy, or deleting the seal are all detected. Interrupted
+operations remain recoverable: the pending `intent` record and the sealed slug are
+untouched by any of this, and `ScopedClinics::resolve()` still repairs them.

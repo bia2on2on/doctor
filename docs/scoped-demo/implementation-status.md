@@ -20,6 +20,22 @@
 
 **Option lifecycle.** `cpsd_ownership_ledger` is enumerated in `ScopedBaseline::COMPANION_OPTIONS` (never prefix-matched), is discarded by the teardown only after the tombstone is durable and the pending baseline is gone, and is treated by `uninstall.php` like the manifest and the pending baseline: while it exists it is recovery evidence and blocks the uninstall instead of being deleted behind an unresolved fixture.
 
+## Mission F — real-user data inside demo tenants
+
+**Defect.** Ownership was decided by the *tenant boundary*: a post-baseline row naming the demo Clinic was demo-owned. A real patient can book into the demo Clinic through the public booking page, and a real member of staff can be given access to it; both create rows that satisfy exactly that predicate and nothing else, so the teardown would have deleted them.
+
+**Stage 1 — positive attribution, fail closed.** Every candidate row must be explained by a positive fixture artifact (`ScopedTeardown::ATTRIBUTION` + the sealed manifest's ids + the sealed ledger): an attributable patient/visit/thread, the sealed mobile, one of the fixture's synthetic accounts, the fixture id, an explicit ledger registration, or — for pure Clinic configuration — the tenant boundary, which is itself a positive claim only because a real actor cannot write into a demo tenant (below). Any row that matches none of these, **including every row naming a real WordPress user** other than the fixture accounts and the administrator who created the demo, refuses the teardown before any destructive stage (`SCOPED_FOREIGN_TENANT_ROW`, plus a per-table total).
+
+**Explicit registration of demo-created rows.** A persona's front-desk data cannot be proven by a structural rule, so it is registered: `ScopedOwnership::register_rows()` seals a `rows` record, written either by a demo workflow (the extra-Clinic Organization membership) or by `ScopedTenantGuard`, which snapshots the demo tenant before every state-changing request by a synthetic fixture account and seals exactly the rows that appeared.
+
+**Stage 2 — server-side tenant write barrier.** While a fixture is active, a state-changing REST/portal request that targets the demo tenant is refused (403, `SCOPED_DEMO_TENANT_WRITE_REFUSED`, Persian message) unless the actor is a fixture account or a site administrator. Anonymous public requests stay allowed — that is the demo's public journey — and what they create for a real patient is refused by the attribution gate. Inert outside scoped mode, so production behaviour is untouched.
+
+**Stage 2 — the portal refusal is scoped to the fixture.** `guard_portal_clinic_creation()` now requires all three: scoped mode on, a verified **active** manifest, the POST naming the demo Organization, and the actor **being** the fixture's synthetic Organization manager. A legitimate manager of a foreign Organization keeps normal clinic-creation behaviour during a demo.
+
+**Stage 3 — the ledger cannot disappear silently.** `cpsd_ownership_ledger` is mandatory for a sealed active fixture; a monotonic companion record `cpsd_ownership_seal` commits its `count`/`head` after every append and is verified before every append and every teardown. Deletion, truncation, rollback to an older sealed copy, and deletion of the seal are all refused with zero deletions; interrupted registrations remain repairable through the pending intent and `ScopedClinics::resolve()`.
+
+**Drills.** `tests/scoped-portal.php` P8 proves a real patient's post-baseline booking inside the demo Clinic is never deleted (preview and execution refuse, the rows are untouched, no demo row and no synthetic account is lost, the audit chain verifies), and drives the real REST boundary through `rest_do_request()`: a real account is refused for the demo Clinic (403), not refused for its own Clinic, and a synthetic persona is not refused. P9 proves ledger deletion, truncation, rollback and seal loss all refuse, and that restoring the exact pair still completes the teardown.
+
 ## Stage 1 — post-merge failure
 
 Diagnosed separately in [`post-merge-failure-diagnosis.md`](post-merge-failure-diagnosis.md). The evidence supports a Chromium keyboard-focus/timing race in `pilot-admin-narrow.py`, not a deterministic production-code defect or infrastructure failure. The failing assertion moved from `cpms-settings@320` in attempt 1 to `cpms-organization-manager-bootstrap@390` in attempt 2; both runs reported `310 checks / 1 failure / fatal=none`. A separate harness fix is recommended and has not been applied in this scoped-demo work.

@@ -32,6 +32,7 @@ $cpms_demo_scoped_baseline = get_option( 'cpsd_baseline_pending', null );
 // Clinics belong to the fixture. While it exists it is recovery evidence and must
 // survive uninstall exactly like the manifest and the pending baseline.
 $cpms_demo_scoped_ledger   = get_option( 'cpsd_ownership_ledger', null );
+$cpms_demo_scoped_seal     = get_option( 'cpsd_ownership_seal', null );
 $cpms_demo_users           = function_exists( 'get_users' )
 	? get_users(
 		array(
@@ -71,6 +72,7 @@ if ( ( null !== $cpms_demo_manifest && false !== $cpms_demo_manifest )
 	|| ( null !== $cpms_demo_scoped_lock && false !== $cpms_demo_scoped_lock )
 	|| ( null !== $cpms_demo_scoped_baseline && false !== $cpms_demo_scoped_baseline )
 	|| ( null !== $cpms_demo_scoped_ledger && false !== $cpms_demo_scoped_ledger )
+	|| ( null !== $cpms_demo_scoped_seal && false !== $cpms_demo_scoped_seal )
 	|| ! empty( $cpms_demo_users )
 	|| ! empty( $cpms_demo_scoped_users )
 ) {
@@ -102,3 +104,4 @@ delete_option( 'cpsd_mode' );
 delete_option( 'cpsd_lock_state' );
 delete_option( 'cpsd_baseline_pending' );
 delete_option( 'cpsd_ownership_ledger' );
+delete_option( 'cpsd_ownership_seal' );

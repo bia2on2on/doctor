@@ -134,7 +134,18 @@ final class ScopedClinics {
 			// created by the REAL provisioning service with that account's own
 			// authority. Every persona therefore keeps its exact production role,
 			// and the membership row this adds lives inside the demo tenant.
-			$this->platform->set_manager( $context['manager_id'], $org, $admin_id, true );
+			$membership_id = $this->platform->set_manager( $context['manager_id'], $org, $admin_id, true );
+			// The administrator is a REAL account, so the membership row this adds
+			// can never be attributed by a structural rule. It is therefore
+			// registered explicitly, before the Clinic exists: an interrupted run
+			// leaves a registered row and a pending intent, never a row the teardown
+			// would have to guess about.
+			$this->ownership->register_rows(
+				$fixture,
+				'cpms_organization_memberships',
+				array( $membership_id ),
+				array( 'source' => 'extra-clinic', 'actor_id' => $admin_id )
+			);
 			$created = $this->platform->provision_clinic(
 				$admin_id,
 				$org,

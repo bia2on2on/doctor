@@ -270,6 +270,74 @@ class ScopedTeardown {
 	);
 
 	/**
+	 * POSITIVE ATTRIBUTION for every deletable row.
+	 *
+	 * The tenant boundary says which rows are CANDIDATES; it does not, by itself,
+	 * prove that a post-baseline row was created by the demo. A real patient can
+	 * book into the demo Clinic and a real member of staff can be given access to
+	 * it, and neither of them has anything to do with the fixture. Every candidate
+	 * row is therefore attributed to a fixture artifact before it may be deleted:
+	 *
+	 *   @patient   the row names a patient that is itself attributable
+	 *   @visit     the row names a visit that is itself attributable
+	 *   @thread    the row names a demo message thread
+	 *   @mobile    the row carries the fixture's sealed mobile number
+	 *   @user      the row names one of the fixture's synthetic accounts
+	 *   @fixture   the row carries the fixture id in one of its text columns
+	 *   @identity  the row is the fixture patient's organization identity
+	 *   @tenant    the row can only exist through a fixture actor: it is pure
+	 *              configuration of the demo Clinic (settings, services, opening
+	 *              hours, generated slots, taxonomy rows). The write barrier makes
+	 *              this a positive claim rather than an inference: a real actor
+	 *              cannot write into a demo tenant at all.
+	 *
+	 * A row that is registered in the sealed ownership ledger is always attributed
+	 * (that is what the ledger is for: the demo registries its own writes).
+	 * A row that matches NO rule - including every row that names a real
+	 * WordPress user - is refused: SCOPED_FOREIGN_TENANT_ROW, before anything is
+	 * deleted. Refusing is always safe; guessing is not.
+	 *
+	 * @var array<string,string>
+	 */
+	private const ATTRIBUTION = array(
+		'cpms_appointments' => '@patient',
+		'cpms_medical_attachments' => '@patient',
+		'cpms_clinical_notes' => '@patient',
+		'cpms_follow_ups' => '@patient',
+		'cpms_handwriting_documents' => '@patient',
+		'cpms_invoices' => '@patient',
+		'cpms_patient_identity_links' => '@user',
+		'cpms_patient_identities' => '@mobile',
+		'cpms_patient_user_links' => '@user',
+		'cpms_clinicians' => '@user',
+		'cpms_patients' => '@patient',
+		'cpms_payments' => '@patient',
+		'cpms_prescriptions' => '@patient',
+		'cpms_recommendations' => '@patient',
+		'cpms_visits' => '@patient',
+		'cpms_message_threads' => '@thread',
+		'cpms_messages' => '@thread',
+		'cpms_visit_charge_items' => '@visit',
+		'cpms_otp_tokens' => '@mobile',
+		'cpms_slot_holds' => '@mobile',
+		'cpms_sms_messages' => '@mobile',
+		'cpms_notifications' => '@recipient',
+		'cpms_clinic_memberships' => '@user',
+		'cpms_organization_memberships' => '@user',
+	);
+
+	/**
+	 * Sealed ids are explicit evidence too.
+	 *
+	 * The manifest names the exact rows provisioning created (patient, identity,
+	 * visit, invoice, payment, appointment, slots, ...). A row whose id is sealed
+	 * there needs no further artifact: the demo asserted it at seal time.
+	 *
+	 * @var list<string>
+	 */
+	private const SEALED_ID_COLUMNS = array( 'id' );
+
+	/**
 	 * Tables that must never be claimed or deleted, with the reason.
 	 *
 	 * License bookkeeping is install-level and migration bookkeeping is written
@@ -634,6 +702,7 @@ class ScopedTeardown {
 				'code'    => $tenants['ledger_code'],
 				'detail'  => $tenants['ledger_detail'],
 				'pending' => $tenants['pending'],
+				'rows'    => $tenants['row_keys'],
 			),
 			'user_ids'         => $user_ids,
 			'tables'           => $tables,
@@ -671,7 +740,7 @@ class ScopedTeardown {
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
 	 * @param array<string,mixed> $baseline Verified baseline.
-	 * @return array{clinic_ids:list<int>,unproven:list<int>,location_ids:list<int>,pending:list<array{token:string,slug:string,organization_id:int}>,ledger_code:string,ledger_detail:string}
+	 * @return array{clinic_ids:list<int>,unproven:list<int>,location_ids:list<int>,pending:list<array{token:string,slug:string,organization_id:int}>,row_keys:array<string,array<int,bool>>,ledger_code:string,ledger_detail:string}
 	 */
 	private function owned_tenants( array $manifest, array $baseline ): array {
 		$ids     = (array) ( $manifest['ids'] ?? array() );
@@ -687,7 +756,11 @@ class ScopedTeardown {
 		// Organization can be attributed to this session at all.
 		$org_owned = $org > 1 && $org > $baseline_org_max;
 
-		$ledger        = $this->ownership->summary( $fixture );
+		// The ledger is mandatory for a SEALED, active fixture: losing it loses
+		// ownership. An in-progress/failed run is still covered by the pending
+		// intents, so a missing record there is reported, not fabricated.
+		$require_ledger = 'active' === (string) ( $manifest['status'] ?? '' );
+		$ledger         = $this->ownership->summary( $fixture, $require_ledger );
 		$ledger_ids    = $ledger['ok'] ? (array) $ledger['clinic_ids'] : array();
 		$ledger_detail = (string) ( $ledger['detail'] ?? '' );
 		$ledger_code   = (string) ( $ledger['code'] ?? '' );
@@ -730,6 +803,7 @@ class ScopedTeardown {
 			'unproven'      => array_values( array_unique( array_filter( $unproven ) ) ),
 			'location_ids'  => array_values( array_unique( array_filter( array_map( 'intval', $location_ids ) ) ) ),
 			'pending'       => $ledger['ok'] ? (array) $ledger['pending'] : array(),
+			'row_keys'      => $ledger['ok'] ? (array) ( $ledger['row_keys'] ?? array() ) : array(),
 			'ledger_code'   => $ledger_code,
 			'ledger_detail' => $ledger_detail,
 		);
@@ -987,6 +1061,239 @@ class ScopedTeardown {
 	}
 
 	/**
+	 * Attribute every candidate row to a fixture artifact, or refuse.
+	 *
+	 * This is the data-safety gate of Stage 1: a candidate row (one that sits
+	 * inside the demo tenant) is only deletable when a POSITIVE fixture artifact
+	 * explains it. A real patient's booking, a real member of staff's write, or any
+	 * row that names a real WordPress user matches no artifact and refuses the
+	 * whole teardown before a single row is touched.
+	 *
+	 * @param array<string,mixed> $scope    Collected ownership scope.
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param array<string,mixed> $ledger   Verified ownership ledger summary.
+	 * @return array{problems:list<string>,counts:array<string,int>}
+	 */
+	private function attribution_problems( array $scope, array $manifest, array $ledger ): array {
+		$ids       = (array) ( $manifest['ids'] ?? array() );
+		$fixture   = (string) ( $manifest['fixture_id'] ?? '' );
+		$mobile    = $this->normalize_mobile( (string) ( $manifest['patient_mobile'] ?? '' ) );
+		$users     = array_map( 'intval', (array) ( $ids['user_ids'] ?? array() ) );
+		$registered = (array) ( $ledger['row_keys'] ?? array() );
+		$sealed    = array();
+		foreach ( $ids as $key => $value ) {
+			if ( is_array( $value ) ) {
+				foreach ( $value as $item ) {
+					$sealed[ (int) $item ] = true;
+				}
+				continue;
+			}
+			$sealed[ (int) $value ] = true;
+		}
+		$operators = array_map( 'intval', (array) ( $manifest['admin_id'] ?? 0 ) );
+		$context = array(
+			'mobile'     => $mobile,
+			'users'      => $users,
+			// The administrator who created the demo is part of its setup: the
+			// provisioner stamps that account as the creator of several synthetic
+			// rows. It is allowed as an ACTOR reference, but it is never a tenant and
+			// never proof of ownership on its own.
+			'operators'  => array_values( array_filter( $operators ) ),
+			'fixture'    => $fixture,
+			'sealed'     => $sealed,
+			'registered' => $registered,
+			'patients'   => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patients'] ?? array() ) ), true ),
+			'identities' => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patient_identities'] ?? array() ) ), true ),
+			'visits'     => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_visits'] ?? array() ) ), true ),
+			'threads'    => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_message_threads'] ?? array() ) ), true ),
+		);
+
+		$problems = array();
+		$counts   = array();
+		$limit    = 5;
+		foreach ( (array) ( $scope['tables'] ?? array() ) as $short => $row_ids ) {
+			if ( in_array( $short, self::GLOBAL_TABLES, true ) || in_array( $short, self::PRESERVED_PARENT_TABLES, true ) ) {
+				continue;
+			}
+			$row_ids = array_values( array_filter( array_map( 'intval', (array) $row_ids ) ) );
+			if ( array() === $row_ids ) {
+				continue;
+			}
+			$full = $this->platform->table( (string) $short );
+			$cols = $this->platform->columns( $full );
+			if ( ! in_array( 'id', $cols, true ) ) {
+				continue;
+			}
+			$rows = $this->platform->fetch_all(
+				'SELECT * FROM `' . $full . '` WHERE id IN (' . implode( ',', array_fill( 0, count( $row_ids ), '%d' ) ) . ')',
+				$row_ids
+			);
+			foreach ( $rows as $row ) {
+				$row_id = (int) ( $row['id'] ?? 0 );
+				if ( $row_id <= 0 ) {
+					continue;
+				}
+				if ( $this->row_is_attributed( (string) $short, $row, $context ) ) {
+					continue;
+				}
+				$counts[ (string) $short ] = (int) ( $counts[ (string) $short ] ?? 0 ) + 1;
+				if ( $limit > 0 ) {
+					$problems[] = 'SCOPED_FOREIGN_TENANT_ROW:' . $short . ':' . $row_id;
+					--$limit;
+				}
+			}
+		}
+		if ( array() !== $counts ) {
+			$summary = array();
+			foreach ( $counts as $short => $count ) {
+				$summary[] = $short . '=' . $count;
+			}
+			$problems[] = 'SCOPED_FOREIGN_TENANT_ROW_TOTAL: ' . implode( ', ', $summary );
+		}
+
+		return array( 'problems' => $problems, 'counts' => $counts );
+	}
+
+	/**
+	 * Does a fixture artifact explain this concrete row?
+	 *
+	 * @param string              $short   Short table name.
+	 * @param array<string,mixed> $row     Row.
+	 * @param array<string,mixed> $context Attribution context.
+	 * @return bool
+	 */
+	private function row_is_attributed( string $short, array $row, array $context ): bool {
+		$row_id = (int) ( $row['id'] ?? 0 );
+		// A row the demo explicitly registered is owned by definition: that is the
+		// durable ownership registration a controlled demo workflow writes.
+		if ( isset( $context['registered'][ $short ][ $row_id ] ) ) {
+			return true;
+		}
+		// A row whose exact id the sealed manifest names was created by the demo at
+		// provisioning time; the seal is the evidence, the id is the identity.
+		if ( isset( $context['sealed'][ $row_id ] ) ) {
+			return true;
+		}
+		// A row that names a WordPress user OTHER than a synthetic fixture account
+		// was touched by a real person; no amount of tenant or parent evidence
+		// makes deleting it safe.
+		foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
+			if ( ! array_key_exists( $column, $row ) ) {
+				continue;
+			}
+			$value = (int) ( $row[ $column ] ?? 0 );
+			if ( $value > 0 && ! in_array( $value, (array) $context['users'], true ) && ! in_array( $value, (array) $context['operators'], true ) ) {
+				return false;
+			}
+		}
+		$rule = self::ATTRIBUTION[ $short ] ?? '@tenant';
+		if ( '@tenant' === $rule ) {
+			return true;
+		}
+		if ( '@user' === $rule ) {
+			foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
+				if ( array_key_exists( $column, $row ) && in_array( (int) ( $row[ $column ] ?? 0 ), (array) $context['users'], true ) ) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+		if ( '@fixture' === $rule ) {
+			foreach ( $row as $value ) {
+				if ( is_string( $value ) && '' !== (string) $context['fixture'] && false !== strpos( $value, (string) $context['fixture'] ) ) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+		if ( '@mobile' === $rule ) {
+			$candidates = array( 'mobile', 'holder_mobile', 'recipient', 'mobile_at_link', 'normalized_mobile' );
+			foreach ( $candidates as $column ) {
+				if ( array_key_exists( $column, $row ) && '' !== (string) $context['mobile'] && $this->normalize_mobile( (string) $row[ $column ] ) === (string) $context['mobile'] ) {
+					return true;
+				}
+			}
+			foreach ( $row as $value ) {
+				if ( is_string( $value ) && '' !== (string) $context['fixture'] && false !== strpos( $value, (string) $context['fixture'] ) ) {
+					return true;
+				}
+			}
+
+			return false;
+		}
+		if ( '@patient' === $rule ) {
+			if ( 'cpms_patients' === $short ) {
+				if ( isset( $context['sealed'][ $row_id ] ) ) {
+					return true;
+				}
+				if ( array_key_exists( 'identity_id', $row ) && isset( $context['identities'][ (int) ( $row['identity_id'] ?? 0 ) ] ) ) {
+					return true;
+				}
+				foreach ( array( 'mobile', 'phone' ) as $column ) {
+					if ( array_key_exists( $column, $row ) && '' !== (string) $context['mobile'] && $this->normalize_mobile( (string) $row[ $column ] ) === (string) $context['mobile'] ) {
+						return true;
+					}
+				}
+				foreach ( array( 'mrn', 'first_name', 'last_name' ) as $column ) {
+					if ( array_key_exists( $column, $row ) && '' !== (string) $context['fixture'] && false !== strpos( (string) $row[ $column ], (string) $context['fixture'] ) ) {
+						return true;
+					}
+				}
+
+				return false;
+			}
+
+			return array_key_exists( 'patient_id', $row ) && isset( $context['patients'][ (int) ( $row['patient_id'] ?? 0 ) ] );
+		}
+		if ( '@recipient' === $rule ) {
+			if ( array_key_exists( 'recipient_patient_id', $row ) && (int) ( $row['recipient_patient_id'] ?? 0 ) > 0 ) {
+				return isset( $context['patients'][ (int) $row['recipient_patient_id'] ] );
+			}
+			foreach ( $row as $value ) {
+				if ( is_string( $value ) && '' !== (string) $context['fixture'] && false !== strpos( $value, (string) $context['fixture'] ) ) {
+					return true;
+				}
+			}
+
+			// A queue row with no patient binding belongs to the demo Clinic's own
+			// operational queue (staff notification, retry bookkeeping).
+			return true;
+		}
+		if ( '@visit' === $rule ) {
+			return array_key_exists( 'visit_id', $row ) && isset( $context['visits'][ (int) ( $row['visit_id'] ?? 0 ) ] );
+		}
+		if ( '@thread' === $rule ) {
+			if ( 'cpms_message_threads' === $short ) {
+				return ( array_key_exists( 'patient_id', $row ) && isset( $context['patients'][ (int) ( $row['patient_id'] ?? 0 ) ] ) )
+					|| in_array( (int) ( $row['created_by_wp_user_id'] ?? 0 ), (array) $context['users'], true );
+			}
+
+			return array_key_exists( 'thread_id', $row ) && isset( $context['threads'][ (int) ( $row['thread_id'] ?? 0 ) ] );
+		}
+
+		return false;
+	}
+
+	/**
+	 * Digits-only mobile, with the Iranian country prefix folded away.
+	 *
+	 * @param string $mobile Raw mobile.
+	 * @return string
+	 */
+	private function normalize_mobile( string $mobile ): string {
+		$digits = preg_replace( '/\D+/', '', $mobile );
+		$digits = is_string( $digits ) ? $digits : '';
+		$digits = (string) preg_replace( '/^(?:0098|98)/', '0', $digits );
+		if ( 10 === strlen( $digits ) && '9' === substr( $digits, 0, 1 ) ) {
+			$digits = '0' . $digits;
+		}
+
+		return $digits;
+	}
+
+	/**
 	 * Is this concrete row inside the proven demo scope?
 	 *
 	 * @param string              $short     Short table name.
@@ -1150,6 +1457,10 @@ class ScopedTeardown {
 			$problems[] = $audit['error'];
 		}
 		$scope = $this->collect_scope( $manifest, $baseline );
+		// Stage 1 gate: every candidate row must be attributable to a fixture
+		// artifact. This is what stops a real patient's booking, or a real member
+		// of staff's write, from ever being deleted as demo data.
+		$attribution = $this->attribution_problems( $scope, $manifest, (array) ( $tenants['row_keys'] ?? array() ) );
 		if ( array() !== $scope['processing_jobs'] ) {
 			$problems[] = 'JOBS_ACTIVE: ' . implode( ',', $scope['processing_jobs'] );
 		}
@@ -1162,6 +1473,7 @@ class ScopedTeardown {
 			$problems[] = 'QUEUE_RUNNER_ACTIVE';
 		}
 		$problems = array_merge( $problems, $this->scan_untracked_fixture_rows( $manifest, $baseline, $scope, false ) );
+		$problems = array_merge( $problems, (array) $attribution['problems'] );
 
 		// Nothing is deleted while a row we do NOT own still references a synthetic
 		// account. This is the whole point of the fix: a post-baseline row that
@@ -1232,6 +1544,13 @@ class ScopedTeardown {
 					throw new Exception(
 						'SCOPED_FOREIGN_DEPENDENCY',
 						'داده‌ای بیرون از محدودهٔ دمو به یک کاربر ساختگی وابسته است؛ پاک‌سازی متوقف شد: ' . $problem
+					);
+				}
+				if ( 0 === strpos( (string) $problem, 'SCOPED_FOREIGN_TENANT_ROW' ) ) {
+					throw new Exception(
+						'SCOPED_FOREIGN_TENANT_ROW',
+						'درمانگاه دمو رکوردی دارد که به هیچ اثر ساختگی این دمو نسبت داده نمی‌شود (احتمالاً دادهٔ کاربر واقعی)؛ '
+						. 'هیچ داده‌ای حذف نشد: ' . $problem
 					);
 				}
 				if ( 0 === strpos( (string) $problem, 'SCOPED_OWNERSHIP_LEDGER_INVALID' ) ) {

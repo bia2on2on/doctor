@@ -60,6 +60,7 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-guard.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-clinics.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
@@ -100,3 +101,8 @@ add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_as
 // handler, so the request never reaches the production dispatcher. It returns
 // immediately when scoped mode is off, leaving production behaviour untouched.
 add_action( 'template_redirect', array( 'CpmsDemo\\ScopedAdmin', 'guard_portal_clinic_creation' ), 0 );
+// The tenant boundary around the demo Clinic/Organization: it records what the
+// demo's own synthetic accounts create (so the teardown never has to guess) and
+// refuses writes into the demo tenant by real users, on the server. Every hook
+// returns immediately unless a scoped fixture is active.
+CpmsDemo\ScopedTenantGuard::register();

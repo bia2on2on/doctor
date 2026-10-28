@@ -388,14 +388,19 @@ class ScopedAdmin {
 	}
 
 	/**
-	 * Refuse portal Clinic creation while the scoped demo mode is enabled.
+	 * Refuse portal Clinic creation for the SYNTHETIC DEMO MANAGER only.
 	 *
-	 * Server-side boundary (not a UI restriction, not a disabled button): the POST
-	 * is rejected before the portal dispatcher runs, so no code path can create an
-	 * unregistered Clinic through the Management Portal during a demo session. It
-	 * is registered on `template_redirect` priority 0, ahead of the portal's own
-	 * handler. Outside scoped demo mode this method returns immediately, so normal
-	 * production behaviour is untouched.
+	 * Scope of the refusal, all three conditions required:
+	 *
+	 *   1. scoped demo mode is enabled AND a verified manifest for this site is
+	 *      active (an interrupted/aborted fixture does not restrict anything);
+	 *   2. the request names the demo Organization;
+	 *   3. the actor is the synthetic Organization manager of that fixture.
+	 *
+	 * Everything else - most importantly a legitimate Organization manager of a
+	 * FOREIGN Organization creating a Clinic while a demo is active - is left
+	 * completely alone. The refusal is server-side (it happens before the portal
+	 * dispatcher runs) and the message is Persian.
 	 *
 	 * @return void
 	 */
@@ -405,10 +410,11 @@ class ScopedAdmin {
 		}
 		// A refusal is not a state change: it writes nothing, so a nonce cannot make
 		// it legitimate, and demanding one would let a crafted POST slip past this
-		// boundary into the production controller. The value is only compared
-		// against one literal action name.
+		// boundary into the production controller. The values are only compared
+		// against the sealed fixture identity below.
 		// phpcs:disable WordPress.Security.NonceVerification.Missing -- read-only refusal guard; nothing is written or changed.
-		$posted_action = isset( $_POST['cpms_action'] ) ? (string) wp_unslash( $_POST['cpms_action'] ) : '';
+		$posted_action     = isset( $_POST['cpms_action'] ) ? (string) wp_unslash( $_POST['cpms_action'] ) : '';
+		$posted_org        = isset( $_POST['organization_id'] ) ? (int) wp_unslash( $_POST['organization_id'] ) : 0;
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		$action = sanitize_key( $posted_action );
 		if ( 'org_create_clinic' !== $action ) {
@@ -418,14 +424,33 @@ class ScopedAdmin {
 		if ( ! $manifest->mode_enabled() ) {
 			return;
 		}
+		$loaded = $manifest->load();
+		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+			// No live fixture: this request cannot belong to a demo session, so a
+			// leftover mode marker must not restrict anybody.
+			return;
+		}
+		$demo_org = (int) ( $loaded['ids']['organization_id'] ?? 0 );
+		$manager  = (int) ( $loaded['ids']['user_ids']['organization_manager'] ?? 0 );
+		if ( $demo_org <= 1 || $manager <= 1 ) {
+			return;
+		}
+		if ( get_current_user_id() !== $manager ) {
+			// A real Organization manager (of any Organization, including one that
+			// happens to post into the demo Organization) is NOT the demo persona.
+			return;
+		}
+		if ( $posted_org > 0 && $posted_org !== $demo_org ) {
+			return;
+		}
 		wp_die(
 			esc_html(
-				'در حالت «دموی محدودشده» ساخت درمانگاه تازه از درگاه مدیریت مسدود است و این درخواست در سرور رد شد. '
+				'در حالت «دموی محدودشده» حساب نمایشی مدیر سازمان نمی‌تواند از درگاه مدیریت درمانگاه تازه بسازد و این درخواست در سرور رد شد. '
 				. 'دلیل: درمانگاهی که پس از مهر پایهٔ مرجع زیر سازمان دمو ساخته شود از یک درمانگاه واقعی قابل تشخیص نیست و '
 				. 'پاک‌سازی خودکار ممکن است دادهٔ واقعی را حذف کند. اگر برای آزمون به درمانگاه دوم نیاز دارید، آن را از صفحهٔ '
 				. '«دموی محدودشده CPMS» در پیشخوان بسازید؛ مالکیت آن پیش از ساخت در دفتر مهرشدهٔ دمو ثبت می‌شود.'
 			),
-			esc_html( 'ساخت درمانگاه در حالت دموی محدودشده مسدود است' ),
+			esc_html( 'ساخت درمانگاه برای حساب نمایشی مسدود است' ),
 			array( 'response' => 403 )
 		);
 	}
