@@ -383,10 +383,19 @@ def journey_staff_messaging_privacy(browser, rotated_creds: dict, links: dict, f
         " return el ? String((JSON.parse(el.textContent) || {}).nonce || '') : ''; }"
     )
     check("the messages module publishes its own REST nonce", len(str(nonce)) >= 8, str(len(nonce)))
+    # The module always sends the selected Clinic, because the production scope
+    # resolver fail-closed when the site hosts more than one Clinic. Replaying the
+    # request without it would only rehearse CLINIC_SCOPE_REQUIRED, so the header
+    # is taken from the Clinic the real UI actually selected.
+    clinic_id = msg_page.evaluate(
+        "() => { const el = document.querySelector('[data-role=\"messages-clinic\"]');"
+        " return el && el.value ? String(el.value) : ''; }"
+    )
+    check("the messages module selected a Clinic for its requests", str(clinic_id).isdigit(), str(clinic_id))
     guessed = msg_page.evaluate(
-        """async ([url, nonce]) => {
+        """async ([url, nonce, clinic]) => {
             const res = await fetch(url, {
-                headers: {'X-WP-Nonce': String(nonce), 'Accept': 'application/json'},
+                headers: {'X-WP-Nonce': String(nonce), 'Accept': 'application/json', 'X-CPMS-Clinic-Id': String(clinic)},
                 credentials: 'same-origin', cache: 'no-store'
             });
             let body = {};
@@ -396,6 +405,7 @@ def journey_staff_messaging_privacy(browser, rotated_creds: dict, links: dict, f
         [
             f"{rest_root}/staff/portal/messages/threads/{max(thread_ids) + 9000}/messages",
             str(nonce),
+            str(clinic_id),
         ],
     )
     check(
