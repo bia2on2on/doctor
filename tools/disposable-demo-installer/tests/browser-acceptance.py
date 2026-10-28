@@ -1371,7 +1371,18 @@ def main() -> None:
             diag_form.locator('input[name="cpdd_confirm"]').fill("RUN_READ_ONLY_DIAGNOSTIC")
             diag_form.locator('button[type="submit"]').click()
             admin_page.wait_for_load_state("domcontentloaded")
-            check("browser-triggered read-only diagnostics PASS", admin_page.locator('[data-cpdd-diagnostic="pass"]').count() == 1)
+            # The read-only diagnostic is the ownership proof that gates every
+            # destructive action, so its verdict is asserted AND its reason is
+            # printed: a blocked diagnostic is the most safety-critical failure
+            # in this journey and must be diagnosable from the log alone.
+            diag_card = admin_page.locator("[data-cpdd-diagnostic]")
+            diag_verdict = (diag_card.get_attribute("data-cpdd-diagnostic") or "") if diag_card.count() else ""
+            diag_text = diag_card.inner_text()[:900] if diag_card.count() else "diagnostic card absent"
+            check(
+                "browser-triggered read-only diagnostics PASS",
+                diag_verdict == "pass",
+                f"verdict={diag_verdict!r} {diag_text}",
+            )
 
             td_form = admin_page.locator('form[data-cpdd-form="teardown"]')
             td_form.locator('input[name="cpdd_confirm"]').fill("WRONG_PHRASE")
