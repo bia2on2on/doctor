@@ -277,6 +277,26 @@ jobs:
             2>&1 | tee /tmp/cpdd-ci/integration.log
           grep -q '^CPDD_INTEGRATION=PASS' /tmp/cpdd-ci/integration.log
 
+      # TEMPORARY DIAGNOSTIC (to be removed): the real-WordPress lanes upload
+      # their logs as artifacts, which are not readable from here, so a failed
+      # integration assertion would otherwise be undiagnosable. This publishes
+      # only the acceptance lines, never credentials or page bodies.
+      - name: Diagnostic — publish integration failure lines (temporary)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          PR="${{ github.event.pull_request.number }}"
+          LOG=/tmp/cpdd-ci/integration.log
+          [ -f "$LOG" ] || { echo 'no integration log'; exit 0; }
+          grep -E '^(FAIL|PASS|CPDD_|TEARDOWN_|PREFLIGHT_)|Fatal error|Uncaught|Exception|SQL' "$LOG" | tail -n 60 > /tmp/cpdd-ci/diag.txt || true
+          wc -l /tmp/cpdd-ci/diag.txt || true
+          if [ -n "$PR" ] && [ -s /tmp/cpdd-ci/diag.txt ]; then
+            { echo '### Companion integration failure lines (temporary diagnostic)'; echo '```'; cat /tmp/cpdd-ci/diag.txt; echo '```'; } > /tmp/cpdd-ci/diag.md
+            gh pr comment "$PR" --body-file /tmp/cpdd-ci/diag.md || true
+          fi
+
       - name: Post-teardown site state (default data intact, no demo artefacts)
         run: |
           set -Eeuo pipefail
