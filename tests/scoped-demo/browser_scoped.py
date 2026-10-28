@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from pathlib import Path
@@ -887,6 +888,9 @@ def journeys_phase(browser) -> None:
     page.screenshot(path=str(EVIDENCE / "journey-organization-manager.png"))
     ctx.close()
 
+    # ---------------- Iran V1 (schema 0030): private staff messaging + visit pricing
+    iran_v1_phase(browser, creds, targets)
+
     # ---------------- admin: read-only diagnostic then authorised teardown
     ctx, admin = admin_login(browser)
     admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
@@ -908,6 +912,334 @@ def journeys_phase(browser) -> None:
     ctx.close()
 
 
+def iran_v1_phase(browser, creds: dict, targets: dict) -> None:
+    """`cpsd_staff_messaging_privacy` and `cpsd_visit_pricing_invoice`.
+
+    Both journeys are driven through the delivered staff-portal modules of the
+    SCOPED fixture (a seeded, non-empty host site), because the properties they
+    prove are properties of the shipped UI:
+
+    * privacy is only shown by which rows a real participant is rendered — the
+      second doctor and the second receptionist are active members of the same
+      Clinic, so "not in the thread" must mean "sees nothing", not "is refused";
+    * the fee-snapshot rule is only shown by the pricing forms, which must keep
+      the check-in snapshot and never reprice an established Visit when the
+      doctor's default fee changes.
+    """
+    iran = targets.get("iran_v1") or {}
+    modules = ((targets.get("portals") or {}).get("modules") or {})
+    clinic_id = int(targets.get("clinic_id") or 0)
+    private_thread = int(iran.get("private_thread") or 0)
+    threads = [int(value) for value in (iran.get("threads") or [])]
+    pricing_visit = int(iran.get("pricing_visit_id") or 0)
+    pricing_location = int(iran.get("pricing_visit_location_id") or 0)
+
+    check("the scoped fixture seals the three private staff threads",
+          private_thread > 0 and len(threads) == 3, json.dumps(threads))
+    check("the scoped fixture seals the pricing visit and its Location",
+          pricing_visit > 0 and pricing_location > 0,
+          f"visit={pricing_visit} location={pricing_location}")
+
+    # ================= private staff messaging =================
+    ctx, page = persona_login(browser, creds["doctor"]["username"], creds["doctor"]["password"])
+    page.goto(str(modules.get("messages") or ""), wait_until="domcontentloaded")
+    check("doctor opens the staff messaging module",
+          page.locator('[data-role="messages-root"]').count() == 1, f"url={page.url}")
+    threads_node = page.locator('[data-role="messages-threads"]')
+    threads_node.wait_for(state="visible", timeout=45000)
+    thread_rows = threads_node.locator("li button")
+    thread_rows.first.wait_for(state="visible", timeout=45000)
+    # Three threads exist; the doctor participates in exactly two of them.
+    check("the doctor sees exactly their two private threads",
+          thread_rows.count() == 2, f"rendered={thread_rows.count()} sealed={len(threads)}")
+    check("the doctor's unread badge is rendered",
+          page.locator('[data-role="messages-unread-total"]').is_visible())
+
+    thread_rows.first.click()
+    bubbles = page.locator('[data-role="messages-list"] .cpms-msg__bubble')
+    bubbles.first.wait_for(state="visible", timeout=45000)
+    seeded = bubbles.count()
+    check("opening a conversation renders its seeded messages", seeded >= 2, str(seeded))
+    page.fill('[data-role="messages-body"]', "پیام آزمایشی دموی محدود — داده فرضی")
+    page.locator('[data-role="messages-form"]').evaluate("form => form.requestSubmit()")
+    page.wait_for_function(
+        "n => document.querySelectorAll('[data-role=\"messages-list\"] .cpms-msg__bubble').length > n",
+        arg=seeded,
+        timeout=45000,
+    )
+    check("the doctor sends a message through the real form", True, "bubble appended")
+
+    cfg = surface_config(page, "doctor messaging")
+    msg_root = rest_root_from(cfg)
+    # A thread that does not exist must be refused with the same non-revealing
+    # 404 the service returns, never a distinguishable answer.
+    guessed = api(page, str(cfg.get("nonce", "")), "GET",
+                  f"/staff/portal/messages/threads/{max(threads) + 9000}/messages",
+                  headers=scope_headers(clinic_id), rest_root=msg_root)
+    check("a guessed thread id is refused with the non-revealing 404",
+          guessed["status"] == 404 and code_of(guessed) == "CLINIC_NOT_FOUND",
+          f"HTTP {guessed['status']} {code_of(guessed)}")
+    # The fixture seals its threads in a documented order:
+    #   0: doctor <-> receptionist   1: doctor <-> finance   2: receptionist <-> finance
+    # so the doctor owns exactly 0 and 1, and 2 is a real thread they are not in.
+    for owned in threads[:2]:
+        readable = api(page, str(cfg.get("nonce", "")), "GET",
+                       f"/staff/portal/messages/threads/{owned}/messages",
+                       headers=scope_headers(clinic_id), rest_root=msg_root)
+        check(f"the doctor reads their own thread {owned}",
+              readable["status"] == 200, f"HTTP {readable['status']} {code_of(readable)}")
+    outsider = api(page, str(cfg.get("nonce", "")), "GET",
+                   f"/staff/portal/messages/threads/{threads[2]}/messages",
+                   headers=scope_headers(clinic_id), rest_root=msg_root)
+    check("the receptionist <-> finance thread is refused like a missing one",
+          outsider["status"] == 404 and code_of(outsider) == "CLINIC_NOT_FOUND",
+          f"HTTP {outsider['status']} {code_of(outsider)} thread={threads[2]}")
+    ctx.close()
+
+    for intruder in ("receptionist_second", "doctor_second"):
+        ctx, page = persona_login(browser, creds[intruder]["username"], creds[intruder]["password"])
+        page.goto(str(modules.get("messages") or ""), wait_until="domcontentloaded")
+        intruder_threads = page.locator('[data-role="messages-threads"]')
+        intruder_threads.wait_for(state="visible", timeout=45000)
+        page.wait_for_function(
+            "() => (document.querySelector('[data-role=\"messages-threads\"]') || {}).textContent"
+            ".indexOf('هنوز گفتگویی وجود ندارد') !== -1",
+            timeout=45000,
+        )
+        check(f"{intruder} (a real member of the Clinic) sees no private conversation",
+              intruder_threads.locator("li button").count() == 0
+              and not page.locator('[data-role="messages-unread-total"]').is_visible(),
+              f"threads={intruder_threads.locator('li button').count()}")
+        ctx.close()
+
+    # ================= visit pricing -> invoice -> collection =================
+    ctx, page = persona_login(browser, creds["doctor_second"]["username"], creds["doctor_second"]["password"])
+    page.goto(str(modules.get("pricing") or ""), wait_until="domcontentloaded")
+    check("the second doctor opens the pricing module",
+          page.locator('[data-role="pricing-root"]').count() == 1, f"url={page.url}")
+    page.locator('[data-role="pricing-context-label"]').wait_for(state="visible", timeout=45000)
+    page.wait_for_function(
+        "() => !document.querySelector('[data-role=\"pricing-context-label\"]').textContent"
+        ".includes('در حال دریافت')",
+        timeout=45000,
+    )
+    visit_button = page.locator(
+        '[data-role="pricing-visits"] li button',
+        has_text=re.compile(rf"ویزیت {pricing_visit}\s*$"),
+    )
+    visit_button.wait_for(state="visible", timeout=45000)
+    visit_button.click()
+    page.locator('[data-role="pricing-billing"]').wait_for(state="visible", timeout=45000)
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-visit-title\"]')"
+        ".textContent.includes('صورتحساب')",
+        timeout=45000,
+    )
+    stats = page.locator('[data-role="pricing-stats"]').inner_text() or ""
+    # The doctor's CURRENT default is the LATER value; the Visit must still show
+    # the fee captured at check-in, with the no-reprice policy stated.
+    check("the projection shows the check-in snapshot fee and the no-reprice policy",
+          "تعرفه ثبت‌شده هنگام پذیرش" in stats
+          and "500000 ریال" in stats
+          and "750000 ریال" in stats
+          and "سیاست تعرفه" in stats,
+          stats[:220])
+
+    page.fill('[data-role="pricing-charge-description"]', "خدمت درمانی آزمایشی دمو")
+    page.fill('[data-role="pricing-charge-amount"]', "200000")
+    page.fill('[data-role="pricing-charge-quantity"]', "1")
+    page.locator('[data-role="pricing-charge-form"]').evaluate("form => form.requestSubmit()")
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-charges\"]')"
+        ".textContent.includes('خدمت درمانی آزمایشی دمو')",
+        timeout=45000,
+    )
+    check("the doctor adds an itemized charge through the real form", True, "row rendered")
+
+    # Editing a charge is a genuine UI action: three sequential window.prompt()s.
+    answers = ["خدمت درمانی آزمایشی دمو (اصلاح‌شده)", "200000", "2"]
+
+    def answer_prompt(dialog) -> None:
+        if dialog.type == "prompt" and answers:
+            dialog.accept(answers.pop(0))
+        else:
+            dialog.accept()
+
+    page.on("dialog", answer_prompt)
+    page.locator('[data-role="pricing-charges"] tr').first.locator("button", has_text="اصلاح").click()
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-charges\"]')"
+        ".textContent.includes('اصلاح‌شده')",
+        timeout=45000,
+    )
+    page.wait_for_function(
+        "() => { const rows = document.querySelectorAll('[data-role=\"pricing-charges\"] tr');"
+        " if (rows.length !== 1) return false;"
+        " const cells = rows[0].querySelectorAll('td');"
+        " return cells.length > 2 && cells[2].textContent.trim() === '2'; }",
+        timeout=45000,
+    )
+    check("the doctor edits the charge quantity through the real UI", True, "quantity cell is 2")
+    page.remove_listener("dialog", answer_prompt)
+
+    page.fill('[data-role="pricing-override-amount"]', "620000")
+    page.locator('[data-role="pricing-override-form"]').evaluate("form => form.requestSubmit()")
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-stats\"]')"
+        ".textContent.includes('تعرفه اختصاصی پزشک')",
+        timeout=45000,
+    )
+    check("the doctor applies a per-visit fee override through the real form", True, "visit_override")
+    page.screenshot(path=str(EVIDENCE / "journey-pricing-doctor.png"))
+    ctx.close()
+
+    ctx, page = persona_login(browser, creds["receptionist"]["username"], creds["receptionist"]["password"])
+    page.goto(str(modules.get("finance") or ""), wait_until="domcontentloaded")
+    check("the receptionist opens the finance module",
+          page.locator("#cpms-finance-board-config").count() == 1, f"url={page.url}")
+    location_select = page.locator('[data-role="finance-location"]')
+    location_select.wait_for(state="visible", timeout=45000)
+    page.locator(f'[data-role="finance-location"] option[value="{pricing_location}"]').wait_for(
+        state="attached", timeout=45000
+    )
+    if location_select.input_value() != str(pricing_location):
+        location_select.select_option(str(pricing_location))
+    billing_open = page.locator(
+        f'[data-role="finance-billing-open"][data-visit-id="{pricing_visit}"]'
+    )
+    billing_open.wait_for(state="visible", timeout=60000)
+    billing_open.click()
+    page.locator('[data-role="finance-billing"]').wait_for(state="visible", timeout=45000)
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"finance-billing-charges\"]')"
+        ".textContent.includes('اصلاح‌شده')",
+        timeout=45000,
+    )
+    breakdown = page.locator('[data-role="finance-billing"]').inner_text() or ""
+    check("the receptionist sees the doctor's override and the itemized charge",
+          "تعرفه اختصاصی ویزیت" in breakdown and "اصلاح‌شده" in breakdown,
+          breakdown[:220])
+
+    issue = page.locator('[data-role="finance-billing-auto"]')
+    check("the receptionist may issue the invoice from the doctor pricing", issue.is_visible())
+    issue.click()
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"finance-billing-items\"]')"
+        ".textContent.includes('ویزیت و مشاوره')",
+        timeout=60000,
+    )
+    lines = page.locator('[data-role="finance-billing-items"]').inner_text() or ""
+    check("the finance invoice carries the consultation and the treatment line",
+          "ویزیت و مشاوره" in lines and "اصلاح‌شده" in lines, lines[:220])
+
+    cfg = surface_config(page, "receptionist finance")
+    fin_root = rest_root_from(cfg)
+    fin_nonce = str(cfg.get("nonce", ""))
+    fin_headers = scope_headers(clinic_id, pricing_location)
+
+    # The Visit's ACTIVE invoice is read back through the same production route
+    # the finance UI uses; the awaiting-payment board is a Location-local,
+    # today-only projection, so it is not a safe identity source here.
+    invoice_id = 0
+    invoice_state: dict = {}
+    for _ in range(30):
+        answered = api(page, fin_nonce, "GET", f"/visits/{pricing_visit}/invoice",
+                       headers=fin_headers, rest_root=fin_root)
+        if answered["status"] == 200:
+            body = payload_of(answered)
+            invoice_id = int(body.get("id") or 0)
+            invoice_state = {
+                "status": str(body.get("status") or ""),
+                "total": int(round(float(body.get("total") or 0))),
+                "paid": int(round(float(body.get("paid_amount") or 0))),
+                "balance": int(round(float(body.get("balance") or 0))),
+            }
+            if invoice_id:
+                break
+        page.wait_for_timeout(500)
+    check("the browser-issued pricing invoice is recorded against the Visit",
+          invoice_id > 0 and invoice_state.get("total") == 1020000,
+          f"id={invoice_id} state={json.dumps(invoice_state)}")
+
+    pay_open = page.locator(f'[data-role="finance-pay-open"][data-invoice-id="{invoice_id}"]')
+    pay_open.wait_for(state="visible", timeout=60000)
+    pay_open.click()
+    page.fill('[data-role="finance-pay-amount"]', "300000")
+    page.select_option('[data-role="finance-pay-method"]', "cash")
+    page.fill('[data-role="finance-pay-ref"]', "SYNTHETIC-SCOPED-PARTIAL")
+    page.locator('[data-role="finance-pay-form"]').evaluate("form => form.requestSubmit()")
+
+    partial: dict = {}
+
+    def read_invoice() -> dict:
+        answered = api(page, fin_nonce, "GET", f"/visits/{pricing_visit}/invoice",
+                       headers=fin_headers, rest_root=fin_root)
+        body = payload_of(answered)
+        return {
+            "status_label": str(body.get("status") or ""),
+            "id": int(body.get("id") or 0),
+            "total": int(round(float(body.get("total") or 0))),
+            "paid": int(round(float(body.get("paid_amount") or 0))),
+            "balance": int(round(float(body.get("balance") or 0))),
+        }
+
+    for _ in range(40):
+        partial = read_invoice()
+        if partial.get("paid") == 300000:
+            break
+        page.wait_for_timeout(500)
+    check("the partial payment is persisted against the pricing invoice",
+          partial.get("paid") == 300000 and partial.get("balance") == 720000,
+          json.dumps(partial))
+
+    pay_open.click()
+    page.fill('[data-role="finance-pay-amount"]', "720000")
+    page.select_option('[data-role="finance-pay-method"]', "card_pos")
+    page.fill('[data-role="finance-pay-ref"]', "SYNTHETIC-SCOPED-FINAL")
+    page.locator('[data-role="finance-pay-form"]').evaluate("form => form.requestSubmit()")
+
+    settled: dict = {}
+    for _ in range(40):
+        settled = read_invoice()
+        if settled.get("paid") == 1020000:
+            break
+        page.wait_for_timeout(500)
+    check("the pricing invoice settles to a zero balance",
+          settled.get("paid") == 1020000 and settled.get("balance") == 0,
+          json.dumps(settled))
+    page.screenshot(path=str(EVIDENCE / "journey-pricing-finance.png"))
+    ctx.close()
+
+    # The finalized Visit is read-only in the doctor module: the charge and
+    # override actions must be disabled, never silently accepted.
+    ctx, page = persona_login(browser, creds["doctor_second"]["username"], creds["doctor_second"]["password"])
+    page.goto(str(modules.get("pricing") or ""), wait_until="domcontentloaded")
+    page.locator('[data-role="pricing-root"]').wait_for(state="visible", timeout=45000)
+    page.locator('[data-role="pricing-context-label"]').wait_for(state="visible", timeout=45000)
+    page.wait_for_function(
+        "() => !document.querySelector('[data-role=\"pricing-context-label\"]').textContent"
+        ".includes('در حال دریافت')",
+        timeout=45000,
+    )
+    frozen = page.locator(
+        '[data-role="pricing-visits"] li button',
+        has_text=re.compile(rf"ویزیت {pricing_visit}\s*$"),
+    )
+    frozen.wait_for(state="visible", timeout=45000)
+    frozen.click()
+    page.locator('[data-role="pricing-billing"]').wait_for(state="visible", timeout=45000)
+    page.wait_for_function(
+        "() => document.querySelector('[data-role=\"pricing-charge-add\"]')"
+        ".disabled === true",
+        timeout=45000,
+    )
+    check("a settled Visit is frozen for the doctor (no new charge, no override)",
+          page.locator('[data-role="pricing-charge-add"]').is_disabled()
+          and page.locator('[data-role="pricing-override-save"]').is_disabled(),
+          "charge-add and override-save disabled")
+    ctx.close()
+
+
 def write_result(ok: bool, extra: dict | None = None) -> None:
     result = {
         "ok": bool(ok) and all(bool(c["ok"]) for c in CHECKS),
@@ -916,6 +1248,7 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
         "limitations": [
             "Journeys call the plugin REST API from the persona's own portal surface, not every UI form",
             "clinic_manager/organization_manager assert the management portal surface, not REST journeys",
+            "staff messaging and visit pricing ARE driven through the delivered modules (thread list, thread view, send, charge add/edit dialog, override, invoice, partial and final payment); only the pricing visit-list pagination and the finance receipt print view are not exercised",
             "The patient OTP journey posts the widget's own /otp/request payload from inside the real booking page; the calendar/slot click path and the patient portal's OTP form (which multi-Clinic installs refuse with CLINIC_SCOPE_REQUIRED) are not driven",
             "Password-only patient login stays unbound by design: cpms_patient_user_links is written only by the mobile-OTP enrollment flow, which is exercised through the production /otp/verify route",
             "Screenshot pixels not inspected",

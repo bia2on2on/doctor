@@ -92,6 +92,14 @@ try {
 			(int) ( $live['ids']['visit_id'] ?? 0 )
 		)
 	);
+	// The pricing fixture visit is a SEPARATE walk-in (its own Location), so the
+	// finance journey cannot reuse the operational visit's Location.
+	$pricing_visit_row = $wpdb->get_row(
+		$wpdb->prepare(
+			'SELECT id, clinician_id, location_id FROM ' . $table( 'cpms_visits' ) . ' WHERE id = %d',
+			(int) ( $live['ids']['visit_id_pricing'] ?? 0 )
+		)
+	);
 	$clinic_row = $wpdb->get_row(
 		$wpdb->prepare( 'SELECT id, name FROM ' . $table( 'cpms_clinics' ) . ' WHERE id = %d', $clinic_id )
 	);
@@ -178,6 +186,8 @@ try {
 				'pricing_visit_id'    => (int) ( $live['ids']['visit_id_pricing'] ?? 0 ),
 				'doctor_second_id'    => (int) ( $live['ids']['user_ids']['doctor_second'] ?? 0 ),
 				'reception_second_id' => (int) ( $live['ids']['user_ids']['receptionist_second'] ?? 0 ),
+				'pricing_visit_location_id' => null === $pricing_visit_row ? 0 : (int) $pricing_visit_row->location_id,
+				'pricing_visit_clinician_id' => null === $pricing_visit_row ? 0 : (int) $pricing_visit_row->clinician_id,
 			),
 			'foreign'      => array(
 				'invoice_id' => null === $foreign_invoice ? null : (int) $foreign_invoice->id,
