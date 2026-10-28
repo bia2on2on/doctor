@@ -937,6 +937,7 @@ try {
 		$checks
 	);
 
+	$frn_pristine_digest = cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org );
 	$frn_now = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$frn_tag = 'recovery-frn-' . bin2hex( random_bytes( 3 ) );
 	$frn     = static fn ( string $short ): string => $platform->table( $short );
@@ -955,7 +956,7 @@ try {
 	);
 	$frn_staff = cpsd_rec_insert(
 		$frn( 'cpms_clinicians' ),
-		array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => 1, 'full_name' => 'Foreign Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
+		array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => null, 'full_name' => 'Foreign Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
 	);
 	$frn_patient = cpsd_rec_insert(
 		$frn( 'cpms_patients' ),
@@ -1040,13 +1041,17 @@ try {
 	$checks[]            = 'INFO R9 foreign tenant clinic=' . $foreign_clinic . ' org=' . $foreign_org . ' digest=' . substr( $frn_baseline_digest, 0, 16 );
 
 	$frn_vectors = array(
-		// (1) A synthetic demo account enrolled as staff IN the foreign Clinic.
-		'cpms_clinicians'          => static function ( array $users ) use ( $platform, $foreign_clinic, $frn_now, $frn_tag ): callable {
-			$id = cpsd_rec_insert(
-				$platform->table( 'cpms_clinicians' ),
-				array( 'clinic_id' => $foreign_clinic, 'wp_user_id' => (int) $users['doctor'], 'full_name' => 'Enrolled Demo Doctor ' . $frn_tag, 'specialty' => 'general', 'is_active' => 1, 'created_at' => $frn_now, 'updated_at' => $frn_now )
-			);
-			return static fn () => cpsd_rec_delete( $platform->table( 'cpms_clinicians' ), $id );
+		// (1) A synthetic demo account enrolled as a clinician IN the foreign
+		// Clinic. `cpms_clinicians.wp_user_id` carries a global UNIQUE index
+		// (`u_clinician_user`), so enrollment binds the foreign Clinic's own
+		// clinician row rather than creating a second one for the same account.
+		'cpms_clinicians'          => static function ( array $users ) use ( $platform, $frn_staff ): callable {
+			global $wpdb;
+			$wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => (int) $users['doctor'] ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
+			return static function () use ( $platform, $frn_staff ): void {
+				global $wpdb;
+				$wpdb->update( $platform->table( 'cpms_clinicians' ), array( 'wp_user_id' => null ), array( 'id' => $frn_staff ), array( '%d' ), array( '%d' ) );
+			};
 		},
 		// (2) A synthetic demo account given a membership in the foreign Clinic.
 		'cpms_clinic_memberships'  => static function ( array $users ) use ( $platform, $foreign_clinic, $frn_now ): callable {
@@ -1178,6 +1183,24 @@ try {
 		wp_cache_flush();
 	}
 	$report['foreign_tenant_vectors'] = $frn_report;
+
+	// The drill seeded a real foreign tenant to attack. Remove exactly that seed
+	// and prove the foreign tenant is byte-identical to how it was found: R8 then
+	// asserts the same property for every pre-existing host row.
+	cpsd_rec_delete( $platform->table( 'cpms_payments' ), $frn_payment );
+	cpsd_rec_delete( $platform->table( 'cpms_invoices' ), $frn_invoice );
+	cpsd_rec_delete( $platform->table( 'cpms_clinical_notes' ), $frn_note );
+	cpsd_rec_delete( $platform->table( 'cpms_visits' ), $frn_visit );
+	cpsd_rec_delete( $platform->table( 'cpms_patients' ), $frn_patient );
+	cpsd_rec_delete( $platform->table( 'cpms_clinicians' ), $frn_staff );
+	cpsd_rec_delete( $platform->table( 'cpms_locations' ), $frn_location );
+	cpsd_rec_delete( $platform->table( 'cpms_organization_memberships' ), $frn_org_membership );
+	cpsd_rec_check(
+		cpsd_rec_foreign_digest( $platform, $foreign_clinic, $foreign_org ) === $frn_pristine_digest,
+		'R9 the foreign tenant is byte-identical to how the drill found it',
+		$checks
+	);
+	$report['foreign_tenant_pristine'] = substr( $frn_pristine_digest, 0, 16 );
 
 	// ------------------------------------------------------ final host invariant
 	// Every drill above (provisioning, four tamper vectors, three teardowns,
