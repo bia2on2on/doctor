@@ -473,7 +473,7 @@ function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patien
 		$full( 'cpms_invoices' ),
 		array(
 			'clinic_id'             => $clinic_id,
-			'invoice_number'        => $tag . '-I' . bin2hex( random_bytes( 2 ) ),
+			'invoice_number'        => 'INV' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
 			'patient_id'            => $patient_id,
 			'visit_id'              => $visit,
 			'status'                => 'open',
@@ -489,7 +489,7 @@ function cpsd_rec_foreign_graph( Platform $platform, int $clinic_id, int $patien
 		$full( 'cpms_payments' ),
 		array(
 			'clinic_id'             => $clinic_id,
-			'payment_number'        => $tag . '-P' . bin2hex( random_bytes( 2 ) ),
+			'payment_number'        => 'PAY' . strtoupper( bin2hex( random_bytes( 5 ) ) ),
 			'invoice_id'            => $invoice,
 			'patient_id'            => $patient_id,
 			'amount'                => 10000,
