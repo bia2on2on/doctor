@@ -730,6 +730,15 @@ class Platform {
 			$keys[] = 'sms-test-' . $uid;
 			$keys[] = 'sms-send-' . $uid;
 			$keys[] = 'sms-tmpl-' . $uid;
+			// Iran V1 (schema 0030) actor-keyed windows. Every one of these is
+			// bound to a synthetic WordPress user id, so it belongs to exactly
+			// that fixture actor. Without them the fixture's own browser journeys
+			// (staff messaging poll/send, doctor pricing writes) leave windows the
+			// teardown could not prove ownership of, and the fail-closed
+			// diagnostic would block the very cleanup it is protecting.
+			$keys[] = 'msg_read_' . $uid;
+			$keys[] = 'msg_send_' . $uid;
+			$keys[] = 'pricing_write_' . $uid;
 		}
 
 		foreach ( (array) ( $scope['login_user_keys'] ?? array() ) as $login_key ) {
