@@ -425,6 +425,26 @@ jobs:
               sys.exit(1)
           PY
 
+      # TEMPORARY DIAGNOSTIC (to be removed): the journey PASS/FAIL lines live
+      # only in the step log and the uploaded artifact, neither of which is
+      # readable from the review environment.
+      - name: Diagnostic — publish scoped journey checks (temporary)
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -u
+          PR="${{ github.event.pull_request.number }}"
+          FILE=/tmp/cpsd-ci/browser.log
+          [ -f "$FILE" ] || exit 0
+          {
+            echo '### Scoped browser journeys (temporary diagnostic)'
+            echo '```'
+            grep -E '^(PASS|FAIL)|^CPSD_BROWSER|Error|error' "$FILE" | tail -40 || true
+            echo '```'
+          } > /tmp/cpsd-ci/journey-diag.md || true
+          if [ -n "$PR" ] && [ -s /tmp/cpsd-ci/journey-diag.md ]; then gh pr comment "$PR" --body-file /tmp/cpsd-ci/journey-diag.md || true; fi
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
