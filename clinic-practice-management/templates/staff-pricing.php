@@ -13,7 +13,8 @@ declare(strict_types=1);
 defined( 'ABSPATH' ) || exit;
 
 if ( empty( $cpms_staff_embed ) ) {
-    ?><!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>تعرفه و خدمات ویزیت</title></head><body><p>این صفحه فقط از طریق پورتال کارکنان در دسترس است.</p></body></html><?php
+    ?><!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>تعرفه و خدمات ویزیت</title></head><body><p>این صفحه فقط از طریق پورتال کارکنان در دسترس است.</p></body></html>
+    <?php
     return;
 }
 
@@ -30,7 +31,7 @@ foreach ( App::membership_service()->active_memberships_for_user( $cpms_pricing_
         );
     }
 }
-$cpms_pricing_config = array(
+$cpms_pricing_config      = array(
     'rest_root' => esc_url_raw( untrailingslashit( rest_url( 'clinic/v1' ) ) ),
     'nonce'     => (string) wp_create_nonce( 'wp_rest' ),
     'clinics'   => $cpms_pricing_clinics,
@@ -198,13 +199,35 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         if (state.clinicId) value['X-CPMS-Clinic-Id'] = String(state.clinicId);
         return value;
     }
+    function restUrl(path) {
+        var base = String(config.rest_root || '');
+        var q = path.indexOf('?');
+        var restPath = q === -1 ? path : path.slice(0, q);
+        var query = q === -1 ? '' : path.slice(q + 1);
+        if (base.indexOf('rest_route=') === -1) {
+            return base.replace(/\/$/, '') + restPath + (query ? '?' + query : '');
+        }
+        var url = new URL(base);
+        var route = url.searchParams.get('rest_route') || '/clinic/v1';
+        url.searchParams.set('rest_route', route.replace(/\/$/, '') + restPath);
+        if (query) {
+            query.split('&').forEach(function (pair) {
+                if (!pair) return;
+                var idx = pair.indexOf('=');
+                var key = idx === -1 ? pair : pair.slice(0, idx);
+                var value = idx === -1 ? '' : pair.slice(idx + 1);
+                url.searchParams.set(key, decodeURIComponent(value));
+            });
+        }
+        return url.toString();
+    }
     function request(path, method, body) {
         var options = { method: method || 'GET', headers: headers(), credentials: 'same-origin', cache: 'no-store' };
         if (body !== undefined) {
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
         }
-        return fetch(root + path, options).then(function (response) {
+        return fetch(restUrl(path), options).then(function (response) {
             return response.json().then(function (payload) {
                 if (!response.ok || !payload || !payload.data) {
                     var error = new Error((payload && payload.message) || 'خطای ارتباط');
@@ -230,7 +253,8 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
             state.clinicId = Number(data.clinic_id) || state.clinicId;
             clinicSelect.value = String(state.clinicId);
             contextLabel.textContent = 'پزشک: ' + (data.clinician_name || '') + ' — تعرفه پیشفرض فعلی: '
-                + (data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee));
+                + (data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee))
+                + ' — سیاست: ' + (data.fee_policy || 'تعرفه هر ویزیت هنگام پذیرش ثبت میشود');
             document.querySelector('[data-role="pricing-default-amount"]').value = data.default_fee === null ? '' : String(data.default_fee);
             if (!data.can_edit) setStatus('دسترسی ویرایش تعرفه برای این حساب فعال نیست.', 'error');
         });
@@ -257,6 +281,12 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         box.appendChild(node('strong', '', value));
         statsNode.appendChild(box);
     }
+    function feeSourceLabel(source) {
+        if (source === 'visit_override') return 'تعرفه اختصاصی پزشک';
+        if (source === 'checkin_snapshot') return 'تعرفه ثبتشده هنگام پذیرش';
+        if (source === 'doctor_default') return 'پیشفرض پزشک';
+        return 'تنظیم نشده';
+    }
     function cell(text, label) {
         var td = node('td', '', text);
         if (label) td.dataset.label = label;
@@ -268,6 +298,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         document.querySelector('[data-role="pricing-visit-title"]').textContent = 'صورتحساب ویزیت ' + data.visit_id + ' — ' + (data.patient_name || '');
         statsNode.textContent = '';
         stat('تعرفه پیشفرض پزشک', data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee));
+        stat('تعرفه ثبتشده هنگام پذیرش', data.snapshot_fee === null ? 'ثبت نشده' : rial(data.snapshot_fee));
         stat('تعرفه اختصاصی این ویزیت', data.override_fee === null ? 'بدون تغییر' : rial(data.override_fee));
         stat('تعرفه اعمالشده ویزیت', rial(data.effective_fee === null ? 0 : data.effective_fee));
         stat('جمع خدمات اضافی', rial(data.charges_total));
@@ -275,7 +306,8 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         stat('مبلغ پرداختشده', rial(data.paid_amount));
         stat('مانده بدهی', rial(data.remaining_balance));
         stat('وضعیت پرداخت', data.payment_status_label);
-        stat('منبع تعرفه', data.fee_source === 'visit_override' ? 'تعرفه اختصاصی' : (data.fee_source === 'doctor_default' ? 'پیشفرض پزشک' : 'تنظیم نشده'));
+        stat('منبع تعرفه', feeSourceLabel(data.fee_source));
+        stat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد');
 
         chargesNode.textContent = '';
         var charges = Array.isArray(data.charges) ? data.charges : [];

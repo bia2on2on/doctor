@@ -367,11 +367,14 @@ final class RestClinicContext
             $request->get_param('clinic_id'),
             'clinic_id'
         );
-        // Schedule configuration sends the target Location as an operational
-        // BODY field; it is validated by ScheduleService (not-found parity), so
-        // it must not be mistaken for a tenant scope selector. An explicit
-        // X-CPMS-Location-Id header still binds scope normally.
-        $location = preg_match( '#^/clinic/v1/config/schedules(?:/|$)#', (string) $request->get_route() ) === 1
+        // Schedule configuration and Iran V1 doctor-default-fee writes send a
+        // target Location as an operational BODY field. ScheduleService and
+        // VisitPricingService validate that field against the trusted Clinic
+        // (not-found parity and Location-scope grants respectively), so 0 —
+        // the clinic-wide fee sentinel — must not be parsed as an invalid
+        // tenant Location selector here. An explicit X-CPMS-Location-Id
+        // header still binds scope normally on every route.
+        $location = self::business_location_field_route( (string) $request->get_route() )
             ? self::combine( $request->get_header( 'X-CPMS-Location-Id' ), null, 'location_id' )
             : self::combine(
                 $request->get_header( 'X-CPMS-Location-Id' ),
@@ -390,6 +393,18 @@ final class RestClinicContext
             'clinic_id' => $clinic,
             'location_id' => $location,
         ];
+    }
+
+    /**
+     * Routes whose JSON `location_id` is a domain value, not a tenant scope
+     * selector. Keep this allowlist narrow: every entry must validate the
+     * field in its own service after the trusted Clinic is bound.
+     */
+    private static function business_location_field_route( string $route ): bool {
+        return preg_match(
+            '#^/clinic/v1/(?:config/schedules|staff/portal/pricing/default-fee)(?:/|$)#',
+            $route
+        ) === 1;
     }
 
     /**

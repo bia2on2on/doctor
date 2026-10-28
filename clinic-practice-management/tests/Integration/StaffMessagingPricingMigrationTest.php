@@ -31,6 +31,15 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         'cpms_visit_charge_items',
     ];
 
+    /**
+     * Durable rows created by the real-table upgrade test. Migration DDL causes
+     * an implicit MySQL commit, so WP_UnitTestCase cannot roll these back; they
+     * are removed explicitly by tearDown before the next test observes them.
+     *
+     * @var array<string, int>
+     */
+    private array $upgradeRows = [];
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -40,6 +49,10 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         try {
+            // DDL in the upgrade simulation commits the open WP test
+            // transaction. Remove these durable fixture rows before the next
+            // integration test counts visits, payments or invoices.
+            $this->cleanupUpgradeRows();
             $this->withRealTables(static fn (): array => App::migrations()->migrate());
         } finally {
             parent::tearDown();
@@ -102,13 +115,13 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
             'clinic_id' => 1, 'full_name' => 'پزشک پیش از ارتقا', 'is_active' => 1,
             'created_at' => $now, 'updated_at' => $now,
         ]));
-        $clinician = (int) $wpdb->insert_id;
+        $clinician = $this->rememberUpgradeRow('clinician', (int) $wpdb->insert_id);
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_patients', [
             'clinic_id' => 1, 'mrn' => 'IV1-MIG-' . bin2hex(random_bytes(4)),
             'first_name' => 'پیش', 'last_name' => 'ازارتقا', 'mobile' => '09120000000',
             'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
         ]));
-        $patient = (int) $wpdb->insert_id;
+        $patient = $this->rememberUpgradeRow('patient', (int) $wpdb->insert_id);
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_visits', [
             'clinic_id' => 1, 'location_id' => (int) $db->fetchValue('SELECT id FROM ' . $db->table('cpms_locations') . ' ORDER BY id'),
             'clinician_id' => $clinician,
@@ -116,7 +129,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
             'visit_date' => gmdate('Y-m-d'), 'check_in_at' => $now, 'active' => 0,
             'created_at' => $now, 'updated_at' => $now,
         ]));
-        $visit = (int) $wpdb->insert_id;
+        $visit = $this->rememberUpgradeRow('visit', (int) $wpdb->insert_id);
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_invoices', [
             'clinic_id' => 1, 'invoice_number' => 'INV-MIG-' . bin2hex(random_bytes(4)),
             'patient_id' => $patient, 'visit_id' => $visit, 'status' => 'paid',
@@ -124,7 +137,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
             'paid_amount' => '250000.00', 'balance' => '0.00', 'issued_by_wp_user_id' => 1,
             'created_at' => $now, 'updated_at' => $now,
         ]));
-        $invoice = (int) $wpdb->insert_id;
+        $invoice = $this->rememberUpgradeRow('invoice', (int) $wpdb->insert_id);
         self::assertNotFalse($wpdb->insert($wpdb->prefix . 'cpms_invoice_items', [
             'invoice_id' => $invoice, 'description' => 'ویزیت قدیمی', 'quantity' => '1.00',
             'unit_price' => '250000.00', 'amount' => '250000.00',
@@ -164,5 +177,45 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         self::assertSame($before['invoice'], $db->fetchRow('SELECT * FROM ' . $db->table('cpms_invoices') . ' WHERE id = %d', [$invoice]));
         self::assertSame($before['item'], $db->fetchRow('SELECT * FROM ' . $db->table('cpms_invoice_items') . ' WHERE invoice_id = %d', [$invoice]));
         self::assertSame($before['payment'], $db->fetchRow('SELECT * FROM ' . $db->table('cpms_payments') . ' WHERE invoice_id = %d', [$invoice]));
+    }
+
+    private function rememberUpgradeRow(string $key, int $id): int
+    {
+        self::assertGreaterThan(0, $id, $key . ' fixture row must be persisted');
+        $this->upgradeRows[$key] = $id;
+
+        return $id;
+    }
+
+    private function cleanupUpgradeRows(): void
+    {
+        if ($this->upgradeRows === []) {
+            return;
+        }
+
+        $db = App::db();
+        $invoice = (int) ($this->upgradeRows['invoice'] ?? 0);
+        $visit = (int) ($this->upgradeRows['visit'] ?? 0);
+        $patient = (int) ($this->upgradeRows['patient'] ?? 0);
+        $clinician = (int) ($this->upgradeRows['clinician'] ?? 0);
+
+        // Child rows first. These are exact ids created by this test only.
+        if ($invoice > 0) {
+            $db->query('DELETE FROM ' . $db->table('cpms_payments') . ' WHERE invoice_id = %d', [$invoice]);
+            $db->query('DELETE FROM ' . $db->table('cpms_invoice_items') . ' WHERE invoice_id = %d', [$invoice]);
+            $db->query('DELETE FROM ' . $db->table('cpms_invoices') . ' WHERE id = %d', [$invoice]);
+        }
+        if ($visit > 0) {
+            $db->query('DELETE FROM ' . $db->table('cpms_visit_status_history') . ' WHERE visit_id = %d', [$visit]);
+            $db->query('DELETE FROM ' . $db->table('cpms_visits') . ' WHERE id = %d', [$visit]);
+        }
+        if ($patient > 0) {
+            $db->query('DELETE FROM ' . $db->table('cpms_patients') . ' WHERE id = %d', [$patient]);
+        }
+        if ($clinician > 0) {
+            $db->query('DELETE FROM ' . $db->table('cpms_clinicians') . ' WHERE id = %d', [$clinician]);
+        }
+
+        $this->upgradeRows = [];
     }
 }

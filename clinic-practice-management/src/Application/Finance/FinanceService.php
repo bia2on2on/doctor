@@ -421,33 +421,37 @@ final class FinanceService
      *
      * @return array<string, mixed>
      */
-    public function issue_invoice_from_pricing(int $actorUserId, int $visitId): array
-    {
-        $this->requireCap($actorUserId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
-        $clinicId = $this->requireTrustedClinicId();
-        $this->authorizeScoped($actorUserId, $clinicId, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue');
-        if ($visitId <= 0) {
-            throw FinanceException::of('CLINIC_VALIDATION_FAILED', 'شناسه ویزیت نامعتبر است', 422);
+    public function issue_invoice_from_pricing( int $actor_user_id, int $visit_id ): array {
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue' );
+        $clinic_id = $this->requireTrustedClinicId();
+        $this->authorizeScoped( $actor_user_id, $clinic_id, RolesAndCapabilities::INVOICE_CREATE, 'invoice.issue' );
+        if ( $visit_id <= 0 ) {
+            throw FinanceException::of( 'CLINIC_VALIDATION_FAILED', 'شناسه ویزیت نامعتبر است', 422 );
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $visitId, $clinicId): array {
-            $visit = $this->visits->findForUpdate($visitId);
-            if ($visit === null || !$this->rowBelongsToTrustedClinic($visit)) {
-                throw FinanceException::of('CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404);
-            }
-            if ($this->invoices->activeForVisit($visitId) !== null) {
-                throw FinanceException::of('CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409);
-            }
+        return $this->db->transactional(
+            function () use ( $actor_user_id, $visit_id, $clinic_id ): array {
+                $visit = $this->visits->findForUpdate( $visit_id );
+                if ( $visit === null || ! $this->rowBelongsToTrustedClinic( $visit ) ) {
+                    throw FinanceException::of( 'CLINIC_NOT_FOUND', 'ویزیت یافت نشد', 404 );
+                }
+                if ( $this->invoices->activeForVisit( $visit_id ) !== null ) {
+                    throw FinanceException::of( 'CLINIC_POLICY_VIOLATION', 'این ویزیت فاکتور فعال دارد', 409 );
+                }
 
-            $built = $this->pricing->build_invoice_items($visit);
-            $invoice = $this->issueInvoice($actorUserId, [
-                'visit_id' => $visitId,
-                'items'    => $built['items'],
-            ]);
-            $this->pricing->stamp_charges_invoiced($built['charge_ids'], (int) $invoice['id'], $clinicId);
+                $built   = $this->pricing->build_invoice_items( $visit );
+                $invoice = $this->issueInvoice(
+                    $actor_user_id,
+                    [
+                        'visit_id' => $visit_id,
+                        'items'    => $built['items'],
+                    ]
+                );
+                $this->pricing->stamp_charges_invoiced( $built['charge_ids'], (int) $invoice['id'], $clinic_id );
 
-            return $invoice;
-        });
+                return $invoice;
+            }
+        );
     }
 
     // ================= D13 — ثبت پرداخت =================

@@ -35,7 +35,8 @@ return [
         $overrides   = $db->table( 'cpms_visit_consultation_fees' );
         $charges     = $db->table( 'cpms_visit_charge_items' );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$threads} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$threads} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `organization_id` BIGINT UNSIGNED NOT NULL,
@@ -50,9 +51,11 @@ return [
             KEY `idx_msg_thread_clinic` (`clinic_id`,`id`),
             KEY `idx_msg_thread_org` (`organization_id`,`clinic_id`),
             KEY `idx_msg_thread_visit` (`visit_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$participant} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$participant} (
             `thread_id` BIGINT UNSIGNED NOT NULL,
             `wp_user_id` BIGINT UNSIGNED NOT NULL,
             `staff_class` VARCHAR(24) NOT NULL,
@@ -60,9 +63,11 @@ return [
             `created_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`thread_id`,`wp_user_id`),
             KEY `idx_msg_part_user` (`wp_user_id`,`thread_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$messages} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$messages} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `thread_id` BIGINT UNSIGNED NOT NULL,
@@ -72,9 +77,11 @@ return [
             PRIMARY KEY (`id`),
             KEY `idx_msg_thread_id` (`thread_id`,`id`),
             KEY `idx_msg_clinic_id` (`clinic_id`,`id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$fees} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$fees} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `clinician_id` BIGINT UNSIGNED NOT NULL,
@@ -86,9 +93,11 @@ return [
             `updated_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`id`),
             UNIQUE KEY `u_doctor_fee` (`clinic_id`,`clinician_id`,`location_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$overrides} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$overrides} (
             `visit_id` BIGINT UNSIGNED NOT NULL,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `clinician_id` BIGINT UNSIGNED NOT NULL,
@@ -98,9 +107,11 @@ return [
             `updated_at` DATETIME(3) NOT NULL,
             PRIMARY KEY (`visit_id`),
             KEY `idx_visit_fee_clinic` (`clinic_id`,`visit_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
 
-        $db->query( "CREATE TABLE IF NOT EXISTS {$charges} (
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$charges} (
             `id` BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
             `clinic_id` BIGINT UNSIGNED NOT NULL,
             `visit_id` BIGINT UNSIGNED NOT NULL,
@@ -119,7 +130,8 @@ return [
             PRIMARY KEY (`id`),
             KEY `idx_charge_visit` (`clinic_id`,`visit_id`,`removed_at`),
             KEY `idx_charge_invoice` (`invoiced_invoice_id`)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci" );
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
     },
     'down'        => static function ( CpmsDb $db ): void {
         // DEVELOPMENT ONLY. Production downgrades restore from backup: these

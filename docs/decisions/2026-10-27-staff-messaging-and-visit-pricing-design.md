@@ -33,7 +33,9 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
    - `cpms_doctor_consultation_fees` — `(clinic_id, clinician_id, location_id)`
      unique; `location_id = 0` is the clinic-wide default (sentinel avoids
      MySQL/MariaDB multiple-NULL unique semantics).
-   - `cpms_visit_consultation_fees` — per-visit override (PK `visit_id`).
+   - `cpms_visit_consultation_fees` — one fee row per Visit (PK `visit_id`):
+     a system fee snapshot captured at check-in (`set_by_wp_user_id = 0`) or
+     an explicit doctor per-visit override (`set_by_wp_user_id > 0`).
    - `cpms_visit_charge_items` — draft service charges with `quantity`, `note`,
      `invoiced_invoice_id`, soft removal columns, audit-friendly before/after.
    No existing financial table is altered; existing paid/finalized invoices
@@ -45,9 +47,14 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
 3. **Pricing/charges**: `MoneyInput` (pure integer validation),
    `VisitPricingRepository`, `VisitPricingService`, `VisitPricingController`
    (`/clinic/v1/staff/portal/pricing/*`), `staff-pricing` portal module.
-4. **Billing handoff**: `FinanceService::issue_invoice_from_pricing()` builds
-   consultation + charge items and calls the existing `issueInvoice()` inside
-   one transaction; draft charges are stamped with the resulting invoice id.
+4. **Billing handoff + fee snapshot**: `VisitService::createVisit()` calls
+   `VisitPricingService::snapshot_visit_fee_on_check_in()` inside the same
+   atomic check-in/walk-in transaction; the first draft pricing read is a
+   compatibility backstop for legacy rows. `VISIT_FEE_SNAPSHOT` is audited with
+   ids/fee/source only. `FinanceService::issue_invoice_from_pricing()` builds
+   consultation + charge items from the snapshot/override — never from a later
+   doctor default — and calls the existing `issueInvoice()` inside one
+   transaction; draft charges are stamped with the resulting invoice id.
    `FinancePortalController` gains a read-only itemized billing projection and
    an auto-issuance route; the finance board gains the matching UI panel.
    Payment capture/void stay on the existing routes and capabilities.
@@ -98,6 +105,7 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
 | T9 | Double payment / doctor capture | Reuse `recordPayment` (UUID idempotency + unique key + row lock); no new capture path; doctor `PAYMENT_CREATE` denial asserted. | `VisitPricingBillingTest` |
 | T10 | CSRF / unauthenticated REST | `X-WP-Nonce` + login + scoped capability in every route's `permission_callback`; no public route. | `StaffMessagingSecurityTest`, `VisitPricingBillingTest` |
 | T11 | Currency ambiguity / float drift | Integer Rial only (`MoneyInput`), `IRR` label «ریال» on every amount, `InvoiceCalc` integer totals. | `MoneyInputTest`, `VisitPricingBillingTest` |
+| T12 | Retroactive repricing of established Visits | The applicable doctor default is snapshotted into `cpms_visit_consultation_fees` at check-in (actor 0) and on the first draft read; later `PUT /default-fee` only changes the doctor default and never rewrites a Visit snapshot. Explicit draft overrides replace the snapshot; finalized invoice lines/totals/payments are immutable. | `VisitPricingBillingTest::testCheckInSnapshotsFeeAndLaterDefaultsNeverRepriceEstablishedVisits`, `testExplicitPerVisitOverrideReplacesSnapshotBeforeFinalBilling` |
 
 ## 5. Retention policy (explicit)
 

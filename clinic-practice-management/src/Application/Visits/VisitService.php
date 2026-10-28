@@ -1171,6 +1171,23 @@ final class VisitService
             'request_id' => null,
         ]);
 
+        // Iran V1: capture the consultation fee while the Visit is established
+        // so later doctor-default changes cannot reprice it. Ancillary failure
+        // is logged without aborting the atomic visit creation.
+        try {
+            App::visit_pricing_service()->snapshot_visit_fee_on_check_in([
+                'id' => $visitId,
+                'clinic_id' => $clinic_id,
+                'clinician_id' => $clinicianId,
+                'location_id' => $locationIdForDate,
+            ]);
+        } catch (\Throwable $e) {
+            $this->opLog?->warning(
+                'visit.fee_snapshot_failed',
+                ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $e->getMessage()]
+            );
+        }
+
         // D-6: رابطه دوطرفه — active_visit_id روی Appointment
         if ( $appointmentId !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
             $this->appointments->updateStatus($appointmentId, ['active_visit_id' => $visitId]);

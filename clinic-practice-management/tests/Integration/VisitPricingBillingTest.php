@@ -28,6 +28,7 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
     private const BILLING = '/clinic/v1/staff/portal/finance/visits/%d/billing';
     private const AUTO = '/clinic/v1/staff/portal/finance/visits/%d/invoice/auto';
     private const PAY = '/clinic/v1/staff/portal/finance/invoices/%d/payments';
+    private const DEFAULT_FEE = '/clinic/v1/staff/portal/pricing/default-fee';
 
     protected function setUp(): void
     {
@@ -238,7 +239,7 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         self::assertSame($payments_before, $payments_after, 'recorded payments are byte-identical');
     }
 
-    public function testReceptionistSeesItemizedChargesAndDuplicatePaymentIsPrevented(): void
+    public function testReceptionistBillingJourneyPartialFullPaymentReplayAndImmutableFinalBilling(): void
     {
         $world = $this->world();
         $patient = $this->iv1_patient((int) $world['clinic'], 'بیمار پذیرش');
@@ -291,6 +292,41 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         $doctor_void = $this->iv1_dispatch('POST', '/clinic/v1/payments/1/void', [], $this->iv1_headers((int) $world['clinic']), ['reason' => 'test']);
         self::assertGreaterThanOrEqual(400, $doctor_void->get_status(), 'no unrestricted doctor void authority');
         self::assertSame(1, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_payments') . ' WHERE invoice_id = %d', [$invoice_id]));
+
+        // Complete the receptionist journey: full payment, then prove the
+        // finalized invoice and every pricing mutation stay immutable.
+        wp_set_current_user((int) $world['secretary']);
+        $full_key = $this->iv1_uuid();
+        $full_headers = $headers + ['Idempotency-Key' => $full_key];
+        $full = $this->iv1_dispatch('POST', sprintf(self::PAY, $invoice_id), [], $full_headers, ['amount' => 180000, 'method' => 'cash']);
+        self::assertSame(201, $full->get_status(), 'remaining balance capture — ' . $this->iv1_code($full));
+        $final = $this->iv1_dispatch('GET', sprintf(self::BILLING, $visit), [], $headers);
+        $final_bill = $this->iv1_data($final);
+        self::assertSame(280000, (int) $final_bill['paid_amount']);
+        self::assertSame(0, (int) $final_bill['remaining_balance']);
+        self::assertSame('پرداخت شده', $final_bill['payment_status_label']);
+        self::assertSame(2, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_payments') . ' WHERE invoice_id = %d', [$invoice_id]));
+
+        $invoice_row = App::db()->fetchRow('SELECT total, paid_amount, balance, status FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice_id]);
+        self::assertSame(280000.0, (float) $invoice_row['total']);
+        self::assertSame(280000.0, (float) $invoice_row['paid_amount']);
+        self::assertSame(0.0, (float) $invoice_row['balance']);
+        wp_set_current_user((int) $world['doctor']);
+        $service = App::visit_pricing_service();
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->add_charge((int) $world['doctor'], $visit, ['description' => 'غیرمجاز', 'amount' => 1000])),
+            'CLINIC_INVOICE_NOT_MODIFIABLE',
+            409
+        );
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->set_visit_consultation_fee((int) $world['doctor'], $visit, 999000)),
+            'CLINIC_INVOICE_NOT_MODIFIABLE',
+            409
+        );
+        $after_denied = App::db()->fetchRow('SELECT total, paid_amount, balance, status FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice_id]);
+        self::assertSame(280000.0, (float) $after_denied['total']);
+        self::assertSame(280000.0, (float) $after_denied['paid_amount']);
+        self::assertSame(0.0, (float) $after_denied['balance']);
     }
 
     public function testMultiDoctorAndMultiLocationPricingIsolation(): void
@@ -389,5 +425,168 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         self::assertContains($again->get_status(), [409, 422]);
         $after = App::db()->fetchRow('SELECT * FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$legacy_id]);
         self::assertSame($before, $after, 'existing finalized invoice survives pricing + migration unchanged');
+    }
+
+    /**
+     * REST regression: `location_id: 0` is the clinic-wide default-fee target,
+     * not a tenant Location selector. The generic trusted-scope binder must
+     * not reject it with CLINIC_VALIDATION_FAILED before VisitPricingService
+     * applies its own Clinic/Location authorization.
+     */
+    public function testRestDefaultFeeAcceptsClinicWideZeroLocationTarget(): void
+    {
+        $world = $this->world();
+        wp_set_current_user((int) $world['doctor']);
+
+        $response = $this->iv1_dispatch(
+            'POST',
+            self::DEFAULT_FEE,
+            [],
+            $this->iv1_headers((int) $world['clinic']),
+            ['amount' => 350000, 'location_id' => 0]
+        );
+
+        self::assertSame(200, $response->get_status(), 'clinic-wide fee target 0 must reach the pricing service — ' . $this->iv1_code($response));
+        $data = $this->iv1_data($response);
+        self::assertSame(350000, (int) ($data['default_fee'] ?? 0));
+        self::assertSame(0, (int) ($data['location_id'] ?? -1));
+        self::assertSame('IRR', (string) ($data['currency'] ?? ''));
+        self::assertSame('ریال', (string) ($data['currency_label'] ?? ''));
+
+        $billing = $this->iv1_scope(
+            (int) $world['clinic'],
+            fn (): array => App::visit_pricing_service()->context((int) $world['doctor'])
+        );
+        self::assertSame(350000, (int) ($billing['default_fee'] ?? 0), 'the persisted fee is readable back from the trusted Clinic');
+    }
+
+    public function testCheckInSnapshotsFeeAndLaterDefaultsNeverRepriceEstablishedVisits(): void
+    {
+        global $wpdb;
+        $world   = $this->world();
+        $clinic  = (int) $world['clinic'];
+        $patient = $this->iv1_patient($clinic, 'بیمار پذیرش');
+        $this->pricing_default($world, 500000);
+
+        // Production VisitService::createVisit() must snapshot inside the
+        // atomic check-in transaction, not fall back to the current default.
+        $visit = $this->iv1_walk_in_visit(
+            $clinic,
+            (int) $world['location'],
+            (int) $world['secretary'],
+            $patient,
+            (int) $world['clinician']
+        );
+        $snapshot = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT fee, set_by_wp_user_id FROM ' . $wpdb->prefix . 'cpms_visit_consultation_fees WHERE visit_id = %d',
+                $visit
+            ),
+            ARRAY_A
+        );
+        self::assertIsArray($snapshot, 'check-in persists an auditable fee snapshot');
+        self::assertSame(500000, (int) $snapshot['fee']);
+        self::assertSame(0, (int) $snapshot['set_by_wp_user_id'], 'system snapshot is not a doctor override');
+
+        // Changing the doctor default AFTER check-in must not reprice this Visit.
+        wp_set_current_user((int) $world['doctor']);
+        $this->pricing_default($world, 900000);
+        $bill = $this->billing($world, $visit, (int) $world['secretary']);
+        self::assertSame(900000, (int) $bill['default_fee']);
+        self::assertSame(500000, (int) $bill['snapshot_fee']);
+        self::assertSame(500000, (int) $bill['effective_fee']);
+        self::assertSame('checkin_snapshot', (string) $bill['fee_source']);
+        self::assertNotEmpty((string) $bill['fee_policy']);
+        self::assertSame(500000, (int) $bill['expected_total']);
+
+        // A NEW Visit established after the change snapshots the new default.
+        $patient2 = $this->iv1_patient($clinic, 'بیمار دوم');
+        $visit2   = $this->iv1_walk_in_visit(
+            $clinic,
+            (int) $world['location'],
+            (int) $world['secretary'],
+            $patient2,
+            (int) $world['clinician']
+        );
+        $snapshot2 = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT fee FROM ' . $wpdb->prefix . 'cpms_visit_consultation_fees WHERE visit_id = %d',
+                $visit2
+            ),
+            ARRAY_A
+        );
+        self::assertIsArray($snapshot2);
+        self::assertSame(900000, (int) $snapshot2['fee']);
+        self::assertSame(500000, (int) $this->billing($world, $visit, (int) $world['secretary'])['effective_fee']);
+
+        // Invoice lines come from the snapshot, and finalized billing is immutable.
+        wp_set_current_user((int) $world['secretary']);
+        $headers = $this->iv1_headers($clinic, (int) $world['location']);
+        $issued  = $this->iv1_dispatch('POST', sprintf(self::AUTO, $visit), [], $headers, []);
+        self::assertSame(201, $issued->get_status(), 'auto invoice uses the snapshot — ' . $this->iv1_code($issued));
+        $invoice_id = (int) $this->iv1_data($issued)['id'];
+        self::assertSame(500000.0, (float) $this->iv1_data($issued)['total']);
+        wp_set_current_user((int) $world['doctor']);
+        $this->pricing_default($world, 1200000);
+        $row = App::db()->fetchRow('SELECT total, status FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice_id]);
+        self::assertSame(500000.0, (float) $row['total']);
+        self::assertSame('open', (string) $row['status']);
+        $final_bill = $this->billing($world, $visit, (int) $world['secretary']);
+        self::assertSame(500000, (int) $final_bill['effective_fee'], 'finalized Visit never falls back to the new default');
+        $service = App::visit_pricing_service();
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope($clinic, fn (): array => $service->set_visit_consultation_fee((int) $world['doctor'], $visit, 2000000)),
+            'CLINIC_INVOICE_NOT_MODIFIABLE',
+            409
+        );
+    }
+
+    public function testExplicitPerVisitOverrideReplacesSnapshotBeforeFinalBilling(): void
+    {
+        global $wpdb;
+        $world   = $this->world();
+        $clinic  = (int) $world['clinic'];
+        $patient = $this->iv1_patient($clinic, 'بیمار تعرفه اختصاصی');
+        $this->pricing_default($world, 500000);
+        $visit = $this->iv1_walk_in_visit(
+            $clinic,
+            (int) $world['location'],
+            (int) $world['secretary'],
+            $patient,
+            (int) $world['clinician']
+        );
+
+        wp_set_current_user((int) $world['doctor']);
+        $override = $this->iv1_scope($clinic, fn (): array => App::visit_pricing_service()->set_visit_consultation_fee((int) $world['doctor'], $visit, 750000));
+        self::assertSame(750000, (int) $override['effective_fee']);
+        $row = $wpdb->get_row(
+            $wpdb->prepare(
+                'SELECT fee, set_by_wp_user_id FROM ' . $wpdb->prefix . 'cpms_visit_consultation_fees WHERE visit_id = %d',
+                $visit
+            ),
+            ARRAY_A
+        );
+        self::assertIsArray($row);
+        self::assertSame(750000, (int) $row['fee']);
+        self::assertSame((int) $world['doctor'], (int) $row['set_by_wp_user_id'], 'explicit override replaces the system snapshot');
+
+        $this->pricing_default($world, 1100000);
+        $bill = $this->billing($world, $visit, (int) $world['secretary']);
+        self::assertSame(1100000, (int) $bill['default_fee']);
+        self::assertNull($bill['snapshot_fee']);
+        self::assertSame(750000, (int) $bill['override_fee']);
+        self::assertSame(750000, (int) $bill['effective_fee']);
+        self::assertSame('visit_override', (string) $bill['fee_source']);
+
+        wp_set_current_user((int) $world['secretary']);
+        $headers = $this->iv1_headers($clinic, (int) $world['location']);
+        $issued  = $this->iv1_dispatch('POST', sprintf(self::AUTO, $visit), [], $headers, []);
+        self::assertSame(201, $issued->get_status(), 'override reaches invoice lines — ' . $this->iv1_code($issued));
+        $invoice_id = (int) $this->iv1_data($issued)['id'];
+        self::assertSame(750000.0, (float) $this->iv1_data($issued)['total']);
+        wp_set_current_user((int) $world['doctor']);
+        $this->pricing_default($world, 2000000);
+        $persisted = App::db()->fetchRow('SELECT total FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice_id]);
+        self::assertSame(750000.0, (float) $persisted['total'], 'finalized invoice stays priced at the explicit override');
     }
 }

@@ -87,6 +87,8 @@ def dump_results(fixture=None):
         "fixture": safe_fixture,
         "checks": RESULTS,
         "stage": STATE["stage"],
+        "iran_v1_step": STATE.get("iran_v1_step", ""),
+        "iran_v1_rest": STATE.get("iran_v1_rest", []),
         "secrets_in_results": False,
     }
     with open(f"{OUT}/logs/disposable-results.json", "w", encoding="utf-8") as handle:
@@ -195,6 +197,28 @@ def open_account(browser, credentials, key):
 
 def with_query(url, **params):
     return url + ("&" if "?" in url else "?") + urlencode(params)
+
+
+def iran_v1_step(name):
+    """Record a bounded, non-secret step label for failure diagnostics."""
+    STATE["iran_v1_step"] = name
+
+
+def rest_route_label(url):
+    parsed = urlparse(url)
+    return parse_qs(parsed.query).get("rest_route", [""])[0] or parsed.path
+
+
+def attach_iran_v1_diagnostics(page, label):
+    """Capture only REST route + status for Iran V1 failures; never bodies."""
+    def record(response):
+        route = rest_route_label(response.url)
+        if "/clinic/v1/staff/portal/" not in route:
+            return
+        entries = STATE.setdefault("iran_v1_rest", [])
+        if len(entries) < 80:
+            entries.append({"label": label, "route": route, "status": response.status})
+    page.on("response", record)
 
 
 def assert_no_horizontal_overflow(page, name):
@@ -637,17 +661,26 @@ echo "FIXTURE_OPERATION=" . wp_json_encode([
 def iran_v1_messaging_pricing(browser, credentials, links, fixture):
     """Iran V1 — real-Chromium RTL desktop + narrow mobile acceptance.
 
-    Proves the delivered portal modules, the doctor default consultation fee
-    (Rial), a receptionist→doctor message through the real REST boundary and
-    the doctor's polling read of that message. Screenshots are captured at a
-    360px RTL viewport; no credentials, cookies or patient data are logged.
+    Proves the delivered pricing/messaging/finance modules, the doctor default
+    consultation fee (Rial), the audited fee-snapshot policy, a
+    receptionist→doctor message through the real REST boundary and the
+    doctor's polling read of that message. Pricing, messaging and finance
+    billing are all re-rendered at a 360px RTL viewport; no credentials,
+    cookies or patient data are logged.
     """
     stage("iran v1 messaging pricing RTL desktop and narrow mobile")
+    STATE["iran_v1_rest"] = []
+    iran_v1_step("start")
     pricing_url = with_query(links["staff"], **{"cpms-module": "pricing"})
     messages_url = with_query(links["staff"], **{"cpms-module": "messages"})
     doctor_context, doctor_page = open_account(browser, credentials, "doctor")
     reception_context, reception_page = open_account(browser, credentials, "receptionist")
+    finance_context, finance_page = open_account(browser, credentials, "accountant")
+    attach_iran_v1_diagnostics(doctor_page, "doctor")
+    attach_iran_v1_diagnostics(reception_page, "receptionist")
+    attach_iran_v1_diagnostics(finance_page, "accountant")
     try:
+        iran_v1_step("pricing_module")
         doctor_page.goto(pricing_url, wait_until="domcontentloaded")
         doctor_page.wait_for_selector('[data-role="pricing-root"]')
         check("iran v1 pricing module delivered",
@@ -655,10 +688,12 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
         check("iran v1 pricing document RTL",
               doctor_page.locator("html").get_attribute("dir") == "rtl")
         assert_no_horizontal_overflow(doctor_page, "iran v1 pricing RTL desktop has no horizontal overflow")
+        iran_v1_step("pricing_context")
         doctor_page.wait_for_function(
             '!document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("در حال")'
         )
         doctor_page.fill('[data-role="pricing-default-amount"]', "350000")
+        iran_v1_step("default_fee_write")
         doctor_page.click('[data-role="pricing-save-default"]')
         doctor_page.wait_for_function(
             'document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("350000")'
@@ -667,6 +702,7 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
               "ریال" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text()
               and "350000" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text())
 
+        iran_v1_step("messaging_module")
         reception_page.goto(messages_url, wait_until="domcontentloaded")
         reception_page.wait_for_selector('[data-role="messages-root"]')
         check("iran v1 messaging module delivered",
@@ -674,13 +710,16 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
         check("iran v1 messaging document RTL",
               reception_page.locator("html").get_attribute("dir") == "rtl")
         assert_no_horizontal_overflow(reception_page, "iran v1 messaging RTL desktop has no horizontal overflow")
+        iran_v1_step("messaging_context")
         reception_page.wait_for_function(
             'document.querySelector(`[data-role="messages-counterpart"]`).options.length > 0'
         )
+        iran_v1_step("thread_create")
         reception_page.click('[data-role="messages-new"]')
         reception_page.wait_for_function(
             'document.querySelectorAll(`[data-role="messages-threads"] .cpms-msg__item`).length > 0'
         )
+        iran_v1_step("message_send")
         reception_page.fill('[data-role="messages-body"]', "پیام آزمایشی پذیرش به پزشک")
         reception_page.click('[data-role="messages-send"]')
         reception_page.wait_for_function(
@@ -688,24 +727,85 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
         )
         check("iran v1 receptionist message reaches the conversation", True)
 
+        iran_v1_step("doctor_threads")
         doctor_page.goto(messages_url, wait_until="domcontentloaded")
         doctor_page.wait_for_selector('[data-role="messages-root"]')
         doctor_page.wait_for_function(
             'document.querySelectorAll(`[data-role="messages-threads"] .cpms-msg__item`).length > 0'
         )
+        iran_v1_step("doctor_reads_message")
         doctor_page.locator('[data-role="messages-threads"] .cpms-msg__item').first.click()
         doctor_page.wait_for_function(
             'document.querySelector(`[data-role="messages-list"]`).textContent.includes("پیام آزمایشی")'
         )
         check("iran v1 doctor reads the receptionist message through polling", True)
 
-        for label, page in (("doctor", doctor_page), ("receptionist", reception_page)):
+        # Plain-permalink regression: the disposable site uses ?page_id= and
+        # ?rest_route=. Every Iran V1 REST call must keep exactly one query
+        # separator, route under /clinic/v1/staff/portal/, and stay authorized.
+        rest_entries = STATE.get("iran_v1_rest", [])
+        bad_rest = [
+            entry for entry in rest_entries
+            if entry["status"] < 200 or entry["status"] >= 300
+            or "?" in entry["route"]
+            or "/clinic/v1/staff/portal/" not in entry["route"]
+        ]
+        check("iran v1 plain-permalink REST URLs are well-formed and authorized",
+              len(rest_entries) >= 5 and not bad_rest,
+              json.dumps({"count": len(rest_entries), "bad": bad_rest[:5]}, ensure_ascii=False))
+
+        iran_v1_step("mobile_rtl_overflow")
+        mobile_modules = (
+            ("doctor", doctor_page, pricing_url, "pricing-root"),
+            ("receptionist", reception_page, messages_url, "messages-root"),
+        )
+        for label, page, module_url, root_role in mobile_modules:
             page.set_viewport_size({"width": 360, "height": 780})
+            page.goto(module_url, wait_until="domcontentloaded")
+            page.wait_for_selector(f'[data-role="{root_role}"]')
+            check(f"iran v1 {label} module remains RTL at 360px",
+                  page.locator("html").get_attribute("dir") == "rtl")
             assert_no_horizontal_overflow(page, f"iran v1 {label} RTL 360px mobile has no horizontal overflow")
+            if label == "doctor":
+                page.wait_for_function(
+                    'document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("سیاست")'
+                )
+                check("iran v1 pricing exposes the audited fee-snapshot policy at 360px",
+                      "سیاست" in page.locator('[data-role="pricing-context-label"]').inner_text())
+            else:
+                page.wait_for_function(
+                    'document.querySelector(`[data-role="messages-counterpart"]`).options.length > 0'
+                )
+                check("iran v1 messaging counterpart list stays usable at 360px", True)
             page.screenshot(path=f"{OUT}/screenshots/disposable-iran-v1-{label}-360.png", full_page=True)
+
+        # Finance board is the third Iran V1 responsive RTL surface: the
+        # read-only itemized billing projection must expose the fee snapshot
+        # and its policy at a narrow viewport without horizontal overflow.
+        iran_v1_step("finance_mobile_billing")
+        finance_url = with_query(links["staff"], **{"cpms-module": "finance"})
+        finance_page.set_viewport_size({"width": 360, "height": 780})
+        finance_page.goto(finance_url, wait_until="domcontentloaded")
+        finance_page.wait_for_selector('[data-role="finance-root"]')
+        check("iran v1 finance board remains RTL at 360px",
+              finance_page.locator("html").get_attribute("dir") == "rtl")
+        billing_controls = finance_page.locator('[data-role="finance-billing-open"]')
+        if billing_controls.count() > 0:
+            billing_controls.first.click()
+            finance_page.wait_for_selector('[data-role="finance-billing"]:not([hidden])')
+            stats = finance_page.locator('[data-role="finance-billing-stats"]').inner_text()
+            check("iran v1 finance billing exposes fee snapshot and policy at 360px",
+                  "تعرفه ثبتشده هنگام پذیرش" in stats and "سیاست تعرفه" in stats)
+            finance_page.locator('[data-role="finance-billing-close"]').click()
+        else:
+            check("iran v1 finance billing exposes fee snapshot and policy at 360px", False,
+                  "no awaiting-payment billing-details control")
+        assert_no_horizontal_overflow(finance_page, "iran v1 finance billing RTL 360px mobile has no horizontal overflow")
+        finance_page.screenshot(path=f"{OUT}/screenshots/disposable-iran-v1-finance-360.png", full_page=True)
     finally:
         doctor_context.close()
         reception_context.close()
+        finance_context.close()
 
 
 def main():

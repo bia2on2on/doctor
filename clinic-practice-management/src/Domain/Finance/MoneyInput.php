@@ -13,8 +13,8 @@ use DomainException;
  * units (in IRR: Rial). Fractions, negative values and non-integral numbers
  * are rejected so no rial/toman conversion ambiguity can enter the ledger.
  */
-final class MoneyInput
-{
+final class MoneyInput {
+
     /** Per-unit cap, comfortably below DECIMAL(12,2) limits. */
     public const MAX_AMOUNT = 999999999;
 
@@ -23,8 +23,7 @@ final class MoneyInput
 
     public const MAX_QUANTITY = 100.0;
 
-    private function __construct()
-    {
+    private function __construct() {
     }
 
     /**
@@ -32,20 +31,19 @@ final class MoneyInput
      *
      * @throws DomainException
      */
-    public static function amount(mixed $value, bool $positive = false): int
-    {
-        if (is_int($value)) {
+    public static function amount( mixed $value, bool $positive = false ): int {
+        if ( is_int( $value ) ) {
             $amount = $value;
-        } elseif (is_float($value) && is_finite($value) && $value === floor($value)) {
+        } elseif ( is_float( $value ) && is_finite( $value ) && $value === floor( $value ) ) {
             $amount = (int) $value;
-        } elseif (is_string($value) && preg_match('/^[0-9]+$/', trim($value)) === 1) {
-            $amount = (int) trim($value);
+        } elseif ( is_string( $value ) && preg_match( '/^[0-9]+$/', trim( $value ) ) === 1 ) {
+            $amount = (int) trim( $value );
         } else {
-            throw new DomainException('CLINIC_AMOUNT_INVALID');
+            throw new DomainException( 'CLINIC_AMOUNT_INVALID' );
         }
 
-        if ($amount < 0 || ($positive && $amount === 0) || $amount > self::MAX_AMOUNT) {
-            throw new DomainException('CLINIC_AMOUNT_INVALID');
+        if ( $amount < 0 || ( $positive && $amount === 0 ) || $amount > self::MAX_AMOUNT ) {
+            throw new DomainException( 'CLINIC_AMOUNT_INVALID' );
         }
 
         return $amount;
@@ -56,21 +54,20 @@ final class MoneyInput
      *
      * @throws DomainException
      */
-    public static function quantity(mixed $value): float
-    {
-        if (is_int($value) || is_float($value)) {
+    public static function quantity( mixed $value ): float {
+        if ( is_int( $value ) || is_float( $value ) ) {
             $quantity = (float) $value;
-        } elseif (is_string($value) && is_numeric(trim($value))) {
-            $quantity = (float) trim($value);
+        } elseif ( is_string( $value ) && is_numeric( trim( $value ) ) ) {
+            $quantity = (float) trim( $value );
         } else {
-            throw new DomainException('CLINIC_QUANTITY_INVALID');
+            throw new DomainException( 'CLINIC_QUANTITY_INVALID' );
         }
 
-        if (!is_finite($quantity) || $quantity <= 0 || $quantity > self::MAX_QUANTITY) {
-            throw new DomainException('CLINIC_QUANTITY_INVALID');
+        if ( ! is_finite( $quantity ) || $quantity <= 0 || $quantity > self::MAX_QUANTITY ) {
+            throw new DomainException( 'CLINIC_QUANTITY_INVALID' );
         }
-        if (round($quantity, 2) !== $quantity) {
-            throw new DomainException('CLINIC_QUANTITY_INVALID');
+        if ( round( $quantity, 2 ) !== $quantity ) {
+            throw new DomainException( 'CLINIC_QUANTITY_INVALID' );
         }
 
         return $quantity;
@@ -81,18 +78,17 @@ final class MoneyInput
      *
      * @throws DomainException
      */
-    public static function text(mixed $value, int $max, bool $required = true): string
-    {
-        if (!is_string($value)) {
-            if (!$required) {
+    public static function text( mixed $value, int $max, bool $required = true ): string {
+        if ( ! is_string( $value ) ) {
+            if ( ! $required ) {
                 return '';
             }
-            throw new DomainException('CLINIC_TEXT_INVALID');
+            throw new DomainException( 'CLINIC_TEXT_INVALID' );
         }
-        $text = preg_replace('/[\x00-\x1F\x7F-\x9F]/u', '', $value) ?? '';
-        $text = trim(strip_tags($text));
-        if (($required && $text === '') || mb_strlen($text, 'UTF-8') > $max) {
-            throw new DomainException('CLINIC_TEXT_INVALID');
+        $text = preg_replace( '/[\x00-\x1F\x7F-\x9F]/u', '', $value ) ?? '';
+        $text = trim( strip_tags( $text ) ); // phpcs:ignore WordPress.WP.AlternativeFunctions.strip_tags_strip_tags -- Pure domain boundary; no WordPress helper dependency in isolated unit tests.
+        if ( ( $required && $text === '' ) || mb_strlen( $text, 'UTF-8' ) > $max ) {
+            throw new DomainException( 'CLINIC_TEXT_INVALID' );
         }
 
         return $text;

@@ -16,7 +16,7 @@ rial↔toman conversion. `quantity` is at most two decimals (`cpms_invoice_items
 | --- | --- | --- | --- | --- |
 | GET | `/context` | `cpms_visit_read` + doctor/receptionist class | 120/min | `clinic_id`, `organization_id`, `actor_class`, `counterparts[]`, `unread_total`, `retention_policy=append_only`, `max_message_chars=2000` |
 | GET | `/threads?limit=50` | same | 120/min | `threads[]` (`id`, `counterpart`, `patient_id`, `visit_id`, `location_id`, `unread_count`, `last_message_excerpt`, `last_message_at`, `last_message_jalali`), `unread_total`, `polling` |
-| POST | `/threads` | same | 120/min | `{recipient_wp_user_id, patient_id?, visit_id?}` → thread (201). `patient_id` and `visit_id` must be **both** present or both absent; server verifies `visit.clinic_id`, `visit.patient_id === patient_id`, `patient.clinic_id`, doctor ownership of the Visit and Location eligibility of both participants. |
+| POST | `/threads` | same | 120/min | `{recipient_wp_user_id, patient_id?, visit_id?}` → thread (201). `patient_id` and `visit_id` must be **both** present or both absent; server verifies `visit.clinic_id`, `visit.patient_id === patient_id`, `patient.clinic_id`, doctor ownership of the Visit and Location eligibility of both participants. **Role pairing:** the two participants must be one doctor and one receptionist (effective scoped classes); same-class recipients are refused with 403 `CLINIC_PERMISSION_DENIED` / `reason=role_pairing`, and `/context` only lists opposite-class counterparts. |
 | GET | `/threads/{id}/messages?since_id=0&limit=100` | same | 120/min | `messages[]` (`id`, `sender_wp_user_id`, `body`, `created_at`, `jalali_time`, `mine`), `last_id`, `unread_count`. Incremental authenticated polling; bounded to 100 rows. |
 | POST | `/threads/{id}/messages` | same | **20 sends/min per actor** | `{body}` → message (201). Plain text only: HTML tags/control characters stripped, 1–2000 characters. |
 | POST | `/threads/{id}/read` | same | 120/min | Monotonic `last_read_message_id`, `unread_count`, `unread_total`. |
@@ -36,8 +36,8 @@ history is kept for the Clinic lifetime under the existing backup/DR policy.
 
 | Method | Route | Capability | Result |
 | --- | --- | --- | --- |
-| GET | `/context?location_id=0` | `cpms_invoice_read` | doctor identity (server-derived clinician), `default_fee`, `currency=IRR`, `currency_label=ریال`, `can_edit`, caps |
-| POST | `/default-fee` | `cpms_invoice_read` + `cpms_invoice_create` | `{amount, location_id?}` → previous/new default fee; `location_id=0` is clinic-wide |
+| GET | `/context?location_id=0` | `cpms_invoice_read` | doctor identity (server-derived clinician), `default_fee`, `fee_policy`, `currency=IRR`, `currency_label=ریال`, `can_edit`, caps |
+| POST | `/default-fee` | `cpms_invoice_read` + `cpms_invoice_create` | `{amount, location_id?}` → previous/new default fee; `location_id=0` is clinic-wide. This BODY field is a fee target, not a tenant selector: only `X-CPMS-Location-Id` binds the trusted Location, and `VisitPricingService::assert_location_allowed()` re-checks the target after the trusted Clinic is bound. |
 | GET | `/visits` | `cpms_invoice_read` | today's Visits of this doctor only (server-derived clinician + eligible Locations) |
 | GET | `/visits/{id}/billing` | `cpms_invoice_read` | itemized billing projection (below) |
 | POST | `/visits/{id}/consultation-fee` | write caps | `{amount}` → per-Visit override (draft only) |
@@ -61,14 +61,34 @@ a paid/checked-out Visit, or a charge already stamped into an invoice returns
 
 The billing projection always distinguishes:
 
-- `default_fee` — doctor/clinic/location default,
-- `override_fee` — this Visit only,
-- `effective_fee` — override when set, otherwise default,
+- `default_fee` — doctor/clinic/location default (current, informational),
+- `snapshot_fee` — the fee captured for this Visit at check-in / first draft pricing read,
+- `override_fee` — explicit doctor override of that Visit's snapshot (draft only),
+- `effective_fee` — override when set, otherwise snapshot, otherwise (draft fallback) default,
+- `fee_source` — `visit_override`, `checkin_snapshot`, `doctor_default`, or `unset`,
+- `fee_policy` — the audited snapshot policy string,
 - `charges[]` — additional treatment/service items with `unit_amount`, `quantity`, `line_total`, `note`,
 - `charges_total`, `expected_total`,
 - `invoice` — persisted invoice `items[]`, `total`, `paid_amount`, `balance`, `status`, `payments[]`,
 - `paid_amount`, `remaining_balance`, `payment_status`, `payment_status_label` (Persian),
 - `currency=IRR`, `currency_label=ریال`, `editable`, `can_edit_pricing`.
+
+**Fee-snapshot policy (financial integrity):** when a Visit is checked in or
+created as a walk-in, `VisitService::createVisit()` calls
+`VisitPricingService::snapshot_visit_fee_on_check_in()` inside the same atomic
+transaction. The applicable doctor default is persisted in
+`cpms_visit_consultation_fees` with `set_by_wp_user_id = 0` and audited as
+`VISIT_FEE_SNAPSHOT` (ids/fee/source only; no PHI). The first draft pricing
+read is a compatibility backstop for legacy/directly-seeded Visits. Changing
+`PUT /default-fee` afterwards updates only
+`cpms_doctor_consultation_fees`; it never rewrites an established Visit's
+snapshot, so established Visits and their invoice lines cannot be repriced
+retroactively. An explicit `POST /visits/{id}/consultation-fee` while billing
+is still a draft replaces the snapshot with `set_by_wp_user_id > 0` and is
+audited as `VISIT_FEE_UPDATE`. Invoice issuance always builds lines from the
+snapshot/override, never from a later default. Once an invoice is finalized,
+persisted items/totals/payments are immutable and pricing endpoints return 409
+`CLINIC_INVOICE_NOT_MODIFIABLE`.
 
 Payment capture/void/refund stay on the **existing** routes and capabilities:
 `POST /staff/portal/finance/invoices/{id}/payments` requires

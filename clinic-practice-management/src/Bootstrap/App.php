@@ -311,39 +311,42 @@ final class App
         add_filter( 'rest_pre_dispatch', [RequestProfiler::class, 'mark_dispatch'], 1, 3 );
         add_filter( 'rest_post_dispatch', [RequestProfiler::class, 'attach_profile'], 999, 3 );
 
-        add_action('rest_api_init', static function (): void {
-            (new HealthController())->register_routes();
-            (new OtpController(self::otpService()))->register_routes();
-            (new SmsController(self::smsService()))->register_routes();
-            (new BookingController(self::bookingService()))->register_routes();
-            (new PatientController(self::patientService()))->register_routes();
-            (new QueueController(self::visitService()))->register_routes();
-            (new ScheduleController(self::scheduleService()))->register_routes();
-            (new ClinicalController(self::clinicalService()))->register_routes();
-            (new FilesController(self::medicalFileService()))->register_routes();
-            (new FinanceController(self::financeService()))->register_routes();
-            (new HandwritingController(self::handwritingService()))->register_routes();
-            (new NotificationsController(self::notificationService()))->register_routes();
-            // Iran V1 — internal staff messaging + doctor-managed visit pricing.
-            (new MessagingController(self::staff_messaging_service()))->register_routes();
-            (new VisitPricingController(self::visit_pricing_service()))->register_routes();
-            (new ReportsController(self::reportService(), self::exportService()))->register_routes();
-            ( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
-            // Phase 11 Slices 1–5 — Staff Portal reception boundary (stricter contract lives there).
-            ( new ReceptionPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\AppointmentRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\SlotRepository( self::db() ) ) )->register_routes();
-            // Phase 12 Slices 1–5 — Staff Portal finance boundary. Slice 3 adds the
-            // InvoiceRepository the capture guard needs to load the PERSISTED
-            // invoice; Slice 4 adds the paid board + portal checkout, which
-            // delegates to self::visitService() (no second checkout engine);
-            // Slice 5 adds the PaymentRepository the read-only receipt needs to
-            // prove the durable settlement from its captured payment rows, plus
-            // the PatientRepository it re-reads through to prove the persisted
-            // patient is the Visit's patient inside the trusted Clinic before
-            // any display identity is rendered.
-            // Every mutation delegates to the existing services unchanged.
-            ( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ), new InvoiceRepository( self::db() ), new PaymentRepository( self::db() ), new PatientRepository( self::db() ) ) )->register_routes();
-            // Endpointهای فازهای بعد (F8+) — مطابق API Contract.
-        });
+        add_action(
+            'rest_api_init',
+            static function (): void {
+				( new HealthController() )->register_routes();
+				( new OtpController( self::otpService() ) )->register_routes();
+				( new SmsController( self::smsService() ) )->register_routes();
+				( new BookingController( self::bookingService() ) )->register_routes();
+				( new PatientController( self::patientService() ) )->register_routes();
+				( new QueueController( self::visitService() ) )->register_routes();
+				( new ScheduleController( self::scheduleService() ) )->register_routes();
+				( new ClinicalController( self::clinicalService() ) )->register_routes();
+				( new FilesController( self::medicalFileService() ) )->register_routes();
+				( new FinanceController( self::financeService() ) )->register_routes();
+				( new HandwritingController( self::handwritingService() ) )->register_routes();
+				( new NotificationsController( self::notificationService() ) )->register_routes();
+				// Iran V1 — internal staff messaging + doctor-managed visit pricing.
+				( new MessagingController( self::staff_messaging_service() ) )->register_routes();
+				( new VisitPricingController( self::visit_pricing_service() ) )->register_routes();
+				( new ReportsController( self::reportService(), self::exportService() ) )->register_routes();
+				( new DoctorPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ) ) )->register_routes();
+				// Phase 11 Slices 1–5 — Staff Portal reception boundary (stricter contract lives there).
+				( new ReceptionPortalController( new \ClinicCore\Infrastructure\Repository\MembershipRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\AppointmentRepository( self::db() ), new \ClinicCore\Infrastructure\Repository\SlotRepository( self::db() ) ) )->register_routes();
+				// Phase 12 Slices 1–5 — Staff Portal finance boundary. Slice 3 adds the
+				// InvoiceRepository the capture guard needs to load the PERSISTED
+				// invoice; Slice 4 adds the paid board + portal checkout, which
+				// delegates to self::visitService() (no second checkout engine);
+				// Slice 5 adds the PaymentRepository the read-only receipt needs to
+				// prove the durable settlement from its captured payment rows, plus
+				// the PatientRepository it re-reads through to prove the persisted
+				// patient is the Visit's patient inside the trusted Clinic before
+				// any display identity is rendered.
+				// Every mutation delegates to the existing services unchanged.
+				( new FinancePortalController( new MembershipRepository( self::db() ), new VisitRepository( self::db() ), new InvoiceRepository( self::db() ), new PaymentRepository( self::db() ), new PatientRepository( self::db() ) ) )->register_routes();
+				// Endpointهای فازهای بعد (F8+) — مطابق API Contract.
+			}
+        );
 
         // Cron: اولویت با Cron OS-level (bin/cpms jobs tick) — WP-Cron به‌عنوان Fallback
         self::register_cron_schedules();
@@ -1150,20 +1153,19 @@ final class App
     /**
      * Iran V1 — تعرفه ویزیت پزشک و اقلام خدمات پیشنویس (بدون موتور صورتحساب دوم).
      */
-    public static function visit_pricing_service(): VisitPricingService
-    {
+    public static function visit_pricing_service(): VisitPricingService {
         static $pricing = null;
-        if ($pricing === null) {
-            $db = self::db();
+        if ( $pricing === null ) {
+            $db      = self::db();
             $pricing = new VisitPricingService(
                 $db,
-                new VisitPricingRepository($db),
-                new VisitRepository($db),
-                new InvoiceRepository($db),
-                new PaymentRepository($db),
-                new ClinicianRepository($db),
-                new MembershipRepository($db),
-                new PatientRepository($db),
+                new VisitPricingRepository( $db ),
+                new VisitRepository( $db ),
+                new InvoiceRepository( $db ),
+                new PaymentRepository( $db ),
+                new ClinicianRepository( $db ),
+                new MembershipRepository( $db ),
+                new PatientRepository( $db ),
                 self::audit()
             );
         }
@@ -1174,18 +1176,17 @@ final class App
     /**
      * Iran V1 — پیامرسانی داخلی پزشک/پذیرش در همان Clinic مورد اعتماد.
      */
-    public static function staff_messaging_service(): StaffMessagingService
-    {
+    public static function staff_messaging_service(): StaffMessagingService {
         static $messaging = null;
-        if ($messaging === null) {
-            $db = self::db();
+        if ( $messaging === null ) {
+            $db        = self::db();
             $messaging = new StaffMessagingService(
                 $db,
-                new MessageRepository($db),
-                new MembershipRepository($db),
-                new VisitRepository($db),
-                new PatientRepository($db),
-                new ClinicianRepository($db),
+                new MessageRepository( $db ),
+                new MembershipRepository( $db ),
+                new VisitRepository( $db ),
+                new PatientRepository( $db ),
+                new ClinicianRepository( $db ),
                 self::audit()
             );
         }

@@ -13,7 +13,8 @@ declare(strict_types=1);
 defined( 'ABSPATH' ) || exit;
 
 if ( empty( $cpms_staff_embed ) ) {
-    ?><!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>پیام‌های داخلی</title></head><body><p>این صفحه فقط از طریق پورتال کارکنان در دسترس است.</p></body></html><?php
+    ?><!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>پیام‌های داخلی</title></head><body><p>این صفحه فقط از طریق پورتال کارکنان در دسترس است.</p></body></html>
+    <?php
     return;
 }
 
@@ -30,11 +31,11 @@ foreach ( App::membership_service()->active_memberships_for_user( $cpms_messages
         );
     }
 }
-$cpms_messages_config = array(
-    'rest_root'    => esc_url_raw( untrailingslashit( rest_url( 'clinic/v1' ) ) ),
-    'nonce'        => (string) wp_create_nonce( 'wp_rest' ),
-    'clinics'      => $cpms_messages_clinics,
-    'portal_url'   => esc_url_raw( \ClinicCore\Frontend\StaffPortalShell::portal_url() ),
+$cpms_messages_config      = array(
+    'rest_root'  => esc_url_raw( untrailingslashit( rest_url( 'clinic/v1' ) ) ),
+    'nonce'      => (string) wp_create_nonce( 'wp_rest' ),
+    'clinics'    => $cpms_messages_clinics,
+    'portal_url' => esc_url_raw( \ClinicCore\Frontend\StaffPortalShell::portal_url() ),
 );
 $cpms_messages_config_json = wp_json_encode( $cpms_messages_config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE );
 if ( ! is_string( $cpms_messages_config_json ) ) {
@@ -169,13 +170,38 @@ if ( ! is_string( $cpms_messages_config_json ) ) {
         if (state.clinicId) value['X-CPMS-Clinic-Id'] = String(state.clinicId);
         return value;
     }
+    function restUrl(path) {
+        var base = String(config.rest_root || '');
+        var q = path.indexOf('?');
+        var restPath = q === -1 ? path : path.slice(0, q);
+        var query = q === -1 ? '' : path.slice(q + 1);
+        if (base.indexOf('rest_route=') === -1) {
+            return base.replace(/\/$/, '') + restPath + (query ? '?' + query : '');
+        }
+        // Plain permalinks: ?rest_route=/clinic/v1 must receive the appended
+        // route path, while query parameters stay separate. Never put a second
+        // '?' inside the rest_route value.
+        var url = new URL(base);
+        var route = url.searchParams.get('rest_route') || '/clinic/v1';
+        url.searchParams.set('rest_route', route.replace(/\/$/, '') + restPath);
+        if (query) {
+            query.split('&').forEach(function (pair) {
+                if (!pair) return;
+                var idx = pair.indexOf('=');
+                var key = idx === -1 ? pair : pair.slice(0, idx);
+                var value = idx === -1 ? '' : pair.slice(idx + 1);
+                url.searchParams.set(key, decodeURIComponent(value));
+            });
+        }
+        return url.toString();
+    }
     function request(path, method, body) {
         var options = { method: method || 'GET', headers: headers(), credentials: 'same-origin', cache: 'no-store' };
         if (body !== undefined) {
             options.headers['Content-Type'] = 'application/json';
             options.body = JSON.stringify(body);
         }
-        return fetch(root + path, options).then(function (response) {
+        return fetch(restUrl(path), options).then(function (response) {
             return response.json().then(function (payload) {
                 if (!response.ok || !payload || !payload.data) {
                     var error = new Error((payload && payload.message) || 'خطای ارتباط');

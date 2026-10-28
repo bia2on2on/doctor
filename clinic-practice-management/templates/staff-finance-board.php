@@ -733,13 +733,23 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     function billingStat(label, value) {
         return '<div class="cpms-finance-board__billing-stat"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
     }
+    function feeSourceLabel(source) {
+        if (source === 'visit_override') return 'تعرفه اختصاصی پزشک';
+        if (source === 'checkin_snapshot') return 'تعرفه ثبتشده هنگام پذیرش';
+        if (source === 'doctor_default') return 'پیشفرض پزشک';
+        return 'تنظیم نشده';
+    }
     function renderBilling(data) {
+        if (!billingPanel || !billingVisitNode || !billingStatsNode || !billingChargesNode || !billingItemsNode || !billingAutoNode) return;
         billingPanel.hidden = false;
         billingVisitNode.textContent = '— ' + (data.patient_name || '') + ' (ویزیت ' + Number(data.visit_id) + ')';
         billingStatsNode.innerHTML = [
             billingStat('تعرفه پیشفرض پزشک', data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee)),
+            billingStat('تعرفه ثبتشده هنگام پذیرش', data.snapshot_fee === null ? 'ثبت نشده' : rial(data.snapshot_fee)),
             billingStat('تعرفه اختصاصی ویزیت', data.override_fee === null ? 'بدون تغییر' : rial(data.override_fee)),
             billingStat('تعرفه ویزیت اعمالشده', rial(data.effective_fee === null ? 0 : data.effective_fee)),
+            billingStat('منبع تعرفه', feeSourceLabel(data.fee_source)),
+            billingStat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد'),
             billingStat('جمع خدمات اضافی', rial(data.charges_total)),
             billingStat('جمع کل اقلام', rial(data.expected_total)),
             billingStat('مبلغ پرداختشده', rial(data.paid_amount)),
@@ -782,7 +792,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     }
     function closeBilling() {
         state.billingVisitId = null;
-        billingPanel.hidden = true;
+        if (billingPanel) billingPanel.hidden = true;
     }
 
     function loadEligible() {
@@ -1028,10 +1038,11 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (!trigger) return;
         openBilling(Number(trigger.getAttribute('data-visit-id')));
     }
-    eligibleRowsNode.addEventListener('click', billingClick);
-    rowsNode.addEventListener('click', billingClick);
-    document.querySelector('[data-role="finance-billing-close"]').addEventListener('click', closeBilling);
-    billingAutoNode.addEventListener('click', function () {
+    if (eligibleRowsNode) eligibleRowsNode.addEventListener('click', billingClick);
+    if (rowsNode) rowsNode.addEventListener('click', billingClick);
+    var billingCloseNode = document.querySelector('[data-role="finance-billing-close"]');
+    if (billingCloseNode) billingCloseNode.addEventListener('click', closeBilling);
+    if (billingAutoNode) billingAutoNode.addEventListener('click', function () {
         if (!state.billingVisitId || state.mutating) return;
         state.mutating = true;
         billingAutoNode.disabled = true;

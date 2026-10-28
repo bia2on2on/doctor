@@ -140,6 +140,30 @@ trait IranV1Fixture
         return (int) $wpdb->insert_id;
     }
 
+    /**
+     * Create a checked-in Visit through the real VisitService so the Iran V1
+     * fee-snapshot hook runs inside the production atomic transaction.
+     */
+    protected function iv1_walk_in_visit(
+        int $clinic_id,
+        int $location_id,
+        int $receptionist_user_id,
+        int $patient_id,
+        int $clinician_id
+    ): int {
+        $previous = ScopeContext::tryGet();
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic_id, $location_id));
+        wp_set_current_user($receptionist_user_id);
+        try {
+            $visit = App::visitService()->walkIn($receptionist_user_id, $patient_id, $clinician_id);
+
+            return (int) $visit['id'];
+        } finally {
+            App::replaceExplicitScope($previous);
+            wp_set_current_user(0);
+        }
+    }
+
     protected function iv1_membership(int $user_id, int $clinic_id, string $role = RolesAndCapabilities::ROLE_SECRETARY): int
     {
         return cpms_test_seed_membership($user_id, $clinic_id, $role);

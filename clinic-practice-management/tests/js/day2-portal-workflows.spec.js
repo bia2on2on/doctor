@@ -191,6 +191,11 @@ function createDomEnv(initialHtml, customFetch, onReload) {
     }
     child.parentElement = this;
     this.children.push(child);
+    // Minimal <select> semantics: the first appended <option> becomes the
+    // selected value, matching browser behavior used by portal modules.
+    if (this.tagName === 'SELECT' && child.tagName === 'OPTION' && !this.value) {
+      this.value = child.value || child.getAttribute('value') || '';
+    }
     return child;
   };
 
@@ -427,6 +432,9 @@ function createDomEnv(initialHtml, customFetch, onReload) {
     Promise: Promise,
     Uint8Array: Uint8Array,
     encodeURIComponent: encodeURIComponent,
+    decodeURIComponent: decodeURIComponent,
+    URL: URL,
+    URLSearchParams: URLSearchParams,
     parseInt: parseInt,
     isNaN: isNaN
   });
@@ -849,6 +857,14 @@ function financeBoardHtml() {
         '<div data-role="finance-recon-summary" hidden></div>' +
         '<div data-role="finance-recon-table-wrap" hidden><tbody data-role="finance-recon-rows"></tbody></div>' +
       '</section>' +
+      '<section data-role="finance-billing" hidden>' +
+        '<h2><span data-role="finance-billing-visit"></span></h2>' +
+        '<div data-role="finance-billing-stats"></div>' +
+        '<table><tbody data-role="finance-billing-charges"></tbody></table>' +
+        '<table><tbody data-role="finance-billing-items"></tbody></table>' +
+        '<button type="button" data-role="finance-billing-auto" hidden></button>' +
+        '<button type="button" data-role="finance-billing-close"></button>' +
+      '</section>' +
       '<script type="application/json" id="cpms-finance-board-config">' +
         JSON.stringify({ rest_root: 'https://clinic.test/wp-json/clinic/v1', nonce: 'nonce-fin-1' }) +
       '</script>' +
@@ -1097,6 +1113,231 @@ async function testFinanceSubmitSurvivesInFlightRead() {
   );
 }
 
+// Iran V1 — the receptionist itemized billing panel renders server truth and
+// keeps the existing payment/issuance controls untouched.
+async function testFinanceBillingPanelVm() {
+  var financePhp = readPluginFile('templates/staff-finance-board.php');
+  var scriptMatch = financePhp.match(/<script>\n([\s\S]*?)\n<\/script>/);
+  assert.ok(scriptMatch && scriptMatch[1], 'Extracts finance inline script');
+
+  var calls = [];
+  var env = createDomEnv(financeBoardHtml(), function (url, opts) {
+    calls.push({ url: url, opts: opts || {} });
+    if (url.indexOf('/staff/portal/finance/context') !== -1) {
+      return jsonResponse(200, {
+        ok: true,
+        data: {
+          clinic_id: 7,
+          location_id: 14,
+          locations: [{ id: 14, name: 'شعبه ۱' }],
+          can_issue_invoice: false,
+          can_capture_payment: false,
+          can_check_out: false
+        }
+      });
+    }
+    if (url.indexOf('/visits/88/billing') !== -1) {
+      return jsonResponse(200, {
+        ok: true,
+        data: {
+          visit_id: 88,
+          patient_name: 'بیمار',
+          default_fee: 600000,
+          snapshot_fee: 500000,
+          override_fee: null,
+          effective_fee: 500000,
+          fee_source: 'checkin_snapshot',
+          charges_total: 70000,
+          expected_total: 570000,
+          paid_amount: 0,
+          remaining_balance: 570000,
+          payment_status_label: 'پرداخت نشده',
+          charges: [
+            { description: 'پانسمان', unit_amount: 20000, quantity: 2, line_total: 40000, note: 'دو بار' }
+          ],
+          invoice: null
+        }
+      });
+    }
+    return jsonResponse(200, { ok: true, data: { date: '2026-10-23', jalali_date: '1405/08/01', location_id: 14, visits: [], has_more: false } });
+  });
+
+  vm.runInContext(scriptMatch[1], env.context);
+  await flushPromises();
+  await flushPromises();
+
+  var rows = env.doc.querySelector('[data-role="finance-rows"]');
+  rows.innerHTML = '<tr><td><button type="button" data-role="finance-billing-open" data-visit-id="88">جزئیات</button></td></tr>';
+  env.doc.querySelector('[data-role="finance-billing-open"]').dispatch('click');
+  await flushPromises();
+  await flushPromises();
+
+  var billingCall = calls.find(function (c) { return c.url.indexOf('/visits/88/billing') !== -1; });
+  assert.ok(billingCall, 'Clicking billing details fetches the read-only itemized billing route');
+  assert.strictEqual(billingCall.opts.headers['X-CPMS-Clinic-Id'], '7', 'Billing read keeps the trusted Clinic selector');
+  var panel = env.doc.querySelector('[data-role="finance-billing"]');
+  assert.strictEqual(panel.hidden, false, 'Billing panel opens from the row action');
+  var stats = env.doc.querySelector('[data-role="finance-billing-stats"]');
+  assert.ok(stats.innerHTML.indexOf('570000') !== -1, 'Billing panel renders the server total');
+  assert.ok(stats.innerHTML.indexOf('500000') !== -1, 'Billing panel renders the check-in fee snapshot');
+  assert.ok(stats.innerHTML.indexOf('تعرفه ثبتشده هنگام پذیرش') !== -1, 'Billing panel labels the snapshot source');
+  assert.ok(stats.innerHTML.indexOf('ریال') !== -1, 'Billing panel labels Rial amounts');
+  var charges = env.doc.querySelector('[data-role="finance-billing-charges"]');
+  assert.ok(charges.innerHTML.indexOf('پانسمان') !== -1, 'Billing panel itemizes treatment charges');
+  env.doc.querySelector('[data-role="finance-billing-close"]').dispatch('click');
+  assert.strictEqual(panel.hidden, true, 'Billing panel closes without a server mutation');
+}
+
+// Iran V1 — plain-permalink REST URL construction for the messaging module.
+// WordPress serves REST as ?rest_route=/clinic/v1 on sites without pretty
+// permalinks; appending a path that itself carries ?limit=... must never put a
+// second '?' inside the rest_route value.
+function messagesModuleHtml(restRoot) {
+  return (
+    '<main data-role="messages-root" dir="rtl" lang="fa">' +
+      '<select data-role="messages-clinic"></select>' +
+      '<select data-role="messages-counterpart"></select>' +
+      '<input data-role="messages-patient-id">' +
+      '<input data-role="messages-visit-id">' +
+      '<p data-role="messages-status"></p>' +
+      '<span data-role="messages-unread-total">0</span>' +
+      '<h2 data-role="messages-thread-title"></h2>' +
+      '<ul data-role="messages-threads"></ul>' +
+      '<div data-role="messages-list"></div>' +
+      '<button type="button" data-role="messages-new"></button>' +
+      '<button type="button" data-role="messages-refresh"></button>' +
+      '<form data-role="messages-form">' +
+        '<textarea data-role="messages-body"></textarea>' +
+        '<button type="submit" data-role="messages-send"></button>' +
+      '</form>' +
+      '<script type="application/json" id="cpms-messages-config">' +
+        JSON.stringify({ rest_root: restRoot, nonce: 'nonce-msg-1', clinics: [{ id: 7, name: 'مطب ۱' }] }) +
+      '</script>' +
+    '</main>'
+  );
+}
+
+function plainRouteParts(url) {
+  var parsed = new URL(url);
+  return {
+    route: parsed.searchParams.get('rest_route') || '',
+    params: parsed.searchParams,
+    questionMarks: url.split('?').length - 1
+  };
+}
+
+async function testMessagesPlainPermalinkVm() {
+  var messagesPhp = readPluginFile('templates/staff-messages.php');
+  var scriptMatch = messagesPhp.match(/<script>\n([\s\S]*?)\n<\/script>/);
+  assert.ok(scriptMatch && scriptMatch[1], 'Extracts messaging inline script');
+
+  var calls = [];
+  var env = createDomEnv(
+    messagesModuleHtml('https://clinic.test/?rest_route=/clinic/v1'),
+    function (url, opts) {
+      calls.push({ url: url, opts: opts || {} });
+      var parts = plainRouteParts(url);
+      var route = parts.route;
+      var method = String((opts && opts.method) || 'GET').toUpperCase();
+      if (route === '/clinic/v1/staff/portal/messages/context') {
+        return jsonResponse(200, { ok: true, data: {
+          clinic_id: 7, organization_id: 3, actor_class: 'receptionist',
+          counterparts: [{ wp_user_id: 9, display_name: 'پزشک', label: 'پزشک' }],
+          unread_total: 0, retention_policy: 'append_only', max_message_chars: 2000
+        } });
+      }
+      if (route === '/clinic/v1/staff/portal/messages/threads' && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: {
+          threads: [{ id: 11, counterpart: { display_name: 'پزشک' }, unread_count: 1,
+            last_message_excerpt: 'سلام', last_message_jalali: '۱۴۰۵/۰۸/۰۶' }],
+          unread_total: 1, polling: { strategy: 'authenticated_incremental', interval_ms: 8000 }
+        } });
+      }
+      if (route === '/clinic/v1/staff/portal/messages/threads' && method === 'POST') {
+        return jsonResponse(201, { ok: true, data: { id: 11, counterpart: { display_name: 'پزشک' } } });
+      }
+      if (route === '/clinic/v1/staff/portal/messages/threads/11/messages' && method === 'GET') {
+        return jsonResponse(200, { ok: true, data: {
+          messages: [{ id: 1, body: 'سلام', mine: false, jalali_time: '۱۴۰۵/۰۸/۰۶' }],
+          last_id: 1, unread_count: 0
+        } });
+      }
+      if (route === '/clinic/v1/staff/portal/messages/threads/11/messages' && method === 'POST') {
+        return jsonResponse(201, { ok: true, data: {
+          id: 2, body: 'پاسخ', mine: true, jalali_time: '۱۴۰۵/۰۸/۰۶'
+        } });
+      }
+      if (route === '/clinic/v1/staff/portal/messages/threads/11/read' && method === 'POST') {
+        return jsonResponse(200, { ok: true, data: {
+          thread_id: 11, last_read_message_id: 1, unread_count: 0, unread_total: 0
+        } });
+      }
+      return jsonResponse(404, { ok: false, code: 'CLINIC_NOT_FOUND' });
+    }
+  );
+
+  vm.runInContext(scriptMatch[1], env.context);
+  await flushPromises();
+  await flushPromises();
+
+  function callsFor(route, method) {
+    return calls.filter(function (c) {
+      return plainRouteParts(c.url).route === route &&
+        String((c.opts && c.opts.method) || 'GET').toUpperCase() === method;
+    });
+  }
+
+  var contextCalls = callsFor('/clinic/v1/staff/portal/messages/context', 'GET');
+  assert.strictEqual(contextCalls.length, 1, 'context is fetched exactly once');
+  assert.strictEqual(contextCalls[0].opts.headers['X-CPMS-Clinic-Id'], '7', 'context keeps trusted Clinic header');
+
+  var threadCalls = callsFor('/clinic/v1/staff/portal/messages/threads', 'GET');
+  assert.ok(threadCalls.length >= 1, 'thread listing is fetched');
+  var threadParts = plainRouteParts(threadCalls[0].url);
+  assert.strictEqual(threadParts.params.get('limit'), '50', 'limit stays a separate query parameter');
+  assert.strictEqual(threadParts.questionMarks, 1, 'thread listing URL has exactly one query separator');
+
+  // Create a thread, open it (poll + read ack), then send a message.
+  env.doc.querySelector('[data-role="messages-new"]').dispatch('click');
+  await flushPromises();
+  await flushPromises();
+  await flushPromises();
+
+  var pollCalls = callsFor('/clinic/v1/staff/portal/messages/threads/11/messages', 'GET');
+  assert.ok(pollCalls.length >= 1, 'message polling is fetched');
+  var pollParts = plainRouteParts(pollCalls[0].url);
+  assert.strictEqual(pollParts.params.get('since_id'), '0', 'since_id stays a separate query parameter');
+  assert.strictEqual(pollParts.params.get('limit'), '100', 'poll limit stays a separate query parameter');
+  assert.strictEqual(pollParts.questionMarks, 1, 'polling URL has exactly one query separator');
+
+  var readCalls = callsFor('/clinic/v1/staff/portal/messages/threads/11/read', 'POST');
+  assert.strictEqual(readCalls.length, 1, 'read acknowledgment is posted exactly once');
+
+  env.doc.querySelector('[data-role="messages-body"]').value = 'پاسخ';
+  env.doc.querySelector('[data-role="messages-form"]').dispatch('submit');
+  await flushPromises();
+  await flushPromises();
+  var sendCalls = callsFor('/clinic/v1/staff/portal/messages/threads/11/messages', 'POST');
+  assert.strictEqual(sendCalls.length, 1, 'send is posted exactly once');
+  assert.deepStrictEqual(JSON.parse(sendCalls[0].opts.body), { body: 'پاسخ' }, 'send body is preserved');
+
+  // Explicit refresh exercises incremental polling with a non-zero since_id.
+  env.doc.querySelector('[data-role="messages-refresh"]').dispatch('click');
+  await flushPromises();
+  await flushPromises();
+  var refreshCalls = callsFor('/clinic/v1/staff/portal/messages/threads/11/messages', 'GET');
+  var incremental = refreshCalls.some(function (c) {
+    return plainRouteParts(c.url).params.get('since_id') === '2';
+  });
+  assert.ok(incremental, 'refresh polls with the last seen message id');
+
+  calls.forEach(function (c) {
+    assert.strictEqual(plainRouteParts(c.url).questionMarks, 1, 'no nested query separator in ' + c.url);
+    assert.ok(plainRouteParts(c.url).route.indexOf('clinic/v1/staff/portal/messages/') !== -1,
+      'route stays under the messages namespace');
+  });
+}
+
 (async function main() {
   try {
     await testPatientPortalReschedule();
@@ -1105,6 +1346,8 @@ async function testFinanceSubmitSurvivesInFlightRead() {
     testPatientPortalCompletionTemplateContracts();
     await testFinanceReconciliationVm();
     await testFinanceSubmitSurvivesInFlightRead();
+    await testFinanceBillingPanelVm();
+    await testMessagesPlainPermalinkVm();
     console.log('OK: all Day-2 portal workflow JS & template assertions passed');
   } catch (err) {
     console.error('FAIL:', err && err.stack ? err.stack : err);

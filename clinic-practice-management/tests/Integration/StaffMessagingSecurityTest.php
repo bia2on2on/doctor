@@ -74,8 +74,8 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
             $fn();
             self::fail('Expected MessagingException ' . $code);
         } catch (MessagingException $exception) {
-            self::assertSame($code, $exception->errorCode);
-            self::assertSame($status, $exception->httpStatus);
+            self::assertSame($code, $exception->error_code);
+            self::assertSame($status, $exception->http_status);
         }
     }
 
@@ -338,5 +338,43 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_messages') . ' WHERE thread_id = %d',
             [$id]
         ));
+    }
+
+    /**
+     * Iran V1 product contract: an internal thread has exactly one doctor and
+     * one receptionist. Same-class chat is not an explicitly required feature
+     * and is refused on the server, not merely hidden in the UI.
+     */
+    public function testThreadCreationRequiresDoctorReceptionistPairing(): void
+    {
+        $world = $this->world();
+        $doctor2 = $this->iv1_user(RolesAndCapabilities::ROLE_DOCTOR, 'doc2');
+        $this->iv1_membership($doctor2, (int) $world['clinic'], RolesAndCapabilities::ROLE_DOCTOR);
+        $secretary2 = $this->iv1_user(RolesAndCapabilities::ROLE_SECRETARY, 'sec2');
+        $this->iv1_membership($secretary2, (int) $world['clinic'], RolesAndCapabilities::ROLE_SECRETARY);
+
+        wp_set_current_user((int) $world['doctor']);
+        $this->assertDenied(
+            fn () => $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => $doctor2]),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+
+        wp_set_current_user($secretary2);
+        $this->assertDenied(
+            fn () => $this->call_thread($world, $secretary2, ['recipient_wp_user_id' => (int) $world['secretary']]),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+
+        wp_set_current_user((int) $world['doctor']);
+        $context = $this->iv1_scope(
+            (int) $world['clinic'],
+            fn (): array => App::staff_messaging_service()->context((int) $world['doctor'])
+        );
+        $ids = array_map('intval', array_column($context['counterparts'], 'wp_user_id'));
+        self::assertContains((int) $world['secretary'], $ids);
+        self::assertContains($secretary2, $ids);
+        self::assertNotContains($doctor2, $ids, 'same-class doctors are not offered as counterparts');
     }
 }
