@@ -1098,6 +1098,10 @@ try {
 
 	$frn_report = array();
 	foreach ( $frn_vectors as $frn_label => $frn_inject ) {
+		// R6 impersonated personas through the real REST stack, so the current user
+		// is not the Administrator any more. Restore it before an operation that
+		// checks capabilities, exactly as the admin page would.
+		wp_set_current_user( $admin_id );
 		$manifest->enable_mode( $admin_id );
 		$services['provisioner']->provision( $admin_id );
 		$frn_live = $manifest->load();
@@ -1158,6 +1162,7 @@ try {
 			$checks
 		);
 
+		wp_set_current_user( $admin_id );
 		$frn_clean = $services['teardown']->execute( $manifest->load(), $admin_id );
 		cpsd_rec_check( true === (bool) $frn_clean['ok'], 'R9 ' . $frn_label . ': authorized teardown completes once the foreign dependency is gone', $checks );
 		cpsd_rec_check( null === $manifest->load(), 'R9 ' . $frn_label . ': the manifest is released after the authorized teardown', $checks );
