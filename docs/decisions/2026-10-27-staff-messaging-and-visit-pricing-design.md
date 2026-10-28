@@ -72,6 +72,11 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
   active membership (`cpms_consult_complete` = doctor class,
   `cpms_queue_checkin` = receptionist class), never from a WP role alone.
   An actor must additionally hold `cpms_visit_read` in the same Clinic.
+  **Iran V1 role pairing:** no delivered product requirement authorizes
+  doctor↔doctor or receptionist↔receptionist threads. `/context` therefore
+  lists only opposite-class counterparts, and `create_thread()` re-checks the
+  persisted membership/class and refuses same-class recipients with 403
+  `CLINIC_PERMISSION_DENIED` / `reason=role_pairing`.
 - A thread is readable only by its two participants, inside the stored Clinic
   **and** Organization; if it has a Location, both participants and the actor
   must be eligible for that Location (clinic-wide membership or an explicit
