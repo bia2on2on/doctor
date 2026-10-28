@@ -41,6 +41,10 @@ class ScopedPhpContractTests(unittest.TestCase):
             "class-cpms-demo-scoped-provisioner.php",
             "class-cpms-demo-scoped-teardown.php",
             "class-cpms-demo-scoped-admin.php",
+            # Stage 1/2 of the ownership work: the sealed append-only ownership
+            # ledger, and the only path that creates an additional demo Clinic.
+            "class-cpms-demo-scoped-ownership.php",
+            "class-cpms-demo-scoped-clinics.php",
         }
         actual = {p.name for p in SCOPED}
         self.assertEqual(expected, actual)

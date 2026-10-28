@@ -108,6 +108,11 @@ class ScopedBaseline {
 		'cpsd_lock_state',
 		'cpsd_had_clean_teardown',
 		'cpsd_baseline_pending',
+		// Sealed append-only ownership ledger for additional demo Clinics. It is
+		// demo-owned and exists only while the demo manifest does, so it must be
+		// enumerated here (never matched by prefix) and must never be reported as
+		// host-option residue while the fixture is still live.
+		'cpsd_ownership_ledger',
 		'cpdd_manifest',
 		'cpdd_tombstone',
 		'cpdd_had_clean_teardown',

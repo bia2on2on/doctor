@@ -899,6 +899,65 @@ class Platform {
 	}
 
 	/**
+	 * Read back a production capability decision for this exact actor.
+	 *
+	 * The scoped demo withholds Clinic-creation authority from the portal-facing
+	 * synthetic Organization manager. A stored DENY row is not enough evidence:
+	 * the decision is read back through the production resolver that the portal
+	 * itself uses, so a silently ineffective row can never masquerade as policy.
+	 *
+	 * @param int    $actor_id        Acting user.
+	 * @param int    $organization_id Organization.
+	 * @param string $capability      Capability key.
+	 * @return bool
+	 */
+	public function production_can( int $actor_id, int $organization_id, string $capability ): bool {
+		return App::organization_clinic_provisioning_service()->can( $actor_id, $organization_id, $capability );
+	}
+
+	/**
+	 * Designate (or suspend) an Organization manager through the production
+	 * service, under the caller's own Organization authority.
+	 *
+	 * The scoped demo uses this to give a *second*, non-portal synthetic account
+	 * Organization manager authority, so that a demo-owned additional Clinic can
+	 * be created by the real provisioning service while the portal-facing
+	 * synthetic manager stays unable to create Clinics at all.
+	 *
+	 * @param int  $actor_id        Authorized Organization manager.
+	 * @param int  $organization_id Organization.
+	 * @param int  $target_id       Target WordPress user.
+	 * @param bool $active          Activate or suspend.
+	 * @return array<string,mixed>
+	 */
+	public function set_manager( int $actor_id, int $organization_id, int $target_id, bool $active ): array {
+		return App::organization_clinic_provisioning_service()->set_manager( $actor_id, $organization_id, $target_id, $active );
+	}
+
+	/**
+	 * Insert one row and fail closed when the database refuses it.
+	 *
+	 * Used for the scoped-mode capability DENY that removes the portal's
+	 * create-Clinic authority from the synthetic Organization manager. A row that
+	 * was not stored is not a policy: callers read it back and verify.
+	 *
+	 * @param string              $short Short table name.
+	 * @param array<string,mixed> $data  Row.
+	 * @return int Insert id.
+	 */
+	public function insert_row( string $short, array $data ): int {
+		global $wpdb;
+		$table = $this->table( $short );
+		$ok    = $wpdb->insert( $table, $data );
+		if ( false === $ok || '' !== (string) $wpdb->last_error || (int) $wpdb->insert_id <= 0 ) {
+			throw new Exception( 'ROW_INSERT', 'نوشتن ردیف ' . $short . ' ناموفق بود: ' . (string) $wpdb->last_error );
+		}
+
+		return (int) $wpdb->insert_id;
+	}
+
+
+	/**
 	 * @param int    $clinic_id Clinic.
 	 * @param int    $wp_user_id Doctor user.
 	 * @param string $full_name Synthetic doctor name.

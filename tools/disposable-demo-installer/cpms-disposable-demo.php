@@ -59,6 +59,8 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-baseline.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-clinics.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
@@ -93,3 +95,8 @@ add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\ScopedAdmin', 'register_menu' ), 11 );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_assets' ) );
+// Server-side refusal of portal Clinic creation while the scoped demo mode is
+// enabled. Priority 0 puts it ahead of the portal's own `template_redirect`
+// handler, so the request never reaches the production dispatcher. It returns
+// immediately when scoped mode is off, leaving production behaviour untouched.
+add_action( 'template_redirect', array( 'CpmsDemo\\ScopedAdmin', 'guard_portal_clinic_creation' ), 0 );

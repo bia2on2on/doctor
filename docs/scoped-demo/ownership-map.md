@@ -203,3 +203,63 @@ leaving the fixture active and recoverable. Removing or re-homing that Clinic ma
 the same teardown pass, which is what
 `tools/disposable-demo-installer/tests/scoped-portal.php` (P1/P2/P3) proves against
 a real database on MySQL 8 and MariaDB 11.4.
+
+### Ownership of an additional Clinic is a sealed record, not an inference
+
+The previous rule for a *second* Clinic was: it names the demo Organization, the
+Organization itself postdates the seal, and the Clinic's `id` is above the sealed
+baseline `max_id` — therefore it is demo-owned. That rule is **removed**. It could
+not distinguish a demo Clinic from a genuine non-demo Clinic that a real
+Organization manager created under the same Organization *after* the baseline was
+taken, and it would have deleted (or suspended and stripped of its actors) real
+data on a populated site.
+
+Ownership of every additional Clinic is now an explicit, verifiable record in
+`ScopedOwnership` (option `cpsd_ownership_ledger`, a distinct namespace from every
+manifest option):
+
+| Property | How it is proven |
+|---|---|
+| Sealed | every record is HMAC-sealed with the manifest key, bound to this site fingerprint **and** this fixture id; a record copied from another site or fixture does not verify |
+| Append-only | each record carries `seq`, the previous record's MAC and its own MAC, and the option also commits `count` and `head`, so an edit, an insertion **and a truncation** are all detected |
+| Creation-time | the exact slug of a new Clinic is sealed as an `intent` record **before** the row can exist (after a collision check), and the created id + its Locations are sealed back as a `clinic` record |
+| Fail-closed | an absent ledger means "no additional Clinic is owned"; an invalid ledger (`SCOPED_OWNERSHIP_LEDGER_INVALID`) or an unresolved intent (`SCOPED_OWNERSHIP_PENDING`) blocks the destructive teardown before anything is deleted |
+| Interruption-safe | an unresolved intent is never guessed at: an administrator either registers the live row that matches the pre-committed Organization **and** slug, or abandons the intent after proving no row carries that slug |
+
+Genuine foreign Clinics cannot enter the record through ordinary management
+actions, because no ordinary management action writes it: the portal's create
+action is refused (below), and the only writer is the scoped demo page's own
+form behind capability + nonce + confirmation phrase + site identity.
+
+### The Management Portal may not mint Clinics in scoped demo mode
+
+Enforced twice, both server-side, and only while scoped demo mode is enabled:
+
+1. **Capability.** The synthetic Organization manager's membership receives an
+   explicit `DENY` row for the production `cpms_org_clinic_create` capability,
+   written by the provisioner and read back through the production resolver
+   (`OrganizationClinicProvisioningService::can()`). The portal therefore does not
+   even render the create form, and a direct service call is refused by production
+   code. `cpms_org_clinic_update` and `cpms_org_clinic_lifecycle` are untouched, so
+   the lifecycle journeys keep working.
+2. **HTTP boundary.** `ScopedAdmin::guard_portal_clinic_creation()` runs on
+   `template_redirect` at priority 0 — ahead of the portal's own handler — and
+   refuses any POST of `cpms_action=org_create_clinic` with a Persian explanation
+   and HTTP 403. It returns immediately when scoped mode is off, so normal
+   production behaviour outside a demo is unchanged.
+
+Neither restriction is a UI change. The Persian explanation is server-rendered
+(`wp_die` on the refused request and a policy card on the scoped demo page).
+
+### Preview and execution share one ownership decision
+
+`owned_tenants()` resolves the owned Clinic set once (manifest Clinic + sealed
+ledger ids that are live rows still naming the demo Organization), and that single
+decision feeds `collect_scope()`, the `anchors` used by the dependency scan, the
+delete phase, `suspend_clinic()` and `assert_user_not_foreign_dependent()`. The
+scope carries `ownership_ledger.{code,detail,pending}`, so `preview()` and
+`do_execute()` cannot disagree. `tools/disposable-demo-installer/tests/scoped-portal.php`
+P4–P7 prove each case against a real MySQL 8 / MariaDB 11.4 database: a foreign
+post-baseline Clinic under the demo Organization, a foreign tenant whose rows carry
+synthetic user ids, a manipulated/truncated ledger, and an interrupted
+creation/registration that is repaired from sealed evidence.

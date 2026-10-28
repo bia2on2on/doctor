@@ -25,6 +25,10 @@ class ScopedRequest extends Request {
 	public const ACTION_OTP       = 'otp';
 	public const ACTION_DIAGNOSE  = 'diagnose';
 	public const ACTION_TEARDOWN  = 'teardown';
+	// Explicitly registered additional Clinic, and the repair path for a run that
+	// was interrupted between sealing the intent and registering the Clinic.
+	public const ACTION_ADD_CLINIC     = 'add_clinic';
+	public const ACTION_RESOLVE_CLINIC = 'resolve_clinic';
 
 	/**
 	 * @return array<string,array{nonce:string,phrase:string,label:string}>
@@ -55,6 +59,16 @@ class ScopedRequest extends Request {
 				'nonce'  => 'cpsd_teardown',
 				'phrase' => 'REMOVE_ONLY_SCOPED_DEMO_DATA',
 				'label'  => 'پاکسازی فقط دادههای دمو',
+			),
+			self::ACTION_ADD_CLINIC     => array(
+				'nonce'  => 'cpsd_add_clinic',
+				'phrase' => 'REGISTER_ADDITIONAL_DEMO_CLINIC',
+				'label'  => 'ساخت درمانگاه نمایشی ثبت‌شده',
+			),
+			self::ACTION_RESOLVE_CLINIC => array(
+				'nonce'  => 'cpsd_resolve_clinic',
+				'phrase' => 'RESOLVE_INTERRUPTED_DEMO_CLINIC',
+				'label'  => 'تعیین تکلیف درمانگاه نمایشی ناتمام',
 			),
 		);
 	}

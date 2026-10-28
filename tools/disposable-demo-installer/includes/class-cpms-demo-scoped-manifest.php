@@ -67,6 +67,31 @@ class ScopedManifest extends Manifest {
 		return $loaded;
 	}
 
+	/**
+	 * Seal one payload with the same HMAC primitive and key as the manifest.
+	 *
+	 * Used by the append-only ownership ledger (ScopedOwnership) so that every
+	 * ownership record is tamper-evident without introducing a second secret.
+	 *
+	 * @param array<string,mixed> $payload Payload without `mac`.
+	 * @return array<string,mixed> Payload with `mac` appended.
+	 */
+	public function seal( array $payload ): array {
+		$payload['mac'] = $this->mac( $payload );
+
+		return $payload;
+	}
+
+	/**
+	 * Deterministic JSON used by the sealing helpers (exposed for diagnostics).
+	 *
+	 * @param mixed $value Value.
+	 * @return string
+	 */
+	public function canonical_form( $value ): string {
+		return $this->canonical( $value );
+	}
+
 	public function fixture_prefix(): string {
 		return 'cpsd-';
 	}

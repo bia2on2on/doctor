@@ -358,6 +358,18 @@ class ScopedTeardown {
 	private ScopedBaseline $baseline;
 
 	/**
+	 * Sealed append-only ownership ledger.
+	 *
+	 * Additional Clinics are demo-owned only when this record names them (or
+	 * pre-committed their exact slug before the row could exist). Nothing about
+	 * an Organization reference, an auto-increment id or a timestamp proves
+	 * ownership, so this object - not an inference - decides.
+	 *
+	 * @var ScopedOwnership
+	 */
+	private ScopedOwnership $ownership;
+
+	/**
 	 * Id-sets proven owned during the CURRENT collection pass.
 	 *
 	 * Parent-based rules read from here and nowhere else: they see only ids that
@@ -374,6 +386,7 @@ class ScopedTeardown {
 		$this->manifest    = $manifest;
 		$this->audit_guard = $audit_guard;
 		$this->baseline    = $baseline;
+		$this->ownership   = new ScopedOwnership( $env, $manifest );
 		$this->platform->set_env( $env );
 	}
 
@@ -588,6 +601,19 @@ class ScopedTeardown {
 			}
 		}
 
+		// Preserved audit anchors and the tenant boundary, by identity. These rows
+		// outlive the teardown by design, so they must be recognised as demo-owned
+		// in BOTH the preview and the post-delete dependency scan. `??` is not a
+		// fallback here: an existing-but-empty set must still resolve by identity.
+		$clinic_anchors = array_values( array_filter( array_map( 'intval', (array) ( $tables['cpms_clinics'] ?? array() ) ) ) );
+		if ( array() === $clinic_anchors ) {
+			$clinic_anchors = array_values( array_filter( array_map( 'intval', (array) $tenants['clinic_ids'] ) ) );
+		}
+		$location_anchors = array_values( array_filter( array_map( 'intval', (array) ( $tables['cpms_locations'] ?? array() ) ) ) );
+		if ( array() === $location_anchors ) {
+			$location_anchors = array_values( array_filter( array_map( 'intval', (array) $tenants['location_ids'] ) ) );
+		}
+
 		return array(
 			'fixture_id'       => $fixture,
 			'clinic_id'        => $clinic_id,
@@ -597,10 +623,18 @@ class ScopedTeardown {
 			// demo-owned in BOTH the preview and the post-delete dependency scan.
 			'anchors'          => array(
 				'cpms_organizations' => $org_id > 1 ? array( $org_id ) : array(),
-				'cpms_clinics'       => array() !== (array) ( $tables['cpms_clinics'] ?? array() ) ? (array) $tables['cpms_clinics'] : (array) $tenants['clinic_ids'],
-				'cpms_locations'     => array() !== (array) ( $tables['cpms_locations'] ?? array() ) ? (array) $tables['cpms_locations'] : (array) $tenants['location_ids'],
+				'cpms_clinics'       => $clinic_anchors,
+				'cpms_locations'     => $location_anchors,
 			),
 			'unproven_clinics' => $tenants['unproven'],
+			// Sealed ownership ledger state, so preview and execution read the SAME
+			// decision: an invalid ledger or a pending (interrupted) registration
+			// blocks the destructive stages before anything is deleted.
+			'ownership_ledger' => array(
+				'code'    => $tenants['ledger_code'],
+				'detail'  => $tenants['ledger_detail'],
+				'pending' => $tenants['pending'],
+			),
 			'user_ids'         => $user_ids,
 			'tables'           => $tables,
 			'composite'        => $owned_composite,
@@ -617,36 +651,46 @@ class ScopedTeardown {
 	/**
 	 * Prove which Clinics and Locations belong to this fixture.
 	 *
-	 * The demo Organization is created by provisioning, so it did not exist when
-	 * the sealed baseline was taken. A Clinic that points at it AND was created
-	 * after the baseline therefore came into existence inside the demo - the
-	 * management portal can legitimately create one, and leaving it behind would
-	 * strand a live Clinic under a suspended demo Organization while its actors
-	 * were deleted. That is the ONLY way a second Clinic is claimed: never because
-	 * it shares a user reference, and never merely because it names the
-	 * Organization.
+	 * THE RULE (Stage 1 of the ownership work): a Clinic is demo-owned ONLY when
+	 * it is named explicitly by sealed evidence -
 	 *
-	 * A Clinic that points at the demo Organization but is NOT post-baseline
-	 * cannot be proven either way. It is reported as unproven so the teardown
-	 * refuses BEFORE any destructive work, instead of guessing.
+	 *   1. the sealed manifest names it as the fixture Clinic, or
+	 *   2. the sealed append-only ownership ledger names its exact id, or
+	 *   3. a sealed ledger intent pre-committed its exact slug BEFORE the row
+	 *      could exist (an interrupted run; it is PENDING until an administrator
+	 *      resolves it, and a pending intent blocks the teardown).
+	 *
+	 * A Clinic is NEVER claimed because it names the demo Organization, because
+	 * its id or creation timestamp postdates the seal, or because a synthetic
+	 * user id appears anywhere in it. Those were the old inferences, and each of
+	 * them can belong to a genuine non-demo Clinic that a real Organization
+	 * manager created under the same Organization after the baseline was taken.
+	 *
+	 * Any other Clinic that names the demo Organization is reported as unproven,
+	 * so the teardown refuses BEFORE any destructive work instead of guessing.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
 	 * @param array<string,mixed> $baseline Verified baseline.
-	 * @return array{clinic_ids:list<int>,unproven:list<int>,location_ids:list<int>}
+	 * @return array{clinic_ids:list<int>,unproven:list<int>,location_ids:list<int>,pending:list<array{token:string,slug:string,organization_id:int}>,ledger_code:string,ledger_detail:string}
 	 */
 	private function owned_tenants( array $manifest, array $baseline ): array {
-		$ids   = (array) ( $manifest['ids'] ?? array() );
-		$org   = (int) ( $ids['organization_id'] ?? 0 );
-		$demo  = (int) ( $ids['clinic_id'] ?? 0 );
+		$ids     = (array) ( $manifest['ids'] ?? array() );
+		$org     = (int) ( $ids['organization_id'] ?? 0 );
+		$demo    = (int) ( $ids['clinic_id'] ?? 0 );
+		$fixture = (string) ( $manifest['fixture_id'] ?? '' );
 		$clinic_ids   = $demo > 1 ? array( $demo ) : array();
 		$unproven     = array();
 		$declared_loc = array_values( array_filter( array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) ) ) );
-		$baseline_max = (int) ( $baseline['cpms']['cpms_clinics']['max_id'] ?? 0 );
-		// The Organization must itself be provably demo-created. If the manifest
-		// names an Organization that predates the seal, nothing sharing it can be
-		// claimed: sharing an Organization is never proof of ownership.
-		$org_baseline_max = (int) ( $baseline['cpms']['cpms_organizations']['max_id'] ?? 0 );
-		$org_owned        = $org > 1 && $org > $org_baseline_max;
+		$baseline_org_max = (int) ( $baseline['cpms']['cpms_organizations']['max_id'] ?? 0 );
+		// The demo Organization must itself postdate the seal. If the manifest names
+		// an Organization that pre-dates it, no additional Clinic under that
+		// Organization can be attributed to this session at all.
+		$org_owned = $org > 1 && $org > $baseline_org_max;
+
+		$ledger        = $this->ownership->summary( $fixture );
+		$ledger_ids    = $ledger['ok'] ? (array) $ledger['clinic_ids'] : array();
+		$ledger_detail = (string) ( $ledger['detail'] ?? '' );
+		$ledger_code   = (string) ( $ledger['code'] ?? '' );
 
 		if ( $org > 1 && $this->platform->table_exists( 'cpms_clinics' ) ) {
 			$rows = $this->platform->fetch_all(
@@ -658,7 +702,10 @@ class ScopedTeardown {
 				if ( $id <= 1 || $id === $demo ) {
 					continue;
 				}
-				if ( $org_owned && $id > $baseline_max ) {
+				// Explicit sealed record AND a provably demo-created Organization.
+				// The live row must still name the demo Organization (the SELECT
+				// above), so a forged ledger id cannot drag in a foreign Clinic.
+				if ( $ledger['ok'] && $org_owned && in_array( $id, $ledger_ids, true ) ) {
 					$clinic_ids[] = $id;
 				} else {
 					$unproven[] = $id;
@@ -679,9 +726,12 @@ class ScopedTeardown {
 		}
 
 		return array(
-			'clinic_ids'   => array_values( array_unique( array_filter( $clinic_ids ) ) ),
-			'unproven'     => array_values( array_unique( array_filter( $unproven ) ) ),
-			'location_ids' => array_values( array_unique( array_filter( array_map( 'intval', $location_ids ) ) ) ),
+			'clinic_ids'    => array_values( array_unique( array_filter( $clinic_ids ) ) ),
+			'unproven'      => array_values( array_unique( array_filter( $unproven ) ) ),
+			'location_ids'  => array_values( array_unique( array_filter( array_map( 'intval', $location_ids ) ) ) ),
+			'pending'       => $ledger['ok'] ? (array) $ledger['pending'] : array(),
+			'ledger_code'   => $ledger_code,
+			'ledger_detail' => $ledger_detail,
 		);
 	}
 
@@ -1078,8 +1128,18 @@ class ScopedTeardown {
 		// baseline cannot be proven demo-created, so it is neither claimed nor left
 		// behind silently: refuse before any destructive work and say what to do.
 		$tenants = $this->owned_tenants( $manifest, $baseline );
+		if ( '' !== (string) $tenants['ledger_code'] ) {
+			$problems[] = $tenants['ledger_code'] . ': ' . (string) $tenants['ledger_detail'];
+		}
 		if ( array() !== $tenants['unproven'] ) {
 			$problems[] = 'SCOPED_OWNERSHIP_UNPROVEN: cpms_clinics=' . implode( ',', $tenants['unproven'] );
+		}
+		if ( array() !== $tenants['pending'] ) {
+			$tokens = array();
+			foreach ( $tenants['pending'] as $intent ) {
+				$tokens[] = (string) ( $intent['token'] ?? '' );
+			}
+			$problems[] = 'SCOPED_OWNERSHIP_PENDING: ' . implode( ',', array_filter( $tokens ) );
 		}
 		$audit = $this->audit_guard->verify_chain();
 		if ( ! $audit['ok'] ) {
@@ -1170,6 +1230,19 @@ class ScopedTeardown {
 						'داده‌ای بیرون از محدودهٔ دمو به یک کاربر ساختگی وابسته است؛ پاک‌سازی متوقف شد: ' . $problem
 					);
 				}
+				if ( 0 === strpos( (string) $problem, 'SCOPED_OWNERSHIP_LEDGER_INVALID' ) ) {
+					throw new Exception(
+						'SCOPED_OWNERSHIP_LEDGER_INVALID',
+						'دفتر مالکیت دمو معتبر نیست؛ هیچ داده‌ای حذف نشد. ' . $problem
+					);
+				}
+				if ( 0 === strpos( (string) $problem, 'SCOPED_OWNERSHIP_PENDING' ) ) {
+					throw new Exception(
+						'SCOPED_OWNERSHIP_PENDING',
+						'یک ثبت درمانگاه نمایشی نیمه‌تمام باقی مانده است؛ هیچ داده‌ای حذف نشد. '
+						. 'آن را در صفحهٔ دمو تعیین تکلیف کنید: ' . $problem
+					);
+				}
 				if ( 0 === strpos( (string) $problem, 'SCOPED_OWNERSHIP_UNPROVEN' ) ) {
 					throw new Exception(
 						'SCOPED_OWNERSHIP_UNPROVEN',
@@ -1252,6 +1325,11 @@ class ScopedTeardown {
 			// recover safely.
 			$this->manifest->write_tombstone( $tombstone );
 			$this->manifest->clear_pending_baseline();
+			// The ledger is recovery evidence for a run that could still be
+			// resumed, so it is discarded only after the tombstone is durable and
+			// the pending baseline is gone: every step that loses evidence loses it
+			// in the order that keeps the remaining evidence sufficient.
+			$this->ownership->clear();
 			$this->manifest->disable_mode();
 			$this->env->option_delete( ScopedManifest::LOCK_OPTION );
 			$this->env->option_delete( 'cpsd_had_clean_teardown' );
@@ -1350,8 +1428,11 @@ class ScopedTeardown {
 			if ( $clinic_id <= 1 ) {
 				continue;
 			}
-			// The organization_id + slug predicate is the fixture's own identity; a
-			// Clinic that does not match it is never touched.
+			// Identity, not inference: the id comes from the sealed anchor set (the
+			// manifest and/or the sealed ownership ledger) AND the row must still
+			// name the demo Organization. A Clinic that fails either test is never
+			// touched, and `$slug` is only a sanity guard that the fixture really has
+			// a Clinic identity.
 			$wpdb->update(
 				$table,
 				array( 'status' => 'suspended' ),

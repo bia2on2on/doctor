@@ -34,9 +34,16 @@ Honest scope notes (do not overclaim):
   * clinic_manager and organization_manager prove the portal renders *and* that
     their fixture membership (not a WordPress role) grants the surface. The
     organization manager additionally drives the portal's own lifecycle form
-    (activate/deactivate) and its create-Clinic form; those are real form
-    submissions through the production controller. No REST call is claimed for
-    either persona.
+    (activate and deactivate), which is a real form submission through the
+    production controller. No REST call is claimed for either persona.
+  * In a scoped demo the portal may NOT create additional Clinics: the synthetic
+    Organization manager carries an explicit DENY for the production
+    `cpms_org_clinic_create` capability, and the demo plugin refuses any portal
+    POST of `org_create_clinic` at the `template_redirect` boundary. Both are
+    server-side. The journey therefore proves the create form is gone AND that a
+    crafted POST is refused with the Persian explanation, and the only way to
+    obtain a second demo Clinic is the scoped demo page's own form, which seals
+    the Clinic's identity into the ownership ledger before the row exists.
   * Screenshot pixels are not inspected.
 """
 
@@ -433,13 +440,17 @@ def management_journey(page, label: str, url: str, expected: str) -> None:
 def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) -> dict:
     """The synthetic Organization manager drives the portal's own lifecycle forms.
 
-    This is the browser half of the reported defect: the Organization manager
-    deactivates and reactivates the demo Clinic through the production
-    `org_clinic_status` form (which stamps `status_updated_by_wp_user_id` with
-    that synthetic account), then creates a SECOND Clinic under the demo
-    Organization through the production `org_create_clinic` form. The admin
-    teardown that follows in this same phase must still complete, which is
-    exactly what used to fail with SCOPED_FOREIGN_DEPENDENCY.
+    Browser half of two properties:
+
+    * the Organization manager deactivates and reactivates the demo Clinic through
+      the production `org_clinic_status` form (which stamps
+      `status_updated_by_wp_user_id` with that synthetic account), and the admin
+      teardown that follows must still complete;
+    * the portal can NOT create a second Clinic in scoped demo mode. The
+      production resolver denies `cpms_org_clinic_create` to this persona, so the
+      create form is not rendered at all, and a crafted POST of the same action
+      is refused by the demo plugin's `template_redirect` guard with a Persian
+      explanation instead of reaching the controller.
     """
     clinic_id = int(targets.get("clinic_id") or 0)
     organization_id = int(targets.get("organization_id") or 0)
@@ -497,30 +508,41 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
         evidence["status_round_trip"] = True
         page.goto(url, wait_until="domcontentloaded")
 
-        # ---------------- a second Clinic created through the portal form
-        slug = "cpsd-lifecycle-" + uuid.uuid4().hex[:10]
+        # ---------------- the portal may NOT create a second Clinic
+        slug = "cpsd-forbidden-" + uuid.uuid4().hex[:10]
         create_form = page.locator(
             'form.cpms-mgmt-form:has(input[name="cpms_action"][value="org_create_clinic"])'
         )
-        check("lifecycle: the portal renders the create-Clinic form", create_form.count() == 1,
-              f"forms={create_form.count()}")
-        create_form.locator('input[name="cpms_entity_name"]').fill("درمانگاه دوم چرخهٔ عمر")
-        create_form.locator('input[name="slug"]').fill(slug)
-        if create_form.locator('input[name="timezone"]').count():
-            create_form.locator('input[name="timezone"]').fill("Asia/Tehran")
-        if create_form.locator('input[name="location_name"]').count():
-            create_form.locator('input[name="location_name"]').fill("شعبهٔ دوم چرخهٔ عمر")
-        if create_form.locator('input[name="phone"]').count():
-            create_form.locator('input[name="phone"]').fill("02100000000")
-        create_form.locator("button[type=submit]").click()
-        page.wait_for_load_state("domcontentloaded")
-        created_body = page.content()
-        check("lifecycle: the production controller created a second Clinic under the demo Organization",
-              "درمانگاه ایجاد شد" in created_body, page.url)
+        check("lifecycle: scoped mode does not render the create-Clinic form for the manager",
+              create_form.count() == 0, f"forms={create_form.count()}")
+
+        # A crafted POST (bypassing the UI entirely) must be refused by the
+        # server-side guard, never dispatched to the production controller.
+        response = page.context.request.post(
+            url,
+            form={
+                "cpms_action": "org_create_clinic",
+                "organization_id": str(organization_id),
+                "cpms_entity_name": "درمانگاه غیرمجاز چرخهٔ عمر",
+                "slug": slug,
+                "timezone": "Asia/Tehran",
+                "location_name": "شعبه غیرمجاز",
+            },
+        )
+        refused_body = response.text()
+        check("lifecycle: a crafted create-Clinic POST is refused with an explicit status",
+              response.status >= 400, f"HTTP {response.status}")
+        check("lifecycle: the refusal explains the scoped-demo ownership policy in Persian",
+              "دموی محدودشده" in refused_body and "مسدود" in refused_body,
+              refused_body[:300])
+
+        # Nothing was created, and the portal still lists only the demo Clinic.
         page.goto(url, wait_until="domcontentloaded")
-        check("lifecycle: the new Clinic is listed in the portal",
-              "درمانگاه دوم چرخهٔ عمر" in page.content(), slug)
-        evidence["second_clinic_slug"] = slug
+        check("lifecycle: the refused attempt created no Clinic under the demo Organization",
+              "درمانگاه غیرمجاز چرخهٔ عمر" not in page.content(), slug)
+        check("lifecycle: the manager still sees their own Clinic surface",
+              "cpms-mgmt-shell" in page.content(), page.url)
+        evidence["portal_clinic_create_refused"] = True
         page.screenshot(path=str(EVIDENCE / "journey-org-manager-lifecycle.png"))
     finally:
         ctx.close()
@@ -1049,8 +1071,21 @@ def journeys_phase(browser) -> None:
         browser, creds, targets, management_url
     )
 
-    # ---------------- admin: read-only diagnostic then authorised teardown
+    # ---------------- admin: registered additional Clinic, diagnostic, teardown
     ctx, admin = admin_login(browser)
+    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    # The ONLY way to obtain a second demo Clinic: the demo page's own form, which
+    # seals the Clinic's identity into the append-only ownership ledger BEFORE the
+    # row exists. The portal itself refuses the same action (see lifecycle_phase).
+    policy_card = admin.locator('[data-cpsd-ownership="1"]')
+    check("the scoped demo page explains the portal restriction in Persian",
+          policy_card.count() == 1 and "مسدود" in policy_card.inner_text(),
+          policy_card.inner_text()[:300] if policy_card.count() else "no policy card")
+    submit_form(admin, "add_clinic", "REGISTER_ADDITIONAL_DEMO_CLINIC")
+    check("the demo created and registered an additional Clinic",
+          "درمانگاه نمایشی دوم ساخته و مالکیت آن در دفتر مهرشدهٔ دمو ثبت شد" in admin.content(),
+          admin.url)
+    admin.screenshot(path=str(EVIDENCE / "scoped-admin-ownership.png"))
     admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     submit_form(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
     check("the read-only diagnostic page publishes the scoped surface",

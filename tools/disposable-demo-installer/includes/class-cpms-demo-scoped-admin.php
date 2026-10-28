@@ -45,6 +45,9 @@ class ScopedAdmin {
 	/** @var array{manifest:array<string,mixed>,credentials:array<string,string>}|null */
 	private static $provisioned = null;
 
+	/** @var array<string,mixed>|null Result of an additional-Clinic operation. */
+	private static $extra = null;
+
 	public static function reset_state(): void {
 		self::$notice      = null;
 		self::$credentials = null;
@@ -52,6 +55,7 @@ class ScopedAdmin {
 		self::$diagnostic  = null;
 		self::$teardown    = null;
 		self::$provisioned = null;
+		self::$extra       = null;
 	}
 
 	/**
@@ -135,6 +139,8 @@ class ScopedAdmin {
 		$provisioner  = new ScopedProvisioner( $env, $platform, $manifest, $preflight, $credentials, $baseline, $audit_guard );
 		$teardown     = new ScopedTeardown( $env, $platform, $manifest, $audit_guard, $baseline );
 		$otp_helper   = new ScopedOtp( $env, $platform, $manifest );
+		$ownership    = new ScopedOwnership( $env, $manifest );
+		$clinics      = new ScopedClinics( $env, $platform, $manifest, $ownership );
 		$post         = (array) wp_unslash( $_POST );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		try {
@@ -165,6 +171,32 @@ class ScopedAdmin {
 					}
 					self::$diagnostic = $teardown->preview( $loaded );
 					self::$notice      = array( 'type' => 'info', 'text' => 'پیشنمایش فقطخواندنی اجرا شد؛ هیچ ردیفی حذف نشد.' );
+					break;
+				case ScopedRequest::ACTION_ADD_CLINIC:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					self::$extra  = $clinics->create( $loaded, $admin_id );
+					self::$notice = array(
+						'type' => 'success',
+						'text' => 'درمانگاه نمایشی دوم ساخته و مالکیت آن در دفتر مهرشدهٔ دمو ثبت شد (شناسه: ' . (int) self::$extra['clinic_id'] . ').',
+					);
+					break;
+				case ScopedRequest::ACTION_RESOLVE_CLINIC:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					$token   = isset( $post['cpdd_token'] ) ? sanitize_text_field( (string) $post['cpdd_token'] ) : '';
+					$claim   = isset( $post['cpdd_decision'] ) && 'claim' === sanitize_key( (string) $post['cpdd_decision'] );
+					self::$extra  = $clinics->resolve( $loaded, $token, $claim );
+					self::$notice = array(
+						'type' => 'success',
+						'text' => 'registered' === (string) ( self::$extra['decision'] ?? '' )
+							? 'درمانگاه ناتمام در دفتر مالکیت دمو ثبت شد.'
+							: 'قصد ناتمام لغو شد؛ هیچ درمانگاهی ثبت نشد.',
+					);
 					break;
 				case ScopedRequest::ACTION_TEARDOWN:
 					$loaded = $manifest->load();
@@ -226,6 +258,7 @@ class ScopedAdmin {
 			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و حساب‌های کاملاً ساختگی دمو ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
 		} else {
 			$status = (string) ( $loaded['status'] ?? 'unknown' );
+			self::render_ownership( $env, $manifest, $request, $loaded );
 			if ( 'active' === $status ) {
 				self::render_links( $loaded );
 				self::render_form( $request, ScopedRequest::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'پس از درخواست کد از رابط واقعی بیمار، کد همان چالش زنده را نشان میدهد.' );
@@ -289,16 +322,106 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
-	private static function render_form( ScopedRequest $request, string $action, string $title, string $phrase, string $hint ): void {
+	private static function render_form( ScopedRequest $request, string $action, string $title, string $phrase, string $hint, array $fields = array() ): void {
 		echo '<form method="post" class="cpdd-card" data-cpsd-form="' . esc_attr( $action ) . '">';
 		echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( $action ) . '" />';
 		echo '<input type="hidden" name="cpdd_nonce" value="' . esc_attr( $request->nonce( $action ) ) . '" />';
 		echo '<input type="hidden" name="cpdd_site" value="' . esc_attr( $request->site_fingerprint_field() ) . '" />';
+		foreach ( $fields as $name => $value ) {
+			echo '<input type="hidden" name="' . esc_attr( (string) $name ) . '" value="' . esc_attr( (string) $value ) . '" />';
+		}
 		echo '<h2>' . esc_html( $title ) . '</h2><p>' . esc_html( $hint ) . '</p>';
 		echo '<p><label>عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
 		echo '<p><input type="text" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required /></p>';
 		echo '<p><button type="submit" class="button ' . ( ScopedRequest::ACTION_TEARDOWN === $action ? 'button-link-delete' : 'button-primary' ) . '">' . esc_html( $title ) . '</button></p>';
 		echo '</form>';
+	}
+
+	/**
+	 * Persian, server-enforced explanation of the scoped-mode Clinic policy, the
+	 * sealed ownership state, and the explicit registration path.
+	 *
+	 * The restriction is enforced twice on the server: the synthetic Organization
+	 * manager carries an explicit DENY for `cpms_org_clinic_create` (so the
+	 * production resolver refuses, and the portal does not even render the
+	 * create form), and any portal POST of `org_create_clinic` is refused before
+	 * dispatch while scoped mode is enabled. This card explains that, and offers
+	 * the only path that produces a provably demo-owned additional Clinic.
+	 *
+	 * @param Env                 $env      Environment.
+	 * @param ScopedManifest      $manifest Manifest.
+	 * @param ScopedRequest       $request  Request gates.
+	 * @param array<string,mixed> $loaded   Verified manifest.
+	 * @return void
+	 */
+	private static function render_ownership( Env $env, ScopedManifest $manifest, ScopedRequest $request, array $loaded ): void {
+		$summary = ( new ScopedOwnership( $env, $manifest ) )->summary( (string) ( $loaded['fixture_id'] ?? '' ) );
+		$status  = (string) ( $loaded['status'] ?? 'unknown' );
+		echo '<div class="cpdd-card" data-cpsd-ownership="1"><h2>مالکیت درمانگاه‌ها در حالت دموی محدودشده</h2>';
+		if ( ! $summary['ok'] ) {
+			echo '<p class="cpdd-warn">دفتر مالکیت دمو معتبر نیست؛ پاک‌سازی تا تعیین تکلیف متوقف می‌ماند. ' . esc_html( (string) $summary['detail'] ) . '</p>';
+		}
+		echo '<p>ساخت درمانگاه تازه از «درگاه مدیریت» در این حالت <strong>مسدود است</strong> و این محدودیت در سرور اعمال می‌شود: '
+			. 'مجوز <code dir="ltr">cpms_org_clinic_create</code> برای مدیر سازمان نمایشی به‌صورت DENY ثبت شده و هر درخواست ساخت از درگاه '
+			. 'پیش از اجرا رد می‌شود. دلیل: درمانگاهی که پس از مهر پایهٔ مرجع زیر سازمان دمو ساخته شود از یک درمانگاه واقعی قابل تشخیص نیست '
+			. 'و پاک‌سازی خودکار ممکن است دادهٔ واقعی را حذف کند. برای همین، هر درمانگاه اضافی فقط از همین صفحه و با ثبت مالکیت در '
+			. 'دفتر مهرشدهٔ دمو ساخته می‌شود.</p>';
+		echo '<p>درمانگاه‌های ثبت‌شده در دفتر مالکیت: <code dir="ltr">'
+			. esc_html( implode( ', ', array_map( 'strval', (array) $summary['clinic_ids'] ) ) )
+			. '</code></p>';
+		if ( array() !== (array) $summary['pending'] ) {
+			echo '<p class="cpdd-warn">یک ثبت ناتمام از اجرای قبلی باقی مانده است. تا تعیین تکلیف آن، پاک‌سازی مخرب اجرا نمی‌شود.</p>';
+			foreach ( (array) $summary['pending'] as $intent ) {
+				$token = (string) ( $intent['token'] ?? '' );
+				$slug  = (string) ( $intent['slug'] ?? '' );
+				echo '<p>قصد ناتمام — شناسهٔ یکتا: <code dir="ltr">' . esc_html( $slug ) . '</code></p>';
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'ثبت مالکیت درمانگاه متناظر', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط ردیفی ثبت می‌شود که دقیقاً با شناسهٔ یکتای مهرشده و سازمان دمو هم‌خوان باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'claim' ) );
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'لغو قصد ناتمام', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط وقتی مجاز است که هیچ ردیفی با شناسهٔ یکتای مهرشده وجود نداشته باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'abandon' ) );
+			}
+		} elseif ( 'active' === $status ) {
+			self::render_form( $request, ScopedRequest::ACTION_ADD_CLINIC, 'ساخت درمانگاه نمایشی دوم', 'REGISTER_ADDITIONAL_DEMO_CLINIC', 'مالکیت این درمانگاه پیش از ساخت در دفتر مهرشده ثبت می‌شود؛ ساخت آن با سرویس واقعی production انجام می‌گیرد.' );
+		}
+		if ( is_array( self::$extra ) ) {
+			echo '<p data-cpsd-extra="1">درمانگاه نمایشی: <code dir="ltr">' . esc_html( (string) ( self::$extra['slug'] ?? '' ) ) . '</code> — شناسه: <code dir="ltr">' . esc_html( (string) ( self::$extra['clinic_id'] ?? 0 ) ) . '</code></p>';
+		}
+		echo '</div>';
+	}
+
+	/**
+	 * Refuse portal Clinic creation while the scoped demo mode is enabled.
+	 *
+	 * Server-side boundary (not a UI restriction, not a disabled button): the POST
+	 * is rejected before the portal dispatcher runs, so no code path can create an
+	 * unregistered Clinic through the Management Portal during a demo session. It
+	 * is registered on `template_redirect` priority 0, ahead of the portal's own
+	 * handler. Outside scoped demo mode this method returns immediately, so normal
+	 * production behaviour is untouched.
+	 *
+	 * @return void
+	 */
+	public static function guard_portal_clinic_creation(): void {
+		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
+			return;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Missing -- a refusal needs no nonce; the action name is not a state change.
+		$action = isset( $_POST['cpms_action'] ) ? sanitize_key( (string) wp_unslash( $_POST['cpms_action'] ) ) : '';
+		if ( 'org_create_clinic' !== $action ) {
+			return;
+		}
+		$manifest = new ScopedManifest( new Env() );
+		if ( ! $manifest->mode_enabled() ) {
+			return;
+		}
+		wp_die(
+			esc_html(
+				'در حالت «دموی محدودشده» ساخت درمانگاه تازه از درگاه مدیریت مسدود است و این درخواست در سرور رد شد. '
+				. 'دلیل: درمانگاهی که پس از مهر پایهٔ مرجع زیر سازمان دمو ساخته شود از یک درمانگاه واقعی قابل تشخیص نیست و '
+				. 'پاک‌سازی خودکار ممکن است دادهٔ واقعی را حذف کند. اگر برای آزمون به درمانگاه دوم نیاز دارید، آن را از صفحهٔ '
+				. '«دموی محدودشده CPMS» در پیشخوان بسازید؛ مالکیت آن پیش از ساخت در دفتر مهرشدهٔ دمو ثبت می‌شود.'
+			),
+			esc_html( 'ساخت درمانگاه در حالت دموی محدودشده مسدود است' ),
+			array( 'response' => 403 )
+		);
 	}
 
 	private static function render_credentials( ?array $loaded ): void {

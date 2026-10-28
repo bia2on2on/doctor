@@ -290,9 +290,16 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         preview = preview[: preview.index("public function execute(")]
         self.assertIn("$tenants = $this->owned_tenants( $manifest, $baseline );", preview)
         self.assertIn("SCOPED_OWNERSHIP_UNPROVEN", preview)
-        # A Clinic is claimed only when the Organization itself is provably
-        # demo-created AND the Clinic postdates the sealed baseline.
-        self.assertIn("$org_owned && $id > $baseline_max", self.teardown)
+        # A Clinic is claimed only when the sealed ownership ledger names its
+        # exact id (or the sealed manifest names the fixture Clinic). The old
+        # inference - "names the demo Organization and postdates the seal" - is
+        # exactly what could not distinguish a genuine non-demo Clinic.
+        self.assertIn("in_array( $id, $ledger_ids, true )", self.teardown)
+        self.assertNotIn("$org_owned && $id > $baseline_max", self.teardown)
+        owners = self.teardown[self.teardown.index("private function owned_tenants("):]
+        owners = owners[: owners.index("private function ownership_rule(")]
+        self.assertNotIn("$id > $baseline_max", owners)
+        self.assertIn("$this->ownership->summary( $fixture )", owners)
 
     def test_composite_rows_are_selected_by_parent_only(self) -> None:
         self.assertIn("private const COMPOSITE_PARENT_COLUMN", self.teardown)
@@ -301,6 +308,116 @@ class DefectHForeignTenantOwnership(unittest.TestCase):
         body = body[: body.index("return $changed;")]
         self.assertIn("$rule['sql']", body)
         self.assertNotIn("' OR '", body)
+
+
+class ClinicOwnershipIsExplicitNotInferred(unittest.TestCase):
+    """A: an additional Clinic is demo-owned only because a sealed record says so.
+
+    The risk this locks down: a legitimate non-demo Clinic created under the
+    synthetic demo Organization AFTER the sealed baseline used to be claimed as
+    demo-owned merely because it named that Organization and had a higher id.
+    Nothing about an Organization reference, an auto-increment id, a creation
+    timestamp or a synthetic actor id may decide ownership; only a sealed record
+    may - and anything unproven must fail closed before a destructive stage.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        cls.ledger = read(COMPANION / "includes" / "class-cpms-demo-scoped-ownership.php")
+        cls.clinics = read(COMPANION / "includes" / "class-cpms-demo-scoped-clinics.php")
+        cls.provisioner = read(COMPANION / "includes" / "class-cpms-demo-scoped-provisioner.php")
+        cls.admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        cls.plugin = read(COMPANION / "cpms-disposable-demo.php")
+        cls.portal_drill = read(COMPANION / "tests" / "scoped-portal.php")
+
+    def test_the_ledger_is_a_sealed_append_only_chain(self) -> None:
+        self.assertIn("public const OPTION = 'cpsd_ownership_ledger';", self.ledger)
+        self.assertIn("public const FORMAT", self.ledger)
+        # Append-only: every record commits its sequence, the previous MAC and
+        # its own MAC, and the record commits the chain head and length, so an
+        # edit, an insertion OR a truncation is detected.
+        for anchor in ("'seq'", "'prev'", "'count'", "'head'"):
+            self.assertIn(anchor, self.ledger)
+        self.assertIn("hash_hmac(", self.ledger)
+        self.assertIn("$this->manifest->verify( $raw )", self.ledger)
+        self.assertIn("hash_equals", read(COMPANION / "includes" / "class-cpms-demo-manifest.php"))
+        # The option namespace is its own: it can never overwrite the manifest.
+        self.assertNotIn("'cpsd_manifest'", self.ledger.split("function __construct")[1][:400])
+
+    def test_ownership_is_never_inferred_from_tenant_or_time(self) -> None:
+        owners = self.teardown[self.teardown.index("private function owned_tenants("):]
+        owners = owners[: owners.index("private function ownership_rule(")]
+        # The Clinic is claimed from sealed ids only.
+        self.assertIn("in_array( $id, $ledger_ids, true )", owners)
+        # ... and never from a baseline comparison, a timestamp or a user column.
+        for forbidden in ("$id > $baseline_max", "created_at", "wp_user_id", "'suspended' ==="):
+            self.assertNotIn(forbidden, owners, forbidden)
+
+    def test_an_invalid_or_pending_ledger_blocks_before_any_deletion(self) -> None:
+        # The ledger itself owns the invalidity code; the pending (interrupted)
+        # state is raised by the Clinic service and again by the teardown.
+        self.assertIn("SCOPED_OWNERSHIP_LEDGER_INVALID", self.ledger)
+        self.assertIn("SCOPED_OWNERSHIP_LEDGER_INVALID", self.teardown)
+        self.assertIn("SCOPED_OWNERSHIP_PENDING", self.teardown)
+        self.assertIn("SCOPED_OWNERSHIP_PENDING", self.clinics)
+        preview = self.teardown[self.teardown.index("public function preview("):]
+        preview = preview[: preview.index("public function execute(")]
+        self.assertIn("$tenants['ledger_code']", preview)
+        self.assertIn("$tenants['pending']", preview)
+        execute = self.teardown[self.teardown.index("private function do_execute("):]
+        first_destructive = execute.index("$stage   = 'sessions';")
+        self.assertLess(execute.index("'SCOPED_OWNERSHIP_LEDGER_INVALID'"), first_destructive)
+        self.assertLess(execute.index("'SCOPED_OWNERSHIP_PENDING'"), first_destructive)
+        self.assertLess(execute.index("'SCOPED_OWNERSHIP_UNPROVEN'"), first_destructive)
+
+    def test_the_additional_clinic_is_registered_before_it_can_exist(self) -> None:
+        body = self.clinics[self.clinics.index("public function create("):]
+        body = body[: body.index("public function resolve(")]
+        self.assertLess(body.index("'intent'"), body.index("$this->platform->provision_clinic("))
+        self.assertIn("'slug'", body)
+        # The exact slug is checked free BEFORE it is sealed, so an existing row
+        # can never be mistaken for the Clinic this run is about to create.
+        self.assertLess(body.index("WHERE slug = %s"), body.index("'intent'"))
+        # The Clinic is created by the real production service, never by an INSERT.
+        self.assertIn("provision_clinic(", body)
+        self.assertNotIn("$wpdb->insert", body)
+
+    def test_portal_clinic_creation_is_refused_server_side(self) -> None:
+        # 1) the production capability resolver denies the create capability;
+        self.assertIn("enforce_portal_clinic_policy", self.provisioner)
+        self.assertIn("'cpms_org_clinic_create'", self.provisioner)
+        self.assertIn("production_can(", self.provisioner)
+        self.assertIn("'deny'", self.provisioner)
+        # 2) and the HTTP boundary refuses the action before dispatch.
+        self.assertIn("guard_portal_clinic_creation", self.admin)
+        self.assertIn("guard_portal_clinic_creation", self.plugin)
+        self.assertIn("'template_redirect'", self.plugin)
+        guard = self.admin[self.admin.index("public static function guard_portal_clinic_creation()"):]
+        guard = guard[: guard.index("private static function render_credentials(")]
+        self.assertIn("'org_create_clinic'", guard)
+        self.assertIn("wp_die(", guard)
+        self.assertIn("403", guard)
+        # Production behaviour outside scoped demo mode is untouched.
+        self.assertIn("if ( ! $manifest->mode_enabled() ) {", guard)
+        self.assertLess(guard.index("if ( ! $manifest->mode_enabled() ) {"), guard.index("wp_die("))
+        # No UI-only restriction: the Persian explanation is server-rendered, and
+        # the user-facing card states the enforcement, not just the policy.
+        self.assertIn("مسدود", guard)
+
+    def test_every_ownership_decision_survives_the_drill(self) -> None:
+        for marker in (
+            "ScopedOwnership",
+            "ScopedClinics",
+            "SCOPED_OWNERSHIP_PENDING",
+            "SCOPED_OWNERSHIP_LEDGER_INVALID",
+            "SCOPED_OWNERSHIP_UNPROVEN",
+            "INJECTED_FAULT",
+        ):
+            self.assertIn(marker, self.portal_drill)
+        # The additional-Clinic scenarios are explicit, not implied by P1/P2.
+        for scenario in ("scenario P4", "scenario P5", "scenario P6", "scenario P7"):
+            self.assertIn(scenario, self.portal_drill)
 
 
 class PortalLifecycleDrillsAreSelfConsistent(unittest.TestCase):
