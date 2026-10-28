@@ -12,7 +12,7 @@ require_once __DIR__ . '/RealTableMigrations.php';
 /**
  * Iran V1 migration 0030 — upgrade safety on MySQL 8 / MariaDB 11.4.
  *
- * Additive-only: six new tables, no change to any pre-existing financial,
+ * Additive-only: seven new tables, no change to any pre-existing financial,
  * clinical, visit or membership column. Repeated migrate() is a no-op and a
  * real 0029 → 0030 upgrade preserves existing invoice/payment rows byte-for-byte.
  */
@@ -29,6 +29,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         'cpms_doctor_consultation_fees',
         'cpms_visit_consultation_fees',
         'cpms_visit_charge_items',
+        'cpms_visit_fee_snapshot_failures',
     ];
 
     /**
@@ -59,7 +60,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         }
     }
 
-    public function testSixAdditiveTablesExistWithPortableColumnsAndNoForeignKeys(): void
+    public function testSevenAdditiveTablesExistWithPortableColumnsAndNoForeignKeys(): void
     {
         $db = App::db();
         self::assertSame(self::VERSION, App::migrations()->currentVersion());
@@ -91,9 +92,10 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         self::assertContains('fee', $columns('cpms_doctor_consultation_fees'));
         self::assertContains('quantity', $columns('cpms_visit_charge_items'));
         self::assertContains('invoiced_invoice_id', $columns('cpms_visit_charge_items'));
+        self::assertContains('failed_at', $columns('cpms_visit_fee_snapshot_failures'));
 
         // The DDL is portable under the WP test-suite temporary-table rewrite:
-        // no FOREIGN KEY is declared on the six new tables.
+        // no FOREIGN KEY is declared on the seven new tables.
         foreach (self::TABLES as $short) {
             $fk = (int) $db->fetchValue(
                 'SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS'

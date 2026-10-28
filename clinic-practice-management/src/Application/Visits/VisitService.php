@@ -1183,6 +1183,19 @@ final class VisitService
                 'location_id' => $locationIdForDate,
             ]);
         } catch (\Throwable $e) {
+            // Preserve check-in availability, but durably prevent a later read
+            // from substituting a fee default that may have changed meanwhile.
+            try {
+                App::visit_pricing_service()->mark_fee_snapshot_failed([
+                    'id' => $visitId,
+                    'clinic_id' => $clinic_id,
+                ]);
+            } catch (\Throwable $marker_error) {
+                $this->opLog?->error(
+                    'visit.fee_snapshot_failure_marker_failed',
+                    ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $marker_error->getMessage()]
+                );
+            }
             $this->opLog?->warning(
                 'visit.fee_snapshot_failed',
                 ['visit_id' => $visitId, 'clinic_id' => $clinic_id, 'error' => $e->getMessage()]

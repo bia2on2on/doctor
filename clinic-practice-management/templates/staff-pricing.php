@@ -284,6 +284,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     function feeSourceLabel(source) {
         if (source === 'visit_override') return 'تعرفه اختصاصی پزشک';
         if (source === 'checkin_snapshot') return 'تعرفه ثبتشده هنگام پذیرش';
+        if (source === 'snapshot_failed') return 'ثبت تعرفه هنگام پذیرش ناموفق بود؛ تعیین دستی لازم است';
         if (source === 'doctor_default') return 'پیشفرض پزشک';
         return 'تنظیم نشده';
     }

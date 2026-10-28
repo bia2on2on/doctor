@@ -109,6 +109,33 @@ final class VisitPricingRepository {
     }
 
     /**
+     * A failed check-in snapshot is durable so a later billing read cannot
+     * silently substitute a newer default. The marker is separate from the
+     * fee row so it remains writable when that insert path itself fails.
+     */
+    public function mark_fee_snapshot_failed( int $visit_id, int $clinic_id ): void {
+        if ( $visit_id <= 0 || $clinic_id <= 0 ) {
+            return;
+        }
+        $this->db->query(
+            'INSERT INTO ' . $this->db->table( 'cpms_visit_fee_snapshot_failures' )
+            . ' (visit_id, clinic_id, failed_at) VALUES (%d, %d, %s)'
+            . ' ON DUPLICATE KEY UPDATE clinic_id = VALUES(clinic_id), failed_at = VALUES(failed_at)',
+            [$visit_id, $clinic_id, $this->db->nowUtcSql()]
+        );
+        if ( ! $this->fee_snapshot_failed( $visit_id ) ) {
+            throw new \RuntimeException( 'Unable to persist the Visit fee snapshot failure marker.' );
+        }
+    }
+
+    public function fee_snapshot_failed( int $visit_id ): bool {
+        return (int) $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_visit_fee_snapshot_failures' ) . ' WHERE visit_id = %d',
+            [$visit_id]
+        ) > 0;
+    }
+
+    /**
      * Capture the fee that applied when the Visit was established. The 0 actor
      * marks a system snapshot; a later explicit doctor override replaces it.
      * INSERT IGNORE keeps concurrent check-in / first-read paths idempotent.

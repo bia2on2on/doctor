@@ -377,4 +377,73 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         self::assertContains($secretary2, $ids);
         self::assertNotContains($doctor2, $ids, 'same-class doctors are not offered as counterparts');
     }
+    public function testPatientLinkedThreadRequiresSelectedDoctorOnVisitCareTeam(): void
+    {
+        $world = $this->world();
+        $unrelated_doctor = $this->iv1_user(RolesAndCapabilities::ROLE_DOCTOR, 'unrelated_doc');
+        $this->iv1_membership($unrelated_doctor, (int) $world['clinic'], RolesAndCapabilities::ROLE_DOCTOR);
+        $this->iv1_clinician((int) $world['clinic'], $unrelated_doctor, 'پزشک نامرتبط');
+        wp_set_current_user((int) $world['secretary']);
+
+        // Unlinked clinic messaging remains available to any valid paired staff.
+        $general = $this->call_thread($world, (int) $world['secretary'], ['recipient_wp_user_id' => $unrelated_doctor]);
+        self::assertGreaterThan(0, (int) $general['id']);
+
+        $this->assertDenied(
+            fn () => $this->call_thread($world, (int) $world['secretary'], [
+                'recipient_wp_user_id' => $unrelated_doctor,
+                'patient_id' => (int) $world['patient'],
+                'visit_id' => (int) $world['visit'],
+            ]),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+        $linked = $this->call_thread($world, (int) $world['secretary'], [
+            'recipient_wp_user_id' => (int) $world['doctor'],
+            'patient_id' => (int) $world['patient'],
+            'visit_id' => (int) $world['visit'],
+        ]);
+        self::assertSame((int) $world['visit'], (int) $linked['visit_id']);
+    }
+
+    public function testThreadAccessStopsWhenCounterpartMembershipIsNoLongerActive(): void
+    {
+        $world = $this->world();
+        wp_set_current_user((int) $world['doctor']);
+        $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
+        $membership = App::membership_service()->membership_for((int) $world['clinic'], (int) $world['secretary']);
+        self::assertNotNull($membership);
+        App::membership_service()->suspend_membership((int) $membership['id']);
+
+        $this->assertDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->messages(
+                (int) $world['doctor'], (int) $thread['id'], 0, 50
+            )),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+    }
+
+    public function testThreadAccessStopsWhenCounterpartLosesMessagingRoleCapability(): void
+    {
+        $world = $this->world();
+        wp_set_current_user((int) $world['doctor']);
+        $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
+        $membership = App::membership_service()->membership_for((int) $world['clinic'], (int) $world['secretary']);
+        self::assertNotNull($membership);
+        App::membership_service()->set_capability(
+            (int) $membership['id'],
+            RolesAndCapabilities::QUEUE_CHECKIN,
+            'deny'
+        );
+
+        $this->assertDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->messages(
+                (int) $world['doctor'], (int) $thread['id'], 0, 50
+            )),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+    }
+
 }

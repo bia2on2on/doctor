@@ -125,6 +125,12 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         self::assertSame(750000, (int) $override['effective_fee']);
         $bill1_after = $this->billing($world, $visit1, (int) $world['secretary']);
         self::assertSame(500000, (int) $bill1_after['effective_fee'], 'another patient override never changes this visit');
+        wp_set_current_user((int) $world['secretary']);
+        $manual = $this->iv1_dispatch('POST', '/clinic/v1/invoices', [], $this->iv1_headers((int) $world['clinic'], (int) $world['location']), [
+            'visit_id' => $visit1,
+            'items' => [['description' => 'قلم دستی', 'quantity' => 1, 'unit_price' => 1]],
+        ]);
+        self::assertSame(409, $manual->get_status(), 'legacy manual invoice route cannot silently omit committed treatment charges');
         $bill2 = $this->billing($world, $visit2, (int) $world['secretary']);
         self::assertSame(750000, (int) $bill2['effective_fee']);
         self::assertSame(500000, (int) $bill2['default_fee']);
@@ -138,6 +144,12 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         self::assertSame('IRR', $invoice['currency'] ?? null);
         self::assertCount(3, $invoice['items'] ?? []);
         self::assertSame(VisitPricingService::CONSULTATION_DESCRIPTION, $invoice['items'][0]['description'] ?? null);
+        $duplicate_issue = $this->iv1_dispatch('POST', sprintf(self::AUTO, $visit1), [], $headers, []);
+        self::assertSame(409, $duplicate_issue->get_status(), 'duplicate auto-issue cannot create a second invoice');
+        self::assertSame(1, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_invoices') . ' WHERE visit_id = %d AND status <> %s',
+            [$visit1, 'voided']
+        ));
 
         // A later default-fee change must never rewrite an existing invoice.
         wp_set_current_user((int) $world['doctor']);
@@ -591,4 +603,176 @@ final class VisitPricingBillingTest extends WP_UnitTestCase
         $persisted = App::db()->fetchRow('SELECT total FROM ' . App::db()->table('cpms_invoices') . ' WHERE id = %d', [$invoice_id]);
         self::assertSame(750000.0, (float) $persisted['total'], 'finalized invoice stays priced at the explicit override');
     }
+    public function testLocationScopedDoctorCannotWriteClinicWideDefaultThroughServiceOrRest(): void
+    {
+        $world = $this->world();
+        $other_location = $this->iv1_location((int) $world['clinic'], 'محل خارج از دسترسی');
+        $membership = App::membership_service()->membership_for((int) $world['clinic'], (int) $world['doctor']);
+        self::assertNotNull($membership);
+        $this->iv1_restrict_to_location((int) $membership['id'], (int) $world['location']);
+        wp_set_current_user((int) $world['doctor']);
+
+        $this->assertFinanceDenied(
+            fn () => $this->pricing_default($world, 650000),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+        $headers = $this->iv1_headers((int) $world['clinic']);
+        $response = $this->iv1_dispatch(
+            'POST',
+            self::DEFAULT_FEE,
+            [],
+            $headers,
+            ['location_id' => 0, 'amount' => 650000]
+        );
+        self::assertSame(403, $response->get_status(), 'REST body sentinel must not bypass location grants');
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->iv1_code($response));
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_doctor_consultation_fees')
+            . ' WHERE clinic_id = %d AND clinician_id = %d AND location_id = 0',
+            [(int) $world['clinic'], (int) $world['clinician']]
+        ), 'the denied attempt must not create a clinic-wide fee row');
+
+        // The same restricted doctor may still change a default at a granted Location.
+        $allowed = $this->iv1_scope((int) $world['clinic'], fn (): array => App::visit_pricing_service()->set_default_fee(
+            (int) $world['doctor'], (int) $world['location'], 425000
+        ));
+        self::assertSame(425000, (int) $allowed['default_fee']);
+    }
+
+    public function testReceptionistCannotMutateAnyDoctorPricingOrTreatmentCharge(): void
+    {
+        $world = $this->world();
+        $patient = $this->iv1_patient((int) $world['clinic'], 'بیمار منع تعرفه');
+        $visit = $this->iv1_visit((int) $world['clinic'], (int) $world['location'], $patient, (int) $world['clinician']);
+        wp_set_current_user((int) $world['doctor']);
+        $this->pricing_default($world, 250000);
+        $charge = $this->add_charge($world, $visit, ['description' => 'قلم موجود', 'amount' => 10000]);
+
+        wp_set_current_user((int) $world['secretary']);
+        $service = App::visit_pricing_service();
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->set_default_fee((int) $world['secretary'], 0, 300000)),
+            'CLINIC_PERMISSION_DENIED', 403
+        );
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->set_visit_consultation_fee((int) $world['secretary'], $visit, 300000)),
+            'CLINIC_PERMISSION_DENIED', 403
+        );
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->add_charge((int) $world['secretary'], $visit, ['description' => 'غیرمجاز', 'amount' => 1000])),
+            'CLINIC_PERMISSION_DENIED', 403
+        );
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->update_charge((int) $world['secretary'], $visit, (int) $charge['charge_id'], ['amount' => 1])),
+            'CLINIC_PERMISSION_DENIED', 403
+        );
+        $this->assertFinanceDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->remove_charge((int) $world['secretary'], $visit, (int) $charge['charge_id'])),
+            'CLINIC_PERMISSION_DENIED', 403
+        );
+    }
+
+    public function testFailedCheckinSnapshotDoesNotAdoptLaterDefaultAndRequiresExplicitFee(): void
+    {
+        global $wpdb;
+        $world = $this->world();
+        $clinic = (int) $world['clinic'];
+        wp_set_current_user((int) $world['doctor']);
+        $this->pricing_default($world, 500000);
+        $patient = $this->iv1_patient($clinic, 'بیمار خطای ثبت تعرفه');
+
+        $fee_table = $wpdb->prefix . 'cpms_visit_consultation_fees';
+        $injected = false;
+        $fail_snapshot_insert = static function (string $sql) use ($fee_table, &$injected): string {
+            if (!$injected && str_contains($sql, 'INSERT IGNORE INTO ' . $fee_table)) {
+                $injected = true;
+                return 'INSERT INTO cpms_injected_snapshot_failure (id) VALUES (1)';
+            }
+
+            return $sql;
+        };
+        add_filter('query', $fail_snapshot_insert, 999);
+        try {
+            $visit = $this->iv1_walk_in_visit(
+                $clinic,
+                (int) $world['location'],
+                (int) $world['secretary'],
+                $patient,
+                (int) $world['clinician']
+            );
+        } finally {
+            remove_filter('query', $fail_snapshot_insert, 999);
+        }
+        self::assertTrue($injected, 'the check-in snapshot insert failure was injected');
+
+        $this->iv1_complete_consultation($visit);
+        $this->pricing_default($world, 900000);
+        $failure_marker = App::db()->fetchRow(
+            'SELECT visit_id FROM ' . App::db()->table('cpms_visit_fee_snapshot_failures') . ' WHERE visit_id = %d',
+            [$visit]
+        );
+        self::assertNotNull($failure_marker, 'check-in records that its ancillary snapshot failed');
+
+        $bill = $this->billing($world, $visit, (int) $world['secretary']);
+        self::assertNull($bill['effective_fee'], 'the later 900000 default is not silently applied');
+        self::assertSame('snapshot_failed', $bill['fee_source']);
+
+        wp_set_current_user((int) $world['secretary']);
+        $headers = $this->iv1_headers($clinic, (int) $world['location']);
+        $blocked = $this->iv1_dispatch('POST', sprintf(self::AUTO, $visit), [], $headers, []);
+        self::assertSame(409, $blocked->get_status(), 'invoice requires an explicit doctor fee after failed snapshot');
+
+        wp_set_current_user((int) $world['doctor']);
+        $override = $this->iv1_scope($clinic, fn (): array => App::visit_pricing_service()->set_visit_consultation_fee(
+            (int) $world['doctor'], $visit, 700000
+        ));
+        self::assertSame(700000, (int) $override['effective_fee']);
+        wp_set_current_user((int) $world['secretary']);
+        $issued = $this->iv1_dispatch('POST', sprintf(self::AUTO, $visit), [], $headers, []);
+        self::assertSame(201, $issued->get_status(), 'an explicit override safely restores invoiceability');
+        self::assertSame(700000.0, (float) $this->iv1_data($issued)['total']);
+    }
+
+    public function testIndependentDatabaseSessionCannotPassVisitLockUntilPricingTransactionEnds(): void
+    {
+        global $wpdb;
+        $world = $this->world();
+        $patient = $this->iv1_patient((int) $world['clinic'], 'بیمار قفل همزمان');
+        $visit = $this->iv1_visit((int) $world['clinic'], (int) $world['location'], $patient, (int) $world['clinician']);
+
+        $second = new \wpdb(DB_USER, DB_PASSWORD, DB_NAME, DB_HOST);
+        $second->set_prefix($wpdb->prefix);
+        $second->suppress_errors(true);
+        $db = App::db();
+        try {
+            self::assertNotFalse($db->query('START TRANSACTION'));
+            self::assertNotNull($this->iv1_scope((int) $world['clinic'], fn (): ?array => $db->fetchRowForUpdate(
+                'SELECT id FROM ' . $db->table('cpms_visits') . ' WHERE id = %d LIMIT 1',
+                [$visit]
+            )));
+            $second->query('SET SESSION innodb_lock_wait_timeout = 1');
+            $blocked = $second->get_row(
+                $second->prepare('SELECT id FROM ' . $second->prefix . 'cpms_visits WHERE id = %d FOR UPDATE', $visit),
+                ARRAY_A
+            );
+            self::assertNull($blocked, 'the independent session cannot cross the Visit lock');
+            self::assertStringContainsString('lock wait timeout', strtolower((string) $second->last_error));
+
+            self::assertNotFalse($db->query('COMMIT'));
+            $second->last_error = '';
+            $released = $second->get_row(
+                $second->prepare('SELECT id FROM ' . $second->prefix . 'cpms_visits WHERE id = %d FOR UPDATE', $visit),
+                ARRAY_A
+            );
+            self::assertIsArray($released, 'the competing session can proceed once the lock is released');
+            $second->query('COMMIT');
+        } finally {
+            // Never leave a lock behind when an assertion fails.
+            $db->query('ROLLBACK');
+            $second->query('ROLLBACK');
+            $second->close();
+        }
+    }
+
 }

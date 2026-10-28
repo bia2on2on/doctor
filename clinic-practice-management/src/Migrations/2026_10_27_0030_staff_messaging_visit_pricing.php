@@ -34,6 +34,7 @@ return [
         $fees        = $db->table( 'cpms_doctor_consultation_fees' );
         $overrides   = $db->table( 'cpms_visit_consultation_fees' );
         $charges     = $db->table( 'cpms_visit_charge_items' );
+        $snapshotFailures = $db->table( 'cpms_visit_fee_snapshot_failures' );
 
         $db->query(
             "CREATE TABLE IF NOT EXISTS {$threads} (
@@ -132,12 +133,23 @@ return [
             KEY `idx_charge_invoice` (`invoiced_invoice_id`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
         );
+
+        $db->query(
+            "CREATE TABLE IF NOT EXISTS {$snapshotFailures} (
+            `visit_id` BIGINT UNSIGNED NOT NULL,
+            `clinic_id` BIGINT UNSIGNED NOT NULL,
+            `failed_at` DATETIME(3) NOT NULL,
+            PRIMARY KEY (`visit_id`),
+            KEY `idx_snapshot_failure_clinic` (`clinic_id`,`visit_id`)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci"
+        );
     },
     'down'        => static function ( CpmsDb $db ): void {
         // DEVELOPMENT ONLY. Production downgrades restore from backup: these
         // tables contain append-only messaging history and auditable pricing.
         foreach (
             [
+                'cpms_visit_fee_snapshot_failures',
                 'cpms_visit_charge_items',
                 'cpms_visit_consultation_fees',
                 'cpms_doctor_consultation_fees',

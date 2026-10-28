@@ -163,6 +163,9 @@ final class StaffMessagingService {
             if ( $ctx['staff_class'] === 'doctor' && ! $this->doctor_owns_visit( $actor_user_id, $ctx['clinic_id'], $visit ) ) {
                 throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'این ویزیت به پزشک جاری تعلق ندارد', 403 );
             }
+            if ( $ctx['staff_class'] === 'receptionist' && ! $this->doctor_owns_visit( $recipient_id, $ctx['clinic_id'], $visit ) ) {
+                throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'پزشک گیرنده عضو تیم درمان این ویزیت نیست', 403 );
+            }
             $location_fk = isset( $visit['location_id'] ) ? (int) $visit['location_id'] : null;
             if ( $location_fk !== null ) {
                 $this->assert_location_allowed( $ctx['clinic_id'], $actor_user_id, $location_fk );
@@ -476,6 +479,10 @@ final class StaffMessagingService {
         $counterpart_id = $participants[0];
         if ( $this->memberships->find_active( $ctx['clinic_id'], $counterpart_id ) === null ) {
             throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'گیرندهٔ گفتگو غیرفعال است', 403 );
+        }
+        $current_counterpart_class = $this->recipient_class( $ctx['clinic_id'], $counterpart_id );
+        if ( $current_counterpart_class === '' || $current_counterpart_class === $ctx['staff_class'] ) {
+            throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'نقش گیرنده دیگر مجاز به این گفتگو نیست', 403 );
         }
         if ( $thread['location_id'] !== null ) {
             $location_id = (int) $thread['location_id'];
