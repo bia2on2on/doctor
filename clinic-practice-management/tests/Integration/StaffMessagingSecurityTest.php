@@ -14,7 +14,7 @@ use WP_UnitTestCase;
 require_once __DIR__ . '/Fixtures/IranV1Fixture.php';
 
 /**
- * Iran V1 — internal Doctor/Receptionist messaging security and behaviour.
+ * Iran V1 — private one-to-one staff messaging security and behaviour.
  *
  * Covers: same-Clinic two-way conversation, unread indicators, timestamps,
  * cross-Clinic/cross-Organization denial, patient/visit scope verification,
@@ -341,31 +341,39 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
     }
 
     /**
-     * Iran V1 product contract: an internal thread has exactly one doctor and
-     * one receptionist. Same-class chat is not an explicitly required feature
-     * and is refused on the server, not merely hidden in the UI.
+     * Finance staff are eligible only through current effective CPMS capabilities.
+     * Every supported pairing remains a private, explicit two-person thread.
      */
-    public function testThreadCreationRequiresDoctorReceptionistPairing(): void
+    public function testAuthorizedStaffRolesAreEligibleAsExplicitOneToOneCounterparts(): void
     {
         $world = $this->world();
         $doctor2 = $this->iv1_user(RolesAndCapabilities::ROLE_DOCTOR, 'doc2');
         $this->iv1_membership($doctor2, (int) $world['clinic'], RolesAndCapabilities::ROLE_DOCTOR);
         $secretary2 = $this->iv1_user(RolesAndCapabilities::ROLE_SECRETARY, 'sec2');
         $this->iv1_membership($secretary2, (int) $world['clinic'], RolesAndCapabilities::ROLE_SECRETARY);
+        $finance1 = $this->iv1_user(RolesAndCapabilities::ROLE_ACCOUNTANT, 'cash1');
+        $this->iv1_membership($finance1, (int) $world['clinic'], RolesAndCapabilities::ROLE_ACCOUNTANT);
+        $finance2 = $this->iv1_user(RolesAndCapabilities::ROLE_ACCOUNTANT, 'cash2');
+        $this->iv1_membership($finance2, (int) $world['clinic'], RolesAndCapabilities::ROLE_ACCOUNTANT);
 
-        wp_set_current_user((int) $world['doctor']);
-        $this->assertDenied(
-            fn () => $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => $doctor2]),
-            'CLINIC_PERMISSION_DENIED',
-            403
-        );
-
-        wp_set_current_user($secretary2);
-        $this->assertDenied(
-            fn () => $this->call_thread($world, $secretary2, ['recipient_wp_user_id' => (int) $world['secretary']]),
-            'CLINIC_PERMISSION_DENIED',
-            403
-        );
+        $pairs = [
+            [(int) $world['doctor'], (int) $world['secretary']],
+            [(int) $world['doctor'], $finance1],
+            [(int) $world['secretary'], $finance1],
+            [(int) $world['doctor'], $doctor2],
+            [(int) $world['secretary'], $secretary2],
+            [$finance1, $finance2],
+        ];
+        foreach ($pairs as [$actor, $recipient]) {
+            wp_set_current_user($actor);
+            $thread = $this->call_thread($world, $actor, ['recipient_wp_user_id' => $recipient]);
+            self::assertGreaterThan(0, (int) $thread['id']);
+            self::assertSame($recipient, (int) $thread['counterpart']['wp_user_id']);
+            self::assertSame(2, (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_message_participants') . ' WHERE thread_id = %d',
+                [(int) $thread['id']]
+            ));
+        }
 
         wp_set_current_user((int) $world['doctor']);
         $context = $this->iv1_scope(
@@ -373,9 +381,144 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
             fn (): array => App::staff_messaging_service()->context((int) $world['doctor'])
         );
         $ids = array_map('intval', array_column($context['counterparts'], 'wp_user_id'));
-        self::assertContains((int) $world['secretary'], $ids);
-        self::assertContains($secretary2, $ids);
-        self::assertNotContains($doctor2, $ids, 'same-class doctors are not offered as counterparts');
+        self::assertContains($finance1, $ids);
+        $finance_counterpart = null;
+        foreach ( $context['counterparts'] as $person ) {
+            if ( (int) $person['wp_user_id'] === $finance1 ) {
+                $finance_counterpart = $person;
+                break;
+            }
+        }
+        self::assertIsArray( $finance_counterpart );
+        self::assertSame( 'مالی', $finance_counterpart['label'] );
+
+        // Finance staff are authorized by durable CPMS capabilities and can use
+        // the actual authenticated REST endpoints, not only the domain service.
+        wp_set_current_user((int) $world['doctor']);
+        $rest_thread = $this->iv1_dispatch(
+            'POST', self::THREADS, [], $this->iv1_headers((int) $world['clinic']),
+            ['recipient_wp_user_id' => $finance1]
+        );
+        self::assertSame(201, $rest_thread->get_status());
+        $rest_id = (int) ($rest_thread->get_data()['data']['id'] ?? 0);
+        self::assertGreaterThan(0, $rest_id);
+        $sent = $this->iv1_dispatch(
+            'POST', '/clinic/v1/staff/portal/messages/threads/' . $rest_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic']), ['body' => 'پیام خصوصی مالی']
+        );
+        self::assertSame(201, $sent->get_status());
+        wp_set_current_user($finance1);
+        $inbox = $this->iv1_dispatch(
+            'GET', '/clinic/v1/staff/portal/messages/threads/' . $rest_id . '/messages', [],
+            $this->iv1_headers((int) $world['clinic'])
+        );
+        self::assertSame(200, $inbox->get_status());
+        self::assertSame('پیام خصوصی مالی', $inbox->get_data()['data']['messages'][0]['body']);
+
+        $audit_meta = (string) App::db()->fetchValue(
+            'SELECT meta_json FROM ' . App::db()->table('cpms_audit_logs')
+            . " WHERE action = 'MESSAGE_THREAD_CREATE' AND resource_id = %d ORDER BY id DESC",
+            [$rest_id]
+        );
+        self::assertStringNotContainsString('recipient_id', $audit_meta);
+        self::assertStringNotContainsString((string) $finance1, $audit_meta);
+    }
+
+    public function testOneDoctorCanKeepTwoReceptionistThreadsStrictlySeparate(): void
+    {
+        $world = $this->world();
+        $secretary2 = $this->iv1_user(RolesAndCapabilities::ROLE_SECRETARY, 'sec2');
+        $this->iv1_membership($secretary2, (int) $world['clinic'], RolesAndCapabilities::ROLE_SECRETARY);
+        $service = App::staff_messaging_service();
+        wp_set_current_user((int) $world['doctor']);
+        $thread1 = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
+        $thread2 = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => $secretary2]);
+        $this->iv1_scope((int) $world['clinic'], fn (): array => $service->send((int) $world['doctor'], (int) $thread1['id'], 'فقط منشی اول'));
+        $this->iv1_scope((int) $world['clinic'], fn (): array => $service->send((int) $world['doctor'], (int) $thread2['id'], 'فقط منشی دوم'));
+
+        $one = $this->iv1_scope((int) $world['clinic'], fn (): array => $service->threads((int) $world['secretary']));
+        $two = $this->iv1_scope((int) $world['clinic'], fn (): array => $service->threads($secretary2));
+        self::assertCount(1, $one['threads']);
+        self::assertCount(1, $two['threads']);
+        self::assertSame((int) $thread1['id'], (int) $one['threads'][0]['id']);
+        self::assertSame((int) $thread2['id'], (int) $two['threads'][0]['id']);
+        self::assertSame(1, (int) $one['unread_total']);
+        self::assertSame(1, (int) $two['unread_total']);
+        $one_messages = $this->iv1_scope((int) $world['clinic'], fn (): array => $service->messages((int) $world['secretary'], (int) $thread1['id'], 0, 50));
+        $two_messages = $this->iv1_scope((int) $world['clinic'], fn (): array => $service->messages($secretary2, (int) $thread2['id'], 0, 50));
+        self::assertSame('فقط منشی اول', $one_messages['messages'][0]['body']);
+        self::assertSame('فقط منشی دوم', $two_messages['messages'][0]['body']);
+        $this->assertDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->messages((int) $world['secretary'], (int) $thread2['id'], 0, 50)),
+            'CLINIC_NOT_FOUND',
+            404
+        );
+    }
+
+    public function testUnexpectedThirdParticipantMakesThreadUnreadableToEveryone(): void
+    {
+        $world = $this->world();
+        $third = $this->iv1_user(RolesAndCapabilities::ROLE_SECRETARY, 'third');
+        $this->iv1_membership($third, (int) $world['clinic'], RolesAndCapabilities::ROLE_SECRETARY);
+        wp_set_current_user((int) $world['doctor']);
+        $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
+        $service = App::staff_messaging_service();
+        $this->iv1_scope((int) $world['clinic'], fn (): array => $service->send((int) $world['doctor'], (int) $thread['id'], 'خصوصی'));
+        (new \ClinicCore\Infrastructure\Repository\MessageRepository(App::db()))->add_participant(
+            (int) $thread['id'], $third, 'receptionist'
+        );
+
+        foreach ([(int) $world['doctor'], (int) $world['secretary'], $third] as $actor) {
+            $this->assertDenied(
+                fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => $service->messages($actor, (int) $thread['id'], 0, 50)),
+                'CLINIC_NOT_FOUND',
+                404
+            );
+            $listing = $this->iv1_scope((int) $world['clinic'], fn (): array => $service->threads($actor));
+            self::assertSame([], $listing['threads']);
+            self::assertSame(0, (int) $listing['unread_total']);
+        }
+    }
+
+    public function testThirdClinicMemberCannotEnumerateOrUseKnownPrivateThreadIdThroughRest(): void
+    {
+        $world = $this->world();
+        $doctor2 = $this->iv1_user(RolesAndCapabilities::ROLE_DOCTOR, 'doc2');
+        $this->iv1_membership($doctor2, (int) $world['clinic'], RolesAndCapabilities::ROLE_DOCTOR);
+        wp_set_current_user((int) $world['doctor']);
+        $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => (int) $world['secretary']]);
+        $thread_id = (int) $thread['id'];
+        $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->send(
+            (int) $world['doctor'], $thread_id, 'فقط برای گیرنده'
+        ));
+
+        wp_set_current_user($doctor2);
+        $headers = $this->iv1_headers((int) $world['clinic']);
+        $listing = $this->iv1_dispatch('GET', self::THREADS, [], $headers);
+        self::assertSame(200, $listing->get_status());
+        $data = $listing->get_data()['data'] ?? [];
+        self::assertSame([], $data['threads'] ?? []);
+        self::assertSame(0, (int) ($data['unread_total'] ?? -1));
+
+        foreach ([
+            ['GET', '/clinic/v1/staff/portal/messages/threads/' . $thread_id . '/messages', []],
+            ['POST', '/clinic/v1/staff/portal/messages/threads/' . $thread_id . '/messages', ['body' => 'افشای پیام']],
+            ['POST', '/clinic/v1/staff/portal/messages/threads/' . $thread_id . '/read', []],
+        ] as [$method, $route, $payload]) {
+            $response = $this->iv1_dispatch($method, $route, [], $headers, $payload);
+            self::assertSame(404, $response->get_status());
+            self::assertSame('CLINIC_NOT_FOUND', $this->iv1_code($response));
+            self::assertStringNotContainsString('فقط برای گیرنده', wp_json_encode($response->get_data()));
+            self::assertStringNotContainsString((string) $world['secretary'], wp_json_encode($response->get_data()));
+        }
+
+        $admin = self::factory()->user->create(['role' => 'administrator']);
+        wp_set_current_user($admin);
+        $admin_response = $this->iv1_dispatch(
+            'GET', '/clinic/v1/staff/portal/messages/threads/' . $thread_id . '/messages', [], $headers
+        );
+        self::assertSame(403, $admin_response->get_status());
+        self::assertSame('CLINIC_PERMISSION_DENIED', $this->iv1_code($admin_response));
     }
     public function testPatientLinkedThreadRequiresSelectedDoctorOnVisitCareTeam(): void
     {
@@ -385,7 +528,7 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         $this->iv1_clinician((int) $world['clinic'], $unrelated_doctor, 'پزشک نامرتبط');
         wp_set_current_user((int) $world['secretary']);
 
-        // Unlinked clinic messaging remains available to any valid paired staff.
+        // Unlinked clinic messaging remains available to eligible staff.
         $general = $this->call_thread($world, (int) $world['secretary'], ['recipient_wp_user_id' => $unrelated_doctor]);
         self::assertGreaterThan(0, (int) $general['id']);
 
@@ -419,6 +562,33 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
             fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->messages(
                 (int) $world['doctor'], (int) $thread['id'], 0, 50
             )),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+    }
+
+    public function testFinanceParticipantLosesAccessWhenMessagingCapabilityIsRevoked(): void
+    {
+        $world = $this->world();
+        $finance = $this->iv1_user(RolesAndCapabilities::ROLE_ACCOUNTANT, 'cashier');
+        $membership_id = $this->iv1_membership($finance, (int) $world['clinic'], RolesAndCapabilities::ROLE_ACCOUNTANT);
+        wp_set_current_user((int) $world['doctor']);
+        $thread = $this->call_thread($world, (int) $world['doctor'], ['recipient_wp_user_id' => $finance]);
+        App::membership_service()->set_capability(
+            $membership_id,
+            RolesAndCapabilities::FINANCE_READ,
+            'deny'
+        );
+
+        $this->assertDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->messages(
+                (int) $world['doctor'], (int) $thread['id'], 0, 50
+            )),
+            'CLINIC_PERMISSION_DENIED',
+            403
+        );
+        $this->assertDenied(
+            fn () => $this->iv1_scope((int) $world['clinic'], fn (): array => App::staff_messaging_service()->context($finance)),
             'CLINIC_PERMISSION_DENIED',
             403
         );

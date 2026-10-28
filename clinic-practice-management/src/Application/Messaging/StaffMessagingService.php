@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Messaging;
 
-use ClinicCore\Application\Authorization\AuthorizationException;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -20,7 +19,7 @@ use ClinicCore\Infrastructure\Repository\VisitRepository;
 use DomainException;
 
 /**
- * Two-way internal Doctor/Receptionist messaging inside ONE trusted Clinic.
+ * Private one-to-one staff messaging inside ONE trusted Clinic.
  *
  * Authority is re-checked on EVERY read and write: explicit trusted Clinic
  * scope, active membership, effective Clinic-scoped capabilities, participant
@@ -34,7 +33,6 @@ final class StaffMessagingService {
 
     private const DOCTOR_CAP       = RolesAndCapabilities::CONSULT_COMPLETE;
     private const RECEPTIONIST_CAP = RolesAndCapabilities::QUEUE_CHECKIN;
-    private const BASE_CAP         = RolesAndCapabilities::VISIT_READ;
 
     public function __construct(
         private readonly CpmsDb $db,
@@ -52,6 +50,10 @@ final class StaffMessagingService {
      *
      * @return array<string, mixed>
      */
+    public function authorize_actor( int $actor_user_id ): void {
+        $this->context_for( $actor_user_id );
+    }
+
     public function context( int $actor_user_id ): array {
         $ctx = $this->context_for( $actor_user_id );
 
@@ -61,7 +63,7 @@ final class StaffMessagingService {
             'actor_wp_user_id'  => $actor_user_id,
             'actor_class'       => $ctx['staff_class'],
             'counterparts'      => $this->counterparts( $ctx, $actor_user_id ),
-            'unread_total'      => $this->messages->unread_total( $ctx['clinic_id'], $ctx['organization_id'], $actor_user_id ),
+            'unread_total'      => $this->visible_unread_total( $ctx, $actor_user_id ),
             'retention_policy'  => self::RETENTION_POLICY,
             'max_message_chars' => MessageText::MAX_LENGTH,
         ];
@@ -85,7 +87,9 @@ final class StaffMessagingService {
         foreach ( $rows as $row ) {
             $counterpart_id = (int) $row['counterpart_wp_user_id'];
             // A suspended/removed counterpart must not resurrect a thread.
-            if ( $this->memberships->find_active( $ctx['clinic_id'], $counterpart_id ) === null ) {
+            if ( $this->memberships->find_active( $ctx['clinic_id'], $counterpart_id ) === null
+                || $this->recipient_class( $ctx['clinic_id'], $counterpart_id ) === ''
+            ) {
                 continue;
             }
             if ( ! $this->counterpart_location_allowed( $ctx['clinic_id'], $counterpart_id, $row['location_id'] ) ) {
@@ -105,9 +109,11 @@ final class StaffMessagingService {
             ];
         }
 
+        $visible_unread_total = $this->visible_unread_total( $ctx, $actor_user_id );
+
         return [
             'threads'      => $threads,
-            'unread_total' => $this->messages->unread_total( $ctx['clinic_id'], $ctx['organization_id'], $actor_user_id ),
+            'unread_total' => $visible_unread_total,
             'polling'      => ['strategy' => 'authenticated_incremental', 'interval_ms' => 8000],
         ];
     }
@@ -125,12 +131,12 @@ final class StaffMessagingService {
         if ( $recipient_id <= 0 || $recipient_id === $actor_user_id ) {
             throw MessagingException::of( 'CLINIC_VALIDATION_FAILED', 'گیرندهٔ پیام نامعتبر است', 422 );
         }
-        if ( ! $this->recipient_eligible( $ctx['clinic_id'], $recipient_id, $ctx['staff_class'] ) ) {
+        if ( ! $this->recipient_eligible( $ctx['clinic_id'], $recipient_id ) ) {
             throw MessagingException::of(
                 'CLINIC_PERMISSION_DENIED',
-                'گفتگوی داخلی فقط بین پزشک و پذیرش مجاز است',
+                'گیرنده باید یکی از همکاران دارای عضویت و دسترسی مجاز باشد',
                 403,
-                ['reason' => 'role_pairing']
+                ['reason' => 'staff_eligibility']
             );
         }
 
@@ -160,11 +166,25 @@ final class StaffMessagingService {
             ) {
                 throw MessagingException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
             }
-            if ( $ctx['staff_class'] === 'doctor' && ! $this->doctor_owns_visit( $actor_user_id, $ctx['clinic_id'], $visit ) ) {
-                throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'این ویزیت به پزشک جاری تعلق ندارد', 403 );
+            $recipient_class = $this->recipient_class( $ctx['clinic_id'], $recipient_id );
+            if ( ! in_array( $ctx['staff_class'], ['doctor', 'receptionist'], true )
+                || ! in_array( $recipient_class, ['doctor', 'receptionist'], true )
+                || ! App::authorization_service()->can( $actor_user_id, $ctx['clinic_id'], RolesAndCapabilities::VISIT_READ )
+                || ! App::authorization_service()->can( $recipient_id, $ctx['clinic_id'], RolesAndCapabilities::VISIT_READ )
+            ) {
+                throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'پیام مرتبط با بیمار فقط برای اعضای مجاز تیم درمان است', 403 );
             }
-            if ( $ctx['staff_class'] === 'receptionist' && ! $this->doctor_owns_visit( $recipient_id, $ctx['clinic_id'], $visit ) ) {
-                throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'پزشک گیرنده عضو تیم درمان این ویزیت نیست', 403 );
+            $doctor_ids = [];
+            if ( $ctx['staff_class'] === 'doctor' ) {
+                $doctor_ids[] = $actor_user_id;
+            }
+            if ( $recipient_class === 'doctor' ) {
+                $doctor_ids[] = $recipient_id;
+            }
+            foreach ( $doctor_ids as $doctor_id ) {
+                if ( ! $this->doctor_owns_visit( $doctor_id, $ctx['clinic_id'], $visit ) ) {
+                    throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'پزشک گفتگو عضو تیم درمان این ویزیت نیست', 403 );
+                }
             }
             $location_fk = isset( $visit['location_id'] ) ? (int) $visit['location_id'] : null;
             if ( $location_fk !== null ) {
@@ -197,7 +217,6 @@ final class StaffMessagingService {
                     null,
                     [
 						'thread_id'    => $id,
-						'recipient_id' => $recipient_id,
 						'visit_id'     => $visit_fk,
 						'location_id'  => $location_fk,
                     ],
@@ -310,7 +329,7 @@ final class StaffMessagingService {
             'thread_id'            => $thread_id,
             'last_read_message_id' => $last !== null ? (int) $last['id'] : 0,
             'unread_count'         => $this->messages->thread_unread( $thread_id, $actor_user_id ),
-            'unread_total'         => $this->messages->unread_total( $ctx['clinic_id'], $ctx['organization_id'], $actor_user_id ),
+            'unread_total'         => $this->visible_unread_total( $ctx, $actor_user_id ),
         ];
     }
 
@@ -332,15 +351,8 @@ final class StaffMessagingService {
             throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'عضویت فعالی در این مطب ندارید', 403 );
         }
 
-        $auth = App::authorization_service();
-        try {
-            $auth->authorize( $actor_user_id, $clinic_id, self::BASE_CAP );
-        } catch ( AuthorizationException $exception ) {
-            throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'دسترسی لازم را ندارید', 403, ['reason' => $exception->getErrorCode()] );
-        }
-        $doctor_class       = $auth->can( $actor_user_id, $clinic_id, self::DOCTOR_CAP );
-        $receptionist_class = $auth->can( $actor_user_id, $clinic_id, self::RECEPTIONIST_CAP );
-        if ( ! $doctor_class && ! $receptionist_class ) {
+        $staff_class = $this->staff_class_for( $actor_user_id, $clinic_id );
+        if ( $staff_class === '' ) {
             throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'پیام‌رسانی داخلی برای این نقش مجاز نیست', 403 );
         }
 
@@ -355,8 +367,26 @@ final class StaffMessagingService {
         return [
             'clinic_id'       => $clinic_id,
             'organization_id' => $organization_id,
-            'staff_class'     => $doctor_class ? 'doctor' : 'receptionist',
+            'staff_class'     => $staff_class,
         ];
+    }
+
+    private function staff_class_for( int $user_id, int $clinic_id ): string {
+        $auth = App::authorization_service();
+        if ( $auth->can( $user_id, $clinic_id, self::DOCTOR_CAP ) ) {
+            return 'doctor';
+        }
+        if ( $auth->can( $user_id, $clinic_id, self::RECEPTIONIST_CAP ) ) {
+            return 'receptionist';
+        }
+        if ( $auth->can( $user_id, $clinic_id, RolesAndCapabilities::FINANCE_READ )
+            && ( $auth->can( $user_id, $clinic_id, RolesAndCapabilities::PAYMENT_CREATE )
+                || $auth->can( $user_id, $clinic_id, RolesAndCapabilities::INVOICE_CREATE ) )
+        ) {
+            return 'finance';
+        }
+
+        return '';
     }
 
     /**
@@ -368,8 +398,7 @@ final class StaffMessagingService {
         $own_locs = $this->allowed_locations( $ctx['clinic_id'], $actor_user_id );
         foreach ( $this->messages->active_member_ids( $ctx['clinic_id'], $actor_user_id ) as $user_id ) {
             $class = $this->recipient_class( $ctx['clinic_id'], $user_id );
-            if ( $class === '' || $class === $ctx['staff_class'] ) {
-                // Iran V1 product contract: a thread is doctor <-> receptionist.
+            if ( $class === '' ) {
                 continue;
             }
             if ( $own_locs !== null ) {
@@ -384,29 +413,18 @@ final class StaffMessagingService {
         return $out;
     }
 
-    private function recipient_eligible( int $clinic_id, int $recipient_id, string $actor_class ): bool {
+    private function recipient_eligible( int $clinic_id, int $recipient_id ): bool {
         if ( $this->memberships->find_active( $clinic_id, $recipient_id ) === null ) {
             return false;
         }
 
         $recipient_class = $this->recipient_class( $clinic_id, $recipient_id );
 
-        return $recipient_class !== '' && $recipient_class !== $actor_class;
+        return $recipient_class !== '';
     }
 
     private function recipient_class( int $clinic_id, int $user_id ): string {
-        $auth = App::authorization_service();
-        if ( ! $auth->can( $user_id, $clinic_id, self::BASE_CAP ) ) {
-            return '';
-        }
-        if ( $auth->can( $user_id, $clinic_id, self::DOCTOR_CAP ) ) {
-            return 'doctor';
-        }
-        if ( $auth->can( $user_id, $clinic_id, self::RECEPTIONIST_CAP ) ) {
-            return 'receptionist';
-        }
-
-        return '';
+        return $this->staff_class_for( $user_id, $clinic_id );
     }
 
     /**
@@ -473,7 +491,7 @@ final class StaffMessagingService {
             throw MessagingException::of( 'CLINIC_NOT_FOUND', 'گفتگو یافت نشد', 404 );
         }
         $participants = $this->thread_participants( $thread_id, $actor_user_id );
-        if ( $participants === [] ) {
+        if ( count( $participants ) !== 1 ) {
             throw MessagingException::of( 'CLINIC_NOT_FOUND', 'گفتگو یافت نشد', 404 );
         }
         $counterpart_id = $participants[0];
@@ -481,7 +499,7 @@ final class StaffMessagingService {
             throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'گیرندهٔ گفتگو غیرفعال است', 403 );
         }
         $current_counterpart_class = $this->recipient_class( $ctx['clinic_id'], $counterpart_id );
-        if ( $current_counterpart_class === '' || $current_counterpart_class === $ctx['staff_class'] ) {
+        if ( $current_counterpart_class === '' ) {
             throw MessagingException::of( 'CLINIC_PERMISSION_DENIED', 'نقش گیرنده دیگر مجاز به این گفتگو نیست', 403 );
         }
         if ( $thread['location_id'] !== null ) {
@@ -491,6 +509,41 @@ final class StaffMessagingService {
         }
 
         return $thread;
+    }
+
+    /**
+     * Sum unread messages only across currently authorized two-person threads.
+     * Pages all rows so the badge remains correct for users with >100 threads.
+     *
+     * @param array{clinic_id: int, organization_id: int, staff_class: string} $ctx
+     */
+    private function visible_unread_total( array $ctx, int $actor_user_id ): int {
+        $total  = 0;
+        $offset = 0;
+        do {
+            $rows = $this->messages->threads_for_user(
+                $ctx['clinic_id'],
+                $ctx['organization_id'],
+                $actor_user_id,
+                $this->allowed_locations( $ctx['clinic_id'], $actor_user_id ),
+                100,
+                $offset
+            );
+            foreach ( $rows as $row ) {
+                $counterpart_id = (int) $row['counterpart_wp_user_id'];
+                if ( $this->memberships->find_active( $ctx['clinic_id'], $counterpart_id ) === null
+                    || $this->recipient_class( $ctx['clinic_id'], $counterpart_id ) === ''
+                    || ! $this->counterpart_location_allowed( $ctx['clinic_id'], $counterpart_id, $row['location_id'] )
+                ) {
+                    continue;
+                }
+                $total += $this->messages->thread_unread( (int) $row['id'], $actor_user_id );
+            }
+            $count   = count( $rows );
+            $offset += $count;
+        } while ( $count === 100 );
+
+        return $total;
     }
 
     /** @return list<int> */
@@ -539,7 +592,12 @@ final class StaffMessagingService {
             'wp_user_id'   => $user_id,
             'display_name' => $name,
             'staff_class'  => $staff_class,
-            'label'        => $staff_class === 'doctor' ? 'پزشک' : 'پذیرش',
+            'label'        => match ( $staff_class ) {
+                'doctor' => 'پزشک',
+                'receptionist' => 'پذیرش',
+                'finance' => 'مالی',
+                default => 'همکار',
+            },
         ];
     }
 

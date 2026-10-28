@@ -93,8 +93,8 @@ if ( ! is_string( $cpms_messages_config_json ) ) {
 </style>
 <main class="cpms-msg" data-role="messages-root" aria-labelledby="cpms-messages-title">
     <section class="cpms-msg__panel" aria-label="محدوده پیامرسانی">
-        <h2 class="cpms-msg__heading" id="cpms-messages-title">پیام‌های داخلی پزشک و پذیرش <span class="cpms-msg__badge" data-role="messages-unread-total" hidden>0</span></h2>
-        <p class="cpms-msg__hint">پیامها فقط در همان مطب و بین کارکنان مجاز نمایش داده میشوند. متن پیام ساده است و یادداشت بالینی یا پرونده پزشکی از این طریق ارسال نمیشود. همه پیامها نگهداری میشوند.</p>
+        <h2 class="cpms-msg__heading" id="cpms-messages-title">پیام‌های خصوصی کارکنان <span class="cpms-msg__badge" data-role="messages-unread-total" hidden>0</span></h2>
+        <p class="cpms-msg__hint">هر گفتگو خصوصی و فقط بین دو همکار مشخص در همان مطب است؛ پزشک، پذیرش و مالی پیام می‌دهند. متن پیام ساده است و یادداشت بالینی یا پرونده پزشکی از این طریق ارسال نمیشود. همه پیامها نگهداری میشوند.</p>
         <div class="cpms-msg__row">
             <label class="cpms-msg__field">مطب
                 <select class="cpms-msg__select" data-role="messages-clinic" aria-label="انتخاب مطب"></select>

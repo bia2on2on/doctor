@@ -28,7 +28,7 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
    idempotent `SHOW`-style checks, `down()` for dev only):
    - `cpms_message_threads` — `clinic_id`, `organization_id`, nullable
      `location_id`/`patient_id`/`visit_id`, creator, timestamps.
-   - `cpms_message_participants` — two rows per thread, `last_read_message_id`.
+   - `cpms_message_participants` — exactly two explicit WordPress user IDs per thread, each with its own `last_read_message_id`; public service creation writes exactly two and all reads fail closed if participant cardinality differs.
    - `cpms_messages` — append-only body + sender + timestamp.
    - `cpms_doctor_consultation_fees` — `(clinic_id, clinician_id, location_id)`
      unique; `location_id = 0` is the clinic-wide default (sentinel avoids
@@ -69,22 +69,23 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
   membership + active Organization + validated Location). No payload clinic,
   no role name, no UI selection is authority.
 - Messaging staff class is derived from **effective scoped capabilities** of an
-  active membership (`cpms_consult_complete` = doctor class,
-  `cpms_queue_checkin` = receptionist class), never from a WP role alone.
-  An actor must additionally hold `cpms_visit_read` in the same Clinic.
-  **Iran V1 role pairing:** no delivered product requirement authorizes
-  doctor↔doctor or receptionist↔receptionist threads. `/context` therefore
-  lists only opposite-class counterparts, and `create_thread()` re-checks the
-  persisted membership/class and refuses same-class recipients with 403
-  `CLINIC_PERMISSION_DENIED` / `reason=role_pairing`.
+  active membership, never from a WP role or request label (`cpms_consult_complete`
+  = doctor; `cpms_queue_checkin` = receptionist; `cpms_finance_read` plus an
+  invoice-create or payment-create capability = finance). The actor and the
+  explicitly selected counterpart are distinct active staff identities. Any
+  one-to-one pairing among these eligible classes is allowed; no group, role-wide
+  inbox, or broadcast exists. `/context` lists only eligible counterparts and
+  creation rechecks both persisted memberships/capabilities server-side.
 - A thread is readable only by its two participants, inside the stored Clinic
   **and** Organization; if it has a Location, both participants and the actor
   must be eligible for that Location (clinic-wide membership or an explicit
   `cpms_membership_locations` row).
 - Patient/visit-linked threads require **both** ids, a persisted Visit in the
   trusted Clinic, `visit.patient_id === patient_id`, a patient row in the same
-  Clinic, and (for doctor actors) the server-derived clinician owning that
-  Visit. The thread's Location is copied from the Visit, never from the client.
+  Clinic, visit-read authority for both participants, and a doctor participant
+  whose server-derived clinician owns that Visit. Finance-only participants
+  cannot receive Visit-linked conversation access. The thread's Location is
+  copied from the Visit, never from the client.
 - Pricing writes require an active membership, `cpms_invoice_create` in the
   trusted Clinic, and a server-derived active clinician profile that equals
   the Visit's clinician. Reads require `cpms_invoice_read`.
@@ -99,7 +100,7 @@ and `InvoiceCalc`. Every UI label says «ریال»; no toman conversion is perf
 
 | # | Threat | Mitigation | Test evidence |
 | --- | --- | --- | --- |
-| T1 | Cross-clinic / cross-org thread id enumeration | Stored `clinic_id` + `organization_id` equality with trusted scope; participant-only reads; 404 parity for unknown/foreign ids. | `StaffMessagingSecurityTest` |
+| T1 | Cross-clinic / cross-org/thread-id enumeration or group expansion | Stored `clinic_id` + `organization_id` equality with trusted scope; exactly-two participant cardinality; participant-only reads; 404 parity for unknown/foreign ids. | `StaffMessagingSecurityTest` |
 | T2 | Cross-location access by location-scoped staff | Thread Location derived from the persisted Visit; location membership verified for actor and counterpart on every operation. | `StaffMessagingSecurityTest` |
 | T3 | Patient/visit reference forgery, PHI disclosure | Both ids required, patient↔visit↔clinic chain verified server-side; messaging payload contains no clinical note/record/medical file fields; audit logs store ids/lengths, never bodies or clinical text. | `StaffMessagingSecurityTest`, API contract |
 | T4 | Stored XSS / oversized payload | Pure `MessageText` sanitizer strips tags + control chars and enforces a 2000-character bound; JS renders with `textContent`; REST output is plain text. | `MessageTextTest`, `StaffMessagingSecurityTest` |

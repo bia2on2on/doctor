@@ -96,7 +96,8 @@ final class MessageRepository {
         ?int $organization_id,
         int $wp_user_id,
         ?array $location_ids,
-        int $limit
+        int $limit,
+        int $offset = 0
     ): array {
         $sql    = 'SELECT t.*, other.wp_user_id AS counterpart_wp_user_id,'
             . ' other.staff_class AS counterpart_staff_class,'
@@ -106,7 +107,9 @@ final class MessageRepository {
             . ' ON mine.thread_id = t.id AND mine.wp_user_id = %d'
             . ' INNER JOIN ' . $this->db->table( 'cpms_message_participants' ) . ' other'
             . ' ON other.thread_id = t.id AND other.wp_user_id != %d'
-            . ' WHERE t.clinic_id = %d';
+            . ' WHERE t.clinic_id = %d'
+            . ' AND (SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_message_participants' ) . ' exact_pair'
+            . ' WHERE exact_pair.thread_id = t.id) = 2';
         $params = [$wp_user_id, $wp_user_id, $clinic_id];
         if ( $organization_id !== null ) {
             $sql     .= ' AND t.organization_id = %d';
@@ -121,28 +124,13 @@ final class MessageRepository {
                 $params = array_merge( $params, $location_ids );
             }
         }
-        $sql     .= ' ORDER BY t.last_message_id DESC, t.id DESC LIMIT %d';
+        $sql     .= ' ORDER BY t.last_message_id DESC, t.id DESC LIMIT %d OFFSET %d';
         $params[] = max( 1, min( 100, $limit ) );
+        $params[] = max( 0, min( 10000000, $offset ) );
 
         // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- composed statements use only %d placeholders generated above; no raw request value is interpolated.
         $rows = $this->db->fetchAll( $sql, $params );
         return is_array( $rows ) ? $rows : [];
-    }
-
-    public function unread_total( int $clinic_id, ?int $organization_id, int $wp_user_id ): int {
-        $sql    = 'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_messages' ) . ' m'
-            . ' INNER JOIN ' . $this->db->table( 'cpms_message_threads' ) . ' t ON t.id = m.thread_id'
-            . ' INNER JOIN ' . $this->db->table( 'cpms_message_participants' ) . ' mine'
-            . ' ON mine.thread_id = t.id AND mine.wp_user_id = %d'
-            . ' WHERE t.clinic_id = %d AND m.sender_wp_user_id != %d AND m.id > mine.last_read_message_id';
-        $params = [$wp_user_id, $clinic_id, $wp_user_id];
-        if ( $organization_id !== null ) {
-            $sql     .= ' AND t.organization_id = %d';
-            $params[] = $organization_id;
-        }
-
-        // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- composed statement uses only %d placeholders.
-        return (int) $this->db->fetchValue( $sql, $params );
     }
 
     public function thread_unread( int $thread_id, int $wp_user_id ): int {

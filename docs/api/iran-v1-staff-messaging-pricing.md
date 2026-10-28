@@ -14,9 +14,9 @@ rial↔toman conversion. `quantity` is at most two decimals (`cpms_invoice_items
 
 | Method | Route | Capability | Rate limit | Result |
 | --- | --- | --- | --- | --- |
-| GET | `/context` | `cpms_visit_read` + doctor/receptionist class | 120/min | `clinic_id`, `organization_id`, `actor_class`, `counterparts[]`, `unread_total`, `retention_policy=append_only`, `max_message_chars=2000` |
-| GET | `/threads?limit=50` | same | 120/min | `threads[]` (`id`, `counterpart`, `patient_id`, `visit_id`, `location_id`, `unread_count`, `last_message_excerpt`, `last_message_at`, `last_message_jalali`), `unread_total`, `polling` |
-| POST | `/threads` | same | 120/min | `{recipient_wp_user_id, patient_id?, visit_id?}` → thread (201). `patient_id` and `visit_id` must be **both** present or both absent; server verifies `visit.clinic_id`, `visit.patient_id === patient_id`, `patient.clinic_id`, doctor ownership of the Visit and Location eligibility of both participants. **Role pairing:** the two participants must be one doctor and one receptionist (effective scoped classes); same-class recipients are refused with 403 `CLINIC_PERMISSION_DENIED` / `reason=role_pairing`, and `/context` only lists opposite-class counterparts. |
+| GET | `/context` | active membership + server-derived doctor (`cpms_consult_complete`), receptionist (`cpms_queue_checkin`), or finance (`cpms_finance_read` plus `cpms_payment_create` or `cpms_invoice_create`) eligibility | 120/min | `clinic_id`, `organization_id`, `actor_class`, `counterparts[]`, `unread_total`, `retention_policy=append_only`, `max_message_chars=2000` |
+| GET | `/threads?limit=50` | same; pair and active counterparty rechecked | 120/min | `threads[]` (`id`, `counterpart`, `patient_id`, `visit_id`, `location_id`, `unread_count`, `last_message_excerpt`, `last_message_at`, `last_message_jalali`), `unread_total`, `polling` |
+| POST | `/threads` | same | 120/min | `{recipient_wp_user_id, patient_id?, visit_id?}` → private thread (201). Each thread is exactly two explicit active CPMS members, checked on every request; the same-role and cross-role one-to-one pairs are allowed among doctor, receptionist, and finance classes. Finance is capability-derived, not client-labelled. `patient_id` and `visit_id` must be **both** present or both absent; links are restricted to doctor/reception participants with `cpms_visit_read` and a doctor participant on the Visit's care team. |
 | GET | `/threads/{id}/messages?since_id=0&limit=100` | same | 120/min | `messages[]` (`id`, `sender_wp_user_id`, `body`, `created_at`, `jalali_time`, `mine`), `last_id`, `unread_count`. Incremental authenticated polling; bounded to 100 rows. |
 | POST | `/threads/{id}/messages` | same | **20 sends/min per actor** | `{body}` → message (201). Plain text only: HTML tags/control characters stripped, 1–2000 characters. |
 | POST | `/threads/{id}/read` | same | 120/min | Monotonic `last_read_message_id`, `unread_count`, `unread_total`. |
@@ -25,9 +25,7 @@ rial↔toman conversion. `quantity` is at most two decimals (`cpms_invoice_items
 the persisted `clinic_id` **and** `organization_id` equal the trusted scope. A
 thread with a `location_id` additionally requires Location authorization for
 the actor and the counterpart. Unknown/foreign ids share the non-enumerating
-404 `CLINIC_NOT_FOUND` parity. No clinical note, prescription, medical file or
-other PHI field is projected. Audit events (`MESSAGE_THREAD_CREATE`,
-`MESSAGE_SEND`) store ids/lengths only — never message bodies.
+404 `CLINIC_NOT_FOUND` parity. A thread must have exactly two participant rows; malformed/group-shaped rows fail closed. Active membership, current effective staff capability, participant ID, tenant, and applicable Location are rechecked on listing, polling, send, and read acknowledgment. WordPress administrator status is not a messaging grant. No clinical note, prescription, medical file or other PHI field is projected. Audit events contain no message body or recipient identity; message-send audit metadata records only thread/message identifiers, safe linkage metadata, and body length.
 
 **Retention:** append-only. There is no update/delete route for messages;
 history is kept for the Clinic lifetime under the existing backup/DR policy.
@@ -98,7 +96,7 @@ not receive capture/void authority from this slice.
 
 ## D. Portal modules (Staff Portal, no new top-level wp-admin menu)
 
-- `?cpms-module=messages` → «پیام‌های داخلی مطب» — Persian RTL, responsive,
+- `?cpms-module=messages` → «پیام‌های خصوصی کارکنان» — Persian RTL, responsive,
   unread badges, timestamps, authenticated incremental polling every 8s.
 - `?cpms-module=pricing` → «تعرفه و خدمات ویزیت» — Persian RTL, responsive,
   billing refresh every 15s.

@@ -6,14 +6,13 @@ namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Messaging\MessagingException;
 use ClinicCore\Application\Messaging\StaffMessagingService;
-use ClinicCore\Auth\RolesAndCapabilities;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
 use WP_REST_Server;
 
 /**
- * REST boundary for internal Doctor/Receptionist messaging.
+ * REST boundary for private one-to-one messaging among eligible Clinic staff.
  *
  * Efficient authenticated polling only (incremental `since_id`); no WebSocket,
  * no WordPress comments, no public route. Every route is nonce + login +
@@ -186,7 +185,15 @@ final class MessagingController extends RestBase {
             return $this->error( 'CLINIC_UNAUTHORIZED', 401, 'وارد نشده اید' );
         }
 
-        return $this->requireClinicPermission( RolesAndCapabilities::VISIT_READ );
+        try {
+            $this->messaging->authorize_actor( $this->user_id() );
+        } catch ( MessagingException ) {
+            // This route has no safe unscoped mode. Collapse missing Clinic,
+            // membership, and capability state into the same denial envelope.
+            return $this->error( 'CLINIC_PERMISSION_DENIED', 403, 'دسترسی ندارید' );
+        }
+
+        return true;
     }
 
     private function poll_limit( WP_REST_Request $request ): bool|WP_Error {
