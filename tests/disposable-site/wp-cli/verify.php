@@ -227,6 +227,29 @@ try {
         cpms_ds_fail('BOUNDED_FIXTURE', 'non-generating bounded templates or exact synthetic slot scope was violated');
     }
     if (!$after_browser) {
+        // Regression (near-midnight fixture defect). The browser journey books the
+        // earliest still-available synthetic slot and then checks that appointment
+        // in on the Staff Portal reception board, which is strictly the Location's
+        // local "today" (ReceptionPortalController::board -> VisitService::today
+        // plus today's booked rows). Assert through the fixture's own recorded
+        // public slot that the offer the journey will take is on that local day, so
+        // this lane can never again pass or fail on the wall clock alone. Prints
+        // nothing on success, so the byte-for-byte idempotency comparison in the
+        // "Idempotent repeat" step stays stable.
+        $public_slot_date = (string) $db->fetchValue(
+            'SELECT slot_date FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [(int) ($state['slot_id'] ?? 0), $clinic_id]
+        );
+        $location_timezone = (string) $db->fetchValue(
+            'SELECT timezone FROM ' . $db->table('cpms_locations') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [(int) $state['location_id'], $clinic_id]
+        );
+        $board_local_today = in_array($location_timezone, timezone_identifiers_list(), true)
+            ? (new DateTimeImmutable('now', new DateTimeZone('UTC')))->setTimezone(new DateTimeZone($location_timezone))->format('Y-m-d')
+            : '';
+        if ($public_slot_date === '' || $board_local_today === '' || $public_slot_date !== $board_local_today) {
+            cpms_ds_fail('BOUNDED_FIXTURE', 'the publicly bookable synthetic slot is not on the reception board local day');
+        }
         $initial = [
             'cpms_appointments' => 1,
             'cpms_visits' => 1,

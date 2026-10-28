@@ -11,6 +11,14 @@ needs no SSH, WP-CLI, terminal or database access.
 - **Production is untouched:** nothing under `clinic-practice-management/**` is
   modified by this branch; the companion is a separate plugin directory.
 
+## Separate scoped mode (non-empty test sites)
+
+A second, disabled-by-default wp-admin page `cpms-scoped-demo` supports evaluation on an existing non-empty WordPress test site. It is not a relaxation of the strict disposable preflight: it uses a separate `cpsd-` fixture namespace, a 128-bit fixture ID, its own HMAC-sealed manifest, explicit administrator activation, a sealed baseline snapshot, full global audit-chain verification, exact per-record ownership collection, and fail-closed teardown.
+
+The scoped teardown never deletes `cpms_audit_logs`; it preserves unrelated queue jobs, shared/global rate-limit counters, and all pre-existing WordPress/CPMS rows. Because the append-only audit table has a production foreign key to `cpms_clinics`, the three synthetic parent rows (Organization, Clinic, Locations) are archived in place as inert audit anchors instead of being physically deleted; all owned operational, clinical and financial records are removed. It verifies baseline digests and the full audit hash chain before and after cleanup. Browser-only Persian instructions are in `docs/scoped-demo/setup-fa.md`; the design and safety contract are in `docs/scoped-demo/`.
+
+Real MySQL 8 / MariaDB 11.4.13 / Chromium acceptance must be executed on the exact PR head before this mode can be claimed production-ready.
+
 ## Surface
 
 One page: **مدیریت مطب → دموی یک‌بارمصرف CPMS** when CPMS Classic is active.

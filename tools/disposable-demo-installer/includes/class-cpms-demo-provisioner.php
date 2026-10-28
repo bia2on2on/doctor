@@ -30,27 +30,27 @@ class Provisioner {
 	/**
 	 * @var Env
 	 */
-	private Env $env;
+	protected Env $env;
 
 	/**
 	 * @var Platform
 	 */
-	private Platform $platform;
+	protected Platform $platform;
 
 	/**
 	 * @var Manifest
 	 */
-	private Manifest $manifest;
+	protected Manifest $manifest;
 
 	/**
 	 * @var Preflight
 	 */
-	private Preflight $preflight;
+	protected Preflight $preflight;
 
 	/**
 	 * @var Credentials
 	 */
-	private Credentials $credentials;
+	protected Credentials $credentials;
 
 	/**
 	 * @param Env         $env Environment.
@@ -81,12 +81,13 @@ class Provisioner {
 	/**
 	 * @return array{fixture_id:string,slug:string} New fixture identity.
 	 */
-	private function new_fixture(): array {
-		$fixture = bin2hex( random_bytes( 8 ) );
+	protected function new_fixture(): array {
+		$fixture = $this->manifest->fixture_id();
+		$prefix  = $this->manifest->fixture_prefix();
 
 		return array(
 			'fixture_id' => $fixture,
-			'slug'       => 'cpdd-' . $fixture,
+			'slug'       => $prefix . $fixture,
 		);
 	}
 
@@ -117,6 +118,8 @@ class Provisioner {
 		if ( $this->manifest->exists() ) {
 			throw new Exception( 'ALREADY_PROVISIONED', 'یک دمو از قبل ثبت شده است؛ برای ساخت دموی تازه ابتدا آن را پاک‌سازی کنید.' );
 		}
+
+		$this->before_provision( $admin_id );
 
 		$preflight = $this->preflight->run();
 		if ( ! $preflight['ok'] ) {
@@ -161,7 +164,7 @@ class Provisioner {
 			$stage = 'users';
 			$index = 0;
 			foreach ( Credentials::PERSONA_ORDER as $persona ) {
-				$login = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
+				$login = $this->manifest->fixture_prefix() . $persona . '-' . $fixture['fixture_id'];
 				if ( $this->env->username_exists( $login ) ) {
 					throw new Exception( 'USER_EXISTS', 'نام کاربری آزمایشی از قبل وجود دارد؛ سایت خالی نیست.' );
 				}
@@ -379,7 +382,7 @@ class Provisioner {
 						'method'          => 'other',
 						'transaction_ref' => 'SYNTHETIC-NO-PAYMENT',
 					),
-					'cpdd-synthetic-payment-' . $fixture['fixture_id']
+					$this->manifest->fixture_prefix() . 'synthetic-payment-' . $fixture['fixture_id']
 				);
 				$manifest = $this->manifest->save( $manifest );
 				$this->platform->transition( $reception, $visit, 'check_out' );
@@ -412,7 +415,7 @@ class Provisioner {
 			$manifest          = $this->manifest->save( $manifest );
 
 			$this->platform->audit(
-				'CPDD_DEMO_PROVISIONED',
+				$this->manifest->audit_action(),
 				$admin_id,
 				$clinic_id,
 				array(
@@ -423,9 +426,12 @@ class Provisioner {
 				)
 			);
 
-			return array(
-				'manifest'    => $manifest,
-				'credentials' => $passwords,
+			return $this->after_provision(
+				array(
+					'manifest'    => $manifest,
+					'credentials' => $passwords,
+				),
+				$admin_id
 			);
 		} catch ( \Throwable $error ) {
 			$manifest['status']          = 'failed';
@@ -445,38 +451,96 @@ class Provisioner {
 	}
 
 	/**
-	 * Future public-booking slots: one block today (if time remains before
-	 * Tehran midnight) plus blocks on the next two days. Deliberately generated
-	 * with the same production slot table contract.
+	 * Extension hook executed inside the provisioning lock before any write.
+	 * Strict mode deliberately does nothing.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return void
+	 */
+	protected function before_provision( int $admin_id ): void {
+		unset( $admin_id );
+	}
+
+	/**
+	 * Extension hook executed inside the provisioning lock after the manifest is sealed.
+	 *
+	 * @param array{manifest:array<string,mixed>,credentials:array<string,string>} $result Result.
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>}
+	 */
+	protected function after_provision( array $result, int $admin_id ): array {
+		unset( $admin_id );
+
+		return $result;
+	}
+
+	/**
+	 * Future public-booking slots: one later-day 09:00 row reserved for the
+	 * synthetic staff appointment, one same-day public block, then the remaining
+	 * later-day rows. The plan never has fewer than six entries, so the "open
+	 * future slots for a NEW public booking" contract cannot be starved by the
+	 * wall clock, and the same-day block stays genuinely available for the public
+	 * journey instead of being consumed by the staff appointment. Deliberately
+	 * generated with the same production slot table contract.
 	 *
 	 * @return list<array{date:string,time:string}>
 	 */
 	public function slot_plan(): array {
-		$tz    = new \DateTimeZone( 'Asia/Tehran' );
-		$now   = new \DateTimeImmutable( 'now', $tz );
-		$today = $now->format( 'Y-m-d' );
-		$plan  = array();
+		// The returned order is fixture ROLE order, not chronological, and that is
+		// deliberate. do_provision() books $slots[0] for the synthetic staff
+		// appointment, while the browser journey books the earliest still-available
+		// slot and then checks that appointment in on the Staff Portal reception
+		// board - which is strictly the Location's local "today"
+		// (ReceptionPortalController::board -> VisitService::today plus today's
+		// booked rows). Reserving a later-day slot for the staff appointment keeps
+		// the same-day public offer genuinely available instead of consuming it.
+		//
+		// The public block is anchored five minutes ahead on a whole-minute grid and
+		// every entry carries its OWN local date, so the block can never collapse as
+		// local midnight approaches. The previous plan anchored 45 minutes ahead and
+		// truncated DOWN to a 20-minute boundary, which silently dropped today's
+		// entries one by one (3 -> 2 -> 1 -> 0) and made this lane fail on the wall
+		// clock alone every day between ~22:55 and ~24:00 Asia/Tehran: with exactly
+		// one same-day slot the staff appointment consumed it and the browser timed
+		// out waiting for a same-day arrival row, and with none the "open future
+		// slots" bound failed. No date is hardcoded here and no production
+		// scheduling rule is bypassed - every entry is still a real strictly-future
+		// cpms_schedule_slots row with the normal 20-minute duration and capacity 1,
+		// persisted through Platform::insert_slot() and booked through the ordinary
+		// production booking service.
+		$tz  = new \DateTimeZone( 'Asia/Tehran' );
+		$now = new \DateTimeImmutable( 'now', $tz );
 
-		$start = $now->modify( '+45 minutes' );
-		$start = $start->setTime( (int) $start->format( 'H' ), (int) $start->format( 'i' ) - ( (int) $start->format( 'i' ) % 20 ), 0 );
-		foreach ( array( 0, 20, 40 ) as $offset ) {
-			$slot = $start->modify( '+' . $offset . ' minutes' );
-			if ( $slot->format( 'Y-m-d' ) === $today ) {
-				$plan[] = array(
-					'date' => $slot->format( 'Y-m-d' ),
-					'time' => $slot->format( 'H:i:00' ),
-				);
-			}
-		}
+		$upcoming = array();
 		for ( $day = 1; $day <= 2; $day++ ) {
 			foreach ( array( '09:00:00', '09:20:00', '09:40:00' ) as $time ) {
-				$plan[] = array(
+				$upcoming[] = array(
 					'date' => $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' ),
 					'time' => $time,
 				);
 			}
 		}
 
-		return $plan;
+		$anchor   = $now->modify( '+5 minutes' );
+		$anchor   = $anchor->setTime( (int) $anchor->format( 'H' ), (int) $anchor->format( 'i' ), 0 );
+		$journey  = $anchor->format( 'Y-m-d' );
+		$public   = array();
+		foreach ( array( 0, 20, 40 ) as $offset ) {
+			$slot = $anchor->modify( '+' . $offset . ' minutes' );
+			if ( $slot->format( 'Y-m-d' ) === $journey ) {
+				$public[] = array(
+					'date' => $slot->format( 'Y-m-d' ),
+					'time' => $slot->format( 'H:i:00' ),
+				);
+			}
+		}
+
+		// array_shift() cannot return null here: the loop above always fills six
+		// entries. The reserved slot is a later-day 09:00 row, so it can never
+		// collide with the anchored public block (which starts at most a few
+		// minutes ahead of "now").
+		$plan = array( array_shift( $upcoming ) );
+
+		return array_merge( $plan, $public, $upcoming );
 	}
 }
