@@ -348,7 +348,8 @@ try {
 	$created = cpsd_ts_row( $t( 'cpms_patients' ), $new_patient );
 	cpsd_ts_check( is_array( $created ) && (string) ( $created['mobile'] ?? '' ) === $mobile, 'A: the new patient exists with a DIFFERENT mobile', $checks, $mobile );
 	$after_write = $teardown->preview( $manifest->load() );
-	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the recorder registered the row and the teardown attributes it', $checks, 'patient=' . $new_patient );
+	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the recorder registered the row inside the demo tenant', $checks, 'patient=' . $new_patient );
+	cpsd_ts_check( true === (bool) $after_write['ok'], 'A: the recorded write is ATTRIBUTED - the preview stays clean', $checks, implode( ' | ', array_slice( (array) ( $after_write['problems'] ?? array() ), 0, 3 ) ) );
 	$summary = $ownership->summary( (string) $live['fixture_id'] );
 	cpsd_ts_check( true === (bool) ( $summary['ok'] ?? false ), 'A: the ownership ledger still verifies after the recorded write', $checks, (string) ( $summary['error'] ?? '' ) );
 	$report['registered_patient'] = $new_patient;
@@ -398,9 +399,19 @@ try {
 		'manifest_admin' => (array) ( $live['admin_id'] ?? 0 ),
 		'real_admin'  => $real_admin,
 	);
+	// The tenant scope lists every membership row that sits inside the demo
+	// Clinic; the DELETABLE set is what attribution proved. The invariant is
+	// therefore not "absent from scope" but "the preview refuses", and the
+	// refusal must name this row rather than a generic total.
 	cpsd_ts_check(
-		! cpsd_ts_claimed( $b_preview, 'cpms_clinic_memberships', $b_id ),
-		'B: the unregistered real administrator grant is NOT deletable',
+		false === (bool) $b_preview['ok'],
+		'B: the preview REFUSES while an unregistered real administrator holds a grant',
+		$checks,
+		implode( ' | ', array_slice( (array) ( $b_preview['problems'] ?? array() ), 0, 3 ) )
+	);
+	cpsd_ts_check(
+		cpsd_ts_problem( $b_preview, 'cpms_clinic_memberships:' . $b_id ) || cpsd_ts_problem( $b_preview, 'SCOPED_FOREIGN_TENANT_ROW' ),
+		'B: the refusal names the real administrator\'s grant',
 		$checks,
 		mb_substr( (string) wp_json_encode( $b_diag ), 0, 900 )
 	);
@@ -452,7 +463,7 @@ try {
 	);
 	cpsd_ts_check( $d_id === $collision_id && null !== cpsd_ts_row( $invoice_table, $d_id ), 'D: the colliding invoice really exists with the sealed patient id', $checks, 'invoice=' . $d_id );
 	$d_preview = $teardown->preview( $manifest->load() );
-	cpsd_ts_check( ! cpsd_ts_claimed( $d_preview, 'cpms_invoices', $d_id ), 'D: the numeric collision does not make the invoice demo-owned', $checks );
+	cpsd_ts_check( false === (bool) $d_preview['ok'], 'D: the preview refuses a row that only shares a numeric id', $checks, implode( ' | ', array_slice( (array) ( $d_preview['problems'] ?? array() ), 0, 3 ) ) );
 	cpsd_ts_check( cpsd_ts_problem( $d_preview, 'cpms_invoices:' . $d_id ) || cpsd_ts_problem( $d_preview, 'SCOPED_FOREIGN_TENANT_ROW' ), 'D: the collision is refused instead of assumed', $checks, implode( ' | ', array_slice( (array) $d_preview['problems'], 0, 3 ) ) );
 	$wpdb->delete( $invoice_table, array( 'id' => $d_id ), array( '%d' ) );
 
@@ -466,7 +477,7 @@ try {
 	cpsd_ts_check( null !== cpsd_ts_row( $visit_table, $e_id ), 'E: the unprovable visit inside the demo Clinic really exists', $checks, 'id=' . $e_id );
 	$e_preview = $teardown->preview( $manifest->load() );
 	cpsd_ts_check( false === (bool) $e_preview['ok'], 'E: unknown ownership blocks the teardown before any destructive stage', $checks );
-	cpsd_ts_check( ! cpsd_ts_claimed( $e_preview, 'cpms_visits', $e_id ), 'E: the unprovable row is not claimed', $checks );
+	cpsd_ts_check( cpsd_ts_problem( $e_preview, 'cpms_visits:' . $e_id ) || cpsd_ts_problem( $e_preview, 'SCOPED_FOREIGN_TENANT_ROW' ), 'E: the unprovable row is named by the refusal', $checks, implode( ' | ', array_slice( (array) ( $e_preview['problems'] ?? array() ), 0, 3 ) ) );
 	cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_patients' ), $patient ), 'E: the refused preview deleted nothing (the demo patient still exists)', $checks );
 	$wpdb->delete( $visit_table, array( 'id' => $e_id ), array( '%d' ) );
 	cpsd_ts_check( true === (bool) $teardown->preview( $manifest->load() )['ok'], 'E: removing the unprovable row restores a clean preview', $checks );
