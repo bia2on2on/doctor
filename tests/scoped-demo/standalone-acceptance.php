@@ -6,6 +6,7 @@
  * installed (no `clinic-practice-management`):
  *
  *   CPSD_SA_MODE=seed       wp eval-file tests/scoped-demo/standalone-acceptance.php
+ *   CPSD_SA_MODE=provision  ... (provisions the scoped demo and LEAVES IT ACTIVE)
  *   CPSD_SA_MODE=assert     wp eval-file tests/scoped-demo/standalone-acceptance.php
  *   CPSD_SA_MODE=conflict   wp eval-file tests/scoped-demo/standalone-acceptance.php
  *   CPSD_SA_MODE=after_delete wp eval-file tests/scoped-demo/standalone-acceptance.php
@@ -207,6 +208,36 @@ try {
 		if ( false === file_put_contents( $cpsd_sa_file, (string) wp_json_encode( $evidence ) ) ) {
 			throw new RuntimeException( 'cannot write evidence file: ' . $cpsd_sa_file );
 		}
+	}
+
+	if ( 'provision' === $cpsd_sa_mode ) {
+		// The drill in tools/…/tests/scoped-integration.php provisions and then
+		// tears itself down; the preservation proof needs a fixture that is still
+		// LIVE while the seeded WordPress data is digested. Same objects, same
+		// services, no shortcut: this is the real provisioner on the real schema.
+		$env         = new Env();
+		$platform    = new \CpmsDemo\Platform();
+		$manifest    = new \CpmsDemo\ScopedManifest( $env );
+		$audit_guard = new \CpmsDemo\ScopedAuditGuard( $platform );
+		$baseline    = new \CpmsDemo\ScopedBaseline( $env, $platform );
+		$preflight   = new \CpmsDemo\ScopedPreflight( $env, $platform, $manifest, $audit_guard, $baseline );
+		$credentials = new \CpmsDemo\Credentials( $env );
+		$provisioner = new \CpmsDemo\ScopedProvisioner( $env, $platform, $manifest, $preflight, $credentials, $baseline, $audit_guard );
+		$manifest->enable_mode( 1 );
+		$state = $preflight->run();
+		$cpsd_sa_check( (bool) $state['ok'], 'scoped preflight passes on the non-empty site', $checks, implode( ',', (array) ( $state['blocking'] ?? array() ) ) );
+		$result = $provisioner->provision( 1 );
+		$active = $manifest->load();
+		$cpsd_sa_check( is_array( $active ) && 'active' === (string) ( $active['status'] ?? '' ), 'the scoped fixture is active', $checks );
+		if ( is_array( $active ) ) {
+			$cpsd_sa_check( count( \CpmsDemo\Credentials::PERSONA_ORDER ) === count( (array) ( $active['ids']['user_ids'] ?? array() ) ), 'one synthetic account per persona is recorded', $checks );
+			$cpsd_sa_check( (int) ( $active['ids']['clinic_id'] ?? 0 ) > 0, 'the demo Clinic id is recorded', $checks, (string) ( $active['ids']['clinic_id'] ?? 0 ) );
+			$evidence['fixture_id'] = (string) ( $active['fixture_id'] ?? '' );
+			$evidence['demo_clinic'] = (int) ( $active['ids']['clinic_id'] ?? 0 );
+			$evidence['personas']    = count( (array) ( $active['ids']['user_ids'] ?? array() ) );
+		}
+		// Credentials are one-time secrets: never written to evidence.
+		$cpsd_sa_check( array() !== (array) ( $result['credentials'] ?? array() ), 'the provisioner issued one credential per persona', $checks, 'count=' . count( (array) ( $result['credentials'] ?? array() ) ) );
 	}
 
 	if ( 'assert' === $cpsd_sa_mode ) {

@@ -291,6 +291,28 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Provision the scoped demo on the non-empty site
+        run: |
+          set -Eeuo pipefail
+          # The integration drill above proves the same services work and then
+          # tears itself down; this step leaves a fixture ACTIVE so the
+          # preservation proof below runs against a real, live demo.
+          CPSD_SA_MODE=provision CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
+            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ci/standalone-provision.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/standalone-provision.json', encoding='utf-8').read().strip().splitlines()[-1])
+          print('STANDALONE_PROVISION_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []):
+              print(line)
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
+                  print('::error title=CPSA_PROVISION::' + str(line).replace('%', '%25').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
       - name: Pre-existing WordPress data survives provisioning
         run: |
           set -Eeuo pipefail
