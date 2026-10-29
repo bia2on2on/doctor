@@ -110,7 +110,38 @@ final class Standalone {
 	 * @return bool
 	 */
 	public static function another_core_is_loaded(): bool {
-		return defined( 'CPMS_PLUGIN_FILE' ) || class_exists( 'ClinicCore\\Bootstrap\\App', false );
+		if ( ! defined( 'CPMS_PLUGIN_FILE' ) && ! class_exists( 'ClinicCore\\Bootstrap\\App', false ) ) {
+			return false;
+		}
+
+		// A core that came from THIS package's `core/` directory is not another
+		// core: it is our own, reached again in the same PHP process (WordPress
+		// includes the plugin file once for the request and again inside
+		// activate_plugin(), and WP-CLI keeps one process across the whole
+		// activation). Treating that as a conflict refused every activation.
+		$loaded   = self::loaded_core_file();
+		$embedded = realpath( self::core_main() );
+		if ( '' !== $loaded && false !== $embedded ) {
+			return realpath( $loaded ) !== $embedded;
+		}
+
+		return true;
+	}
+
+	/**
+	 * Where the loaded CPMS core classes actually came from.
+	 *
+	 * @return string Absolute path, or '' when no file can be resolved.
+	 */
+	private static function loaded_core_file(): string {
+		if ( class_exists( 'ClinicCore\\Bootstrap\\App', false ) ) {
+			$file = ( new \ReflectionClass( 'ClinicCore\\Bootstrap\\App' ) )->getFileName();
+			if ( is_string( $file ) && '' !== $file ) {
+				return $file;
+			}
+		}
+
+		return defined( 'CPMS_PLUGIN_FILE' ) ? (string) CPMS_PLUGIN_FILE : '';
 	}
 
 	/**
@@ -119,6 +150,10 @@ final class Standalone {
 	 * @return string '' when operational, otherwise a fault code.
 	 */
 	public static function evaluate(): string {
+		if ( self::$booted ) {
+			// This request already booted the embedded core: we are the owner.
+			return '';
+		}
 		if ( ! self::is_embedded() ) {
 			// Companion build: the production plugin must provide the core.
 			if ( ! class_exists( 'ClinicCore\\Bootstrap\\App' ) ) {
@@ -179,6 +214,15 @@ final class Standalone {
 		if ( ! self::is_embedded() ) {
 			// Companion mode: production already booted itself.
 			return class_exists( 'ClinicCore\\Bootstrap\\App' );
+		}
+		if ( ! self::production_is_active() && ! self::another_core_is_loaded() ) {
+			// The embedded core may already be loaded without this class having
+			// recorded it (re-entry after a second include of the plugin file).
+			if ( class_exists( 'ClinicCore\\Bootstrap\\App', false ) ) {
+				self::$booted = true;
+
+				return true;
+			}
 		}
 		if ( self::production_is_active() || self::another_core_is_loaded() ) {
 			self::$fault = self::production_is_active()

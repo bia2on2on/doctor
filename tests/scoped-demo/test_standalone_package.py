@@ -77,6 +77,26 @@ class StandaloneBootstrap(unittest.TestCase):
         # `class_exists(..., false)`: a merely autoloadable class is not "loaded".
         self.assertIn("class_exists( 'ClinicCore\\\\Bootstrap\\\\App', false )", self.standalone)
 
+    def test_our_own_core_is_never_mistaken_for_a_conflict(self) -> None:
+        """A second include of the plugin file in one process is not a conflict.
+
+        WordPress includes an inactive plugin's file to activate it, and the
+        embedded core is then already loaded. Discriminating by "a core class
+        exists" refused every real activation; the discriminator has to ask
+        WHERE the class came from.
+        """
+        body = self.standalone[self.standalone.index("public static function another_core_is_loaded"):]
+        body = body[: body.index("public static function evaluate(")]
+        self.assertIn("ReflectionClass(", body)
+        self.assertIn("->getFileName()", body)
+        self.assertIn("realpath( self::core_main() )", body)
+        self.assertIn("realpath( $loaded ) !== $embedded", body)
+        # And a request that already booted the core is the owner of it.
+        evaluate = self.standalone[self.standalone.index("public static function evaluate("):]
+        evaluate = evaluate[: evaluate.index("public static function fault_message(")]
+        self.assertIn("if ( self::$booted ) {", evaluate)
+        self.assertIn("return '';", evaluate)
+
     def test_exactly_one_activation_path_for_the_core(self) -> None:
         # The embedded entry file is never registered as a plugin, so its own
         # activation hook cannot fire: the demo's hook is the only one.

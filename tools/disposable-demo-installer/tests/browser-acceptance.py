@@ -903,8 +903,13 @@ def main() -> None:
                     )
                 )
                 check(
+                    # Two error notices are correct here and neither is noise: the
+                    # standalone banner explains that THIS build needs production
+                    # CPMS, and the preflight refuses the provisioning. The check
+                    # therefore names both surfaces instead of counting notices.
                     "admin provisioning request fails without CPMS and leaves no fixture or extra user",
-                    admin_page.locator(".notice-error").count() == 1
+                    admin_page.locator('[data-cpdd-preflight="fail"]').count() == 1
+                    and admin_page.locator(".notice-error").count() >= 1
                     and admin_page.locator('[data-cpdd-fixture-id]').count() == 0
                     and no_cpms_fixture == {"users": 1, "manifest": False, "clinics": 1, "patients": 0, "appointments": 0},
                     json.dumps(no_cpms_fixture),
