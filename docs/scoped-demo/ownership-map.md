@@ -346,3 +346,51 @@ teardown. Deleting the ledger, truncating it, replacing it with an older (still
 perfectly sealed) copy, or deleting the seal are all detected. Interrupted
 operations remain recoverable: the pending `intent` record and the sealed slug are
 untouched by any of this, and `ScopedClinics::resolve()` still repairs them.
+
+### An unverifiable manifest stands down; it never breaks the site (Stage 4)
+
+The recorder, the barrier and the portal refusal all run on ordinary requests — a
+login POST is a *write* request too. So all three read the manifest through one
+total reader, `ScopedTenantGuard::verified_manifest()`, which returns `null` for a
+payload that does not verify, for a mode marker that does not verify, for a
+manifest that is not `active`, and for one with an empty fixture id. The portal
+refusal catches the same load.
+
+This is fail-closed, not a weakening:
+
+* with no verified fixture there is no fixture identity to register rows against
+  (`register_rows()` needs one) and no demo tenant this process can *prove*, so
+  the boundary cannot be enforced and nothing new becomes deletable;
+* the teardown refuses every row it cannot attribute, so anything written in that
+  window is `SCOPED_FOREIGN_TENANT_ROW` and needs an explicit human decision;
+* and the teardown refuses to run at all while the manifest does not verify.
+
+Letting the exception escape instead — the first implementation — turned a
+tampered manifest into a fatal error on **every form POST of the site**, including
+the login the operator needs to repair the fixture. The Chromium tamper phase of
+the scoped demo lane found exactly that; `tests/scoped-demo/tamper-manifest.php`
+now pins both entry points on the real database with the real tampered payload.
+
+### Evidence (real MySQL 8 and MariaDB 11.4.13 lanes)
+
+* **P8 (attribution).** A real patient booking planted inside the demo Clinic
+  makes `preview()` and `execute()` refuse with `SCOPED_FOREIGN_TENANT_ROW`
+  naming `cpms_patients:<id>`, with zero deletions, byte-identical host rows and
+  an intact audit chain.
+* **P8 (REST boundary).** A real, non-fixture account POSTing the **real**
+  production route `POST /clinic/v1/booking/hold` with the demo Clinic in the
+  `X-CPMS-Clinic-Id` header and in the body is refused with HTTP 403
+  `SCOPED_DEMO_TENANT_WRITE_REFUSED`. Controls in the same drill: the same
+  account writing into its **own** Clinic is not restricted by the demo, and a
+  synthetic fixture persona is not refused by the barrier. The probe reads the
+  machine-readable `code` from the REST **envelope**: `WP_REST_Server::dispatch()`
+  converts a `WP_Error` into a `WP_REST_Response` before returning, so a probe
+  that only inspects `is_wp_error()` reports every refusal as "not refused".
+* **Tamper.** With the manifest tampered out of band, `load()`, the write
+  recorder and `write_verdict()` all refuse or stand down without throwing, and a
+  real Chromium session can still log in and see the Persian
+  `MANIFEST_TAMPERED` refusal with no scoped action offered.
+* **P9 (ledger).** Deleted, truncated, rolled-back, seal-lost and ledger+seal-lost
+  ledgers all refuse with `SCOPED_OWNERSHIP_LEDGER_INVALID` and zero deletions; an
+  exact restore proceeds and the teardown completes. A clean teardown discards the
+  ledger; a *repeated* teardown of an already-removed fixture does not require it.
