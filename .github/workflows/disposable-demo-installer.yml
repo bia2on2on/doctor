@@ -92,10 +92,10 @@ jobs:
       - name: Build installer ZIP twice and prove reproducibility + content
         run: |
           set -Eeuo pipefail
-          OUT_DIR=/tmp/cpdd-build-1 bash bin/build-demo-installer.sh | tee /tmp/cpdd-build-1.log
-          OUT_DIR=/tmp/cpdd-build-2 bash bin/build-demo-installer.sh >/tmp/cpdd-build-2.log
-          ZIP1=/tmp/cpdd-build-1/cpms-disposable-demo-1.0.0.zip
-          ZIP2=/tmp/cpdd-build-2/cpms-disposable-demo-1.0.0.zip
+          OUT_DIR=/tmp/cpdd-build-1 bash bin/build-demo-installer.sh --companion | tee /tmp/cpdd-build-1.log
+          OUT_DIR=/tmp/cpdd-build-2 bash bin/build-demo-installer.sh --companion >/tmp/cpdd-build-2.log
+          ZIP1=/tmp/cpdd-build-1/cpms-disposable-demo-companion-1.0.0.zip
+          ZIP2=/tmp/cpdd-build-2/cpms-disposable-demo-companion-1.0.0.zip
           test "$(sha256sum "$ZIP1" | cut -d' ' -f1)" = "$(sha256sum "$ZIP2" | cut -d' ' -f1)"
           # Exactly one top-level plugin directory, no repository/test/doc paths.
           test "$(unzip -Z1 "$ZIP1" | cut -d/ -f1 | sort -u)" = 'cpms-disposable-demo'
@@ -103,7 +103,15 @@ jobs:
             echo 'FAIL: installer ZIP contains repository paths' >&2; exit 1
           fi
           unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | head -20 | grep -q 'Plugin Name:'
-          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:  clinic-practice-management'
+          # Mission H: the package no longer declares a production dependency; the
+          # companion lane proves the absence is deliberate, the standalone lane proves
+          # the embedded core boots.
+          if unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:'; then
+            echo 'FAIL: Requires Plugins header reintroduced' >&2; exit 1
+          fi
+          if unzip -Z1 "$ZIP1" | grep -q '/core/'; then
+            echo 'FAIL: companion build must not embed the production core' >&2; exit 1
+          fi
           # The companion must never carry the production plugin's sources.
           if unzip -Z1 "$ZIP1" | grep -q 'ClinicCore'; then echo 'FAIL: production sources packaged' >&2; exit 1; fi
           python3 - "$ZIP1" <<'PY'
@@ -123,13 +131,13 @@ jobs:
           json.dump(proof, open('/tmp/cpdd-installer-proof.json', 'w'), indent=2)
           print(json.dumps(proof))
           PY
-          cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
+          cp "$ZIP1" /tmp/cpms-disposable-demo-companion-1.0.0.zip
 
       - name: Upload the genuine installer ZIP
         uses: actions/upload-artifact@v4
         with:
           name: cpms-disposable-demo-installer
-          path: /tmp/cpms-disposable-demo-1.0.0.zip
+          path: /tmp/cpms-disposable-demo-companion-1.0.0.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -248,7 +256,7 @@ jobs:
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
           test "$SCHEMA" = '2026_10_27_0030'
           echo "SCHEMA=$SCHEMA"
-          OUT_DIR=/tmp/cpdd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpdd-ci/companion-build.log
+          OUT_DIR=/tmp/cpdd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" --companion | tee /tmp/cpdd-ci/companion-build.log
           wp plugin install /tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 

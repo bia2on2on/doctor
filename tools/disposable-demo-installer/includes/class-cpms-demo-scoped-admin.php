@@ -245,6 +245,7 @@ class ScopedAdmin {
 		$tombstone = $manifest->tombstone();
 		echo '<div class="wrap cpdd" dir="rtl" data-cpsd-page="1">';
 		echo '<h1>دموی محدودشده CPMS — سایت آزمایشی غیرخالی</h1>';
+		\CpmsDemo\Standalone::render_banner();
 		self::render_notice();
 		self::render_identity( $env, $manifest, $manifest->mode_enabled(), $loaded, $manifest_error );
 		self::render_preflight( $state );

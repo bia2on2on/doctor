@@ -432,6 +432,7 @@ class Admin {
 
 		echo '<div class="wrap cpdd" dir="rtl">';
 		echo '<h1>دموی یک‌بارمصرف CPMS Classic</h1>';
+		\CpmsDemo\Standalone::render_banner();
 		echo '<p class="cpdd-lead">این صفحه فقط برای <strong>سایت آزمایشی خالی</strong> است. هیچ دادهٔ واقعی بیمار، پیامک واقعی یا پرداخت واقعی ساخته نمی‌شود و افزونهٔ Production تغییر نمی‌کند.</p>';
 
 		self::render_notice();

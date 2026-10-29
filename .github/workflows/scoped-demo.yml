@@ -105,10 +105,10 @@ jobs:
       - name: Build companion ZIP twice and prove reproducibility + content
         run: |
           set -Eeuo pipefail
-          OUT_DIR=/tmp/cpsd-build-1 bash bin/build-demo-installer.sh | tee /tmp/cpsd-build-1.log
-          OUT_DIR=/tmp/cpsd-build-2 bash bin/build-demo-installer.sh >/tmp/cpsd-build-2.log
-          ZIP1=/tmp/cpsd-build-1/cpms-disposable-demo-1.0.0.zip
-          ZIP2=/tmp/cpsd-build-2/cpms-disposable-demo-1.0.0.zip
+          OUT_DIR=/tmp/cpsd-build-1 bash bin/build-demo-installer.sh --companion | tee /tmp/cpsd-build-1.log
+          OUT_DIR=/tmp/cpsd-build-2 bash bin/build-demo-installer.sh --companion >/tmp/cpsd-build-2.log
+          ZIP1=/tmp/cpsd-build-1/cpms-disposable-demo-companion-1.0.0.zip
+          ZIP2=/tmp/cpsd-build-2/cpms-disposable-demo-companion-1.0.0.zip
           SHA1="$(sha256sum "$ZIP1" | cut -d' ' -f1)"
           SHA2="$(sha256sum "$ZIP2" | cut -d' ' -f1)"
           test "$SHA1" = "$SHA2"
@@ -122,7 +122,10 @@ jobs:
             echo 'FAIL: production sources packaged' >&2; exit 1
           fi
           unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | head -20 | grep -q 'Plugin Name:'
-          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:  clinic-practice-management'
+          # Mission H: no production-plugin dependency in either build.
+          if unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:'; then
+            echo 'FAIL: Requires Plugins header reintroduced' >&2; exit 1
+          fi
           python3 - "$ZIP1" <<'PY'
           import hashlib, json, sys, zipfile
           path = sys.argv[1]
@@ -139,7 +142,7 @@ jobs:
           json.dump(proof, open('/tmp/cpsd-installer-proof.json', 'w'), indent=2)
           print(json.dumps(proof))
           PY
-          cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
+          cp "$ZIP1" /tmp/cpms-disposable-demo-companion-1.0.0.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -147,7 +150,7 @@ jobs:
           path: |
             /tmp/cpsd-installer-proof.json
             /tmp/cpsd-build-1.log
-            /tmp/cpms-disposable-demo-1.0.0.zip
+            /tmp/cpms-disposable-demo-companion-1.0.0.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -233,8 +236,8 @@ jobs:
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
           test "$SCHEMA" = '2026_10_27_0030'
           echo "SCHEMA=$SCHEMA"
-          OUT_DIR=/tmp/cpsd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpsd-ci/companion-build.log
-          wp plugin install /tmp/cpsd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          OUT_DIR=/tmp/cpsd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" --companion | tee /tmp/cpsd-ci/companion-build.log
+          wp plugin install /tmp/cpsd-ci/cpms-disposable-demo-companion-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 
       - name: Scoped integration on seeded non-empty site

@@ -338,6 +338,117 @@ class ScopedTeardown {
 	private const SEALED_ID_COLUMNS = array( 'id' );
 
 	/**
+	 * Child tables: attribute through an EXPLICIT proven parent row.
+	 *
+	 * These 17 tables previously fell through to the implicit `@tenant` default,
+	 * which meant "it lives in the demo Clinic, therefore it is demo data". That
+	 * is transitive attribution: a financial or clinical row created by a real
+	 * process inside the demo tenant became deletable for no better reason than
+	 * its location. Each row now has to name a parent row that is itself part of
+	 * the attributed set, and the parent column is fixed here - never guessed.
+	 *
+	 * @var array<string,array{0:string,1:string}>
+	 */
+	private const PARENT_RULES = array(
+		'cpms_invoice_items'                    => array( 'cpms_invoices', 'invoice_id' ),
+		'cpms_payment_adjustments'              => array( 'cpms_payments', 'payment_id' ),
+		'cpms_prescription_items'               => array( 'cpms_prescriptions', 'prescription_id' ),
+		'cpms_message_participants'             => array( 'cpms_message_threads', 'thread_id' ),
+		'cpms_visit_status_history'             => array( 'cpms_visits', 'visit_id' ),
+		'cpms_visit_consultation_fees'          => array( 'cpms_visits', 'visit_id' ),
+		'cpms_visit_fee_snapshot_failures'      => array( 'cpms_visits', 'visit_id' ),
+		'cpms_clinical_note_versions'           => array( 'cpms_clinical_notes', 'note_id' ),
+		'cpms_handwriting_pages'                => array( 'cpms_handwriting_documents', 'document_id' ),
+		'cpms_handwriting_page_versions'        => array( 'cpms_handwriting_pages', 'page_id' ),
+		'cpms_ocr_jobs'                         => array( 'cpms_handwriting_pages', 'source_page_id' ),
+		'cpms_membership_capabilities'          => array( 'cpms_clinic_memberships', 'membership_id' ),
+		'cpms_membership_locations'             => array( 'cpms_clinic_memberships', 'membership_id' ),
+		'cpms_organization_membership_capabilities' => array( 'cpms_organization_memberships', 'membership_id' ),
+		'cpms_clinician_locations'              => array( 'cpms_clinicians', 'clinician_id' ),
+		'cpms_custom_role_capabilities'         => array( 'cpms_custom_role_defs', 'role_def_id' ),
+		'cpms_patient_merges'                   => array( 'cpms_patients', 'surviving_patient_id' ),
+	);
+
+	/**
+	 * The ONLY tables where "it configures the demo Clinic" is accepted as
+	 * ownership, and only because a real actor cannot write into a demo tenant
+	 * (server-side barrier). Every entry is pure configuration: no diagnosis, no
+	 * clinical content, no money movement, no actor identity. Anything that is
+	 * not listed here and not covered by `ATTRIBUTION`/`PARENT_RULES` is REFUSED
+	 * - the default is `@none`, never `@tenant`.
+	 *
+	 * @var list<string>
+	 */
+	/**
+	 * Tables where the demo deliberately grants the OPERATOR access.
+	 *
+	 * The scoped fixture adds the real administrator to the synthetic
+	 * Organization so the owner can walk through the demo. That membership row
+	 * names a real account, so it must not be deleted merely because some
+	 * synthetic user id appears in the ledger: a registration on one of these
+	 * tables counts ONLY when the row points at the demo tenant AND names the
+	 * operator recorded in the sealed manifest. Anything else is refused - a
+	 * synthetic actor can never talk the teardown into deleting a real
+	 * administrator's membership, and a membership in a foreign Organization is
+	 * never touched.
+	 *
+	 * @var list<string>
+	 */
+	private const OPERATOR_GRANT_TABLES = array(
+		'cpms_organization_memberships',
+		'cpms_clinic_memberships',
+	);
+
+	private const CONFIGURATION_TABLES = array(
+		'cpms_services',
+		'cpms_settings',
+		'cpms_schedule',
+		'cpms_schedule_exceptions',
+		'cpms_schedule_slots',
+		'cpms_custom_role_defs',
+		'cpms_drug_reference',
+		'cpms_doctor_consultation_fees',
+		'cpms_idempotency_keys',
+	);
+
+	/**
+	 * Which table each sealed manifest id belongs to.
+	 *
+	 * A sealed id is evidence ONLY for the table it was sealed for. Before this
+	 * map existed, `ids` was flattened into one id set and any row in any table
+	 * whose `id` matched a sealed number was treated as demo-owned - so a real
+	 * `cpms_payments` row #42 was deletable because the demo had sealed
+	 * `cpms_patients` #42. That is an auto-increment coincidence, not ownership.
+	 *
+	 * Keys absent from this map (WordPress users, the booking page post) are not
+	 * CPMS rows and are never used as row authority.
+	 *
+	 * @var array<string,string>
+	 */
+	private const SEALED_KEY_TABLES = array(
+		'organization_id'  => 'cpms_organizations',
+		'clinic_id'        => 'cpms_clinics',
+		'location_ids'     => 'cpms_locations',
+		'clinician_id'     => 'cpms_clinicians',
+		'clinician_id_second' => 'cpms_clinicians',
+		'patient_id'       => 'cpms_patients',
+		'identity_id'      => 'cpms_patient_identities',
+		'slot_ids'         => 'cpms_schedule_slots',
+		'appointment_id'   => 'cpms_appointments',
+		'service_id'       => 'cpms_services',
+		'visit_id'         => 'cpms_visits',
+		'visit_id_pricing' => 'cpms_visits',
+		'note_ids'         => 'cpms_clinical_notes',
+		'pricing_note_id'  => 'cpms_clinical_notes',
+		'prescription_id'  => 'cpms_prescriptions',
+		'follow_up_id'     => 'cpms_follow_ups',
+		'invoice_id'       => 'cpms_invoices',
+		'payment_id'       => 'cpms_payments',
+		'message_thread_ids' => 'cpms_message_threads',
+		'message_ids'      => 'cpms_messages',
+	);
+
+	/**
 	 * Tables that must never be claimed or deleted, with the reason.
 	 *
 	 * License bookkeeping is install-level and migration bookkeeping is written
@@ -1094,13 +1205,18 @@ class ScopedTeardown {
 		$registered = (array) ( $ledger['row_keys'] ?? array() );
 		$sealed    = array();
 		foreach ( $ids as $key => $value ) {
-			if ( is_array( $value ) ) {
-				foreach ( $value as $item ) {
-					$sealed[ (int) $item ] = true;
-				}
+			$table = (string) ( self::SEALED_KEY_TABLES[ (string) $key ] ?? '' );
+			if ( '' === $table ) {
+				// Not a CPMS row id (WordPress users, the booking page post):
+				// it can never make a CPMS row deletable.
 				continue;
 			}
-			$sealed[ (int) $value ] = true;
+			foreach ( is_array( $value ) ? $value : array( $value ) as $item ) {
+				$id = (int) $item;
+				if ( $id > 0 ) {
+					$sealed[ $table ][ $id ] = true;
+				}
+			}
 		}
 		$operators = array_map( 'intval', (array) ( $manifest['admin_id'] ?? 0 ) );
 		$context = array(
@@ -1112,13 +1228,27 @@ class ScopedTeardown {
 			// never proof of ownership on its own.
 			'operators'  => array_values( array_filter( $operators ) ),
 			'fixture'    => $fixture,
+			'tenant_org'    => (int) ( $ids['organization_id'] ?? 0 ),
+			'tenant_clinic' => (int) ( $ids['clinic_id'] ?? 0 ),
 			'sealed'     => $sealed,
 			'registered' => $registered,
 			'patients'   => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patients'] ?? array() ) ), true ),
 			'identities' => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patient_identities'] ?? array() ) ), true ),
 			'visits'     => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_visits'] ?? array() ) ), true ),
 			'threads'    => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_message_threads'] ?? array() ) ), true ),
+			// Parent lookup for PARENT_RULES: the id is only accepted when the
+			// parent row is itself inside the attributed set. A parent that is
+			// missing from the scope (a foreign parent outside the demo tenant)
+			// therefore refuses the child instead of inheriting the tenant.
+			'parents'    => array(),
 		);
+		foreach ( self::PARENT_RULES as $parent_rule ) {
+			$parent_table = (string) $parent_rule[0];
+			$context['parents'][ $parent_table ] = array_fill_keys(
+				array_map( 'intval', (array) ( $scope['tables'][ $parent_table ] ?? array() ) ),
+				true
+			);
+		}
 
 		$problems = array();
 		$counts   = array();
@@ -1179,11 +1309,17 @@ class ScopedTeardown {
 		// A row the demo explicitly registered is owned by definition: that is the
 		// durable ownership registration a controlled demo workflow writes.
 		if ( isset( $context['registered'][ $short ][ $row_id ] ) ) {
-			return true;
+			if ( ! in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {
+				return true;
+			}
+			// Operator grants are the one registration that can name a real
+			// account. Re-prove the binding here instead of trusting the writer.
+			return $this->operator_grant_is_bounded( $short, $row, $context );
 		}
-		// A row whose exact id the sealed manifest names was created by the demo at
-		// provisioning time; the seal is the evidence, the id is the identity.
-		if ( isset( $context['sealed'][ $row_id ] ) ) {
+		// A row whose exact (table, id) the sealed manifest names was created by
+		// the demo at provisioning time. The TABLE is part of the identity: a
+		// numeric coincidence across tables is never ownership.
+		if ( isset( $context['sealed'][ $short ][ $row_id ] ) ) {
 			return true;
 		}
 		// A row that names a WordPress user OTHER than a synthetic fixture account
@@ -1198,9 +1334,24 @@ class ScopedTeardown {
 				return false;
 			}
 		}
-		$rule = self::ATTRIBUTION[ $short ] ?? '@tenant';
-		if ( '@tenant' === $rule ) {
+		// Parent rules first: a child row is owned only through an owned parent.
+		if ( isset( self::PARENT_RULES[ $short ] ) ) {
+			$parent_rule = self::PARENT_RULES[ $short ];
+			$column      = (string) $parent_rule[1];
+			$parent_id   = (int) ( $row[ $column ] ?? 0 );
+
+			return $parent_id > 0
+				&& isset( $context['parents'][ (string) $parent_rule[0] ][ $parent_id ] );
+		}
+		// Configuration is a positive claim ONLY for the allowlisted tables.
+		if ( in_array( $short, self::CONFIGURATION_TABLES, true ) ) {
 			return true;
+		}
+		$rule = self::ATTRIBUTION[ $short ] ?? '@none';
+		if ( '@none' === $rule ) {
+			// No artifact explains this row: refuse. Guessing is what deletes
+			// real data; a retained row can still be handled by hand.
+			return false;
 		}
 		if ( '@user' === $rule ) {
 			foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
@@ -1237,7 +1388,7 @@ class ScopedTeardown {
 		}
 		if ( '@patient' === $rule ) {
 			if ( 'cpms_patients' === $short ) {
-				if ( isset( $context['sealed'][ $row_id ] ) ) {
+				if ( isset( $context['sealed'][ $short ][ $row_id ] ) ) {
 					return true;
 				}
 				if ( array_key_exists( 'identity_id', $row ) && isset( $context['identities'][ (int) ( $row['identity_id'] ?? 0 ) ] ) ) {
@@ -1269,9 +1420,11 @@ class ScopedTeardown {
 				}
 			}
 
-			// A queue row with no patient binding belongs to the demo Clinic's own
-			// operational queue (staff notification, retry bookkeeping).
-			return true;
+			// A queue row with no patient binding carries no proof of its origin.
+			// It used to be accepted unconditionally; a notification created by a
+			// real actor inside the demo tenant is not demo data, so the row is
+			// refused unless the ledger registered it (checked above).
+			return false;
 		}
 		if ( '@visit' === $rule ) {
 			return array_key_exists( 'visit_id', $row ) && isset( $context['visits'][ (int) ( $row['visit_id'] ?? 0 ) ] );
@@ -1286,6 +1439,59 @@ class ScopedTeardown {
 		}
 
 		return false;
+	}
+
+	/**
+	 * A membership the demo granted to the operator: bounded or refused.
+	 *
+	 * Requires all of: the row belongs to the demo Organization (or, for a
+	 * Clinic membership, the demo Clinic); every WordPress user it names is
+	 * either a fixture account or the operator recorded in the sealed manifest;
+	 * and at least one of them really is that operator. A membership that names
+	 * a different real person is never owner-registered, whatever the ledger says.
+	 *
+	 * @param string              $short   Table.
+	 * @param array<string,mixed> $row     Row.
+	 * @param array<string,mixed> $context Attribution context.
+	 * @return bool
+	 */
+	private function operator_grant_is_bounded( string $short, array $row, array $context ): bool {
+		$operators = array_values( array_filter( array_map( 'intval', (array) ( $context['operators'] ?? array() ) ) ) );
+		if ( array() === $operators ) {
+			return false;
+		}
+		if ( 'cpms_organization_memberships' === $short ) {
+			$tenant = (int) ( $row['organization_id'] ?? 0 );
+			if ( $tenant <= 0 || $tenant !== (int) ( $context['tenant_org'] ?? 0 ) ) {
+				return false;
+			}
+		} else {
+			$tenant = (int) ( $row['clinic_id'] ?? 0 );
+			if ( $tenant <= 1 || $tenant !== (int) ( $context['tenant_clinic'] ?? 0 ) ) {
+				return false;
+			}
+		}
+		$saw_operator = false;
+		foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
+			if ( ! array_key_exists( $column, $row ) ) {
+				continue;
+			}
+			$value = (int) ( $row[ $column ] ?? 0 );
+			if ( $value <= 0 ) {
+				continue;
+			}
+			if ( in_array( $value, (array) $context['users'], true ) ) {
+				continue;
+			}
+			if ( in_array( $value, $operators, true ) ) {
+				$saw_operator = true;
+				continue;
+			}
+
+			return false;
+		}
+
+		return $saw_operator;
 	}
 
 	/**

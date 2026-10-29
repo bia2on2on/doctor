@@ -345,7 +345,7 @@ class Preflight {
 		if ( ! $this->platform->available() ) {
 			return $this->result( $id, $label, 'fail', 'افزونهٔ CPMS Classic فعال نیست.' );
 		}
-		if ( ! in_array( CPMS_DEMO_CORE_PLUGIN, $this->env->active_plugins(), true ) ) {
+		if ( ! \CpmsDemo\Standalone::core_available() ) {
 			return $this->result( $id, $label, 'fail', 'CPMS Classic در فهرست افزونه‌های فعال نیست.' );
 		}
 		$schema = $this->platform->schema_version();

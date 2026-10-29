@@ -2,21 +2,30 @@
 /**
  * Plugin Name:       CPMS Classic — Disposable Demo Installer
  * Plugin URI:        https://github.com/bia2on2on/doctor
- * Description:       دو حالت جداگانه دمو: سایت یکبارمصرف خالی و حالت محدودشده صریح برای سایت آزمایشی غیرخالی؛ فقط از wp-admin. افزونه Production تغییر نمیکند و هیچ Demo/Backdoor/Credential دائمی ندارد.
+ * Description:       دموی مستقل CPMS Classic V1: هستهٔ واقعی محصول همراه بسته است؛ روی سایت آزمایشی غیرخالی و بدون نیاز به افزونهٔ Production نصب می‌شود. فقط از wp-admin؛ بدون Backdoor/Credential دائمی.
  * Version:           1.0.0
  * Requires at least: 6.9
  * Requires PHP:      8.1
- * Requires Plugins:  clinic-practice-management
  * Author:            CPMS
  * License:           proprietary
  * Text Domain:       cpms
  *
  * @package CpmsDisposableDemo
  *
+ * TWO BUILDS, ONE SOURCE TREE.
+ *  - Companion build (`bin/build-demo-installer.sh --companion`): no embedded
+ *    core, production CPMS must be installed and active.
+ *  - Standalone build (default): the production source is assembled into
+ *    `core/` at build time by the same script, straight from
+ *    `clinic-practice-management/`. Nothing is copied into the repository.
+ *    `CpmsDemo\Standalone` boots it once, refuses a conflicting installation
+ *    instead of fatalling, and keeps the production update channel away from it.
+ *
  * SECURITY CONTRACT (see tools/disposable-demo-installer/README.md):
- *  - This plugin is a temporary companion. It never touches the production
- *    plugin's source, options schema, authorization, OTP policy, booking
- *    concurrency, payment gates or license behaviour.
+ *  - This plugin never touches the production plugin's source, options schema,
+ *    authorization, OTP policy, booking concurrency, payment gates or license
+ *    behaviour. In standalone mode the embedded core IS that plugin, at the
+ *    same repository revision, booted through its own unmodified entry file.
  *  - It exposes no REST route, no AJAX action and no frontend surface. All work
  *    happens on two isolated wp-admin pages under the CPMS unified menu when
  *    available (Tools fallback otherwise), behind capability + nonce +
@@ -35,6 +44,9 @@ define( 'CPMS_DEMO_FILE', __FILE__ );
 define( 'CPMS_DEMO_DIR', plugin_dir_path( __FILE__ ) );
 define( 'CPMS_DEMO_URL', plugin_dir_url( __FILE__ ) );
 define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-management.php' );
+// Standalone builds carry the assembled production core under `core/`; companion
+// builds do not. Both are built from the same source tree by one script.
+define( 'CPMS_DEMO_STANDALONE', is_file( __DIR__ . '/core/clinic-practice-management.php' ) );
 
 /**
  * Schema version this installer was written and verified against.
@@ -43,6 +55,7 @@ define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-man
 define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
 
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-platform.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-manifest.php';
@@ -67,8 +80,29 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
 
 /**
- * Activation guard: the companion is useless — and unsafe to leave active —
- * without an active CPMS Classic on a single-site installation.
+ * Boot the embedded production core (standalone builds) before anything else.
+ *
+ * The core registers its own REST routes, cron schedules, capabilities and
+ * admin surfaces through its own entry file — unchanged. Booting it here, once,
+ * is the whole difference between the companion and the standalone build.
+ */
+$cpms_demo_fault = CpmsDemo\Standalone::evaluate();
+if ( '' === $cpms_demo_fault ) {
+	CpmsDemo\Standalone::boot_core();
+	$cpms_demo_fault = CpmsDemo\Standalone::fault();
+} else {
+	CpmsDemo\Standalone::set_fault( $cpms_demo_fault );
+}
+unset( $cpms_demo_fault );
+CpmsDemo\Standalone::register_update_guards();
+
+/**
+ * Activation guard: single-site only, and never two CPMS cores.
+ *
+ * In standalone mode the embedded core is activated here — its own activation
+ * hook belongs to its own (unregistered) entry file, so this is the single,
+ * explicit call. A conflicting installation fails closed with a Persian
+ * explanation instead of a fatal class redeclaration.
  */
 function cpms_demo_activate(): void {
 	if ( is_multisite() ) {
@@ -80,16 +114,44 @@ function cpms_demo_activate(): void {
 		);
 	}
 
-	if ( ! class_exists( 'ClinicCore\\Bootstrap\\App' ) ) {
+	$fault = CpmsDemo\Standalone::evaluate();
+	if ( '' !== $fault ) {
 		deactivate_plugins( plugin_basename( CPMS_DEMO_FILE ) );
 		wp_die(
-			esc_html__( 'ابتدا افزونهٔ Production «Clinic Practice Management (CPMS)» را نصب و فعال کنید.', 'cpms' ),
-			esc_html__( 'CPMS Demo: افزونهٔ اصلی فعال نیست', 'cpms' ),
+			esc_html( CpmsDemo\Standalone::fault_message( $fault ) ),
+			esc_html__( 'CPMS Demo: نصب انجام نشد', 'cpms' ),
 			array( 'back_link' => true )
 		);
 	}
+
+	if ( CpmsDemo\Standalone::is_embedded() ) {
+		// Exactly one activation of the embedded core, in the same request.
+		if ( ! CpmsDemo\Standalone::boot_core() ) {
+			deactivate_plugins( plugin_basename( CPMS_DEMO_FILE ) );
+			wp_die(
+				esc_html( CpmsDemo\Standalone::fault_message( CpmsDemo\Standalone::fault() ) ),
+				esc_html__( 'CPMS Demo: نصب انجام نشد', 'cpms' ),
+				array( 'back_link' => true )
+			);
+		}
+		ClinicCore\Bootstrap\App::activate( false );
+	}
 }
 register_activation_hook( __FILE__, 'cpms_demo_activate' );
+
+/**
+ * Deactivation never destroys data: it only unschedules the core's queue tick.
+ *
+ * Dropping `cpms_*` tables, users, invoices or clinical records on deactivation
+ * (or on deletion) is explicitly forbidden; cleanup is a separate, authorized,
+ * preview-then-confirm operation on the demo page.
+ */
+function cpms_demo_deactivate(): void {
+	if ( CpmsDemo\Standalone::is_embedded() && class_exists( 'ClinicCore\\Bootstrap\\App' ) ) {
+		ClinicCore\Bootstrap\App::deactivate();
+	}
+}
+register_deactivation_hook( __FILE__, 'cpms_demo_deactivate' );
 
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'redirect_legacy_tools_url' ), 0 );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );

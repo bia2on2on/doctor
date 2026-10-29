@@ -51,6 +51,21 @@ final class ScopedTenantGuard {
 	private static string $fixture = '';
 
 	/**
+	 * Has this request already been considered for snapshotting?
+	 *
+	 * The snapshot MUST be taken once the current user is resolved, and "the
+	 * current user is resolved" happens at a different time on different request
+	 * paths: at `init` nothing has authenticated a cookie yet for a REST request
+	 * (WordPress authenticates inside `serve_request()`, before dispatch), and
+	 * `admin-post.php`/`admin-ajax.php` authenticate later still. Snapshotting
+	 * only on `init` therefore saw user 0 for every authenticated demo write and
+	 * registered NOTHING - the ledger silently stayed empty, which is the broken
+	 * row registration this guard exists to provide. Every write-capable entry
+	 * point now calls `begin_request()`, and this flag makes the first one win.
+	 */
+	private static bool $considered = false;
+
+	/**
 	 * Hook the guard and the recorder.
 	 *
 	 * Priority 0 on both sides: the snapshot must be taken before any plugin can
@@ -59,7 +74,12 @@ final class ScopedTenantGuard {
 	 * @return void
 	 */
 	public static function register(): void {
+		// `init` covers CLI/test contexts where the user is already set; the
+		// admin hooks and `rest_pre_dispatch` cover the paths where WordPress
+		// authenticates the cookie later. `begin_request()` is idempotent.
 		add_action( 'init', array( __CLASS__, 'begin_request' ), 0 );
+		add_action( 'admin_init', array( __CLASS__, 'begin_request' ), 0 );
+		add_action( 'admin_post', array( __CLASS__, 'begin_request' ), 1 );
 		add_action( 'shutdown', array( __CLASS__, 'finish_request' ), 0 );
 		add_filter( 'rest_pre_dispatch', array( __CLASS__, 'guard_rest_request' ), 10, 3 );
 	}
@@ -70,9 +90,10 @@ final class ScopedTenantGuard {
 	 * @return void
 	 */
 	public static function begin_request(): void {
-		if ( ! self::is_write_request() ) {
+		if ( self::$considered || ! self::is_write_request() ) {
 			return;
 		}
+		self::$considered = true;
 		$env      = new Env();
 		$manifest = new ScopedManifest( $env );
 		$loaded   = self::verified_manifest( $manifest );
@@ -147,6 +168,9 @@ final class ScopedTenantGuard {
 		if ( null !== $result || ! ( $request instanceof \WP_REST_Request ) ) {
 			return $result;
 		}
+		// By the time this filter runs WordPress has authenticated the request,
+		// so the actor is known: take the snapshot here for a REST write.
+		self::begin_request();
 		$verdict = self::write_verdict( (string) $request->get_method(), $request->get_params() );
 		if ( true === $verdict ) {
 			return $result;
