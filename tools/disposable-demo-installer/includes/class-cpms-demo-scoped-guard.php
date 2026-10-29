@@ -87,6 +87,16 @@ final class ScopedTenantGuard {
 	private static array $manifest = array();
 
 	/**
+	 * What the last `finish_request()` actually computed, per table: how many
+	 * rows the post-request snapshot saw, how many were new, and what the
+	 * ledger said. Read-only diagnostics for `state()`; it never influences a
+	 * decision.
+	 *
+	 * @var array<string,array{after:int,new:int,registered:string}>
+	 */
+	private static array $trace = array();
+
+	/**
 	 * Set once this request can never become recordable: it is not a write, or
 	 * there is no verified active fixture to record against.
 	 *
@@ -196,6 +206,7 @@ final class ScopedTenantGuard {
 			'fixture'   => self::$fixture,
 			'actor'     => get_current_user_id(),
 			'counts'    => $counts,
+			'trace'     => self::$trace,
 		);
 	}
 
@@ -222,11 +233,16 @@ final class ScopedTenantGuard {
 						$new[] = $id;
 					}
 				}
-				$ownership->register_rows(
+				$registered = $ownership->register_rows(
 					self::$fixture,
 					(string) $short,
 					$new,
 					array( 'source' => 'demo-request', 'actor_id' => get_current_user_id() )
+				);
+				self::$trace[ (string) $short ] = array(
+					'after'      => count( (array) $ids ),
+					'new'        => count( $new ),
+					'registered' => null === $registered ? 'null' : 'ok',
 				);
 			}
 		} catch ( \Throwable $error ) {

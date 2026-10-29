@@ -143,6 +143,24 @@ function cpsd_ts_problem( array $preview, string $needle ): bool {
 }
 
 /**
+ * Drop this process's option cache after ANOTHER process (the HTTP request)
+ * wrote to the database.
+ *
+ * `get_option()` is cached per request. The drill reads the ownership ledger
+ * before it drives the write, so without this the next read would be served
+ * from that cache and the ledger would look untouched - which is exactly how
+ * R1 first presented itself.
+ *
+ * @return void
+ */
+function cpsd_ts_refresh(): void {
+	wp_cache_delete( ScopedOwnership::OPTION, 'options' );
+	wp_cache_delete( ScopedOwnership::SEAL_OPTION, 'options' );
+	wp_cache_delete( 'alloptions', 'options' );
+	wp_cache_delete( 'notoptions', 'options' );
+}
+
+/**
  * One HTTP round-trip against THIS site.
  *
  * The recorder hooks the WordPress request lifecycle (`init` -> `wp_loaded` ->
@@ -444,6 +462,7 @@ try {
 		$checks,
 		'HTTP ' . $rest['status'] . ' ' . mb_substr( $rest['body'], 0, 200 ) . ' ' . $rest['error']
 	);
+	cpsd_ts_refresh();
 	$payload     = json_decode( $rest['body'], true );
 	$payload     = is_array( $payload ) ? $payload : array();
 	$data        = (array) ( $payload['data'] ?? $payload );
@@ -711,6 +730,7 @@ try {
 	$foreign_patients_after = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM `' . $t( 'cpms_patients' ) . '` WHERE clinic_id = ' . (int) $foreign['clinic'] ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table; integer literal.
 	cpsd_ts_check( $foreign_patients_after >= 1, 'K: the foreign tenant still has its own rows after the probes', $checks, (string) $foreign_patients_after );
 	WP_Session_Tokens::get_instance( $surface_user )->destroy( $surface_auth['token'] );
+	cpsd_ts_refresh();
 	$report['surface_user'] = $surface_user;
 
 	// ---- D: a cross-table numeric collision grants nothing -----------------
