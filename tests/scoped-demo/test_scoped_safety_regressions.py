@@ -799,6 +799,60 @@ class DefectNTenantMarkerIsNotAnEntityId(unittest.TestCase):
         self.assertIn("K: a foreign tenant stays writable for the same real actor", drill)
 
 
+class Task2DrillRunsOnBothEnginesAndProvesItsFixtures(unittest.TestCase):
+    """A fixture that cannot be inserted is not a valid RED.
+
+    The drill mounts rows with real foreign keys, so the schema - not the
+    product - decides whether an attack exists at all. These contracts keep the
+    workflow honest about that: both supported engines run it, and every
+    adversarial fixture is read back before an assertion rests on it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.drill = read(ROOT / "tests" / "scoped-demo" / "teardown-safety.php")
+        cls.workflow = read(ROOT / ".github" / "workflows" / "standalone-demo.yml")
+
+    def test_the_drill_runs_on_mysql_and_mariadb(self) -> None:
+        job = self.workflow.split("  teardown-safety:", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("matrix", job)
+        self.assertIn("mysql:8", job)
+        self.assertIn("mariadb:11.4.13", job)
+        self.assertIn("${{ matrix.database }}", job)
+        self.assertIn("fail-fast: false", job)
+
+    def test_each_engine_uploads_its_own_evidence(self) -> None:
+        self.assertIn("cpsa-teardown-safety-${{ matrix.database }}", self.workflow)
+
+    def test_every_fixture_insert_is_proved_before_it_is_used(self) -> None:
+        # cpsd_ts_insert throws on a failed insert, and cpsd_ts_row re-reads.
+        self.assertIn("throw new RuntimeException( 'insert failed:", self.drill)
+        self.assertIn("function cpsd_ts_row(", self.drill)
+
+    def test_required_relationships_are_read_back(self) -> None:
+        # The NOT NULL foreign keys that decide whether a fixture is legal.
+        for relationship in (
+            "clinician_id",
+            "location_id",
+            "visit_id",
+            "issued_by_wp_user_id",
+        ):
+            self.assertIn(relationship, self.drill)
+        self.assertIn("does not name its foreign clinician and Location", self.drill)
+        self.assertIn("does not name its foreign visit and issuer", self.drill)
+
+    def test_the_collision_is_chosen_not_assumed(self) -> None:
+        self.assertIn("$d_candidates", self.drill)
+        self.assertIn("the numeric-collision attack cannot be mounted", self.drill)
+
+    def test_refusal_scenarios_drive_the_real_execute_path(self) -> None:
+        for label in (
+            "B2: the REAL teardown path REFUSES a registered grant to a real person",
+            "H: the REAL teardown path refuses a corrupted ledger and deletes nothing",
+        ):
+            self.assertIn(label, self.drill)
+
+
 class DefectKLedgerRecovery(unittest.TestCase):
     """K: losing or rolling back the ledger must fail closed (Stage 3)."""
 

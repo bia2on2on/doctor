@@ -556,17 +556,28 @@ jobs:
   # The A–J teardown data-safety drill. It gets its OWN job because it is the
   # only sequence that ends with a REAL authorized teardown: running it inside
   # the acceptance job would delete the fixture the later steps still assert on.
-  # The logic under test is WordPress- and service-level (ownership attribution,
-  # preview vs execute, hostile rows), not engine-specific, so one engine is
-  # enough here; the acceptance job already runs the same code on both.
+  #
+  # It runs on BOTH supported engines. The drill mounts foreign-key-shaped
+  # fixtures and reads the schema back, so an engine difference (error text,
+  # FK enforcement timing, ENUM/DECIMAL handling) is exactly the kind of thing
+  # that could invalidate the fixture rather than the product - and a fixture
+  # that cannot be inserted is not evidence of safety.
   teardown-safety:
-    name: A–J teardown data safety (real database)
+    name: A–J teardown data safety (${{ matrix.database }})
     needs: static
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: mysql-8
+            image: mysql:8
+          - database: mariadb-11.4.13
+            image: mariadb:11.4.13
     services:
       mysql:
-        image: mysql:8
+        image: ${{ matrix.image }}
         env:
           MYSQL_ROOT_PASSWORD: root
         ports: ['3306:3306']
@@ -761,14 +772,17 @@ jobs:
           report "$WP_DIR/wp-content/debug.log"
           if [ -f /tmp/cpsa-ts/probe.jsonl ]; then
             tail -2 /tmp/cpsa-ts/probe.jsonl | sed 's/%/%25/g' | while IFS= read -r LINE; do
-              echo "::error title=CPSA_TS_PROBE::$(printf '%s' "$LINE" | tr '\n' ' ')"
+              echo "::error title=CPSA_TS_PROBE (${{ matrix.database }})::$(printf '%s' "$LINE" | tr '\n' ' ')"
             done
           fi
 
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: cpsa-teardown-safety-${{ github.run_id }}
+          # One artifact per engine: the drill is now a matrix, and two engines
+          # uploading the same artifact name would overwrite each other's
+          # evidence for exactly the dimension the matrix exists to compare.
+          name: cpsa-teardown-safety-${{ matrix.database }}-${{ github.run_id }}
           path: |
             /tmp/cpsa-ts/teardown-safety-plant.jsonl
             /tmp/cpsa-ts/teardown-safety-teardown.jsonl
