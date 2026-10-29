@@ -308,7 +308,7 @@ jobs:
               tail -120 /tmp/fp/portal-hospital.log || true
               echo '```'
             } > /tmp/fp/portal-journey-pr.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/fp/portal-journey-pr.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family fp-portal-journey --body-file /tmp/fp/portal-journey-pr.md \
               || echo '::notice::portal journey evidence comment failed (non-fatal)'
           fi
           if [ "$RC" -ne 0 ]; then echo "PORTAL HOSPITAL BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
@@ -338,7 +338,7 @@ jobs:
               tail -120 /tmp/fp/portal-delegated.log || true
               echo '```'
             } > /tmp/fp/portal-delegated-pr.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/fp/portal-delegated-pr.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family fp-portal-delegated --body-file /tmp/fp/portal-delegated-pr.md \
               || echo '::notice::portal delegated journey evidence comment failed (non-fatal)'
           fi
           if [ "$RC" -ne 0 ]; then echo "PORTAL DELEGATED BROWSER FAILED (rc=$RC)"; exit "$RC"; fi
@@ -408,6 +408,10 @@ jobs:
         if: always() && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
+          # The step used to inline the number into the command; the shared
+          # publisher takes it from here (and PR #282's comment ceiling made the
+          # previous form fail the step instead of announcing the cause).
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           {
             echo "### First-practice browser (${{ matrix.database }}) — job ${{ job.status }}"
@@ -424,7 +428,7 @@ jobs:
             cat /tmp/fp/recovery.log 2>/dev/null || echo '(recovery browser did not produce a log)'
             echo '```'
           } > /tmp/fp/pr-comment.md
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/fp/pr-comment.md
+          bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family fp-browser-acceptance --body-file /tmp/fp/pr-comment.md
 
       - name: Mirror bounded mobile visual evidence for restricted reviewers
         if: always() && github.event_name == 'pull_request' && matrix.database == 'mariadb'

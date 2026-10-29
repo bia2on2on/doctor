@@ -456,7 +456,8 @@ jobs:
             echo '```'
           } > /tmp/cpdd-ci/pr-comment.md
           if [ -s /tmp/cpdd-ci/pr-comment.md ]; then
-            gh pr comment "$PR_NUMBER" --repo "${{ github.repository }}" --body-file /tmp/cpdd-ci/pr-comment.md
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family cpdd-real-wordpress --pr "$PR_NUMBER" \
+              --repo "${{ github.repository }}" --body-file /tmp/cpdd-ci/pr-comment.md
           fi
 
       - uses: actions/upload-artifact@v4

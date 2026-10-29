@@ -659,8 +659,34 @@ try {
 		$checks,
 		implode( ' | ', array_slice( (array) ( $b2_preview['problems'] ?? array() ), 0, 3 ) )
 	);
-	cpsd_ts_check( ! cpsd_ts_claimed( $b2_preview, 'cpms_clinic_memberships', $b2_id ), 'B2: the registered grant is NOT in the deletable set', $checks, 'id=' . $b2_id );
-	cpsd_ts_check( null !== cpsd_ts_row( $membership_table, $b2_id ), 'B2: the refused preview deleted nothing', $checks );
+	// The invariant is NOT "absent from the tenant scope": a membership row that
+	// sits inside the demo Clinic legitimately belongs to the candidate set that
+	// the scope reports, and an earlier revision of this drill asserted exactly
+	// that and was therefore unable to pass no matter how correct the product
+	// was. The invariant is what the PRODUCT actually does: the real teardown
+	// path refuses, names this row, and deletes nothing at all.
+	cpsd_ts_check(
+		cpsd_ts_problem( $b2_preview, 'SCOPED_FOREIGN_TENANT_ROW:cpms_clinic_memberships:' . $b2_id ),
+		'B2: the refusal names the exact registered grant row',
+		$checks,
+		implode( ' | ', array_slice( (array) ( $b2_preview['problems'] ?? array() ), 0, 3 ) )
+	);
+	$b2_actor    = (int) ( $live['ids']['admin_id'] ?? 0 );
+	$b2_executed = null;
+	$b2_code     = '';
+	try {
+		$b2_executed = $teardown->execute( $manifest->load(), $b2_actor > 0 ? $b2_actor : 1 );
+	} catch ( \Throwable $error ) {
+		$b2_code = $error instanceof CpmsDemo\Exception ? $error->demo_code() : (string) $error->getMessage();
+	}
+	cpsd_ts_check(
+		null === $b2_executed && 'SCOPED_FOREIGN_TENANT_ROW' === $b2_code,
+		'B2: the REAL teardown path REFUSES a registered grant to a real person',
+		$checks,
+		'code=' . $b2_code . ' | ' . implode( ' | ', array_slice( (array) ( $b2_preview['problems'] ?? array() ), 0, 3 ) )
+	);
+	cpsd_ts_check( null !== cpsd_ts_row( $membership_table, $b2_id ), 'B2: the refused teardown deleted nothing', $checks, 'id=' . $b2_id );
+	cpsd_ts_check( null !== get_userdata( $real_admin ), 'B2: the real person still exists after the refused teardown', $checks, (string) $real_admin );
 	$wpdb->delete( $membership_table, array( 'id' => $b2_id ), array( '%d' ) );
 	cpsd_ts_refresh();
 	cpsd_ts_check( true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B2: removing the registered real grant restores a clean preview', $checks );

@@ -117,7 +117,7 @@ jobs:
               echo '```'
               echo '</details>'
             } > /tmp/cpms-composer-evidence.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-composer-evidence.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-composer-lock-audit --body-file /tmp/cpms-composer-evidence.md \
               || echo '::notice::Composer evidence mirror failed (non-fatal; audit remains blocking)'
           fi
 
@@ -160,7 +160,8 @@ jobs:
             echo '```'
           } > /tmp/unit-body.md
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/unit-body.md || echo "::notice::PR comment failed (permissions?)"
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-unit-tests --body-file /tmp/unit-body.md \
+              || echo '::notice::Unit failure evidence could not be mirrored (see the warning above)' 
           fi
 
       - name: Locked production install / platform / built-ZIP SDK smoke
@@ -183,7 +184,7 @@ jobs:
               cat /tmp/cpms-release-runtime.log 2>/dev/null || echo '(runtime probe not reached)'
               echo '```'
             } > /tmp/cpms-release-runtime-evidence.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/cpms-release-runtime-evidence.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-release-runtime --body-file /tmp/cpms-release-runtime-evidence.md \
               || echo '::notice::Built-runtime evidence mirror failed (non-fatal; build/probe remain blocking)'
           fi
 
@@ -460,7 +461,8 @@ jobs:
               done
               echo '```'
             } > /tmp/heartbeat-recovery-pr.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/heartbeat-recovery-pr.md || echo '::warning::focused evidence comment could not be mirrored'
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-heartbeat-recovery --body-file /tmp/heartbeat-recovery-pr.md \
+              || echo '::warning::focused evidence comment could not be mirrored'
           fi
           exit "$result"
 
@@ -524,7 +526,7 @@ jobs:
           } > /tmp/custom-role-race-pr.md
           cat /tmp/custom-role-race-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-race-pr.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-race --body-file /tmp/custom-role-race-pr.md \
               || { echo '::error::Could not mirror the focused race evidence to the PR.'; exit 1; }
           fi
       - name: Run focused terminal role archival security contract
@@ -547,7 +549,7 @@ jobs:
           } > /tmp/custom-role-archive-pr.md
           cat /tmp/custom-role-archive-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-pr.md
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-archive --body-file /tmp/custom-role-archive-pr.md
           fi
           if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
           python3 - <<'PYARCHIVE'
@@ -590,7 +592,7 @@ jobs:
             echo '```'
           } > /tmp/custom-role-archive-migration-pr.md
           cat /tmp/custom-role-archive-migration-pr.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$PR_NUMBER" ]; then gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-migration-pr.md; fi
+          if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-migration --body-file /tmp/custom-role-archive-migration-pr.md; fi
           if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
           grep -qE '^OK \(' /tmp/custom-role-archive-migration.log
 
@@ -613,7 +615,7 @@ jobs:
             echo '```'
           } > /tmp/custom-role-archive-race-pr.md
           cat /tmp/custom-role-archive-race-pr.md >> "$GITHUB_STEP_SUMMARY"
-          if [ -n "$PR_NUMBER" ]; then gh pr comment "$PR_NUMBER" --body-file /tmp/custom-role-archive-race-pr.md; fi
+          if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-races --body-file /tmp/custom-role-archive-race-pr.md; fi
           if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
           python3 - <<'PYRACE'
           import json
@@ -896,7 +898,7 @@ jobs:
               echo '**FAIL** — the coverage guard produced no summary (fail-closed).'
             fi
           } > /tmp/authz-coverage-pr.md
-          gh pr comment "$PR_NUMBER" --body-file /tmp/authz-coverage-pr.md \
+          bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-authz-coverage --body-file /tmp/authz-coverage-pr.md \
             || echo '::notice::AuthorizationService coverage PR mirror failed (non-fatal; guard verdict remains blocking)'
 
       # ------------------------------------------------------------------
@@ -941,7 +943,7 @@ jobs:
               cat /tmp/red1-probe.log
               echo '```'
             } > /tmp/red1-probe-comment.md
-            gh pr comment "$PR_NUMBER" --body-file /tmp/red1-probe-comment.md \
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-red1-probe --body-file /tmp/red1-probe-comment.md \
               || echo '::notice::RED 1 probe evidence comment failed (non-fatal)'
           fi
           exit "${PROBE_RC:-1}"
@@ -1053,7 +1055,8 @@ jobs:
             echo '```'
           } > /tmp/pr-evidence.md
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/pr-evidence.md || echo "::notice::PR comment failed (permissions?)"
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-integration-evidence --body-file /tmp/pr-evidence.md \
+              || echo '::notice::Integration evidence could not be mirrored (see the warning above)'
           fi
 
       # انتقال لاگ شکست‌ها به PR — لاگ‌های job از API به blob ریدایرکت می‌شوند و
@@ -1087,7 +1090,8 @@ jobs:
             echo '```'
           } > /tmp/pr-body.md
           if [ -n "$PR_NUMBER" ]; then
-            gh pr comment "$PR_NUMBER" --body-file /tmp/pr-body.md || echo "::notice::PR comment failed (permissions?)"
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-integration-failures --body-file /tmp/pr-body.md \
+              || echo '::notice::Integration failure evidence could not be mirrored (see the warning above)'
           fi
 
       # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
@@ -1299,7 +1303,8 @@ jobs:
                 cat /tmp/wpcs-new.txt
                 echo '```'
               } > /tmp/wpcs-pr.md
-              gh pr comment "$PR_NUM" --body-file /tmp/wpcs-pr.md || echo '::notice::PR comment failed'
+              bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-wpcs-violations --pr "$PR_NUM" --body-file /tmp/wpcs-pr.md \
+                || echo '::notice::WPCS violation evidence could not be mirrored'
             fi
             exit 1
           fi
@@ -1329,5 +1334,5 @@ jobs:
             cat /tmp/wpcs-collect.log 2>/dev/null || echo '(collector log missing)'
             echo '```'
           } > /tmp/wpcs-evidence.md
-          gh pr comment "$PR_NUMBER" --body-file /tmp/wpcs-evidence.md \
+          bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-wpcs-evidence --body-file /tmp/wpcs-evidence.md \
             || echo '::notice::WPCS evidence mirror failed (non-fatal)'

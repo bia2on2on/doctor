@@ -74,9 +74,15 @@ jobs:
       # evaluate a release, so an undetected mismatch would ship a release nobody
       # can exercise or safely tear down.
       - name: Companion compatibility gate (blocks publication on mismatch)
+        # This job's default working directory is the plugin source directory, so
+        # a repo-relative `.github/scripts/...` invocation could not be resolved:
+        # python exited 2 ("can't open file") and the gate never actually ran.
+        working-directory: ${{ github.workspace }}
         run: |
           set -Eeuo pipefail
           python3 --version
+          test -f .github/scripts/companion-compat/evaluate.py || {
+            echo "::error::companion compatibility gate script is missing from ${PWD}"; exit 2; }
           # `$?` inside `if ! cmd; then` is the status of the NEGATION, i.e. always
           # 0 - so the previous form reported "failed with exit 0" and then
           # `exit 0`, turning a failed gate into a green release gate. The exit
@@ -113,7 +119,7 @@ jobs:
               echo 'Inner ZIP fits the provisional 32 MiB PHP upload policy (independent of the 40 MiB POST limit).'
             fi
           } | tee /tmp/cpms-inner-zip-evidence.md >> "$GITHUB_STEP_SUMMARY"
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/cpms-inner-zip-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/cpms-inner-zip-evidence.md "pilot-inner-zip"
 
       - name: Runtime SDK contract (built ZIP, no network)
         run: python3 tests/bin/release-runtime-contract.py
@@ -1182,7 +1188,7 @@ jobs:
           fi
           python3 bin/pilot-bench-report.py --verify-evidence "$EVIDENCE" \
             || { echo '::error::safe evidence projection failed pre-publication re-validation — NOT posted (fail closed)'; exit 1; }
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" "$EVIDENCE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" "$EVIDENCE" "pilot-benchmark"
 
       - name: Upload benchmark artifact (per-run numbers never enter Git history)
         if: always()
@@ -1412,7 +1418,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-gate-debug"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1544,7 +1550,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-responsive-debug"
 
   # ============================================================
   # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
@@ -2310,7 +2316,7 @@ jobs:
             python3 -c "import json;d=json.load(open('pilot-admin-narrow-results.json'));print('INFO admin_narrow_json=' + json.dumps(d['summary'],ensure_ascii=False))" 2>/dev/null || echo '(pilot-admin-narrow-results.json موجود نیست: اسکریپت به جمع‌بندی نرسیده است)'
             echo '```'
           } > /tmp/resp-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md "pilot-responsive-evidence"
 
       # همان الگوی evidence channel — sandbox نمی‌تواند blob artifact را دانلود
       # کند، پس خلاصهٔ PASS/FAIL سفر OTP هم (فقط boolean/شناسه/تعداد) به PR
@@ -2330,7 +2336,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/شناسه/تعداد — کد OTP، موبایل، نام بیمار(ها)، cookie، nonce و secret در شواهد نشت نکرده‌اند.'
           } > /tmp/journey-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/journey-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/journey-evidence.md "pilot-otp-journey"
 
       # Slice 3 — همان کانال شواهد: مرورگر واقعی با Clinicِ سوم و N>1 chooser.
       # sandbox نمی‌تواند blob را دانلود کند، پس خلاصه PASS/FAIL هم به PR پست
@@ -2364,7 +2370,7 @@ jobs:
               echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
             } > /tmp/slice3-evidence.md
           fi
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/slice3-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/slice3-evidence.md "pilot-slice3-chooser"
           exit "$PROJECTION_RC"
 
       # Phase 9 Slice 1 + Slice 2 — همان کانال شواهد برای پورتال بیمار (لغو نوبت +
@@ -2398,7 +2404,7 @@ jobs:
               echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
             } > /tmp/portal-cancel-evidence.md
           fi
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-cancel-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-cancel-evidence.md "pilot-portal-cancel"
           exit "$PROJECTION_RC"
 
       # Phase 9 Slice 4 — same channel, with status-only browser output and a safe fixture summary.
@@ -2418,7 +2424,7 @@ jobs:
             echo '```'
             echo 'قرارداد شواهد: فقط boolean/تعداد/شناسه‌های synthetic — هیچ موبایل/کدملی/رمز/nonce/cookie/OTP در شواهد نشت نکرده. ظاهر توسط مالک تأیید نشده است.'
           } > /tmp/portal-profile-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-profile-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-profile-evidence.md "pilot-portal-profile"
 
       - name: Post Doctor Portal evidence to PR
         if: always() && !cancelled()
@@ -2435,7 +2441,7 @@ jobs:
             echo '```'
             echo 'Evidence is status-only; fixture environment values and identifiers are withheld. Screenshot pixels are not inspected by this comment.'
           } > /tmp/doctor-portal-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"
 
       - name: Post Reception evidence to PR
         if: always() && !cancelled()
@@ -2460,7 +2466,7 @@ jobs:
             echo '```'
             echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
           } > /tmp/reception-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/reception-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/reception-evidence.md "pilot-reception"
 
       - name: Post Day-2 Operational Workflows evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
@@ -2477,7 +2483,7 @@ jobs:
             echo '```'
             echo 'Evidence is booleans, HTTP statuses, and synthetic numeric IDs only — no passwords, OTP codes, mobile numbers, patient names, nonces, or cookies.'
           } > /tmp/day2-workflows-evidence.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"
 
       - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
         if: failure()
@@ -2509,7 +2515,7 @@ jobs:
             cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
             echo '```'
           } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-debug-dump"
       - uses: actions/upload-artifact@v4
         if: always() && !cancelled()
         with:

@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
+COMMENTER = ROOT / ".github" / "scripts" / "pr-evidence-comment.sh"
 SAFE_PILOT_EVIDENCE = ROOT / "clinic-practice-management" / "bin" / "pilot-safe-evidence.py"
 
 
@@ -275,19 +276,64 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertIn('case "$EVENT" in', helper)
         self.assertIn('PR_NUMBER=${CPMS_PR_NUMBER:-}', helper)
         self.assertIn("Required evidence comment to PR", helper)
-        self.assertNotIn("gh api", helper, "do not broaden commit-comment permissions")
         self.assertIn("cat \"$EVIDENCE\" >> \"$GITHUB_STEP_SUMMARY\"", helper)
-        # Forward-compatible publication: a sticky comment edited in place, so a
-        # long-lived PR can never exhaust GitHub's per-issue comment ceiling and
-        # silently stop publishing evidence.
-        self.assertIn("--edit-last", helper, "evidence must be updatable in place")
-        self.assertIn("cpms:evidence-sticky", helper, "the sticky comment needs a marker")
-        self.assertIn("EVIDENCE_COMMENT_CEILING", helper, "the ceiling must be announced, not hidden")
+        # The publisher may only touch PR comments: `pull-requests: write` is the
+        # permission the workflows already grant, and no endpoint beyond the
+        # issue-comment API is used (no broadened commit-comment scope).
+        logical = helper.replace("\\\n", " ")
+        for segment in logical.split("gh api")[1:]:
+            command = re.split(r"\s\|\||\s&&|;", segment)[0]
+            self.assertIn(
+                "repos/$REPOSITORY/issues",
+                command,
+                f"publisher must stay inside the PR comment API, got: {command.strip()}",
+            )
+        # Publication is delegated to ONE shared transport, so the ceiling is
+        # resolved identically everywhere. The publisher keeps PR-target
+        # resolution and the run-summary fallback, and it must still fail loudly
+        # when publication really fails.
+        self.assertIn("pr-evidence-comment.sh", helper, "publication is shared, not duplicated")
+        self.assertIn("--family \"$EVIDENCE_FAMILY\"", helper)
+        self.assertIn('EVIDENCE_FAMILY=${EVIDENCE_FAMILY:-${STREAM_FAMILY:-$(basename "$EVIDENCE" .md)}}', helper,
+                      "each evidence stream owns its own comment, so steps cannot overwrite each other")
         self.assertLess(
-            helper.index("--edit-last"),
+            helper.index("EDIT") if "EDIT" in helper else helper.index("--family"),
             helper.index("::error::Required evidence comment to PR"),
-            "editing in place must be attempted before any failure classification",
+            "publication must be attempted before any failure classification",
         )
+
+    def test_every_evidence_stream_names_its_own_comment(self):
+        """Two steps in one job must never overwrite each other's evidence.
+
+        The sticky transport keys a comment by family, so a family has to be
+        unique per evidence STREAM, not per workflow.
+        """
+        for filename in ("closure-gate.yml", "pilot-gate.yml", "disposable-site-acceptance.yml"):
+            with self.subTest(filename=filename):
+                text = (WORKFLOWS / filename).read_text(encoding="utf-8")
+                invocations = [
+                    line for line in text.splitlines()
+                    if "post-pr-evidence.sh" in line and "call below publishes" not in line
+                ]
+                self.assertTrue(invocations)
+                families = []
+                for line in invocations:
+                    match = re.search(r'post-pr-evidence\.sh"?\s+(\S+)\s+"([^"]+)"\s*$', line)
+                    self.assertIsNotNone(match, f"evidence stream must name its family: {line.strip()}")
+                    families.append(match.group(2))
+                self.assertEqual(sorted(families), sorted(set(families)), "families must be unique")
+
+    def test_pilot_gate_compatibility_gate_runs_from_the_repository_root(self):
+        """The job's default working directory is the plugin, not the repo root.
+
+        `.github/scripts/companion-compat/evaluate.py` therefore could not be
+        opened at all: python exited 2 and the gate had never actually run.
+        """
+        text = workflow("pilot-gate.yml")
+        block = text.split("- name: Companion compatibility gate (blocks publication on mismatch)", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("working-directory: ${{ github.workspace }}", block)
+        self.assertIn("test -f .github/scripts/companion-compat/evaluate.py", block)
 
     def test_pilot_gate_compatibility_gate_reports_the_real_exit_status(self):
         """`$?` inside `if ! cmd; then` is the NEGATION's status, i.e. always 0.
@@ -479,10 +525,183 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
         self.assertIn("browser diagnostics:", finance_browser)
 
 
+class SharedCommentTransportTests(unittest.TestCase):
+    """Every workflow family publishes through ONE ceiling-aware helper.
+
+    The inline `gh pr comment` calls each knew nothing about GitHub's 2,500
+    comment ceiling: on PR #282 half of them failed their step and the rest
+    reported "permissions?", which was both wrong and a silent evidence loss.
+    """
+
+    def test_no_workflow_publishes_a_pr_comment_directly_any_more(self):
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"(?m)^\s*gh pr comment ", text):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "route PR evidence through pr-evidence-comment.sh")
+
+    def test_every_family_uses_a_distinct_marker(self):
+        families = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8").replace("\\\n", " ")
+            families += re.findall(r"--family (\S+)", text)
+        unique = set(families)
+        self.assertEqual(sorted(families), sorted(unique), "each family appears once")
+        self.assertGreaterEqual(len(unique), 13, sorted(unique))
+
+    def test_helper_is_inside_the_pr_comment_api_and_announces_the_ceiling(self):
+        helper = COMMENTER.read_text(encoding="utf-8")
+        for call in helper.replace("\\\n", " ").split("gh api")[1:]:
+            command = re.split(r"\s\|\||\s&&|;", call)[0]
+            self.assertIn("repos/$REPOSITORY/issues", command, command.strip())
+        self.assertIn("COMMENT_CEILING=2500", helper)
+        self.assertIn("EVIDENCE_COMMENT_CEILING", helper)
+        self.assertIn("cpms:evidence-sticky:", helper)
+        self.assertLess(
+            helper.index("--method PATCH"),
+            helper.index("--method POST"),
+            "update in place before creating anything",
+        )
+        self.assertIn("exit 1", helper, "a real publication failure still fails")
+        self.assertLess(
+            helper.index("EVIDENCE_COMMENT_CEILING"),
+            helper.index("::error title=EVIDENCE_COMMENT_FAILED"),
+            "the ceiling must be classified before the generic failure",
+        )
+        self.assertNotRegex(helper, r"(?m)^\s*gh pr comment", "the helper is the transport")
+
+    def run_helper(self, **kwargs):
+        with tempfile.TemporaryDirectory(prefix="comment-transport-test-") as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, shutil, sys\n"
+                "args = sys.argv[1:]\n"
+                "env = os.environ.get\n"
+                "with open(os.environ['GH_TEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps(args) + '\\n')\n"
+                "for arg in args:\n"
+                "    if arg.startswith('body=@') and env('GH_TEST_BODY_COPY'):\n"
+                "        shutil.copyfile(arg[6:], env('GH_TEST_BODY_COPY'))\n"
+                "method = 'GET'\n"
+                "if '--method' in args:\n"
+                "    method = args[args.index('--method') + 1]\n"
+                "path = [a for a in args if a.startswith('repos/')][0]\n"
+                "if method == 'GET' and 'comments?per_page=100' in path:\n"
+                "    if env('GH_TEST_FIND_FAIL') == '1':\n"
+                "        sys.exit(30)\n"
+                "    if env('GH_TEST_STICKY_ID'):\n"
+                "        print(env('GH_TEST_STICKY_ID'))\n"
+                "elif method == 'GET':\n"
+                "    print(env('GH_TEST_COMMENT_COUNT', '0'))\n"
+                "elif method == 'PATCH':\n"
+                "    if env('GH_TEST_EDIT_FAIL') == '1':\n"
+                "        sys.exit(31)\n"
+                "    print('{}')\n"
+                "elif method == 'POST':\n"
+                "    if env('GH_TEST_CREATE_FAIL') == '1':\n"
+                "        print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
+                "        sys.exit(32)\n"
+                "    print('{}')\n"
+                "else:\n"
+                "    sys.exit(33)\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            body = tmp_path / "body.md"
+            body.write_text("synthetic family evidence\n", encoding="utf-8")
+            calls_file = tmp_path / "calls.jsonl"
+            summary = tmp_path / "summary.md"
+            summary.touch()
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                    "GH_TEST_CALLS": str(calls_file),
+                    "GH_TEST_STICKY_ID": kwargs.get("sticky_id", ""),
+                    "GH_TEST_FIND_FAIL": "1" if kwargs.get("find_fail") else "0",
+                    "GH_TEST_EDIT_FAIL": "1" if kwargs.get("edit_fail") else "0",
+                    "GH_TEST_CREATE_FAIL": "1" if kwargs.get("create_fail") else "0",
+                    "GH_TEST_COMMENT_COUNT": kwargs.get("comment_count", "0"),
+                    "GH_TEST_BODY_COPY": str(tmp_path / "published-body.md"),
+                    "GITHUB_REPOSITORY": "bia2on2on/doctor",
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                    "GITHUB_RUN_ID": "999",
+                    "GITHUB_SHA": "deadbeef",
+                }
+            )
+            env.pop("CPMS_PR_NUMBER", None)
+            env.pop("PR_NUMBER", None)
+            args = ["bash", str(COMMENTER), "--family", "ci-unit-tests", "--body-file", str(body)]
+            if kwargs.get("pr", "282"):
+                args += ["--pr", kwargs.get("pr", "282")]
+            result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, check=False)
+            calls = [json.loads(l) for l in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            published = (tmp_path / "published-body.md")
+            return result, calls, summary.read_text(encoding="utf-8"), (
+                published.read_text(encoding="utf-8") if published.exists() else ""
+            )
+
+    def test_existing_family_comment_is_updated_in_place(self):
+        result, calls, summary, body = self.run_helper(sticky_id="7777")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][:3], ["api", "--method", "PATCH"])
+        self.assertIn("repos/bia2on2on/doctor/issues/comments/7777", " ".join(calls[1]))
+        self.assertTrue(body.startswith("<!-- cpms:evidence-sticky:ci-unit-tests -->"), body[:80])
+        self.assertIn("synthetic family evidence", body)
+        self.assertIn("PR_EVIDENCE_PUBLICATION=ci-unit-tests#comment:7777", result.stdout)
+        self.assertEqual(summary, "")
+
+    def test_first_run_creates_the_family_comment_once(self):
+        result, calls, summary, _ = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
+        self.assertIn("#comment (created)", result.stdout)
+
+    def test_the_ceiling_is_announced_and_never_fails_the_step(self):
+        result, calls, summary, _ = self.run_helper(create_fail=True, comment_count="2500")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("2500", result.stderr)
+        self.assertIn("#run-summary", result.stdout)
+        self.assertIn("durable copy", summary)
+
+    def test_a_real_failure_below_the_ceiling_is_never_hidden(self):
+        result, calls, summary, _ = self.run_helper(create_fail=True, comment_count="12")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_FAILED", result.stderr)
+        self.assertNotIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("durable copy", summary)
+
+    def test_a_lookup_failure_is_announced_then_classified(self):
+        result, calls, summary, _ = self.run_helper(find_fail=True, create_fail=True, comment_count="12")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_LOOKUP", result.stderr)
+        self.assertIn("EVIDENCE_COMMENT_FAILED", result.stderr)
+
+    def test_no_pull_request_is_skipped_explicitly_not_silently(self):
+        result, calls, summary, _ = self.run_helper(pr="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+        self.assertIn("EVIDENCE_COMMENT_SKIPPED", result.stderr)
+
+
 class EvidenceTargetRuntimeTests(unittest.TestCase):
     """Execute the real publisher with a deterministic fake gh executable."""
 
-    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_comment=False, fail_list=False, editable=True, ceiling=False):
+    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_list=False,
+                      sticky_id="", find_fail=False, edit_fail=False, create_fail=False,
+                      comment_count="0"):
+        """Execute the real publisher against a fake `gh`.
+
+        The fake models the three endpoints the publisher is allowed to use:
+        list PR comments (paginated), PATCH one comment, POST one comment.
+        """
         with tempfile.TemporaryDirectory(prefix="evidence-target-test-") as tmp:
             tmp_path = Path(tmp)
             fake_bin = tmp_path / "bin"
@@ -490,33 +709,61 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
             gh = fake_bin / "gh"
             gh.write_text(
                 "#!/usr/bin/env python3\n"
-                "import json, os, pathlib, sys\n"
+                "import json, os, sys\n"
                 "args = sys.argv[1:]\n"
                 "with open(os.environ['GH_TEST_CALLS'], 'a', encoding='utf-8') as f:\n"
                 "    f.write(json.dumps(args) + '\\n')\n"
-                "if args[:2] == ['pr', 'list'] and os.environ.get('GH_TEST_FAIL_LIST') == '1':\n"
+                "def env(name, default=''):\n"
+                "    return os.environ.get(name, default)\n"
+                "for arg in args:\n"
+                "    if arg.startswith('body=@'):\n"
+                "        import os as _os, shutil\n"
+                "        shutil.copyfile(arg[len('body=@'):],\n"
+                "                        _os.path.join(_os.path.dirname(arg[len('body=@'):]), 'published-body.md'))\n"
+                "if args[:2] == ['pr', 'list'] and env('GH_TEST_FAIL_LIST') == '1':\n"
                 "    print('simulated PR lookup failure', file=sys.stderr)\n"
                 "    sys.exit(22)\n"
                 "elif args[:2] == ['pr', 'list']:\n"
-                "    print(os.environ.get('GH_TEST_CANDIDATES', '[]'))\n"
-                "elif args[:2] == ['pr', 'comment'] and '--edit-last' in args and os.environ.get('GH_TEST_EDIT') != '1':\n"
-                "    print('no comment found for current user to edit', file=sys.stderr)\n"
-                "    sys.exit(25)\n"
-                "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_FAIL_COMMENT') == '1':\n"
-                "    print('simulated comment transport failure', file=sys.stderr)\n"
-                "    sys.exit(23)\n"
-                "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_CEILING') == '1' and '--edit-last' not in args:\n"
-                "    print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
-                "    sys.exit(26)\n"
-                "elif args[:2] != ['pr', 'comment']:\n"
+                "    print(env('GH_TEST_CANDIDATES', '[]'))\n"
+                "elif args[0] != 'api':\n"
                 "    print('unexpected gh command: ' + repr(args), file=sys.stderr)\n"
-                "    sys.exit(24)\n",
+                "    sys.exit(24)\n"
+                "else:\n"
+                "    args = args[1:]\n"
+                "    method = 'GET'\n"
+                "    if '--method' in args:\n"
+                "        method = args[args.index('--method') + 1]\n"
+                "    path = [a for a in args if a.startswith('repos/')][0]\n"
+                "    if method == 'GET' and path.endswith('/comments?per_page=100'):\n"
+                "        if env('GH_TEST_FIND_FAIL') == '1':\n"
+                "            print('simulated comment listing failure', file=sys.stderr)\n"
+                "            sys.exit(30)\n"
+                "        sticky = env('GH_TEST_STICKY_ID')\n"
+                "        if sticky:\n"
+                "            print(sticky)\n"
+                "    elif method == 'GET' and not path.endswith('/comments?per_page=100'):\n"
+                "        print(env('GH_TEST_COMMENT_COUNT', '0'))\n"
+                "    elif method == 'PATCH':\n"
+                "        if env('GH_TEST_EDIT_FAIL') == '1':\n"
+                "            print('simulated edit failure', file=sys.stderr)\n"
+                "            sys.exit(31)\n"
+                "        print('{}')\n"
+                "    elif method == 'POST':\n"
+                "        if env('GH_TEST_CREATE_FAIL') == '1':\n"
+                "            print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
+                "            sys.exit(32)\n"
+                "        print('{}')\n"
+                "    else:\n"
+                "        print('unexpected api call: ' + repr(args), file=sys.stderr)\n"
+                "        sys.exit(33)\n",
                 encoding="utf-8",
             )
             gh.chmod(0o755)
             evidence = tmp_path / "evidence.md"
             evidence.write_text("synthetic safe evidence\n", encoding="utf-8")
             calls_file = tmp_path / "gh-calls.jsonl"
+            bodies_dir = tmp_path / "bodies"
+            bodies_dir.mkdir()
             summary = tmp_path / "summary.md"
             summary.touch()
             env = os.environ.copy()
@@ -525,10 +772,12 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
                     "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
                     "GH_TEST_CALLS": str(calls_file),
                     "GH_TEST_CANDIDATES": json.dumps(candidates or []),
-                    "GH_TEST_FAIL_COMMENT": "1" if fail_comment else "0",
                     "GH_TEST_FAIL_LIST": "1" if fail_list else "0",
-                    "GH_TEST_EDIT": "1" if editable else "0",
-                    "GH_TEST_CEILING": "1" if ceiling else "0",
+                    "GH_TEST_STICKY_ID": sticky_id,
+                    "GH_TEST_FIND_FAIL": "1" if find_fail else "0",
+                    "GH_TEST_EDIT_FAIL": "1" if edit_fail else "0",
+                    "GH_TEST_CREATE_FAIL": "1" if create_fail else "0",
+                    "GH_TEST_COMMENT_COUNT": comment_count,
                     "GITHUB_EVENT_NAME": event,
                     "GITHUB_REPOSITORY": "bia2on2on/doctor",
                     "GITHUB_REPOSITORY_OWNER": "bia2on2on",
@@ -548,52 +797,104 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
             return result, calls, summary.read_text(encoding="utf-8")
 
+    @staticmethod
+    def body_of(call):
+        if "--body-file" in call:
+            return call[call.index("--body-file") + 1]
+        if "-F" in call:
+            return call[call.index("-F") + 1]
+        return ""
+
     def test_pull_request_uses_event_number_not_merge_ref_lookup(self):
         result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][:6], ["pr", "comment", "269", "--repo", "bia2on2on/doctor", "--edit-last"])
-        self.assertEqual(calls[0][6:8], ["--body-file", calls[0][7]])
-        self.assertTrue(Path(calls[0][7]).is_absolute())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:2], ["api", "--paginate"])
+        self.assertIn("repos/bia2on2on/doctor/issues/269/comments?per_page=100", " ".join(calls[0]))
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
         self.assertFalse(any(call[:2] == ["pr", "list"] for call in calls))
         self.assertEqual(summary, "")
 
-    def test_evidence_is_edited_in_place_so_the_comment_count_never_grows(self):
+    def test_an_existing_sticky_comment_is_updated_in_place(self):
         """A sticky comment, not an append: PR #282 hit GitHub's 2,500 ceiling."""
-        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", editable=True)
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242"
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 1, "editing in place must not also create a comment")
-        self.assertIn("--edit-last", calls[0])
-        body = Path(calls[0][calls[0].index("--body-file") + 1]).read_text(encoding="utf-8") if Path(calls[0][calls[0].index("--body-file") + 1]).exists() else ""
+        self.assertEqual(len(calls), 2, "editing in place must not also create a comment")
+        self.assertEqual(calls[1][:3], ["api", "--method", "PATCH"])
+        self.assertIn("repos/bia2on2on/doctor/issues/comments/4242", " ".join(calls[1]))
+        self.assertTrue(self.body_of(calls[1]).startswith("body=@"))
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#comment:4242", result.stdout)
         self.assertEqual(summary, "")
 
-        sticky = PUBLISHER.read_text(encoding="utf-8")
-        self.assertIn("cpms:evidence-sticky", sticky)
-        self.assertIn("--edit-last", sticky)
+    def test_the_published_body_carries_the_marker_and_the_evidence(self):
+        result, calls, _ = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body_path = self.body_of(calls[1]).split("@", 1)[1]
 
-    def test_first_run_falls_back_to_creating_the_sticky_once(self):
-        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", editable=False)
+        body = (Path(body_path).parent / "published-body.md").read_text(encoding="utf-8")
+        self.assertTrue(body.startswith("<!-- cpms:evidence-sticky"))
+        self.assertIn("synthetic safe evidence", body)
+        self.assertIn("issues/comments/4242", " ".join(calls[1]))
+        # The marker is what makes the comment findable on the next run.
+        self.assertIn("cpms:evidence-sticky", calls[0][calls[0].index("--jq") + 1])
+
+    def test_first_run_creates_the_sticky_exactly_once(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 2)
-        self.assertIn("--edit-last", calls[0])
-        self.assertNotIn("--edit-last", calls[1])
-        self.assertEqual(calls[1][:3], ["pr", "comment", "269"])
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#comment (created)", result.stdout)
+
+    def test_a_failed_in_place_update_falls_back_to_creating_one(self):
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242", edit_fail=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2][:3], ["api", "--method", "POST"])
+        self.assertIn("EVIDENCE_COMMENT_UPDATE", result.stderr)
+        self.assertEqual(summary, "")
 
     def test_comment_ceiling_is_reported_explicitly_and_keeps_evidence(self):
         """The ceiling is not a product defect, and it is never silent.
 
-        Both paths are exhausted, so the evidence goes to the durable run
-        summary and the condition is annotated; the step does not pretend the
-        PR comment was published.
+        Both write paths are unavailable, so the evidence goes to the durable run
+        summary and the condition is annotated; the step does not pretend the PR
+        comment was published.
         """
         result, calls, summary = self.run_publisher(
-            "pull_request", "269/merge", pr_number="269", editable=False, ceiling=True
+            "pull_request", "269/merge", pr_number="269", create_fail=True, comment_count="2500"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 2)
-        self.assertEqual(summary, "synthetic safe evidence\n")
+        self.assertIn("repos/bia2on2on/doctor/issues/269", " ".join(calls[-1]))
+        self.assertIn(".comments", " ".join(calls[-1]))
+        self.assertIn("synthetic safe evidence", summary)
         self.assertIn("EVIDENCE_COMMENT_CEILING", result.stderr)
-        self.assertIn("GitHub's comment ceiling", result.stderr)
+        self.assertIn("2500", result.stderr)
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#run-summary", result.stdout)
+        self.assertNotIn("#comment", result.stdout)
+
+    def test_a_publication_failure_below_the_ceiling_is_a_hard_failure(self):
+        """Never turn a genuine publication failure into a green step."""
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", create_fail=True, comment_count="17"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("::error::Required evidence comment to PR", result.stderr)
+        self.assertIn("synthetic safe evidence", summary)
+        self.assertIn("durable copy", summary)
+
+    def test_a_failed_lookup_is_announced_and_still_classified_honestly(self):
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", find_fail=True, create_fail=True, comment_count="17"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_LOOKUP", result.stderr)
+        self.assertIn("::error::Required evidence comment to PR", result.stderr)
 
     def test_main_push_schedule_and_main_dispatch_use_summary_not_an_inferred_pr(self):
         for event in ("push", "schedule", "workflow_dispatch"):
@@ -615,7 +916,8 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][:2], ["pr", "list"])
         self.assertIn("--head", calls[0])
         self.assertEqual(calls[0][calls[0].index("--head") + 1], "arena/topic")
-        self.assertEqual(calls[1][:3], ["pr", "comment", "269"])
+        self.assertEqual(calls[1][:1], ["api"])
+        self.assertIn("issues/269/comments", " ".join(calls[1]))
         self.assertEqual(summary, "")
 
     def test_unrelated_or_ambiguous_pr_is_never_commented(self):
@@ -638,18 +940,6 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         result, calls, _ = self.run_publisher("workflow_dispatch", "arena/topic", candidates=duplicate)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1)
-
-    def test_required_pr_comment_failure_is_nonzero_and_evidence_remains_in_summary(self):
-        # No editable comment AND the create fails for a non-ceiling reason: the
-        # step must fail, because evidence publication really did not happen.
-        result, calls, summary = self.run_publisher(
-            "pull_request", "269/merge", pr_number="269", fail_comment=True, editable=False
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls[0][:3], ["pr", "comment", "269"])
-        self.assertEqual(summary, "synthetic safe evidence\n")
-        self.assertIn("Required evidence comment to PR #269 failed", result.stderr)
-        self.assertNotIn("EVIDENCE_COMMENT_CEILING", result.stderr)
 
     def test_manual_target_lookup_failure_is_not_silenced(self):
         result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", fail_list=True)
