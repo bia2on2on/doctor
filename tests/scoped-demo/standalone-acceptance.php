@@ -329,6 +329,9 @@ try {
 			// itself. WordPress includes the file first, so the include is not
 			// preventable from here - the SIDE EFFECTS are: the option write is
 			// filtered and the production activation hook is dropped.
+			$schema_before = (string) \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+			$jobs_before = count( (array) _get_cron_array() );
+			$ticks_before = (int) wp_next_scheduled( 'cpms_jobs_tick' ) > 0 ? 1 : 0;
 			$residual = '';
 			try {
 				$residual = (string) wp_json_encode( activate_plugin( 'clinic-practice-management/clinic-practice-management.php', '', false, true ) );
@@ -337,11 +340,14 @@ try {
 			}
 			$after_residual = (array) get_option( 'active_plugins', array() );
 			$cpsd_sa_check( ! in_array( 'clinic-practice-management/clinic-practice-management.php', $after_residual, true ), 'a programmatic activation cannot persist a two-core state either', $checks, $residual );
-			$cpsd_sa_check(
-				false === has_action( 'activate_clinic-practice-management/clinic-practice-management.php' ),
-				'the production activation hook was dropped before it could run',
-				$checks
-			);
+			// No second activation ran: the same number of scheduled events, and
+			// still exactly one tick for the single core.
+			$jobs_after = count( (array) _get_cron_array() );
+			$ticks_after = (int) wp_next_scheduled( 'cpms_jobs_tick' ) > 0 ? 1 : 0;
+			$cpsd_sa_check( $jobs_before === $jobs_after, 'the refused activation scheduled nothing new', $checks, $jobs_before . ' -> ' . $jobs_after );
+			$cpsd_sa_check( 1 === $ticks_after && 1 === $ticks_before, 'there is still exactly one CPMS queue tick, not two', $checks, $ticks_before . ' -> ' . $ticks_after );
+			$schema_after = (string) \ClinicCore\Bootstrap\App::migrations()->currentVersion();
+			$cpsd_sa_check( $schema_before === $schema_after, 'the production migration ran exactly once', $checks, $schema_before . ' -> ' . $schema_after );
 			$post = Standalone::status();
 			$cpsd_sa_check( '' === (string) $post['fault'], 'the demo keeps running with no fault after the refusal', $checks, (string) $post['fault'] );
 			$post_core = ( new ReflectionClass( \ClinicCore\Bootstrap\App::class ) )->getFileName();
