@@ -281,17 +281,102 @@ try {
 	}
 
 	if ( 'conflict' === $cpsd_sa_mode ) {
-		$status = Standalone::status();
+		// TWO activation orders, both through real WordPress mechanisms.
+		$order = (string) ( getenv( 'CPSD_SA_CONFLICT' ) ?: 'forward' );
 		$active = (array) get_option( 'active_plugins', array() );
-		$cpsd_sa_check( in_array( 'clinic-practice-management/clinic-practice-management.php', $active, true ), 'the production plugin is now active alongside the demo', $checks );
-		$cpsd_sa_check( '' !== (string) $status['fault'], 'the standalone build reports a conflict instead of booting a second core', $checks, (string) $status['fault'] );
-		$cpsd_sa_check( in_array( (string) $status['fault'], array( 'embedded_conflict_production_active', 'embedded_conflict_core_loaded' ), true ), 'the fault is one of the two documented conflict codes', $checks, (string) $status['fault'] );
-		$message = Standalone::fault_message( (string) $status['fault'] );
-		$cpsd_sa_check( false !== strpos( $message, 'CPMS' ), 'the explanation is Persian and names the product', $checks, mb_substr( $message, 0, 40 ) );
-		// Exactly one core class definition: the production plugin's, loaded once.
-		$core_file = ( new ReflectionClass( \ClinicCore\Bootstrap\App::class ) )->getFileName();
-		$cpsd_sa_check( false !== strpos( (string) $core_file, 'clinic-practice-management' ), 'the loaded core is the production plugin, not the embedded copy', $checks, (string) $core_file );
-		$evidence['core_file'] = (string) $core_file;
+		$status = Standalone::status();
+		$message = Standalone::activation_blocked_message();
+		$cpsd_sa_check( false !== strpos( $message, 'CPMS' ) && false !== strpos( $message, 'Production' ), 'the refusal is Persian and names the production conflict', $checks, mb_substr( $message, 0, 40 ) );
+		$cpsd_sa_check( true === (bool) $status['embedded'], 'the package is still the standalone build', $checks );
+		// A wp_die is how a refusal reaches the operator; capture it instead of
+		// letting it terminate the drill. `wp_die_handler` is the documented hook.
+		$cpsd_sa_die = static function (): callable {
+			return static function ( $msg ) {
+				throw new RuntimeException( 'wp_die: ' . (string) $msg );
+			};
+		};
+		add_filter( 'wp_die_handler', $cpsd_sa_die );
+
+		if ( 'forward' === $order ) {
+			// Order A: the demo is active, production is installed, and somebody
+			// activates production. The activation must be REFUSED before the
+			// production entry file is included.
+			$cpsd_sa_check( in_array( 'cpms-disposable-demo/cpms-disposable-demo.php', $active, true ), 'the standalone demo is active', $checks );
+			$cpsd_sa_check( ! in_array( 'clinic-practice-management/clinic-practice-management.php', $active, true ), 'production is installed but NOT active', $checks );
+			$cpsd_sa_check( '' === (string) $status['fault'], 'the demo is healthy before the attempt', $checks, (string) $status['fault'] );
+			$embedded_core = ( new ReflectionClass( \ClinicCore\Bootstrap\App::class ) )->getFileName();
+			$cpsd_sa_check( false !== strpos( (string) $embedded_core, 'cpms-disposable-demo' ), 'the loaded core is the embedded copy', $checks, (string) $embedded_core );
+
+			// (1) The plugins screen: refused BEFORE WordPress includes the file.
+			$_GET     = array( 'action' => 'activate', 'plugin' => 'clinic-practice-management/clinic-practice-management.php' );
+			$_REQUEST = $_GET;
+			$die_message = '';
+			try {
+				Standalone::refuse_activation_request();
+			} catch ( RuntimeException $error ) {
+				$die_message = $error->getMessage();
+			} catch ( Throwable $error ) {
+				$cpsd_sa_check( false, 'the plugins-screen refusal must not fatal: ' . get_class( $error ), $checks, $error->getMessage() );
+			}
+			$_GET     = array();
+			$_REQUEST = array();
+			$after = (array) get_option( 'active_plugins', array() );
+			$cpsd_sa_check( ! in_array( 'clinic-practice-management/clinic-practice-management.php', $after, true ), 'production never becomes active beside the demo', $checks );
+			$cpsd_sa_check( '' !== $die_message, 'the refusal is reported to the operator', $checks, mb_substr( $die_message, 0, 40 ) );
+			$cpsd_sa_check( false !== strpos( $die_message, 'Production' ) || false !== strpos( $die_message, 'CPMS' ), 'the reported refusal is the Persian conflict explanation', $checks, mb_substr( $die_message, 0, 40 ) );
+			$cpsd_sa_check( (bool) get_transient( Standalone::BLOCKED_TRANSIENT ), 'the refused activation is recorded for the dashboard', $checks );
+			// (2) The residual path: third-party code calling activate_plugin()
+			// itself. WordPress includes the file first, so the include is not
+			// preventable from here - the SIDE EFFECTS are: the option write is
+			// filtered and the production activation hook is dropped.
+			$residual = '';
+			try {
+				$residual = (string) wp_json_encode( activate_plugin( 'clinic-practice-management/clinic-practice-management.php', '', false, true ) );
+			} catch ( Throwable $error ) {
+				$residual = get_class( $error ) . ': ' . $error->getMessage();
+			}
+			$after_residual = (array) get_option( 'active_plugins', array() );
+			$cpsd_sa_check( ! in_array( 'clinic-practice-management/clinic-practice-management.php', $after_residual, true ), 'a programmatic activation cannot persist a two-core state either', $checks, $residual );
+			$cpsd_sa_check(
+				false === has_action( 'activate_clinic-practice-management/clinic-practice-management.php' ),
+				'the production activation hook was dropped before it could run',
+				$checks
+			);
+			$post = Standalone::status();
+			$cpsd_sa_check( '' === (string) $post['fault'], 'the demo keeps running with no fault after the refusal', $checks, (string) $post['fault'] );
+			$post_core = ( new ReflectionClass( \ClinicCore\Bootstrap\App::class ) )->getFileName();
+			$cpsd_sa_check( (string) $post_core === (string) $embedded_core, 'no second core was loaded by the refused activation', $checks );
+			$evidence['order']         = 'forward';
+			$evidence['die_message']   = $die_message;
+			$evidence['core_after']    = (string) $post_core;
+		} else {
+			// Order B: production is active FIRST. The demo must refuse to run,
+			// report the conflict and never define a second set of classes.
+			$cpsd_sa_check( in_array( 'clinic-practice-management/clinic-practice-management.php', $active, true ), 'production is active', $checks );
+			$cpsd_sa_check( '' !== (string) $status['fault'], 'the demo reports a conflict instead of booting a second core', $checks, (string) $status['fault'] );
+			$cpsd_sa_check( 'embedded_conflict_production_active' === (string) $status['fault'], 'the fault is the production-active conflict code', $checks, (string) $status['fault'] );
+			$fault_message = Standalone::fault_message( (string) $status['fault'] );
+			$cpsd_sa_check( false !== strpos( $fault_message, 'CPMS' ), 'the conflict explanation is Persian', $checks, mb_substr( $fault_message, 0, 40 ) );
+			$core_file = ( new ReflectionClass( \ClinicCore\Bootstrap\App::class ) )->getFileName();
+			$cpsd_sa_check( false !== strpos( (string) $core_file, 'clinic-practice-management' ), 'the loaded core is the production plugin, not the embedded copy', $checks, (string) $core_file );
+			// And the demo cannot be (re)activated while production is active.
+			$die_message = '';
+			try {
+				activate_plugin( 'cpms-disposable-demo/cpms-disposable-demo.php', '', false, true );
+			} catch ( RuntimeException $error ) {
+				$die_message = $error->getMessage();
+			} catch ( Throwable $error ) {
+				$cpsd_sa_check( false, 'a demo activation attempt must not fatal: ' . get_class( $error ), $checks, $error->getMessage() );
+			}
+			$after = (array) get_option( 'active_plugins', array() );
+			$cpsd_sa_check( '' !== $die_message, 'activating the demo beside production is refused in Persian', $checks, mb_substr( $die_message, 0, 40 ) );
+			$cpsd_sa_check( ! in_array( 'cpms-disposable-demo/cpms-disposable-demo.php', $after, true ), 'the demo does not stay active in the conflicting state', $checks );
+			$evidence['order']       = 'reverse';
+			$evidence['fault']       = (string) $status['fault'];
+			$evidence['core_file']   = (string) $core_file;
+			$evidence['die_message'] = $die_message;
+		}
+		remove_filter( 'wp_die_handler', $cpsd_sa_die );
 	}
 
 	if ( 'after_delete' === $cpsd_sa_mode ) {

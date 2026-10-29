@@ -385,6 +385,11 @@ final class Standalone {
 		// admin page, a script): the option write is where a two-core state
 		// becomes permanent, so it is filtered too.
 		add_filter( 'pre_update_option_active_plugins', array( __CLASS__, 'keep_single_core' ), PHP_INT_MAX, 2 );
+		// The residual path: third-party code calling `activate_plugin()` directly.
+		// WordPress includes the plugin file BEFORE it fires `activate_{plugin}`,
+		// so the include cannot be stopped from here - but the side effects can:
+		// this runs between the include and the activation hook, and drops it.
+		add_action( 'activate_plugin', array( __CLASS__, 'discard_production_activation_hooks' ), 0, 2 );
 		if ( class_exists( '\\WP_CLI' ) ) {
 			// WP-CLI loads this plugin (it is active) before running the command,
 			// so `wp plugin activate clinic-practice-management` would hit exactly
@@ -462,6 +467,27 @@ final class Standalone {
 		}
 		self::record_blocked_activation();
 		\WP_CLI::error( self::activation_blocked_message() );
+	}
+
+	/**
+	 * Drop a production activation hook that reached `activate_plugin()` anyway.
+	 *
+	 * Fires after WordPress included the production entry file and before it runs
+	 * `activate_{$plugin}`, so `App::activate()` - migrations, cron scheduling,
+	 * capability registration - never runs a second time. The embedded core is
+	 * already activated; nothing about the site is changed by dropping this.
+	 *
+	 * @param string $plugin       Plugin basename.
+	 * @param bool   $network_wide Network activation.
+	 * @return void
+	 */
+	public static function discard_production_activation_hooks( $plugin, $network_wide = false ): void {
+		unset( $network_wide );
+		if ( ! is_string( $plugin ) || ! self::is_production_reference( $plugin ) ) {
+			return;
+		}
+		remove_all_actions( 'activate_' . $plugin );
+		self::record_blocked_activation();
 	}
 
 	/**

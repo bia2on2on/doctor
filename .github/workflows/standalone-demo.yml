@@ -364,39 +364,73 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Reinstall, then prove the production/demo conflict is refused
+      - name: Both activation orders refuse a second core (production installed, demo active)
         run: |
           set -Eeuo pipefail
           wp plugin install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
-          # Now install the production plugin alongside the standalone demo. This
-          # is the two-core state the package must refuse, never fatal.
+          # Install the production plugin WITHOUT activating it: the standalone demo
+          # is active and must refuse the activation, not merely survive it.
           composer install --no-interaction --no-progress --working-dir="$GITHUB_WORKSPACE/clinic-practice-management" --no-dev >/tmp/cpsa-ci/composer.log 2>&1
           bash "$GITHUB_WORKSPACE/clinic-practice-management/bin/build-release.sh" | tee /tmp/cpsa-ci/release-build.log
           CPMS_ZIP="$(find "$GITHUB_WORKSPACE/clinic-practice-management/dist" -maxdepth 1 -name 'clinic-practice-management-*.zip' -print -quit)"
           test -n "$CPMS_ZIP"
-          wp plugin install "$CPMS_ZIP" --activate --path="$WP_DIR" --allow-root || true
-          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
-          CPSD_SA_MODE=conflict CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
+          wp plugin install "$CPMS_ZIP" --path="$WP_DIR" --allow-root
+          # ORDER A: the plugins screen and the residual programmatic path, on the
+          # real database, through WordPress's own activation API.
+          CPSD_SA_MODE=conflict CPSD_SA_CONFLICT=forward CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
             wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
             --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
-            | tee /tmp/cpsa-ci/standalone-conflict.json
+            | tee /tmp/cpsa-ci/standalone-conflict-forward.json
           python3 - <<'PY'
           import json, sys
-          data = json.loads(open('/tmp/cpsa-ci/standalone-conflict.json', encoding='utf-8').read().strip().splitlines()[-1])
-          print('CONFLICT_OK=' + str(bool(data.get('ok'))))
+          data = json.loads(open('/tmp/cpsa-ci/standalone-conflict-forward.json', encoding='utf-8').read().strip().splitlines()[-1])
+          print('CONFLICT_FORWARD_OK=' + str(bool(data.get('ok'))))
           for line in data.get('checks', []):
               print(line)
           if not data.get('ok'):
               for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
-                  print('::error title=CPSA_CONFLICT::' + str(line).replace('%', '%25').replace('\n', ' '))
+                  print('::error title=CPSA_CONFLICT_FORWARD::' + str(line).replace('%', '%25').replace('\n', ' '))
               sys.exit(1)
           PY
-          # The demo page must still render: a conflict is a refusal, not a fatal.
-          wp eval 'echo "ADMIN_PAGE_OK";' --path="$WP_DIR" --allow-root
+          # The production plugin was never activated, and the demo is still healthy.
+          if wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root; then
+            echo 'FAIL: production CPMS became active beside the standalone demo' >&2; exit 1
+          fi
+          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
+          wp eval 'echo \CpmsDemo\Standalone::status()["fault"];' --path="$WP_DIR" --allow-root > /tmp/cpsa-ci/fault-forward.txt
+          test -z "$(cat /tmp/cpsa-ci/fault-forward.txt)"
+          wp eval 'echo defined("CPMS_VERSION") ? "CORE_OK" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_OK
+          # An unrelated plugin still activates normally in the very same install.
+          wp plugin install classic-editor --activate --path="$WP_DIR" --allow-root >/dev/null
+          wp plugin is-active classic-editor --path="$WP_DIR" --allow-root
+          # ORDER B: production active FIRST, then activate the demo. The demo must
+          # refuse, stay inactive, explain itself in Persian and never fatal.
+          wp plugin deactivate cpms-disposable-demo --path="$WP_DIR" --allow-root
+          wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          set +e
+          REVERSE_OUT="$(wp plugin activate cpms-disposable-demo --path="$WP_DIR" --allow-root 2>&1)"
+          REVERSE_CODE=$?
+          set -e
+          printf '%s\n' "$REVERSE_OUT"
+          if [ "$REVERSE_CODE" -eq 0 ]; then
+            echo 'FAIL: the demo activated beside an active production plugin' >&2; exit 1
+          fi
+          if wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root; then
+            echo 'FAIL: the demo stayed active in the conflicting state' >&2; exit 1
+          fi
+          printf '%s' "$REVERSE_OUT" | tee /tmp/cpsa-ci/conflict-reverse.txt
+          grep -q 'CPMS' /tmp/cpsa-ci/conflict-reverse.txt
           if grep -q 'PHP Fatal error' "$WP_DIR/wp-content/debug.log" 2>/dev/null; then
             echo 'FAIL: a PHP fatal error was logged' >&2; tail -40 "$WP_DIR/wp-content/debug.log" >&2; exit 1
           fi
+          # The production core is the only core, and the site still works.
+          wp eval 'echo defined("CPMS_VERSION") ? "CORE_OK" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_OK
+          # BACK TO THE STANDALONE BUILD: production gone, demo active and healthy.
+          wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root
+          wp plugin activate cpms-disposable-demo --path="$WP_DIR" --allow-root
+          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 
       - name: Remove the production plugin again and re-prove the standalone build
         run: |
