@@ -41,7 +41,7 @@ defined( 'ABSPATH' ) || exit;
  */
 final class ScopedTenantGuard {
 
-/** WP-CLI / cron contexts never carry a portal or REST actor. */
+	/** WP-CLI / cron contexts never carry a portal or REST actor. */
 	private const WRITE_METHODS = array( 'POST', 'PUT', 'PATCH', 'DELETE' );
 
 	/**

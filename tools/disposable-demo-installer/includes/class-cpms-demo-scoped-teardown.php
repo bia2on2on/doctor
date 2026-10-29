@@ -1624,6 +1624,16 @@ class ScopedTeardown {
 				return false;
 			}
 		}
+		// 1b. An EXPLICIT, sealed registration is authoritative: the demo workflow
+		//     that wrote this grant recorded it before the row existed. It is still
+		//     bounded by the tenant check above, so a registration can never reach
+		//     outside the demo tenant. This is how the demo's own portal journey
+		//     grants a REAL administrator a role inside the demo Organization and
+		//     still cleans it up afterwards.
+		$row_id = (int) ( $row['id'] ?? 0 );
+		if ( $row_id > 0 && isset( $context['registered'][ $short ][ $row_id ] ) ) {
+			return true;
+		}
 		$users     = array_map( 'intval', (array) ( $context['users'] ?? array() ) );
 		$operators = array_map( 'intval', (array) ( $context['operators'] ?? array() ) );
 		// 2. The grant's own principal must be a synthetic fixture account. A real

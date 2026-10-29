@@ -409,6 +409,7 @@ final class Standalone {
 	 * @return void
 	 */
 	public static function refuse_activation_request(): void {
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only routing: this only classifies the request, and WordPress verifies the activation nonce itself.
 		$action = isset( $_GET['action'] ) ? sanitize_key( (string) wp_unslash( $_GET['action'] ) ) : '';
 		if ( 'activate' !== $action && 'activate-selected' !== $action ) {
 			return;
@@ -419,6 +420,7 @@ final class Standalone {
 		}
 		$requested = array();
 		if ( 'activate' === $action ) {
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- the value is matched against a fixed basename, never used as a path.
 			$single = isset( $_GET['plugin'] ) ? (string) wp_unslash( $_GET['plugin'] ) : '';
 			if ( '' !== $single ) {
 				$requested[] = $single;
