@@ -50,6 +50,19 @@ final class ScopedTenantGuard {
 	 * `/clinic/v1/appointments/42` carries no tenant marker, so the row's own
 	 * `clinic_id` is the only honest answer to "which tenant is this write for".
 	 */
+	/**
+	 * Request keys that NAME a tenant instead of identifying a row.
+	 *
+	 * They are compared against the verified demo tenant directly, so they must
+	 * never also be read as opaque row ids: `clinic_id=7` would otherwise match
+	 * `cpms_patients.id = 7` inside the demo Clinic and a real user's write to a
+	 * FOREIGN Clinic would be refused - an over-blocking that is indistinguishable
+	 * from a safe barrier but breaks somebody else's site.
+	 *
+	 * @var list<string>
+	 */
+	private const TENANT_PARAM_KEYS = array( 'clinic_id', 'clinicId', 'organization_id', 'organizationId', 'location_id', 'locationId' );
+
 	private const ENTITY_TABLES = array(
 		'cpms_appointments',
 		'cpms_visits',
@@ -372,6 +385,8 @@ final class ScopedTenantGuard {
 			return true;
 		}
 		foreach ( array( 'clinic_id', 'clinicId', 'organization_id', 'organizationId' ) as $key ) {
+			// Tenant markers only; see TENANT_PARAM_KEYS for why they are never
+			// treated as entity ids as well.
 			if ( ! isset( $params[ $key ] ) || ! is_scalar( $params[ $key ] ) ) {
 				continue;
 			}
@@ -421,6 +436,11 @@ final class ScopedTenantGuard {
 				continue;
 			}
 			$key = (string) $key;
+			if ( in_array( $key, self::TENANT_PARAM_KEYS, true ) ) {
+				// A tenant marker is authorization-shaped data, not a row id: it was
+				// already resolved against the verified tenant above.
+				continue;
+			}
 			if ( 'id' !== $key && ! preg_match( '/_(id|ids)$/', $key ) ) {
 				continue;
 			}

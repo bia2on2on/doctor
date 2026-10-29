@@ -758,6 +758,47 @@ class DefectJPortalGuardScope(unittest.TestCase):
         self.assertEqual(body.count("if ( 'org_create_clinic' !== $action )"), 1)
 
 
+class DefectNTenantMarkerIsNotAnEntityId(unittest.TestCase):
+    """A safe barrier must not over-block a FOREIGN tenant.
+
+    `clinic_id`, `organization_id` and `location_id` NAME a tenant; they are
+    compared with the verified demo tenant directly. Reading them a second time
+    as opaque row ids made `clinic_id = 7` collide with `cpms_patients.id = 7`
+    inside the demo Clinic, so a real user's write to their OWN Clinic was
+    refused with the demo message whenever a demo existed. That is not a safe
+    default: it breaks the rest of the site while looking like a barrier.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = read(ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-guard.php")
+        start = cls.source.index("private static function entity_targets_demo_tenant(")
+        cls.method = cls.source[start:cls.source.index("private static function resolved_scope_is_demo(", start)]
+
+    def test_tenant_markers_are_declared_once(self) -> None:
+        self.assertIn("private const TENANT_PARAM_KEYS = array(", self.source)
+        for key in ("'clinic_id'", "'organization_id'", "'location_id'", "'clinicId'", "'organizationId'", "'locationId'"):
+            self.assertIn(key, self.source.split("private const TENANT_PARAM_KEYS", 1)[1].split(";", 1)[0])
+
+    def test_the_entity_scan_skips_tenant_markers(self) -> None:
+        self.assertIn("in_array( $key, self::TENANT_PARAM_KEYS, true )", self.method)
+        self.assertLess(
+            self.method.index("TENANT_PARAM_KEYS"),
+            self.method.index("_(id|ids)$"),
+            "the tenant-marker exclusion must come before the generic id match",
+        )
+
+    def test_entity_ids_are_still_resolved_through_the_tenant_column(self) -> None:
+        # The security half: a genuine entity id is still resolved against the
+        # row's OWN clinic, never trusted from the browser.
+        self.assertIn("clinic_id IN (", self.method)
+        self.assertIn("self::ENTITY_TABLES", self.method)
+
+    def test_the_drill_keeps_the_negative_control(self) -> None:
+        drill = read(ROOT / "tests" / "scoped-demo" / "teardown-safety.php")
+        self.assertIn("K: a foreign tenant stays writable for the same real actor", drill)
+
+
 class DefectKLedgerRecovery(unittest.TestCase):
     """K: losing or rolling back the ledger must fail closed (Stage 3)."""
 
