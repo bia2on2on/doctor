@@ -401,6 +401,9 @@ $slot_plan = ( new CpmsDemo\Provisioner( $ctx['env'], $ctx['platform'], $ctx['ma
 $slot_hours = array_unique( array_map( static fn ( $slot ) => substr( $slot['time'], 0, 5 ), $slot_plan ) );
 Cpdd_Test::ok( array() === array_diff( $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) ), 'provisioning: public slots never depend on now+5 minutes (no 23:47 artefact)' );
 Cpdd_Test::ok( array( 'doctor', 'doctor_second' ) === array_values( array_unique( array_column( $slot_plan, 'doctor' ) ) ), 'provisioning: public slots cover both synthetic doctors' );
+$local_today = ( new DateTimeImmutable( 'now', new DateTimeZone( 'Asia/Tehran' ) ) )->format( 'Y-m-d' );
+Cpdd_Test::equals( $local_today, $post['manifest']['ids']['staff_slot_date'], 'provisioning: reception-arrival staff slot is on the LOCAL today' );
+Cpdd_Test::ok( in_array( (int) $post['manifest']['ids']['staff_slot_id'], array_map( 'intval', $post['manifest']['ids']['slot_ids'] ), true ), 'provisioning: the reserved staff-arrival slot is owned by the fixture' );
 $expected_shortcode = '[cpms_public_booking clinic_id="' . (int) $post['manifest']['ids']['clinic_id'] . '"]';
 Cpdd_Test::equals( $expected_shortcode, $post['manifest']['shortcode'], 'provisioning: page uses the actual production shortcode' );
 $page = $ctx['env']->post( (int) $post['manifest']['ids']['booking_page_id'] );

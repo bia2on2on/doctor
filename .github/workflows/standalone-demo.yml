@@ -288,7 +288,20 @@ jobs:
           CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
         run: |
           set -Eeuo pipefail
-          python3 tests/scoped-demo/browser_install.py | tee /tmp/cpsa-ci/browser-install.log
+          if ! python3 tests/scoped-demo/browser_install.py | tee /tmp/cpsa-ci/browser-install.log; then
+            python3 - <<'ANN'
+          import json, pathlib
+          p = pathlib.Path('/tmp/cpsa-ci/browser/admin-install-browser.json')
+          detail = 'browser install evidence missing'
+          if p.is_file():
+              data = json.loads(p.read_text(encoding='utf-8'))
+              failed = [c for c in data.get('checks', []) if not c.get('ok')]
+              detail = ' || '.join(str(c.get('name')) + ' — ' + str(c.get('detail', ''))[:240] for c in failed[-4:]) or detail
+          print('::error title=CPSA_ADMIN_INSTALL::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
+          ANN
+            tail -n 40 /tmp/cpsa-ci/php-server.log || true
+            exit 1
+          fi
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
           if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
             echo 'FAIL: production CPMS was installed' >&2; exit 1

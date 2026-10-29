@@ -147,6 +147,19 @@ class StandaloneAdminAcceptanceTests(unittest.TestCase):
         # Non-empty WordPress is seeded BEFORE the admin upload.
         self.assertLess(job.index("Seed a genuinely non-empty WordPress BEFORE"), job.index("Real wp-admin ZIP upload"))
 
+    def test_ci_observer_rotates_only_acceptance_capture_and_refreshes_plugin_cache(self):
+        observer = (ROOT / "tests" / "scoped-demo" / "ci-observer.php").read_text()
+        self.assertIn("getenv( 'CPSD_CI_CAPTURE' )", observer)
+        self.assertIn("wp_clean_plugins_cache", observer)
+        text = workflow("standalone-demo.yml")
+        job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]
+        server = job.split("Start PHP built-in WordPress server", 1)[1].split("Real wp-admin ZIP upload", 1)[0]
+        self.assertIn("CPSD_CI_CAPTURE: '1'", server)
+        provision = job.split("Provision the scoped demo on the non-empty site", 1)[1].split("Export the read-only portal identifiers", 1)[0]
+        self.assertIn("CPSD_CI_CAPTURE: '1'", provision)
+        integration = job.split("Enable and provision the scoped demo", 1)[1].split("Provision the scoped demo on the non-empty site", 1)[0]
+        self.assertNotIn("CPSD_CI_CAPTURE", integration)
+
     def test_standalone_evidence_never_uploads_one_time_credentials_or_otp_codes(self):
         text = workflow("standalone-demo.yml")
         job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]

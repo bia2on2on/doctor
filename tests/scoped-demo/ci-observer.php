@@ -40,6 +40,12 @@ add_action(
 		}
 		require_once ABSPATH . 'wp-admin/includes/plugin.php';
 		require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+		// The upload request may have warmed the plugin cache before the new
+		// directory existed. Mirror the post-install cache invalidation WordPress
+		// performs before the skin asks for plugin_info().
+		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
+			wp_clean_plugins_cache();
+		}
 		$upgrader = new Plugin_Upgrader();
 		$info     = $upgrader->plugin_info();
 		$plugins  = get_plugins( '/cpms-disposable-demo' );
@@ -64,6 +70,12 @@ add_action(
 add_action(
 	'cpms_demo_provisioned',
 	static function ( $manifest ) use ( $cpms_ci_browser, $cpms_ci_write ): void {
+		// Only acceptance fixture capture rotates passwords. Other drills (for
+		// example scoped integration) authenticate with the credentials returned
+		// by their own provision call; rotating underneath them invalidates them.
+		if ( ! getenv( 'CPSD_CI_CAPTURE' ) ) {
+			return;
+		}
 		if ( ! is_array( $manifest ) || 'active' !== (string) ( $manifest['status'] ?? '' ) || ! class_exists( 'CpmsDemo\\Credentials' ) ) {
 			return;
 		}

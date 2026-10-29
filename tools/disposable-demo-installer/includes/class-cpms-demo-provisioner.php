@@ -314,18 +314,27 @@ class Provisioner {
 					$slot_id                = $this->platform->insert_slot( $clinic_id, $location_primary, $slot_clinician, $slot['date'], $slot['time'] );
 					$manifest['ids']['slot_ids'][] = $slot_id;
 				}
+				// The reception-arrival drill needs an appointment on the Location's
+				// LOCAL today, while public booking must offer realistic future clinic
+				// hours. Reserve a separate 09:00 staff-arrival slot today instead of
+				// anchoring anything to "now + minutes" (the old 23:47 artefact) or
+				// forcing the public schedule into the current wall-clock minute.
+				$local_today   = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'Asia/Tehran' ) ) )->format( 'Y-m-d' );
+				$staff_slot_id = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $local_today, '09:00:00' );
+				$manifest['ids']['slot_ids'][]      = $staff_slot_id;
+				$manifest['ids']['staff_slot_id']   = $staff_slot_id;
+				$manifest['ids']['staff_slot_date'] = $local_today;
 				$manifest = $this->manifest->save( $manifest );
 
 				$stage       = 'appointment';
-				$first       = $slots[0];
 				$appointment = $this->platform->create_staff_appointment(
 					$reception,
 					(int) $manifest['ids']['patient_id'],
 					$clinician_id,
-					$first['date'],
-					$first['time'],
+					$local_today,
+					'09:00:00',
 					'SYNTHETIC-' . $fixture['fixture_id'],
-					(int) $manifest['ids']['slot_ids'][0]
+					$staff_slot_id
 				);
 				$manifest['ids']['appointment_id'] = $appointment;
 				$manifest = $this->manifest->save( $manifest );
@@ -667,13 +676,15 @@ class Provisioner {
 	/**
 	 * Deterministic, realistic Iranian clinic hours for BOTH synthetic doctors.
 	 *
-	 * Slots are on the next two LOCAL calendar days (Asia/Tehran), never anchored
-	 * to "now + five minutes", so the Owner never sees artefacts such as 23:47.
-	 * Doctor one works mornings (09:00–09:40), doctor two afternoons
-	 * (14:00–14:40). The first row is reserved for the synthetic staff
-	 * appointment; the remaining rows are open to the real public booking flow.
-	 * Local dates are carried per row and DST is handled by DateTimeImmutable in
-	 * the Location timezone, not by UTC arithmetic or browser clocks.
+	 * Public slots are on the next two LOCAL calendar days (Asia/Tehran), never
+	 * anchored to "now + five minutes", so the Owner never sees artefacts such as
+	 * 23:47. Doctor one works mornings (09:00–09:40), doctor two afternoons
+	 * (14:00–14:40). These rows are open to the real public booking flow. The
+	 * synthetic staff-arrival appointment uses a separate reserved 09:00 slot on
+	 * the LOCAL today, so reception check-in remains provable on the board's local
+	 * day without publishing past or wall-clock-derived public times. Local dates
+	 * are carried per row and DST is handled by DateTimeImmutable in the Location
+	 * timezone, not by UTC arithmetic or browser clocks.
 	 *
 	 * @return list<array{date:string,time:string,doctor:string}>
 	 */

@@ -1117,6 +1117,7 @@ def main() -> None:
                         'clinician_id' => (int) $m['ids']['clinician_id'],
                         'clinician_name' => (string) ($doc['full_name'] ?? ''),
                         'patient_mobile' => (string) $m['patient_mobile'],
+                        'appointment_id' => (int) ($m['ids']['appointment_id'] ?? 0),
                     ]);
                     """
                 )
@@ -1243,7 +1244,7 @@ def main() -> None:
 
             # 13. Reception workflow
             stage("13. Reception arrival check-in and queue enqueue")
-            appointment_id = int(
+            booked_appointment_id = int(
                 wp_eval(
                     r"""
                     $db = \ClinicCore\Bootstrap\App::db();
@@ -1252,7 +1253,13 @@ def main() -> None:
                     {"CID": str(fixture_meta["clinic_id"]), "REF": reference_code},
                 )
             )
-            check("booked appointment persisted in DB", appointment_id > 0, str(appointment_id))
+            check("booked appointment persisted in DB", booked_appointment_id > 0, str(booked_appointment_id))
+            arrival_appointment_id = int(fixture_meta.get("appointment_id") or 0)
+            check(
+                "reception arrival uses the synthetic local-today staff appointment, not a future public slot",
+                arrival_appointment_id > 0 and arrival_appointment_id != booked_appointment_id,
+                f"arrival={arrival_appointment_id} public={booked_appointment_id}",
+            )
 
             rec_ctx, rec_page = open_persona_context(browser, rotated_creds, "receptionist")
             contexts.append(rec_ctx)
@@ -1265,7 +1272,7 @@ def main() -> None:
             l_sel = rec_page.locator('[data-role="sr-location-select"]')
             rec_page.locator(f'[data-role="sr-location-select"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
             l_sel.select_option(str(fixture_meta["location_id"]))
-            arrive_btn = rec_page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
+            arrive_btn = rec_page.locator(f'[data-role="sr-arrive"][data-appointment-id="{arrival_appointment_id}"]')
             arrive_btn.wait_for(state="visible", timeout=35000)
             arrive_btn.click()
             arrive_btn.wait_for(state="detached", timeout=35000)
@@ -1279,7 +1286,7 @@ def main() -> None:
                     $db = \ClinicCore\Bootstrap\App::db();
                     echo (int) $db->fetchValue("SELECT id FROM " . $db->table('cpms_visits') . " WHERE clinic_id = %d AND appointment_id = %d AND status = 'waiting' ORDER BY id DESC LIMIT 1", [(int) getenv('CID'), (int) getenv('AID')]);
                     """,
-                    {"CID": str(fixture_meta["clinic_id"]), "AID": str(appointment_id)},
+                    {"CID": str(fixture_meta["clinic_id"]), "AID": str(arrival_appointment_id)},
                 )
             )
             check("reception check-in created waiting visit in DB", visit_id > 0, str(visit_id))

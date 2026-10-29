@@ -353,8 +353,13 @@ page (`manage_options`) with a plugin-row shortcut, independent of the productio
 and without any clinical/financial capability grant. The Owner guide names the synthetic mobile,
 the `log` provider, the exact OTP retrieval steps, credential rotation, and the unsafe-recovery
 boundary. Both synthetic doctors have bounded weekly templates and public slots at realistic
-Iranian hours (09:xx and 14:xx); the old `now + 5 minutes` anchor that could produce 23:47 is
-gone. Wrong-mobile anonymous rows are never claimed by tenant/mobile/time alone: cleanup refuses
+Iranian hours (09:xx and 14:xx) on the next two LOCAL days; the old `now + 5 minutes` anchor
+that could produce 23:47 is gone. Reception arrival is proved separately through a reserved
+09:00 synthetic staff appointment on the Location's LOCAL today, so the board check does not
+force public booking to publish past or wall-clock-derived times. The CI observer refreshes the
+plugin cache before recording `plugin_info()` and rotates acceptance-fixture passwords only
+when `CPSD_CI_CAPTURE` is explicitly set, so it cannot invalidate another drill's own
+provision-time credentials. Wrong-mobile anonymous rows are never claimed by tenant/mobile/time alone: cleanup refuses
 with `SCOPED_FOREIGN_TENANT_ROW` / `TEARDOWN_BLOCKED`, preserves the rows and audit chain, and the
 Persian guidance says no safe automatic recovery exists without independent ownership evidence.
 
