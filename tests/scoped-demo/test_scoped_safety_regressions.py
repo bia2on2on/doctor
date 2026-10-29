@@ -821,6 +821,17 @@ class Task2DrillRunsOnBothEnginesAndProvesItsFixtures(unittest.TestCase):
         self.assertIn("${{ matrix.database }}", job)
         self.assertIn("fail-fast: false", job)
 
+    def test_each_engine_gets_a_health_probe_it_understands(self) -> None:
+        # MariaDB does not answer `mysqladmin -uroot -proot` the way the MySQL
+        # image does, so a shared probe leaves the container unhealthy and the
+        # engine never starts. That failure looks like a product failure and is
+        # not one.
+        job = self.workflow.split("  teardown-safety:", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("health_cmd: mysqladmin ping", job)
+        self.assertIn("health_cmd: healthcheck.sh --connect --innodb_initialized", job)
+        self.assertIn("--health-cmd=\"${{ matrix.health_cmd }}\"", job)
+        self.assertIn("MARIADB_ROOT_PASSWORD: root", job)
+
     def test_each_engine_uploads_its_own_evidence(self) -> None:
         self.assertIn("cpsa-teardown-safety-${{ matrix.database }}", self.workflow)
 

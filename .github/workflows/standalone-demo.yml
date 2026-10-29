@@ -573,16 +573,22 @@ jobs:
         include:
           - database: mysql-8
             image: mysql:8
+            health_cmd: mysqladmin ping -h 127.0.0.1 -uroot -proot
           - database: mariadb-11.4.13
             image: mariadb:11.4.13
+            # MariaDB ships its own healthcheck and answers `mariadb-admin`, so
+            # the MySQL probe makes the container look unhealthy and the engine
+            # never comes up at all. Same pair the acceptance job uses.
+            health_cmd: healthcheck.sh --connect --innodb_initialized
     services:
       mysql:
         image: ${{ matrix.image }}
         env:
           MYSQL_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: root
         ports: ['3306:3306']
         options: >-
-          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-cmd="${{ matrix.health_cmd }}"
           --health-interval=10s --health-timeout=5s --health-retries=20
     steps:
       - uses: actions/checkout@v4
