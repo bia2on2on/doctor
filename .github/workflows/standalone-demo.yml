@@ -611,6 +611,25 @@ jobs:
           wp plugin install /tmp/cpsa-ts/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 
+      - name: Seed a genuinely non-empty host site (the preflight requires it)
+        run: |
+          set -Eeuo pipefail
+          CPSD_SA_MODE=seed CPSD_SA_EVIDENCE=/tmp/cpsa-ts/seed.json \
+            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ts/seed.jsonl
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ts/seed.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
+          print('SEED_OK=' + str(bool(data.get('ok'))))
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
+                  print('::error title=CPSA_TS_SEED::' + str(line).replace('%', '%25').replace('\n', ' '))
+              sys.exit(1)
+          PY
+          wp plugin install classic-editor --activate --path="$WP_DIR" --allow-root >/dev/null
+          wp plugin is-active classic-editor --path="$WP_DIR" --allow-root
+
       - name: Provision the fixture the drill attacks
         run: |
           set -Eeuo pipefail
