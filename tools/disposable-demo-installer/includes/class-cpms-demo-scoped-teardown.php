@@ -1455,10 +1455,12 @@ class ScopedTeardown {
 		// because a synthetic account had created it. Ownership of a grant is now
 		// only ever explicit registration plus a re-proved operator binding.
 		if ( in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {
-			if ( ! isset( $context['registered'][ $short ][ $row_id ] ) ) {
-				return false;
-			}
-
+			// The grant's OWN principal must be a synthetic fixture account and the
+			// row must live in a verified demo tenant; who INVITED or CREATED it is
+			// never evidence. That keeps a real administrator's membership out of
+			// the deletable set no matter which synthetic account produced it,
+			// while the provisioner's own persona memberships stay provable without
+			// depending on a ledger that only the request recorder writes.
 			return $this->operator_grant_is_bounded( $short, $row, $context );
 		}
 		// A row the demo explicitly registered is owned by definition: that is the
@@ -1606,14 +1608,10 @@ class ScopedTeardown {
 	 * @return bool
 	 */
 	private function operator_grant_is_bounded( string $short, array $row, array $context ): bool {
-		$operators = array_values( array_filter( array_map( 'intval', (array) ( $context['operators'] ?? array() ) ) ) );
-		if ( array() === $operators ) {
-			return false;
-		}
-		// The row must belong to a VERIFIED demo tenant. Every verified demo Clinic
-		// counts, not only the fixture's first one: a demo may own more than one
-		// Clinic (`ScopedClinics::create()`), and refusing those would block a
-		// legitimate teardown instead of protecting anybody.
+		// 1. The row must belong to a VERIFIED demo tenant. Every verified demo
+		//    Clinic counts, not only the fixture's first one: a demo may own more
+		//    than one Clinic (`ScopedClinics::create()`), and refusing those would
+		//    block a legitimate teardown instead of protecting anybody.
 		if ( 'cpms_organization_memberships' === $short ) {
 			$tenant = (int) ( $row['organization_id'] ?? 0 );
 			if ( $tenant <= 0 || $tenant !== (int) ( $context['tenant_org'] ?? 0 ) ) {
@@ -1626,27 +1624,35 @@ class ScopedTeardown {
 				return false;
 			}
 		}
-		$saw_operator = false;
+		$users     = array_map( 'intval', (array) ( $context['users'] ?? array() ) );
+		$operators = array_map( 'intval', (array) ( $context['operators'] ?? array() ) );
+		// 2. The grant's own principal must be a synthetic fixture account. A real
+		//    person's membership is refused HERE, whatever else the row says - the
+		//    defect this replaces accepted the synthetic INVITER as evidence and
+		//    deleted a real administrator's membership.
+		$principal = (int) ( $row['wp_user_id'] ?? 0 );
+		if ( $principal <= 0 || ! in_array( $principal, $users, true ) ) {
+			return false;
+		}
+		// 3. No OTHER user reference may name a person outside the fixture. A
+		//    synthetic inviter is acceptable (it is the demo acting), a real one is
+		//    not.
 		foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
-			if ( ! array_key_exists( $column, $row ) ) {
+			if ( 'wp_user_id' === $column || ! array_key_exists( $column, $row ) ) {
 				continue;
 			}
 			$value = (int) ( $row[ $column ] ?? 0 );
 			if ( $value <= 0 ) {
 				continue;
 			}
-			if ( in_array( $value, (array) $context['users'], true ) ) {
-				continue;
-			}
-			if ( in_array( $value, $operators, true ) ) {
-				$saw_operator = true;
+			if ( in_array( $value, $users, true ) || in_array( $value, $operators, true ) ) {
 				continue;
 			}
 
 			return false;
 		}
 
-		return $saw_operator;
+		return true;
 	}
 
 	/**

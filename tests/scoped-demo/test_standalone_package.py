@@ -320,7 +320,11 @@ class SecurityFindingsDisposition(unittest.TestCase):
         self.assertIn("$context['tenant_org']", body)
         self.assertIn("$context['demo_clinics']", body)
         self.assertIn("in_array( $tenant, $clinics, true )", body)
-        self.assertIn("$saw_operator", body)
+        # The grant's OWN principal must be synthetic; a synthetic inviter is not
+        # evidence of ownership over a real person's membership.
+        self.assertIn("$principal = (int) ( $row['wp_user_id'] ?? 0 );", body)
+        self.assertIn("if ( $principal <= 0 || ! in_array( $principal, $users, true ) ) {", body)
+        self.assertNotIn("$saw_operator", body)
         self.assertIn("return false;", body)
         # And a membership row never falls through to a generic rule, so a
         # synthetic inviter can never make a real person's membership deletable.
@@ -329,8 +333,9 @@ class SecurityFindingsDisposition(unittest.TestCase):
         self.assertIn("if ( in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {", attributed)
         guard = attributed[attributed.index("self::OPERATOR_GRANT_TABLES"):]
         guard = guard[: guard.index("return $this->operator_grant_is_bounded")]
-        self.assertIn("if ( ! isset( $context['registered'][ $short ][ $row_id ] ) ) {", guard)
-        self.assertIn("return false;", guard)
+        # The branch decides on its own and never falls through to a generic rule.
+        self.assertIn("return $this->operator_grant_is_bounded( $short, $row, $context );", guard + attributed[attributed.index("return $this->operator_grant_is_bounded"):][:80])
+        self.assertNotIn("@user", guard)
 
 
 class PackageContents(unittest.TestCase):

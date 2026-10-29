@@ -104,7 +104,7 @@ final class ScopedTenantGuard {
 		add_action( 'init', array( __CLASS__, 'begin_request' ), 0 );
 		// `wp_loaded` runs after WordPress has resolved the current user and
 		// BEFORE any dispatch: admin-post.php fires its action after it,
-		// admin-ajax.php fires `wp_ajax_*` after it, `template_redirect` (the
+		// admin-ajax.php fires the admin-AJAX actions after it, `template_redirect` (the
 		// Management Portal) runs after it, and REST dispatch runs after it. It is
 		// therefore the only universal place where a write can be both recorded
 		// and refused for every surface, with the actor already known.
