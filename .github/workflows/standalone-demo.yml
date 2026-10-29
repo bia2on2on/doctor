@@ -630,6 +630,26 @@ jobs:
           wp plugin install classic-editor --activate --path="$WP_DIR" --allow-root >/dev/null
           wp plugin is-active classic-editor --path="$WP_DIR" --allow-root
 
+      - name: Scoped integration first (it leaves the host multi-Clinic)
+        run: |
+          set -Eeuo pipefail
+          # The scoped preflight refuses a single-Clinic host: adding an anchor
+          # Clinic to a site with exactly one Clinic would change every
+          # COUNT(*)===1 decision. This drill is what makes the host genuinely
+          # multi-Clinic, exactly as the acceptance job does.
+          wp eval-file "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/scoped-integration.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ts/scoped-integration.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ts/scoped-integration.json', encoding='utf-8').read().strip().splitlines()[-1])
+          print('SCOPED_INTEGRATION_OK=' + str(bool(data.get('ok'))))
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
+                  print('::error title=CPSA_TS_INTEGRATION::' + str(line).replace('%', '%25').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
       - name: Provision the fixture the drill attacks
         run: |
           set -Eeuo pipefail
