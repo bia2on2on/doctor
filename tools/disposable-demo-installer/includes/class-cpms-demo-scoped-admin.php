@@ -45,6 +45,9 @@ class ScopedAdmin {
 	/** @var array{manifest:array<string,mixed>,credentials:array<string,string>}|null */
 	private static $provisioned = null;
 
+	/** @var array<string,mixed>|null Result of an additional-Clinic operation. */
+	private static $extra = null;
+
 	public static function reset_state(): void {
 		self::$notice      = null;
 		self::$credentials = null;
@@ -52,6 +55,7 @@ class ScopedAdmin {
 		self::$diagnostic  = null;
 		self::$teardown    = null;
 		self::$provisioned = null;
+		self::$extra       = null;
 	}
 
 	/**
@@ -135,6 +139,8 @@ class ScopedAdmin {
 		$provisioner  = new ScopedProvisioner( $env, $platform, $manifest, $preflight, $credentials, $baseline, $audit_guard );
 		$teardown     = new ScopedTeardown( $env, $platform, $manifest, $audit_guard, $baseline );
 		$otp_helper   = new ScopedOtp( $env, $platform, $manifest );
+		$ownership    = new ScopedOwnership( $env, $manifest );
+		$clinics      = new ScopedClinics( $env, $platform, $manifest, $ownership );
 		$post         = (array) wp_unslash( $_POST );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		try {
@@ -166,6 +172,32 @@ class ScopedAdmin {
 					self::$diagnostic = $teardown->preview( $loaded );
 					self::$notice      = array( 'type' => 'info', 'text' => 'پیشنمایش فقطخواندنی اجرا شد؛ هیچ ردیفی حذف نشد.' );
 					break;
+				case ScopedRequest::ACTION_ADD_CLINIC:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					self::$extra  = $clinics->create( $loaded, $admin_id );
+					self::$notice = array(
+						'type' => 'success',
+						'text' => 'درمانگاه نمایشی دوم ساخته و مالکیت آن در دفتر مهرشدهٔ دمو ثبت شد (شناسه: ' . (int) self::$extra['clinic_id'] . ').',
+					);
+					break;
+				case ScopedRequest::ACTION_RESOLVE_CLINIC:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					$token   = isset( $post['cpdd_token'] ) ? sanitize_text_field( (string) $post['cpdd_token'] ) : '';
+					$claim   = isset( $post['cpdd_decision'] ) && 'claim' === sanitize_key( (string) $post['cpdd_decision'] );
+					self::$extra  = $clinics->resolve( $loaded, $token, $claim );
+					self::$notice = array(
+						'type' => 'success',
+						'text' => 'registered' === (string) ( self::$extra['decision'] ?? '' )
+							? 'درمانگاه ناتمام در دفتر مالکیت دمو ثبت شد.'
+							: 'قصد ناتمام لغو شد؛ هیچ درمانگاهی ثبت نشد.',
+					);
+					break;
 				case ScopedRequest::ACTION_TEARDOWN:
 					$loaded = $manifest->load();
 					if ( null === $loaded ) {
@@ -178,9 +210,13 @@ class ScopedAdmin {
 					throw new Exception( 'ACTION_UNKNOWN', 'عملیات ناشناخته است.' );
 			}
 		} catch ( Exception $e ) {
-			self::$notice = array( 'type' => 'error', 'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')' );
+			self::$notice = array( 'type' => 'error', 'code' => $e->demo_code(), 'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')' );
 		} catch ( \Throwable $e ) {
-			self::$notice = array( 'type' => 'error', 'text' => 'خطای غیرمنتظره: ' . $e->getMessage() );
+			// A raw exception message is not operator-facing Persian, and it can
+			// carry a class name or a file path. The strict page already refuses
+			// to echo it; this one no longer does either.
+			unset( $e );
+			self::$notice = array( 'type' => 'error', 'code' => 'UNEXPECTED', 'text' => 'خطای غیرمنتظره رخ داد؛ هیچ تغییری خارج از مسیر گزارش‌شده انجام نشد.' );
 		}
 	}
 
@@ -213,6 +249,7 @@ class ScopedAdmin {
 		$tombstone = $manifest->tombstone();
 		echo '<div class="wrap cpdd" dir="rtl" data-cpsd-page="1">';
 		echo '<h1>دموی محدودشده CPMS — سایت آزمایشی غیرخالی</h1>';
+		\CpmsDemo\Standalone::render_banner();
 		self::render_notice();
 		self::render_identity( $env, $manifest, $manifest->mode_enabled(), $loaded, $manifest_error );
 		self::render_preflight( $state );
@@ -223,11 +260,12 @@ class ScopedAdmin {
 		} elseif ( ! $manifest->mode_enabled() ) {
 			self::render_form( $request, ScopedRequest::ACTION_ENABLE, 'فعالسازی حالت محدودشده', 'I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE', 'این دکمه فقط یک نشانگر HMACشده مینویسد و هیچ کاربر یا رکورد CPMS نمیسازد.' );
 		} elseif ( null === $loaded ) {
-			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و شش حساب کاملاً ساختگی ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
+			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و حساب‌های کاملاً ساختگی دمو ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
 		} else {
 			$status = (string) ( $loaded['status'] ?? 'unknown' );
+			self::render_ownership( $env, $manifest, $request, $loaded );
 			if ( 'active' === $status ) {
-				self::render_links( $loaded );
+				self::render_persona_access( $loaded );
 				self::render_form( $request, ScopedRequest::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'پس از درخواست کد از رابط واقعی بیمار، کد همان چالش زنده را نشان میدهد.' );
 			} else {
 				echo '<div class="notice notice-warning inline"><p>وضعیت دمو ناتمام است: <code dir="ltr">' . esc_html( $status ) . '</code>. ساخت دمو تازهای مجاز نیست؛ از پیشنمایش و پاکسازی ایمن استفاده کنید.</p></div>';
@@ -251,7 +289,14 @@ class ScopedAdmin {
 		}
 		$type  = (string) ( self::$notice['type'] ?? 'info' );
 		$class = 'error' === $type ? 'notice-error' : ( 'warning' === $type ? 'notice-warning' : ( 'success' === $type ? 'notice-success' : 'notice-info' ) );
-		echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
+		$code  = (string) ( self::$notice['code'] ?? '' );
+
+		// Same rule as the strict admin page: the outcome notice is addressable
+		// and a refusal names its stable code, so a drill (or an operator's
+		// support report) can identify it without matching Persian prose.
+		echo '<div class="notice ' . esc_attr( $class ) . '" data-cpdd-notice="' . esc_attr( $type ) . '"'
+			. ( '' === $code ? '' : ' data-cpdd-code="' . esc_attr( $code ) . '"' )
+			. '><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
 	}
 
 	private static function render_identity( Env $env, ScopedManifest $manifest, bool $mode, ?array $loaded, string $error ): void {
@@ -289,16 +334,149 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
-	private static function render_form( ScopedRequest $request, string $action, string $title, string $phrase, string $hint ): void {
+	private static function render_form( ScopedRequest $request, string $action, string $title, string $phrase, string $hint, array $fields = array() ): void {
 		echo '<form method="post" class="cpdd-card" data-cpsd-form="' . esc_attr( $action ) . '">';
 		echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( $action ) . '" />';
 		echo '<input type="hidden" name="cpdd_nonce" value="' . esc_attr( $request->nonce( $action ) ) . '" />';
 		echo '<input type="hidden" name="cpdd_site" value="' . esc_attr( $request->site_fingerprint_field() ) . '" />';
+		foreach ( $fields as $name => $value ) {
+			echo '<input type="hidden" name="' . esc_attr( (string) $name ) . '" value="' . esc_attr( (string) $value ) . '" />';
+		}
 		echo '<h2>' . esc_html( $title ) . '</h2><p>' . esc_html( $hint ) . '</p>';
 		echo '<p><label>عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
 		echo '<p><input type="text" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required /></p>';
 		echo '<p><button type="submit" class="button ' . ( ScopedRequest::ACTION_TEARDOWN === $action ? 'button-link-delete' : 'button-primary' ) . '">' . esc_html( $title ) . '</button></p>';
 		echo '</form>';
+	}
+
+	/**
+	 * Persian, server-enforced explanation of the scoped-mode Clinic policy, the
+	 * sealed ownership state, and the explicit registration path.
+	 *
+	 * The restriction is enforced twice on the server: the synthetic Organization
+	 * manager carries an explicit DENY for `cpms_org_clinic_create` (so the
+	 * production resolver refuses, and the portal does not even render the
+	 * create form), and any portal POST of `org_create_clinic` is refused before
+	 * dispatch while scoped mode is enabled. This card explains that, and offers
+	 * the only path that produces a provably demo-owned additional Clinic.
+	 *
+	 * @param Env                 $env      Environment.
+	 * @param ScopedManifest      $manifest Manifest.
+	 * @param ScopedRequest       $request  Request gates.
+	 * @param array<string,mixed> $loaded   Verified manifest.
+	 * @return void
+	 */
+	private static function render_ownership( Env $env, ScopedManifest $manifest, ScopedRequest $request, array $loaded ): void {
+		$summary = ( new ScopedOwnership( $env, $manifest ) )->summary( (string) ( $loaded['fixture_id'] ?? '' ) );
+		$status  = (string) ( $loaded['status'] ?? 'unknown' );
+		echo '<div class="cpdd-card" data-cpsd-ownership="1"><h2>مالکیت درمانگاه‌ها در حالت دموی محدودشده</h2>';
+		if ( ! $summary['ok'] ) {
+			echo '<p class="cpdd-warn">دفتر مالکیت دمو معتبر نیست؛ پاک‌سازی تا تعیین تکلیف متوقف می‌ماند. ' . esc_html( (string) $summary['detail'] ) . '</p>';
+		}
+		echo '<p>ساخت درمانگاه تازه از «درگاه مدیریت» در این حالت <strong>مسدود است</strong> و این محدودیت در سرور اعمال می‌شود: '
+			. 'مجوز <code dir="ltr">cpms_org_clinic_create</code> برای مدیر سازمان نمایشی به‌صورت DENY ثبت شده و هر درخواست ساخت از درگاه '
+			. 'پیش از اجرا رد می‌شود. دلیل: درمانگاهی که پس از مهر پایهٔ مرجع زیر سازمان دمو ساخته شود از یک درمانگاه واقعی قابل تشخیص نیست '
+			. 'و پاک‌سازی خودکار ممکن است دادهٔ واقعی را حذف کند. برای همین، هر درمانگاه اضافی فقط از همین صفحه و با ثبت مالکیت در '
+			. 'دفتر مهرشدهٔ دمو ساخته می‌شود.</p>';
+		echo '<p>درمانگاه‌های ثبت‌شده در دفتر مالکیت: <code dir="ltr">'
+			. esc_html( implode( ', ', array_map( 'strval', (array) $summary['clinic_ids'] ) ) )
+			. '</code></p>';
+		if ( array() !== (array) $summary['pending'] ) {
+			echo '<p class="cpdd-warn">یک ثبت ناتمام از اجرای قبلی باقی مانده است. تا تعیین تکلیف آن، پاک‌سازی مخرب اجرا نمی‌شود.</p>';
+			foreach ( (array) $summary['pending'] as $intent ) {
+				$token = (string) ( $intent['token'] ?? '' );
+				$slug  = (string) ( $intent['slug'] ?? '' );
+				echo '<p>قصد ناتمام — شناسهٔ یکتا: <code dir="ltr">' . esc_html( $slug ) . '</code></p>';
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'ثبت مالکیت درمانگاه متناظر', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط ردیفی ثبت می‌شود که دقیقاً با شناسهٔ یکتای مهرشده و سازمان دمو هم‌خوان باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'claim' ) );
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'لغو قصد ناتمام', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط وقتی مجاز است که هیچ ردیفی با شناسهٔ یکتای مهرشده وجود نداشته باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'abandon' ) );
+			}
+		} elseif ( 'active' === $status ) {
+			self::render_form( $request, ScopedRequest::ACTION_ADD_CLINIC, 'ساخت درمانگاه نمایشی دوم', 'REGISTER_ADDITIONAL_DEMO_CLINIC', 'مالکیت این درمانگاه پیش از ساخت در دفتر مهرشده ثبت می‌شود؛ ساخت آن با سرویس واقعی production انجام می‌گیرد.' );
+		}
+		if ( is_array( self::$extra ) ) {
+			echo '<p data-cpsd-extra="1">درمانگاه نمایشی: <code dir="ltr">' . esc_html( (string) ( self::$extra['slug'] ?? '' ) ) . '</code> — شناسه: <code dir="ltr">' . esc_html( (string) ( self::$extra['clinic_id'] ?? 0 ) ) . '</code></p>';
+		}
+		echo '</div>';
+	}
+
+	/**
+	 * Refuse portal Clinic creation for the SYNTHETIC DEMO MANAGER only.
+	 *
+	 * Scope of the refusal, all three conditions required:
+	 *
+	 *   1. scoped demo mode is enabled AND a verified manifest for this site is
+	 *      active (an interrupted/aborted fixture does not restrict anything);
+	 *   2. the request names the demo Organization;
+	 *   3. the actor is the synthetic Organization manager of that fixture.
+	 *
+	 * Everything else - most importantly a legitimate Organization manager of a
+	 * FOREIGN Organization creating a Clinic while a demo is active - is left
+	 * completely alone. The refusal is server-side (it happens before the portal
+	 * dispatcher runs) and the message is Persian.
+	 *
+	 * @return void
+	 */
+	public static function guard_portal_clinic_creation(): void {
+		if ( 'POST' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
+			return;
+		}
+		// A refusal is not a state change: it writes nothing, so a nonce cannot make
+		// it legitimate, and demanding one would let a crafted POST slip past this
+		// boundary into the production controller. The values are only compared
+		// against the sealed fixture identity below.
+		// phpcs:disable WordPress.Security.NonceVerification.Missing -- read-only refusal guard; nothing is written or changed.
+		$posted_action     = isset( $_POST['cpms_action'] ) ? (string) wp_unslash( $_POST['cpms_action'] ) : '';
+		$posted_org        = isset( $_POST['organization_id'] ) ? (int) wp_unslash( $_POST['organization_id'] ) : 0;
+		// phpcs:enable WordPress.Security.NonceVerification.Missing
+		$action = sanitize_key( $posted_action );
+		if ( 'org_create_clinic' !== $action ) {
+			return;
+		}
+		$manifest = new ScopedManifest( new Env() );
+		if ( ! $manifest->mode_enabled() ) {
+			return;
+		}
+		try {
+			$loaded = $manifest->load();
+		} catch ( \Throwable $error ) {
+			// A manifest that does not verify identifies no fixture, so no actor
+			// can be shown to be the demo's synthetic manager. Refusing here
+			// would either hit the wrong person or (worse) fatal on a form POST
+			// that has nothing to do with the demo; standing down keeps
+			// production behaviour intact. Nothing becomes silently deletable:
+			// the teardown refuses to run at all while the manifest is
+			// unverifiable, so a Clinic created in that window stays unproven
+			// and needs an explicit human decision.
+			return;
+		}
+		if ( ! is_array( $loaded ) || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+			// No live fixture: this request cannot belong to a demo session, so a
+			// leftover mode marker must not restrict anybody.
+			return;
+		}
+		$demo_org = (int) ( $loaded['ids']['organization_id'] ?? 0 );
+		$manager  = (int) ( $loaded['ids']['user_ids']['organization_manager'] ?? 0 );
+		if ( $demo_org <= 1 || $manager <= 1 ) {
+			return;
+		}
+		if ( get_current_user_id() !== $manager ) {
+			// A real Organization manager (of any Organization, including one that
+			// happens to post into the demo Organization) is NOT the demo persona.
+			return;
+		}
+		if ( $posted_org > 0 && $posted_org !== $demo_org ) {
+			return;
+		}
+		wp_die(
+			esc_html(
+				'در حالت «دموی محدودشده» حساب نمایشی مدیر سازمان نمی‌تواند از درگاه مدیریت درمانگاه تازه بسازد و این درخواست در سرور رد شد. '
+				. 'دلیل: درمانگاهی که پس از مهر پایهٔ مرجع زیر سازمان دمو ساخته شود از یک درمانگاه واقعی قابل تشخیص نیست و '
+				. 'پاک‌سازی خودکار ممکن است دادهٔ واقعی را حذف کند. اگر برای آزمون به درمانگاه دوم نیاز دارید، آن را از صفحهٔ '
+				. '«دموی محدودشده CPMS» در پیشخوان بسازید؛ مالکیت آن پیش از ساخت در دفتر مهرشدهٔ دمو ثبت می‌شود.'
+			),
+			esc_html( 'ساخت درمانگاه برای حساب نمایشی مسدود است' ),
+			array( 'response' => 403 )
+		);
 	}
 
 	private static function render_credentials( ?array $loaded ): void {
@@ -317,13 +495,108 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
-	private static function render_links( array $manifest ): void {
-		$links = (array) ( $manifest['links'] ?? array() );
-		echo '<div class="cpdd-card"><h2>پیوندهای درگاهها</h2><ul>';
-		foreach ( $links as $key => $url ) {
-			echo '<li><a href="' . esc_url( (string) $url ) . '" target="_blank" rel="noopener">' . esc_html( (string) $key ) . '</a></li>';
+	/**
+	 * Which portal does each persona actually use?
+	 *
+	 * The key is the manifest link the persona is entitled to open; the label says
+	 * what to do there. Nothing here grants access - each portal enforces its own
+	 * authorization - and no password is repeated here.
+	 *
+	 * @return array<string,array{link:string,portal:string,hint:string}>
+	 */
+	private static function persona_portals(): array {
+		return array(
+			'organization_manager' => array(
+				'link'   => 'management',
+				'portal' => 'درگاه مدیریت — سطح سازمان',
+				'hint'   => 'چرخهٔ عمر درمانگاه‌ها و تعیین مدیر درمانگاه',
+			),
+			'clinic_manager' => array(
+				'link'   => 'management',
+				'portal' => 'درگاه مدیریت — سطح درمانگاه',
+				'hint'   => 'شعبه، پزشک، برنامهٔ هفتگی، سیاست رزرو و آمادگی درمانگاه',
+			),
+			'doctor' => array(
+				'link'   => 'doctor',
+				'portal' => 'درگاه کارکنان — ماژول پزشک',
+				'hint'   => 'ویزیت، شرح حال، نسخه، پیام خصوصی و تعرفهٔ ویزیت',
+			),
+			'doctor_second' => array(
+				'link'   => 'doctor',
+				'portal' => 'درگاه کارکنان — ماژول پزشک (پزشک دوم)',
+				'hint'   => 'برای دیدن جدایی گفتگوی خصوصی و تعرفهٔ هر پزشک',
+			),
+			'receptionist' => array(
+				'link'   => 'receptionist',
+				'portal' => 'درگاه کارکنان — ماژول پذیرش',
+				'hint'   => 'پذیرش بیمار، نوبت‌دهی، صف ورود و دریافت پرداخت',
+			),
+			'receptionist_second' => array(
+				'link'   => 'receptionist',
+				'portal' => 'درگاه کارکنان — ماژول پذیرش (پذیرش دوم)',
+				'hint'   => 'همکار مجاز ولی غیرعضو گفتگوی خصوصی',
+			),
+			'accountant' => array(
+				'link'   => 'accountant',
+				'portal' => 'درگاه کارکنان — ماژول مالی',
+				'hint'   => 'صورتحساب، پرداخت جزئی و کامل، اقلام درمان و نهایی‌سازی',
+			),
+			'patient' => array(
+				'link'   => 'patient',
+				'portal' => 'درگاه بیمار',
+				'hint'   => 'ورود با OTP پیامکی و رزرو نوبت عمومی',
+			),
+		);
+	}
+
+	/**
+	 * One row per synthetic persona: who it is, where it goes, and how to get in.
+	 *
+	 * This is the Product Owner's map of the demo. It deliberately shows NO
+	 * password: passwords exist only in the one-time card rendered by the
+	 * provisioning request (`render_credentials()`), which is the demo's existing
+	 * secure mechanism. There is no impersonation control, no shared token and no
+	 * parallel login - every row links to the real portal, and the production
+	 * authorization decides what that account may do.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return void
+	 */
+	private static function render_persona_access( array $manifest ): void {
+		$links    = (array) ( $manifest['links'] ?? array() );
+		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
+		$portals  = self::persona_portals();
+		$personas = Credentials::personas();
+		echo '<div class="cpdd-card" data-cpsd-persona-access="1"><h2>دسترسی به نقش‌های نمایشی</h2>';
+		echo '<p>برای هر نقش یک حساب ساختگی ساخته شده است. با همان حساب در درگاه خودش وارد شوید تا همان چیزی را ببینید که یک کاربر واقعی با آن نقش می‌بیند. این صفحه هیچ سازوکار «ورود به‌جای دیگری» ندارد و دسترسی هر نقش را خود درگاه تولیدی تعیین می‌کند.</p>';
+		echo '<table class="widefat striped cpdd-personas"><thead><tr><th>نقش</th><th>درگاه</th><th>برای چه کاری</th><th>ورود</th></tr></thead><tbody>';
+		foreach ( Credentials::PERSONA_ORDER as $key ) {
+			$persona = (array) ( $personas[ $key ] ?? array() );
+			$map     = (array) ( $portals[ $key ] ?? array() );
+			$url     = (string) ( $links[ $map['link'] ?? '' ] ?? '' );
+			echo '<tr data-cpsd-persona-portal="' . esc_attr( $key ) . '" data-cpsd-portal-link="' . esc_attr( (string) ( $map['link'] ?? '' ) ) . '">';
+			echo '<td>' . esc_html( (string) ( $persona['label'] ?? $key ) ) . '</td>';
+			echo '<td>' . esc_html( (string) ( $map['portal'] ?? '-' ) ) . '</td>';
+			echo '<td>' . esc_html( (string) ( $map['hint'] ?? '' ) ) . '</td>';
+			if ( '' === $url ) {
+				echo '<td>-</td>';
+			} else {
+				echo '<td><a class="button button-secondary" dir="ltr" target="_blank" rel="noopener" href="' . esc_url( $url ) . '">' . esc_html__( 'بازکردن درگاه', 'cpms' ) . '</a></td>';
+			}
+			echo '</tr>';
 		}
-		echo '</ul><p>Shortcode رزرو: <code dir="ltr">' . esc_html( (string) ( $manifest['shortcode'] ?? '' ) ) . '</code></p></div>';
+		echo '</tbody></table>';
+		echo '<p>نام کاربری هر نقش به شکل <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمز هر نقش فقط یک‌بار و در کارت «رمزهای یک‌بارمصرف» همان درخواستی که دمو را می‌سازد نشان داده می‌شود و ذخیره نمی‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر رمزها را از دست دادید، پس از پاک‌سازی مجاز دمو و ساخت دوبارهٔ آن رمزهای تازه صادر می‌شود.</p>';
+		$extra = array();
+		foreach ( array( 'messages' => 'پیام‌های خصوصی کارکنان', 'pricing' => 'تعرفه‌ها', 'reports' => 'گزارش‌ها' ) as $key => $label ) {
+			if ( ! empty( $links[ $key ] ) ) {
+				$extra[] = '<a href="' . esc_url( (string) $links[ $key ] ) . '" target="_blank" rel="noopener">' . esc_html( $label ) . '</a>';
+			}
+		}
+		if ( array() !== $extra ) {
+			echo '<p>میان‌برها: ' . wp_kses_post( implode( ' · ', $extra ) ) . '</p>';
+		}
+		echo '<p>Shortcode رزرو: <code dir="ltr">' . esc_html( (string) ( $manifest['shortcode'] ?? '' ) ) . '</code></p></div>';
 	}
 
 	private static function render_otp(): void {
@@ -372,7 +645,7 @@ class ScopedAdmin {
 		echo '<li>ابتدا یک پشتیبان کامل و قابل بازیابی از سایت آزمایشی بگیرید.</li>';
 		echo '<li>دو ZIP جداگانه CPMS Classic و companion را از wp-admin نصب و فعال کنید.</li>';
 		echo '<li>حالت محدودشده را با عبارت <code dir="ltr">I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE</code> فعال کنید.</li>';
-		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای شش شخصیت را همان لحظه ذخیره کنید.</li>';
+		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای همهٔ شخصیت‌ها را همان لحظه ذخیره کنید.</li>';
 		echo '<li>هر شخصیت را در یک پنجره خصوصی جداگانه وارد کرده و جریانهای رزرو، پذیرش، بالینی و مالی را انجام دهید.</li>';
 		echo '<li>پیشنمایش پاکسازی را بررسی کنید، سپس با عبارت <code dir="ltr">REMOVE_ONLY_SCOPED_DEMO_DATA</code> فقط دادههای دمو را حذف کنید.</li>';
 		echo '<li>نتیجه حفظ baseline و زنجیره حسابرسی را بررسی کنید؛ در صورت هشدار ناقص، دوباره پاکسازی را اجرا کنید.</li>';

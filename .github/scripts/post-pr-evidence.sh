@@ -2,11 +2,14 @@
 # Publish pre-sanitized, bounded workflow evidence without guessing PR targets.
 set -euo pipefail
 
-if [[ $# -ne 1 || ! -f "$1" ]]; then
+if [[ $# -lt 1 || $# -gt 2 || ! -f "$1" ]]; then
   echo "::error::Evidence file is missing or invocation is invalid" >&2
   exit 2
 fi
 EVIDENCE=$1
+# The evidence stream this call owns. Two steps in one job must never share a
+# comment, or the later one would overwrite the earlier one's evidence.
+STREAM_FAMILY=${2:-}
 EVENT=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME is required}
 REPOSITORY=${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}
 REF_NAME=${GITHUB_REF_NAME:?GITHUB_REF_NAME is required}
@@ -70,14 +73,32 @@ append_to_summary() {
   cat "$EVIDENCE" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# Publication itself lives in ONE shared transport so every workflow family -
+# including the inline publishers in ci.yml and the browser workflows - resolves
+# the PR comment ceiling the same way. Each evidence stream owns exactly one
+# marker comment: several steps in one job must not overwrite each other, so the
+# family defaults to the evidence file's own name, and can be named explicitly
+# with EVIDENCE_FAMILY.
+COMMENTER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pr-evidence-comment.sh"
+EVIDENCE_FAMILY=${EVIDENCE_FAMILY:-${STREAM_FAMILY:-$(basename "$EVIDENCE" .md)}}
+
 if [[ -n "$PR_NUMBER" ]]; then
-  if ! gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body-file "$EVIDENCE"; then
-    # Preserve a run-visible copy, but fail the step so required PR publication
-    # failures cannot be mistaken for successful evidence publication.
-    append_to_summary
-    echo "::error::Required evidence comment to PR #$PR_NUMBER failed" >&2
-    exit 1
+  OUTCOME_FILE=$(mktemp)
+  trap 'rm -f "$OUTCOME_FILE"' EXIT
+  if "$COMMENTER" --family "$EVIDENCE_FAMILY" --pr "$PR_NUMBER" --repo "$REPOSITORY" \
+       --body-file "$EVIDENCE" --outcome-file "$OUTCOME_FILE"; then
+    if [[ "$(cat "$OUTCOME_FILE" 2>/dev/null)" == summary ]]; then
+      # GitHub's comment ceiling: the run summary is the durable copy, and the
+      # transport has already announced it as a warning.
+      append_to_summary
+      echo "::notice::PR #$PR_NUMBER is at GitHub's comment ceiling; evidence for '$EVIDENCE_FAMILY' was added to the run summary"
+    fi
+    exit 0
   fi
+  # A real publication failure: keep the evidence in the run summary and fail.
+  append_to_summary
+  echo "::error::Required evidence comment to PR #$PR_NUMBER failed" >&2
+  exit 1
 else
   # Main pushes, schedules, main dispatches, and ambiguous/unmatched dispatches
   # retain evidence in the run summary; never broaden token permissions to post

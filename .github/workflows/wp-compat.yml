@@ -231,7 +231,8 @@ jobs:
             cat /tmp/compat-probe.log 2>/dev/null || echo '(probe log missing)'
             echo '```'
           } > /tmp/wp-compat-pr.md
-          gh pr comment "$PR_NUM" --body-file /tmp/wp-compat-pr.md || echo '::notice::probe evidence comment failed'
+          bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family wp-compat-probe --pr "$PR_NUM" --body-file /tmp/wp-compat-pr.md \
+            || echo '::notice::probe evidence comment could not be mirrored'
 
       - name: Summary
         if: always()

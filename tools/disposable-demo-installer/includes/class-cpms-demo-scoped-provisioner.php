@@ -141,6 +141,20 @@ class ScopedProvisioner extends Provisioner {
 		$manifest['mode']        = 'scoped';
 		$manifest['baseline']    = $this->pending_baseline;
 		$manifest['host_before'] = $this->pending_host;
+		// Ownership of the fixture is recorded explicitly, never inferred later
+		// from "it names the demo Organization and has a higher id". The ledger is
+		// opened FIRST, because the scope collected below must already see it: a
+		// sealed, active fixture is only trustworthy while its ledger exists.
+		$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
+		$ownership->open(
+			(string) $manifest['fixture_id'],
+			(int) ( $manifest['ids']['organization_id'] ?? 0 ),
+			(int) ( $manifest['ids']['clinic_id'] ?? 0 )
+		);
+		$this->env->maybe_inject_fault(
+			'scoped_ownership:after-open',
+			array( 'fixture_id' => (string) $manifest['fixture_id'] )
+		);
 		$teardown = new ScopedTeardown( $this->env, $this->platform, $this->scoped_manifest, $this->audit_guard, $this->baseline );
 		$scope    = $teardown->collect_scope( $manifest, $this->pending_baseline );
 		$manifest['owned'] = array(
@@ -152,10 +166,94 @@ class ScopedProvisioner extends Provisioner {
 		);
 		$manifest['audit_chain_at_seal'] = $this->audit_guard->verify_chain();
 		$manifest = $this->scoped_manifest->save( $manifest );
-		// The baseline is now sealed inside the manifest itself.
+
+		// Prove the sealed baseline actually survived the write before discarding
+		// the pending copy. save() already reads the record back, but the baseline
+		// is the one field the recovery path cannot reconstruct, so it is asserted
+		// explicitly on a fresh load (which also re-verifies the HMAC and the site
+		// fingerprint).
+		$reloaded = $this->scoped_manifest->load();
+		if ( ! is_array( $reloaded ) || array() === (array) ( $reloaded['baseline'] ?? array() ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'پایهٔ مرجع در فایل مالکیت تأیید نشد؛ عملیات متوقف شد.' );
+		}
+		// Only now is the pending copy redundant.
 		$this->scoped_manifest->clear_pending_baseline();
+
+		$this->enforce_portal_clinic_policy( $manifest );
+
 		$result['manifest'] = $manifest;
 		return $result;
+	}
+
+	/**
+	 * Remove the portal's create-Clinic authority from the synthetic Organization
+	 * manager, and prove it was removed.
+	 *
+	 * WHY: the portal legitimately creates additional Clinics under an
+	 * Organization. In a scoped demo that is exactly the data-safety hazard this
+	 * work addresses, because such a Clinic would be indistinguishable from a
+	 * genuine non-demo Clinic. The authority is therefore withheld from the
+	 * portal-facing synthetic persona for the lifetime of the demo, using the
+	 * production capability resolver (DENY > GRANT > preset), and the resulting
+	 * decision is read back through that resolver. The row is additive and lives
+	 * inside the fixture (it hangs off a membership of the demo Organization), so
+	 * the teardown owns and removes it.
+	 *
+	 * Everything else the persona needs - reading the Organization, Clinic
+	 * profile updates, and lifecycle transitions - is untouched.
+	 *
+	 * @param array<string,mixed> $manifest Sealed manifest.
+	 * @return void
+	 */
+	private function enforce_portal_clinic_policy( array $manifest ): void {
+		$ids     = (array) ( $manifest['ids'] ?? array() );
+		$users   = (array) ( $ids['user_ids'] ?? array() );
+		$org     = (int) ( $ids['organization_id'] ?? 0 );
+		$manager = (int) ( $users['organization_manager'] ?? 0 );
+		$admin   = (int) ( $manifest['admin_id'] ?? 0 );
+		if ( $org <= 1 || $manager <= 1 ) {
+			throw new Exception( 'PORTAL_POLICY', 'شناسه‌های سازمان/مدیر برای اعمال محدودیت درگاه مدیریت کامل نیستند.' );
+		}
+		$capability = 'cpms_org_clinic_create';
+		$membership = $this->platform->fetch_row(
+			'SELECT id FROM `' . $this->platform->table( 'cpms_organization_memberships' ) . '` WHERE organization_id = %d AND wp_user_id = %d LIMIT 1',
+			array( $org, $manager )
+		);
+		if ( null === $membership ) {
+			throw new Exception( 'PORTAL_POLICY', 'عضویت سازمانی مدیر نمایشی پیدا نشد؛ محدودیت ساخت درمانگاه تأیید نشد.' );
+		}
+		$membership_id = (int) ( $membership['id'] ?? 0 );
+		$existing      = $this->platform->fetch_row(
+			'SELECT id, effect FROM `' . $this->platform->table( 'cpms_organization_membership_capabilities' ) . '` WHERE membership_id = %d AND capability = %s LIMIT 1',
+			array( $membership_id, $capability )
+		);
+		if ( null === $existing ) {
+			$this->platform->insert_row(
+				'cpms_organization_membership_capabilities',
+				array(
+					'membership_id'          => $membership_id,
+					'capability'             => $capability,
+					'effect'                 => 'deny',
+					'created_by_wp_user_id'  => $admin > 0 ? $admin : null,
+					'created_at'             => $this->env->now_sql(),
+				)
+			);
+		} elseif ( 'deny' !== (string) ( $existing['effect'] ?? '' ) ) {
+			throw new Exception( 'PORTAL_POLICY', 'برای مدیر نمایشی مجوز ساخت درمانگاه از قبل فعال است؛ محدودیت اعمال نشد.' );
+		}
+
+		// Read the policy back through the row AND through the production resolver:
+		// a stored row that the resolver does not honour is not a policy.
+		$stored = $this->platform->fetch_row(
+			'SELECT id, effect FROM `' . $this->platform->table( 'cpms_organization_membership_capabilities' ) . '` WHERE membership_id = %d AND capability = %s LIMIT 1',
+			array( $membership_id, $capability )
+		);
+		if ( null === $stored || 'deny' !== (string) ( $stored['effect'] ?? '' ) ) {
+			throw new Exception( 'PORTAL_POLICY', 'محدودیت ساخت درمانگاه از درگاه مدیریت ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
+		if ( $this->platform->production_can( $manager, $org, $capability ) ) {
+			throw new Exception( 'PORTAL_POLICY', 'production capability resolver still allows the synthetic Organization manager to create Clinics.' );
+		}
 	}
 
 	/**

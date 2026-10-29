@@ -42,7 +42,7 @@ form. Responses that ever include a credential or OTP code send
 Single site (no multisite) · HTTPS or loopback · PHP ≥ 8.1 · WP ≥ 6.9 ·
 no persistent object cache · **exactly one** WordPress account (the acting
 Administrator) · only default WordPress starter content · no other active plugin ·
-CPMS active with schema `2026_10_18_0029` · `CPMS_DEV_OTP_ECHO` undefined ·
+CPMS active with schema `2026_10_27_0030` · `CPMS_DEV_OTP_ECHO` undefined ·
 CPMS bootstrap Organization/Clinic/Location untouched · every clinical, booking,
 patient, finance, SMS, OTP, rate-limit and idempotency table empty · no unknown
 `cpms_*` table holding data · no existing demo manifest.

@@ -129,7 +129,7 @@ class ScopedPreflight extends Preflight {
 
 	/** @return array{id:string,label:string,status:string,detail:string} */
 	private function check_cpms(): array {
-		if ( ! $this->platform->available() || ! in_array( CPMS_DEMO_CORE_PLUGIN, $this->env->active_plugins(), true ) ) {
+		if ( ! $this->platform->available() || ! \CpmsDemo\Standalone::core_available( $this->env->active_plugins() ) ) {
 			return $this->result( 'cpms', 'CPMS Classic', 'fail', 'افزونه CPMS Classic فعال نیست.' );
 		}
 		if ( CPMS_DEMO_SCHEMA_VERSION !== $this->platform->schema_version() ) {

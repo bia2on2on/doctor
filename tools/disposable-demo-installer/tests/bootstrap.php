@@ -17,7 +17,7 @@ define( 'CPMS_DEMO_FILE', __DIR__ . '/../cpms-disposable-demo.php' );
 define( 'CPMS_DEMO_DIR', __DIR__ . '/../' );
 define( 'CPMS_DEMO_URL', 'https://example.test/wp-content/plugins/cpms-disposable-demo/' );
 define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-management.php' );
-define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_18_0029' );
+define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
 
 // --- Minimal WordPress functions used by the tested code paths. -------------
 function add_action( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
@@ -97,6 +97,12 @@ function esc_html__( string $text, string $domain = 'default' ): string {
 	return esc_html( $text );
 }
 
+function __( string $text, string $domain = 'default' ): string {
+	unset( $domain );
+
+	return $text;
+}
+
 function wp_nonce_field( string $action, string $name = '_wpnonce', bool $referer = true, bool $display = true ): string {
 	unset( $referer );
 	$env   = $GLOBALS['cpdd_active_fake_env'] ?? null;
@@ -132,6 +138,132 @@ function delete_option( string $name ): bool {
 	return $env instanceof Cpdd_Fake_Env ? $env->option_delete( $name ) : false;
 }
 
+// --- Update/activation shim: filters, transients, WP_Error, WP-CLI. ---------
+// Test-only doubles for the WordPress surfaces the standalone guards use.
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) {
+	define( 'MINUTE_IN_SECONDS', 60 );
+}
+if ( ! defined( 'WP_PLUGIN_DIR' ) ) {
+	define( 'WP_PLUGIN_DIR', sys_get_temp_dir() . '/cpdd-plugins' );
+}
+
+function add_filter( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+	$GLOBALS['cpdd_test_filters'][ $hook ][] = compact( 'callback', 'priority', 'accepted_args' );
+
+	return true;
+}
+
+/**
+ * @param mixed $value Value.
+ * @param mixed ...$args Extra arguments.
+ * @return mixed
+ */
+function apply_filters( string $hook, $value, ...$args ) {
+	$registered = (array) ( $GLOBALS['cpdd_test_filters'][ $hook ] ?? array() );
+	usort(
+		$registered,
+		static fn ( array $a, array $b ): int => $a['priority'] <=> $b['priority']
+	);
+	foreach ( $registered as $entry ) {
+		$value = ( $entry['callback'] )( $value, ...$args );
+	}
+
+	return $value;
+}
+
+/**
+ * @param string $hook Hook name.
+ * @return list<mixed>
+ */
+function cpdd_test_hook_callbacks( string $hook ): array {
+	return array_map(
+		static fn ( array $entry ) => $entry['callback'],
+		(array) ( $GLOBALS['cpdd_test_filters'][ $hook ] ?? array() )
+	);
+}
+
+function cpdd_test_reset_hooks(): void {
+	$GLOBALS['cpdd_test_filters']       = array();
+	$GLOBALS['cpdd_test_hooks']         = array();
+	$GLOBALS['cpdd_test_wpcli_hooks']   = array();
+}
+
+/**
+ * Action hook names recorded by `add_action()`.
+ *
+ * @return list<string>
+ */
+function cpdd_test_action_hooks(): array {
+	return array_map( static fn ( array $entry ): string => (string) $entry['hook'], (array) ( $GLOBALS['cpdd_test_hooks'] ?? array() ) );
+}
+
+if ( ! class_exists( 'WP_Error' ) ) {
+	/**
+	 * Minimal WP_Error double.
+	 */
+	class WP_Error {
+
+		public string $code;
+		public string $message;
+		/** @var array<string,mixed> */
+		public array $data;
+
+		public function __construct( string $code = '', string $message = '', array $data = array() ) {
+			$this->code    = $code;
+			$this->message = $message;
+			$this->data    = $data;
+		}
+
+		public function get_error_code(): string {
+			return $this->code;
+		}
+
+		public function get_error_message(): string {
+			return $this->message;
+		}
+	}
+}
+
+function is_wp_error( $thing ): bool {
+	return $thing instanceof WP_Error;
+}
+
+function get_transient( string $name ) {
+	return $GLOBALS['cpdd_test_transients'][ $name ] ?? false;
+}
+
+function set_transient( string $name, $value, int $expiration = 0 ): bool {
+	unset( $expiration );
+	$GLOBALS['cpdd_test_transients'][ $name ] = $value;
+
+	return true;
+}
+
+function delete_transient( string $name ): bool {
+	unset( $GLOBALS['cpdd_test_transients'][ $name ] );
+
+	return true;
+}
+
+/**
+ * WP-CLI double: `error()` and `success()` behave like the real ones (they
+ * terminate the command), which is exactly the contract the guard relies on.
+ */
+class WP_CLI {
+
+	public static string $error_message = '';
+
+	public static function error( string $message, bool $exit = true ): void {
+		unset( $exit );
+		self::$error_message = $message;
+		throw new RuntimeException( 'wp-cli-error: ' . $message );
+	}
+
+	public static function add_hook( string $name, $callback ): void {
+		$GLOBALS['cpdd_test_wpcli_hooks'][ $name ][] = $callback;
+	}
+}
+
 function get_users( array $args = array() ): array {
 	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
 	if ( ! ( $env instanceof Cpdd_Fake_Env ) ) {
@@ -152,6 +284,7 @@ function get_users( array $args = array() ): array {
 
 // --- Plugin classes under test (main plugin file is never loaded here). -----
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-platform.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-manifest.php';
@@ -458,11 +591,12 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public array $tables_data = array();
 	public array $calls       = array();
 	public bool $available_flag = true;
-	public string $schema     = '2026_10_18_0029';
+	public string $schema     = '2026_10_27_0030';
 	public array $settings    = array();
 	public int $fake_clinic_id = 0;
 	public string $fake_patient_mobile = '';
 	public ?string $fail_delete_on = null;
+	public array $pricing_state = array( 'default_fee' => null, 'snapshot_fee' => null, 'override_fee' => null );
 	private array $last_scope = array();
 
 	public function available(): bool {
@@ -491,7 +625,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				),
 			),
 			'cpms_schema_migrations' => array(
-				array( 'version' => '2026_10_18_0029', 'description' => 'baseline' ),
+				array( 'version' => '2026_10_27_0030', 'description' => 'baseline' ),
 			),
 			'cpms_license_install'   => array(
 				array( 'id' => 1, 'install_id' => '0123456789abcdef0123456789abcdef', 'environment' => 'production' ),
@@ -588,6 +722,16 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'cpms_audit_logs'                           => array( 'id', 'clinic_id', 'action', 'resource_type', 'resource_id', 'actor_wp_user_id', 'meta_json', 'request_id', 'ip_hash' ),
 			'cpms_rate_limits'                          => array( 'window_key', 'window_id', 'hits' ),
 			'cpms_drug_reference'                       => array( 'id', 'clinic_id', 'generic_name' ),
+			// Schema 2026_10_27_0030. The three messaging/pricing tables without a
+			// surrogate `id` are modelled explicitly so composite-key teardown is
+			// exercised rather than silently skipped.
+			'cpms_message_threads'                      => array( 'id', 'clinic_id', 'organization_id', 'location_id', 'patient_id', 'visit_id', 'created_by_wp_user_id' ),
+			'cpms_message_participants'                 => array( 'thread_id', 'wp_user_id', 'staff_class', 'last_read_message_id' ),
+			'cpms_messages'                             => array( 'id', 'clinic_id', 'thread_id', 'sender_wp_user_id', 'body' ),
+			'cpms_doctor_consultation_fees'             => array( 'id', 'clinic_id', 'clinician_id', 'location_id', 'fee' ),
+			'cpms_visit_consultation_fees'              => array( 'visit_id', 'clinic_id', 'clinician_id', 'fee', 'set_by_wp_user_id' ),
+			'cpms_visit_charge_items'                   => array( 'id', 'clinic_id', 'visit_id', 'clinician_id', 'description', 'unit_amount', 'invoiced_invoice_id' ),
+			'cpms_visit_fee_snapshot_failures'          => array( 'visit_id', 'clinic_id', 'failed_at' ),
 		);
 
 		return $map[ $short ] ?? array( 'id', 'clinic_id' );
@@ -753,8 +897,12 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	 * @return list<array<string,mixed>>
 	 */
 	private function matches( string $short, string $where, array $params ): array {
-		$rows = $this->tables_data[ $short ] ?? array();
-		$out  = array();
+		// Production SQL quotes identifiers with backticks; the rules below are
+		// written without them, so quoting is normalised away once here instead of
+		// being duplicated into every predicate shape.
+		$where = str_replace( '`', '', $where );
+		$rows  = $this->tables_data[ $short ] ?? array();
+		$out   = array();
 		if ( '1 = 0' === $where ) {
 			return array();
 		}
@@ -886,9 +1034,54 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				}
 				continue;
 			}
+			if ( str_contains( $where, ' OR ' ) && str_contains( $where, ' IN (' ) ) {
+				// Compound OR-of-INs issued by ScopedTeardown::collect_composite_rows().
+				$cursor = 0;
+				$hit    = false;
+				foreach ( explode( ' OR ', $where ) as $part ) {
+					if ( preg_match( '/^([a-z_]+) IN \(([^()]*)\)$/', trim( $part ), $pm ) !== 1 ) {
+						throw new RuntimeException( 'unsupported test predicate: ' . $where . ' on ' . $short );
+					}
+					$counted = substr_count( $pm[2], ',' ) + 1;
+					$slice   = array_slice( $params, $cursor, $counted );
+					$cursor += $counted;
+					if ( in_array( (int) ( $row[ $pm[1] ] ?? -1 ), array_map( 'intval', $slice ), true ) ) {
+						$hit = true;
+						break;
+					}
+				}
+				if ( $hit ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
 			if ( preg_match( '/^([a-z_]+) IN \((.*)\)$/', $where, $m ) === 1 ) {
 				$values = array_map( 'intval', $params );
 				if ( in_array( (int) ( $row[ $m[1] ] ?? -1 ), $values, true ) ) {
+					$out[ $index ] = $row;
+				}
+				continue;
+			}
+			// Generic chained equality: `col` = %d AND `col` = %s [AND ...].
+			// Used by ScopedTeardown::delete_composite_rows(), which addresses a
+			// table without a surrogate `id` by its full verified primary key.
+			if ( preg_match( '/^(?:[a-z_]+ = %[ds])(?: AND [a-z_]+ = %[ds])*$/', $where ) === 1 ) {
+				$pairs = array();
+				preg_match_all( '/([a-z_]+) = %([ds])/', $where, $pairs, PREG_SET_ORDER );
+				$matched_row = true;
+				foreach ( $pairs as $position => $pair ) {
+					$expected = $params[ $position ] ?? null;
+					$actual   = $row[ $pair[1] ] ?? null;
+					$is_int   = 'd' === $pair[2];
+					$equal    = $is_int
+						? (int) $actual === (int) $expected
+						: (string) $actual === (string) $expected;
+					if ( ! $equal ) {
+						$matched_row = false;
+						break;
+					}
+				}
+				if ( $matched_row ) {
 					$out[ $index ] = $row;
 				}
 				continue;
@@ -930,6 +1123,9 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	}
 
 	public function fetch_all( string $sql, array $params = array() ): array {
+		// Compare against a backtick-free copy so identifier quoting in production
+		// SQL does not change which shape is recognised.
+		$probe = str_replace( '`', '', $sql );
 		if ( str_contains( $sql, 'FROM wp_cpms_otp_tokens WHERE clinic_id = %d AND mobile = %s' ) ) {
 			return $this->matches( 'cpms_otp_tokens', 'clinic_id = %d AND mobile = %s', $params );
 		}
@@ -939,13 +1135,22 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		if ( str_contains( $sql, "FROM wp_cpms_sms_messages WHERE clinic_id = %d AND recipient LIKE '0900%%'" ) ) {
 			return $this->matches( 'cpms_sms_messages', "clinic_id = %d AND recipient LIKE '0900%%'", $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' IN (' . $m[3] . ')', $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) ORDER BY id/', $sql, $m ) === 1 ) {
+		if ( preg_match( '/FROM wp_([a-z_]+) WHERE \((.+)\)$/', $probe, $m ) === 1 && str_contains( $m[2], ' IN (' ) ) {
+			// Compound OR-of-INs used by ScopedTeardown::collect_composite_rows().
+			return $this->matches( $m[1], $m[2], $params );
+		}
+		if ( preg_match( '/FROM wp_([a-z_]+)$/', trim( $probe ), $m ) === 1 ) {
+			// Unfiltered scan of a table without a surrogate `id`
+			// (ScopedTeardown::scan_untracked_fixture_rows()).
+			return $this->tables_data[ $m[1] ] ?? array();
+		}
+		if ( preg_match( '/FROM wp_([a-z_]+) ORDER BY id/', $probe, $m ) === 1 ) {
 			return $this->tables_data[ $m[1] ] ?? array();
 		}
 		throw new RuntimeException( 'unsupported test query: ' . $sql );
@@ -1193,13 +1398,20 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 
 	public function walk_in( int $actor_id, int $patient_id, int $clinician_id, array $input ): int {
 		$this->calls[] = 'walk_in';
+		// The production VisitService snapshots the doctor's consultation fee
+		// INSIDE the check-in transaction; the double captures it here so the
+		// provisioner's "a later default change must not reprice" assertion is
+		// exercised offline exactly as it is against the real database.
+		$this->pricing_state['snapshot_fee'] = $this->pricing_state['default_fee'];
+		$id            = $this->max_id( 'cpms_visits' ) + 1;
 		$this->tables_data['cpms_visits'][] = array(
-			'id'         => 1,
-			'clinic_id'  => $this->fake_clinic_id,
-			'patient_id' => $patient_id,
+			'id'          => $id,
+			'clinic_id'   => $this->fake_clinic_id,
+			'patient_id'  => $patient_id,
+			'clinician_id' => $clinician_id,
 		);
 
-		return 1;
+		return $id;
 	}
 
 	public function transition( int $actor_id, int $visit_id, string $event, array $extra = array() ): void {
@@ -1260,6 +1472,175 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		return 1;
 	}
 
+	// ---------------------------------------------------------------------
+	// Iran V1 (schema 0030) — messaging + visit pricing.
+	//
+	// The double mirrors the real adapter's call surface so the offline suite
+	// proves the PROVISIONER/ TEARDOWN contract without a database. It
+	// deliberately returns the same projection keys the production services
+	// return, because the provisioner asserts the fee-snapshot rule on them.
+	// ---------------------------------------------------------------------
+
+	public function message_thread( int $actor_id, int $recipient_id, ?int $patient_id = null, ?int $visit_id = null ): int {
+		unset( $patient_id, $visit_id );
+		$this->calls[] = 'message_thread';
+		$id            = $this->max_id( 'cpms_message_threads' ) + 1;
+		$this->tables_data['cpms_message_threads'][] = array(
+			'id'         => $id,
+			'clinic_id'  => $this->fake_clinic_id,
+			'created_by_wp_user_id' => $actor_id,
+		);
+		$this->tables_data['cpms_message_participants'][] = array( 'thread_id' => $id, 'wp_user_id' => $actor_id );
+		$this->tables_data['cpms_message_participants'][] = array( 'thread_id' => $id, 'wp_user_id' => $recipient_id );
+
+		return $id;
+	}
+
+	public function send_message( int $actor_id, int $thread_id, string $body ): int {
+		$this->calls[] = 'send_message';
+		$id            = $this->max_id( 'cpms_messages' ) + 1;
+		$this->tables_data['cpms_messages'][] = array(
+			'id'                 => $id,
+			'clinic_id'          => $this->fake_clinic_id,
+			'thread_id'          => $thread_id,
+			'sender_wp_user_id'  => $actor_id,
+			'body_length'        => strlen( $body ),
+		);
+
+		return $id;
+	}
+
+	public function message_context( int $actor_id ): array {
+		unset( $actor_id );
+
+		return array( 'staff_class' => 'doctor', 'counterparts' => array(), 'unread_total' => 0 );
+	}
+
+	public function message_threads( int $actor_id ): array {
+		unset( $actor_id );
+
+		return array( 'threads' => array(), 'unread_total' => 0 );
+	}
+
+	public function message_list( int $actor_id, int $thread_id, int $since_id = 0 ): array {
+		unset( $actor_id, $thread_id, $since_id );
+
+		return array( 'messages' => array(), 'unread_count' => 0 );
+	}
+
+	public function mark_thread_read( int $actor_id, int $thread_id ): array {
+		unset( $actor_id, $thread_id );
+
+		return array( 'unread_count' => 0, 'unread_total' => 0 );
+	}
+
+	public function set_default_consultation_fee( int $actor_id, ?int $location_id, int $amount ): array {
+		$this->calls[]                = 'set_default_consultation_fee';
+		$this->pricing_state['default_fee'] = $amount;
+		unset( $actor_id, $location_id );
+
+		return array( 'default_fee' => $amount );
+	}
+
+	public function pricing_context( int $actor_id, int $location_id = 0 ): array {
+		unset( $actor_id, $location_id );
+
+		return array( 'default_fee' => $this->pricing_state['default_fee'] );
+	}
+
+	public function set_visit_consultation_fee( int $actor_id, int $visit_id, int $amount ): array {
+		unset( $actor_id, $visit_id );
+		$this->calls[]                        = 'set_visit_consultation_fee';
+		$this->pricing_state['override_fee']  = $amount;
+
+		return array( 'override_fee' => $amount );
+	}
+
+	public function add_visit_charge( int $actor_id, int $visit_id, array $input ): int {
+		unset( $actor_id );
+		$this->calls[] = 'add_visit_charge';
+		$id            = $this->max_id( 'cpms_visit_charge_items' ) + 1;
+		$this->tables_data['cpms_visit_charge_items'][] = array(
+			'id'           => $id,
+			'clinic_id'    => $this->fake_clinic_id,
+			'visit_id'     => $visit_id,
+			'description'  => (string) ( $input['description'] ?? '' ),
+			'unit_amount'  => (int) ( $input['amount'] ?? 0 ),
+			'quantity'     => (float) ( $input['quantity'] ?? 1 ),
+		);
+
+		return $id;
+	}
+
+	public function update_visit_charge( int $actor_id, int $visit_id, int $charge_id, array $input ): array {
+		unset( $actor_id );
+		$this->calls[] = 'update_visit_charge';
+
+		return array( 'charge_id' => $charge_id, 'visit_id' => $visit_id, 'input' => $input );
+	}
+
+	/**
+	 * The check-in snapshot is immutable by contract: the provisioner proves
+	 * that a LATER default change does not reprice the established Visit, so
+	 * this projection keeps returning the value captured at walk-in.
+	 *
+	 * @param int $actor_id Actor.
+	 * @param int $visit_id Visit.
+	 * @return array<string,mixed>
+	 */
+	public function visit_billing( int $actor_id, int $visit_id ): array {
+		unset( $actor_id );
+		$this->calls[] = 'visit_billing';
+		$snapshot      = $this->pricing_state['snapshot_fee'];
+
+		return array(
+			'visit_id'      => $visit_id,
+			'default_fee'   => $this->pricing_state['default_fee'],
+			'snapshot_fee'  => $snapshot,
+			'override_fee'  => null,
+			'effective_fee' => $snapshot,
+			'fee_source'    => 'checkin_snapshot',
+			'charges'       => array(),
+			'charges_total' => 0,
+			'expected_total' => $snapshot,
+		);
+	}
+
+	public function issue_invoice_from_pricing( int $actor_id, int $visit_id ): int {
+		unset( $actor_id );
+		$this->calls[] = 'issue_invoice_from_pricing';
+
+		return $this->issue_invoice( 0, array( 'visit_id' => $visit_id, 'items' => array() ) );
+	}
+
+	public function invoice_row( int $invoice_id ): ?array {
+		foreach ( $this->tables_data['cpms_invoices'] as $row ) {
+			if ( (int) $row['id'] === $invoice_id ) {
+				return $row;
+			}
+		}
+
+		return null;
+	}
+
+	public function invoice_items( int $invoice_id ): array {
+		unset( $invoice_id );
+
+		return array();
+	}
+
+	public function invoice_payments( int $invoice_id ): array {
+		unset( $invoice_id );
+
+		return array();
+	}
+
+	public function visit_status( int $visit_id ): string {
+		unset( $visit_id );
+
+		return 'consultation_completed';
+	}
+
 	public function audit( string $action, int $actor_id, int $clinic_id, array $meta ): void {
 		$this->calls[] = 'audit:' . $action;
 		$this->tables_data['cpms_audit_logs'][] = array(
@@ -1278,6 +1659,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'finance'    => 'https://demo.test/cpms-staff-portal/?cpms-module=finance',
 			'doctor'     => 'https://demo.test/cpms-staff-portal/?cpms-module=doctor',
 			'reports'    => 'https://demo.test/cpms-staff-portal/?cpms-module=reports',
+			'messages'   => 'https://demo.test/cpms-staff-portal/?cpms-module=messages',
+			'pricing'    => 'https://demo.test/cpms-staff-portal/?cpms-module=pricing',
 		);
 	}
 

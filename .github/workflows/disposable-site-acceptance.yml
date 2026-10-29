@@ -465,4 +465,4 @@ jobs:
             echo 'Protected credential/OTP files are never included in logs, comments, this artifact, or the production ZIP.'
             echo 'The post-browser scan covers generated-source and public evidence; teardown emits only fixed non-secret status lines and then removes protected inputs.'
           } > /tmp/acc/evidence-comment.md
-          bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md
+          bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md "external-site-acceptance"

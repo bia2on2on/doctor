@@ -1,0 +1,189 @@
+name: Companion sync (open/update reviewable PR)
+
+# Keeps the demo companion's declared compatibility in step with the production
+# plugin, without ever deciding how a demo may delete data.
+#
+# Security model
+# --------------
+# * Triggered ONLY by a push to `main`. There is deliberately no `pull_request`
+#   variant and no `pull_request_target`: untrusted pull-request code can never
+#   reach this workflow, so the write token it needs is never exposed to a fork.
+# * `permissions:` is the minimum required — `contents: write` to push the
+#   generated branch and `pull-requests: write` to open the review PR.
+# * A branch/protected ref is a precondition; the job refuses to run elsewhere.
+# * Recursion guard: the generated PR is created with `GITHUB_TOKEN`, and GitHub
+#   does not start new workflow runs for pushes/PRs made with that token. The
+#   `concurrency` group additionally serialises runs.
+# * The workflow never merges, never tags, never publishes a release artifact,
+#   and never modifies a production-plugin file. That last point is asserted as a
+#   hard step, so a generator bug cannot smuggle production code into the PR.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'clinic-practice-management/**'
+      - 'tools/disposable-demo-installer/**'
+      - '.github/scripts/companion-compat/**'
+      - '.github/workflows/companion-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: companion-sync-main
+  cancel-in-progress: false
+
+env:
+  SYNC_BRANCH: companion-sync
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  sync:
+    name: Detect and propose companion updates
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Derive the compatibility report for this revision
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/sync
+          python3 .github/scripts/companion-compat/evaluate.py \
+            --root . --gate all --report /tmp/sync/evaluate-main.json > /tmp/sync/evaluate.log 2>&1 || true
+          python3 .github/scripts/companion-compat/generate.py \
+            --root . --check --report /tmp/sync/plan.json > /tmp/sync/plan.log 2>&1 || true
+          cat /tmp/sync/evaluate.log
+          cat /tmp/sync/plan.log
+
+      - name: Apply only the provably safe metadata updates
+        id: apply
+        run: |
+          set -Eeuo pipefail
+          python3 .github/scripts/companion-compat/generate.py --root . --write
+          if git diff --quiet; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            echo 'no safe updates are needed for this revision'
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+            git --no-pager diff --stat
+          fi
+
+      - name: Refuse to include any production-plugin change
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
+          if git diff --name-only | grep -q '^clinic-practice-management/'; then
+            echo 'companion-sync must never modify production-plugin files' >&2
+            git diff --name-only | grep '^clinic-practice-management/' >&2
+            exit 1
+          fi
+          if git diff --name-only | grep -qv -E '^(tools/disposable-demo-installer/|docs/)'; then
+            echo 'companion-sync produced a change outside the companion subtree' >&2
+            git diff --name-only >&2
+            exit 1
+          fi
+
+      - name: Companion isolation holds for the generated change set
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
+          git diff --name-only | python3 .github/scripts/companion-isolation.py
+
+      - name: Re-check the gate after the safe updates
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
+          # The update is only acceptable if it did not break the blocking gate.
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+
+      - name: Build the pull-request body
+        if: steps.apply.outputs.changed == 'true'
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY' > /tmp/sync/body.md
+          import json, pathlib
+
+          plan = json.loads(pathlib.Path('/tmp/sync/plan.json').read_text()) if pathlib.Path('/tmp/sync/plan.json').exists() else {}
+          report = json.loads(pathlib.Path('/tmp/sync/evaluate-main.json').read_text())
+          lines = [
+              'Automated companion-sync for `main` at `%s`.' % "${{ github.sha }}",
+              '',
+              '## Applied automatically',
+              '',
+          ]
+          changed = plan.get('changed') or []
+          lines += ['- `%s`' % item for item in changed] or ['- (nothing)']
+          lines += ['', '## Compatibility status: **%s**' % ('complete' if report['compatibility_complete'] else 'INCOMPLETE'), '']
+          gaps = [f for f in report['findings'] if f['severity'] == 'gap']
+          for gap in gaps:
+              lines.append('- **%s**: %s' % (gap['check'], gap['message']))
+              if gap.get('detail'):
+                  lines.append('  - %s' % gap['detail'])
+          blockers = [f for f in report['findings'] if f['severity'] == 'blocker']
+          if blockers:
+              lines += ['', '## Manual implementation still required', '']
+              lines += ['- **%s**: %s' % (b['check'], b['message']) for b in blockers]
+          lines += ['', 'This pull request is **not** auto-merged. Ownership and deletion rules', 'are never generated from schema metadata; a human must review every rule.']
+          print('\n'.join(lines))
+          PY
+          cat /tmp/sync/body.md
+
+      - name: Publish the generated branch and open/update the review PR
+        if: steps.apply.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          git config user.name 'companion-sync[bot]'
+          git config user.email 'companion-sync@users.noreply.github.com'
+          git checkout -b "$SYNC_BRANCH"
+          git add -A
+          git commit -m 'chore(companion): sync demo compatibility with main@${{ github.sha }}'
+          # The sync branch is generated and disposable. It is recreated from main
+          # on every run, so the remote copy is replaced rather than merged.
+          git push --force origin "$SYNC_BRANCH"
+
+          EXISTING="$(gh pr list --head "$SYNC_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [ -n "$EXISTING" ]; then
+            gh pr edit "$EXISTING" --body-file /tmp/sync/body.md
+            echo "updated existing companion-sync PR #$EXISTING"
+          else
+            gh pr create \
+              --base main \
+              --head "$SYNC_BRANCH" \
+              --title 'chore(companion): sync demo compatibility with production plugin' \
+              --body-file /tmp/sync/body.md
+          fi
+
+      - name: Report a stale sync branch with nothing to apply
+        if: steps.apply.outputs.changed == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -Eeuo pipefail
+          echo 'no safe updates for this revision; leaving any existing PR untouched' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarise
+        if: always()
+        run: |
+          set -Eeuo pipefail
+          {
+            echo '## Companion sync'
+            echo '```'
+            cat /tmp/sync/evaluate.log 2>/dev/null || true
+            cat /tmp/sync/plan.log 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

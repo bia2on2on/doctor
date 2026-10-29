@@ -320,7 +320,7 @@ class Admin {
 					self::$credentials = $credentials->rotate( $loaded );
 					self::$notice      = array(
 						'type' => 'success',
-						'text' => 'رمزهای هر شش حساب چرخانده شد و نشست‌های قبلی آن‌ها باطل شد.',
+						'text' => 'رمزهای همهٔ حساب‌های دمو چرخانده شد و نشست‌های قبلی آن‌ها باطل شد.',
 					);
 					break;
 
@@ -388,12 +388,14 @@ class Admin {
 		} catch ( Exception $e ) {
 			self::$notice = array(
 				'type' => 'error',
+				'code' => $e->demo_code(),
 				'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')',
 			);
 		} catch ( \Throwable $e ) {
 			unset( $e );
 			self::$notice = array(
 				'type' => 'error',
+				'code' => 'UNEXPECTED',
 				'text' => 'خطای غیرمنتظره رخ داد؛ هیچ تغییری خارج از مسیر گزارش‌شده انجام نشد.',
 			);
 		}
@@ -432,6 +434,7 @@ class Admin {
 
 		echo '<div class="wrap cpdd" dir="rtl">';
 		echo '<h1>دموی یک‌بارمصرف CPMS Classic</h1>';
+		\CpmsDemo\Standalone::render_banner();
 		echo '<p class="cpdd-lead">این صفحه فقط برای <strong>سایت آزمایشی خالی</strong> است. هیچ دادهٔ واقعی بیمار، پیامک واقعی یا پرداخت واقعی ساخته نمی‌شود و افزونهٔ Production تغییر نمی‌کند.</p>';
 
 		self::render_notice();
@@ -454,7 +457,7 @@ class Admin {
 			if ( 'active' === (string) ( $loaded['status'] ?? '' ) ) {
 				self::render_links( $platform, $loaded );
 				self::render_form( $request, Request::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_DEMO_OTP', 'پس از زدن «درخواست کد» در برگهٔ رزرو عمومی بیمار، این دکمه کد یک‌بارمصرف همان چالش را فقط در همین پاسخ نمایش می‌دهد.' );
-				self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای شش حساب', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
+				self::render_form( $request, Request::ACTION_ROTATE, 'چرخش رمزهای همهٔ حساب‌های دمو', 'ROTATE_DEMO_PASSWORDS', 'برای وقتی که رمزهای اولیه گم شده‌اند. رمزهای قبلی بی‌درنگ بی‌اعتبار می‌شوند.' );
 			} else {
 				self::render_recovery_card( $loaded );
 			}
@@ -472,6 +475,52 @@ class Admin {
 		self::render_instructions( null !== self::cpms_parent_slug() );
 		self::render_limitations();
 		echo '</div>';
+	}
+
+	/**
+	 * Explain a refused production activation on every admin screen.
+	 *
+	 * The refusal itself happens before WordPress includes the production plugin
+	 * (see `Standalone::register_activation_barriers()`); this only reports it, so
+	 * an administrator who clicked "Activate" learns why nothing happened instead
+	 * of finding a silently unchanged page. Consumed once.
+	 *
+	 * @return void
+	 */
+	public static function render_activation_conflict_notice(): void {
+		if ( ! Standalone::take_blocked_activation() ) {
+			return;
+		}
+		if ( ! current_user_can( 'activate_plugins' ) ) {
+			return;
+		}
+		echo '<div class="notice notice-warning" data-cpdd-notice="warning" data-cpdd-code="embedded_activation_blocked">'
+			. '<p>' . esc_html( Standalone::activation_blocked_message() ) . '</p></div>';
+	}
+
+	/**
+	 * Report a recording failure instead of swallowing it.
+	 *
+	 * When a synthetic persona's write succeeds but the row ledger cannot be
+	 * written, the rows exist and are unregistered: the teardown will refuse them
+	 * (fail closed) rather than guess, which leaves harmless leftovers. That is the
+	 * safe outcome, but it is NOT a silent one - the administrator has to know that
+	 * this demo's cleanup will be incomplete, and why.
+	 *
+	 * @return void
+	 */
+	public static function render_recorder_error_notice(): void {
+		$error = get_option( 'cpsd_recorder_error', null );
+		if ( ! is_array( $error ) || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		delete_option( 'cpsd_recorder_error' );
+		$code = (string) ( $error['code'] ?? 'RECORDER' );
+		echo '<div class="notice notice-error" data-cpdd-notice="error" data-cpdd-code="recorder_error">'
+			. '<p>' . esc_html__( 'ثبت مالکیت رکوردهای ساخته‌شده توسط حساب‌های نمایشی ناموفق بود.', 'cpms' )
+			. ' <code dir="ltr">' . esc_html( $code ) . '</code> '
+			. esc_html__( 'این رکوردها بدون شاهد مالکیت می‌مانند؛ پاک‌سازی دمو آن‌ها را حذف نمی‌کند و برای جلوگیری از حذف دادهٔ واقعی، عملیات را متوقف می‌کند. متن خطا:', 'cpms' )
+			. ' <code dir="ltr">' . esc_html( mb_substr( (string) ( $error['message'] ?? '' ), 0, 300 ) ) . '</code></p></div>';
 	}
 
 	/**
@@ -497,8 +546,18 @@ class Admin {
 		if ( ! is_array( self::$notice ) ) {
 			return;
 		}
-		$class = 'notice-' . ( 'error' === self::$notice['type'] ? 'error' : ( 'warning' === self::$notice['type'] ? 'warning' : ( 'success' === self::$notice['type'] ? 'success' : 'info' ) ) );
-		echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( self::$notice['text'] ) . '</p></div>';
+		$type  = (string) ( self::$notice['type'] ?? 'info' );
+		$class = 'notice-' . ( 'error' === $type ? 'error' : ( 'warning' === $type ? 'warning' : ( 'success' === $type ? 'success' : 'info' ) ) );
+		$code  = (string) ( self::$notice['code'] ?? '' );
+
+		// This page legitimately shows more than one status block: the build/mode
+		// banner (`data-cpsd-standalone`) and the outcome of the submitted action.
+		// The outcome therefore carries its own machine-readable identity, and a
+		// refusal carries its stable code, so "which notice is this?" is answered
+		// by the markup instead of by counting divs or matching Persian prose.
+		echo '<div class="notice ' . esc_attr( $class ) . '" data-cpdd-notice="' . esc_attr( $type ) . '"'
+			. ( '' === $code ? '' : ' data-cpdd-code="' . esc_attr( $code ) . '"' )
+			. '><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
 	}
 
 	/**
@@ -618,7 +677,9 @@ class Admin {
 			'organization_manager' => 'Management Portal — انتخاب سازمان ساختگی',
 			'clinic_manager'       => 'Management Portal — انتخاب درمانگاه ساختگی',
 			'doctor'               => 'Staff Portal — ماژول doctor (مسیر كانونیکال)',
+			'doctor_second'        => 'Staff Portal — ماژول pricing (تعرفهٔ پزشک دوم)',
 			'receptionist'         => 'Staff Portal — ماژول reception',
+			'receptionist_second'  => 'Staff Portal — ماژول messages (پذیرش دوم)',
 			'accountant'           => 'Staff Portal — ماژول finance',
 			'patient'              => 'Patient Portal',
 		);
@@ -637,10 +698,14 @@ class Admin {
 				$url = $url . ( str_contains( $url, '?' ) ? '&' : '?' ) . 'cpms-org=' . $org . '&cpms-clinic=' . $clinic;
 			} elseif ( 'receptionist' === $persona ) {
 				$url = (string) ( $links['receptionist'] ?? $links['reception'] ?? '' );
+			} elseif ( 'receptionist_second' === $persona ) {
+				$url = (string) ( $links['messages'] ?? '' );
 			} elseif ( 'accountant' === $persona ) {
 				$url = (string) ( $links['accountant'] ?? $links['finance'] ?? '' );
 			} elseif ( 'doctor' === $persona ) {
 				$url = (string) ( $links['doctor'] ?? '' );
+			} elseif ( 'doctor_second' === $persona ) {
+				$url = (string) ( $links['pricing'] ?? '' );
 			}
 			echo '<tr><td>' . esc_html( Credentials::personas()[ $persona ]['label'] ) . '</td><td>' . esc_html( $page ) . '</td><td>';
 			if ( '' !== $url ) {
@@ -768,7 +833,7 @@ class Admin {
 			'این ابزار دموی نمایشی می‌سازد؛ Production، مجوز (License)، مجوزدهی، سقف OTP، هم‌زمانی رزرو و دروازه‌های پرداخت تغییر نمی‌کنند.',
 			'کد OTP نمایشی فقط Hash یک چالش زندهٔ همین بیمار ساختگی را بازنویسی می‌کند؛ تمدید اعتبار، بازنشانی تلاش‌ها یا دورزدن Verify انجام نمی‌شود.',
 			'پرداخت‌ها فقط آفلاین با روش other ثبت می‌شوند و هیچ درگاه یا پیامک واقعی فعال نمی‌شود.',
-			'همهٔ شش حساب رمز مستقل دارند و هیچ حساب Administrator ساخته نمی‌شود؛ حساب مدیر شما هرگز در محدودهٔ حذف قرار نمی‌گیرد.',
+			'هر حساب دمو رمز مستقل دارد و هیچ حساب Administrator ساخته نمی‌شود؛ حساب مدیر شما هرگز در محدودهٔ حذف قرار نمی‌گیرد.',
 			'پاک‌سازی فقط وقتی انجام می‌شود که مالکیت همهٔ ردیف‌ها اثبات شود؛ در غیر این صورت مسدود می‌شود و گزارش تشخیص نشان داده می‌شود.',
 		);
 		foreach ( $items as $item ) {

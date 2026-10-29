@@ -23,6 +23,11 @@ on:
       - 'tools/disposable-demo-installer/**'
       - 'tests/scoped-demo/**'
       - 'docs/scoped-demo/**'
+      # The standalone ZIP EMBEDS clinic-practice-management/ at build time, so a
+      # production change changes this artifact. Without this trigger the lane
+      # would go green on a package it never rebuilt - exactly the kind of stale
+      # acceptance this workflow exists to prevent.
+      - 'clinic-practice-management/**'
   push:
     branches: [main]
     paths:
@@ -32,6 +37,11 @@ on:
       - 'tools/disposable-demo-installer/**'
       - 'tests/scoped-demo/**'
       - 'docs/scoped-demo/**'
+      # The standalone ZIP EMBEDS clinic-practice-management/ at build time, so a
+      # production change changes this artifact. Without this trigger the lane
+      # would go green on a package it never rebuilt - exactly the kind of stale
+      # acceptance this workflow exists to prevent.
+      - 'clinic-practice-management/**'
 
 permissions:
   contents: read
@@ -85,6 +95,12 @@ jobs:
       - name: Source ownership and safety contract
         run: python3 -m unittest discover -s tests/scoped-demo -p 'test_*.py' -v
 
+      - name: Companion compatibility gate (schema/table/ownership contract)
+        run: |
+          set -Eeuo pipefail
+          python3 -m unittest discover -s tests/companion-compat -p 'test_*.py'
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+
       - name: Workflow contract tests
         run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 
@@ -99,10 +115,10 @@ jobs:
       - name: Build companion ZIP twice and prove reproducibility + content
         run: |
           set -Eeuo pipefail
-          OUT_DIR=/tmp/cpsd-build-1 bash bin/build-demo-installer.sh | tee /tmp/cpsd-build-1.log
-          OUT_DIR=/tmp/cpsd-build-2 bash bin/build-demo-installer.sh >/tmp/cpsd-build-2.log
-          ZIP1=/tmp/cpsd-build-1/cpms-disposable-demo-1.0.0.zip
-          ZIP2=/tmp/cpsd-build-2/cpms-disposable-demo-1.0.0.zip
+          OUT_DIR=/tmp/cpsd-build-1 bash bin/build-demo-installer.sh --companion | tee /tmp/cpsd-build-1.log
+          OUT_DIR=/tmp/cpsd-build-2 bash bin/build-demo-installer.sh --companion >/tmp/cpsd-build-2.log
+          ZIP1=/tmp/cpsd-build-1/cpms-disposable-demo-companion-1.0.0.zip
+          ZIP2=/tmp/cpsd-build-2/cpms-disposable-demo-companion-1.0.0.zip
           SHA1="$(sha256sum "$ZIP1" | cut -d' ' -f1)"
           SHA2="$(sha256sum "$ZIP2" | cut -d' ' -f1)"
           test "$SHA1" = "$SHA2"
@@ -116,7 +132,10 @@ jobs:
             echo 'FAIL: production sources packaged' >&2; exit 1
           fi
           unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | head -20 | grep -q 'Plugin Name:'
-          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:  clinic-practice-management'
+          # Mission H: no production-plugin dependency in either build.
+          if unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | grep -q 'Requires Plugins:'; then
+            echo 'FAIL: Requires Plugins header reintroduced' >&2; exit 1
+          fi
           python3 - "$ZIP1" <<'PY'
           import hashlib, json, sys, zipfile
           path = sys.argv[1]
@@ -133,7 +152,7 @@ jobs:
           json.dump(proof, open('/tmp/cpsd-installer-proof.json', 'w'), indent=2)
           print(json.dumps(proof))
           PY
-          cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
+          cp "$ZIP1" /tmp/cpms-disposable-demo-companion-1.0.0.zip
 
       - uses: actions/upload-artifact@v4
         with:
@@ -141,7 +160,7 @@ jobs:
           path: |
             /tmp/cpsd-installer-proof.json
             /tmp/cpsd-build-1.log
-            /tmp/cpms-disposable-demo-1.0.0.zip
+            /tmp/cpms-disposable-demo-companion-1.0.0.zip
           if-no-files-found: error
           retention-days: 30
 
@@ -225,10 +244,10 @@ jobs:
           wp plugin install "$GITHUB_WORKSPACE/$CPMS_ZIP" --activate --path="$WP_DIR" --allow-root
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
-          test "$SCHEMA" = '2026_10_18_0029'
+          test "$SCHEMA" = '2026_10_27_0030'
           echo "SCHEMA=$SCHEMA"
-          OUT_DIR=/tmp/cpsd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpsd-ci/companion-build.log
-          wp plugin install /tmp/cpsd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          OUT_DIR=/tmp/cpsd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" --companion | tee /tmp/cpsd-ci/companion-build.log
+          wp plugin install /tmp/cpsd-ci/cpms-disposable-demo-companion-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 
       - name: Scoped integration on seeded non-empty site
@@ -245,6 +264,11 @@ jobs:
           print('SCOPED_INTEGRATION_OK=' + str(bool(data.get('ok'))))
           if not data.get('ok'):
               print(data.get('error', 'unknown error'), file=sys.stderr)
+              # Surface the failing check as a workflow annotation: job logs live
+              # on a host some review environments cannot reach, annotations do.
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
+                  print('::error title=SCOPED_INTEGRATION::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
           PY
 
@@ -265,6 +289,33 @@ jobs:
           print('SCOPED_RECOVERY_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
           if not data.get('ok'):
               print(data.get('error', 'unknown error'), file=sys.stderr)
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              for line in (failed or [str(data.get('error', 'unknown error'))])[:10]:
+                  print('::error title=SCOPED_RECOVERY::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
+      - name: Management-portal lifecycle drills on the real database
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/scoped-portal.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-portal.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-portal.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_PORTAL_CHECKS=' + str(len(data.get('checks', []))))
+          print('SCOPED_PORTAL_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []):
+              print('  ' + line)
+          print('SCOPED_PORTAL_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'unknown error'), file=sys.stderr)
+              failed = [line for line in data.get('checks', []) if str(line).startswith('FAIL')]
+              trail = [str(line) for line in data.get('checks', [])][-6:]
+              detail = ' || '.join(failed[-3:] or trail + [str(data.get('error', 'unknown error'))])
+              print('::error title=SCOPED_PORTAL::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
           PY
 
@@ -394,6 +445,13 @@ jobs:
               if not data.get('ok'):
                   print(data.get('error', f'phase {phase} failed'), file=sys.stderr)
                   ok = False
+                  failed = [item for item in data.get('checks', []) if not item.get('ok')]
+                  detail = ' || '.join(
+                      str(item.get('name')) + ' — ' + str(item.get('detail', ''))[:240]
+                      for item in failed[-3:]
+                  ) or str(data.get('error', f'phase {phase} failed'))
+                  print('::error title=CPSD_BROWSER_' + phase.upper() + '::'
+                        + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
           if not ok:
               sys.exit(1)
           PY
@@ -405,6 +463,7 @@ jobs:
           path: |
             /tmp/cpsd-ci/scoped-integration.json
             /tmp/cpsd-ci/scoped-recovery.json
+            /tmp/cpsd-ci/scoped-portal.json
             /tmp/cpsd-ci/scoped-tamper.json
             /tmp/cpsd-ci/scoped-tamper-restore.json
             /tmp/cpsd-ci/browser-tamper.log

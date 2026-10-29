@@ -28,6 +28,23 @@ class Provisioner {
 	public const MOBILE_PREFIX = '0900';
 
 	/**
+	 * Consultation-fee values used by the synthetic pricing fixture.
+	 *
+	 * They are deliberately distinct, ordered and non-round: a snapshot that was
+	 * silently replaced by a later default is then arithmetically impossible to
+	 * mistake for the correct value.
+	 */
+	public const PRICING_DEFAULT_FEE = 500000;
+
+	public const PRICING_CHANGED_FEE = 750000;
+
+	public const PRICING_OVERRIDE_FEE = 620000;
+
+	public const PRICING_CHARGE_UNIT = 200000;
+
+	public const PRICING_CHARGE_QUANTITY = 2.0;
+
+	/**
 	 * @var Env
 	 */
 	protected Env $env;
@@ -226,6 +243,13 @@ class Provisioner {
 			$this->platform->create_membership( $clinic_id, $doctor, $roles['doctor'], $admin_id );
 			$this->platform->create_membership( $clinic_id, $reception, $roles['receptionist'], $admin_id );
 			$this->platform->create_membership( $clinic_id, $accountant, $roles['accountant'], $admin_id );
+			// Iran V1: a SECOND doctor and a SECOND receptionist are ordinary
+			// active members of the same Clinic. Without them, "the colleague who
+			// is not in the thread cannot see it" would only be provable against
+			// users who have no authority at all, which is not the property the
+			// private-messaging contract claims.
+			$this->platform->create_membership( $clinic_id, (int) $manifest['ids']['user_ids']['doctor_second'], $roles['doctor'], $admin_id );
+			$this->platform->create_membership( $clinic_id, (int) $manifest['ids']['user_ids']['receptionist_second'], $roles['receptionist'], $admin_id );
 
 			$previous = $this->platform->set_scope( $clinic_id, $location_primary, $organization_id );
 			try {
@@ -245,6 +269,11 @@ class Provisioner {
 				$manifest['ids']['clinician_id'] = $clinician_id;
 				$manifest    = $this->manifest->save( $manifest );
 				$this->platform->assign_clinician_locations( $clinician_id, $manifest['ids']['location_ids'], $location_primary );
+
+				$clinician_second_id = $this->platform->create_clinician( $clinic_id, (int) $manifest['ids']['user_ids']['doctor_second'], 'دکتر دوم کاملاً آزمایشی CPMS' );
+				$manifest['ids']['clinician_id_second'] = $clinician_second_id;
+				$manifest = $this->manifest->save( $manifest );
+				$this->platform->assign_clinician_locations( $clinician_second_id, $manifest['ids']['location_ids'], $location_primary );
 
 				$stage = 'schedule';
 				$manifest['counts']['schedule_rows'] = $this->platform->create_bounded_schedule( $clinic_id, $clinician_id, $location_primary );
@@ -386,6 +415,27 @@ class Provisioner {
 				);
 				$manifest = $this->manifest->save( $manifest );
 				$this->platform->transition( $reception, $visit, 'check_out' );
+
+				// Iran V1 (schema 0030) — private staff messaging. Three real
+				// two-person threads are created through StaffMessagingService, so
+				// every participant row is written by the production service under
+				// its own membership/capability re-check.
+				$stage    = 'messaging';
+				$manifest = $this->seed_messaging_fixture( $manifest, $doctor, $reception, $accountant );
+				$manifest = $this->manifest->save( $manifest );
+				$this->env->maybe_inject_fault( 'provision:messaging', array( 'stage' => $stage ) );
+
+				// Iran V1 (schema 0030) — doctor-managed consultation pricing.
+				$stage    = 'pricing';
+				$manifest = $this->seed_pricing_fixture(
+					$manifest,
+					(int) $manifest['ids']['user_ids']['doctor_second'],
+					$reception,
+					(int) $manifest['ids']['patient_id'],
+					(int) $manifest['ids']['clinician_id_second']
+				);
+				$manifest = $this->manifest->save( $manifest );
+				$this->env->maybe_inject_fault( 'provision:pricing', array( 'stage' => $stage ) );
 			} finally {
 				$this->platform->restore_scope( $previous );
 			}
@@ -420,7 +470,7 @@ class Provisioner {
 				$clinic_id,
 				array(
 					'fixture_id' => $fixture['fixture_id'],
-					'accounts'   => 6,
+					'accounts'   => count( Credentials::PERSONA_ORDER ),
 					'sms_provider' => 'log',
 					'payment_method' => 'other',
 				)
@@ -472,6 +522,137 @@ class Provisioner {
 		unset( $admin_id );
 
 		return $result;
+	}
+
+	/**
+	 * Three strictly-private two-person staff threads, written through the
+	 * production StaffMessagingService.
+	 *
+	 * The pair choices are the ones the demo must be able to disprove:
+	 *   doctor <-> receptionist        (one of TWO receptionists)
+	 *   doctor <-> finance/accountant
+	 *   receptionist <-> finance/accountant
+	 *
+	 * The second doctor and second receptionist are deliberately NOT participants
+	 * of any thread, so a later privacy assertion is a real pairwise check.
+	 *
+	 * @param array<string,mixed> $manifest Manifest under construction.
+	 * @param int                 $doctor Doctor WordPress user.
+	 * @param int                 $reception Receptionist WordPress user.
+	 * @param int                 $accountant Finance/cashier WordPress user.
+	 * @return array<string,mixed> Updated manifest.
+	 */
+	protected function seed_messaging_fixture( array $manifest, int $doctor, int $reception, int $accountant ): array {
+		$bodies = array(
+			'doctor_receptionist' => array(
+				$doctor      => 'همکار پذیرش، لطفاً نمونهٔ آزمایشی بعدی را آماده کنید؛ داده فرضی است.',
+				$reception   => 'دریافت شد؛ پروندهٔ آزمایشی آماده است و در نوبت قرار گرفت.',
+			),
+			'doctor_finance'      => array(
+				$doctor      => 'همکار مالی، فاکتور آزمایشی ویزیت امروز را بررسی می‌کنید؟',
+				$accountant  => 'بله؛ فاکتور آزمایشی ثبت شد و مبلغ فرضی دریافت شد.',
+			),
+			'receptionist_finance' => array(
+				$reception   => 'همکار مالی، پرداخت آزمایشی پذیرش ثبت شد.',
+				$accountant  => 'تأیید شد؛ تراز مالی آزمایشی به‌روزرسانی شد.',
+			),
+		);
+
+		$manifest['ids']['message_thread_ids'] = array();
+		$manifest['ids']['message_ids']        = array();
+
+		foreach ( $bodies as $key => $conversation ) {
+			$participants = array_keys( $conversation );
+			$thread_id    = $this->platform->message_thread( (int) $participants[0], (int) $participants[1] );
+			$manifest['ids']['message_thread_ids'][ $key ] = $thread_id;
+			foreach ( $conversation as $sender => $body ) {
+				$manifest['ids']['message_ids'][] = $this->platform->send_message( (int) $sender, (int) $thread_id, (string) $body );
+			}
+		}
+
+		$manifest['messaging'] = array(
+			'thread_keys'              => array_keys( $bodies ),
+			'second_doctor_id'         => (int) $manifest['ids']['user_ids']['doctor_second'],
+			'second_receptionist_id'   => (int) $manifest['ids']['user_ids']['receptionist_second'],
+			'private_thread'           => (int) $manifest['ids']['message_thread_ids']['doctor_receptionist'],
+		);
+
+		return $manifest;
+	}
+
+	/**
+	 * Doctor-managed consultation pricing fixture.
+	 *
+	 * Proves the fee-snapshot rule at its source: the doctor sets a default, a
+	 * NEW visit inherits it at walk-in, and a LATER change of that default does
+	 * not reprice the already-established visit. The per-visit override, the
+	 * itemized charges, the invoice and the payments are left to the browser
+	 * journey so they are exercised through the real UI.
+	 *
+	 * @param array<string,mixed> $manifest Manifest under construction.
+	 * @param int                 $doctor Doctor (second) WordPress user.
+	 * @param int                 $reception Receptionist WordPress user.
+	 * @param int                 $patient Patient id.
+	 * @param int                 $clinician_id Clinician owning the visit.
+	 * @return array<string,mixed> Updated manifest.
+	 * @throws Exception When the snapshot rule is violated by production.
+	 */
+	protected function seed_pricing_fixture( array $manifest, int $doctor, int $reception, int $patient, int $clinician_id ): array {
+		$this->platform->set_default_consultation_fee( $doctor, null, self::PRICING_DEFAULT_FEE );
+
+		$visit = $this->platform->walk_in( $reception, $patient, $clinician_id, array( 'note' => 'ویزیت تعرفهٔ آزمایشی — داده فرضی' ) );
+		$manifest['ids']['visit_id_pricing'] = $visit;
+
+		$this->platform->transition( $doctor, $visit, 'call', array( 'room' => 'SYNTHETIC' ) );
+		$this->platform->transition( $doctor, $visit, 'start' );
+		// Production refuses to complete a consultation without a chief-complaint
+		// note, exactly like the main fixture: the note is synthetic text and is
+		// owned by the same Clinic, so teardown covers it.
+		$manifest['ids']['pricing_note_id'] = $this->platform->add_note(
+			$doctor,
+			$visit,
+			array(
+				'category'     => 'chief_complaint',
+				'visibility'   => 'patient_visible',
+				'content_text' => 'شکایت اصلی آزمایشی برای ویزیت تعرفه — داده کاملاً فرضی.',
+			)
+		);
+		$this->platform->complete_consultation( $doctor, $visit );
+
+		// A later default change must never reprice the established Visit.
+		$this->platform->set_default_consultation_fee( $doctor, null, self::PRICING_CHANGED_FEE );
+
+		$billing      = $this->platform->visit_billing( $doctor, $visit );
+		$snapshot_fee = null === ( $billing['snapshot_fee'] ?? null ) ? 0 : (int) $billing['snapshot_fee'];
+		if ( self::PRICING_DEFAULT_FEE !== $snapshot_fee ) {
+			throw new Exception(
+				'FEE_SNAPSHOT_MISMATCH',
+				'تعرفهٔ ثبت‌شده هنگام پذیرش با تعرفهٔ پیش‌فرض پزشک هم‌خوان نیست؛ ساخت دمو متوقف شد.'
+			);
+		}
+		// No per-visit override exists yet, so the effective fee must still be the
+		// check-in snapshot and NOT the later default. The default itself is
+		// expected to have changed: that is what the fixture demonstrates.
+		if ( self::PRICING_DEFAULT_FEE !== (int) ( $billing['effective_fee'] ?? 0 ) ) {
+			throw new Exception( 'FEE_SNAPSHOT_REPRICED', 'ویزیت ثبت‌شده با تعرفهٔ جدید بازقیمت‌گذاری شد؛ ساخت دمو متوقف شد.' );
+		}
+		if ( 'checkin_snapshot' !== (string) ( $billing['fee_source'] ?? '' ) ) {
+			throw new Exception( 'FEE_SNAPSHOT_SOURCE', 'منبع تعرفهٔ ویزیت باید snapshot پذیرش باشد؛ ساخت دمو متوقف شد.' );
+		}
+
+		$manifest['pricing'] = array(
+			'default_fee'         => self::PRICING_DEFAULT_FEE,
+			'changed_default_fee' => self::PRICING_CHANGED_FEE,
+			'override_fee'        => self::PRICING_OVERRIDE_FEE,
+			'charge_unit'         => self::PRICING_CHARGE_UNIT,
+			'charge_quantity'     => self::PRICING_CHARGE_QUANTITY,
+			'snapshot_fee'        => $snapshot_fee,
+			'snapshot_source'     => (string) ( $billing['fee_source'] ?? '' ),
+			'clinician_id'        => $clinician_id,
+			'expected_total'      => self::PRICING_OVERRIDE_FEE + (int) round( self::PRICING_CHARGE_UNIT * self::PRICING_CHARGE_QUANTITY ),
+		);
+
+		return $manifest;
 	}
 
 	/**

@@ -76,6 +76,60 @@ class ScopedBaseline {
 	 */
 	private const VOLATILE_POSTMETA = array( '_pingme', '_encloseme', '_edit_lock' );
 
+	/**
+	 * Legitimate runtime churn in `wp_options`, stated one key at a time.
+	 *
+	 * These are install-level CPMS heartbeats: the queue rewrites
+	 * `cpms_jobs_last_tick_at` after every successful tick and the scheduler
+	 * rewrites `cpms_backup_last_run_at` after each backup, with no operator
+	 * action and no clinical, financial or content meaning. Excluding anything
+	 * else would blind the teardown to an unauthorised change of a preexisting
+	 * record, so this list is deliberately not a wildcard and every entry carries
+	 * its justification.
+	 *
+	 * @var array<string,string>
+	 */
+	private const VOLATILE_OPTIONS = array(
+		'cpms_jobs_last_tick_at'  => 'Queue heartbeat; rewritten by every successful queue tick (autoload=no).',
+		'cpms_backup_last_run_at' => 'Backup heartbeat; rewritten by each scheduled backup run.',
+	);
+
+	/**
+	 * The companion's own bookkeeping options. They are demo-owned, never shared,
+	 * and enumerated explicitly rather than matched by prefix so a new companion
+	 * option cannot silently inherit an exemption.
+	 *
+	 * @var list<string>
+	 */
+	private const COMPANION_OPTIONS = array(
+		'cpsd_manifest',
+		'cpsd_tombstone',
+		'cpsd_mode',
+		'cpsd_lock_state',
+		'cpsd_had_clean_teardown',
+		'cpsd_baseline_pending',
+		// Sealed append-only ownership ledger for additional demo Clinics. It is
+		// demo-owned and exists only while the demo manifest does, so it must be
+		// enumerated here (never matched by prefix) and must never be reported as
+		// host-option residue while the fixture is still live.
+		'cpsd_ownership_ledger',
+		'cpdd_manifest',
+		'cpdd_tombstone',
+		'cpdd_had_clean_teardown',
+		'cpdd_lock_state',
+	);
+
+	/** WordPress core options that core rewrites on its own schedule. */
+	private const CORE_VOLATILE_OPTIONS = array(
+		'cron',
+		'recently_activated',
+		'user_count',
+		'rewrite_rules',
+		'db_upgraded',
+		'fresh_site',
+		'admin_email_lifespan',
+	);
+
 	/** Per-row digests are stored for tables up to this many rows, so a mismatch can name rows. */
 	private const ROW_MAP_LIMIT = 500;
 
@@ -250,7 +304,7 @@ class ScopedBaseline {
 		$params = array( $max_id );
 		if ( $this->is_options_table( $table ) ) {
 			$where .= " AND option_name NOT LIKE '\\_transient%' AND option_name NOT LIKE '\\_site\\_transient%'";
-			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
+			$where .= $this->option_exclusion_where();
 		}
 		$where .= $this->volatile_usermeta_where( $table );
 		$where .= $this->volatile_postmeta_where( $table );
@@ -339,7 +393,7 @@ class ScopedBaseline {
 		$where = '`' . $id_col . '` <= %d';
 		if ( $this->is_options_table( $table ) ) {
 			$where .= " AND option_name NOT LIKE '\\_transient%' AND option_name NOT LIKE '\\_site\\_transient%'";
-			$where .= " AND option_name NOT IN ('cron','recently_activated','user_count','rewrite_rules','db_upgraded','fresh_site','admin_email_lifespan','cpsd_manifest','cpsd_tombstone','cpsd_mode','cpsd_lock_state','cpsd_had_clean_teardown','cpdd_manifest','cpdd_tombstone','cpdd_had_clean_teardown','cpdd_lock_state')";
+			$where .= $this->option_exclusion_where();
 		}
 		$where .= $this->volatile_usermeta_where( $table );
 		$where .= $this->volatile_postmeta_where( $table );
@@ -391,6 +445,27 @@ class ScopedBaseline {
 		}
 
 		return array_slice( $names, 0, 2 );
+	}
+
+	/**
+	 * Build the `option_name NOT IN (...)` clause from the declarative lists.
+	 *
+	 * @return string
+	 */
+	private function option_exclusion_where(): string {
+		$names = array_merge(
+			self::CORE_VOLATILE_OPTIONS,
+			self::COMPANION_OPTIONS,
+			array_keys( self::VOLATILE_OPTIONS )
+		);
+		$names = array_values( array_unique( array_filter( array_map( 'strval', $names ) ) ) );
+		if ( array() === $names ) {
+			return '';
+		}
+		global $wpdb;
+		$placeholders = implode( ',', array_fill( 0, count( $names ), '%s' ) );
+
+		return ' AND option_name NOT IN (' . $wpdb->prepare( $placeholders, $names ) . ')'; // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders are generated above and every value is prepared.
 	}
 
 	/**

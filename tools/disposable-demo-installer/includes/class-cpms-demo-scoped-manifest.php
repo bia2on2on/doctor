@@ -67,6 +67,31 @@ class ScopedManifest extends Manifest {
 		return $loaded;
 	}
 
+	/**
+	 * Seal one payload with the same HMAC primitive and key as the manifest.
+	 *
+	 * Used by the append-only ownership ledger (ScopedOwnership) so that every
+	 * ownership record is tamper-evident without introducing a second secret.
+	 *
+	 * @param array<string,mixed> $payload Payload without `mac`.
+	 * @return array<string,mixed> Payload with `mac` appended.
+	 */
+	public function seal( array $payload ): array {
+		$payload['mac'] = $this->mac( $payload );
+
+		return $payload;
+	}
+
+	/**
+	 * Deterministic JSON used by the sealing helpers (exposed for diagnostics).
+	 *
+	 * @param mixed $value Value.
+	 * @return string
+	 */
+	public function canonical_form( $value ): string {
+		return $this->canonical( $value );
+	}
+
 	public function fixture_prefix(): string {
 		return 'cpsd-';
 	}
@@ -101,7 +126,9 @@ class ScopedManifest extends Manifest {
 			'site'     => $this->site_fingerprint(),
 		);
 		$payload['mac'] = $this->mac( $payload );
-		$this->env->option_set( self::MODE_OPTION, $payload );
+		if ( ! $this->env->persist_verified( self::MODE_OPTION, $payload ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'نشانگر حالت محدودشده ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 	}
 
 	/**
@@ -144,7 +171,11 @@ class ScopedManifest extends Manifest {
 			'site'        => $this->site_fingerprint(),
 		);
 		$payload['mac'] = $this->mac( $payload );
-		$this->env->option_set( self::PENDING_BASELINE_OPTION, $payload );
+		if ( ! $this->env->persist_verified( self::PENDING_BASELINE_OPTION, $payload ) ) {
+			// Provisioning must not create a single synthetic row when the recovery
+			// evidence it depends on was not durably stored.
+			throw new Exception( 'OPTION_WRITE_FAILED', 'پایهٔ مرجع پیش از راه‌اندازی ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
 	}
 
 	/**

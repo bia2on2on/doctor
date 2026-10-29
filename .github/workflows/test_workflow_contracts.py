@@ -2,6 +2,7 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
 PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
+COMMENTER = ROOT / ".github" / "scripts" / "pr-evidence-comment.sh"
 SAFE_PILOT_EVIDENCE = ROOT / "clinic-practice-management" / "bin" / "pilot-safe-evidence.py"
 
 
@@ -174,6 +176,17 @@ class CompanionIsolationTests(unittest.TestCase):
         ])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
+    def test_a_new_shared_evidence_script_is_lane_plumbing_not_a_boundary_change(self):
+        """A new .github/scripts/ file is unclassified until it is named here.
+
+        That fail-closed rule is right, and it is why adding the shared PR
+        comment transport had to be classified explicitly rather than silently
+        landing as an "other" path.
+        """
+        result = self._run([".github/scripts/pr-evidence-comment.sh"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("lane files: 1", result.stdout)
+
     def test_workflow_only_change_is_allowed(self):
         result = self._run([".github/workflows/disposable-demo-installer.yml"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -190,6 +203,51 @@ class CompanionIsolationTests(unittest.TestCase):
     def test_docs_only_change_is_out_of_scope(self):
         result = self._run(["docs/demo-setup-fa.md"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_compatibility_automation_counts_as_the_lane_side(self):
+        """A gate that is rewritten together with production proves nothing.
+
+        The companion-compat scripts, the scoped-demo tests and the lane
+        workflows are executable evidence about the same boundary, so they are
+        classified rather than silently ignored.
+        """
+        for path in (
+            ".github/scripts/companion-compat/evaluate.py",
+            "tests/companion-compat/test_compatibility_gate.py",
+            "tests/scoped-demo/test_scoped_safety_regressions.py",
+            "tests/disposable-site/test_x.py",
+        ):
+            result = self._run([path, "clinic-practice-management/src/Bootstrap/App.php"])
+            self.assertEqual(result.returncode, 1, path + ": " + result.stdout)
+            self.assertIn("mixed change", result.stdout)
+
+    def test_compatibility_automation_alone_is_allowed(self):
+        result = self._run([
+            ".github/scripts/companion-compat/evaluate.py",
+            "tests/scoped-demo/test_scoped_safety_regressions.py",
+        ])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("compatibility files: 2", result.stdout)
+
+    def test_lane_workflows_are_classified(self):
+        result = self._run([".github/workflows/scoped-demo.yml", ".github/workflows/companion-compat.yml"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("lane files: 2", result.stdout)
+
+    def test_scoped_demo_documentation_is_classified(self):
+        result = self._run(["docs/scoped-demo/ownership-map.md"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("documentation files: 1", result.stdout)
+
+    def test_unclassified_lane_file_fails_closed(self):
+        result = self._run(["tools/some-new-lane-tool.sh"])
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("unclassified lane file", result.stdout)
+        mixed = self._run([
+            "tools/some-new-lane-tool.sh",
+            "clinic-practice-management/src/Bootstrap/App.php",
+        ])
+        self.assertEqual(mixed.returncode, 1, mixed.stdout + mixed.stderr)
 
     def test_persian_wc_diagnosis_is_named_and_acceptance_requires_stage_b(self):
         text = workflow("persian-coexistence.yml")
@@ -229,8 +287,78 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertIn('case "$EVENT" in', helper)
         self.assertIn('PR_NUMBER=${CPMS_PR_NUMBER:-}', helper)
         self.assertIn("Required evidence comment to PR", helper)
-        self.assertNotIn("gh api", helper, "do not broaden commit-comment permissions")
         self.assertIn("cat \"$EVIDENCE\" >> \"$GITHUB_STEP_SUMMARY\"", helper)
+        # The publisher may only touch PR comments: `pull-requests: write` is the
+        # permission the workflows already grant, and no endpoint beyond the
+        # issue-comment API is used (no broadened commit-comment scope).
+        logical = helper.replace("\\\n", " ")
+        for segment in logical.split("gh api")[1:]:
+            command = re.split(r"\s\|\||\s&&|;", segment)[0]
+            self.assertIn(
+                "repos/$REPOSITORY/issues",
+                command,
+                f"publisher must stay inside the PR comment API, got: {command.strip()}",
+            )
+        # Publication is delegated to ONE shared transport, so the ceiling is
+        # resolved identically everywhere. The publisher keeps PR-target
+        # resolution and the run-summary fallback, and it must still fail loudly
+        # when publication really fails.
+        self.assertIn("pr-evidence-comment.sh", helper, "publication is shared, not duplicated")
+        self.assertIn("--family \"$EVIDENCE_FAMILY\"", helper)
+        self.assertIn('EVIDENCE_FAMILY=${EVIDENCE_FAMILY:-${STREAM_FAMILY:-$(basename "$EVIDENCE" .md)}}', helper,
+                      "each evidence stream owns its own comment, so steps cannot overwrite each other")
+        self.assertLess(
+            helper.index("EDIT") if "EDIT" in helper else helper.index("--family"),
+            helper.index("::error::Required evidence comment to PR"),
+            "publication must be attempted before any failure classification",
+        )
+
+    def test_every_evidence_stream_names_its_own_comment(self):
+        """Two steps in one job must never overwrite each other's evidence.
+
+        The sticky transport keys a comment by family, so a family has to be
+        unique per evidence STREAM, not per workflow.
+        """
+        for filename in ("closure-gate.yml", "pilot-gate.yml", "disposable-site-acceptance.yml"):
+            with self.subTest(filename=filename):
+                text = (WORKFLOWS / filename).read_text(encoding="utf-8")
+                invocations = [
+                    line for line in text.splitlines()
+                    if "post-pr-evidence.sh" in line and "call below publishes" not in line
+                ]
+                self.assertTrue(invocations)
+                families = []
+                for line in invocations:
+                    match = re.search(r'post-pr-evidence\.sh"?\s+(\S+)\s+"([^"]+)"\s*$', line)
+                    self.assertIsNotNone(match, f"evidence stream must name its family: {line.strip()}")
+                    families.append(match.group(2))
+                self.assertEqual(sorted(families), sorted(set(families)), "families must be unique")
+
+    def test_pilot_gate_compatibility_gate_runs_from_the_repository_root(self):
+        """The job's default working directory is the plugin, not the repo root.
+
+        `.github/scripts/companion-compat/evaluate.py` therefore could not be
+        opened at all: python exited 2 and the gate had never actually run.
+        """
+        text = workflow("pilot-gate.yml")
+        block = text.split("- name: Companion compatibility gate (blocks publication on mismatch)", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("working-directory: ${{ github.workspace }}", block)
+        self.assertIn("test -f .github/scripts/companion-compat/evaluate.py", block)
+
+    def test_pilot_gate_compatibility_gate_reports_the_real_exit_status(self):
+        """`$?` inside `if ! cmd; then` is the NEGATION's status, i.e. always 0.
+
+        The previous form therefore printed "failed with exit 0" and executed
+        `exit 0`, so a failed compatibility gate made the release gate green.
+        """
+        text = workflow("pilot-gate.yml")
+        block = text.split("- name: Companion compatibility gate (blocks publication on mismatch)", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("GATE_EXIT=$?", block, block)
+        self.assertIn('if [ "${GATE_EXIT}" -ne 0 ]; then', block, block)
+        self.assertNotIn('exit "${code}"', block, block)
+        self.assertNotIn("if ! python3 .github/scripts/companion-compat/evaluate.py", block, block)
 
     def test_failure_dump_guards_and_bounds_are_preserved(self):
         text = workflow("pilot-gate.yml")
@@ -408,10 +536,183 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
         self.assertIn("browser diagnostics:", finance_browser)
 
 
+class SharedCommentTransportTests(unittest.TestCase):
+    """Every workflow family publishes through ONE ceiling-aware helper.
+
+    The inline `gh pr comment` calls each knew nothing about GitHub's 2,500
+    comment ceiling: on PR #282 half of them failed their step and the rest
+    reported "permissions?", which was both wrong and a silent evidence loss.
+    """
+
+    def test_no_workflow_publishes_a_pr_comment_directly_any_more(self):
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            if re.search(r"(?m)^\s*gh pr comment ", text):
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "route PR evidence through pr-evidence-comment.sh")
+
+    def test_every_family_uses_a_distinct_marker(self):
+        families = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8").replace("\\\n", " ")
+            families += re.findall(r"--family (\S+)", text)
+        unique = set(families)
+        self.assertEqual(sorted(families), sorted(unique), "each family appears once")
+        self.assertGreaterEqual(len(unique), 13, sorted(unique))
+
+    def test_helper_is_inside_the_pr_comment_api_and_announces_the_ceiling(self):
+        helper = COMMENTER.read_text(encoding="utf-8")
+        for call in helper.replace("\\\n", " ").split("gh api")[1:]:
+            command = re.split(r"\s\|\||\s&&|;", call)[0]
+            self.assertIn("repos/$REPOSITORY/issues", command, command.strip())
+        self.assertIn("COMMENT_CEILING=2500", helper)
+        self.assertIn("EVIDENCE_COMMENT_CEILING", helper)
+        self.assertIn("cpms:evidence-sticky:", helper)
+        self.assertLess(
+            helper.index("--method PATCH"),
+            helper.index("--method POST"),
+            "update in place before creating anything",
+        )
+        self.assertIn("exit 1", helper, "a real publication failure still fails")
+        self.assertLess(
+            helper.index("EVIDENCE_COMMENT_CEILING"),
+            helper.index("::error title=EVIDENCE_COMMENT_FAILED"),
+            "the ceiling must be classified before the generic failure",
+        )
+        self.assertNotRegex(helper, r"(?m)^\s*gh pr comment", "the helper is the transport")
+
+    def run_helper(self, **kwargs):
+        with tempfile.TemporaryDirectory(prefix="comment-transport-test-") as tmp:
+            tmp_path = Path(tmp)
+            fake_bin = tmp_path / "bin"
+            fake_bin.mkdir()
+            gh = fake_bin / "gh"
+            gh.write_text(
+                "#!/usr/bin/env python3\n"
+                "import json, os, shutil, sys\n"
+                "args = sys.argv[1:]\n"
+                "env = os.environ.get\n"
+                "with open(os.environ['GH_TEST_CALLS'], 'a', encoding='utf-8') as f:\n"
+                "    f.write(json.dumps(args) + '\\n')\n"
+                "for arg in args:\n"
+                "    if arg.startswith('body=@') and env('GH_TEST_BODY_COPY'):\n"
+                "        shutil.copyfile(arg[6:], env('GH_TEST_BODY_COPY'))\n"
+                "method = 'GET'\n"
+                "if '--method' in args:\n"
+                "    method = args[args.index('--method') + 1]\n"
+                "path = [a for a in args if a.startswith('repos/')][0]\n"
+                "if method == 'GET' and 'comments?per_page=100' in path:\n"
+                "    if env('GH_TEST_FIND_FAIL') == '1':\n"
+                "        sys.exit(30)\n"
+                "    if env('GH_TEST_STICKY_ID'):\n"
+                "        print(env('GH_TEST_STICKY_ID'))\n"
+                "elif method == 'GET':\n"
+                "    print(env('GH_TEST_COMMENT_COUNT', '0'))\n"
+                "elif method == 'PATCH':\n"
+                "    if env('GH_TEST_EDIT_FAIL') == '1':\n"
+                "        sys.exit(31)\n"
+                "    print('{}')\n"
+                "elif method == 'POST':\n"
+                "    if env('GH_TEST_CREATE_FAIL') == '1':\n"
+                "        print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
+                "        sys.exit(32)\n"
+                "    print('{}')\n"
+                "else:\n"
+                "    sys.exit(33)\n",
+                encoding="utf-8",
+            )
+            gh.chmod(0o755)
+            body = tmp_path / "body.md"
+            body.write_text("synthetic family evidence\n", encoding="utf-8")
+            calls_file = tmp_path / "calls.jsonl"
+            summary = tmp_path / "summary.md"
+            summary.touch()
+            env = os.environ.copy()
+            env.update(
+                {
+                    "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
+                    "GH_TEST_CALLS": str(calls_file),
+                    "GH_TEST_STICKY_ID": kwargs.get("sticky_id", ""),
+                    "GH_TEST_FIND_FAIL": "1" if kwargs.get("find_fail") else "0",
+                    "GH_TEST_EDIT_FAIL": "1" if kwargs.get("edit_fail") else "0",
+                    "GH_TEST_CREATE_FAIL": "1" if kwargs.get("create_fail") else "0",
+                    "GH_TEST_COMMENT_COUNT": kwargs.get("comment_count", "0"),
+                    "GH_TEST_BODY_COPY": str(tmp_path / "published-body.md"),
+                    "GITHUB_REPOSITORY": "bia2on2on/doctor",
+                    "GITHUB_STEP_SUMMARY": str(summary),
+                    "GITHUB_RUN_ID": "999",
+                    "GITHUB_SHA": "deadbeef",
+                }
+            )
+            env.pop("CPMS_PR_NUMBER", None)
+            env.pop("PR_NUMBER", None)
+            args = ["bash", str(COMMENTER), "--family", "ci-unit-tests", "--body-file", str(body)]
+            if kwargs.get("pr", "282"):
+                args += ["--pr", kwargs.get("pr", "282")]
+            result = subprocess.run(args, cwd=ROOT, env=env, text=True, capture_output=True, check=False)
+            calls = [json.loads(l) for l in calls_file.read_text().splitlines()] if calls_file.exists() else []
+            published = (tmp_path / "published-body.md")
+            return result, calls, summary.read_text(encoding="utf-8"), (
+                published.read_text(encoding="utf-8") if published.exists() else ""
+            )
+
+    def test_existing_family_comment_is_updated_in_place(self):
+        result, calls, summary, body = self.run_helper(sticky_id="7777")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][:3], ["api", "--method", "PATCH"])
+        self.assertIn("repos/bia2on2on/doctor/issues/comments/7777", " ".join(calls[1]))
+        self.assertTrue(body.startswith("<!-- cpms:evidence-sticky:ci-unit-tests -->"), body[:80])
+        self.assertIn("synthetic family evidence", body)
+        self.assertIn("PR_EVIDENCE_PUBLICATION=ci-unit-tests#comment:7777", result.stdout)
+        self.assertEqual(summary, "")
+
+    def test_first_run_creates_the_family_comment_once(self):
+        result, calls, summary, _ = self.run_helper()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
+        self.assertIn("#comment (created)", result.stdout)
+
+    def test_the_ceiling_is_announced_and_never_fails_the_step(self):
+        result, calls, summary, _ = self.run_helper(create_fail=True, comment_count="2500")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("2500", result.stderr)
+        self.assertIn("#run-summary", result.stdout)
+        self.assertIn("durable copy", summary)
+
+    def test_a_real_failure_below_the_ceiling_is_never_hidden(self):
+        result, calls, summary, _ = self.run_helper(create_fail=True, comment_count="12")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_FAILED", result.stderr)
+        self.assertNotIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("durable copy", summary)
+
+    def test_a_lookup_failure_is_announced_then_classified(self):
+        result, calls, summary, _ = self.run_helper(find_fail=True, create_fail=True, comment_count="12")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_LOOKUP", result.stderr)
+        self.assertIn("EVIDENCE_COMMENT_FAILED", result.stderr)
+
+    def test_no_pull_request_is_skipped_explicitly_not_silently(self):
+        result, calls, summary, _ = self.run_helper(pr="")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [])
+        self.assertIn("EVIDENCE_COMMENT_SKIPPED", result.stderr)
+
+
 class EvidenceTargetRuntimeTests(unittest.TestCase):
     """Execute the real publisher with a deterministic fake gh executable."""
 
-    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_comment=False, fail_list=False):
+    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_list=False,
+                      sticky_id="", find_fail=False, edit_fail=False, create_fail=False,
+                      comment_count="0"):
+        """Execute the real publisher against a fake `gh`.
+
+        The fake models the three endpoints the publisher is allowed to use:
+        list PR comments (paginated), PATCH one comment, POST one comment.
+        """
         with tempfile.TemporaryDirectory(prefix="evidence-target-test-") as tmp:
             tmp_path = Path(tmp)
             fake_bin = tmp_path / "bin"
@@ -419,27 +720,61 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
             gh = fake_bin / "gh"
             gh.write_text(
                 "#!/usr/bin/env python3\n"
-                "import json, os, pathlib, sys\n"
+                "import json, os, sys\n"
                 "args = sys.argv[1:]\n"
                 "with open(os.environ['GH_TEST_CALLS'], 'a', encoding='utf-8') as f:\n"
                 "    f.write(json.dumps(args) + '\\n')\n"
-                "if args[:2] == ['pr', 'list'] and os.environ.get('GH_TEST_FAIL_LIST') == '1':\n"
+                "def env(name, default=''):\n"
+                "    return os.environ.get(name, default)\n"
+                "for arg in args:\n"
+                "    if arg.startswith('body=@'):\n"
+                "        import os as _os, shutil\n"
+                "        shutil.copyfile(arg[len('body=@'):],\n"
+                "                        _os.path.join(_os.path.dirname(arg[len('body=@'):]), 'published-body.md'))\n"
+                "if args[:2] == ['pr', 'list'] and env('GH_TEST_FAIL_LIST') == '1':\n"
                 "    print('simulated PR lookup failure', file=sys.stderr)\n"
                 "    sys.exit(22)\n"
                 "elif args[:2] == ['pr', 'list']:\n"
-                "    print(os.environ.get('GH_TEST_CANDIDATES', '[]'))\n"
-                "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_FAIL_COMMENT') == '1':\n"
-                "    print('simulated comment transport failure', file=sys.stderr)\n"
-                "    sys.exit(23)\n"
-                "elif args[:2] != ['pr', 'comment']:\n"
+                "    print(env('GH_TEST_CANDIDATES', '[]'))\n"
+                "elif args[0] != 'api':\n"
                 "    print('unexpected gh command: ' + repr(args), file=sys.stderr)\n"
-                "    sys.exit(24)\n",
+                "    sys.exit(24)\n"
+                "else:\n"
+                "    args = args[1:]\n"
+                "    method = 'GET'\n"
+                "    if '--method' in args:\n"
+                "        method = args[args.index('--method') + 1]\n"
+                "    path = [a for a in args if a.startswith('repos/')][0]\n"
+                "    if method == 'GET' and path.endswith('/comments?per_page=100'):\n"
+                "        if env('GH_TEST_FIND_FAIL') == '1':\n"
+                "            print('simulated comment listing failure', file=sys.stderr)\n"
+                "            sys.exit(30)\n"
+                "        sticky = env('GH_TEST_STICKY_ID')\n"
+                "        if sticky:\n"
+                "            print(sticky)\n"
+                "    elif method == 'GET' and not path.endswith('/comments?per_page=100'):\n"
+                "        print(env('GH_TEST_COMMENT_COUNT', '0'))\n"
+                "    elif method == 'PATCH':\n"
+                "        if env('GH_TEST_EDIT_FAIL') == '1':\n"
+                "            print('simulated edit failure', file=sys.stderr)\n"
+                "            sys.exit(31)\n"
+                "        print('{}')\n"
+                "    elif method == 'POST':\n"
+                "        if env('GH_TEST_CREATE_FAIL') == '1':\n"
+                "            print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
+                "            sys.exit(32)\n"
+                "        print('{}')\n"
+                "    else:\n"
+                "        print('unexpected api call: ' + repr(args), file=sys.stderr)\n"
+                "        sys.exit(33)\n",
                 encoding="utf-8",
             )
             gh.chmod(0o755)
             evidence = tmp_path / "evidence.md"
             evidence.write_text("synthetic safe evidence\n", encoding="utf-8")
             calls_file = tmp_path / "gh-calls.jsonl"
+            bodies_dir = tmp_path / "bodies"
+            bodies_dir.mkdir()
             summary = tmp_path / "summary.md"
             summary.touch()
             env = os.environ.copy()
@@ -448,8 +783,12 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
                     "PATH": f"{fake_bin}{os.pathsep}{env.get('PATH', '')}",
                     "GH_TEST_CALLS": str(calls_file),
                     "GH_TEST_CANDIDATES": json.dumps(candidates or []),
-                    "GH_TEST_FAIL_COMMENT": "1" if fail_comment else "0",
                     "GH_TEST_FAIL_LIST": "1" if fail_list else "0",
+                    "GH_TEST_STICKY_ID": sticky_id,
+                    "GH_TEST_FIND_FAIL": "1" if find_fail else "0",
+                    "GH_TEST_EDIT_FAIL": "1" if edit_fail else "0",
+                    "GH_TEST_CREATE_FAIL": "1" if create_fail else "0",
+                    "GH_TEST_COMMENT_COUNT": comment_count,
                     "GITHUB_EVENT_NAME": event,
                     "GITHUB_REPOSITORY": "bia2on2on/doctor",
                     "GITHUB_REPOSITORY_OWNER": "bia2on2on",
@@ -469,14 +808,104 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
             calls = [json.loads(line) for line in calls_file.read_text().splitlines()] if calls_file.exists() else []
             return result, calls, summary.read_text(encoding="utf-8")
 
+    @staticmethod
+    def body_of(call):
+        if "--body-file" in call:
+            return call[call.index("--body-file") + 1]
+        if "-F" in call:
+            return call[call.index("-F") + 1]
+        return ""
+
     def test_pull_request_uses_event_number_not_merge_ref_lookup(self):
         result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][:6], ["pr", "comment", "269", "--repo", "bia2on2on/doctor", "--body-file"])
-        self.assertTrue(Path(calls[0][6]).is_absolute())
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0][:2], ["api", "--paginate"])
+        self.assertIn("repos/bia2on2on/doctor/issues/269/comments?per_page=100", " ".join(calls[0]))
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
         self.assertFalse(any(call[:2] == ["pr", "list"] for call in calls))
         self.assertEqual(summary, "")
+
+    def test_an_existing_sticky_comment_is_updated_in_place(self):
+        """A sticky comment, not an append: PR #282 hit GitHub's 2,500 ceiling."""
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2, "editing in place must not also create a comment")
+        self.assertEqual(calls[1][:3], ["api", "--method", "PATCH"])
+        self.assertIn("repos/bia2on2on/doctor/issues/comments/4242", " ".join(calls[1]))
+        self.assertTrue(self.body_of(calls[1]).startswith("body=@"))
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#comment:4242", result.stdout)
+        self.assertEqual(summary, "")
+
+    def test_the_published_body_carries_the_marker_and_the_evidence(self):
+        result, calls, _ = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        body_path = self.body_of(calls[1]).split("@", 1)[1]
+
+        body = (Path(body_path).parent / "published-body.md").read_text(encoding="utf-8")
+        self.assertTrue(body.startswith("<!-- cpms:evidence-sticky"))
+        self.assertIn("synthetic safe evidence", body)
+        self.assertIn("issues/comments/4242", " ".join(calls[1]))
+        # The marker is what makes the comment findable on the next run.
+        self.assertIn("cpms:evidence-sticky", calls[0][calls[0].index("--jq") + 1])
+
+    def test_first_run_creates_the_sticky_exactly_once(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[1][:3], ["api", "--method", "POST"])
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#comment (created)", result.stdout)
+
+    def test_a_failed_in_place_update_falls_back_to_creating_one(self):
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", sticky_id="4242", edit_fail=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(calls[2][:3], ["api", "--method", "POST"])
+        self.assertIn("EVIDENCE_COMMENT_UPDATE", result.stderr)
+        self.assertEqual(summary, "")
+
+    def test_comment_ceiling_is_reported_explicitly_and_keeps_evidence(self):
+        """The ceiling is not a product defect, and it is never silent.
+
+        Both write paths are unavailable, so the evidence goes to the durable run
+        summary and the condition is annotated; the step does not pretend the PR
+        comment was published.
+        """
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", create_fail=True, comment_count="2500"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("repos/bia2on2on/doctor/issues/269", " ".join(calls[-1]))
+        self.assertIn(".comments", " ".join(calls[-1]))
+        self.assertIn("synthetic safe evidence", summary)
+        self.assertIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("2500", result.stderr)
+        self.assertIn("PR_EVIDENCE_PUBLICATION=evidence#run-summary", result.stdout)
+        self.assertNotIn("#comment", result.stdout)
+
+    def test_a_publication_failure_below_the_ceiling_is_a_hard_failure(self):
+        """Never turn a genuine publication failure into a green step."""
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", create_fail=True, comment_count="17"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("::error::Required evidence comment to PR", result.stderr)
+        self.assertIn("synthetic safe evidence", summary)
+        self.assertIn("durable copy", summary)
+
+    def test_a_failed_lookup_is_announced_and_still_classified_honestly(self):
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", find_fail=True, create_fail=True, comment_count="17"
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("EVIDENCE_COMMENT_LOOKUP", result.stderr)
+        self.assertIn("::error::Required evidence comment to PR", result.stderr)
 
     def test_main_push_schedule_and_main_dispatch_use_summary_not_an_inferred_pr(self):
         for event in ("push", "schedule", "workflow_dispatch"):
@@ -498,7 +927,8 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(calls[0][:2], ["pr", "list"])
         self.assertIn("--head", calls[0])
         self.assertEqual(calls[0][calls[0].index("--head") + 1], "arena/topic")
-        self.assertEqual(calls[1][:3], ["pr", "comment", "269"])
+        self.assertEqual(calls[1][:1], ["api"])
+        self.assertIn("issues/269/comments", " ".join(calls[1]))
         self.assertEqual(summary, "")
 
     def test_unrelated_or_ambiguous_pr_is_never_commented(self):
@@ -522,13 +952,6 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1)
 
-    def test_required_pr_comment_failure_is_nonzero_and_evidence_remains_in_summary(self):
-        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", fail_comment=True)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(calls[0][:3], ["pr", "comment", "269"])
-        self.assertEqual(summary, "synthetic safe evidence\n")
-        self.assertIn("Required evidence comment to PR #269 failed", result.stderr)
-
     def test_manual_target_lookup_failure_is_not_silenced(self):
         result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", fail_list=True)
         self.assertNotEqual(result.returncode, 0)
@@ -543,6 +966,148 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls, [])
         self.assertEqual(summary, "")
+
+
+class CompanionCompatibilityGateContractTests(unittest.TestCase):
+    """The demo-coverage gate must be a REQUIRED, fail-closed check.
+
+    The defect these tests pin: the `--gate all` step carried
+    `continue-on-error: true` and a shell `|| true`, so a declared demo GAP - the
+    exact state `compatibility_complete=false` describes - left the required pull
+    request check green. A release could then ship from an incomplete companion
+    while every check looked healthy.
+    """
+
+    FILE = "companion-compat.yml"
+
+    def step_containing(self, text: str, needle: str) -> str:
+        """Return the YAML step block that contains `needle`."""
+        lines = text.splitlines()
+        start = None
+        for index, line in enumerate(lines):
+            if needle in line:
+                start = index
+                break
+        self.assertIsNotNone(start, f"no step contains {needle!r}")
+        begin = start
+        while begin > 0 and not lines[begin].lstrip().startswith("- name:"):
+            begin -= 1
+        end = start + 1
+        while end < len(lines):
+            stripped = lines[end]
+            if stripped.lstrip().startswith("- name:") or (
+                stripped.strip() and not stripped.startswith(" " * 7) and not stripped.startswith(" " * 6)
+            ):
+                break
+            end += 1
+        return "\n".join(lines[begin:end])
+
+    def test_demo_coverage_step_cannot_be_ignored(self):
+        text = workflow(self.FILE)
+        self.assertNotRegex(
+            text,
+            r"(?m)^\s*continue-on-error:\s*true\s*$",
+            "a required gate must not be allowed to fail quietly",
+        )
+        block = self.step_containing(text, "--gate all")
+        self.assertNotIn("|| true", block, block)
+        self.assertIn("status=$?", block, block)  # the code is captured, then re-raised below
+        self.assertIn('if [ "$status" -ne 0 ]', block, block)
+        self.assertIn('exit "$status"', block, block)
+        self.assertIn("::error title=COMPANION_COMPAT", block, block)
+
+    def test_gate_all_step_rechecks_the_report_itself(self):
+        """Defence in depth: even a regressed exit code cannot turn a GAP green."""
+        block = self.step_containing(workflow(self.FILE), "--gate all")
+        self.assertIn("report['counts']['blocker']", block, block)
+        self.assertIn("report['counts']['gap']", block, block)
+        self.assertIn("compatibility_complete", block, block)
+        self.assertIn("sys.exit(1)", block, block)
+
+    def test_manifest_sync_check_is_not_swallowed(self):
+        text = workflow(self.FILE)
+        block = self.step_containing(text, "generate.py --root . --check")
+        self.assertNotIn("|| true", block, block)
+        self.assertIn("--check", block, block)
+
+    def test_the_gate_command_fails_on_an_injected_gap(self):
+        """Executable negative contract: the gate the workflow runs fails on a GAP.
+
+        A temporary root is assembled by symlinking the real sources and copying
+        the manifest with one demo-required feature stripped of its journeys. The
+        same evaluator the workflow calls must then exit non-zero for `--gate all`
+        while `--gate compatibility` still passes - so the failure really is the
+        demo-coverage gap, not a broken tree.
+        """
+        evaluator = ROOT / ".github" / "scripts" / "companion-compat" / "evaluate.py"
+        manifest_path = ROOT / "tools" / "disposable-demo-installer" / "compatibility.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        feature = next(f for f in manifest["features"] if f.get("journeys"))
+        stripped = dict(feature)
+        stripped["journeys"] = []
+        manifest["features"] = [stripped if f is feature else f for f in manifest["features"]]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "repo"
+            root.mkdir()
+            # The heavy production tree is only READ, so it is symlinked; the
+            # companion tree is copied so its manifest can be mutated.
+            for name in ("clinic-practice-management", ".github", "tests", "docs"):
+                target = ROOT / name
+                if target.exists():
+                    os.symlink(target, root / name)
+            shutil.copytree(ROOT / "tools", root / "tools", symlinks=False)
+            (root / "tools" / "disposable-demo-installer" / "compatibility.json").write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+            )
+
+            report = Path(tmp) / "report.json"
+            all_result = subprocess.run(
+                [sys.executable, str(evaluator), "--root", str(root), "--gate", "all", "--report", str(report)],
+                capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(1, all_result.returncode, all_result.stdout + all_result.stderr)
+            self.assertRegex(all_result.stdout, r"compatibility_complete: (false|False)")
+            data = json.loads(report.read_text(encoding="utf-8"))
+            self.assertFalse(data["compatibility_complete"])
+            self.assertGreaterEqual(data["counts"]["gap"], 1)
+            compat = subprocess.run(
+                [sys.executable, str(evaluator), "--root", str(root), "--gate", "compatibility", "--quiet"],
+                capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual(0, compat.returncode, compat.stdout + compat.stderr)
+
+    def test_the_standalone_artifact_is_rebuilt_when_its_embedded_source_changes(self):
+        # The standalone ZIP embeds clinic-practice-management/ at build time. A
+        # production change therefore changes the artifact, and a lane that does
+        # not trigger on it would certify a package it never rebuilt.
+        for filename in ("standalone-demo.yml", "scoped-demo.yml"):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+                blocks = {}
+                for chunk in re.split(r"(?m)^(?=  [a-z_]+:)", events):
+                    head = chunk.split(":", 1)[0].strip()
+                    if head:
+                        blocks[head] = chunk
+                for trigger in ("pull_request", "push"):
+                    self.assertIn(trigger, blocks)
+                    self.assertIn("      - 'clinic-practice-management/**'", blocks[trigger], trigger)
+                    self.assertIn("      - 'tools/disposable-demo-installer/**'", blocks[trigger], trigger)
+                # The build really does assemble the core from that source.
+                build = (ROOT / "bin" / "build-demo-installer.sh").read_text(encoding="utf-8")
+                self.assertIn("clinic-practice-management", build)
+                self.assertIn("core", build)
+
+    def test_auto_sync_opens_a_reviewable_pr_and_never_merges(self):
+        text = workflow("companion-sync.yml")
+        self.assertIn("gh pr create", text)
+        for forbidden in ("gh pr merge", "--auto", "--admin", "git tag", "gh release create"):
+            self.assertNotIn(forbidden, text, forbidden)
+        self.assertIn("not** auto-merged", text)
+        events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertNotIn("pull_request_target", events)
+        self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
 if __name__ == "__main__":

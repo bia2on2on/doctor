@@ -305,7 +305,7 @@ jobs:
             if [ -f "$EVIDF" ]; then tail -n 100 "$EVIDF"; else echo '(job failed before evidence)'; fi
             echo '```'
           } > /tmp/closure-comment.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md "closure-runtime-php"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -547,7 +547,7 @@ jobs:
             done
             echo '```'
           } > /tmp/closure-comment.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/closure-comment.md "closure-restore-apply"
 
       - uses: actions/upload-artifact@v4
         if: always()

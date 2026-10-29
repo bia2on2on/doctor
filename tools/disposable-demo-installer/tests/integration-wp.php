@@ -7,7 +7,7 @@
  *     --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER"
  *
  * It exercises the *shipping* code paths end to end: preflight, provisioning
- * through production services, six persona logins, the public booking page and
+ * through production services, one login per persona, the public booking page and
  * shortcode, the real OTP request/verify cycle with the demo code, and the
  * ownership-proofed teardown. It prints evidence only — never credentials,
  * codes, peppers or session data.
@@ -50,7 +50,7 @@ $admin_id = get_current_user_id();
 
 cpdd_assert( $admin_id > 0 && user_can( $admin_id, 'manage_options' ), 'administrator session with manage_options' );
 cpdd_assert( class_exists( App::class ), 'CPMS Classic is active in the same request' );
-cpdd_assert( '2026_10_18_0029' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
+cpdd_assert( '2026_10_27_0030' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
 
 // --- 1. Preflight ----------------------------------------------------------
 $preflight = new Preflight( $env, $platform, $manifest );
@@ -71,7 +71,7 @@ $fixture     = $result['manifest'];
 $passwords   = $result['credentials'];
 
 cpdd_assert( 'active' === $fixture['status'], 'fixture sealed as active' );
-cpdd_assert( 6 === count( $fixture['ids']['user_ids'] ), 'six persona accounts created' );
+cpdd_assert( count( \CpmsDemo\Credentials::PERSONA_ORDER ) === count( $fixture['ids']['user_ids'] ), 'one account per persona created' );
 cpdd_assert( 2 === count( $fixture['ids']['location_ids'] ), 'two locations created' );
 cpdd_assert( count( $fixture['ids']['slot_ids'] ) >= 6, 'at least six future public-booking slots' );
 cpdd_assert( isset( $fixture['ids']['visit_id'], $fixture['ids']['invoice_id'], $fixture['ids']['payment_id'], $fixture['ids']['follow_up_id'], $fixture['ids']['prescription_id'] ), 'visit, invoice, payment, prescription and follow-up recorded' );
@@ -80,7 +80,7 @@ $clinic_id = (int) $fixture['ids']['clinic_id'];
 $doctor_id = (int) $fixture['ids']['clinician_id'];
 $mobile    = (string) $fixture['patient_mobile'];
 
-// --- 3. Six independent logins -------------------------------------------
+// --- 3. Independent logins ------------------------------------------------
 foreach ( $passwords as $persona => $password ) {
 	$login = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
 	$user  = wp_authenticate( $login, $password );
@@ -341,7 +341,7 @@ try {
 // --- 5a. S-6 Rotation + S-1 Safe Uninstall while active -------------------
 $rotator           = new Credentials( $env );
 $rotated_Following = $rotator->rotate( $fixture );
-cpdd_assert( 6 === count( $rotated_Following ), 's6: rotation produces six fresh persona secrets' );
+cpdd_assert( count( \CpmsDemo\Credentials::PERSONA_ORDER ) === count( $rotated_Following ), 's6: rotation produces fresh secrets for every persona' );
 foreach ( $rotated_Following as $persona => $new_secret ) {
 	$login    = 'cpdd-' . $persona . '-' . $fixture['fixture_id'];
 	$old_user = wp_authenticate( $login, $passwords[ $persona ] );
@@ -369,7 +369,7 @@ cpdd_assert( str_contains( $admin_html, 'دستورالعمل فارسی' ), 'ad
 cpdd_assert( str_contains( $admin_html, 'ROTATE_DEMO_PASSWORDS' ) && str_contains( $admin_html, 'DESTROY_DEMO_DATA_ONLY' ), 'admin page renders confirmation-phrase forms' );
 $links_map         = (array) ( $fixture['links'] ?? array() );
 $all_links_present = true;
-foreach ( array( 'booking', 'patient', 'management', 'doctor', 'receptionist', 'accountant' ) as $link_key ) {
+foreach ( array( 'booking', 'patient', 'management', 'doctor', 'receptionist', 'accountant', 'messages', 'pricing' ) as $link_key ) {
 	$target_href = (string) ( $links_map[ $link_key ] ?? '' );
 	if ( '' === $target_href || ! str_contains( $admin_html, esc_url( $target_href ) ) ) {
 		$all_links_present = false;
@@ -385,6 +385,25 @@ foreach ( $passwords as $pw ) {
 	}
 }
 cpdd_assert( ! $leaked_pw, 'subsequent admin page render omits one-time persona secrets' );
+
+// --- 5b. Iran V1 (schema 0030) demo-required features, on the live fixture --
+// The suite lives beside this harness in the repository checkout. It is NOT
+// part of the installable companion ZIP, so CPMS_DEMO_DIR (the installed plugin
+// directory) does not contain it: __DIR__ is the only path that is correct in
+// both places.
+$feature_file     = __DIR__ . '/features-messaging-pricing.php';
+$feature_evidence = array();
+cpdd_assert( is_file( $feature_file ), 'iran-v1 feature suite is present beside the integration harness' );
+require_once $feature_file;
+try {
+	$feature_evidence = cpdd_feature_suite( $platform, $fixture, 'strict' );
+	foreach ( (array) ( $feature_evidence['lines'] ?? array() ) as $feature_line ) {
+		echo (string) $feature_line . PHP_EOL;
+	}
+	cpdd_assert( true, 'iran-v1 feature suite passed on real MySQL (messaging privacy + visit pricing)' );
+} catch ( \Throwable $feature_error ) {
+	cpdd_assert( false, 'iran-v1 feature suite: ' . $feature_error->getMessage() );
+}
 
 // --- 6. Ownership-proofed teardown (+ S-2 fault injection & recovery) ----
 $teardown = new Teardown( $env, $platform, $manifest );
