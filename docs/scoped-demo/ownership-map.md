@@ -394,3 +394,25 @@ now pins both entry points on the real database with the real tampered payload.
   ledgers all refuse with `SCOPED_OWNERSHIP_LEDGER_INVALID` and zero deletions; an
   exact restore proceeds and the teardown completes. A clean teardown discards the
   ledger; a *repeated* teardown of an already-removed fixture does not require it.
+
+## Mission H — the standalone build does not weaken any of this
+
+The standalone package is the **same** demo source plus the real production core assembled
+into `core/` at build time. Ownership, attribution, the ledger and the teardown code are
+byte-identical between the two builds; only the bootstrap differs (`CpmsDemo\Standalone`
+boots the embedded core once, refuses a foreign core instead of redeclaring classes, and
+keeps the production update channel away from it). Nothing in the standalone path invents a
+second tenancy authority: the embedded core *is* production CPMS at the same revision.
+
+Two observations worth recording, because both were real defects found by the new lane:
+
+* **"A core is loaded" is not "another core is loaded".** WordPress includes an inactive
+  plugin's file to activate it, and the embedded core is loaded by then. The conflict
+  discriminator therefore resolves *where* `ClinicCore\Bootstrap\App` came from
+  (`ReflectionClass::getFileName()` vs `realpath( core/… )`). Without that, the standalone
+  build could not be activated at all — it read itself as a conflict.
+* **Ownership is unchanged by packaging.** The single artefact carries both the demo's
+  ownership ledger and the real core, and the teardown's refusals (`SCOPED_FOREIGN_TENANT_ROW`,
+  `SCOPED_OWNERSHIP_LEDGER_INVALID`, `SCOPED_FOREIGN_TENANT_CLINIC`, `MANIFEST_TAMPERED`)
+  behave identically. Verify it by reading `tools/disposable-demo-installer/includes/`
+  inside the ZIP: it is the same 28 files that the companion build ships.

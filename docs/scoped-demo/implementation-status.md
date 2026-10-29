@@ -1,6 +1,6 @@
 # Scoped demo — implementation status
 
-**Branch:** `arena/3c5e41b4-doctor` (Arena-fixed; no second branch was created).
+**Branch:** `arena/19f8e063-doctor` (Arena-fixed; no second branch was created).
 **Main merged forward:** `7dcfbbc6613f1ee29c06f270f69a01bb896d8cd8` via normal merge commit `e870023d…`, preserving preparation commit `5e951c837cbd195d483395cc6944211b9d038293`.
 **Status:** implementation complete, plus three runtime-hardening tasks requested before the PR leaves draft: (1) tampered-manifest rejection proven at every entry point including the real admin page, (2) idempotent teardown proven across three consecutive runs with a row-level proof that pre-existing host rows are byte-identical, and (3) a real OTP-bound patient identity in the browser with a captured write and its idempotent replay. See *Stage 4* below for the before/after of each one. The exact head, the per-check counts and the job links for this work are recorded in PR #277 and in the *Exact-head CI evidence* section; nothing here is claimed for a head that has not been green. The items listed under *Remaining risks* remain NOT RUN.
 
@@ -222,3 +222,75 @@ Also green on the same head: `Integration (WP 7.1 + MySQL 8)`. Still running at 
 - The post-merge `Responsive smoke` failure on `main` remains a separate harness issue; it may cause unrelated required checks to fail on this PR even if scoped-demo checks pass.
 - Universal hosting compatibility is not claimed. The conservative preflight refuses multisite, persistent object cache, schema drift, unknown CPMS tables with data, dev OTP echo, and a busy queue runner.
 - Local `php-wasm` checks are syntax/unit evidence only, not real MySQL/MariaDB/WordPress/Chromium evidence.
+
+## Mission H — the standalone package (independently installable)
+
+**What changed.** The demo used to be a *companion*: a `Requires Plugins:` header plus an
+activation guard meant WordPress refused to activate it unless the production plugin was
+already installed and active. The Product Owner evaluates the product on their own
+non-empty test site and does not want to install production CPMS to do it, so the demo is
+now built in two modes from the **same source tree** by one script:
+
+* `bin/build-demo-installer.sh` (default, or `--standalone`) assembles the real production
+  source — `clinic-practice-management.php`, `src/`, `templates/`, `assets/` at the current
+  revision — into `core/` **at build time**. Nothing is copied into the repository, so the
+  production source stays single and reviewable. Result: `cpms-disposable-demo-1.0.0.zip`,
+  **1,617,100 bytes**, 358 entries, one top-level directory, exactly one plugin header, no
+  `vendor/`, no `tests|docs|.github|bin|node_modules|phpunit|composer.*|*.dist`, and no
+  `uninstall.php` from the core. Two builds of the same revision are byte-identical.
+* `--companion` builds the previous artefact (`cpms-disposable-demo-companion-1.0.0.zip`)
+  with no `core/`, for sites that do have production CPMS.
+
+**Bootstrap (`CpmsDemo\Standalone`).** The embedded `core/` sits two levels below
+`wp-content/plugins`, where WordPress's plugin scanner never sees it, so the core's own
+activation hook cannot fire and its classes cannot be loaded twice by accident. The demo
+boots it once, explicitly, from its own entry file and calls `App::activate( false )` once.
+Boot happens only when no *foreign* CPMS is present; "foreign" is decided by **where the
+loaded class came from** (`ReflectionClass::getFileName()`, compared by `realpath()` against
+`core/`), not by the mere existence of a core class — a package that asked only
+"is a core loaded?" refused to activate itself, which the first standalone lane caught.
+A conflict is a Persian fault with no fatal: `embedded_conflict_production_active`,
+`embedded_conflict_core_loaded`, `embedded_core_unreadable`, `companion_missing_production`.
+The production update channel cannot replace the embedded copy: the slug is stripped from
+`pre_set_site_transient_update_plugins`, `plugins_api` answers with
+`WP_Error CPMS_DEMO_EMBEDDED_CORE`, and `auto_update_plugin` is false.
+
+**Nothing about a non-empty site became a requirement.** Activation no longer probes the
+site for emptiness; the demo provisions only its own sealed tenant, and the preflight asks
+the production services what they can prove instead of assuming an empty installation.
+
+**Measured lane (`standalone-demo.yml`, MySQL 8 + MariaDB 11.4.13).** A clean WordPress with
+**no production CPMS anywhere** installs only the standalone ZIP, then: the embedded core
+reports a real `CPMS_VERSION` and a real migration head; a genuinely non-empty site is
+seeded (two real users, a page, a post, a comment, an attachment, a third-party plugin) and
+digested byte-for-byte; the scoped demo is provisioned through the production services and
+left **live**; the digest is re-checked with the demo active; the plugin is deactivated and
+deleted and the digest is re-checked again, with every `cpms_*` table still present and the
+synthetic accounts left in place (harmless rows over risky deletion); then production CPMS
+is installed **alongside** the standalone build and the conflict is proven to be a Persian
+refusal with no fatal and no second core boot; finally the production plugin is removed and
+the standalone build proves it still boots. The driver never exits non-zero itself — it
+prints one JSON line per mode, and the lane annotates the failing check by name.
+
+## Disposition of the independent review's findings
+
+| Finding | Disposition |
+| --- | --- |
+| **P0** sealed ids were untyped, so an auto-increment value could be read as an id in another table | **Fixed.** `SEALED_KEY_TABLES` binds each sealed key to exactly one table; a lookup is `(table, id)` or nothing. |
+| **P0** ownership-ledger rows were registered before the actor was known, so registration silently never happened | **Fixed.** `ScopedTenantGuard::begin_request()` is idempotent and is invoked from `init@0`, `admin_init@0`, `admin_post@1`, `rest_pre_dispatch@10/3` and `shutdown@0`; the snapshot is taken after authentication, and `guard_rest_request()` re-snapshots post-auth. |
+| **P1** transitive attribution (`@recipient` and the implicit `@tenant` default) could claim rows nothing proved | **Fixed.** `@recipient` returns `false`; the default is `@none` (refuse). 17 child tables have explicit `PARENT_RULES`, 9 configuration tables are allowlisted as `CONFIGURATION_TABLES`, and every other table must carry a positive claim. |
+| **P1** incomplete demo-tenant write barriers | **Narrowed and stated.** Production CPMS exposes exactly two write surfaces — 137 `register_rest_route()` calls and 50 `admin_post_*` handlers, with **no** `wp_ajax_*` action and no XML-RPC method — and the guard covers both plus admin screens. A write that bypasses both (direct service call, WP-CLI, another plugin) is not blocked by the barrier; it is caught later by attribution, which refuses the whole teardown with `SCOPED_FOREIGN_TENANT_ROW` rather than deleting a row it cannot prove. The barrier makes `@tenant` a positive claim; the attribution gate is what protects the site if the barrier is bypassed. |
+| **P2** a corrupt manifest could make the guard stand down (or, before that, fatal on every POST) | **Fixed in Stage 4** and pinned by `tests/scoped-demo/tamper-manifest.php`: `verified_manifest()` returns `null` for an unverifiable payload, marker, status or empty fixture id; nothing new becomes deletable and the teardown refuses to run. |
+| **P2** interrupted provisioning | **Fixed in Stage 3/Stage 4.** The pending baseline and the sealed `intent` records are written before the first row exists and are repaired through `ScopedClinics::resolve()`; drills interrupt both provisioning and teardown at named stages. |
+| **P3** a synthetic actor could be attributed a real administrator's membership | **Fixed.** `OPERATOR_GRANT_TABLES` + `operator_grant_is_bounded()`: a membership row is deleted only when it names the demo Organization/Clinic **and** the sealed operator, both re-proved at teardown; otherwise it refuses. |
+
+## Defects this mission fixed in its own work
+
+* The package refused to activate itself, because `evaluate()` ran again after
+  `boot_core()` and saw its own core as a conflict. `another_core_is_loaded()` now
+  discriminates by file path, and a booted request is recorded as the owner.
+* `Standalone::core_available()` read `active_plugins` behind the environment
+  abstraction's back; it now takes the list the environment already exposes, so the
+  companion rule stays testable and the embedded rule stays build-based.
+* The reproducibility contract compared its second build against whatever older archive
+  happened to sit in `/tmp`; it now hashes the archive that build actually produced.
