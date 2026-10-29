@@ -96,6 +96,14 @@ def check(name: str, ok: bool, detail: str = "") -> None:
     suffix = f" — {safe_detail}" if safe_detail else ""
     print(f"{prefix}{name}{suffix}", flush=True)
     if not ok:
+        # Job logs are not readable in every review environment; a failed check
+        # must be visible as an annotation naming the check, not as "exit 1".
+        print(
+            f"::error title=CPDD_BROWSER_CHECK::stage={STATE['stage']} {name} — {safe_detail}".replace(
+                "\r", " "
+            ).replace("\n", " "),
+            flush=True,
+        )
         raise RuntimeError(f"Check failed: {name} ({safe_detail})")
 
 
@@ -1537,5 +1545,12 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        print(f"ERROR: {type(exc).__name__}: {str(exc)[:400]}", flush=True)
+        message = f"{type(exc).__name__}: {str(exc)[:400]}"
+        print(f"ERROR: {message}", flush=True)
+        print(
+            f"::error title=CPDD_BROWSER::stage={STATE['stage']} {message}".replace("\r", " ").replace(
+                "\n", " "
+            ),
+            flush=True,
+        )
         sys.exit(1)

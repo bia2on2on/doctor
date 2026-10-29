@@ -207,8 +207,34 @@ jobs:
       - name: Install ONLY the standalone demo package from a real ZIP
         run: |
           set -Eeuo pipefail
-          OUT_DIR=/tmp/cpsa-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpsa-ci/build.log
-          wp plugin install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          if ! OUT_DIR=/tmp/cpsa-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" > /tmp/cpsa-ci/build.log 2>&1; then
+            echo "::error title=CPSA_BUILD::$(tail -4 /tmp/cpsa-ci/build.log | tr '\n' ' ' | sed 's/%/%25/g')"
+            exit 1
+          fi
+          tail -3 /tmp/cpsa-ci/build.log
+          # Diagnostic surface: job logs are not readable in every review
+          # environment, so a failed install/activation becomes an annotation
+          # carrying the real WP-CLI error and the PHP error log tail.
+          cpsa_fail() {
+            local title="$1" detail="$2"
+            printf '%s\n' "$detail" | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
+              echo "::error title=${title}::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
+            done
+            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
+              grep -E 'PHP Fatal|PHP Parse|Uncaught|critical error' "$WP_DIR/wp-content/debug.log" \
+                | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
+                  echo "::error title=${title}_PHPLOG::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
+                done
+            fi
+          }
+          if ! INSTALL_OUT="$(wp plugin install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip --path="$WP_DIR" --allow-root 2>&1)"; then
+            cpsa_fail CPSA_INSTALL "$INSTALL_OUT"; exit 1
+          fi
+          printf '%s\n' "$INSTALL_OUT"
+          if ! ACTIVATE_OUT="$(wp plugin activate cpms-disposable-demo --path="$WP_DIR" --allow-root 2>&1)"; then
+            cpsa_fail CPSA_ACTIVATE "$ACTIVATE_OUT"; exit 1
+          fi
+          printf '%s\n' "$ACTIVATE_OUT"
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
           # The production plugin is absent, and must stay absent.
           if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
