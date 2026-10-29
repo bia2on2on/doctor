@@ -796,3 +796,66 @@ class DefectKLedgerRecovery(unittest.TestCase):
         self.assertIn("$cpms_demo_scoped_seal     = get_option( 'cpsd_ownership_seal', null );", uninstall)
         self.assertIn("delete_option( 'cpsd_ownership_ledger' );", uninstall)
         self.assertIn("delete_option( 'cpsd_ownership_seal' );", uninstall)
+
+
+class DefectMMembershipRegistrationCannotOutrankThePrincipal(unittest.TestCase):
+    """M: an explicit ledger registration is evidence about a ROW, not a PERSON.
+
+    The defect this pins: `operator_grant_is_bounded()` returned ownership for a
+    registered membership BEFORE it looked at `wp_user_id`, so sealing a grant
+    into the ledger made a real person's membership deletable. Registration must
+    never outrank the only column that says who holds the grant.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        start = cls.source.index("private function operator_grant_is_bounded(")
+        cls.method = cls.source[start : cls.source.index("\n\t}\n", start)]
+
+    def test_no_ownership_is_granted_before_the_principal_is_decided(self) -> None:
+        principal = self.method.index("$principal_is_synthetic = in_array(")
+        self.assertNotIn(
+            "return true;",
+            self.method[:principal],
+            "nothing may grant ownership before the principal is established",
+        )
+
+    def test_no_early_success_on_registration(self) -> None:
+        registration = self.method.index("$registered")
+        first_return_true = self.method.find("return true;")
+        between = self.method[registration:first_return_true]
+        self.assertNotIn(
+            "if ( $registered ) {\n\t\t\treturn true;",
+            between,
+            "a registered grant must still be checked against its principal and references",
+        )
+        # The only `registered` uses that may grant ownership are the explicit,
+        # bounded operator branch and nothing else.
+        self.assertEqual(
+            self.method.count("$registered ) {\n\t\t\treturn true;"),
+            0,
+            "registration alone never returns ownership",
+        )
+
+    def test_a_foreign_principal_is_refused_before_registration_is_considered(self) -> None:
+        principal_check = self.method.index("if ( ! $principal_is_synthetic && ! $principal_is_operator ) {")
+        self.assertIn("return false;", self.method[principal_check : principal_check + 200])
+        self.assertLess(
+            principal_check,
+            self.method.index("if ( $principal_is_operator && ! $registered ) {"),
+            "a real, non-operator principal must be refused before the operator exception",
+        )
+
+    def test_the_operator_grant_requires_explicit_registration(self) -> None:
+        self.assertIn("if ( $principal_is_operator && ! $registered ) {", self.method)
+        self.assertIn("return false;", self.method)
+
+    def test_every_other_user_reference_is_still_bounded(self) -> None:
+        self.assertIn("foreach ( self::USER_REFERENCE_COLUMNS as $column ) {", self.method)
+        self.assertIn("'wp_user_id' === $column", self.method)
+
+    def test_the_drill_proves_the_registered_foreign_grant_is_refused(self) -> None:
+        drill = read(ROOT / "tests" / "scoped-demo" / "teardown-safety.php")
+        self.assertIn("B2: a REGISTERED grant to a real person is still REFUSED", drill)
+        self.assertIn("register_rows(", drill)

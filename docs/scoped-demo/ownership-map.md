@@ -314,6 +314,17 @@ sealed `rows` record. Two producers:
    `shutdown`, sealing exactly the rows that appeared. The teardown therefore never
    has to guess what a demo persona created.
 
+**A registration is evidence about a ROW, never about a PERSON.** The one family
+that can name a real person — `cpms_clinic_memberships` and
+`cpms_organization_memberships` — is decided by `operator_grant_is_bounded()`,
+which resolves the grant's own `wp_user_id` **before** it looks at any
+registration. Acceptable principals are exactly two: a synthetic fixture account,
+or the sealed operator (`manifest.admin_id`). The operator's grant is the single
+exception and it exists only as an EXPLICIT, sealed registration bounded to a
+verified demo tenant; every other user-reference column on the row must still be
+bounded. A registered grant whose principal is any other real person is refused —
+sealing it in the ledger cannot make it deletable (`SCOPED_FOREIGN_TENANT_ROW`).
+
 ### Server-side tenant write barrier (Stage 2)
 
 While a fixture is active, `ScopedTenantGuard` refuses a state-changing REST

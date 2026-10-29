@@ -70,14 +70,57 @@ append_to_summary() {
   cat "$EVIDENCE" >> "$GITHUB_STEP_SUMMARY"
 }
 
+# GitHub caps the number of comments on one issue/PR (2,500). A publisher that
+# always creates a comment therefore stops working *permanently* on a long-lived
+# pull request - which is a silent loss of evidence exactly where the most
+# evidence exists. The body carries a marker so the automation can recognise its
+# own comment, and publication EDITS that comment in place instead of appending.
+# History is not deleted: every run's full evidence is also in its own, immutable
+# run summary and its uploaded artifacts.
+STICKY_MARKER='<!-- cpms:evidence-sticky -->'
+
 if [[ -n "$PR_NUMBER" ]]; then
-  if ! gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body-file "$EVIDENCE"; then
-    # Preserve a run-visible copy, but fail the step so required PR publication
-    # failures cannot be mistaken for successful evidence publication.
-    append_to_summary
-    echo "::error::Required evidence comment to PR #$PR_NUMBER failed" >&2
-    exit 1
+  STICKY_BODY=$(mktemp)
+  trap 'rm -f "$STICKY_BODY"' EXIT
+  {
+    printf '%s\n' "$STICKY_MARKER"
+    printf '**Rolling evidence** - workflow `%s`, run [%s](%s/%s/actions/runs/%s), head `%s` (%s).\n\n' \
+      "${GITHUB_WORKFLOW:-workflow}" \
+      "${GITHUB_RUN_ID:-local}" "${GITHUB_SERVER_URL:-https://github.com}" "$REPOSITORY" "${GITHUB_RUN_ID:-0}" \
+      "${GITHUB_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    cat "$EVIDENCE"
+    printf '\n_This comment is updated in place; older evidence remains in each run summary._\n'
+  } > "$STICKY_BODY"
+
+  EDIT_ERR=$(mktemp)
+  CREATE_ERR=$(mktemp)
+  trap 'rm -f "$STICKY_BODY" "$EDIT_ERR" "$CREATE_ERR"' EXIT
+  # 1. Preferred: replace the automation's own last comment (no count growth).
+  if gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --edit-last --body-file "$STICKY_BODY" >"$EDIT_ERR" 2>&1; then
+    echo "PR_EVIDENCE_PUBLICATION=pr-comment (updated in place)"
+    exit 0
   fi
+  # 2. Nothing editable yet (first run by this token): create the sticky once.
+  if gh pr comment "$PR_NUMBER" --repo "$REPOSITORY" --body-file "$STICKY_BODY" >"$CREATE_ERR" 2>&1; then
+    cat "$CREATE_ERR"
+    echo "PR_EVIDENCE_PUBLICATION=pr-comment (sticky created)"
+    exit 0
+  fi
+  # Both transports are already captured; show what GitHub actually said.
+  cat "$EDIT_ERR" "$CREATE_ERR" >&2
+  # 3. Classify honestly. A comment-count ceiling is NOT a product or evidence
+  #    defect: the canonical copy is the run summary, which is durable, and the
+  #    condition is annotated so it can never be mistaken for silent success.
+  if grep -qiE 'comment (limit|count)|too many comments|secondary rate limit' "$EDIT_ERR" "$CREATE_ERR" 2>/dev/null; then
+    append_to_summary
+    echo "::warning title=EVIDENCE_COMMENT_CEILING::PR #$PR_NUMBER has reached GitHub's comment ceiling; evidence was published to this run's summary and to the run artifacts only." >&2
+    echo "PR_EVIDENCE_PUBLICATION=run-summary (comment ceiling)" >&2
+    exit 0
+  fi
+  # Any other publication failure is a real failure and must not be swallowed.
+  append_to_summary
+  echo "::error::Required evidence comment to PR #$PR_NUMBER failed" >&2
+  exit 1
 else
   # Main pushes, schedules, main dispatches, and ambiguous/unmatched dispatches
   # retain evidence in the run summary; never broaden token permissions to post

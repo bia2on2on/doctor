@@ -1624,29 +1624,45 @@ class ScopedTeardown {
 				return false;
 			}
 		}
-		// 1b. An EXPLICIT, sealed registration is authoritative: the demo workflow
-		//     that wrote this grant recorded it before the row existed. It is still
-		//     bounded by the tenant check above, so a registration can never reach
-		//     outside the demo tenant. This is how the demo's own portal journey
-		//     grants a REAL administrator a role inside the demo Organization and
-		//     still cleans it up afterwards.
-		$row_id = (int) ( $row['id'] ?? 0 );
-		if ( $row_id > 0 && isset( $context['registered'][ $short ][ $row_id ] ) ) {
-			return true;
-		}
 		$users     = array_map( 'intval', (array) ( $context['users'] ?? array() ) );
 		$operators = array_map( 'intval', (array) ( $context['operators'] ?? array() ) );
-		// 2. The grant's own principal must be a synthetic fixture account. A real
-		//    person's membership is refused HERE, whatever else the row says - the
-		//    defect this replaces accepted the synthetic INVITER as evidence and
-		//    deleted a real administrator's membership.
+		$row_id    = (int) ( $row['id'] ?? 0 );
+		$registered = $row_id > 0 && isset( $context['registered'][ $short ][ $row_id ] );
+
+		// 2. THE PRINCIPAL IS CHECKED FIRST, ALWAYS - and before any registration
+		//    shortcut. A prior revision returned ownership for a registered grant
+		//    at this point, so a ledger entry made a grant whose `wp_user_id` was
+		//    a real person deletable: registration silently outranked the only
+		//    column that says WHO holds the grant. Registration is evidence that
+		//    the demo wrote a row; it is never evidence about a person.
+		//
+		//    Two principals are acceptable, and only these two:
+		//      (a) a synthetic fixture account - the demo's own persona, or
+		//      (b) the SEALED operator (the manifest's `admin_id`), whose grant
+		//          exists only so the Owner can walk the demo.
 		$principal = (int) ( $row['wp_user_id'] ?? 0 );
-		if ( $principal <= 0 || ! in_array( $principal, $users, true ) ) {
+		if ( $principal <= 0 ) {
 			return false;
 		}
-		// 3. No OTHER user reference may name a person outside the fixture. A
-		//    synthetic inviter is acceptable (it is the demo acting), a real one is
-		//    not.
+		$principal_is_synthetic = in_array( $principal, $users, true );
+		$principal_is_operator  = in_array( $principal, $operators, true );
+		if ( ! $principal_is_synthetic && ! $principal_is_operator ) {
+			// A real person who is not the sealed operator. No registration can
+			// make their membership demo-owned.
+			return false;
+		}
+		// 3. The OPERATOR's grant is the one exception, and it exists only as an
+		//    EXPLICIT, sealed registration bounded by the tenant check above. That
+		//    is how the demo's own portal journey grants the Owner a role inside
+		//    the demo Organization and still cleans it up afterwards - and why an
+		//    unregistered operator grant is refused.
+		if ( $principal_is_operator && ! $registered ) {
+			return false;
+		}
+		// 4. No OTHER user reference may name a person outside the fixture. A
+		//    synthetic inviter is acceptable (it is the demo acting); a real
+		//    inviter or creator outside the fixture is not, and it is not
+		//    sufficient evidence of ownership on its own either.
 		foreach ( self::USER_REFERENCE_COLUMNS as $column ) {
 			if ( 'wp_user_id' === $column || ! array_key_exists( $column, $row ) ) {
 				continue;

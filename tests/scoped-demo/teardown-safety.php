@@ -268,14 +268,34 @@ function cpsd_ts_plant_foreign( Platform $platform, callable $table_prefix, int 
 		$t( 'cpms_locations' ),
 		array( 'clinic_id' => $ids['clinic'], 'name' => 'شعبه غیردمو', 'slug' => $slug . '-loc', 'timezone' => 'Asia/Tehran', 'is_primary' => 1, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now )
 	);
+	// `cpms_visits.clinician_id` is NOT NULL with a foreign key to
+	// `cpms_clinicians`, so a foreign visit needs a real foreign clinician. A
+	// NULL here is rejected by the database, not by the product, and an insert
+	// failure would make every later assertion meaningless.
+	$ids['clinician'] = cpsd_ts_insert(
+		$t( 'cpms_clinicians' ),
+		array(
+			'clinic_id'  => $ids['clinic'],
+			'wp_user_id' => $overlap_user,
+			'full_name'  => 'پزشک غیردمو',
+			'specialty'  => 'general',
+			'room'       => 'F1',
+			'is_active'  => 1,
+			'created_at' => $now,
+			'updated_at' => $now,
+		)
+	);
 	$ids['patient'] = cpsd_ts_insert(
 		$t( 'cpms_patients' ),
 		array( 'clinic_id' => $ids['clinic'], 'mrn' => $slug . '-mrn', 'first_name' => 'بیمار', 'last_name' => 'غیردمو', 'mobile' => '0936' . (string) random_int( 1000000, 9999999 ), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
 	);
 	$ids['visit'] = cpsd_ts_insert(
 		$t( 'cpms_visits' ),
-		array( 'clinic_id' => $ids['clinic'], 'location_id' => $ids['location'], 'clinician_id' => null, 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
+		array( 'clinic_id' => $ids['clinic'], 'clinician_id' => $ids['clinician'], 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
 	);
+	// `cpms_invoices.visit_id` is NOT NULL and NOT NULL-declared for
+	// `issued_by_wp_user_id` as well: a foreign invoice is only a valid fixture
+	// when it names the foreign visit and a real issuer.
 	$ids['invoice'] = cpsd_ts_insert(
 		$t( 'cpms_invoices' ),
 		array( 'clinic_id' => $ids['clinic'], 'invoice_number' => 'TSINV' . strtoupper( bin2hex( random_bytes( 4 ) ) ), 'patient_id' => $ids['patient'], 'visit_id' => $ids['visit'], 'status' => 'open', 'subtotal' => 10, 'discount' => 0, 'tax' => 0, 'total' => 10, 'currency' => 'IRR', 'paid_amount' => 0, 'balance' => 10, 'issued_by_wp_user_id' => $overlap_user, 'created_at' => $now, 'updated_at' => $now )
@@ -295,6 +315,17 @@ function cpsd_ts_plant_foreign( Platform $platform, callable $table_prefix, int 
 		'updated_at' => $now,
 	);
 	$ids['membership'] = cpsd_ts_insert( $t( 'cpms_clinic_memberships' ), $membership );
+
+	// A fixture that did not really take the shape it claims is not evidence, so
+	// every relationship the attacks depend on is re-read from the database.
+	$visit = cpsd_ts_row( $t( 'cpms_visits' ), $ids['visit'] );
+	$invoice = cpsd_ts_row( $t( 'cpms_invoices' ), $ids['invoice'] );
+	if ( ! is_array( $visit ) || (int) $visit['clinician_id'] !== (int) $ids['clinician'] ) {
+		throw new RuntimeException( 'foreign fixture: the visit does not name its foreign clinician' );
+	}
+	if ( ! is_array( $invoice ) || (int) $invoice['visit_id'] !== (int) $ids['visit'] || (int) $invoice['issued_by_wp_user_id'] !== (int) $overlap_user ) {
+		throw new RuntimeException( 'foreign fixture: the invoice does not name its foreign visit and issuer' );
+	}
 
 	return $ids;
 }
@@ -339,7 +370,7 @@ try {
 			++$intact;
 		}
 		$report['survivors'] = $intact;
-		cpsd_ts_check( $intact >= 8, 'C: the whole planted foreign tenant survived the teardown', $checks, 'rows=' . $intact );
+		cpsd_ts_check( $intact >= 9, 'C: the whole planted foreign tenant survived the teardown', $checks, 'rows=' . $intact );
 		// The demo's own data is gone, and the tables are still there (J).
 		$demo_clinic = (int) ( $recorded['demo_clinic'] ?? 0 );
 		cpsd_ts_check( $demo_clinic > 0, 'J: the drill recorded the demo Clinic', $checks );
@@ -575,6 +606,65 @@ try {
 	cpsd_ts_check( null === cpsd_ts_row( $membership_table, $b_id ) && true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B: removing the adversarial grant restores a clean preview', $checks );
 	$report['real_admin'] = $real_admin;
 
+	// ---- B2: a REGISTERED grant whose principal is a real person -------------
+	// The exact defect this mission is about: registration is evidence that the
+	// demo wrote a row, never evidence about WHO holds a grant. This row is
+	// inserted and then explicitly sealed into the ownership ledger, so the old
+	// implementation would have called it demo-owned and deleted a real person's
+	// membership. It must still be refused.
+	$b2_id = cpsd_ts_insert(
+		$membership_table,
+		array(
+			'clinic_id'  => $demo_clinic,
+			'wp_user_id' => $real_admin,
+			'role_key'   => $role_key,
+			'scope_mode' => 'clinic',
+			'status'     => 'active',
+			'is_primary' => 0,
+			'created_at' => gmdate( 'Y-m-d H:i:s' ) . '.000',
+			'updated_at' => gmdate( 'Y-m-d H:i:s' ) . '.000',
+		)
+	);
+	cpsd_ts_check(
+		null !== cpsd_ts_row( $membership_table, $b2_id ) && (int) ( cpsd_ts_row( $membership_table, $b2_id )['wp_user_id'] ?? 0 ) === $real_admin,
+		'B2: the real administrator\'s membership really exists in the demo Clinic',
+		$checks,
+		'id=' . $b2_id
+	);
+	$sealed_b2 = $ownership->register_rows(
+		(string) $live['fixture_id'],
+		'cpms_clinic_memberships',
+		array( $b2_id ),
+		array( 'source' => 'drill', 'actor_id' => $manager )
+	);
+	cpsd_ts_check( null !== $sealed_b2, 'B2: the grant is now REGISTERED in the sealed ledger', $checks, (string) wp_json_encode( $sealed_b2 ) );
+	cpsd_ts_refresh();
+	$b2_summary = $ownership->summary( (string) $live['fixture_id'] );
+	cpsd_ts_check(
+		isset( $b2_summary['row_keys']['cpms_clinic_memberships'][ $b2_id ] ),
+		'B2: the ledger really lists the grant (the registration took effect)',
+		$checks,
+		(string) wp_json_encode( array_keys( (array) ( $b2_summary['row_keys']['cpms_clinic_memberships'] ?? array() ) ) )
+	);
+	$b2_preview = $teardown->preview( $manifest->load() );
+	cpsd_ts_check(
+		false === (bool) $b2_preview['ok'],
+		'B2: a REGISTERED grant to a real person is still REFUSED',
+		$checks,
+		implode( ' | ', array_slice( (array) ( $b2_preview['problems'] ?? array() ), 0, 3 ) )
+	);
+	cpsd_ts_check(
+		cpsd_ts_problem( $b2_preview, 'cpms_clinic_memberships:' . $b2_id ),
+		'B2: the refusal names the real person\'s registered grant',
+		$checks,
+		implode( ' | ', array_slice( (array) ( $b2_preview['problems'] ?? array() ), 0, 3 ) )
+	);
+	cpsd_ts_check( ! cpsd_ts_claimed( $b2_preview, 'cpms_clinic_memberships', $b2_id ), 'B2: the registered grant is NOT in the deletable set', $checks, 'id=' . $b2_id );
+	cpsd_ts_check( null !== cpsd_ts_row( $membership_table, $b2_id ), 'B2: the refused preview deleted nothing', $checks );
+	$wpdb->delete( $membership_table, array( 'id' => $b2_id ), array( '%d' ) );
+	cpsd_ts_refresh();
+	cpsd_ts_check( true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B2: removing the registered real grant restores a clean preview', $checks );
+
 	// ---- C: a foreign tenant that overlaps the demo's own Organization ------
 	// Its actor references are a REAL user the drill creates: a foreign tenant
 	// that legitimately belongs to a real person. (A foreign row that points at
@@ -597,11 +687,12 @@ try {
 	}
 	$c_preview = $teardown->preview( $manifest->load() );
 	cpsd_ts_check( true === (bool) $c_preview['ok'], 'C: a foreign tenant does not block the demo teardown', $checks, implode( ' | ', (array) ( $c_preview['problems'] ?? array() ) ) );
-	foreach ( array( 'organization', 'clinic', 'location', 'patient', 'visit', 'invoice', 'payment', 'membership' ) as $key ) {
+	foreach ( array( 'organization', 'clinic', 'location', 'clinician', 'patient', 'visit', 'invoice', 'payment', 'membership' ) as $key ) {
 		$short = array(
 			'organization' => 'cpms_organizations',
 			'clinic'     => 'cpms_clinics',
 			'location'   => 'cpms_locations',
+			'clinician'  => 'cpms_clinicians',
 			'patient'    => 'cpms_patients',
 			'visit'      => 'cpms_visits',
 			'invoice'    => 'cpms_invoices',
@@ -734,38 +825,81 @@ try {
 	$report['surface_user'] = $surface_user;
 
 	// ---- D: a cross-table numeric collision grants nothing -----------------
+	// The attack: an invoice whose OWN id equals a SEALED id from a DIFFERENT
+	// table (the demo patient). If ownership were ever resolved by "this number
+	// is sealed somewhere", that invoice would be claimed. It lives in the
+	// FOREIGN tenant with its own valid patient/visit/issuer, so the row is a
+	// legal record that the demo must simply never touch.
 	$sealed_patient = cpsd_ts_claimed( $c_preview, 'cpms_patients', $new_patient ) ? $new_patient : $patient;
-	cpsd_ts_check( $sealed_patient > 0, 'D: a sealed patient id is available for the collision', $checks, (string) $sealed_patient );
+	cpsd_ts_check( $sealed_patient > 0, 'D: a sealed demo patient id is available for the collision', $checks, (string) $sealed_patient );
 	$invoice_table = $t( 'cpms_invoices' );
-	$collision_id  = 0;
-	$candidate     = $sealed_patient;
-	for ( $i = 0; $i < 50; $i++ ) {
-		if ( null === cpsd_ts_row( $invoice_table, $candidate ) ) {
-			$collision_id = $candidate;
-			break;
-		}
-		++$candidate;
-	}
-	cpsd_ts_check( $collision_id > 0, 'D: a free invoice id equal to the sealed patient id exists', $checks, 'id=' . $candidate );
+	cpsd_ts_check( null === cpsd_ts_row( $invoice_table, $sealed_patient ), 'D: the collision id is FREE in cpms_invoices', $checks, 'id=' . $sealed_patient );
 	$now_d = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$d_id  = cpsd_ts_insert(
 		$invoice_table,
-		array( 'id' => $collision_id, 'clinic_id' => $demo_clinic, 'invoice_number' => 'TSCOL' . strtoupper( bin2hex( random_bytes( 3 ) ) ), 'patient_id' => $sealed_patient, 'visit_id' => null, 'status' => 'open', 'subtotal' => 1, 'discount' => 0, 'tax' => 0, 'total' => 1, 'currency' => 'IRR', 'paid_amount' => 0, 'balance' => 1, 'created_at' => $now_d, 'updated_at' => $now_d )
+		array(
+			'id'                    => $sealed_patient,
+			'clinic_id'             => (int) $foreign['clinic'],
+			'invoice_number'        => 'TSCOL' . strtoupper( bin2hex( random_bytes( 3 ) ) ),
+			'patient_id'            => (int) $foreign['patient'],
+			'visit_id'              => (int) $foreign['visit'],
+			'status'                => 'open',
+			'subtotal'              => 1,
+			'discount'              => 0,
+			'tax'                   => 0,
+			'total'                 => 1,
+			'currency'              => 'IRR',
+			'paid_amount'           => 0,
+			'balance'               => 1,
+			'issued_by_wp_user_id'  => $foreign_user,
+			'created_at'            => $now_d,
+			'updated_at'            => $now_d,
+		)
 	);
-	cpsd_ts_check( $d_id === $collision_id && null !== cpsd_ts_row( $invoice_table, $d_id ), 'D: the colliding invoice really exists with the sealed patient id', $checks, 'invoice=' . $d_id );
+	cpsd_ts_check( $d_id === $sealed_patient, 'D: the colliding invoice really took the sealed patient id', $checks, 'invoice=' . $d_id );
+	$d_row = cpsd_ts_row( $invoice_table, $d_id );
+	cpsd_ts_check(
+		is_array( $d_row )
+			&& (int) $d_row['id'] === $sealed_patient
+			&& null !== cpsd_ts_row( $t( 'cpms_patients' ), $sealed_patient ),
+		'D: the attack condition holds - one id, two tables, one sealed by the demo',
+		$checks,
+		'invoice=' . $d_id . ' patient=' . $sealed_patient
+	);
 	$d_preview = $teardown->preview( $manifest->load() );
-	cpsd_ts_check( false === (bool) $d_preview['ok'], 'D: the preview refuses a row that only shares a numeric id', $checks, implode( ' | ', array_slice( (array) ( $d_preview['problems'] ?? array() ), 0, 3 ) ) );
-	cpsd_ts_check( cpsd_ts_problem( $d_preview, 'cpms_invoices:' . $d_id ) || cpsd_ts_problem( $d_preview, 'SCOPED_FOREIGN_TENANT_ROW' ), 'D: the collision is refused instead of assumed', $checks, implode( ' | ', array_slice( (array) $d_preview['problems'], 0, 3 ) ) );
-	$wpdb->delete( $invoice_table, array( 'id' => $d_id ), array( '%d' ) );
+	cpsd_ts_check( ! cpsd_ts_claimed( $d_preview, 'cpms_invoices', $d_id ), 'D: the numeric collision does not make the invoice demo-owned', $checks, 'invoice=' . $d_id );
+	cpsd_ts_check( true === (bool) $d_preview['ok'], 'D: a foreign tenant with a colliding id does not block the teardown', $checks, implode( ' | ', array_slice( (array) ( $d_preview['problems'] ?? array() ), 0, 3 ) ) );
+	$planted['foreign_collision_invoice'] = array( 'table' => $invoice_table, 'id' => $d_id, 'hash' => cpsd_ts_hash( $invoice_table, $d_id ) );
 
 	// ---- E: unknown ownership blocks destructive work ----------------------
 	$visit_table = $t( 'cpms_visits' );
 	$now_e       = gmdate( 'Y-m-d H:i:s' ) . '.000';
+	// The row sits INSIDE the demo Clinic, so it is a deletion candidate, but its
+	// patient belongs to the foreign tenant: no artifact explains it, so it is
+	// unprovable. `clinician_id` is NOT NULL, so it names the demo's own sealed
+	// clinician - the visit is a legal record, it is only its OWNERSHIP that is
+	// unknown.
+	// A precondition, not a fixture: the sealed manifest always names the demo
+	// clinician, and inventing one would leave a second unprovable row behind
+	// and make the "removing the row restores a clean preview" check meaningless.
+	$demo_clinician = (int) ( $live['ids']['clinician_id'] ?? 0 );
+	cpsd_ts_check(
+		$demo_clinician > 0 && null !== cpsd_ts_row( $t( 'cpms_clinicians' ), $demo_clinician ),
+		'E: precondition - the sealed demo clinician exists',
+		$checks,
+		(string) $demo_clinician
+	);
 	$e_id        = cpsd_ts_insert(
 		$visit_table,
-		array( 'clinic_id' => $demo_clinic, 'location_id' => (int) ( $live['ids']['location_ids'][0] ?? 0 ), 'clinician_id' => null, 'patient_id' => (int) $foreign['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now_e, 'created_at' => $now_e, 'updated_at' => $now_e )
+		array( 'clinic_id' => $demo_clinic, 'clinician_id' => $demo_clinician, 'patient_id' => (int) $foreign['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now_e, 'created_at' => $now_e, 'updated_at' => $now_e )
 	);
-	cpsd_ts_check( null !== cpsd_ts_row( $visit_table, $e_id ), 'E: the unprovable visit inside the demo Clinic really exists', $checks, 'id=' . $e_id );
+	$e_row = cpsd_ts_row( $visit_table, $e_id );
+	cpsd_ts_check(
+		is_array( $e_row ) && (int) $e_row['clinic_id'] === $demo_clinic && (int) $e_row['patient_id'] === (int) $foreign['patient'],
+		'E: the unprovable visit inside the demo Clinic really exists',
+		$checks,
+		'id=' . $e_id
+	);
 	$e_preview = $teardown->preview( $manifest->load() );
 	cpsd_ts_check( false === (bool) $e_preview['ok'], 'E: unknown ownership blocks the teardown before any destructive stage', $checks );
 	cpsd_ts_check( cpsd_ts_problem( $e_preview, 'cpms_visits:' . $e_id ) || cpsd_ts_problem( $e_preview, 'SCOPED_FOREIGN_TENANT_ROW' ), 'E: the unprovable row is named by the refusal', $checks, implode( ' | ', array_slice( (array) ( $e_preview['problems'] ?? array() ), 0, 3 ) ) );

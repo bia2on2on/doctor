@@ -277,6 +277,31 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertIn("Required evidence comment to PR", helper)
         self.assertNotIn("gh api", helper, "do not broaden commit-comment permissions")
         self.assertIn("cat \"$EVIDENCE\" >> \"$GITHUB_STEP_SUMMARY\"", helper)
+        # Forward-compatible publication: a sticky comment edited in place, so a
+        # long-lived PR can never exhaust GitHub's per-issue comment ceiling and
+        # silently stop publishing evidence.
+        self.assertIn("--edit-last", helper, "evidence must be updatable in place")
+        self.assertIn("cpms:evidence-sticky", helper, "the sticky comment needs a marker")
+        self.assertIn("EVIDENCE_COMMENT_CEILING", helper, "the ceiling must be announced, not hidden")
+        self.assertLess(
+            helper.index("--edit-last"),
+            helper.index("::error::Required evidence comment to PR"),
+            "editing in place must be attempted before any failure classification",
+        )
+
+    def test_pilot_gate_compatibility_gate_reports_the_real_exit_status(self):
+        """`$?` inside `if ! cmd; then` is the NEGATION's status, i.e. always 0.
+
+        The previous form therefore printed "failed with exit 0" and executed
+        `exit 0`, so a failed compatibility gate made the release gate green.
+        """
+        text = workflow("pilot-gate.yml")
+        block = text.split("- name: Companion compatibility gate (blocks publication on mismatch)", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("GATE_EXIT=$?", block, block)
+        self.assertIn('if [ "${GATE_EXIT}" -ne 0 ]; then', block, block)
+        self.assertNotIn('exit "${code}"', block, block)
+        self.assertNotIn("if ! python3 .github/scripts/companion-compat/evaluate.py", block, block)
 
     def test_failure_dump_guards_and_bounds_are_preserved(self):
         text = workflow("pilot-gate.yml")
@@ -457,7 +482,7 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
 class EvidenceTargetRuntimeTests(unittest.TestCase):
     """Execute the real publisher with a deterministic fake gh executable."""
 
-    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_comment=False, fail_list=False):
+    def run_publisher(self, event, ref_name, *, pr_number="", candidates=None, fail_comment=False, fail_list=False, editable=True, ceiling=False):
         with tempfile.TemporaryDirectory(prefix="evidence-target-test-") as tmp:
             tmp_path = Path(tmp)
             fake_bin = tmp_path / "bin"
@@ -474,9 +499,15 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
                 "    sys.exit(22)\n"
                 "elif args[:2] == ['pr', 'list']:\n"
                 "    print(os.environ.get('GH_TEST_CANDIDATES', '[]'))\n"
+                "elif args[:2] == ['pr', 'comment'] and '--edit-last' in args and os.environ.get('GH_TEST_EDIT') != '1':\n"
+                "    print('no comment found for current user to edit', file=sys.stderr)\n"
+                "    sys.exit(25)\n"
                 "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_FAIL_COMMENT') == '1':\n"
                 "    print('simulated comment transport failure', file=sys.stderr)\n"
                 "    sys.exit(23)\n"
+                "elif args[:2] == ['pr', 'comment'] and os.environ.get('GH_TEST_CEILING') == '1' and '--edit-last' not in args:\n"
+                "    print('GraphQL: Comment limit exceeded for this issue', file=sys.stderr)\n"
+                "    sys.exit(26)\n"
                 "elif args[:2] != ['pr', 'comment']:\n"
                 "    print('unexpected gh command: ' + repr(args), file=sys.stderr)\n"
                 "    sys.exit(24)\n",
@@ -496,6 +527,8 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
                     "GH_TEST_CANDIDATES": json.dumps(candidates or []),
                     "GH_TEST_FAIL_COMMENT": "1" if fail_comment else "0",
                     "GH_TEST_FAIL_LIST": "1" if fail_list else "0",
+                    "GH_TEST_EDIT": "1" if editable else "0",
+                    "GH_TEST_CEILING": "1" if ceiling else "0",
                     "GITHUB_EVENT_NAME": event,
                     "GITHUB_REPOSITORY": "bia2on2on/doctor",
                     "GITHUB_REPOSITORY_OWNER": "bia2on2on",
@@ -519,10 +552,48 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][:6], ["pr", "comment", "269", "--repo", "bia2on2on/doctor", "--body-file"])
-        self.assertTrue(Path(calls[0][6]).is_absolute())
+        self.assertEqual(calls[0][:6], ["pr", "comment", "269", "--repo", "bia2on2on/doctor", "--edit-last"])
+        self.assertEqual(calls[0][6:8], ["--body-file", calls[0][7]])
+        self.assertTrue(Path(calls[0][7]).is_absolute())
         self.assertFalse(any(call[:2] == ["pr", "list"] for call in calls))
         self.assertEqual(summary, "")
+
+    def test_evidence_is_edited_in_place_so_the_comment_count_never_grows(self):
+        """A sticky comment, not an append: PR #282 hit GitHub's 2,500 ceiling."""
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", editable=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 1, "editing in place must not also create a comment")
+        self.assertIn("--edit-last", calls[0])
+        body = Path(calls[0][calls[0].index("--body-file") + 1]).read_text(encoding="utf-8") if Path(calls[0][calls[0].index("--body-file") + 1]).exists() else ""
+        self.assertEqual(summary, "")
+
+        sticky = PUBLISHER.read_text(encoding="utf-8")
+        self.assertIn("cpms:evidence-sticky", sticky)
+        self.assertIn("--edit-last", sticky)
+
+    def test_first_run_falls_back_to_creating_the_sticky_once(self):
+        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", editable=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertIn("--edit-last", calls[0])
+        self.assertNotIn("--edit-last", calls[1])
+        self.assertEqual(calls[1][:3], ["pr", "comment", "269"])
+
+    def test_comment_ceiling_is_reported_explicitly_and_keeps_evidence(self):
+        """The ceiling is not a product defect, and it is never silent.
+
+        Both paths are exhausted, so the evidence goes to the durable run
+        summary and the condition is annotated; the step does not pretend the
+        PR comment was published.
+        """
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", editable=False, ceiling=True
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(summary, "synthetic safe evidence\n")
+        self.assertIn("EVIDENCE_COMMENT_CEILING", result.stderr)
+        self.assertIn("GitHub's comment ceiling", result.stderr)
 
     def test_main_push_schedule_and_main_dispatch_use_summary_not_an_inferred_pr(self):
         for event in ("push", "schedule", "workflow_dispatch"):
@@ -569,11 +640,16 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
     def test_required_pr_comment_failure_is_nonzero_and_evidence_remains_in_summary(self):
-        result, calls, summary = self.run_publisher("pull_request", "269/merge", pr_number="269", fail_comment=True)
+        # No editable comment AND the create fails for a non-ceiling reason: the
+        # step must fail, because evidence publication really did not happen.
+        result, calls, summary = self.run_publisher(
+            "pull_request", "269/merge", pr_number="269", fail_comment=True, editable=False
+        )
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(calls[0][:3], ["pr", "comment", "269"])
         self.assertEqual(summary, "synthetic safe evidence\n")
         self.assertIn("Required evidence comment to PR #269 failed", result.stderr)
+        self.assertNotIn("EVIDENCE_COMMENT_CEILING", result.stderr)
 
     def test_manual_target_lookup_failure_is_not_silenced(self):
         result, calls, summary = self.run_publisher("workflow_dispatch", "arena/topic", fail_list=True)

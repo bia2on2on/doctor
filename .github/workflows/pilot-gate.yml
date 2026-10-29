@@ -77,10 +77,17 @@ jobs:
         run: |
           set -Eeuo pipefail
           python3 --version
-          if ! python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility; then
-            code=$?
-            echo "::error::companion compatibility gate failed with exit ${code}"
-            exit "${code}"
+          # `$?` inside `if ! cmd; then` is the status of the NEGATION, i.e. always
+          # 0 - so the previous form reported "failed with exit 0" and then
+          # `exit 0`, turning a failed gate into a green release gate. The exit
+          # status is captured before it is tested.
+          set +e
+          python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
+          GATE_EXIT=$?
+          set -e
+          if [ "${GATE_EXIT}" -ne 0 ]; then
+            echo "::error::companion compatibility gate failed with exit ${GATE_EXIT}"
+            exit "${GATE_EXIT}"
           fi
 
       - name: Build release ZIP (whitelist-only)

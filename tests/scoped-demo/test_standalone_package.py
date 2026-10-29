@@ -323,7 +323,15 @@ class SecurityFindingsDisposition(unittest.TestCase):
         # The grant's OWN principal must be synthetic; a synthetic inviter is not
         # evidence of ownership over a real person's membership.
         self.assertIn("$principal = (int) ( $row['wp_user_id'] ?? 0 );", body)
-        self.assertIn("if ( $principal <= 0 || ! in_array( $principal, $users, true ) ) {", body)
+        # The principal must be resolved to a synthetic account or the SEALED
+        # operator, and a real non-operator principal must be refused outright.
+        self.assertIn("$principal_is_synthetic = in_array( $principal, $users, true );", body)
+        self.assertIn("$principal_is_operator  = in_array( $principal, $operators, true );", body)
+        self.assertIn("if ( ! $principal_is_synthetic && ! $principal_is_operator ) {", body)
+        # Registration is evidence about a ROW, never about a person: it can only
+        # ever be the operator exception, never a standalone success.
+        self.assertIn("if ( $principal_is_operator && ! $registered ) {", body)
+        self.assertNotIn("if ( $registered ) {\n\t\t\treturn true;", body)
         self.assertNotIn("$saw_operator", body)
         self.assertIn("return false;", body)
         # And a membership row never falls through to a generic rule, so a
