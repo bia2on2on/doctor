@@ -81,13 +81,16 @@ def main() -> int:
                 option.wait_for(state="visible")
                 option.click()
                 page.wait_for_load_state("networkidle")
+            clinician_button = page.locator(".cpms-public-booking__clinician").first
+            clinician_id = clinician_button.get_attribute("data-clinician-id") or ""
             with page.expect_response(lambda r: "/clinic/v1/availability" in r.url) as a1:
-                page.locator(".cpms-public-booking__clinician").first.click()
+                clinician_button.click()
             check("public availability A1 succeeds", a1.value.status == 200, str(a1.value.status))
             slot = page.locator(".cpms-public-booking__slot").first
             slot.wait_for(state="visible")
             slot_id = int(slot.get_attribute("data-slot-id") or 0)
             slot_time = slot.get_attribute("data-slot-time") or ""
+            check("public slot carries an explicit server slot id", slot_id > 0, str(slot_id))
             check("public slot uses a realistic Iranian clinic hour", slot_time[:5] in ("09:00", "09:20", "09:40", "14:00", "14:20", "14:40"), slot_time)
             with page.expect_response(lambda r: "/clinic/v1/booking/quote" in r.url) as a4:
                 slot.click()
@@ -114,7 +117,34 @@ def main() -> int:
                     page.locator('[data-auth-action="otp-verify"]').click()
             check("production OTP verification issues a real session", a3.value.status == 200, str(a3.value.status))
             page.wait_for_load_state("networkidle")
-            page.locator('[data-role="confirm-btn"]').wait_for(state="visible")
+            # The widget preserves the selection across the OTP reload, but the
+            # patient-mode Hold is only started by its own quote/selection path.
+            # Re-drive the SAME server slot through the real UI instead of assuming
+            # a hidden restore timing; this creates no OTP request and bypasses no
+            # production hold/confirm policy.
+            picker = page.locator('[data-role="location-picker"]')
+            if picker.count() and picker.is_visible():
+                option = page.locator('[data-role="location-option"]:not([disabled])').first
+                option.wait_for(state="visible")
+                option.click()
+                page.wait_for_load_state("networkidle")
+            with page.expect_response(lambda r: "/clinic/v1/availability" in r.url) as a1b:
+                page.locator(f'.cpms-public-booking__clinician[data-clinician-id="{clinician_id}"]').first.click()
+            check("patient-mode availability after OTP succeeds", a1b.value.status == 200, str(a1b.value.status))
+            same_slot = page.locator(f'.cpms-public-booking__slot[data-slot-id="{slot_id}"]').first
+            same_slot.wait_for(state="visible")
+            with page.expect_response(lambda r: "/clinic/v1/booking/quote" in r.url) as a4b:
+                same_slot.click()
+            check("patient-mode quote of the same slot succeeds", a4b.value.status == 200, str(a4b.value.status))
+            confirm = page.locator('[data-role="confirm-btn"]')
+            try:
+                confirm.wait_for(state="visible", timeout=15000)
+            except Exception:
+                status = page.locator('[data-role="continue-status"]')
+                detail = status.inner_text()[:300] if status.count() else "no continue-status"
+                panel = page.locator('[data-role="panel"]')
+                state = panel.get_attribute("data-state") if panel.count() else "no-panel"
+                check("production Hold exposes the final confirm button", False, f"state={state} status={detail}")
             if page.locator('[data-role="names-form"]').is_visible():
                 page.locator('[data-role="patient-first-name"]').fill("آزمایشی")
                 page.locator('[data-role="patient-last-name"]').fill("شماره‌اشتباه")
