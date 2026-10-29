@@ -1021,18 +1021,25 @@ class Platform {
 	}
 
 	/**
-	 * Weekly availability templates. Deliberately one minute long (shorter than
-	 * the 20-minute appointment) so the production `slots.generate` job — which
-	 * ScheduleService::create() enqueues — cannot manufacture future slots on
-	 * the owner's host. The explicit open slots used by the demo are inserted
-	 * separately with `generated_from = 'manual'`, exactly like a manual row.
+	 * Bounded weekly availability templates at a realistic Iranian clinic hour.
+	 * The template window is deliberately one minute long (shorter than the
+	 * 20-minute appointment) so the production `slots.generate` job cannot
+	 * manufacture unattributed future slots on the Owner's host. The explicit
+	 * open slots used by the demo are inserted separately with
+	 * `generated_from = 'manual'` at 09:xx / 14:xx, exactly like manual rows.
+	 * This is a demo bounding technique, not a change to production scheduling.
 	 *
 	 * @param int $clinic_id Clinic.
 	 * @param int $clinician_id Clinician.
 	 * @param int $location_id Location.
+	 * @param string $start_time Local wall-clock start (H:i:s).
 	 * @return int Rows inserted.
 	 */
-	public function create_bounded_schedule( int $clinic_id, int $clinician_id, int $location_id ): int {
+	public function create_bounded_schedule( int $clinic_id, int $clinician_id, int $location_id, string $start_time = '09:00:00' ): int {
+		if ( ! in_array( $start_time, array( '09:00:00', '14:00:00' ), true ) ) {
+			throw new Exception( 'SCHEDULE_SCOPE', 'ساعت برنامهٔ نمایشی خارج از بازهٔ مجاز دمو است.' );
+		}
+		$end_time = '09:00:00' === $start_time ? '09:01:00' : '14:01:00';
 		$now     = $this->now_sql();
 		$inserted = 0;
 		for ( $day = 0; $day <= 6; $day++ ) {
@@ -1043,8 +1050,8 @@ class Platform {
 					'clinician_id'           => $clinician_id,
 					'location_id'            => $location_id,
 					'day_of_week'            => $day,
-					'start_time'             => '00:00:00',
-					'end_time'               => '00:01:00',
+					'start_time'             => $start_time,
+					'end_time'               => $end_time,
 					'break_start'            => null,
 					'break_end'              => null,
 					'appointment_duration_min' => 20,

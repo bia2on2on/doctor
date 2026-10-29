@@ -25,6 +25,10 @@ function add_action( string $hook, $callback, int $priority = 10, int $accepted_
 	return true;
 }
 
+function do_action( string $hook, ...$args ): void {
+	$GLOBALS['cpdd_test_actions'][] = array( 'hook' => $hook, 'args' => $args );
+}
+
 function add_management_page( string $page_title, string $menu_title, string $capability, string $menu_slug, $callback ): string {
 	$GLOBALS['cpdd_test_management_pages'][] = compact( 'page_title', 'menu_title', 'capability', 'menu_slug', 'callback' );
 	return 'tools_page_' . $menu_slug;
@@ -1320,15 +1324,16 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		}
 	}
 
-	public function create_bounded_schedule( int $clinic_id, int $clinician_id, int $location_id ): int {
+	public function create_bounded_schedule( int $clinic_id, int $clinician_id, int $location_id, string $start_time = '09:00:00' ): int {
 		$this->calls[] = 'create_bounded_schedule';
 		for ( $i = 0; $i < 7; $i++ ) {
 			$this->tables_data['cpms_schedule'][] = array(
-				'id'           => $i + 1,
+				'id'           => count( $this->tables_data['cpms_schedule'] ) + 1,
 				'clinic_id'    => $clinic_id,
 				'clinician_id' => $clinician_id,
 				'location_id'  => $location_id,
 				'day_of_week'  => $i,
+				'start_time'   => $start_time,
 			);
 		}
 

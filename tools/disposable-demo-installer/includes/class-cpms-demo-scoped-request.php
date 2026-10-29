@@ -23,6 +23,7 @@ class ScopedRequest extends Request {
 	public const ACTION_ENABLE    = 'enable';
 	public const ACTION_PROVISION = 'provision';
 	public const ACTION_OTP       = 'otp';
+	public const ACTION_ROTATE    = 'rotate_credentials';
 	public const ACTION_DIAGNOSE  = 'diagnose';
 	public const ACTION_TEARDOWN  = 'teardown';
 	// Explicitly registered additional Clinic, and the repair path for a run that
@@ -49,6 +50,11 @@ class ScopedRequest extends Request {
 				'nonce'  => 'cpsd_otp',
 				'phrase' => 'SHOW_SCOPED_DEMO_OTP',
 				'label'  => 'ساخت کد OTP نمایشی',
+			),
+			self::ACTION_ROTATE    => array(
+				'nonce'  => 'cpsd_rotate_credentials',
+				'phrase' => 'ROTATE_SCOPED_DEMO_CREDENTIALS',
+				'label'  => 'چرخش رمزهای نمایشی',
 			),
 			self::ACTION_DIAGNOSE  => array(
 				'nonce'  => 'cpsd_diagnose',

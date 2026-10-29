@@ -19,16 +19,14 @@ name: Standalone demo (real WordPress, no production plugin)
 #     fault and never a fatal;
 #   * deactivating and deleting the demo destroys nothing (no dropped tables, no
 #     deleted users, no deleted content);
-#   * a REAL Chromium session on this build alone: administrator login through
-#     the WordPress form, the demo admin page (persona-access card and the
-#     one-time credentials' disappearance), the public booking page, the staff
-#     portal and all five modules, the patient and management portals, the
-#     plugins screen, and a phone viewport;
-#   * NOT COVERED HERE: the six logged-in persona journeys. Those need the
-#     one-time persona credentials, which the PHP provisioning above already
-#     consumed; they run in the scoped lane against the same core code. This
-#     lane proves the standalone build's UI reachable by an administrator and
-#     anonymous visitor, not a persona's own login.
+#   * the INNER installable ZIP is uploaded and activated through the real
+#     wp-admin Plugins → Add New → Upload Plugin → Install Now → Activate Plugin
+#     screens in Chromium; a CI-only observer records the actual
+#     Plugin_Upgrader::plugin_info(), get_plugins() and validate_plugin() result;
+#   * all EIGHT logged-in persona journeys run on this standalone build, plus
+#     public booking/OTP, private messaging, consultation pricing/invoicing,
+#     Persian RTL/mobile, clean teardown, and a real wrong-mobile booking whose
+#     unattributable rows block cleanup and are preserved;
 
 on:
   workflow_dispatch:
@@ -211,6 +209,7 @@ jobs:
           wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
           wp config shuffle-salts --allow-root
           wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp config set FS_METHOD direct --allow-root
           wp config set WP_DEBUG true --raw --allow-root
           wp config set WP_DEBUG_LOG true --raw --allow-root
           wp config set WP_DEBUG_DISPLAY false --raw --allow-root
@@ -223,54 +222,7 @@ jobs:
             echo 'FAIL: production CPMS present on a clean install' >&2; exit 1
           fi
 
-      - name: Install ONLY the standalone demo package from a real ZIP
-        run: |
-          set -Eeuo pipefail
-          if ! OUT_DIR=/tmp/cpsa-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" > /tmp/cpsa-ci/build.log 2>&1; then
-            echo "::error title=CPSA_BUILD::$(tail -4 /tmp/cpsa-ci/build.log | tr '\n' ' ' | sed 's/%/%25/g')"
-            exit 1
-          fi
-          tail -3 /tmp/cpsa-ci/build.log
-          # Diagnostic surface: job logs are not readable in every review
-          # environment, so a failed install/activation becomes an annotation
-          # carrying the real WP-CLI error and the PHP error log tail.
-          cpsa_fail() {
-            local title="$1" detail="$2"
-            printf '%s\n' "$detail" | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
-              echo "::error title=${title}::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
-            done
-            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
-              grep -E 'PHP Fatal|PHP Parse|Uncaught|critical error' "$WP_DIR/wp-content/debug.log" \
-                | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
-                  echo "::error title=${title}_PHPLOG::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
-                done
-            fi
-          }
-          if ! INSTALL_OUT="$(wp plugin install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip --path="$WP_DIR" --allow-root 2>&1)"; then
-            cpsa_fail CPSA_INSTALL "$INSTALL_OUT"; exit 1
-          fi
-          printf '%s\n' "$INSTALL_OUT"
-          if ! ACTIVATE_OUT="$(wp plugin activate cpms-disposable-demo --path="$WP_DIR" --allow-root 2>&1)"; then
-            cpsa_fail CPSA_ACTIVATE "$ACTIVATE_OUT"; exit 1
-          fi
-          printf '%s\n' "$ACTIVATE_OUT"
-          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
-          # The production plugin is absent, and must stay absent.
-          if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
-            echo 'FAIL: production CPMS was installed' >&2; exit 1
-          fi
-          # Exactly one plugin header was installed, one plugin is active for the demo.
-          wp plugin list --status=active --field=name --path="$WP_DIR" --allow-root | sort | tr '\n' ' '
-          echo
-          # The embedded core booted: real constants, real classes, real schema.
-          wp eval 'echo defined("CPMS_VERSION") ? CPMS_VERSION : "MISSING";' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/core-version.txt
-          grep -qv MISSING /tmp/cpsa-ci/core-version.txt
-          wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/schema.txt
-          # The embedded core must be at the SAME schema head as the production
-          # build, otherwise the standalone demo evaluates an older product.
-          test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
-
-      - name: Seed a genuinely non-empty site and record its digest
+      - name: Seed a genuinely non-empty WordPress BEFORE any CPMS install
         run: |
           set -Eeuo pipefail
           CPSD_SA_MODE=seed CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
@@ -296,6 +248,57 @@ jobs:
           wp plugin is-active classic-editor --path="$WP_DIR" --allow-root
           wp post list --post_type=page --field=ID --path="$WP_DIR" --allow-root | head -3
 
+      - name: Build the inner installable ZIP and install the CI-only observer
+        run: |
+          set -Eeuo pipefail
+          OUT_DIR=/tmp/cpsa-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" | tee /tmp/cpsa-ci/build.log
+          mkdir -p "$WP_DIR/wp-content/mu-plugins" /tmp/cpsa-ci/browser
+          cp "$GITHUB_WORKSPACE/tests/scoped-demo/ci-observer.php" "$WP_DIR/wp-content/mu-plugins/cpsd-ci-observer.php"
+          php -l "$WP_DIR/wp-content/mu-plugins/cpsd-ci-observer.php"
+          wp config set FS_METHOD direct --allow-root --path="$WP_DIR"
+          test ! -d "$WP_DIR/wp-content/plugins/clinic-practice-management"
+          test ! -d "$WP_DIR/wp-content/plugins/cpms-disposable-demo"
+
+      - name: Playwright Chromium (pinned)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
+
+      - name: Start PHP built-in WordPress server
+        env:
+          CPSD_CI_CAPTURE: '1'
+        run: |
+          set -Eeuo pipefail
+          nohup php -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ci/php-server.log 2>&1 &
+          echo $! > /tmp/cpsa-ci/php-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then echo "PHP_SERVER_READY=1"; exit 0; fi
+            sleep 1
+          done
+          tail -50 /tmp/cpsa-ci/php-server.log || true
+          exit 1
+
+      - name: Real wp-admin ZIP upload and Activate Plugin (Chromium, not WP-CLI)
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_INSTALL_ZIP: /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip
+          CPSD_CI_DIR: /tmp/cpsa-ci
+          CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_install.py | tee /tmp/cpsa-ci/browser-install.log
+          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
+          if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
+            echo 'FAIL: production CPMS was installed' >&2; exit 1
+          fi
+          wp eval 'echo defined("CPMS_VERSION") ? CPMS_VERSION : "MISSING";' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/core-version.txt
+          grep -qv MISSING /tmp/cpsa-ci/core-version.txt
+          wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/schema.txt
+          test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
+          wp eval 'echo class_exists("\ClinicCore\Bootstrap\App") ? "CORE_BOOTED" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_BOOTED
+
       - name: Enable and provision the scoped demo through the real services
         run: |
           set -Eeuo pipefail
@@ -313,6 +316,8 @@ jobs:
           PY
 
       - name: Provision the scoped demo on the non-empty site
+        env:
+          CPSD_CI_CAPTURE: '1'
         run: |
           set -Eeuo pipefail
           # The integration drill above proves the same services work and then
@@ -334,28 +339,6 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Playwright Chromium (pinned)
-        uses: ./.github/actions/playwright-browsers
-        with:
-          browsers: chromium
-
-      - name: Start PHP built-in WordPress server
-        run: |
-          set -Eeuo pipefail
-          mkdir -p /tmp/cpsa-ci/browser
-          nohup php -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ci/php-server.log 2>&1 &
-          echo $! > /tmp/cpsa-ci/php-server.pid
-          for i in $(seq 1 30); do
-            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then
-              echo "PHP_SERVER_READY=1"
-              exit 0
-            fi
-            sleep 1
-          done
-          tail -50 /tmp/cpsa-ci/php-server.log || true
-          echo 'FAIL: PHP built-in server did not become ready' >&2
-          exit 1
-
       - name: Export the read-only portal identifiers
         run: |
           set -Eeuo pipefail
@@ -371,7 +354,7 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Chromium — standalone build in a real browser (admin, portals, phone viewport)
+      - name: Chromium — standalone admin/portal surface and phone viewport
         env:
           BASE: ${{ env.WP_URL }}
           ADMIN_USER: ${{ env.ADMIN_USER }}
@@ -396,6 +379,47 @@ jobs:
               ) or 'standalone browser run failed'
               print('::error title=CPSA_BROWSER::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
               sys.exit(1)
+          PY
+
+      - name: Chromium — all eight persona journeys on the standalone build
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_scoped.py journeys | tee /tmp/cpsa-ci/browser-personas.log
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/browser/browser-result-journeys.json', encoding='utf-8').read())
+          print('STANDALONE_PERSONAS_OK=' + str(bool(data.get('ok'))))
+          if not data.get('ok'):
+              failed = [c for c in data.get('checks', []) if not c.get('ok')]
+              print('::error title=CPSA_PERSONAS::' + ' || '.join(str(c.get('name')) for c in failed[-5:]).replace('%','%25'))
+              sys.exit(1)
+          PY
+
+      - name: Chromium — real wrong-mobile public booking and blocked cleanup
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_CI_DIR: /tmp/cpsa-ci
+          CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_recovery.py | tee /tmp/cpsa-ci/browser-recovery.log
+          CPSD_RECOVERY_BROWSER=/tmp/cpsa-ci/browser/recovery-browser.json \
+            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/recovery-acceptance.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ci/recovery-acceptance.jsonl
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/recovery-acceptance.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
+          print('RECOVERY_DB_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []): print(line)
+          if not data.get('ok'): sys.exit(1)
           PY
 
       - name: Pre-existing WordPress data survives provisioning
@@ -530,6 +554,8 @@ jobs:
           import glob, json, os
           out = {}
           for path in sorted(glob.glob('/tmp/cpsa-ci/*.json')) + sorted(glob.glob('/tmp/cpsa-ci/*.jsonl')):
+              if 'persona-credentials' in path or 'synthetic-otp' in path:
+                  continue
               try:
                   text = open(path, encoding='utf-8').read().strip().splitlines()[-1]
                   data = json.loads(text)
@@ -550,6 +576,12 @@ jobs:
             /tmp/cpsa-ci/*.jsonl
             /tmp/cpsa-ci/*.txt
             /tmp/cpsa-ci/*.log
+            /tmp/cpsa-ci/browser/admin-install-browser.json
+            /tmp/cpsa-ci/browser/standalone-browser.json
+            /tmp/cpsa-ci/browser/browser-result-journeys.json
+            /tmp/cpsa-ci/browser/recovery-browser.json
+            /tmp/cpsa-ci/browser/provision-observer.json
+            /tmp/cpsa-ci/browser/*.png
           if-no-files-found: warn
           retention-days: 30
 

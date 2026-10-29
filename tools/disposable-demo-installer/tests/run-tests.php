@@ -392,6 +392,15 @@ Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['manifest']
 Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['credentials'] ), 'provisioning: independent credentials returned for every persona' );
 Cpdd_Test::equals( 2, count( $post['manifest']['ids']['location_ids'] ), 'provisioning: two locations created' );
 Cpdd_Test::ok( count( $post['manifest']['ids']['slot_ids'] ) >= 6, 'provisioning: enough future public-booking slots' );
+$schedule_calls = array_keys( $ctx['platform']->calls, 'create_bounded_schedule', true );
+Cpdd_Test::ok( 2 === count( $schedule_calls ), 'provisioning: BOTH doctors receive a bounded weekly schedule' );
+$schedule_hours = array_unique( array_column( $ctx['platform']->tables_data['cpms_schedule'], 'start_time' ) );
+sort( $schedule_hours );
+Cpdd_Test::ok( array( '09:00:00', '14:00:00' ) === $schedule_hours, 'provisioning: schedule templates use realistic Iranian hours, not midnight' );
+$slot_plan = ( new CpmsDemo\Provisioner( $ctx['env'], $ctx['platform'], $ctx['manifest'], new CpmsDemo\Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ), new CpmsDemo\Credentials( $ctx['env'] ) ) )->slot_plan();
+$slot_hours = array_unique( array_map( static fn ( $slot ) => substr( $slot['time'], 0, 5 ), $slot_plan ) );
+Cpdd_Test::ok( array() === array_diff( $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) ), 'provisioning: public slots never depend on now+5 minutes (no 23:47 artefact)' );
+Cpdd_Test::ok( array( 'doctor', 'doctor_second' ) === array_values( array_unique( array_column( $slot_plan, 'doctor' ) ) ), 'provisioning: public slots cover both synthetic doctors' );
 $expected_shortcode = '[cpms_public_booking clinic_id="' . (int) $post['manifest']['ids']['clinic_id'] . '"]';
 Cpdd_Test::equals( $expected_shortcode, $post['manifest']['shortcode'], 'provisioning: page uses the actual production shortcode' );
 $page = $ctx['env']->post( (int) $post['manifest']['ids']['booking_page_id'] );

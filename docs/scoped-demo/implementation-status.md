@@ -325,3 +325,41 @@ No error reporting was suppressed and no assertion was removed.
 `Throwable` message into the UI (`خطای غیرمنتظره: ` . `$e->getMessage()`): it now renders the
 same Persian sentence as the strict page with `data-cpdd-code="UNEXPECTED"`, so a class name
 or file path can no longer reach the operator — the strict page already behaved this way.
+
+## Standalone Owner-evaluation correction (this PR — exact-head CI pending)
+
+**Packaging root cause (static + exact WP 7.1.3 source).** The standalone builder shipped the
+production bootstrap under `core/` with its `Plugin Name` header intact. WordPress scans the
+installed plugin directory's immediate PHP files, `get_plugins()` sorts by Name, and
+`Plugin_Upgrader::plugin_info()` returns the first key; the embedded "CPMS Classic" entry could
+therefore win over the outer demo bootstrap and the admin screen would offer the wrong
+activation basename. The builder now neutralizes ONLY the staged copy's metadata key to
+`CPMS Embedded Core:` and asserts every other byte of the bootstrap is identical to production.
+The production source and `bin/build-release.sh` are unchanged. The package contract mirrors
+the permissive `get_file_data()` regex over the first 8 KiB and requires exactly one
+discoverable header.
+
+**Acceptance correction.** `standalone-demo.yml` now seeds non-empty WordPress BEFORE install,
+then drives Plugins → Add New → Upload Plugin → Install Now → Activate Plugin in Chromium.
+A CI-only mu-plugin records the real `Plugin_Upgrader::plugin_info()`, `get_plugins()` and
+`validate_plugin()` from inside that upload. The same standalone build then runs all eight
+persona journeys, public booking/OTP, private messaging, consultation pricing/invoicing,
+RTL/mobile, clean teardown, and a real wrong-mobile public booking whose unattributable rows
+block cleanup and are preserved. One-time credentials and captured synthetic OTP codes are
+written only to non-public runner paths and are excluded from artifacts.
+
+**Usability/safety corrections.** The scoped evaluation console is an administrator-only Tools
+page (`manage_options`) with a plugin-row shortcut, independent of the production clinical menu
+and without any clinical/financial capability grant. The Owner guide names the synthetic mobile,
+the `log` provider, the exact OTP retrieval steps, credential rotation, and the unsafe-recovery
+boundary. Both synthetic doctors have bounded weekly templates and public slots at realistic
+Iranian hours (09:xx and 14:xx); the old `now + 5 minutes` anchor that could produce 23:47 is
+gone. Wrong-mobile anonymous rows are never claimed by tenant/mobile/time alone: cleanup refuses
+with `SCOPED_FOREIGN_TENANT_ROW` / `TEARDOWN_BLOCKED`, preserves the rows and audit chain, and the
+Persian guidance says no safe automatic recovery exists without independent ownership evidence.
+
+**Evidence boundary.** Local PHP-wasm unit suites and Python packaging/workflow contracts are
+executed; they are NOT MySQL/MariaDB or browser acceptance. The real wp-admin upload, both DB
+engines, eight-persona browser run and wrong-mobile recovery are only proven when the exact PR
+head's `standalone-demo.yml` checks pass. This section must be updated with run IDs/head SHA
+before any merge recommendation.

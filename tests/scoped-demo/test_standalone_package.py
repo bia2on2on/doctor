@@ -402,6 +402,31 @@ class PackageContents(unittest.TestCase):
         )
         self.assertIn("cpms-disposable-demo/core/templates", " ".join(names))
 
+    def test_exactly_one_wordpress_discoverable_header(self) -> None:
+        """Mirror WP 7.1.3 get_file_data(): permissive regex, first 8 KiB."""
+        pattern = re.compile(rb"^(?:[ \t]*<\?(?:php)?)?[ \t\/*#@]*Plugin Name:(.*)$", re.M)
+        with zipfile.ZipFile(self.zip_path) as archive:
+            discovered = [
+                name for name in archive.namelist()
+                if name.endswith(".php") and pattern.search(archive.read(name)[:8192])
+            ]
+        self.assertEqual(discovered, ["cpms-disposable-demo/cpms-disposable-demo.php"])
+        with zipfile.ZipFile(self.zip_path) as archive:
+            embedded = archive.read("cpms-disposable-demo/core/clinic-practice-management.php")
+        self.assertIn(b"CPMS Embedded Core:", embedded[:8192])
+        self.assertNotRegex(embedded[:8192], pattern)
+
+    def test_embedded_bootstrap_keeps_executable_production_bytes(self) -> None:
+        source = (ROOT / "clinic-practice-management" / "clinic-practice-management.php").read_bytes()
+        with zipfile.ZipFile(self.zip_path) as archive:
+            embedded = archive.read("cpms-disposable-demo/core/clinic-practice-management.php")
+        key = re.compile(rb"(?m)^([ \t]*\*[ \t]*)Plugin Name:([ \t]*)")
+        match = key.search(source[:8192])
+        self.assertIsNotNone(match)
+        expected = source[:match.start()] + match.group(1) + b"CPMS Embedded Core:" + match.group(2) + source[match.end():]
+        self.assertEqual(embedded, expected)
+        self.assertEqual((ROOT / "clinic-practice-management" / "clinic-practice-management.php").read_bytes(), source)
+
     def test_no_development_material_is_packaged(self) -> None:
         with zipfile.ZipFile(self.zip_path) as archive:
             names = archive.namelist()
@@ -425,6 +450,45 @@ class PackageContents(unittest.TestCase):
         self.assertEqual(int(measured.group(1)), self.zip_path.stat().st_size)
         # A standalone package carries the real application; it is not a stub.
         self.assertGreater(int(measured.group(1)), 500_000)
+
+
+class OwnerUsabilityContracts(unittest.TestCase):
+    """Source contracts for the private Owner evaluation surface (not runtime proof)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        cls.provisioner = read(COMPANION / "includes" / "class-cpms-demo-provisioner.php")
+        cls.platform = read(COMPANION / "includes" / "class-cpms-demo-platform.php")
+        cls.setup = read(ROOT / "docs" / "scoped-demo" / "setup-fa.md")
+
+    def test_scoped_console_is_administrator_tools_navigation_without_clinical_grants(self) -> None:
+        self.assertIn("add_management_page(", self.admin)
+        self.assertNotIn("add_submenu_page(", self.admin)
+        self.assertNotIn("cpms_parent_slug", self.admin)
+        self.assertIn("manage_options", self.admin)
+        self.assertNotIn("add_cap(", self.admin)
+        self.assertNotIn("set_role(", self.admin)
+
+    def test_owner_guide_covers_mobile_otp_rotation_and_safe_recovery(self) -> None:
+        for token in (
+            'data-cpsd-owner-guide="1"', 'data-cpsd-patient-mobile="1"', 'log',
+            'نمایش کد OTP نمایشی', 'تغییر شماره', 'TEARDOWN_BLOCKED', 'ادعای مالکیت', 'حسابرسی',
+            'ROTATE_SCOPED_DEMO_CREDENTIALS',
+        ):
+            self.assertIn(token, self.admin)
+        self.assertIn("هشت حساب ساختگی", self.setup)
+        self.assertIn("cpms-disposable-demo-1.0.0.zip", self.setup)
+        self.assertNotIn("clinic-practice-management-1.0.0.zip", self.setup)
+
+    def test_both_doctors_have_realistic_bounded_iranian_schedules(self) -> None:
+        self.assertIn("create_bounded_schedule( $clinic_id, $clinician_id, $location_primary, '09:00:00' )", self.provisioner)
+        self.assertIn("create_bounded_schedule( $clinic_id, $clinician_second_id, $location_primary, '14:00:00' )", self.provisioner)
+        self.assertNotIn("+5 minutes", self.provisioner)
+        self.assertNotIn("'00:00:00'", self.platform)
+        for hour in ("09:00:00", "09:20:00", "09:40:00", "14:00:00", "14:20:00", "14:40:00"):
+            self.assertIn(hour, self.provisioner)
+        self.assertIn("Asia/Tehran", self.provisioner)
 
 
 if __name__ == "__main__":
