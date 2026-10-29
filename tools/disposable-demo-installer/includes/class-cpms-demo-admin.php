@@ -478,6 +478,52 @@ class Admin {
 	}
 
 	/**
+	 * Explain a refused production activation on every admin screen.
+	 *
+	 * The refusal itself happens before WordPress includes the production plugin
+	 * (see `Standalone::register_activation_barriers()`); this only reports it, so
+	 * an administrator who clicked "Activate" learns why nothing happened instead
+	 * of finding a silently unchanged page. Consumed once.
+	 *
+	 * @return void
+	 */
+	public static function render_activation_conflict_notice(): void {
+		if ( ! Standalone::take_blocked_activation() ) {
+			return;
+		}
+		if ( ! current_user_can( 'activate_plugins' ) ) {
+			return;
+		}
+		echo '<div class="notice notice-warning" data-cpdd-notice="warning" data-cpdd-code="embedded_activation_blocked">'
+			. '<p>' . esc_html( Standalone::activation_blocked_message() ) . '</p></div>';
+	}
+
+	/**
+	 * Report a recording failure instead of swallowing it.
+	 *
+	 * When a synthetic persona's write succeeds but the row ledger cannot be
+	 * written, the rows exist and are unregistered: the teardown will refuse them
+	 * (fail closed) rather than guess, which leaves harmless leftovers. That is the
+	 * safe outcome, but it is NOT a silent one - the administrator has to know that
+	 * this demo's cleanup will be incomplete, and why.
+	 *
+	 * @return void
+	 */
+	public static function render_recorder_error_notice(): void {
+		$error = get_option( 'cpsd_recorder_error', null );
+		if ( ! is_array( $error ) || ! current_user_can( 'manage_options' ) ) {
+			return;
+		}
+		delete_option( 'cpsd_recorder_error' );
+		$code = (string) ( $error['code'] ?? 'RECORDER' );
+		echo '<div class="notice notice-error" data-cpdd-notice="error" data-cpdd-code="recorder_error">'
+			. '<p>' . esc_html__( 'ثبت مالکیت رکوردهای ساخته‌شده توسط حساب‌های نمایشی ناموفق بود.', 'cpms' )
+			. ' <code dir="ltr">' . esc_html( $code ) . '</code> '
+			. esc_html__( 'این رکوردها بدون شاهد مالکیت می‌مانند؛ پاک‌سازی دمو آن‌ها را حذف نمی‌کند و برای جلوگیری از حذف دادهٔ واقعی، عملیات را متوقف می‌کند. متن خطا:', 'cpms' )
+			. ' <code dir="ltr">' . esc_html( mb_substr( (string) ( $error['message'] ?? '' ), 0, 300 ) ) . '</code></p></div>';
+	}
+
+	/**
 	 * Render recovery details when provisioning or teardown was interrupted (S-4).
 	 *
 	 * @param array<string,mixed> $loaded Loaded manifest.

@@ -95,6 +95,10 @@ if ( '' === $cpms_demo_fault ) {
 }
 unset( $cpms_demo_fault );
 CpmsDemo\Standalone::register_update_guards();
+// The reverse order of the activation guard below: the demo is already active
+// and somebody activates the production plugin. Refused before the production
+// entry file is ever included, so no constant or class is defined twice.
+CpmsDemo\Standalone::register_activation_barriers();
 
 /**
  * Activation guard: single-site only, and never two CPMS cores.
@@ -153,6 +157,8 @@ function cpms_demo_deactivate(): void {
 }
 register_deactivation_hook( __FILE__, 'cpms_demo_deactivate' );
 
+add_action( 'admin_notices', array( 'CpmsDemo\\Admin', 'render_activation_conflict_notice' ) );
+add_action( 'admin_notices', array( 'CpmsDemo\\Admin', 'render_recorder_error_notice' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'redirect_legacy_tools_url' ), 0 );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );

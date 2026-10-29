@@ -41,8 +41,29 @@ defined( 'ABSPATH' ) || exit;
  */
 final class ScopedTenantGuard {
 
-	/** WP-CLI / cron contexts never carry a portal or REST actor. */
+/** WP-CLI / cron contexts never carry a portal or REST actor. */
 	private const WRITE_METHODS = array( 'POST', 'PUT', 'PATCH', 'DELETE' );
+
+	/**
+	 * Production tables an entity-id route can address, in lookup order.
+	 *
+	 * `/clinic/v1/appointments/42` carries no tenant marker, so the row's own
+	 * `clinic_id` is the only honest answer to "which tenant is this write for".
+	 */
+	private const ENTITY_TABLES = array(
+		'cpms_appointments',
+		'cpms_visits',
+		'cpms_invoices',
+		'cpms_payments',
+		'cpms_patients',
+		'cpms_prescriptions',
+		'cpms_clinical_notes',
+		'cpms_message_threads',
+		'cpms_clinicians',
+		'cpms_schedule',
+		'cpms_services',
+		'cpms_locations',
+	);
 
 	/** @var array<string,list<int>>|null Snapshot taken at the start of this request. */
 	private static ?array $snapshot = null;
@@ -51,19 +72,22 @@ final class ScopedTenantGuard {
 	private static string $fixture = '';
 
 	/**
-	 * Has this request already been considered for snapshotting?
+	 * Set once this request can never become recordable: it is not a write, or
+	 * there is no verified active fixture to record against.
 	 *
-	 * The snapshot MUST be taken once the current user is resolved, and "the
-	 * current user is resolved" happens at a different time on different request
-	 * paths: at `init` nothing has authenticated a cookie yet for a REST request
-	 * (WordPress authenticates inside `serve_request()`, before dispatch), and
-	 * `admin-post.php`/`admin-ajax.php` authenticate later still. Snapshotting
-	 * only on `init` therefore saw user 0 for every authenticated demo write and
-	 * registered NOTHING - the ledger silently stayed empty, which is the broken
-	 * row registration this guard exists to provide. Every write-capable entry
-	 * point now calls `begin_request()`, and this flag makes the first one win.
+	 * It is deliberately NOT set when the only missing piece is the actor. The
+	 * snapshot MUST be taken once the current user is resolved, and "resolved"
+	 * happens at a different moment on different request paths: at `init` a REST
+	 * request has not authenticated its cookie yet (WordPress authenticates inside
+	 * `serve_request()`, before dispatch), and `admin-post.php` authenticates
+	 * later still. The first implementation set a single "considered" flag at the
+	 * top of `begin_request()`, so the `init` pass - which always sees user 0 for
+	 * REST - consumed it and every later pass returned immediately: a synthetic
+	 * persona's REST write was never snapshotted, and the ledger stayed empty.
+	 * A decision is now only recorded when it cannot change, and the actor check
+	 * retries until the actor is known.
 	 */
-	private static bool $considered = false;
+	private static bool $standdown = false;
 
 	/**
 	 * Hook the guard and the recorder.
@@ -78,7 +102,14 @@ final class ScopedTenantGuard {
 		// admin hooks and `rest_pre_dispatch` cover the paths where WordPress
 		// authenticates the cookie later. `begin_request()` is idempotent.
 		add_action( 'init', array( __CLASS__, 'begin_request' ), 0 );
-		add_action( 'admin_init', array( __CLASS__, 'begin_request' ), 0 );
+		// `wp_loaded` runs after WordPress has resolved the current user and
+		// BEFORE any dispatch: admin-post.php fires its action after it,
+		// admin-ajax.php fires `wp_ajax_*` after it, `template_redirect` (the
+		// Management Portal) runs after it, and REST dispatch runs after it. It is
+		// therefore the only universal place where a write can be both recorded
+		// and refused for every surface, with the actor already known.
+		add_action( 'wp_loaded', array( __CLASS__, 'guard_request' ), 0 );
+		add_action( 'admin_init', array( __CLASS__, 'guard_request' ), 0 );
 		add_action( 'admin_post', array( __CLASS__, 'begin_request' ), 1 );
 		add_action( 'shutdown', array( __CLASS__, 'finish_request' ), 0 );
 		add_filter( 'rest_pre_dispatch', array( __CLASS__, 'guard_rest_request' ), 10, 3 );
@@ -90,21 +121,36 @@ final class ScopedTenantGuard {
 	 * @return void
 	 */
 	public static function begin_request(): void {
-		if ( self::$considered || ! self::is_write_request() ) {
+		if ( null !== self::$snapshot || self::$standdown ) {
+			// Already recording, or this request can never be recorded.
 			return;
 		}
-		self::$considered = true;
+		if ( ! self::is_write_request() ) {
+			self::$standdown = true;
+
+			return;
+		}
 		$env      = new Env();
 		$manifest = new ScopedManifest( $env );
 		$loaded   = self::verified_manifest( $manifest );
 		if ( null === $loaded ) {
+			// No verified active fixture: there is no fixture identity to register
+			// rows against, so nothing about this request can ever be recorded.
+			self::$standdown = true;
+
 			return;
 		}
 		$fixture = (string) ( $loaded['fixture_id'] ?? '' );
 		// Only a synthetic fixture account can create REGISTRABLE demo data; any
-		// other actor is either refused below or (anonymous) protected by the
-		// teardown's attribution rules. Taking the snapshot only when it can be
+		// other actor is either refused by the barrier or (anonymous) protected by
+		// the teardown's attribution rules. Taking the snapshot only when it can be
 		// used keeps every other request untouched.
+		//
+		// The actor is NOT a terminal decision: at `init` a REST request has not
+		// authenticated yet, so "not a fixture actor" here usually means "not known
+		// yet". The next write-capable entry point (`admin_init`, `admin_post`,
+		// `rest_pre_dispatch`) re-evaluates, and the first one that sees a synthetic
+		// actor takes the snapshot.
 		if ( ! self::is_fixture_actor( $loaded ) ) {
 			return;
 		}
@@ -154,6 +200,33 @@ final class ScopedTenantGuard {
 		}
 		self::$snapshot = null;
 		self::$fixture  = '';
+	}
+
+	/**
+	 * Snapshot the tenant, then refuse a write that must not happen.
+	 *
+	 * REST is not the only way into the demo tenant: `admin-post.php`,
+	 * `admin-ajax.php`, the Management Portal's `template_redirect` handler and any
+	 * plugin screen that writes on `admin_init` reach the same production services.
+	 * This is the single entry point they all pass through, and it runs after the
+	 * actor is known (`wp_loaded`) and before the handler (`admin_init`,
+	 * `wp_loaded`). Both halves are idempotent, so being called twice is harmless.
+	 *
+	 * @return void
+	 */
+	public static function guard_request(): void {
+		self::begin_request();
+		$method = isset( $_SERVER['REQUEST_METHOD'] ) ? strtoupper( (string) $_SERVER['REQUEST_METHOD'] ) : '';
+		if ( ! in_array( $method, self::WRITE_METHODS, true ) ) {
+			return;
+		}
+		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- a read-only classification of the request, never used to authorize anything.
+		$params  = (array) wp_unslash( $_REQUEST );
+		$verdict = self::write_verdict( $method, $params );
+		if ( true === $verdict ) {
+			return;
+		}
+		wp_die( esc_html( $verdict ), esc_html__( 'CPMS Demo: نوشتن در درمانگاه نمایشی مجاز نیست', 'cpms' ), array( 'response' => 403 ) );
 	}
 
 	/**
@@ -230,12 +303,14 @@ final class ScopedTenantGuard {
 	 * @return bool
 	 */
 	private static function targets_demo_tenant( array $manifest, array $params ): bool {
-		$ids    = (array) ( $manifest['ids'] ?? array() );
-		$clinic = (int) ( $ids['clinic_id'] ?? 0 );
-		$org    = (int) ( $ids['organization_id'] ?? 0 );
-		$owned  = array_values( array_filter( array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) ) ) );
+		$scope   = self::demo_scope( $manifest );
+		$clinics = (array) $scope['clinics'];
+		if ( array() === $clinics ) {
+			return false;
+		}
+		$org = (int) $scope['organization_id'];
 		// The production API scopes a request with the X-CPMS-Clinic-Id header.
-		if ( isset( $_SERVER['HTTP_X_CPMS_CLINIC_ID'] ) && $clinic > 1 && (int) $_SERVER['HTTP_X_CPMS_CLINIC_ID'] === $clinic ) {
+		if ( isset( $_SERVER['HTTP_X_CPMS_CLINIC_ID'] ) && in_array( (int) $_SERVER['HTTP_X_CPMS_CLINIC_ID'], $clinics, true ) ) {
 			return true;
 		}
 		foreach ( array( 'clinic_id', 'clinicId', 'organization_id', 'organizationId' ) as $key ) {
@@ -243,7 +318,7 @@ final class ScopedTenantGuard {
 				continue;
 			}
 			$value = (int) $params[ $key ];
-			if ( $clinic > 1 && $value === $clinic ) {
+			if ( in_array( $value, $clinics, true ) ) {
 				return true;
 			}
 			if ( $org > 1 && $value === $org ) {
@@ -251,12 +326,136 @@ final class ScopedTenantGuard {
 			}
 		}
 		foreach ( array( 'location_id', 'locationId' ) as $key ) {
-			if ( isset( $params[ $key ] ) && is_scalar( $params[ $key ] ) && in_array( (int) $params[ $key ], $owned, true ) ) {
+			if ( isset( $params[ $key ] ) && is_scalar( $params[ $key ] ) && in_array( (int) $params[ $key ], (array) $scope['locations'], true ) ) {
+				return true;
+			}
+		}
+		// ENTITY-ID ROUTES. `/clinic/v1/appointments/42` names no tenant at all: the
+		// tenant is implied by the row itself. A browser-provided id is never
+		// authorization, so the id is resolved against the production tables and
+		// the row's own clinic decides.
+		if ( self::entity_targets_demo_tenant( $clinics, $params ) ) {
+			return true;
+		}
+
+		// IMPLICIT TRUSTED SCOPE. Production resolves the effective Clinic for this
+		// request from the actor's memberships (SystemClinicResolver), and a write
+		// with no tenant marker at all inherits it. Asking production the same
+		// question it will ask is the only way to see that surface without
+		// re-implementing authorization here.
+		return self::resolved_scope_is_demo( $clinics );
+	}
+
+	/**
+	 * Does an entity id in this request name a row inside a demo Clinic?
+	 *
+	 * Only the production tables that own a tenant column are consulted, and only
+	 * for the id-shaped values the request actually carries.
+	 *
+	 * @param list<int>           $clinics Verified demo Clinics.
+	 * @param array<string,mixed> $params  Request parameters.
+	 * @return bool
+	 */
+	private static function entity_targets_demo_tenant( array $clinics, array $params ): bool {
+		$candidates = array();
+		foreach ( $params as $key => $value ) {
+			if ( ! is_scalar( $value ) || ! ctype_digit( (string) $value ) ) {
+				continue;
+			}
+			$key = (string) $key;
+			if ( 'id' !== $key && ! preg_match( '/_(id|ids)$/', $key ) ) {
+				continue;
+			}
+			$id = (int) $value;
+			if ( $id > 0 ) {
+				$candidates[ $id ] = true;
+			}
+		}
+		if ( array() === $candidates ) {
+			return false;
+		}
+		$ids  = array_keys( $candidates );
+		$size = count( $clinics );
+		foreach ( self::ENTITY_TABLES as $short ) {
+			$platform = new Platform();
+			if ( ! $platform->table_exists( $short ) ) {
+				continue;
+			}
+			$full = $platform->table( $short );
+			$cols = $platform->columns( $full );
+			if ( ! in_array( 'id', $cols, true ) || ! in_array( 'clinic_id', $cols, true ) ) {
+				continue;
+			}
+			$rows = $platform->fetch_all(
+				'SELECT id FROM `' . $full . '` WHERE id IN (' . implode( ',', array_fill( 0, count( $ids ), '%d' ) ) . ')'
+				. ' AND clinic_id IN (' . implode( ',', array_fill( 0, $size, '%d' ) ) . ') LIMIT 1',
+				array_merge( $ids, $clinics )
+			);
+			if ( array() !== $rows ) {
 				return true;
 			}
 		}
 
 		return false;
+	}
+
+	/**
+	 * Does production's own resolution put this request inside a demo Clinic?
+	 *
+	 * @param list<int> $clinics Verified demo Clinics.
+	 * @return bool
+	 */
+	private static function resolved_scope_is_demo( array $clinics ): bool {
+		if ( ! class_exists( '\ClinicCore\Application\Scope\SystemClinicResolver' ) || ! class_exists( '\ClinicCore\Bootstrap\App' ) ) {
+			return false;
+		}
+		try {
+			$scope = \ClinicCore\Application\Scope\SystemClinicResolver::resolve( \ClinicCore\Bootstrap\App::db() );
+		} catch ( \Throwable $error ) {
+			// Production refuses to resolve an implicit scope (multi-Clinic site,
+			// no selection). That is not a demo tenant, and it is production's own
+			// refusal to make.
+			return false;
+		}
+		$clinic = (int) ( $scope->clinicId ?? 0 ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published production scope API.
+
+		return $clinic > 0 && in_array( $clinic, $clinics, true );
+	}
+
+	/**
+	 * The verified demo tenant scope for the barrier and the recorder.
+	 *
+	 * The fixture Clinic comes from the sealed manifest; any ADDITIONAL demo
+	 * Clinic comes from the sealed ownership ledger, which only registers a Clinic
+	 * it created itself. The ledger is optional here: an unreadable one leaves the
+	 * manifest Clinic in force, which is the narrowest correct scope.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return array{clinics:list<int>,locations:list<int>,organization_id:int}
+	 */
+	private static function demo_scope( array $manifest ): array {
+		$ids       = (array) ( $manifest['ids'] ?? array() );
+		$clinics   = array( (int) ( $ids['clinic_id'] ?? 0 ) );
+		$locations = array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) );
+		$org       = (int) ( $ids['organization_id'] ?? 0 );
+		try {
+			$env       = new Env();
+			$reader    = new ScopedManifest( $env );
+			$ownership = new ScopedOwnership( $env, $reader );
+			$summary   = $ownership->summary( (string) ( $manifest['fixture_id'] ?? '' ) );
+			foreach ( (array) ( $summary['clinic_ids'] ?? array() ) as $clinic_id ) {
+				$clinics[] = (int) $clinic_id;
+			}
+		} catch ( \Throwable $error ) {
+			// Keep the manifest Clinic only; never widen the scope on a failure.
+			unset( $error );
+		}
+
+		return array(
+			'clinics'         => array_values( array_unique( array_filter( $clinics, static fn ( int $id ): bool => $id > 1 ) ) ),
+			'locations'       => array_values( array_unique( array_filter( $locations ) ) ),
+			'organization_id' => $org,
+		);
 	}
 
 	/**
@@ -348,10 +547,9 @@ final class ScopedTenantGuard {
 	private static function snapshot( Env $env, Platform $platform, array $manifest ): array {
 		unset( $env );
 		$out    = array();
-		$ids    = (array) ( $manifest['ids'] ?? array() );
-		$clinic = (int) ( $ids['clinic_id'] ?? 0 );
-		$org    = (int) ( $ids['organization_id'] ?? 0 );
-		if ( $clinic <= 1 ) {
+		$scope  = self::demo_scope( $manifest );
+		$org    = (int) $scope['organization_id'];
+		if ( array() === $scope['clinics'] ) {
 			return $out;
 		}
 		foreach ( Preflight::KNOWN_TABLES as $short ) {
@@ -366,8 +564,8 @@ final class ScopedTenantGuard {
 			$clauses = array();
 			$params  = array();
 			if ( in_array( 'clinic_id', $cols, true ) ) {
-				$clauses[] = '`clinic_id` = %d';
-				$params[]  = $clinic;
+				$clauses[] = '`clinic_id` IN (' . implode( ',', array_fill( 0, count( $scope['clinics'] ), '%d' ) ) . ')';
+				$params    = array_merge( $params, $scope['clinics'] );
 			}
 			if ( $org > 1 && in_array( 'organization_id', $cols, true ) ) {
 				$clauses[] = '`organization_id` = %d';

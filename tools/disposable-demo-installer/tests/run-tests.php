@@ -1394,4 +1394,202 @@ Cpdd_Test::ok(
 	'notice-id: a phrase refusal is never reported as a CPMS-inactive refusal'
 );
 
+
+// ---------------------------------------------------------------------------
+// Standalone update protection (finding 5).
+//
+// The embedded core must never be replaced or shadowed by the production
+// update channel, while an unrelated plugin keeps updating normally. These are
+// behaviour tests against the real filter callbacks, not source assertions.
+// ---------------------------------------------------------------------------
+$refs_yes = array(
+	'clinic-practice-management/clinic-practice-management.php',
+	'clinic-practice-management',
+	'clinic-practice-management/anything.php',
+	'/var/www/wp-content/plugins/clinic-practice-management/clinic-practice-management.php',
+);
+foreach ( $refs_yes as $ref ) {
+	Cpdd_Test::ok(
+		\CpmsDemo\Standalone::is_production_reference( $ref ),
+		'update-guard: production reference recognised: ' . $ref
+	);
+}
+foreach ( array( 'akismet/akismet.php', 'clinic-practice-management-only/x.php', 'other/clinic-practice-management.php', '' ) as $ref ) {
+	Cpdd_Test::ok(
+		! \CpmsDemo\Standalone::is_production_reference( $ref ),
+		'update-guard: unrelated reference NOT matched: ' . ( '' === $ref ? '(empty)' : $ref )
+	);
+}
+
+$production_item = (object) array( 'slug' => 'clinic-practice-management', 'plugin' => 'clinic-practice-management/clinic-practice-management.php', 'new_version' => '1.0.1' );
+$other_item      = (object) array( 'slug' => 'akismet', 'plugin' => 'akismet/akismet.php', 'new_version' => '5.0' );
+$transient       = (object) array(
+	'response'     => array(
+		'clinic-practice-management/clinic-practice-management.php' => $production_item,
+		'akismet/akismet.php'                                       => $other_item,
+	),
+	'no_update'    => array(
+		'clinic-practice-management' => (object) array( 'slug' => 'clinic-practice-management' ),
+		'akismet/akismet.php'        => (object) array( 'slug' => 'akismet' ),
+	),
+	'checked'      => array(
+		'clinic-practice-management/clinic-practice-management.php' => '1.0.0',
+		'akismet/akismet.php'                                       => '4.9',
+	),
+	// A bucket keyed by something else entirely, whose ITEM is production.
+	'extra-bucket' => array( 'x' => (object) array( 'plugin' => 'clinic-practice-management/clinic-practice-management.php' ) ),
+	'translations' => array(
+		(object) array( 'slug' => 'clinic-practice-management', 'language' => 'fa_IR' ),
+		(object) array( 'slug' => 'akismet', 'language' => 'fa_IR' ),
+	),
+);
+$filtered = \CpmsDemo\Standalone::strip_production_update( $transient );
+Cpdd_Test::ok( ! isset( $filtered->response['clinic-practice-management/clinic-practice-management.php'] ), 'update-guard: basename-keyed production response removed' );
+Cpdd_Test::ok( ! isset( $filtered->no_update['clinic-practice-management'] ), 'update-guard: slug-keyed production no_update removed' );
+Cpdd_Test::ok( ! isset( $filtered->checked['clinic-practice-management/clinic-practice-management.php'] ), 'update-guard: production removed from checked' );
+Cpdd_Test::ok( isset( $filtered->response['akismet/akismet.php'] ), 'update-guard: unrelated plugin keeps its update' );
+Cpdd_Test::ok( isset( $filtered->no_update['akismet/akismet.php'] ), 'update-guard: unrelated plugin keeps no_update' );
+Cpdd_Test::ok( isset( $filtered->checked['akismet/akismet.php'] ), 'update-guard: unrelated plugin keeps checked' );
+Cpdd_Test::ok( array() === (array) ( $filtered->{'extra-bucket'} ), 'update-guard: a production ITEM is removed even under an unexpected key' );
+Cpdd_Test::equals( 1, count( (array) $filtered->translations ), 'update-guard: only the unrelated translation survives' );
+Cpdd_Test::equals( 'akismet', (string) $filtered->translations[0]->slug, 'update-guard: the surviving translation is the unrelated one' );
+Cpdd_Test::equals( 'akismet/akismet.php', (string) $filtered->response['akismet/akismet.php']->plugin, 'update-guard: the unrelated update item is untouched' );
+
+Cpdd_Test::ok( false === \CpmsDemo\Standalone::disable_production_auto_update( true, $production_item ), 'update-guard: auto-update disabled for the production item' );
+Cpdd_Test::ok( false === \CpmsDemo\Standalone::disable_production_auto_update( true, (object) array( 'slug' => 'clinic-practice-management' ) ), 'update-guard: auto-update disabled for a slug-only production item' );
+Cpdd_Test::ok( true === \CpmsDemo\Standalone::disable_production_auto_update( true, $other_item ), 'update-guard: auto-update still enabled for an unrelated plugin' );
+Cpdd_Test::ok( true === \CpmsDemo\Standalone::disable_production_auto_update( true, 'not-an-object' ), 'update-guard: a non-object item is left alone' );
+
+$package_cases = array(
+	'plugin basename' => array( 'plugin' => 'clinic-practice-management/clinic-practice-management.php' ),
+	'plugin slug'     => array( 'slug' => 'clinic-practice-management' ),
+	'package url'     => array( 'package' => 'https://example.test/clinic-practice-management.1.0.1.zip' ),
+);
+foreach ( $package_cases as $label => $hook_extra ) {
+	$result = \CpmsDemo\Standalone::refuse_production_package( null, $hook_extra );
+	Cpdd_Test::ok( is_wp_error( $result ), 'update-guard: install refused by ' . $label );
+	Cpdd_Test::equals( 'CPMS_DEMO_EMBEDDED_CORE', $result instanceof WP_Error ? $result->get_error_code() : '', 'update-guard: refusal code for ' . $label );
+}
+Cpdd_Test::ok( null === \CpmsDemo\Standalone::refuse_production_package( null, array( 'plugin' => 'akismet/akismet.php' ) ), 'update-guard: an unrelated plugin installs normally' );
+Cpdd_Test::ok( null === \CpmsDemo\Standalone::refuse_production_package( null, array( 'package' => 'https://example.test/other-plugin.zip' ) ), 'update-guard: an unrelated package URL installs normally' );
+$existing_error = new WP_Error( 'EXISTING', 'boom' );
+Cpdd_Test::ok( $existing_error === \CpmsDemo\Standalone::refuse_production_package( $existing_error, array( 'plugin' => 'clinic-practice-management/clinic-practice-management.php' ) ), 'update-guard: an existing error is never overwritten' );
+
+// --- Reverse activation: the production plugin must never join the demo. ---
+$GLOBALS['cpdd_test_transients'] = array();
+$admixed = \CpmsDemo\Standalone::keep_single_core(
+	array( 'akismet/akismet.php', 'clinic-practice-management/clinic-practice-management.php', 'cpms-disposable-demo/cpms-disposable-demo.php' ),
+	array()
+);
+Cpdd_Test::equals( array( 'akismet/akismet.php', 'cpms-disposable-demo/cpms-disposable-demo.php' ), array_values( $admixed ), 'activation-order: production is stripped from active_plugins' );
+Cpdd_Test::ok( \CpmsDemo\Standalone::take_blocked_activation(), 'activation-order: the stripped activation is recorded for the dashboard' );
+Cpdd_Test::ok( ! \CpmsDemo\Standalone::take_blocked_activation(), 'activation-order: the record is consumed exactly once' );
+Cpdd_Test::equals( 'string', gettype( \CpmsDemo\Standalone::keep_single_core( 'string' ) ), 'activation-order: a non-array option value passes through unchanged' );
+Cpdd_Test::equals( array( 'akismet/akismet.php' ), array_values( \CpmsDemo\Standalone::keep_single_core( array( 'akismet/akismet.php' ), array() ) ), 'activation-order: a legitimate activation list is untouched' );
+
+// The plugins screen: refused BEFORE WordPress includes the production file.
+$GLOBALS['cpdd_test_transients'] = array();
+$_GET     = array( 'action' => 'activate', 'plugin' => 'akismet/akismet.php' );
+$_REQUEST = $_GET;
+\CpmsDemo\Standalone::refuse_activation_request();
+Cpdd_Test::ok( ! \CpmsDemo\Standalone::take_blocked_activation(), 'activation-order: activating an unrelated plugin is not blocked' );
+
+$_GET     = array( 'action' => 'activate', 'plugin' => 'clinic-practice-management/clinic-practice-management.php' );
+$_REQUEST = $_GET;
+try {
+	\CpmsDemo\Standalone::refuse_activation_request();
+	Cpdd_Test::ok( false, 'activation-order: activating production while the demo is active must be refused' );
+} catch ( RuntimeException $e ) {
+	Cpdd_Test::ok( str_contains( $e->getMessage(), 'Production' ), 'activation-order: the refusal explains the production conflict in Persian' );
+}
+Cpdd_Test::ok( \CpmsDemo\Standalone::take_blocked_activation(), 'activation-order: the refused activation is recorded' );
+
+$_GET     = array( 'action' => 'activate-selected' );
+$_REQUEST = array( 'action' => 'activate-selected', 'checked' => array( 'akismet/akismet.php', 'clinic-practice-management' ) );
+try {
+	\CpmsDemo\Standalone::refuse_activation_request();
+	Cpdd_Test::ok( false, 'activation-order: a bulk activation containing production is refused' );
+} catch ( RuntimeException $e ) {
+	Cpdd_Test::ok( true, 'activation-order: a bulk activation containing production is refused' );
+}
+
+$_GET     = array( 'action' => 'deactivate', 'plugin' => 'clinic-practice-management/clinic-practice-management.php' );
+$_REQUEST = $_GET;
+\CpmsDemo\Standalone::refuse_activation_request();
+Cpdd_Test::ok( true, 'activation-order: deactivating production is not blocked' );
+
+// WP-CLI: the same refusal, before the command runs.
+$GLOBALS['cpdd_test_transients'] = array();
+$_GET     = array();
+$_REQUEST = array();
+WP_CLI::$error_message = '';
+\CpmsDemo\Standalone::refuse_cli_activation( array( 'akismet' ), array() );
+Cpdd_Test::equals( '', WP_CLI::$error_message, 'activation-order: wp plugin activate akismet is not blocked' );
+try {
+	\CpmsDemo\Standalone::refuse_cli_activation( array( 'clinic-practice-management' ), array() );
+	Cpdd_Test::ok( false, 'activation-order: wp plugin activate production must fail' );
+} catch ( RuntimeException $e ) {
+	Cpdd_Test::ok( str_contains( WP_CLI::$error_message, 'Production' ), 'activation-order: the CLI refusal explains the conflict' );
+}
+
+$cli_plugin_file = WP_PLUGIN_DIR . '/clinic-practice-management/clinic-practice-management.php';
+$cli_dir_created = ! is_dir( dirname( $cli_plugin_file ) );
+if ( $cli_dir_created ) {
+	mkdir( dirname( $cli_plugin_file ), 0777, true );
+}
+file_put_contents( $cli_plugin_file, "<?php\n" );
+try {
+	WP_CLI::$error_message = '';
+	$threw_all = false;
+	try {
+		\CpmsDemo\Standalone::refuse_cli_activation( array(), array( 'all' => true ) );
+	} catch ( RuntimeException $e ) {
+		$threw_all = true;
+	}
+	Cpdd_Test::ok( $threw_all, 'activation-order: wp plugin activate --all is refused while production is installed' );
+} finally {
+	unlink( $cli_plugin_file );
+	if ( $cli_dir_created ) {
+		rmdir( dirname( $cli_plugin_file ) );
+	}
+}
+WP_CLI::$error_message = '';
+$threw_after = false;
+try {
+	\CpmsDemo\Standalone::refuse_cli_activation( array(), array( 'all' => true ) );
+} catch ( RuntimeException $e ) {
+	$threw_after = true;
+}
+Cpdd_Test::ok( ! $threw_after, 'activation-order: --all is not refused when production is not installed' );
+
+// The barriers are registered only for an embedded build, and cover every
+// surface the option write can be reached from.
+cpdd_test_reset_hooks();
+$core_dir  = CPMS_DEMO_DIR . 'core';
+$core_main = $core_dir . '/clinic-practice-management.php';
+$made_core = ! is_dir( $core_dir );
+\CpmsDemo\Standalone::register_activation_barriers();
+Cpdd_Test::ok( ! in_array( 'load-plugins.php', cpdd_test_action_hooks(), true ), 'activation-order: a companion/absent core registers no barrier' );
+if ( $made_core ) {
+	mkdir( $core_dir, 0777, true );
+}
+$had_core = is_file( $core_main );
+file_put_contents( $core_main, "<?php\n" );
+try {
+	cpdd_test_reset_hooks();
+	\CpmsDemo\Standalone::register_activation_barriers();
+	$hooks = cpdd_test_action_hooks();
+	Cpdd_Test::ok( in_array( 'load-plugins.php', $hooks, true ), 'activation-order: the plugins screen is intercepted before the include' );
+	Cpdd_Test::ok( array() !== cpdd_test_hook_callbacks( 'pre_update_option_active_plugins' ), 'activation-order: the active_plugins write is filtered' );
+	Cpdd_Test::ok( array() !== ( $GLOBALS['cpdd_test_wpcli_hooks']['before_invoke:plugin activate'] ?? array() ), 'activation-order: WP-CLI is intercepted before the command' );
+} finally {
+	if ( ! $had_core ) {
+		unlink( $core_main );
+	}
+	if ( $made_core ) {
+		rmdir( $core_dir );
+	}
+}
+cpdd_test_reset_hooks();
+
 exit( Cpdd_Test::summary() );

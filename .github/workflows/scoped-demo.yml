@@ -23,6 +23,11 @@ on:
       - 'tools/disposable-demo-installer/**'
       - 'tests/scoped-demo/**'
       - 'docs/scoped-demo/**'
+      # The standalone ZIP EMBEDS clinic-practice-management/ at build time, so a
+      # production change changes this artifact. Without this trigger the lane
+      # would go green on a package it never rebuilt - exactly the kind of stale
+      # acceptance this workflow exists to prevent.
+      - 'clinic-practice-management/**'
   push:
     branches: [main]
     paths:
@@ -32,6 +37,11 @@ on:
       - 'tools/disposable-demo-installer/**'
       - 'tests/scoped-demo/**'
       - 'docs/scoped-demo/**'
+      # The standalone ZIP EMBEDS clinic-practice-management/ at build time, so a
+      # production change changes this artifact. Without this trigger the lane
+      # would go green on a package it never rebuilt - exactly the kind of stale
+      # acceptance this workflow exists to prevent.
+      - 'clinic-practice-management/**'
 
 permissions:
   contents: read

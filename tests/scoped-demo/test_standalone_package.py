@@ -113,10 +113,50 @@ class StandaloneBootstrap(unittest.TestCase):
             "pre_set_site_transient_update_plugins",
             "plugins_api",
             "auto_update_plugin",
+            # The channel WordPress offers outside the transient: a manual upload,
+            # a WP-CLI install, or an auto-update that already passed the filters.
+            "upgrader_pre_install",
         ):
             self.assertIn(hook, self.standalone)
-        self.assertIn("unset( $transient->{$bucket}[ self::PRODUCTION_SLUG ] );", self.standalone)
-        self.assertIn("return false;", self.standalone)
+        # Recognised by basename AND slug AND item, in every bucket - not only by
+        # the slug key, which is why the basename-keyed `response` survived before.
+        self.assertIn("public static function is_production_reference( string $reference ): bool {", self.standalone)
+        self.assertIn("private static function is_production_item( $item ): bool {", self.standalone)
+        strip = self.standalone[self.standalone.index("public static function strip_production_update("):]
+        strip = strip[: strip.index("public static function refuse_production_info(")]
+        self.assertIn("foreach ( array_keys( get_object_vars( $transient ) ) as $bucket ) {", strip)
+        self.assertIn("self::is_production_item( $transient->{$bucket}[ $key ] )", strip)
+        self.assertNotIn("[ self::PRODUCTION_SLUG ]", strip)
+        auto = self.standalone[self.standalone.index("public static function disable_production_auto_update("):]
+        auto = auto[: auto.index("public static function refuse_production_package(")]
+        self.assertIn("if ( self::is_production_item( $item ) ) {", auto)
+        self.assertNotIn("(string) ( $item->plugin ?? '' )", auto)
+        # And the behavioural proof lives in the PHP suite.
+        php = read(COMPANION / "tests" / "run-tests.php")
+        for probe in (
+            "update-guard: basename-keyed production response removed",
+            "update-guard: unrelated plugin keeps its update",
+            "'package url'",
+            "update-guard: an unrelated package URL installs normally",
+            "update-guard: auto-update still enabled for an unrelated plugin",
+            "activation-order: production is stripped from active_plugins",
+            "activation-order: the plugins screen is intercepted before the include",
+        ):
+            self.assertIn(probe, php)
+
+    def test_the_production_plugin_cannot_be_activated_beside_the_demo(self) -> None:
+        # Both activation orders, through real WordPress mechanisms.
+        self.assertIn("public static function register_activation_barriers(): void {", self.standalone)
+        self.assertIn("add_action( 'load-plugins.php', array( __CLASS__, 'refuse_activation_request' ), 0 );", self.standalone)
+        self.assertIn("add_filter( 'pre_update_option_active_plugins', array( __CLASS__, 'keep_single_core' ), PHP_INT_MAX, 2 );", self.standalone)
+        self.assertIn("'before_invoke:plugin activate'", self.standalone)
+        # Registered for an embedded build only, and wired from the plugin file.
+        barriers = self.standalone[self.standalone.index("public static function register_activation_barriers(): void {"):]
+        barriers = barriers[: barriers.index("public static function refuse_activation_request()")]
+        self.assertIn("if ( ! self::is_embedded() ) {", barriers)
+        self.assertIn("CpmsDemo\\Standalone::register_activation_barriers();", self.main)
+        # The Persian conflict report is surfaced where the owner will see it.
+        self.assertIn("data-cpdd-code=\"embedded_activation_blocked\"", read(COMPANION / "includes" / "class-cpms-demo-admin.php"))
 
 
 class NonEmptySiteInstallation(unittest.TestCase):
@@ -214,10 +254,25 @@ class SecurityFindingsDisposition(unittest.TestCase):
 
     def test_p0_row_registration_runs_when_the_actor_is_known(self) -> None:
         # Snapshotting only on `init` saw user 0 for every authenticated REST
-        # write, so the ledger stayed empty.
-        self.assertIn("add_action( 'admin_init', array( __CLASS__, 'begin_request' ), 0 );", self.guard)
+        # write, so the ledger stayed empty. The single "considered" flag made it
+        # worse: the `init` pass consumed it and every later pass returned early.
+        self.assertIn("add_action( 'wp_loaded', array( __CLASS__, 'guard_request' ), 0 );", self.guard)
+        self.assertIn("add_action( 'admin_init', array( __CLASS__, 'guard_request' ), 0 );", self.guard)
         self.assertIn("add_action( 'admin_post', array( __CLASS__, 'begin_request' ), 1 );", self.guard)
-        self.assertIn("private static bool $considered = false;", self.guard)
+        self.assertNotIn("$considered", self.guard)
+        # A decision is only taken when it cannot change: not-a-write and
+        # no-verified-fixture stand down, an unknown actor does not.
+        begin = self.guard[self.guard.index("public static function begin_request("):]
+        begin = begin[: begin.index("public static function finish_request(")]
+        self.assertIn("self::$standdown = true;", begin)
+        actor = begin[begin.index("if ( ! self::is_fixture_actor( $loaded ) ) {"):]
+        actor = actor[: actor.index("self::$fixture  = $fixture;")]
+        self.assertNotIn("standdown", actor)
+        self.assertNotIn("$considered", actor)
+        # Every surface is covered from one place, and REST keeps its own filter.
+        guard = self.guard[self.guard.index("public static function guard_request("):]
+        self.assertIn("self::begin_request();", guard)
+        self.assertIn("self::write_verdict( $method, $params )", guard)
         rest = self.guard[self.guard.index("public static function guard_rest_request("):]
         self.assertIn("self::begin_request();", rest)
 
@@ -260,11 +315,22 @@ class SecurityFindingsDisposition(unittest.TestCase):
         self.assertIn("private function operator_grant_is_bounded(", self.teardown)
         body = self.teardown[self.teardown.index("private function operator_grant_is_bounded("):]
         body = body[: body.index("private function normalize_mobile(")]
-        # Bound to the demo tenant and to the sealed operator, both re-proved.
+        # Bound to a VERIFIED demo tenant and to the sealed operator, both re-proved.
+        # Every verified demo Clinic counts (a demo may own more than one).
         self.assertIn("$context['tenant_org']", body)
-        self.assertIn("$context['tenant_clinic']", body)
+        self.assertIn("$context['demo_clinics']", body)
+        self.assertIn("in_array( $tenant, $clinics, true )", body)
         self.assertIn("$saw_operator", body)
         self.assertIn("return false;", body)
+        # And a membership row never falls through to a generic rule, so a
+        # synthetic inviter can never make a real person's membership deletable.
+        attributed = self.teardown[self.teardown.index("private function row_is_attributed("):]
+        attributed = attributed[: attributed.index("private function normalize_mobile(")]
+        self.assertIn("if ( in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {", attributed)
+        guard = attributed[attributed.index("self::OPERATOR_GRANT_TABLES"):]
+        guard = guard[: guard.index("return $this->operator_grant_is_bounded")]
+        self.assertIn("if ( ! isset( $context['registered'][ $short ][ $row_id ] ) ) {", guard)
+        self.assertIn("return false;", guard)
 
 
 class PackageContents(unittest.TestCase):

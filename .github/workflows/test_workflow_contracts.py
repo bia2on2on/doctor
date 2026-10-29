@@ -700,6 +700,28 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
             )
             self.assertEqual(0, compat.returncode, compat.stdout + compat.stderr)
 
+    def test_the_standalone_artifact_is_rebuilt_when_its_embedded_source_changes(self):
+        # The standalone ZIP embeds clinic-practice-management/ at build time. A
+        # production change therefore changes the artifact, and a lane that does
+        # not trigger on it would certify a package it never rebuilt.
+        for filename in ("standalone-demo.yml", "scoped-demo.yml"):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                events = text.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
+                blocks = {}
+                for chunk in re.split(r"(?m)^(?=  [a-z_]+:)", events):
+                    head = chunk.split(":", 1)[0].strip()
+                    if head:
+                        blocks[head] = chunk
+                for trigger in ("pull_request", "push"):
+                    self.assertIn(trigger, blocks)
+                    self.assertIn("      - 'clinic-practice-management/**'", blocks[trigger], trigger)
+                    self.assertIn("      - 'tools/disposable-demo-installer/**'", blocks[trigger], trigger)
+                # The build really does assemble the core from that source.
+                build = (ROOT / "bin" / "build-demo-installer.sh").read_text(encoding="utf-8")
+                self.assertIn("clinic-practice-management", build)
+                self.assertIn("core", build)
+
     def test_auto_sync_opens_a_reviewable_pr_and_never_merges(self):
         text = workflow("companion-sync.yml")
         self.assertIn("gh pr create", text)

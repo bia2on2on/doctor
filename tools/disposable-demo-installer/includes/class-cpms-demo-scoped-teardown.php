@@ -322,8 +322,10 @@ class ScopedTeardown {
 		'cpms_slot_holds' => '@mobile',
 		'cpms_sms_messages' => '@mobile',
 		'cpms_notifications' => '@recipient',
-		'cpms_clinic_memberships' => '@user',
-		'cpms_organization_memberships' => '@user',
+		// Membership rows are NEVER resolved by a generic rule: they can name a
+		// real person, so `row_is_attributed()` resolves OPERATOR_GRANT_TABLES
+		// before anything else (registered + operator-bounded, or refused).
+		'cpms_idempotency_keys' => '@user',
 	);
 
 	/**
@@ -408,8 +410,32 @@ class ScopedTeardown {
 		'cpms_custom_role_defs',
 		'cpms_drug_reference',
 		'cpms_doctor_consultation_fees',
-		'cpms_idempotency_keys',
 	);
+
+	/**
+	 * `cpms_idempotency_keys` is deliberately NOT configuration.
+	 *
+	 * It used to be, which made every row in that table - including one a real
+	 * accountant created while a real payment was captured for a real patient
+	 * inside the demo Clinic - claimed unconditionally. An idempotency row carries
+	 * `wp_user_id`, so it is attributed like every other actor-scoped row: the
+	 * sealed ledger registration (the demo's own request recorder) or a synthetic
+	 * fixture account. A row an ANONYMOUS request created is refused rather than
+	 * assumed: production replay protection is untouched (this table is never
+	 * rewritten by the demo), and refusing to delete is always safe.
+	 */
+
+	/**
+	 * Maximum fixed-point passes over the candidate rows.
+	 *
+	 * Attribution is monotone: a row is claimed only through a parent that is
+	 * already proven, so the deepest legitimate chain (identity -> patient ->
+	 * appointment -> visit -> invoice -> payment -> adjustment) settles well
+	 * inside this bound. A chain that cannot settle - an unknown or circular
+	 * dependency - leaves its rows unproven, which refuses the teardown instead
+	 * of deleting them.
+	 */
+	private const ATTRIBUTION_PASSES = 14;
 
 	/**
 	 * Which table each sealed manifest id belongs to.
@@ -1198,12 +1224,18 @@ class ScopedTeardown {
 	 * @return array{problems:list<string>,counts:array<string,int>}
 	 */
 	private function attribution_problems( array $scope, array $manifest, array $ledger ): array {
-		$ids       = (array) ( $manifest['ids'] ?? array() );
-		$fixture   = (string) ( $manifest['fixture_id'] ?? '' );
-		$mobile    = $this->normalize_mobile( (string) ( $manifest['patient_mobile'] ?? '' ) );
-		$users     = array_map( 'intval', (array) ( $ids['user_ids'] ?? array() ) );
+		$ids        = (array) ( $manifest['ids'] ?? array() );
+		$fixture    = (string) ( $manifest['fixture_id'] ?? '' );
+		$mobile     = $this->normalize_mobile( (string) ( $manifest['patient_mobile'] ?? '' ) );
+		$users      = array_map( 'intval', (array) ( $ids['user_ids'] ?? array() ) );
+		// The THIRD argument is the verified ledger summary, and its registrations
+		// are the durable ownership evidence a demo workflow or the demo's request
+		// recorder wrote. Reading `$ledger['row_keys']` off an argument that was
+		// ALREADY the row-keys map unwrapped the structure twice, so the map was
+		// always empty and a registered row was never attributed - the exact
+		// "registered rows do not participate" defect.
 		$registered = (array) ( $ledger['row_keys'] ?? array() );
-		$sealed    = array();
+		$sealed     = array();
 		foreach ( $ids as $key => $value ) {
 			$table = (string) ( self::SEALED_KEY_TABLES[ (string) $key ] ?? '' );
 			if ( '' === $table ) {
@@ -1219,41 +1251,45 @@ class ScopedTeardown {
 			}
 		}
 		$operators = array_map( 'intval', (array) ( $manifest['admin_id'] ?? 0 ) );
-		$context = array(
-			'mobile'     => $mobile,
-			'users'      => $users,
+		// Every VERIFIED demo Clinic: the fixture's own plus the ones the sealed
+		// ledger registered. Nothing else is ever a demo tenant.
+		$demo_clinics = array_values(
+			array_unique(
+				array_filter(
+					array_merge(
+						array( (int) ( $ids['clinic_id'] ?? 0 ) ),
+						array_map( 'intval', (array) ( $ledger['clinic_ids'] ?? array() ) )
+					)
+				)
+			)
+		);
+		$base = array(
+			'mobile'        => $mobile,
+			'users'         => $users,
 			// The administrator who created the demo is part of its setup: the
 			// provisioner stamps that account as the creator of several synthetic
 			// rows. It is allowed as an ACTOR reference, but it is never a tenant and
 			// never proof of ownership on its own.
-			'operators'  => array_values( array_filter( $operators ) ),
-			'fixture'    => $fixture,
+			'operators'     => array_values( array_filter( $operators ) ),
+			'fixture'       => $fixture,
 			'tenant_org'    => (int) ( $ids['organization_id'] ?? 0 ),
 			'tenant_clinic' => (int) ( $ids['clinic_id'] ?? 0 ),
-			'sealed'     => $sealed,
-			'registered' => $registered,
-			'patients'   => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patients'] ?? array() ) ), true ),
-			'identities' => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_patient_identities'] ?? array() ) ), true ),
-			'visits'     => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_visits'] ?? array() ) ), true ),
-			'threads'    => array_fill_keys( array_map( 'intval', (array) ( $scope['tables']['cpms_message_threads'] ?? array() ) ), true ),
-			// Parent lookup for PARENT_RULES: the id is only accepted when the
-			// parent row is itself inside the attributed set. A parent that is
-			// missing from the scope (a foreign parent outside the demo tenant)
-			// therefore refuses the child instead of inheriting the tenant.
-			'parents'    => array(),
+			'demo_clinics'  => $demo_clinics,
+			'sealed'        => $sealed,
+			'registered'    => $registered,
+			// Parent sets are filled in per pass from PROVEN rows only.
+			'patients'      => array(),
+			'identities'    => array(),
+			'visits'        => array(),
+			'threads'       => array(),
+			'parents'       => array(),
 		);
-		foreach ( self::PARENT_RULES as $parent_rule ) {
-			$parent_table = (string) $parent_rule[0];
-			$context['parents'][ $parent_table ] = array_fill_keys(
-				array_map( 'intval', (array) ( $scope['tables'][ $parent_table ] ?? array() ) ),
-				true
-			);
-		}
 
-		$problems = array();
-		$counts   = array();
-		$limit    = 5;
+		// Load every candidate row once. Attribution then runs in memory, so a
+		// child is only ever claimed through a parent that is itself proven.
+		$candidates = array();
 		foreach ( (array) ( $scope['tables'] ?? array() ) as $short => $row_ids ) {
+			$short = (string) $short;
 			if ( in_array( $short, self::GLOBAL_TABLES, true ) || in_array( $short, self::PRESERVED_PARENT_TABLES, true ) ) {
 				continue;
 			}
@@ -1261,9 +1297,10 @@ class ScopedTeardown {
 			if ( array() === $row_ids ) {
 				continue;
 			}
-			$full = $this->platform->table( (string) $short );
+			$full = $this->platform->table( $short );
 			$cols = $this->platform->columns( $full );
 			if ( ! in_array( 'id', $cols, true ) ) {
+				// Composite-key tables are loaded below, by their verified key.
 				continue;
 			}
 			$rows = $this->platform->fetch_all(
@@ -1272,15 +1309,87 @@ class ScopedTeardown {
 			);
 			foreach ( $rows as $row ) {
 				$row_id = (int) ( $row['id'] ?? 0 );
-				if ( $row_id <= 0 ) {
+				if ( $row_id > 0 ) {
+					$candidates[ $short ][ (string) $row_id ] = $row;
+				}
+			}
+		}
+		// Composite-key candidates carry no surrogate id. They used to be skipped
+		// by attribution altogether - collected, then deleted without being proven.
+		foreach ( (array) ( $scope['composite'] ?? array() ) as $short => $entries ) {
+			$short = (string) $short;
+			$key   = (array) ( self::COMPOSITE_KEY_TABLES[ $short ] ?? array() );
+			if ( array() === $key || array() === (array) $entries ) {
+				continue;
+			}
+			$full = $this->platform->table( $short );
+			$cols = $this->platform->columns( $full );
+			$ok   = true;
+			$where = array();
+			foreach ( $key as $column ) {
+				if ( ! in_array( (string) $column, $cols, true ) ) {
+					$ok = false;
+					break;
+				}
+				$where[] = '`' . $column . '` = %s';
+			}
+			if ( ! $ok ) {
+				continue;
+			}
+			foreach ( (array) $entries as $fingerprint => $tuple ) {
+				$rows = $this->platform->fetch_all(
+					'SELECT * FROM `' . $full . '` WHERE ' . implode( ' AND ', $where ) . ' LIMIT 1',
+					array_map( 'strval', (array) $tuple )
+				);
+				if ( array() !== $rows ) {
+					$candidates[ $short ][ (string) $fingerprint ] = $rows[0];
+				}
+			}
+		}
+
+		// Dependency-ordered, monotone fixed point. `$proven` only ever grows and
+		// every entry rests on a rule that was evaluated against ALREADY proven
+		// parents, so nothing circular can bootstrap itself into ownership.
+		$proven = array();
+		$passes = 0;
+		do {
+			$changed = false;
+			$context = $this->attribution_context( $base, $proven );
+			$order   = Preflight::KNOWN_TABLES;
+			foreach ( array_keys( $candidates ) as $extra ) {
+				if ( ! in_array( (string) $extra, $order, true ) ) {
+					$order[] = (string) $extra;
+				}
+			}
+			foreach ( $order as $short ) {
+				if ( ! isset( $candidates[ $short ] ) ) {
 					continue;
 				}
-				if ( $this->row_is_attributed( (string) $short, $row, $context ) ) {
+				foreach ( $candidates[ $short ] as $row_key => $row ) {
+					if ( isset( $proven[ $short ][ $row_key ] ) ) {
+						continue;
+					}
+					if ( ! $this->row_is_attributed( (string) $short, $row, $context ) ) {
+						continue;
+					}
+					$proven[ $short ][ $row_key ] = true;
+					$changed                      = true;
+				}
+			}
+			++$passes;
+		} while ( $changed && $passes < self::ATTRIBUTION_PASSES );
+
+		$problems = array();
+		$counts   = array();
+		$limit    = 5;
+		foreach ( $candidates as $short => $rows ) {
+			foreach ( $rows as $row_key => $row ) {
+				if ( isset( $proven[ $short ][ $row_key ] ) ) {
 					continue;
 				}
 				$counts[ (string) $short ] = (int) ( $counts[ (string) $short ] ?? 0 ) + 1;
 				if ( $limit > 0 ) {
-					$problems[] = 'SCOPED_FOREIGN_TENANT_ROW:' . $short . ':' . $row_id;
+					$problems[] = 'SCOPED_FOREIGN_TENANT_ROW:' . $short . ':' . $row_key;
 					--$limit;
 				}
 			}
@@ -1293,7 +1402,36 @@ class ScopedTeardown {
 			$problems[] = 'SCOPED_FOREIGN_TENANT_ROW_TOTAL: ' . implode( ', ', $summary );
 		}
 
-		return array( 'problems' => $problems, 'counts' => $counts );
+		return array( 'problems' => $problems, 'counts' => $counts, 'proven' => $proven );
+	}
+
+	/**
+	 * Attribution context for one pass: parent sets come from PROVEN rows only.
+	 *
+	 * Copying the candidate sets here was the transitive-attribution defect: a
+	 * real patient who booked into the demo Clinic is a *candidate* (the tenant
+	 * boundary collects them), so every candidate visit/invoice/payment that named
+	 * that patient was "attributed" - and deleted. Proven sets are disjoint from
+	 * candidates: a row enters one only after a rule grounded in independent
+	 * evidence accepted it.
+	 *
+	 * @param array<string,mixed> $base   Context without parent sets.
+	 * @param array<string,mixed> $proven table => (row key => true).
+	 * @return array<string,mixed>
+	 */
+	private function attribution_context( array $base, array $proven ): array {
+		$context                = $base;
+		$context['patients']    = (array) ( $proven['cpms_patients'] ?? array() );
+		$context['identities']  = (array) ( $proven['cpms_patient_identities'] ?? array() );
+		$context['visits']      = (array) ( $proven['cpms_visits'] ?? array() );
+		$context['threads']     = (array) ( $proven['cpms_message_threads'] ?? array() );
+		$context['parents']     = array();
+		foreach ( self::PARENT_RULES as $parent_rule ) {
+			$parent_table = (string) $parent_rule[0];
+			$context['parents'][ $parent_table ] = (array) ( $proven[ $parent_table ] ?? array() );
+		}
+
+		return $context;
 	}
 
 	/**
@@ -1306,15 +1444,27 @@ class ScopedTeardown {
 	 */
 	private function row_is_attributed( string $short, array $row, array $context ): bool {
 		$row_id = (int) ( $row['id'] ?? 0 );
+		// Membership rows are the one family that can name a REAL person, so they
+		// are decided before every generic rule and never fall through to one.
+		//
+		// The hole this closes: a synthetic manager who invited a real
+		// administrator into the demo Clinic produced a membership row whose
+		// `wp_user_id` is that administrator and whose `invited_by_wp_user_id` is
+		// the synthetic manager. The generic `@user` rule matched the INVITER and
+		// called the row demo-owned - so a real person's membership was deleted
+		// because a synthetic account had created it. Ownership of a grant is now
+		// only ever explicit registration plus a re-proved operator binding.
+		if ( in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {
+			if ( ! isset( $context['registered'][ $short ][ $row_id ] ) ) {
+				return false;
+			}
+
+			return $this->operator_grant_is_bounded( $short, $row, $context );
+		}
 		// A row the demo explicitly registered is owned by definition: that is the
 		// durable ownership registration a controlled demo workflow writes.
 		if ( isset( $context['registered'][ $short ][ $row_id ] ) ) {
-			if ( ! in_array( $short, self::OPERATOR_GRANT_TABLES, true ) ) {
-				return true;
-			}
-			// Operator grants are the one registration that can name a real
-			// account. Re-prove the binding here instead of trusting the writer.
-			return $this->operator_grant_is_bounded( $short, $row, $context );
+			return true;
 		}
 		// A row whose exact (table, id) the sealed manifest names was created by
 		// the demo at provisioning time. The TABLE is part of the identity: a
@@ -1460,14 +1610,19 @@ class ScopedTeardown {
 		if ( array() === $operators ) {
 			return false;
 		}
+		// The row must belong to a VERIFIED demo tenant. Every verified demo Clinic
+		// counts, not only the fixture's first one: a demo may own more than one
+		// Clinic (`ScopedClinics::create()`), and refusing those would block a
+		// legitimate teardown instead of protecting anybody.
 		if ( 'cpms_organization_memberships' === $short ) {
 			$tenant = (int) ( $row['organization_id'] ?? 0 );
 			if ( $tenant <= 0 || $tenant !== (int) ( $context['tenant_org'] ?? 0 ) ) {
 				return false;
 			}
 		} else {
-			$tenant = (int) ( $row['clinic_id'] ?? 0 );
-			if ( $tenant <= 1 || $tenant !== (int) ( $context['tenant_clinic'] ?? 0 ) ) {
+			$tenant  = (int) ( $row['clinic_id'] ?? 0 );
+			$clinics = array_map( 'intval', (array) ( $context['demo_clinics'] ?? array() ) );
+			if ( $tenant <= 1 || ! in_array( $tenant, $clinics, true ) ) {
 				return false;
 			}
 		}
@@ -1678,7 +1833,7 @@ class ScopedTeardown {
 		// Stage 1 gate: every candidate row must be attributable to a fixture
 		// artifact. This is what stops a real patient's booking, or a real member
 		// of staff's write, from ever being deleted as demo data.
-		$attribution = $this->attribution_problems( $scope, $manifest, (array) ( $tenants['row_keys'] ?? array() ) );
+		$attribution = $this->attribution_problems( $scope, $manifest, $tenants );
 		if ( array() !== $scope['processing_jobs'] ) {
 			$problems[] = 'JOBS_ACTIVE: ' . implode( ',', $scope['processing_jobs'] );
 		}

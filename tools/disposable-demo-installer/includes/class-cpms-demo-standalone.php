@@ -339,6 +339,243 @@ final class Standalone {
 		add_filter( 'pre_set_site_transient_update_plugins', array( __CLASS__, 'strip_production_update' ), PHP_INT_MAX );
 		add_filter( 'plugins_api', array( __CLASS__, 'refuse_production_info' ), PHP_INT_MAX, 3 );
 		add_filter( 'auto_update_plugin', array( __CLASS__, 'disable_production_auto_update' ), PHP_INT_MAX, 2 );
+		// An update that arrives OUTSIDE the transient (a manual "upload plugin",
+		// a WP-CLI install, an auto-update that already passed the filters) would
+		// still unpack `clinic-practice-management/` next to the embedded core.
+		add_filter( 'upgrader_pre_install', array( __CLASS__, 'refuse_production_package' ), PHP_INT_MAX, 2 );
+	}
+
+	/**
+	 * Transient that records a refused production activation.
+	 *
+	 * WordPress has no single choke point for "activate this plugin", so the
+	 * refusal is enforced at the two places the decision is actually made (the
+	 * plugins screen and WP-CLI) and again at the point the decision would become
+	 * PERMANENT (the `active_plugins` option write). A refusal that only happened
+	 * in the option filter would be silent, so it is recorded for the dashboard
+	 * notice.
+	 */
+	public const BLOCKED_TRANSIENT = 'cpms_demo_production_activation_blocked';
+
+	/**
+	 * Refuse to run two CPMS cores at once, in either activation order.
+	 *
+	 * Order A (this one) is: the standalone demo is active, and an administrator
+	 * activates the production plugin. WordPress would then include
+	 * `clinic-practice-management/clinic-practice-management.php` into a request
+	 * where the embedded copy of the SAME file is already loaded: `CPMS_VERSION`,
+	 * `CPMS_PLUGIN_FILE` and friends are redefined (PHP warnings), the production
+	 * autoloader is registered a second time, `App::boot()` runs twice and
+	 * `App::activate()` migrates and schedules a second time. Nothing about that
+	 * is recoverable from here, so the activation is refused before the include.
+	 *
+	 * Order B (production already active, demo activated) is handled by the demo's
+	 * own activation hook, which deactivates itself and explains why.
+	 *
+	 * @return void
+	 */
+	public static function register_activation_barriers(): void {
+		if ( ! self::is_embedded() ) {
+			// Companion build: the production plugin IS the core. Nothing to bar.
+			return;
+		}
+		add_action( 'load-plugins.php', array( __CLASS__, 'refuse_activation_request' ), 0 );
+		// Defence in depth for every path that reaches WordPress without the
+		// plugins screen (another plugin calling `activate_plugin()`, a custom
+		// admin page, a script): the option write is where a two-core state
+		// becomes permanent, so it is filtered too.
+		add_filter( 'pre_update_option_active_plugins', array( __CLASS__, 'keep_single_core' ), PHP_INT_MAX, 2 );
+		if ( class_exists( '\\WP_CLI' ) ) {
+			// WP-CLI loads this plugin (it is active) before running the command,
+			// so `wp plugin activate clinic-practice-management` would hit exactly
+			// the same double include. `before_invoke` is the documented hook that
+			// runs first in that process.
+			\WP_CLI::add_hook( 'before_invoke:plugin activate', array( __CLASS__, 'refuse_cli_activation' ) );
+		}
+	}
+
+	/**
+	 * Refuse a plugins-screen activation of the production build.
+	 *
+	 * `load-plugins.php` runs inside `wp-admin/admin.php`, i.e. BEFORE
+	 * `wp-admin/plugins.php` dispatches `action=activate`, so the production plugin
+	 * file is never included. Covers single, bulk and network-admin activation.
+	 *
+	 * @return void
+	 */
+	public static function refuse_activation_request(): void {
+		$action = isset( $_GET['action'] ) ? sanitize_key( (string) wp_unslash( $_GET['action'] ) ) : '';
+		if ( 'activate' !== $action && 'activate-selected' !== $action ) {
+			return;
+		}
+		if ( ! current_user_can( 'activate_plugins' ) ) {
+			// WordPress refuses this itself, with its own message.
+			return;
+		}
+		$requested = array();
+		if ( 'activate' === $action ) {
+			$single = isset( $_GET['plugin'] ) ? (string) wp_unslash( $_GET['plugin'] ) : '';
+			if ( '' !== $single ) {
+				$requested[] = $single;
+			}
+		} elseif ( isset( $_REQUEST['checked'] ) ) {
+			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- every element is matched against a fixed basename below, never used as a path.
+			$requested = (array) wp_unslash( $_REQUEST['checked'] );
+		}
+		foreach ( $requested as $plugin ) {
+			if ( ! is_string( $plugin ) || ! self::is_production_reference( $plugin ) ) {
+				continue;
+			}
+			self::record_blocked_activation();
+
+			wp_die(
+				esc_html( self::activation_blocked_message() ),
+				esc_html__( 'CPMS Demo: فعال‌سازی افزونهٔ Production مسدود شد', 'cpms' ),
+				array( 'back_link' => true )
+			);
+		}
+	}
+
+	/**
+	 * Refuse `wp plugin activate` for the production build.
+	 *
+	 * @param array<int,string>    $args       Positional arguments.
+	 * @param array<string,mixed>  $assoc_args Associative arguments.
+	 * @return void
+	 */
+	public static function refuse_cli_activation( $args = array(), $assoc_args = array() ): void {
+		$args  = is_array( $args ) ? array_values( array_filter( $args, 'is_string' ) ) : array();
+		$all   = is_array( $assoc_args ) && ( ! empty( $assoc_args['all'] ) );
+		$found = false;
+		foreach ( $args as $plugin ) {
+			if ( self::is_production_reference( $plugin ) ) {
+				$found = true;
+				break;
+			}
+		}
+		if ( ! $found && $all && defined( 'WP_PLUGIN_DIR' ) && is_file( (string) WP_PLUGIN_DIR . '/' . self::PRODUCTION_BASENAME ) ) {
+			// `--all` would activate it as well.
+			$found = true;
+		}
+		if ( ! $found ) {
+			return;
+		}
+		self::record_blocked_activation();
+		\WP_CLI::error( self::activation_blocked_message() );
+	}
+
+	/**
+	 * Keep `active_plugins` free of the production build while embedded.
+	 *
+	 * @param mixed $value     New option value.
+	 * @param mixed $old_value Previous option value.
+	 * @return mixed
+	 */
+	public static function keep_single_core( $value, $old_value = array() ) {
+		unset( $old_value );
+		if ( ! is_array( $value ) ) {
+			return $value;
+		}
+		$kept      = array();
+		$had_match = false;
+		foreach ( $value as $plugin ) {
+			if ( is_string( $plugin ) && self::is_production_reference( $plugin ) ) {
+				$had_match = true;
+				continue;
+			}
+			$kept[] = $plugin;
+		}
+		if ( $had_match ) {
+			self::record_blocked_activation();
+		}
+
+		return $kept;
+	}
+
+	/**
+	 * Persian explanation for a refused production activation.
+	 *
+	 * @return string
+	 */
+	public static function activation_blocked_message(): string {
+		return 'این بستهٔ «دموی مستقل» هستهٔ CPMS را همراه خود دارد و همین حالا فعال است. '
+			. 'فعال‌سازی افزونهٔ Production «Clinic Practice Management» کنار آن، دو هستهٔ CPMS روی یک نصب می‌سازد '
+			. '(تعریف دوبارهٔ کلاس‌ها و ثابت‌ها، ثبت دوبارهٔ زمان‌بندی و مسیرهای REST، و ابهام در مالکیت داده)؛ '
+			. 'برای همین فعال‌سازی انجام نشد و هیچ تغییری روی سایت اعمال نشد. '
+			. 'اگر می‌خواهید افزونهٔ Production را فعال کنید، نخست این بستهٔ دمو را غیرفعال کنید.';
+	}
+
+	/**
+	 * Record a refused activation so the dashboard can explain it.
+	 *
+	 * @return void
+	 */
+	private static function record_blocked_activation(): void {
+		if ( function_exists( 'set_transient' ) ) {
+			set_transient( self::BLOCKED_TRANSIENT, 1, 10 * MINUTE_IN_SECONDS );
+		}
+	}
+
+	/**
+	 * Consume the recorded refusal.
+	 *
+	 * @return bool
+	 */
+	public static function take_blocked_activation(): bool {
+		if ( ! function_exists( 'get_transient' ) ) {
+			return false;
+		}
+		$blocked = (bool) get_transient( self::BLOCKED_TRANSIENT );
+		if ( $blocked ) {
+			delete_transient( self::BLOCKED_TRANSIENT );
+		}
+
+		return $blocked;
+	}
+
+	/**
+	 * Is this plugin reference the production build of CPMS?
+	 *
+	 * WordPress addresses a plugin by BASENAME (`clinic-practice-management/…php`)
+	 * in some places and by SLUG (`clinic-practice-management`) in others, and the
+	 * original guard only recognised the slug - so an update transient keyed by
+	 * basename, which is the normal shape of `$transient->response`, was left
+	 * untouched. Both, plus the individual item, are recognised here.
+	 *
+	 * @param string $reference Basename, slug or absolute path.
+	 * @return bool
+	 */
+	public static function is_production_reference( string $reference ): bool {
+		$reference = trim( str_replace( '\\', '/', $reference ), '/' );
+		if ( '' === $reference ) {
+			return false;
+		}
+		$basename = self::PRODUCTION_BASENAME;
+		$slug     = self::PRODUCTION_SLUG;
+
+		return $reference === $basename
+			|| $reference === $slug
+			|| ( 0 === strpos( $reference, $slug . '/' ) )
+			|| ( substr( $reference, -strlen( '/' . $basename ) ) === '/' . $basename );
+	}
+
+	/**
+	 * Is this update item the production build?
+	 *
+	 * @param mixed $item Update item.
+	 * @return bool
+	 */
+	private static function is_production_item( $item ): bool {
+		if ( ! is_object( $item ) ) {
+			return false;
+		}
+		foreach ( array( 'plugin', 'slug' ) as $key ) {
+			if ( isset( $item->{$key} ) && is_string( $item->{$key} ) && self::is_production_reference( $item->{$key} ) ) {
+				return true;
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -354,10 +591,32 @@ final class Standalone {
 		if ( ! is_object( $transient ) ) {
 			return $transient;
 		}
-		foreach ( array( 'response', 'no_update' ) as $bucket ) {
-			if ( isset( $transient->{$bucket} ) && is_array( $transient->{$bucket} ) ) {
-				unset( $transient->{$bucket}[ self::PRODUCTION_SLUG ] );
+		// EVERY bucket, not a hard-coded list: the production copy must not survive
+		// in `response`, `no_update`, `checked`, `upgrade_notice` or any bucket a
+		// future WordPress version adds. `translations` is a list of objects and is
+		// handled below so that a production language pack is dropped too.
+		foreach ( array_keys( get_object_vars( $transient ) ) as $bucket ) {
+			if ( 'translations' === $bucket || ! is_array( $transient->{$bucket} ) ) {
+				continue;
 			}
+			foreach ( array_keys( $transient->{$bucket} ) as $key ) {
+				if ( self::is_production_reference( (string) $key ) || self::is_production_item( $transient->{$bucket}[ $key ] ) ) {
+					unset( $transient->{$bucket}[ $key ] );
+				}
+			}
+		}
+		// Translations are updates too: a language pack for a plugin that is not
+		// installed is noise, and it is a channel we do not need to keep open.
+		if ( isset( $transient->translations ) && is_array( $transient->translations ) ) {
+			$kept = array();
+			foreach ( $transient->translations as $translation ) {
+				$slug = is_object( $translation ) ? (string) ( $translation->slug ?? '' ) : '';
+				if ( self::is_production_reference( $slug ) ) {
+					continue;
+				}
+				$kept[] = $translation;
+			}
+			$transient->translations = $kept;
 		}
 
 		return $transient;
@@ -375,7 +634,7 @@ final class Standalone {
 		if ( 'plugin_information' !== (string) $action || ! is_object( $args ) ) {
 			return $result;
 		}
-		if ( (string) ( $args->slug ?? '' ) !== self::PRODUCTION_SLUG ) {
+		if ( ! self::is_production_reference( (string) ( $args->slug ?? '' ) ) ) {
 			return $result;
 		}
 
@@ -393,10 +652,55 @@ final class Standalone {
 	 * @return mixed
 	 */
 	public static function disable_production_auto_update( $update, $item ) {
-		if ( is_object( $item ) && (string) ( $item->plugin ?? '' ) === self::PRODUCTION_BASENAME ) {
+		if ( self::is_production_item( $item ) ) {
 			return false;
 		}
 
 		return $update;
+	}
+
+	/**
+	 * Refuse to unpack the production plugin next to the embedded core.
+	 *
+	 * This is the last channel: `upgrader_pre_install` runs for every install and
+	 * update source WordPress has (upload, WP-CLI, auto-update, direct download),
+	 * and refusing here means the embedded core can never be shadowed by a second
+	 * copy - which is the state every other guard in this class exists to prevent.
+	 * Unrelated plugins are untouched.
+	 *
+	 * @param mixed $response Short-circuit value (true or WP_Error).
+	 * @param mixed $hook_extra Extra arguments.
+	 * @return mixed
+	 */
+	public static function refuse_production_package( $response, $hook_extra ) {
+		if ( is_wp_error( $response ) || ! is_array( $hook_extra ) ) {
+			return $response;
+		}
+		foreach ( array( 'plugin', 'slug', 'package' ) as $key ) {
+			if ( ! isset( $hook_extra[ $key ] ) || ! is_string( $hook_extra[ $key ] ) ) {
+				continue;
+			}
+			$value = (string) $hook_extra[ $key ];
+			if ( 'package' === $key ) {
+				// A package URL names the ARTEFACT, not the plugin, so the file name
+				// decides. The slug followed only by a version suffix and `.zip` is
+				// the production build; `clinic-practice-management-pro.zip` and
+				// every other unrelated artefact keep installing.
+				$path = (string) ( wp_parse_url( $value, PHP_URL_PATH ) ?? $value );
+				$name = basename( '' === $path ? $value : $path );
+				if ( 1 !== preg_match( '#^' . preg_quote( self::PRODUCTION_SLUG, '#' ) . '(?:[.\-]\d[^/]*)?\.zip$#i', $name ) ) {
+					continue;
+				}
+			} elseif ( ! self::is_production_reference( $value ) ) {
+				continue;
+			}
+
+			return new \WP_Error(
+				'CPMS_DEMO_EMBEDDED_CORE',
+				__( 'هستهٔ CPMS همراه همین بستهٔ دمو نصب است؛ نصب یا به‌روزرسانی افزونهٔ Production کنار آن دو هستهٔ هم‌زمان می‌سازد و مسدود شد.', 'cpms' )
+			);
+		}
+
+		return $response;
 	}
 }

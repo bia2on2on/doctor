@@ -138,6 +138,132 @@ function delete_option( string $name ): bool {
 	return $env instanceof Cpdd_Fake_Env ? $env->option_delete( $name ) : false;
 }
 
+// --- Update/activation shim: filters, transients, WP_Error, WP-CLI. ---------
+// Test-only doubles for the WordPress surfaces the standalone guards use.
+if ( ! defined( 'MINUTE_IN_SECONDS' ) ) {
+	define( 'MINUTE_IN_SECONDS', 60 );
+}
+if ( ! defined( 'WP_PLUGIN_DIR' ) ) {
+	define( 'WP_PLUGIN_DIR', sys_get_temp_dir() . '/cpdd-plugins' );
+}
+
+function add_filter( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
+	$GLOBALS['cpdd_test_filters'][ $hook ][] = compact( 'callback', 'priority', 'accepted_args' );
+
+	return true;
+}
+
+/**
+ * @param mixed $value Value.
+ * @param mixed ...$args Extra arguments.
+ * @return mixed
+ */
+function apply_filters( string $hook, $value, ...$args ) {
+	$registered = (array) ( $GLOBALS['cpdd_test_filters'][ $hook ] ?? array() );
+	usort(
+		$registered,
+		static fn ( array $a, array $b ): int => $a['priority'] <=> $b['priority']
+	);
+	foreach ( $registered as $entry ) {
+		$value = ( $entry['callback'] )( $value, ...$args );
+	}
+
+	return $value;
+}
+
+/**
+ * @param string $hook Hook name.
+ * @return list<mixed>
+ */
+function cpdd_test_hook_callbacks( string $hook ): array {
+	return array_map(
+		static fn ( array $entry ) => $entry['callback'],
+		(array) ( $GLOBALS['cpdd_test_filters'][ $hook ] ?? array() )
+	);
+}
+
+function cpdd_test_reset_hooks(): void {
+	$GLOBALS['cpdd_test_filters']       = array();
+	$GLOBALS['cpdd_test_hooks']         = array();
+	$GLOBALS['cpdd_test_wpcli_hooks']   = array();
+}
+
+/**
+ * Action hook names recorded by `add_action()`.
+ *
+ * @return list<string>
+ */
+function cpdd_test_action_hooks(): array {
+	return array_map( static fn ( array $entry ): string => (string) $entry['hook'], (array) ( $GLOBALS['cpdd_test_hooks'] ?? array() ) );
+}
+
+if ( ! class_exists( 'WP_Error' ) ) {
+	/**
+	 * Minimal WP_Error double.
+	 */
+	class WP_Error {
+
+		public string $code;
+		public string $message;
+		/** @var array<string,mixed> */
+		public array $data;
+
+		public function __construct( string $code = '', string $message = '', array $data = array() ) {
+			$this->code    = $code;
+			$this->message = $message;
+			$this->data    = $data;
+		}
+
+		public function get_error_code(): string {
+			return $this->code;
+		}
+
+		public function get_error_message(): string {
+			return $this->message;
+		}
+	}
+}
+
+function is_wp_error( $thing ): bool {
+	return $thing instanceof WP_Error;
+}
+
+function get_transient( string $name ) {
+	return $GLOBALS['cpdd_test_transients'][ $name ] ?? false;
+}
+
+function set_transient( string $name, $value, int $expiration = 0 ): bool {
+	unset( $expiration );
+	$GLOBALS['cpdd_test_transients'][ $name ] = $value;
+
+	return true;
+}
+
+function delete_transient( string $name ): bool {
+	unset( $GLOBALS['cpdd_test_transients'][ $name ] );
+
+	return true;
+}
+
+/**
+ * WP-CLI double: `error()` and `success()` behave like the real ones (they
+ * terminate the command), which is exactly the contract the guard relies on.
+ */
+class WP_CLI {
+
+	public static string $error_message = '';
+
+	public static function error( string $message, bool $exit = true ): void {
+		unset( $exit );
+		self::$error_message = $message;
+		throw new RuntimeException( 'wp-cli-error: ' . $message );
+	}
+
+	public static function add_hook( string $name, $callback ): void {
+		$GLOBALS['cpdd_test_wpcli_hooks'][ $name ][] = $callback;
+	}
+}
+
 function get_users( array $args = array() ): array {
 	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
 	if ( ! ( $env instanceof Cpdd_Fake_Env ) ) {
