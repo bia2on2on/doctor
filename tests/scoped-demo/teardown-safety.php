@@ -1040,7 +1040,25 @@ try {
 	$h_preview = $teardown->preview( $manifest->load() );
 	cpsd_ts_check( false === (bool) $h_preview['ok'], 'H: a corrupted ledger fails closed', $checks );
 	cpsd_ts_check( cpsd_ts_problem( $h_preview, 'SCOPED_OWNERSHIP' ), 'H: the refusal names the ownership problem', $checks, implode( ' | ', array_slice( (array) $h_preview['problems'], 0, 3 ) ) );
-	cpsd_ts_check( array() === array_filter( (array) ( $h_preview['scope']['tables']['cpms_patients'] ?? array() ) ), 'H: nothing is claimed while the ledger is corrupt', $checks );
+	// A corrupt ledger must prevent DESTRUCTIVE work, which is a property of the
+	// real execute() path, not of the candidate set: `scope.tables` legitimately
+	// lists every row inside the demo tenant (that is what a scope is), so its
+	// non-emptiness says nothing about ownership. An earlier revision asserted
+	// emptiness here and could therefore never pass.
+	$h_actor    = (int) ( $live['ids']['admin_id'] ?? 0 );
+	$h_executed = null;
+	$h_code     = '';
+	try {
+		$h_executed = $teardown->execute( $manifest->load(), $h_actor > 0 ? $h_actor : 1 );
+	} catch ( \Throwable $error ) {
+		$h_code = $error instanceof CpmsDemo\Exception ? $error->demo_code() : (string) $error->getMessage();
+	}
+	cpsd_ts_check(
+		null === $h_executed && 0 === strpos( $h_code, 'SCOPED_OWNERSHIP' ),
+		'H: the REAL teardown path refuses a corrupted ledger and deletes nothing',
+		$checks,
+		'code=' . $h_code
+	);
 	cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_patients' ), $patient ), 'H: the corrupt preview deleted nothing', $checks );
 	update_option( $ledger_option, $ledger_backup, false );
 	if ( false !== $seal_backup ) {
