@@ -422,7 +422,19 @@ jobs:
           CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
         run: |
           set -Eeuo pipefail
-          python3 tests/scoped-demo/browser_recovery.py | tee /tmp/cpsa-ci/browser-recovery.log
+          if ! python3 tests/scoped-demo/browser_recovery.py | tee /tmp/cpsa-ci/browser-recovery.log; then
+            python3 - <<'ANN'
+          import json, pathlib
+          p = pathlib.Path('/tmp/cpsa-ci/browser/recovery-browser.json')
+          detail = 'browser recovery evidence missing'
+          if p.is_file():
+              data = json.loads(p.read_text(encoding='utf-8'))
+              failed = [c for c in data.get('checks', []) if not c.get('ok')]
+              detail = ' || '.join(str(c.get('name')) + ' — ' + str(c.get('detail', ''))[:240] for c in failed[-4:]) or detail
+          print('::error title=CPSA_RECOVERY_BROWSER::' + detail.replace('%', '%25').replace('\\r', '').replace('\\n', ' '))
+          ANN
+            exit 1
+          fi
           CPSD_RECOVERY_BROWSER=/tmp/cpsa-ci/browser/recovery-browser.json \
             wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/recovery-acceptance.php" \
             --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
@@ -432,7 +444,10 @@ jobs:
           data = json.loads(open('/tmp/cpsa-ci/recovery-acceptance.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
           print('RECOVERY_DB_OK=' + str(bool(data.get('ok'))))
           for line in data.get('checks', []): print(line)
-          if not data.get('ok'): sys.exit(1)
+          if not data.get('ok'):
+              failed = [str(c) for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]
+              print('::error title=CPSA_RECOVERY_DB::' + ' || '.join(failed[-4:]).replace('%', '%25').replace('\\r', '').replace('\\n', ' '))
+              sys.exit(1)
           PY
 
       - name: Pre-existing WordPress data survives provisioning

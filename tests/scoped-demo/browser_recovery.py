@@ -26,9 +26,17 @@ WRONG_MOBILE = "09009999999"
 CHECKS: list[dict] = []
 
 
+def annotate(title: str, message: str) -> None:
+    flat = str(message).replace("%", "%25").replace("\r", "").replace("\n", " ")
+    print(f"::error title={title}::{flat}", flush=True)
+
+
 def check(name: str, ok: bool, detail: str = "") -> None:
     CHECKS.append({"name": name, "ok": bool(ok), "detail": str(detail)[:400]})
     print(("PASS " if ok else "FAIL ") + name + (f" — {detail}" if detail else ""), flush=True)
+    if not ok:
+        annotate("CPSA_RECOVERY", name + ((f" — {detail}" if detail else "")))
+        raise AssertionError(name + (f": {detail}" if detail else ""))
 
 
 def submit(page, action: str, phrase: str) -> None:
@@ -65,6 +73,14 @@ def main() -> int:
             page = ctx.new_page()
             page.set_default_timeout(45000)
             page.goto(booking_url, wait_until="networkidle")
+            # The fixture has two Locations. The public widget is location-first;
+            # choose the primary offered Location before asking for availability.
+            picker = page.locator('[data-role="location-picker"]')
+            if picker.count() and picker.is_visible():
+                option = page.locator('[data-role="location-option"]:not([disabled])').first
+                option.wait_for(state="visible")
+                option.click()
+                page.wait_for_load_state("networkidle")
             with page.expect_response(lambda r: "/clinic/v1/availability" in r.url) as a1:
                 page.locator(".cpms-public-booking__clinician").first.click()
             check("public availability A1 succeeds", a1.value.status == 200, str(a1.value.status))
