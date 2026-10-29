@@ -67,6 +67,9 @@ def main() -> int:
             page.wait_for_load_state("domcontentloaded")
             activated_body = page.content()
             check("activation screen has no PHP diagnostic", not DIAGNOSTIC.search(activated_body))
+            # Activation may redirect to the production first-run wizard. Return to
+            # the canonical Plugins screen before asserting the active row.
+            page.goto(f"{BASE}/wp-admin/plugins.php", wait_until="domcontentloaded")
             row = page.locator('tr[data-plugin="cpms-disposable-demo/cpms-disposable-demo.php"]')
             check("outer demo plugin is active on Plugins screen", row.count() == 1 and "active" in (row.get_attribute("class") or ""),
                   row.get_attribute("class") if row.count() else page.url)

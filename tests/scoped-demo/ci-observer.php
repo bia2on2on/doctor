@@ -46,8 +46,13 @@ add_action(
 		if ( function_exists( 'wp_clean_plugins_cache' ) ) {
 			wp_clean_plugins_cache();
 		}
-		$upgrader = new Plugin_Upgrader();
-		$info     = $upgrader->plugin_info();
+		$upgrader         = new Plugin_Upgrader();
+		// The filter receives the real install result but not the original
+		// upgrader object. Feed that exact result into the real public method so
+		// plugin_info() performs WordPress's own destination_name + first-key
+		// selection instead of returning false on an empty result.
+		$upgrader->result = $result;
+		$info             = $upgrader->plugin_info();
 		$plugins  = get_plugins( '/cpms-disposable-demo' );
 		$valid    = validate_plugin( 'cpms-disposable-demo/cpms-disposable-demo.php' );
 		$cpms_ci_write(

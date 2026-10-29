@@ -151,6 +151,8 @@ class StandaloneAdminAcceptanceTests(unittest.TestCase):
         observer = (ROOT / "tests" / "scoped-demo" / "ci-observer.php").read_text()
         self.assertIn("getenv( 'CPSD_CI_CAPTURE' )", observer)
         self.assertIn("wp_clean_plugins_cache", observer)
+        self.assertIn("$upgrader->result = $result;", observer)
+        self.assertIn("wp-admin/plugins.php", (ROOT / "tests" / "scoped-demo" / "browser_install.py").read_text())
         text = workflow("standalone-demo.yml")
         job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]
         server = job.split("Start PHP built-in WordPress server", 1)[1].split("Real wp-admin ZIP upload", 1)[0]
