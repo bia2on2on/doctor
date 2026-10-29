@@ -454,5 +454,16 @@ jobs:
                       + base64.b64encode(image.read_bytes()).decode() + '\n```\n</details>\n')
               path = pathlib.Path('/tmp/fp/mobile-mirror.md')
               path.write_text(body)
-              subprocess.run(['gh', 'pr', 'comment', os.environ['PR_NUMBER'], '--body-file', str(path)], check=True)
+              # Same shared transport as every other evidence stream: one
+              # automation-owned comment, updated in place, and GitHub's comment
+              # ceiling announced instead of failing the step for a platform
+              # limit (PR #282 is at 2,500 comments).
+              completion = subprocess.run(
+                  ['bash', os.path.join(os.environ.get('GITHUB_WORKSPACE', '.'), '.github/scripts/pr-evidence-comment.sh'),
+                   '--family', 'fp-mobile-visual-' + image.name, '--pr', os.environ['PR_NUMBER'],
+                   '--body-file', str(path)],
+                  check=False,
+              )
+              if completion.returncode != 0:
+                  raise SystemExit('bounded visual evidence could not be published (see the annotation above)')
           PYCODE

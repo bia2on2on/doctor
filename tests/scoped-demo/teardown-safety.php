@@ -856,13 +856,64 @@ try {
 
 	// ---- D: a cross-table numeric collision grants nothing -----------------
 	// The attack: an invoice whose OWN id equals a SEALED id from a DIFFERENT
-	// table (the demo patient). If ownership were ever resolved by "this number
-	// is sealed somewhere", that invoice would be claimed. It lives in the
+	// table. If ownership were ever resolved by "this number is sealed
+	// somewhere", that invoice would be claimed. It lives in the
 	// FOREIGN tenant with its own valid patient/visit/issuer, so the row is a
 	// legal record that the demo must simply never touch.
-	$sealed_patient = cpsd_ts_claimed( $c_preview, 'cpms_patients', $new_patient ) ? $new_patient : $patient;
-	cpsd_ts_check( $sealed_patient > 0, 'D: a sealed demo patient id is available for the collision', $checks, (string) $sealed_patient );
+	// The collision needs an id that is sealed by the demo for a table that is
+	// NOT the invoice table AND is still free in `cpms_invoices`, because the
+	// foreign invoice has to TAKE that id for the attack to exist at all.
+	//
+	// Choosing the demo patient id unconditionally made the drill depend on a
+	// coincidence: on a run where the demo's own invoice already held that id the
+	// precondition failed and no attack was ever mounted - a fixture bug, not a
+	// product finding. Every sealed id from another table is therefore
+	// considered, deterministically in manifest order.
 	$invoice_table = $t( 'cpms_invoices' );
+	$sealed_map    = array(
+		'location_ids'  => 'cpms_locations',
+		'clinician_id'  => 'cpms_clinicians',
+		'patient_id'    => 'cpms_patients',
+		'identity_id'   => 'cpms_patient_identities',
+		'visit_id'      => 'cpms_visits',
+		'appointment_id' => 'cpms_appointments',
+		'payment_id'    => 'cpms_payments',
+		'note_ids'      => 'cpms_clinical_notes',
+		'prescription_id' => 'cpms_prescriptions',
+		'follow_up_id'  => 'cpms_follow_ups',
+	);
+	$d_candidates = array();
+	foreach ( $sealed_map as $sealed_key => $sealed_table_name ) {
+		foreach ( (array) ( $live['ids'][ $sealed_key ] ?? array() ) as $sealed_value ) {
+			$candidate = (int) $sealed_value;
+			if ( $candidate <= 0 || null !== cpsd_ts_row( $invoice_table, $candidate ) ) {
+				continue;
+			}
+			if ( null === cpsd_ts_row( $t( $sealed_table_name ), $candidate ) ) {
+				// The manifest names it but the row is gone: not a collision.
+				continue;
+			}
+			$d_candidates[] = array( 'key' => $sealed_key, 'table' => $sealed_table_name, 'id' => $candidate );
+		}
+	}
+	cpsd_ts_check(
+		array() !== $d_candidates,
+		'D: a sealed id from another table is FREE in cpms_invoices (the collision can be mounted)',
+		$checks,
+		(string) wp_json_encode( array_slice( $d_candidates, 0, 5 ) )
+	);
+	if ( array() === $d_candidates ) {
+		throw new RuntimeException( 'D: no free sealed id exists in cpms_invoices; the numeric-collision attack cannot be mounted' );
+	}
+	$d_sealed        = $d_candidates[0];
+	$sealed_patient  = (int) $d_sealed['id'];
+	$d_sealed_row    = cpsd_ts_row( $t( (string) $d_sealed['table'] ), $sealed_patient );
+	cpsd_ts_check(
+		is_array( $d_sealed_row ),
+		'D: that id really exists in the table the demo sealed (a genuine cross-table collision)',
+		$checks,
+		$d_sealed['key'] . '=' . $sealed_patient . ' in ' . $d_sealed['table']
+	);
 	cpsd_ts_check( null === cpsd_ts_row( $invoice_table, $sealed_patient ), 'D: the collision id is FREE in cpms_invoices', $checks, 'id=' . $sealed_patient );
 	$now_d = gmdate( 'Y-m-d H:i:s' ) . '.000';
 	$d_id  = cpsd_ts_insert(
@@ -886,15 +937,15 @@ try {
 			'updated_at'            => $now_d,
 		)
 	);
-	cpsd_ts_check( $d_id === $sealed_patient, 'D: the colliding invoice really took the sealed patient id', $checks, 'invoice=' . $d_id );
+	cpsd_ts_check( $d_id === $sealed_patient, 'D: the colliding invoice really took an id the demo sealed elsewhere', $checks, 'invoice=' . $d_id );
 	$d_row = cpsd_ts_row( $invoice_table, $d_id );
 	cpsd_ts_check(
 		is_array( $d_row )
 			&& (int) $d_row['id'] === $sealed_patient
-			&& null !== cpsd_ts_row( $t( 'cpms_patients' ), $sealed_patient ),
+			&& is_array( $d_sealed_row ),
 		'D: the attack condition holds - one id, two tables, one sealed by the demo',
 		$checks,
-		'invoice=' . $d_id . ' patient=' . $sealed_patient
+		'invoice=' . $d_id . ' sealed=' . $d_sealed['key'] . ':' . $d_sealed['table']
 	);
 	$d_preview = $teardown->preview( $manifest->load() );
 	cpsd_ts_check( ! cpsd_ts_claimed( $d_preview, 'cpms_invoices', $d_id ), 'D: the numeric collision does not make the invoice demo-owned', $checks, 'invoice=' . $d_id );
