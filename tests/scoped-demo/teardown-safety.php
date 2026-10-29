@@ -461,6 +461,14 @@ try {
 	}
 	$after_write = $teardown->preview( $manifest->load() );
 	$recorder_error = (string) wp_json_encode( get_option( 'cpsd_recorder_error', array() ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+	// What the guard saw INSIDE the process that served the write (the job
+	// installs a test-only mu-plugin that records it at shutdown).
+	$probe_tail = '';
+	$probe_file = (string) ( getenv( 'CPSD_TS_PROBE' ) ?: '' );
+	if ( '' !== $probe_file && is_file( $probe_file ) ) {
+		$probe_lines = array_values( array_filter( array_map( 'trim', (array) file( $probe_file ) ) ) );
+		$probe_tail  = (string) implode( ' || ', array_slice( $probe_lines, -2 ) );
+	}
 	$ledger_summary = $ownership->summary( (string) $live['fixture_id'] );
 	$ledger_rows    = array(
 		'patients'   => array_keys( (array) ( $ledger_summary['row_keys']['cpms_patients'] ?? array() ) ),
@@ -474,6 +482,7 @@ try {
 			. ' recorder_error=' . mb_substr( $recorder_error, 0, 300 )
 			. ' ledger=' . (string) wp_json_encode( $ledger_rows )
 			. ' ledger_ok=' . ( (bool) ( $ledger_summary['ok'] ?? false ) ? '1' : '0' )
+			. ' probe=' . mb_substr( $probe_tail, 0, 600 )
 	);
 	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the registered patient is inside the attributed scope', $checks, 'patient=' . $new_patient );
 	$summary = $ownership->summary( (string) $live['fixture_id'] );

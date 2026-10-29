@@ -685,12 +685,42 @@ jobs:
           echo 'FAIL: the PHP server the drill needs did not start' >&2
           exit 1
 
+      - name: Install the test-only request probe (mu-plugin)
+        run: |
+          set -Eeuo pipefail
+          # Records what the demo guard saw INSIDE the PHP process that served
+          # each HTTP request. Without it a recorder failure can only be
+          # inferred from the database after the fact.
+          mkdir -p "$WP_DIR/wp-content/mu-plugins"
+          cat > "$WP_DIR/wp-content/mu-plugins/cpsd-ts-probe.php" <<'PHP'
+          <?php
+          // Test-only. Never shipped inside the demo package.
+          if ( ! defined( 'ABSPATH' ) ) {
+              return;
+          }
+          $cpsd_ts_probe = static function ( string $phase ): void {
+              if ( ! class_exists( '\\CpmsDemo\\ScopedTenantGuard' ) ) {
+                  return;
+              }
+              $line = array(
+                  'phase'  => $phase,
+                  'uri'    => isset( $_SERVER['REQUEST_URI'] ) ? (string) $_SERVER['REQUEST_URI'] : '',
+                  'method' => isset( $_SERVER['REQUEST_METHOD'] ) ? (string) $_SERVER['REQUEST_METHOD'] : '',
+                  'state'  => \CpmsDemo\ScopedTenantGuard::state(),
+              );
+              file_put_contents( '/tmp/cpsa-ts/probe.jsonl', (string) wp_json_encode( $line ) . PHP_EOL, FILE_APPEND );
+          };
+          add_action( 'shutdown', static function () use ( $cpsd_ts_probe ): void { $cpsd_ts_probe( 'before' ); }, -1 );
+          add_action( 'shutdown', static function () use ( $cpsd_ts_probe ): void { $cpsd_ts_probe( 'after' ); }, 200 );
+          PHP
+          php -l "$WP_DIR/wp-content/mu-plugins/cpsd-ts-probe.php"
+
       - name: A–J drill — plant adversarial rows, then run the AUTHORIZED teardown, then verify survival
         run: |
           set -Eeuo pipefail
           run_mode () {
             MODE="$1"
-            CPSD_TS_MODE="$MODE" CPSD_TS_EVIDENCE=/tmp/cpsa-ts/teardown-safety.json \
+            CPSD_TS_MODE="$MODE" CPSD_TS_EVIDENCE=/tmp/cpsa-ts/teardown-safety.json CPSD_TS_PROBE=/tmp/cpsa-ts/probe.jsonl \
               wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/teardown-safety.php" \
               --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
               | tee "/tmp/cpsa-ts/teardown-safety-$MODE.jsonl"
@@ -714,6 +744,26 @@ jobs:
           # Nothing the drill planted contained PHI or credentials; the evidence
           # files hold table names, ids and hashes only.
           ls -l /tmp/cpsa-ts/teardown-safety-*.jsonl
+
+      - name: Surface PHP diagnostics from the drill (annotations only)
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          report () {
+            FILE="$1"
+            [ -f "$FILE" ] || return 0
+            grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:' "$FILE" \
+              | tail -5 | sed 's/%/%25/g' | while IFS= read -r LINE; do
+                  echo "::error title=CPSA_TS_PHPLOG::$(printf '%s' "$LINE" | tr '\n' ' ')"
+                done
+          }
+          report /tmp/cpsa-ts/php-server.log
+          report "$WP_DIR/wp-content/debug.log"
+          if [ -f /tmp/cpsa-ts/probe.jsonl ]; then
+            tail -2 /tmp/cpsa-ts/probe.jsonl | sed 's/%/%25/g' | while IFS= read -r LINE; do
+              echo "::error title=CPSA_TS_PROBE::$(printf '%s' "$LINE" | tr '\n' ' ')"
+            done
+          fi
 
       - uses: actions/upload-artifact@v4
         if: always()

@@ -72,6 +72,21 @@ final class ScopedTenantGuard {
 	private static string $fixture = '';
 
 	/**
+	 * The VERIFIED manifest the snapshot was taken with.
+	 *
+	 * `finish_request()` used to re-read the manifest to build the post-request
+	 * scope. A re-read that fails verification (or a mode that flipped) returned
+	 * an EMPTY manifest, which silently produced an empty scope and therefore an
+	 * empty diff: every row the request had just created stayed unregistered
+	 * with no error anywhere. The pair is now taken from the same verified
+	 * manifest, so the before and after snapshots always describe the same
+	 * tenants.
+	 *
+	 * @var array<string,mixed>
+	 */
+	private static array $manifest = array();
+
+	/**
 	 * Set once this request can never become recordable: it is not a write, or
 	 * there is no verified active fixture to record against.
 	 *
@@ -155,7 +170,33 @@ final class ScopedTenantGuard {
 			return;
 		}
 		self::$fixture  = $fixture;
+		self::$manifest = $loaded;
 		self::$snapshot = self::snapshot( $env, new Platform(), $loaded );
+	}
+
+	/**
+	 * Observable state of the recorder in THIS request.
+	 *
+	 * Read-only and side-effect free. It exists so an acceptance drill can ask
+	 * the process that actually served the write what it saw, instead of
+	 * inferring it from the database afterwards.
+	 *
+	 * @return array{standdown:bool,snapshot:bool,fixture:string,actor:int,counts:array<string,int>}
+	 */
+	public static function state(): array {
+		$counts = array();
+		foreach ( array( 'cpms_patients', 'cpms_patient_identities' ) as $short ) {
+			$counts[ $short ] = is_array( self::$snapshot ) ? count( (array) ( self::$snapshot[ $short ] ?? array() ) ) : -1;
+		}
+
+		return array(
+			'standdown' => self::$standdown,
+			'snapshot'  => is_array( self::$snapshot ),
+			'manifest'  => array() !== self::$manifest,
+			'fixture'   => self::$fixture,
+			'actor'     => get_current_user_id(),
+			'counts'    => $counts,
+		);
 	}
 
 	/**
@@ -171,7 +212,7 @@ final class ScopedTenantGuard {
 		$platform  = new Platform();
 		$manifest  = new ScopedManifest( $env );
 		$ownership = new ScopedOwnership( $env, $manifest );
-		$after     = self::snapshot( $env, $platform, self::manifest_ids( $manifest ) );
+		$after     = self::snapshot( $env, $platform, array() === self::$manifest ? self::manifest_ids( $manifest ) : self::$manifest );
 		try {
 			foreach ( $after as $short => $ids ) {
 				$before = array_fill_keys( (array) ( self::$snapshot[ $short ] ?? array() ), true );
@@ -200,6 +241,7 @@ final class ScopedTenantGuard {
 		}
 		self::$snapshot = null;
 		self::$fixture  = '';
+		self::$manifest = array();
 	}
 
 	/**
