@@ -19,7 +19,10 @@ name: Standalone demo (real WordPress, no production plugin)
 #     fault and never a fatal;
 #   * deactivating and deleting the demo destroys nothing (no dropped tables, no
 #     deleted users, no deleted content);
-#   * the same package passes the real Chromium journeys the scoped lane runs.
+#   * NOT COVERED HERE: the Chromium persona journeys. The scoped lane runs
+#     them against a site that also carries the production plugin; this lane
+#     does not run them at all. Treat browser coverage of the standalone build
+#     as MISSING, not as inherited.
 
 on:
   workflow_dispatch:
