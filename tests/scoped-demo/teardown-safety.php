@@ -417,7 +417,10 @@ try {
 	// REST dispatch -> `shutdown`), so the recorder is exercised exactly as it
 	// is on the Owner's site.
 	$mobile = '0937' . (string) random_int( 1000000, 9999999 );
-	$auth   = cpsd_ts_auth( $reception );
+	// Clear the recorder's own error slot first, so whatever is in it after the
+	// write belongs to THIS request.
+	delete_option( 'cpsd_recorder_error' );
+	$auth = cpsd_ts_auth( $reception );
 	$rest   = cpsd_ts_http(
 		rest_url( '/clinic/v1/patients' ),
 		array_merge(
@@ -457,11 +460,20 @@ try {
 		cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_patient_identities' ), $new_identity ), 'A: the production service also created the shared identity row', $checks, 'identity=' . $new_identity );
 	}
 	$after_write = $teardown->preview( $manifest->load() );
+	$recorder_error = (string) wp_json_encode( get_option( 'cpsd_recorder_error', array() ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+	$ledger_summary = $ownership->summary( (string) $live['fixture_id'] );
+	$ledger_rows    = array(
+		'patients'   => array_keys( (array) ( $ledger_summary['row_keys']['cpms_patients'] ?? array() ) ),
+		'identities' => array_keys( (array) ( $ledger_summary['row_keys']['cpms_patient_identities'] ?? array() ) ),
+	);
 	cpsd_ts_check(
 		true === (bool) $after_write['ok'],
 		'A: the recorder REGISTERED every row that request created',
 		$checks,
 		implode( ' | ', array_slice( (array) ( $after_write['problems'] ?? array() ), 0, 3 ) )
+			. ' recorder_error=' . mb_substr( $recorder_error, 0, 300 )
+			. ' ledger=' . (string) wp_json_encode( $ledger_rows )
+			. ' ledger_ok=' . ( (bool) ( $ledger_summary['ok'] ?? false ) ? '1' : '0' )
 	);
 	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the registered patient is inside the attributed scope', $checks, 'patient=' . $new_patient );
 	$summary = $ownership->summary( (string) $live['fixture_id'] );
