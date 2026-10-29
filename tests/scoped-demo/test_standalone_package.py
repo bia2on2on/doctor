@@ -116,11 +116,13 @@ class NonEmptySiteInstallation(unittest.TestCase):
     def test_the_core_available_check_accepts_the_embedded_build(self) -> None:
         # Preflight used to demand the production basename in active_plugins,
         # which is false in standalone mode and blocked every run.
-        self.assertIn("public static function core_available()", self.standalone)
+        self.assertIn("public static function core_available( ?array $active_plugins = null ): bool", self.standalone)
         preflight = read(COMPANION / "includes" / "class-cpms-demo-preflight.php")
         scoped = read(COMPANION / "includes" / "class-cpms-demo-scoped-preflight.php")
-        self.assertIn("Standalone::core_available()", preflight)
-        self.assertIn("Standalone::core_available()", scoped)
+        # Both preflights ask the same question through the build-aware helper,
+        # and hand it the active-plugin list the environment already exposes.
+        self.assertIn("Standalone::core_available( $this->env->active_plugins() )", preflight)
+        self.assertIn("Standalone::core_available( $this->env->active_plugins() )", scoped)
 
 
 class CleanupAndUninstallSafety(unittest.TestCase):
@@ -256,7 +258,8 @@ class PackageContents(unittest.TestCase):
         cls.companion_out = Path(tempfile.mkdtemp(prefix="missionh-companion-"))
         env = dict(os.environ)
         cls.build_a = cls._build(cls.standalone_out, [], env)
-        cls.build_b = cls._build(Path(tempfile.mkdtemp(prefix="missionh-repro-")), [], env)
+        cls.repro_out = Path(tempfile.mkdtemp(prefix="missionh-repro-"))
+        cls.build_b = cls._build(cls.repro_out, [], env)
         cls.companion = cls._build(cls.companion_out, ["--companion"], env)
         cls.zip_path = cls.standalone_out / "cpms-disposable-demo-1.0.0.zip"
 
@@ -277,21 +280,14 @@ class PackageContents(unittest.TestCase):
         self.assertEqual(self.companion.returncode, 0, self.companion.stderr[-2000:])
 
     def test_the_archive_is_reproducible(self) -> None:
+        # Compare the two archives THIS test run produced. Globbing /tmp for an
+        # older build would happily compare against a stale artefact and report
+        # determinism that does not exist.
+        repro_zip = self.repro_out / "cpms-disposable-demo-1.0.0.zip"
+        self.assertTrue(repro_zip.is_file(), "the second build produced no archive")
         first = hashlib.sha256(self.zip_path.read_bytes()).hexdigest()
-        second = hashlib.sha256(
-            (self.build_b.stdout and self._repro_zip()).read_bytes()
-        ).hexdigest()
+        second = hashlib.sha256(repro_zip.read_bytes()).hexdigest()
         self.assertEqual(first, second)
-
-    def _repro_zip(self) -> Path:
-        for candidate in self.build_b.args and [] or []:
-            return Path(candidate)
-        # The second build wrote into its own OUT_DIR (see setUpClass).
-        for child in Path("/tmp").glob("missionh-repro-*"):
-            target = child / "cpms-disposable-demo-1.0.0.zip"
-            if target.is_file():
-                return target
-        raise AssertionError("second build produced no archive")
 
     def test_one_top_level_plugin_directory(self) -> None:
         with zipfile.ZipFile(self.zip_path) as archive:

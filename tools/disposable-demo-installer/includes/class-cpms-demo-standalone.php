@@ -272,13 +272,15 @@ final class Standalone {
 	 *
 	 * @return bool
 	 */
-	public static function core_available(): bool {
+	public static function core_available( ?array $active_plugins = null ): bool {
 		if ( self::is_embedded() ) {
 			return self::booted_core() || class_exists( 'ClinicCore\\Bootstrap\\App', false );
 		}
-		$active = function_exists( 'get_option' ) ? get_option( 'active_plugins', array() ) : array();
+		if ( null === $active_plugins ) {
+			$active_plugins = function_exists( 'get_option' ) ? get_option( 'active_plugins', array() ) : array();
+		}
 
-		return is_array( $active ) && in_array( self::PRODUCTION_BASENAME, $active, true );
+		return is_array( $active_plugins ) && in_array( self::PRODUCTION_BASENAME, $active_plugins, true );
 	}
 
 	/**

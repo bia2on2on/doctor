@@ -130,7 +130,6 @@ $cpsd_sa_check = static function ( bool $ok, string $label, array &$checks, stri
 
 try {
 	wp_set_current_user( 1 );
-	$env      = new Env();
 	$checks   = array();
 	$evidence = array( 'mode' => $cpsd_sa_mode );
 
@@ -215,6 +214,7 @@ try {
 		if ( ! is_array( $recorded ) ) {
 			throw new RuntimeException( 'no seeded evidence; run CPSD_SA_MODE=seed first' );
 		}
+		$env    = new Env();
 		$status = Standalone::status();
 		$active = (array) get_option( 'active_plugins', array() );
 		$cpsd_sa_check( ! in_array( 'clinic-practice-management/clinic-practice-management.php', $active, true ), 'the production plugin is NOT installed or active', $checks );
@@ -235,7 +235,7 @@ try {
 		if ( is_array( $loaded ) ) {
 			global $wpdb;
 			$clinic = (int) ( $loaded['ids']['clinic_id'] ?? 0 );
-			$cpsd_sa_check( $clinic > 1, 'the demo Clinic exists', $checks, (string) $clinic );
+			$cpsd_sa_check( $clinic > 0, 'the demo Clinic exists', $checks, (string) $clinic );
 			$cpsd_sa_check( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_patients WHERE clinic_id = %d", $clinic ) ) > 0, 'demo patients exist in the demo Clinic', $checks );
 			$cpsd_sa_check( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_invoices WHERE clinic_id = %d", $clinic ) ) > 0, 'demo invoices exist in the demo Clinic', $checks );
 			$cpsd_sa_check( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_payments WHERE clinic_id = %d", $clinic ) ) > 0, 'demo payments exist in the demo Clinic', $checks );

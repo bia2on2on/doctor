@@ -200,7 +200,9 @@ jobs:
           ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
           wp core install --url="$WP_URL" --title="CPSA Standalone" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpsa.invalid --skip-email --allow-root
           echo "ADMIN_PASS=$ADMIN_PASS" >> "$GITHUB_ENV"
-          test -z "$(wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -c clinic-practice-management || true)"
+          if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
+            echo 'FAIL: production CPMS present on a clean install' >&2; exit 1
+          fi
 
       - name: Install ONLY the standalone demo package from a real ZIP
         run: |
@@ -342,7 +344,12 @@ jobs:
         run: |
           set -Eeuo pipefail
           wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root
+          # Deleting the production plugin must not run its destructive uninstall
+          # path: that path is gated behind `cpms_wipe_on_uninstall`, which this
+          # site never sets, and the guard below proves it before we delete.
+          wp eval 'echo get_option( "cpms_wipe_on_uninstall" ) ? "WIPE" : "NO_WIPE";' --path="$WP_DIR" --allow-root | grep -qx NO_WIPE
           wp plugin delete clinic-practice-management --path="$WP_DIR" --allow-root
+          wp eval 'echo get_option( "cpms_wipe_on_uninstall" ) ? "WIPE" : "NO_WIPE";' --path="$WP_DIR" --allow-root | grep -qx NO_WIPE
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
           wp eval 'echo \CpmsDemo\Standalone::status()["fault"];' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/fault-after.txt
           test -z "$(cat /tmp/cpsa-ci/fault-after.txt)"

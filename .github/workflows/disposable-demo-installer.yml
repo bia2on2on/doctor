@@ -257,7 +257,7 @@ jobs:
           test "$SCHEMA" = '2026_10_27_0030'
           echo "SCHEMA=$SCHEMA"
           OUT_DIR=/tmp/cpdd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" --companion | tee /tmp/cpdd-ci/companion-build.log
-          wp plugin install /tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          wp plugin install /tmp/cpdd-ci/cpms-disposable-demo-companion-1.0.0.zip --activate --path="$WP_DIR" --allow-root
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
 
       - name: Companion surface is read-only by construction (no REST/AJAX/frontend)
@@ -384,7 +384,7 @@ jobs:
           ADMIN_USER="$ADMIN_USER" \
           ADMIN_PASS_FILE="$ADMIN_PASS_FILE" \
           CPMS_ZIP="$GITHUB_WORKSPACE/$CPMS_ZIP" \
-          COMPANION_ZIP="/tmp/cpdd-ci/cpms-disposable-demo-1.0.0.zip" \
+          COMPANION_ZIP="/tmp/cpdd-ci/cpms-disposable-demo-companion-1.0.0.zip" \
           python3 "$GITHUB_WORKSPACE/$COMPANION_DIR/tests/browser-acceptance.py" \
             2>&1 | tee /tmp/cpdd-ci/browser-acceptance.log
           rm -f "$ADMIN_PASS_FILE"

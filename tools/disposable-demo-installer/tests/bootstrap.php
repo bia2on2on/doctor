@@ -97,6 +97,12 @@ function esc_html__( string $text, string $domain = 'default' ): string {
 	return esc_html( $text );
 }
 
+function __( string $text, string $domain = 'default' ): string {
+	unset( $domain );
+
+	return $text;
+}
+
 function wp_nonce_field( string $action, string $name = '_wpnonce', bool $referer = true, bool $display = true ): string {
 	unset( $referer );
 	$env   = $GLOBALS['cpdd_active_fake_env'] ?? null;
@@ -152,6 +158,7 @@ function get_users( array $args = array() ): array {
 
 // --- Plugin classes under test (main plugin file is never loaded here). -----
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-platform.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-manifest.php';
