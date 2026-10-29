@@ -234,7 +234,10 @@ class StaticBoundaryTest(unittest.TestCase):
         self.assertNotIn("actions: read", permissions)
         self.assertNotIn("pull_request_target", workflow)
         self.assertIn("CPMS_PR_NUMBER: ${{ github.event.pull_request.number }}", workflow)
-        self.assertIn("bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md", workflow)
+        self.assertIn(
+            'bash .github/scripts/post-pr-evidence.sh /tmp/acc/evidence-comment.md "external-site-acceptance"',
+            workflow,
+        )
         self.assertNotIn("/commits/$HEAD_SHA/comments", workflow)
 
         browser = (TOOL / "browser-acceptance.py").read_text(encoding="utf-8")

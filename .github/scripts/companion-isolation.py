@@ -77,6 +77,7 @@ WORKFLOW_PREFIXES: tuple[str, ...] = (
     ".github/workflows/scoped-demo.yml",
     ".github/scripts/companion-isolation.py",
     ".github/scripts/post-pr-evidence.sh",
+    ".github/scripts/pr-evidence-comment.sh",
 )
 
 # Executable evidence about the companion/production boundary. A change set may

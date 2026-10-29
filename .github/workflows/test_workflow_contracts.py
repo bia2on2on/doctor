@@ -176,6 +176,17 @@ class CompanionIsolationTests(unittest.TestCase):
         ])
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
+    def test_a_new_shared_evidence_script_is_lane_plumbing_not_a_boundary_change(self):
+        """A new .github/scripts/ file is unclassified until it is named here.
+
+        That fail-closed rule is right, and it is why adding the shared PR
+        comment transport had to be classified explicitly rather than silently
+        landing as an "other" path.
+        """
+        result = self._run([".github/scripts/pr-evidence-comment.sh"])
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("lane files: 1", result.stdout)
+
     def test_workflow_only_change_is_allowed(self):
         result = self._run([".github/workflows/disposable-demo-installer.yml"])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
