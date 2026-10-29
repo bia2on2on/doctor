@@ -324,6 +324,10 @@ try {
 	ScopedTenantGuard::begin_request();
 	$request = new WP_REST_Request( 'POST', '/clinic/v1/patients' );
 	$request->set_header( 'X-CPMS-Clinic-Id', (string) $demo_clinic );
+	// A real REST request carries the logged-in user's REST nonce; the
+	// permission callback rejects the write without it (CSRF), which is the
+	// production behaviour this drill must not bypass.
+	$request->set_header( 'X-WP-Nonce', (string) wp_create_nonce( 'wp_rest' ) );
 	$request->set_body_params(
 		array(
 			'first_name' => 'دوم',
