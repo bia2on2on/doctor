@@ -391,7 +391,19 @@ try {
 	$b_id = cpsd_ts_insert( $membership_table, (array) $b_rows );
 	cpsd_ts_check( null !== cpsd_ts_row( $membership_table, $b_id ), 'B: the adversarial real-administrator membership was really created', $checks, 'id=' . $b_id );
 	$b_preview = $teardown->preview( $manifest->load() );
-	cpsd_ts_check( ! cpsd_ts_claimed( $b_preview, 'cpms_clinic_memberships', $b_id ), 'B: the unregistered real administrator grant is NOT deletable', $checks );
+	$b_diag = array(
+		'row'         => cpsd_ts_row( $membership_table, $b_id ),
+		'claimed_ids' => (array) ( $b_preview['scope']['tables']['cpms_clinic_memberships'] ?? array() ),
+		'fixture_users' => (array) ( $live['ids']['user_ids'] ?? array() ),
+		'manifest_admin' => (array) ( $live['admin_id'] ?? 0 ),
+		'real_admin'  => $real_admin,
+	);
+	cpsd_ts_check(
+		! cpsd_ts_claimed( $b_preview, 'cpms_clinic_memberships', $b_id ),
+		'B: the unregistered real administrator grant is NOT deletable',
+		$checks,
+		mb_substr( (string) wp_json_encode( $b_diag ), 0, 900 )
+	);
 	cpsd_ts_check( cpsd_ts_problem( $b_preview, 'SCOPED_FOREIGN_TENANT_ROW:cpms_clinic_memberships:' . $b_id ), 'B: the teardown refuses and names the row', $checks, implode( ' | ', array_slice( (array) $b_preview['problems'], 0, 3 ) ) );
 	$wpdb->delete( $membership_table, array( 'id' => $b_id ), array( '%d' ) );
 	cpsd_ts_check( null === cpsd_ts_row( $membership_table, $b_id ) && true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B: removing the adversarial grant restores a clean preview', $checks );
