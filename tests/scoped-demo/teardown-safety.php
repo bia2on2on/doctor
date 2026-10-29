@@ -289,9 +289,13 @@ function cpsd_ts_plant_foreign( Platform $platform, callable $table_prefix, int 
 		$t( 'cpms_patients' ),
 		array( 'clinic_id' => $ids['clinic'], 'mrn' => $slug . '-mrn', 'first_name' => 'بیمار', 'last_name' => 'غیردمو', 'mobile' => '0936' . (string) random_int( 1000000, 9999999 ), 'status' => 'active', 'created_at' => $now, 'updated_at' => $now )
 	);
+	// Migration 0013 made `cpms_visits.location_id` NOT NULL with a foreign key to
+	// `cpms_locations`, so the visit must name the foreign Location this fixture
+	// created. Without it the insert is rejected by the database (fk_visit_location)
+	// and the fixture would be invalid rather than adversarial.
 	$ids['visit'] = cpsd_ts_insert(
 		$t( 'cpms_visits' ),
-		array( 'clinic_id' => $ids['clinic'], 'clinician_id' => $ids['clinician'], 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
+		array( 'clinic_id' => $ids['clinic'], 'location_id' => $ids['location'], 'clinician_id' => $ids['clinician'], 'patient_id' => $ids['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now, 'created_at' => $now, 'updated_at' => $now )
 	);
 	// `cpms_invoices.visit_id` is NOT NULL and NOT NULL-declared for
 	// `issued_by_wp_user_id` as well: a foreign invoice is only a valid fixture
@@ -320,8 +324,8 @@ function cpsd_ts_plant_foreign( Platform $platform, callable $table_prefix, int 
 	// every relationship the attacks depend on is re-read from the database.
 	$visit = cpsd_ts_row( $t( 'cpms_visits' ), $ids['visit'] );
 	$invoice = cpsd_ts_row( $t( 'cpms_invoices' ), $ids['invoice'] );
-	if ( ! is_array( $visit ) || (int) $visit['clinician_id'] !== (int) $ids['clinician'] ) {
-		throw new RuntimeException( 'foreign fixture: the visit does not name its foreign clinician' );
+	if ( ! is_array( $visit ) || (int) $visit['clinician_id'] !== (int) $ids['clinician'] || (int) $visit['location_id'] !== (int) $ids['location'] ) {
+		throw new RuntimeException( 'foreign fixture: the visit does not name its foreign clinician and Location' );
 	}
 	if ( ! is_array( $invoice ) || (int) $invoice['visit_id'] !== (int) $ids['visit'] || (int) $invoice['issued_by_wp_user_id'] !== (int) $overlap_user ) {
 		throw new RuntimeException( 'foreign fixture: the invoice does not name its foreign visit and issuer' );
@@ -915,9 +919,17 @@ try {
 		$checks,
 		(string) $demo_clinician
 	);
+	// `cpms_visits.location_id` is NOT NULL (migration 0013, fk_visit_location), so
+	// the demo-side visit names a Location the demo Clinic really owns.
+	$demo_locations = array_map( 'intval', (array) ( $live['ids']['location_ids'] ?? array() ) );
+	$demo_location  = $demo_locations[0] ?? 0;
+	if ( $demo_location <= 0 || null === cpsd_ts_row( $t( 'cpms_locations' ), $demo_location ) ) {
+		$demo_location = (int) $wpdb->get_var( 'SELECT id FROM `' . $t( 'cpms_locations' ) . '` WHERE clinic_id = ' . $demo_clinic . ' ORDER BY is_primary DESC, id ASC LIMIT 1' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table + integer literal.
+	}
+	cpsd_ts_check( $demo_location > 0, 'E: precondition - the demo Clinic has a Location for the visit', $checks, (string) $demo_location );
 	$e_id        = cpsd_ts_insert(
 		$visit_table,
-		array( 'clinic_id' => $demo_clinic, 'clinician_id' => $demo_clinician, 'patient_id' => (int) $foreign['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now_e, 'created_at' => $now_e, 'updated_at' => $now_e )
+		array( 'clinic_id' => $demo_clinic, 'location_id' => $demo_location, 'clinician_id' => $demo_clinician, 'patient_id' => (int) $foreign['patient'], 'source' => 'walk_in', 'status' => 'checked_in', 'visit_date' => gmdate( 'Y-m-d' ), 'check_in_at' => $now_e, 'created_at' => $now_e, 'updated_at' => $now_e )
 	);
 	$e_row = cpsd_ts_row( $visit_table, $e_id );
 	cpsd_ts_check(
