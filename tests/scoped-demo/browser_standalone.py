@@ -138,6 +138,26 @@ def demo_admin_phase(browser: Browser) -> dict:
                 links_ok = False
                 detail.append(f"{persona or '?'}:hint={hint or '-'},links={anchors.count()}")
         check("every persona row carries a real portal link", links_ok, "; ".join(detail[:4]))
+
+        # The same mapping contract the scoped harness asserts: a card that sends
+        # a persona to the wrong portal is worse than no card.
+        expected_portals = {
+            "organization_manager": "management",
+            "clinic_manager": "management",
+            "doctor": "doctor",
+            "doctor_second": "doctor",
+            "receptionist": "receptionist",
+            "receptionist_second": "receptionist",
+            "accountant": "accountant",
+            "patient": "patient",
+        }
+        actual_portals = {
+            (rows.nth(i).get_attribute("data-cpsd-persona-portal") or ""):
+            (rows.nth(i).get_attribute("data-cpsd-portal-link") or "")
+            for i in range(rows.count())
+        }
+        check("every persona is mapped to its own portal", actual_portals == expected_portals,
+              json.dumps(actual_portals, ensure_ascii=False))
         check(
             "persona-access card leaks no credential field",
             card.locator("textarea, input").count() == 0,

@@ -143,6 +143,78 @@ function cpsd_ts_problem( array $preview, string $needle ): bool {
 }
 
 /**
+ * One HTTP round-trip against THIS site.
+ *
+ * The recorder hooks the WordPress request lifecycle (`init` -> `wp_loaded` ->
+ * dispatch -> `shutdown`). A WP-CLI process is not that lifecycle: `init` runs
+ * with no REQUEST_METHOD, so the guard stands down before a test could ever
+ * call it. Driving the real lifecycle over HTTP is the only honest way to ask
+ * "does a demo write get registered?".
+ *
+ * @param string              $url     Absolute URL.
+ * @param array<string,string> $headers Request headers.
+ * @param array|string|null   $body    Body.
+ * @return array{status:int,body:string,error:string}
+ */
+function cpsd_ts_http( string $url, array $headers, $body = null ): array {
+	$args = array(
+		'method'      => 'POST',
+		'timeout'     => 45,
+		'redirection' => 0,
+		'headers'     => $headers,
+	);
+	if ( null !== $body ) {
+		$args['body'] = $body;
+	}
+	$response = wp_remote_request( $url, $args );
+	if ( is_wp_error( $response ) ) {
+		return array( 'status' => 0, 'body' => '', 'error' => $response->get_error_message() );
+	}
+
+	return array(
+		'status' => (int) wp_remote_retrieve_response_code( $response ),
+		'body'   => (string) wp_remote_retrieve_body( $response ),
+		'error'  => '',
+	);
+}
+
+/**
+ * Authenticate ONE outbound request as a real WordPress user.
+ *
+ * A genuine session token plus the REST nonce that belongs to that exact
+ * session - the same pair a browser would hold. Nothing is bypassed: the
+ * far side authenticates the cookie itself.
+ *
+ * @param int $user_id User.
+ * @return array{token:string,headers:array<string,string>}
+ */
+function cpsd_ts_auth( int $user_id ): array {
+	$tokens = WP_Session_Tokens::get_instance( $user_id );
+	$token  = (string) $tokens->create( time() + HOUR_IN_SECONDS );
+	$cookie = wp_generate_auth_cookie( $user_id, time() + HOUR_IN_SECONDS, 'logged_in', $token );
+	// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPressVIPMinimum.Variables.RestrictedVariables.cache_constraints___COOKIE -- the cookie is generated here, not read from the request.
+	$backup = isset( $_COOKIE[ LOGGED_IN_COOKIE ] ) ? (string) $_COOKIE[ LOGGED_IN_COOKIE ] : null;
+	$actor  = get_current_user_id();
+	$_COOKIE[ LOGGED_IN_COOKIE ] = $cookie; // phpcs:ignore WordPressVIPMinimum.Variables.RestrictedVariables.cache_constraints___COOKIE -- see above.
+	wp_set_current_user( $user_id );
+	$nonce = (string) wp_create_nonce( 'wp_rest' );
+	wp_set_current_user( $actor );
+	if ( null === $backup ) {
+		unset( $_COOKIE[ LOGGED_IN_COOKIE ] );
+	} else {
+		$_COOKIE[ LOGGED_IN_COOKIE ] = $backup; // phpcs:ignore WordPressVIPMinimum.Variables.RestrictedVariables.cache_constraints___COOKIE -- restoring the process's own state.
+	}
+
+	return array(
+		'token'   => $token,
+		'headers' => array(
+			'Cookie'     => LOGGED_IN_COOKIE . '=' . $cookie,
+			'X-WP-Nonce' => $nonce,
+		),
+	);
+}
+
+/**
  * Plant a complete foreign tenant, deliberately overlapping the demo's own
  * Organization and synthetic user references: none of that is ownership.
  *
@@ -258,6 +330,30 @@ try {
 		cpsd_ts_check( 'active' !== (string) ( $demo_anchor['status'] ?? '' ), 'J: the retained demo Clinic anchor is inert, not active', $checks, (string) ( $demo_anchor['status'] ?? '' ) );
 		$demo_left = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM `' . $t( 'cpms_patients' ) . '` WHERE clinic_id = ' . $demo_clinic ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table; integer literal.
 		cpsd_ts_check( 0 === $demo_left, 'J: the demo Clinic holds no leftover patient rows', $checks, (string) $demo_left );
+		// A/J: the patient the demo created over real HTTP is gone with the
+		// fixture - the recorder's registration made it deletable, and the
+		// teardown used exactly that.
+		$registered_patient = (int) ( $recorded['registered_patient'] ?? 0 );
+		if ( $registered_patient > 0 ) {
+			cpsd_ts_check( null === cpsd_ts_row( $t( 'cpms_patients' ), $registered_patient ), 'A/J: the patient registered by the real REST write was deleted', $checks, (string) $registered_patient );
+		}
+		// F/J: the additional demo Clinic the drill created is inert, and holds
+		// no leftover rows.
+		$second_clinic = (int) ( $recorded['second_clinic'] ?? 0 );
+		if ( $second_clinic > 0 ) {
+			$second_row = cpsd_ts_row( $t( 'cpms_clinics' ), $second_clinic );
+			cpsd_ts_check( is_array( $second_row ) && 'active' !== (string) ( $second_row['status'] ?? '' ), 'F/J: the additional demo Clinic is preserved and inert', $checks, (string) ( $second_row['status'] ?? 'gone' ) );
+			$second_left = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM `' . $t( 'cpms_patients' ) . '` WHERE clinic_id = ' . $second_clinic ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table; integer literal.
+			cpsd_ts_check( 0 === $second_left, 'F/J: the additional demo Clinic holds no leftover patient rows', $checks, (string) $second_left );
+		}
+		// Real people the drill created (and the host administrator) are not the
+		// demo's to delete.
+		foreach ( array( 'host_user', 'real_admin', 'surface_user', 'foreign_user' ) as $key ) {
+			$uid = (int) ( $recorded[ $key ] ?? 0 );
+			if ( $uid > 0 ) {
+				cpsd_ts_check( null !== get_userdata( $uid ), 'J: the real account survives the teardown (' . $key . ')', $checks, (string) $uid );
+			}
+		}
 		$tables = array();
 		foreach ( array( 'cpms_patients', 'cpms_invoices', 'cpms_payments', 'cpms_visits', 'cpms_clinic_memberships' ) as $short ) {
 			$tables[ $short ] = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM `' . $t( $short ) . '`' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table list.
@@ -317,41 +413,60 @@ try {
 	cpsd_ts_check( true === (bool) $clean['ok'], 'precondition: the fixture previews clean before the drill', $checks, implode( ' | ', (array) ( $clean['problems'] ?? array() ) ) );
 
 	// ---- A: a REAL production REST write by a synthetic persona ------------
+	// Over real HTTP, through the real lifecycle (cookie -> `wp_loaded` ->
+	// REST dispatch -> `shutdown`), so the recorder is exercised exactly as it
+	// is on the Owner's site.
 	$mobile = '0937' . (string) random_int( 1000000, 9999999 );
-	wp_set_current_user( $reception );
-	$_SERVER['REQUEST_METHOD']        = 'POST';
-	$_SERVER['HTTP_X_CPMS_CLINIC_ID'] = (string) $demo_clinic;
-	ScopedTenantGuard::begin_request();
-	$request = new WP_REST_Request( 'POST', '/clinic/v1/patients' );
-	$request->set_header( 'X-CPMS-Clinic-Id', (string) $demo_clinic );
-	// A real REST request carries the logged-in user's REST nonce; the
-	// permission callback rejects the write without it (CSRF), which is the
-	// production behaviour this drill must not bypass.
-	$request->set_header( 'X-WP-Nonce', (string) wp_create_nonce( 'wp_rest' ) );
-	$request->set_body_params(
-		array(
-			'first_name' => 'دوم',
-			'last_name'  => 'بیمار نمایشی',
-			'mobile'     => $mobile,
+	$auth   = cpsd_ts_auth( $reception );
+	$rest   = cpsd_ts_http(
+		rest_url( '/clinic/v1/patients' ),
+		array_merge(
+			$auth['headers'],
+			array(
+				'X-CPMS-Clinic-Id' => (string) $demo_clinic,
+				'Content-Type'     => 'application/json',
+			)
+		),
+		(string) wp_json_encode(
+			array(
+				'first_name' => 'دوم',
+				'last_name'  => 'بیمار نمایشی',
+				'mobile'     => $mobile,
+			)
 		)
 	);
-	$response = rest_do_request( $request );
-	$status   = is_object( $response ) && method_exists( $response, 'get_status' ) ? (int) $response->get_status() : 0;
-	$payload  = is_object( $response ) && method_exists( $response, 'get_data' ) ? (array) $response->get_data() : array();
-	ScopedTenantGuard::finish_request();
-	unset( $_SERVER['REQUEST_METHOD'], $_SERVER['HTTP_X_CPMS_CLINIC_ID'] );
-	cpsd_ts_check( in_array( $status, array( 200, 201 ), true ), 'A: the synthetic receptionist created a patient through the real REST API', $checks, 'HTTP ' . $status . ' ' . mb_substr( (string) wp_json_encode( $payload ), 0, 200 ) );
-	$data       = (array) ( $payload['data'] ?? $payload );
+	cpsd_ts_check(
+		in_array( $rest['status'], array( 200, 201 ), true ),
+		'A: the synthetic receptionist created a patient over real HTTP',
+		$checks,
+		'HTTP ' . $rest['status'] . ' ' . mb_substr( $rest['body'], 0, 200 ) . ' ' . $rest['error']
+	);
+	$payload     = json_decode( $rest['body'], true );
+	$payload     = is_array( $payload ) ? $payload : array();
+	$data        = (array) ( $payload['data'] ?? $payload );
 	$patient_row = (array) ( $data['patient'] ?? $data );
 	$new_patient = (int) ( $patient_row['id'] ?? 0 );
-	cpsd_ts_check( $new_patient > 0, 'A: the real REST response names the new patient', $checks );
+	cpsd_ts_check( $new_patient > 0, 'A: the real REST response names the new patient', $checks, mb_substr( (string) wp_json_encode( $payload ), 0, 200 ) );
 	$created = cpsd_ts_row( $t( 'cpms_patients' ), $new_patient );
 	cpsd_ts_check( is_array( $created ) && (string) ( $created['mobile'] ?? '' ) === $mobile, 'A: the new patient exists with a DIFFERENT mobile', $checks, $mobile );
+	// The shared identity row the production service creates alongside the
+	// patient has no `clinic_id`; it is organization-scoped. Both rows must be
+	// registered, or the teardown cannot attribute either of them.
+	$new_identity = is_array( $created ) ? (int) ( $created['identity_id'] ?? 0 ) : 0;
+	if ( $new_identity > 0 ) {
+		cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_patient_identities' ), $new_identity ), 'A: the production service also created the shared identity row', $checks, 'identity=' . $new_identity );
+	}
 	$after_write = $teardown->preview( $manifest->load() );
-	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the recorder registered the row inside the demo tenant', $checks, 'patient=' . $new_patient );
-	cpsd_ts_check( true === (bool) $after_write['ok'], 'A: the recorded write is ATTRIBUTED - the preview stays clean', $checks, implode( ' | ', array_slice( (array) ( $after_write['problems'] ?? array() ), 0, 3 ) ) );
+	cpsd_ts_check(
+		true === (bool) $after_write['ok'],
+		'A: the recorder REGISTERED every row that request created',
+		$checks,
+		implode( ' | ', array_slice( (array) ( $after_write['problems'] ?? array() ), 0, 3 ) )
+	);
+	cpsd_ts_check( cpsd_ts_claimed( $after_write, 'cpms_patients', $new_patient ), 'A: the registered patient is inside the attributed scope', $checks, 'patient=' . $new_patient );
 	$summary = $ownership->summary( (string) $live['fixture_id'] );
 	cpsd_ts_check( true === (bool) ( $summary['ok'] ?? false ), 'A: the ownership ledger still verifies after the recorded write', $checks, (string) ( $summary['error'] ?? '' ) );
+	WP_Session_Tokens::get_instance( $reception )->destroy( $auth['token'] );
 	$report['registered_patient'] = $new_patient;
 
 	// ---- B: an UNREGISTERED grant to a REAL administrator ------------------
@@ -420,8 +535,23 @@ try {
 	cpsd_ts_check( null === cpsd_ts_row( $membership_table, $b_id ) && true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B: removing the adversarial grant restores a clean preview', $checks );
 	$report['real_admin'] = $real_admin;
 
-	// ---- C: a foreign tenant that overlaps everything ----------------------
-	$foreign = cpsd_ts_plant_foreign( $platform, $t, $demo_org, $manager, $role_key );
+	// ---- C: a foreign tenant that overlaps the demo's own Organization ------
+	// Its actor references are a REAL user the drill creates: a foreign tenant
+	// that legitimately belongs to a real person. (A foreign row that points at
+	// a SYNTHETIC account is a different case - it must BLOCK the teardown,
+	// which is scenario C2 below.)
+	$foreign_user = (int) wp_insert_user(
+		array(
+			'user_login'   => 'ts-foreign-' . strtolower( bin2hex( random_bytes( 3 ) ) ),
+			'user_pass'    => wp_generate_password( 24 ),
+			'user_email'   => 'ts-foreign-' . strtolower( bin2hex( random_bytes( 3 ) ) ) . '@example.test',
+			'display_name' => 'real foreign staff',
+			'role'         => 'subscriber',
+		)
+	);
+	cpsd_ts_check( $foreign_user > 0, 'C: a real user for the foreign tenant was created', $checks );
+	$foreign = cpsd_ts_plant_foreign( $platform, $t, $demo_org, $foreign_user, $role_key );
+	$report['foreign_user'] = $foreign_user;
 	foreach ( $foreign as $key => $id ) {
 		cpsd_ts_check( $id > 0, 'C: the foreign ' . $key . ' was really created', $checks, (string) $id );
 	}
@@ -441,6 +571,126 @@ try {
 		cpsd_ts_check( ! cpsd_ts_claimed( $c_preview, $short, (int) $foreign[ $key ] ), 'C: the foreign ' . $key . ' is never claimed', $checks, $short . '#' . $foreign[ $key ] );
 		$planted[ 'foreign_' . $key ] = array( 'table' => $t( $short ), 'id' => (int) $foreign[ $key ], 'hash' => cpsd_ts_hash( $t( $short ), (int) $foreign[ $key ] ) );
 	}
+
+	// ---- C2: a foreign row that depends on a SYNTHETIC account -------------
+	// The teardown deletes synthetic accounts, so a FOREIGN tenant row that
+	// still references one would lose the user underneath it. That must refuse
+	// (SCOPED_FOREIGN_DEPENDENCY) rather than silently break the foreign tenant.
+	$c2_membership = cpsd_ts_insert(
+		$t( 'cpms_clinic_memberships' ),
+		array(
+			'clinic_id'  => (int) $foreign['clinic'],
+			'wp_user_id' => $reception,
+			'role_key'   => $role_key,
+			'scope_mode' => 'clinic',
+			'status'     => 'active',
+			'is_primary' => 0,
+			'created_at' => gmdate( 'Y-m-d H:i:s' ) . '.000',
+			'updated_at' => gmdate( 'Y-m-d H:i:s' ) . '.000',
+		)
+	);
+	cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_clinic_memberships' ), $c2_membership ), 'C2: the foreign row that depends on a synthetic account really exists', $checks, 'id=' . $c2_membership );
+	$c2_preview = $teardown->preview( $manifest->load() );
+	cpsd_ts_check( false === (bool) $c2_preview['ok'], 'C2: a foreign dependency on a synthetic account blocks the teardown', $checks, implode( ' | ', array_slice( (array) ( $c2_preview['problems'] ?? array() ), 0, 3 ) ) );
+	cpsd_ts_check( cpsd_ts_problem( $c2_preview, 'SCOPED_FOREIGN_DEPENDENCY' ), 'C2: the refusal is the foreign-dependency code', $checks, implode( ' | ', (array) ( $c2_preview['problems'] ?? array() ) ) );
+	cpsd_ts_check( null !== cpsd_ts_row( $t( 'cpms_clinic_memberships' ), $c2_membership ), 'C2: the refused preview deleted the foreign row (it must not)', $checks );
+	$wpdb->delete( $t( 'cpms_clinic_memberships' ), array( 'id' => $c2_membership ), array( '%d' ) );
+	cpsd_ts_check( true === (bool) $teardown->preview( $manifest->load() )['ok'], 'C2: removing the dependency restores a clean preview', $checks );
+
+	// ---- K: every write surface refuses a REAL actor ------------------------
+	// The barrier runs at `wp_loaded`, i.e. before admin-post, admin-AJAX, the
+	// Management Portal's template handler and REST dispatch. This drives all
+	// four surfaces over HTTP with a real, non-fixture, authenticated user.
+	$surface_user = (int) wp_insert_user(
+		array(
+			'user_login'   => 'ts-surface-' . strtolower( bin2hex( random_bytes( 3 ) ) ),
+			'user_pass'    => wp_generate_password( 24 ),
+			'user_email'   => 'ts-surface-' . strtolower( bin2hex( random_bytes( 3 ) ) ) . '@example.test',
+			'display_name' => 'real surface probe',
+			'role'         => 'subscriber',
+		)
+	);
+	cpsd_ts_check( $surface_user > 0, 'K: a real (non-fixture) user was created for the surface probe', $checks );
+	$surface_auth = cpsd_ts_auth( $surface_user );
+	$management   = (string) ( $live['links']['management'] ?? home_url( '/' ) );
+
+	$admin_post = cpsd_ts_http(
+		home_url( '/wp-admin/admin-post.php' ),
+		$surface_auth['headers'],
+		array( 'action' => 'cpsd_surface_probe', 'clinic_id' => $demo_clinic )
+	);
+	cpsd_ts_check(
+		403 === $admin_post['status'] && false !== strpos( $admin_post['body'], 'دموی محدودشده' ),
+		'K: admin-post refuses a real actor writing into the demo Clinic',
+		$checks,
+		'HTTP ' . $admin_post['status'] . ' ' . mb_substr( $admin_post['body'], 0, 160 ) . ' ' . $admin_post['error']
+	);
+
+	$ajax = cpsd_ts_http(
+		home_url( '/wp-admin/admin-ajax.php?action=cpsd_surface_probe' ),
+		$surface_auth['headers'],
+		array( 'clinic_id' => $demo_clinic )
+	);
+	cpsd_ts_check(
+		403 === $ajax['status'] && false !== strpos( $ajax['body'], 'دموی محدودشده' ),
+		'K: admin-AJAX refuses the same write',
+		$checks,
+		'HTTP ' . $ajax['status'] . ' ' . mb_substr( $ajax['body'], 0, 160 )
+	);
+
+	$portal_post = cpsd_ts_http(
+		$management,
+		$surface_auth['headers'],
+		array( 'clinic_id' => $demo_clinic, 'cpms_module' => 'management' )
+	);
+	cpsd_ts_check(
+		403 === $portal_post['status'],
+		'K: the Management Portal refuses the same write',
+		$checks,
+		'HTTP ' . $portal_post['status'] . ' ' . mb_substr( $portal_post['body'], 0, 160 )
+	);
+
+	$rest_refused = cpsd_ts_http(
+		rest_url( '/clinic/v1/patients' ),
+		array_merge(
+			$surface_auth['headers'],
+			array(
+				'X-CPMS-Clinic-Id' => (string) $demo_clinic,
+				'Content-Type'     => 'application/json',
+			)
+		),
+		(string) wp_json_encode(
+			array(
+				'first_name' => 'نفوذی',
+				'last_name'  => 'واقعی',
+				'mobile'     => '0936' . (string) random_int( 1000000, 9999999 ),
+			)
+		)
+	);
+	cpsd_ts_check(
+		403 === $rest_refused['status'],
+		'K: REST refuses the real actor writing into the demo Clinic',
+		$checks,
+		'HTTP ' . $rest_refused['status'] . ' ' . mb_substr( $rest_refused['body'], 0, 160 )
+	);
+
+	// Negative control: the SAME actor and the SAME surfaces stay usable for a
+	// FOREIGN tenant. A barrier that blocks everything is not a fix.
+	$foreign_ajax = cpsd_ts_http(
+		home_url( '/wp-admin/admin-ajax.php?action=cpsd_surface_probe' ),
+		$surface_auth['headers'],
+		array( 'clinic_id' => (int) $foreign['clinic'] )
+	);
+	cpsd_ts_check(
+		403 !== $foreign_ajax['status'],
+		'K: a foreign tenant stays writable for the same real actor',
+		$checks,
+		'HTTP ' . $foreign_ajax['status'] . ' ' . mb_substr( $foreign_ajax['body'], 0, 120 )
+	);
+	$foreign_patients_after = (int) $wpdb->get_var( 'SELECT COUNT(*) FROM `' . $t( 'cpms_patients' ) . '` WHERE clinic_id = ' . (int) $foreign['clinic'] ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- fixed table; integer literal.
+	cpsd_ts_check( $foreign_patients_after >= 1, 'K: the foreign tenant still has its own rows after the probes', $checks, (string) $foreign_patients_after );
+	WP_Session_Tokens::get_instance( $surface_user )->destroy( $surface_auth['token'] );
+	$report['surface_user'] = $surface_user;
 
 	// ---- D: a cross-table numeric collision grants nothing -----------------
 	$sealed_patient = cpsd_ts_claimed( $c_preview, 'cpms_patients', $new_patient ) ? $new_patient : $patient;

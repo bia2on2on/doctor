@@ -436,6 +436,31 @@ def provision_phase(browser) -> None:
         if not href or not href.startswith("http"):
             links_ok = False
     check("every persona row links to a real portal URL", links_ok)
+    # The portal hint is a data contract between the card and the persona: a
+    # wrong mapping sends the Owner to a screen the persona cannot use.
+    expected_portals = {
+        "organization_manager": "management",
+        "clinic_manager": "management",
+        "doctor": "doctor",
+        "doctor_second": "doctor",
+        "receptionist": "receptionist",
+        "receptionist_second": "receptionist",
+        "accountant": "accountant",
+        "patient": "patient",
+    }
+    actual_portals = {
+        (access_rows.nth(i).get_attribute("data-cpsd-persona-portal") or ""):
+        (access_rows.nth(i).get_attribute("data-cpsd-portal-link") or "")
+        for i in range(access_rows.count())
+    }
+    check("every persona is mapped to its own portal", actual_portals == expected_portals,
+          json.dumps(actual_portals, ensure_ascii=False))
+    rows_described = all(
+        len((access_rows.nth(i).locator("td").nth(1).inner_text() or "").strip()) > 0
+        and len((access_rows.nth(i).locator("td").nth(2).inner_text() or "").strip()) > 0
+        for i in range(access_rows.count())
+    )
+    check("every persona row states portal and purpose", rows_described)
     check("the persona-access card exposes no password field",
           access.locator("textarea, input").count() == 0,
           f"inputs={access.locator('textarea, input').count()}")

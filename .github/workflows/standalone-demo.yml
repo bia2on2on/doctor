@@ -266,7 +266,9 @@ jobs:
           wp eval 'echo defined("CPMS_VERSION") ? CPMS_VERSION : "MISSING";' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/core-version.txt
           grep -qv MISSING /tmp/cpsa-ci/core-version.txt
           wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/schema.txt
-          test -n "$(cat /tmp/cpsa-ci/schema.txt)"
+          # The embedded core must be at the SAME schema head as the production
+          # build, otherwise the standalone demo evaluates an older product.
+          test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
 
       - name: Seed a genuinely non-empty site and record its digest
         run: |
@@ -666,6 +668,22 @@ jobs:
                   print('::error title=CPSA_TS_PROVISION::' + str(line).replace('%', '%25').replace('\n', ' '))
               sys.exit(1)
           PY
+
+      - name: Start the PHP server the drill's real HTTP requests go to
+        run: |
+          set -Eeuo pipefail
+          nohup php -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ts/php-server.log 2>&1 &
+          echo $! > /tmp/cpsa-ts/php-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then
+              echo "PHP_SERVER_READY=1"
+              exit 0
+            fi
+            sleep 1
+          done
+          tail -50 /tmp/cpsa-ts/php-server.log || true
+          echo 'FAIL: the PHP server the drill needs did not start' >&2
+          exit 1
 
       - name: A–J drill — plant adversarial rows, then run the AUTHORIZED teardown, then verify survival
         run: |
