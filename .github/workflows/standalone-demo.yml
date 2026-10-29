@@ -19,10 +19,16 @@ name: Standalone demo (real WordPress, no production plugin)
 #     fault and never a fatal;
 #   * deactivating and deleting the demo destroys nothing (no dropped tables, no
 #     deleted users, no deleted content);
-#   * NOT COVERED HERE: the Chromium persona journeys. The scoped lane runs
-#     them against a site that also carries the production plugin; this lane
-#     does not run them at all. Treat browser coverage of the standalone build
-#     as MISSING, not as inherited.
+#   * a REAL Chromium session on this build alone: administrator login through
+#     the WordPress form, the demo admin page (persona-access card and the
+#     one-time credentials' disappearance), the public booking page, the staff
+#     portal and all five modules, the patient and management portals, the
+#     plugins screen, and a phone viewport;
+#   * NOT COVERED HERE: the six logged-in persona journeys. Those need the
+#     one-time persona credentials, which the PHP provisioning above already
+#     consumed; they run in the scoped lane against the same core code. This
+#     lane proves the standalone build's UI reachable by an administrator and
+#     anonymous visitor, not a persona's own login.
 
 on:
   workflow_dispatch:
@@ -326,6 +332,70 @@ jobs:
               sys.exit(1)
           PY
 
+      - name: Playwright Chromium (pinned)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
+
+      - name: Start PHP built-in WordPress server
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpsa-ci/browser
+          nohup php -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ci/php-server.log 2>&1 &
+          echo $! > /tmp/cpsa-ci/php-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then
+              echo "PHP_SERVER_READY=1"
+              exit 0
+            fi
+            sleep 1
+          done
+          tail -50 /tmp/cpsa-ci/php-server.log || true
+          echo 'FAIL: PHP built-in server did not become ready' >&2
+          exit 1
+
+      - name: Export the read-only portal identifiers
+        run: |
+          set -Eeuo pipefail
+          wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/persona-targets.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tail -1 > /tmp/cpsa-ci/browser/persona-targets.json
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/browser/persona-targets.json', encoding='utf-8').read())
+          print('PERSONA_TARGETS_OK=' + str(bool(data.get('ok'))))
+          print('PERSONA_TARGETS=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok'):
+              sys.exit(1)
+          PY
+
+      - name: Chromium — standalone build in a real browser (admin, portals, phone viewport)
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
+        run: |
+          set -Eeuo pipefail
+          test ! -d "$WP_DIR/wp-content/plugins/clinic-practice-management" \
+            || { echo 'FAIL: the production plugin must not be installed in this lane' >&2; exit 1; }
+          python3 tests/scoped-demo/browser_standalone.py | tee /tmp/cpsa-ci/browser-standalone.log
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/browser/standalone-browser.json', encoding='utf-8').read())
+          checks = data.get('checks', [])
+          print('STANDALONE_BROWSER_CHECKS=' + str(len(checks)))
+          print('STANDALONE_BROWSER_OK=' + str(bool(data.get('ok'))))
+          print('STANDALONE_BROWSER_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              failed = [item for item in checks if not item.get('ok')]
+              detail = ' || '.join(
+                  str(item.get('name')) + ' — ' + str(item.get('detail', ''))[:240] for item in failed[-3:]
+              ) or 'standalone browser run failed'
+              print('::error title=CPSA_BROWSER::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
       - name: Pre-existing WordPress data survives provisioning
         run: |
           set -Eeuo pipefail
@@ -478,5 +548,124 @@ jobs:
             /tmp/cpsa-ci/*.jsonl
             /tmp/cpsa-ci/*.txt
             /tmp/cpsa-ci/*.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  # The A–J teardown data-safety drill. It gets its OWN job because it is the
+  # only sequence that ends with a REAL authorized teardown: running it inside
+  # the acceptance job would delete the fixture the later steps still assert on.
+  # The logic under test is WordPress- and service-level (ownership attribution,
+  # preview vs execute, hostile rows), not engine-specific, so one engine is
+  # enough here; the acceptance job already runs the same code on both.
+  teardown-safety:
+    name: A–J teardown data safety (real database)
+    needs: static
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot"
+          --health-interval=10s --health-timeout=5s --health-retries=20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
+          coverage: none
+
+      - name: Tooling (checksum-verified WP-CLI + mysql client)
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mysql-client
+          apt-log-dir: /tmp/cpsa-ts
+
+      - name: Clean WordPress with ONLY the standalone demo package
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpsa-ts /tmp/cpsa-ts-private
+          OUT_DIR=/tmp/cpsa-ts bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" > /tmp/cpsa-ts/build.log 2>&1
+          tail -3 /tmp/cpsa-ts/build.log
+          curl -fsS "https://wordpress.org/wordpress-${WP_VERSION}.tar.gz" -o /tmp/wp.tar.gz
+          tar -xzf /tmp/wp.tar.gz -C /tmp
+          mv /tmp/wordpress "$WP_DIR"
+          mysql -h 127.0.0.1 -P 3306 -uroot -proot -e "CREATE DATABASE $DB_NAME CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+          cd "$WP_DIR"
+          wp config create --dbname="$DB_NAME" --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix='wp_' --skip-salts --allow-root
+          wp config shuffle-salts --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp config set WP_DEBUG true --raw --allow-root
+          wp config set WP_DEBUG_LOG true --raw --allow-root
+          wp config set WP_DEBUG_DISPLAY false --raw --allow-root
+          chmod 0777 /tmp/cpsa-ts-private
+          wp config set CPMS_PRIVATE_STORAGE_DIR /tmp/cpsa-ts-private --type=constant --allow-root
+          ADMIN_PASS="$(python3 -c 'import secrets; print(secrets.token_hex(24))')"
+          wp core install --url="$WP_URL" --title="CPSA Teardown Safety" --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@cpsa.invalid --skip-email --allow-root
+          echo "ADMIN_PASS=$ADMIN_PASS" >> "$GITHUB_ENV"
+          wp plugin install /tmp/cpsa-ts/cpms-disposable-demo-1.0.0.zip --activate --path="$WP_DIR" --allow-root
+          wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
+
+      - name: Provision the fixture the drill attacks
+        run: |
+          set -Eeuo pipefail
+          CPSD_SA_MODE=provision CPSD_SA_EVIDENCE=/tmp/cpsa-ts/seed.json \
+            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ts/provision.jsonl
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ts/provision.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
+          print('PROVISION_OK=' + str(bool(data.get('ok'))))
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
+                  print('::error title=CPSA_TS_PROVISION::' + str(line).replace('%', '%25').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
+      - name: A–J drill — plant adversarial rows, then run the AUTHORIZED teardown, then verify survival
+        run: |
+          set -Eeuo pipefail
+          run_mode () {
+            MODE="$1"
+            CPSD_TS_MODE="$MODE" CPSD_TS_EVIDENCE=/tmp/cpsa-ts/teardown-safety.json \
+              wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/teardown-safety.php" \
+              --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+              | tee "/tmp/cpsa-ts/teardown-safety-$MODE.jsonl"
+            MODE="$MODE" python3 - <<'PY'
+          import json, os, sys
+          mode = os.environ['MODE']
+          data = json.loads(open(f'/tmp/cpsa-ts/teardown-safety-{mode}.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
+          print(f'TEARDOWN_SAFETY_{mode.upper()}_OK=' + str(bool(data.get('ok'))))
+          for line in data.get('checks', []):
+              print('  ' + line)
+          print(f'TEARDOWN_SAFETY_{mode.upper()}_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error', 'unknown'))]:
+                  print(f'::error title=CPSA_TEARDOWN_{mode.upper()}::' + str(line).replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+          }
+          run_mode plant
+          run_mode teardown
+          run_mode verify
+          # Nothing the drill planted contained PHI or credentials; the evidence
+          # files hold table names, ids and hashes only.
+          ls -l /tmp/cpsa-ts/teardown-safety-*.jsonl
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpsa-teardown-safety-${{ github.run_id }}
+          path: |
+            /tmp/cpsa-ts/teardown-safety-plant.jsonl
+            /tmp/cpsa-ts/teardown-safety-teardown.jsonl
+            /tmp/cpsa-ts/teardown-safety-verify.jsonl
+            /tmp/cpsa-ts/teardown-safety.json
           if-no-files-found: warn
           retention-days: 30

@@ -265,7 +265,7 @@ class ScopedAdmin {
 			$status = (string) ( $loaded['status'] ?? 'unknown' );
 			self::render_ownership( $env, $manifest, $request, $loaded );
 			if ( 'active' === $status ) {
-				self::render_links( $loaded );
+				self::render_persona_access( $loaded );
 				self::render_form( $request, ScopedRequest::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'پس از درخواست کد از رابط واقعی بیمار، کد همان چالش زنده را نشان میدهد.' );
 			} else {
 				echo '<div class="notice notice-warning inline"><p>وضعیت دمو ناتمام است: <code dir="ltr">' . esc_html( $status ) . '</code>. ساخت دمو تازهای مجاز نیست؛ از پیشنمایش و پاکسازی ایمن استفاده کنید.</p></div>';
@@ -495,13 +495,108 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
-	private static function render_links( array $manifest ): void {
-		$links = (array) ( $manifest['links'] ?? array() );
-		echo '<div class="cpdd-card"><h2>پیوندهای درگاهها</h2><ul>';
-		foreach ( $links as $key => $url ) {
-			echo '<li><a href="' . esc_url( (string) $url ) . '" target="_blank" rel="noopener">' . esc_html( (string) $key ) . '</a></li>';
+	/**
+	 * Which portal does each persona actually use?
+	 *
+	 * The key is the manifest link the persona is entitled to open; the label says
+	 * what to do there. Nothing here grants access - each portal enforces its own
+	 * authorization - and no password is repeated here.
+	 *
+	 * @return array<string,array{link:string,portal:string,hint:string}>
+	 */
+	private static function persona_portals(): array {
+		return array(
+			'organization_manager' => array(
+				'link'   => 'management',
+				'portal' => 'درگاه مدیریت — سطح سازمان',
+				'hint'   => 'چرخهٔ عمر درمانگاه‌ها و تعیین مدیر درمانگاه',
+			),
+			'clinic_manager' => array(
+				'link'   => 'management',
+				'portal' => 'درگاه مدیریت — سطح درمانگاه',
+				'hint'   => 'شعبه، پزشک، برنامهٔ هفتگی، سیاست رزرو و آمادگی درمانگاه',
+			),
+			'doctor' => array(
+				'link'   => 'doctor',
+				'portal' => 'درگاه کارکنان — ماژول پزشک',
+				'hint'   => 'ویزیت، شرح حال، نسخه، پیام خصوصی و تعرفهٔ ویزیت',
+			),
+			'doctor_second' => array(
+				'link'   => 'doctor',
+				'portal' => 'درگاه کارکنان — ماژول پزشک (پزشک دوم)',
+				'hint'   => 'برای دیدن جدایی گفتگوی خصوصی و تعرفهٔ هر پزشک',
+			),
+			'receptionist' => array(
+				'link'   => 'receptionist',
+				'portal' => 'درگاه کارکنان — ماژول پذیرش',
+				'hint'   => 'پذیرش بیمار، نوبت‌دهی، صف ورود و دریافت پرداخت',
+			),
+			'receptionist_second' => array(
+				'link'   => 'receptionist',
+				'portal' => 'درگاه کارکنان — ماژول پذیرش (پذیرش دوم)',
+				'hint'   => 'همکار مجاز ولی غیرعضو گفتگوی خصوصی',
+			),
+			'accountant' => array(
+				'link'   => 'accountant',
+				'portal' => 'درگاه کارکنان — ماژول مالی',
+				'hint'   => 'صورتحساب، پرداخت جزئی و کامل، اقلام درمان و نهایی‌سازی',
+			),
+			'patient' => array(
+				'link'   => 'patient',
+				'portal' => 'درگاه بیمار',
+				'hint'   => 'ورود با OTP پیامکی و رزرو نوبت عمومی',
+			),
+		);
+	}
+
+	/**
+	 * One row per synthetic persona: who it is, where it goes, and how to get in.
+	 *
+	 * This is the Product Owner's map of the demo. It deliberately shows NO
+	 * password: passwords exist only in the one-time card rendered by the
+	 * provisioning request (`render_credentials()`), which is the demo's existing
+	 * secure mechanism. There is no impersonation control, no shared token and no
+	 * parallel login - every row links to the real portal, and the production
+	 * authorization decides what that account may do.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return void
+	 */
+	private static function render_persona_access( array $manifest ): void {
+		$links    = (array) ( $manifest['links'] ?? array() );
+		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
+		$portals  = self::persona_portals();
+		$personas = Credentials::personas();
+		echo '<div class="cpdd-card" data-cpsd-persona-access="1"><h2>دسترسی به نقش‌های نمایشی</h2>';
+		echo '<p>برای هر نقش یک حساب ساختگی ساخته شده است. با همان حساب در درگاه خودش وارد شوید تا همان چیزی را ببینید که یک کاربر واقعی با آن نقش می‌بیند. این صفحه هیچ سازوکار «ورود به‌جای دیگری» ندارد و دسترسی هر نقش را خود درگاه تولیدی تعیین می‌کند.</p>';
+		echo '<table class="widefat striped cpdd-personas"><thead><tr><th>نقش</th><th>درگاه</th><th>برای چه کاری</th><th>ورود</th></tr></thead><tbody>';
+		foreach ( Credentials::PERSONA_ORDER as $key ) {
+			$persona = (array) ( $personas[ $key ] ?? array() );
+			$map     = (array) ( $portals[ $key ] ?? array() );
+			$url     = (string) ( $links[ $map['link'] ?? '' ] ?? '' );
+			echo '<tr data-cpsd-persona-portal="' . esc_attr( $key ) . '" data-cpsd-portal-link="' . esc_attr( (string) ( $map['link'] ?? '' ) ) . '">';
+			echo '<td>' . esc_html( (string) ( $persona['label'] ?? $key ) ) . '</td>';
+			echo '<td>' . esc_html( (string) ( $map['portal'] ?? '-' ) ) . '</td>';
+			echo '<td>' . esc_html( (string) ( $map['hint'] ?? '' ) ) . '</td>';
+			if ( '' === $url ) {
+				echo '<td>-</td>';
+			} else {
+				echo '<td><a class="button button-secondary" dir="ltr" target="_blank" rel="noopener" href="' . esc_url( $url ) . '">' . esc_html__( 'بازکردن درگاه', 'cpms' ) . '</a></td>';
+			}
+			echo '</tr>';
 		}
-		echo '</ul><p>Shortcode رزرو: <code dir="ltr">' . esc_html( (string) ( $manifest['shortcode'] ?? '' ) ) . '</code></p></div>';
+		echo '</tbody></table>';
+		echo '<p>نام کاربری هر نقش به شکل <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمز هر نقش فقط یک‌بار و در کارت «رمزهای یک‌بارمصرف» همان درخواستی که دمو را می‌سازد نشان داده می‌شود و ذخیره نمی‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر رمزها را از دست دادید، پس از پاک‌سازی مجاز دمو و ساخت دوبارهٔ آن رمزهای تازه صادر می‌شود.</p>';
+		$extra = array();
+		foreach ( array( 'messages' => 'پیام‌های خصوصی کارکنان', 'pricing' => 'تعرفه‌ها', 'reports' => 'گزارش‌ها' ) as $key => $label ) {
+			if ( ! empty( $links[ $key ] ) ) {
+				$extra[] = '<a href="' . esc_url( (string) $links[ $key ] ) . '" target="_blank" rel="noopener">' . esc_html( $label ) . '</a>';
+			}
+		}
+		if ( array() !== $extra ) {
+			echo '<p>میان‌برها: ' . wp_kses_post( implode( ' · ', $extra ) ) . '</p>';
+		}
+		echo '<p>Shortcode رزرو: <code dir="ltr">' . esc_html( (string) ( $manifest['shortcode'] ?? '' ) ) . '</code></p></div>';
 	}
 
 	private static function render_otp(): void {

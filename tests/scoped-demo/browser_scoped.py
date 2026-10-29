@@ -418,9 +418,35 @@ def provision_phase(browser) -> None:
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-provisioned.png"))
     CREDENTIALS_FILE.write_text(json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # One-time display: a reload must not repeat credentials.
+    # The Product Owner's map of the demo: one row per persona, each naming its
+    # portal and linking straight to it - and NO password anywhere in it.
+    access = admin.locator('[data-cpsd-persona-access="1"]')
+    check("the persona-access card is rendered", access.count() == 1)
+    access_rows = access.locator("tr[data-cpsd-persona-portal]")
+    check("the persona-access card covers every persona", access_rows.count() == len(PERSONAS),
+          f"rows={access_rows.count()}")
+    access_keys = [access_rows.nth(i).get_attribute("data-cpsd-persona-portal") or ""
+                   for i in range(access_rows.count())]
+    check("every persona is named and mapped to a portal",
+          sorted(k for k in access_keys if k) == sorted(PERSONAS), json.dumps(access_keys))
+    links_ok = True
+    for i in range(access_rows.count()):
+        row = access_rows.nth(i)
+        href = row.locator("a").first.get_attribute("href") if row.locator("a").count() else ""
+        if not href or not href.startswith("http"):
+            links_ok = False
+    check("every persona row links to a real portal URL", links_ok)
+    check("the persona-access card exposes no password field",
+          access.locator("textarea, input").count() == 0,
+          f"inputs={access.locator('textarea, input').count()}")
+    JOURNEY_EVIDENCE["persona_access"] = {"rows": access_rows.count(), "keys": access_keys}
+
+    # One-time display: a reload must not repeat credentials, but the persona map
+    # is persistent (it contains no secret).
     admin.reload(wait_until="domcontentloaded")
     check("credentials not persisted after reload", admin.locator('[data-cpsd-secret="credentials"]').count() == 0)
+    check("the persona map persists across reloads",
+          admin.locator('[data-cpsd-persona-access="1"]').count() == 1)
     ctx.close()
 
 
