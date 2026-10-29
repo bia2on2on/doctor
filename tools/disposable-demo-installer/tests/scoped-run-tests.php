@@ -91,18 +91,21 @@ namespace {
 	$rotate_env = new Cpdd_Fake_Env();
 	$rotate_env->seed_clean_site();
 	$rotate_ids = array();
+	$rotate_fixture = str_repeat( 'abcdef0123456789', 2 );
 	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $rotate_persona ) {
 		$rotate_ids[ $rotate_persona ] = $rotate_env->create_user( array(
-			'user_login' => 'cpsd-' . $rotate_persona . '-abcdef0123456789',
+			'user_login' => 'cpsd-' . $rotate_persona . '-' . $rotate_fixture,
 			'user_pass'  => 'old-' . $rotate_persona,
 			'user_email' => $rotate_persona . '@demo.invalid',
 			'role'       => 'subscriber',
 		) );
 	}
-	$rotate_manifest = array( 'status' => 'active', 'fixture_id' => 'abcdef0123456789', 'admin_id' => 1, 'ids' => array( 'user_ids' => $rotate_ids ) );
+	$rotate_manifest = array( 'status' => 'active', 'fixture_id' => $rotate_fixture, 'admin_id' => 1, 'ids' => array( 'user_ids' => $rotate_ids ) );
 	$rotated = ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $rotate_manifest, 'cpsd-' );
 	Cpdd_Test::ok( 8 === count( $rotated ) && count( array_unique( $rotated ) ) === 8, 'credentials: scoped cpsd- accounts rotate to eight independent fresh passwords' );
 	Cpdd_Test::refuses( static fn () => ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $rotate_manifest, 'cpdd-' ), 'ROTATE_SCOPE', 'credentials: strict cpdd- prefix cannot rotate scoped cpsd- accounts' );
+	$short_fixture_manifest = array_replace( $rotate_manifest, array( 'fixture_id' => 'abcdef0123456789' ) );
+	Cpdd_Test::refuses( static fn () => ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $short_fixture_manifest, 'cpsd-' ), 'ROTATE_SCOPE', 'credentials: scoped rotation refuses a strict 64-bit fixture identity' );
 
 	final class Cpsd_Fake_Audit_Platform extends Cpdd_Fake_Platform {
 		public array $audit_rows = array();

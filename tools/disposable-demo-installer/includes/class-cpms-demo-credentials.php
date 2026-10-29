@@ -147,7 +147,11 @@ class Credentials {
 				}
 				$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
 				$admin_id = (int) ( $manifest['admin_id'] ?? 0 );
-				if ( 1 !== preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+				// Strict disposable fixtures use 64-bit hex identities; scoped
+				// fixtures use 128-bit hex identities. The account prefix selects the
+				// same closed identity contract as the corresponding manifest class.
+				$fixture_pattern = 'cpsd-' === $prefix ? '/^[a-f0-9]{32}$/D' : '/^[a-f0-9]{16}$/D';
+				if ( 1 !== preg_match( $fixture_pattern, $fixture ) ) {
 					throw new Exception( 'ROTATE_SCOPE', 'شناسهٔ دمو نامعتبر است؛ چرخش رمز متوقف شد.' );
 				}
 				$users    = (array) ( $manifest['ids']['user_ids'] ?? array() );
