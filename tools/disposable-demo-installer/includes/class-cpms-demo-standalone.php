@@ -425,8 +425,8 @@ final class Standalone {
 			if ( '' !== $single ) {
 				$requested[] = $single;
 			}
-		} elseif ( isset( $_REQUEST['checked'] ) ) {
-			// phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- every element is matched against a fixed basename below, never used as a path.
+		} elseif ( isset( $_REQUEST['checked'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only classification; WordPress verifies the bulk-activation nonce itself.
+			// phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- every element is matched against a fixed basename below, never used as a path.
 			$requested = (array) wp_unslash( $_REQUEST['checked'] );
 		}
 		foreach ( $requested as $plugin ) {
