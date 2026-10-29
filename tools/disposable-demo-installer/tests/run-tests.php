@@ -1282,4 +1282,116 @@ Cpdd_Test::ok(
 	'reg-14d: suffix collision causes clinic-scoped OTP audit row to be flagged as ambiguous/foreign rather than owned'
 );
 
+// ---------------------------------------------------------------------------
+// 14. Notice identity — a refusal must be addressable, not merely countable
+// ---------------------------------------------------------------------------
+// The page legitimately shows more than one status block: the build/mode banner
+// (`data-cpsd-standalone`) and the outcome of the submitted action. Counting
+// `.notice-error` cannot tell them apart, so every outcome notice now carries
+// `data-cpdd-notice` and, when it came from a refusal, `data-cpdd-code`. These
+// assertions pin that identity: the browser drill asserts on it instead of on a
+// count, and a count is only used as a closed set.
+$ctx = cpdd_fixture();
+$ctx['platform']->available_flag = false;
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+\CpmsDemo\Standalone::set_fault( 'companion_missing_production' );
+$req_helper = new Request( $ctx['env'], $ctx['manifest'] );
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST = array(
+	Admin::ACTION  => Request::ACTION_PROVISION,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_PROVISION ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_PROVISION ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_inactive = (string) ob_get_clean();
+Cpdd_Test::ok(
+	str_contains( $html_inactive, 'data-cpdd-notice="error"' ),
+	'notice-id: the refused action renders an outcome notice with a stable identity'
+);
+Cpdd_Test::ok(
+	str_contains( $html_inactive, 'data-cpdd-code="CPMS_INACTIVE"' ),
+	'notice-id: the refusal carries its machine code, so the reason is assertable without matching prose'
+);
+Cpdd_Test::ok(
+	1 === preg_match( '/<div class="notice notice-error"[^>]*data-cpdd-notice="error"[^>]*data-cpdd-code="CPMS_INACTIVE"/', $html_inactive )
+	|| 1 === preg_match( '/<div class="notice notice-error"[^>]*data-cpdd-code="CPMS_INACTIVE"[^>]*data-cpdd-notice="error"/', $html_inactive ),
+	'notice-id: identity and code live on the same error notice'
+);
+Cpdd_Test::ok(
+	str_contains( $html_inactive, 'data-cpsd-standalone="fault"' ),
+	'notice-id: the build/mode banner keeps its own, different identity'
+);
+Cpdd_Test::equals(
+	2,
+	(int) preg_match_all( '/class="notice notice-error/', $html_inactive ),
+	'notice-id: exactly two error notices — the banner and the refusal — so a third still fails'
+);
+Cpdd_Test::ok(
+	! str_contains( $html_inactive, 'data-cpdd-notice="success"' ),
+	'notice-id: a refused action never renders a success notice'
+);
+
+// A successful action carries identity too, and no error notice at all.
+// The mode fault is cleared here on purpose: the previous block left a build
+// fault in place, and a leaked fault would make this assertion vacuous.
+\CpmsDemo\Standalone::set_fault( '' );
+$ctx = cpdd_fixture();
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+$req_helper = new Request( $ctx['env'], $ctx['manifest'] );
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST = array(
+	Admin::ACTION  => Request::ACTION_PROVISION,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_PROVISION ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => $req_helper->phrase( Request::ACTION_PROVISION ),
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_success = (string) ob_get_clean();
+Cpdd_Test::ok(
+	str_contains( $html_success, 'data-cpdd-notice="success"' ),
+	'notice-id: a successful action renders an outcome notice with a stable identity'
+);
+Cpdd_Test::equals(
+	0,
+	(int) preg_match_all( '/class="notice notice-error/', $html_success ),
+	'notice-id: a successful action renders no error notice at all'
+);
+Cpdd_Test::ok(
+	! str_contains( $html_success, 'data-cpdd-code=' ),
+	'notice-id: a notice without a refusal code omits the code attribute instead of inventing one'
+);
+
+// A wrong confirmation phrase is its own refusal, and it must not be
+// indistinguishable from "CPMS is inactive".
+$ctx = cpdd_fixture();
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+$req_helper = new Request( $ctx['env'], $ctx['manifest'] );
+$_SERVER['REQUEST_METHOD'] = 'POST';
+$_POST = array(
+	Admin::ACTION  => Request::ACTION_PROVISION,
+	'cpdd_nonce'   => $ctx['env']->nonce_create( $req_helper->nonce_action( Request::ACTION_PROVISION ) ),
+	'cpdd_site'    => $req_helper->site_fingerprint_field(),
+	'cpdd_confirm' => 'WRONG_PHRASE',
+);
+Admin::dispatch();
+ob_start();
+Admin::render();
+$html_phrase = (string) ob_get_clean();
+Cpdd_Test::ok(
+	str_contains( $html_phrase, 'data-cpdd-code="CONFIRMATION"' ),
+	'notice-id: a wrong confirmation phrase is reported with its own code'
+);
+Cpdd_Test::ok(
+	! str_contains( $html_phrase, 'data-cpdd-code="CPMS_INACTIVE"' ),
+	'notice-id: a phrase refusal is never reported as a CPMS-inactive refusal'
+);
+
 exit( Cpdd_Test::summary() );

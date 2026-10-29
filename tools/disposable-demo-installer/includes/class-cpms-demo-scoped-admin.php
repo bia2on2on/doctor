@@ -210,9 +210,13 @@ class ScopedAdmin {
 					throw new Exception( 'ACTION_UNKNOWN', 'عملیات ناشناخته است.' );
 			}
 		} catch ( Exception $e ) {
-			self::$notice = array( 'type' => 'error', 'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')' );
+			self::$notice = array( 'type' => 'error', 'code' => $e->demo_code(), 'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')' );
 		} catch ( \Throwable $e ) {
-			self::$notice = array( 'type' => 'error', 'text' => 'خطای غیرمنتظره: ' . $e->getMessage() );
+			// A raw exception message is not operator-facing Persian, and it can
+			// carry a class name or a file path. The strict page already refuses
+			// to echo it; this one no longer does either.
+			unset( $e );
+			self::$notice = array( 'type' => 'error', 'code' => 'UNEXPECTED', 'text' => 'خطای غیرمنتظره رخ داد؛ هیچ تغییری خارج از مسیر گزارش‌شده انجام نشد.' );
 		}
 	}
 
@@ -285,7 +289,14 @@ class ScopedAdmin {
 		}
 		$type  = (string) ( self::$notice['type'] ?? 'info' );
 		$class = 'error' === $type ? 'notice-error' : ( 'warning' === $type ? 'notice-warning' : ( 'success' === $type ? 'notice-success' : 'notice-info' ) );
-		echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
+		$code  = (string) ( self::$notice['code'] ?? '' );
+
+		// Same rule as the strict admin page: the outcome notice is addressable
+		// and a refusal names its stable code, so a drill (or an operator's
+		// support report) can identify it without matching Persian prose.
+		echo '<div class="notice ' . esc_attr( $class ) . '" data-cpdd-notice="' . esc_attr( $type ) . '"'
+			. ( '' === $code ? '' : ' data-cpdd-code="' . esc_attr( $code ) . '"' )
+			. '><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
 	}
 
 	private static function render_identity( Env $env, ScopedManifest $manifest, bool $mode, ?array $loaded, string $error ): void {

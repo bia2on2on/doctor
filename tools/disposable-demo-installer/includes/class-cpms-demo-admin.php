@@ -388,12 +388,14 @@ class Admin {
 		} catch ( Exception $e ) {
 			self::$notice = array(
 				'type' => 'error',
+				'code' => $e->demo_code(),
 				'text' => $e->getMessage() . ' (کد: ' . $e->demo_code() . ')',
 			);
 		} catch ( \Throwable $e ) {
 			unset( $e );
 			self::$notice = array(
 				'type' => 'error',
+				'code' => 'UNEXPECTED',
 				'text' => 'خطای غیرمنتظره رخ داد؛ هیچ تغییری خارج از مسیر گزارش‌شده انجام نشد.',
 			);
 		}
@@ -498,8 +500,18 @@ class Admin {
 		if ( ! is_array( self::$notice ) ) {
 			return;
 		}
-		$class = 'notice-' . ( 'error' === self::$notice['type'] ? 'error' : ( 'warning' === self::$notice['type'] ? 'warning' : ( 'success' === self::$notice['type'] ? 'success' : 'info' ) ) );
-		echo '<div class="notice ' . esc_attr( $class ) . '"><p>' . esc_html( self::$notice['text'] ) . '</p></div>';
+		$type  = (string) ( self::$notice['type'] ?? 'info' );
+		$class = 'notice-' . ( 'error' === $type ? 'error' : ( 'warning' === $type ? 'warning' : ( 'success' === $type ? 'success' : 'info' ) ) );
+		$code  = (string) ( self::$notice['code'] ?? '' );
+
+		// This page legitimately shows more than one status block: the build/mode
+		// banner (`data-cpsd-standalone`) and the outcome of the submitted action.
+		// The outcome therefore carries its own machine-readable identity, and a
+		// refusal carries its stable code, so "which notice is this?" is answered
+		// by the markup instead of by counting divs or matching Persian prose.
+		echo '<div class="notice ' . esc_attr( $class ) . '" data-cpdd-notice="' . esc_attr( $type ) . '"'
+			. ( '' === $code ? '' : ' data-cpdd-code="' . esc_attr( $code ) . '"' )
+			. '><p>' . esc_html( (string) ( self::$notice['text'] ?? '' ) ) . '</p></div>';
 	}
 
 	/**

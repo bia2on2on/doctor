@@ -902,15 +902,57 @@ def main() -> None:
                         """
                     )
                 )
+                # Two error notices are correct here and neither is noise, so the
+                # assertion names each one by its own semantics:
+                #   * the build/mode banner (`data-cpsd-standalone="fault"`) says
+                #     why THIS package cannot operate on this installation;
+                #   * the outcome notice (`data-cpdd-notice`) reports that the
+                #     submitted action was refused, with its stable code.
+                # Counting `.notice-error` could be satisfied by the wrong element
+                # (and broke when the banner was added); the count is now used only
+                # as a CLOSED SET, so an unexpected third error still fails.
+                banner = admin_page.locator('[data-cpsd-standalone="fault"]')
+                banner_code = (banner.locator("code").inner_text() if banner.count() == 1 else "").strip()
+                outcome = admin_page.locator('[data-cpdd-notice="error"]')
+                outcome_html = outcome.inner_html() if outcome.count() == 1 else ""
+                outcome_text = outcome.inner_text() if outcome.count() == 1 else ""
+                outcome_code = (outcome.get_attribute("data-cpdd-code") if outcome.count() == 1 else "") or ""
+                # Persian RTL is a property of the rendered notice itself, not of a
+                # class name: ask the browser for the computed direction.
+                outcome_rtl = (
+                    outcome.evaluate("el => getComputedStyle(el).direction")
+                    if outcome.count() == 1
+                    else ""
+                )
+                banner_rtl = (
+                    banner.evaluate("el => getComputedStyle(el).direction")
+                    if banner.count() == 1
+                    else ""
+                )
                 check(
-                    # Two error notices are correct here and neither is noise: the
-                    # standalone banner explains that THIS build needs production
-                    # CPMS, and the preflight refuses the provisioning. The check
-                    # therefore names both surfaces instead of counting notices.
+                    "the build/mode banner reports the companion build without production CPMS",
+                    banner.count() == 1
+                    and banner_code == "companion_missing_production"
+                    and "دمو فعال نیست" in banner.inner_text()
+                    and banner_rtl == "rtl",
+                    f"code={banner_code} rtl={banner_rtl}",
+                )
+                check(
+                    "the refused provisioning is reported by its own notice and stable code",
+                    outcome.count() == 1
+                    and outcome_code == "CPMS_INACTIVE"
+                    and "هیچ عملیات دمو اجرا نشد" in outcome_text
+                    and "CPMS_INACTIVE" in outcome_html
+                    and outcome_rtl == "rtl",
+                    f"code={outcome_code} rtl={outcome_rtl} text={outcome_text[:160]}",
+                )
+                check(
                     "admin provisioning request fails without CPMS and leaves no fixture or extra user",
                     admin_page.locator('[data-cpdd-preflight="fail"]').count() == 1
-                    and admin_page.locator(".notice-error").count() >= 1
-                    and admin_page.locator('[data-cpdd-fixture-id]').count() == 0
+                    # Closed set: the banner and the refusal, nothing else.
+                    and admin_page.locator(".notice-error").count() == 2
+                    and admin_page.locator("[data-cpdd-fixture-id]").count() == 0
+                    and admin_page.locator('[data-cpdd-secret="credentials"]').count() == 0
                     and no_cpms_fixture == {"users": 1, "manifest": False, "clinics": 1, "patients": 0, "appointments": 0},
                     json.dumps(no_cpms_fixture),
                 )
@@ -925,7 +967,17 @@ def main() -> None:
             prov_form.locator('input[name="cpdd_confirm"]').fill("WRONG_PHRASE")
             prov_form.locator('button[type="submit"]').click()
             admin_page.wait_for_load_state("domcontentloaded")
-            check("provisioning with wrong phrase refused in browser", admin_page.locator(".notice-error").count() == 1 and admin_page.locator('[data-cpdd-secret="credentials"]').count() == 0)
+            wrong_phrase_notice = admin_page.locator('[data-cpdd-notice="error"]')
+            check(
+                "provisioning with wrong phrase refused in browser",
+                wrong_phrase_notice.count() == 1
+                and (wrong_phrase_notice.get_attribute("data-cpdd-code") or "") == "CONFIRMATION"
+                and "عبارت تأیید" in wrong_phrase_notice.inner_text()
+                # Closed set again: exactly one error on the page, and it is this one.
+                and admin_page.locator(".notice-error").count() == 1
+                and admin_page.locator('[data-cpdd-secret="credentials"]').count() == 0,
+                (wrong_phrase_notice.get_attribute("data-cpdd-code") or "") if wrong_phrase_notice.count() == 1 else "no notice",
+            )
 
             prov_form = admin_page.locator('form[data-cpdd-form="provision"]')
             prov_form.locator('input[name="cpdd_confirm"]').fill("I_UNDERSTAND_THIS_IS_A_DISPOSABLE_EMPTY_SITE")
@@ -1401,7 +1453,17 @@ def main() -> None:
             td_form.locator('input[name="cpdd_confirm"]').fill("WRONG_PHRASE")
             td_form.locator('button[type="submit"]').click()
             admin_page.wait_for_load_state("domcontentloaded")
-            check("teardown with wrong phrase refused in browser", admin_page.locator(".notice-error").count() == 1)
+            teardown_phrase_notice = admin_page.locator('[data-cpdd-notice="error"]')
+            check(
+                "teardown with wrong phrase refused in browser",
+                teardown_phrase_notice.count() == 1
+                and (teardown_phrase_notice.get_attribute("data-cpdd-code") or "") == "CONFIRMATION"
+                and admin_page.locator(".notice-error").count() == 1
+                # A phrase refusal must not run the teardown: no result card of
+                # either verdict (`clean`/`incomplete`) may be rendered.
+                and admin_page.locator("[data-cpdd-teardown]").count() == 0,
+                (teardown_phrase_notice.get_attribute("data-cpdd-code") or "") if teardown_phrase_notice.count() == 1 else "no notice",
+            )
 
             td_form = admin_page.locator('form[data-cpdd-form="teardown"]')
             td_form.locator('input[name="cpdd_confirm"]').fill("DESTROY_DEMO_DATA_ONLY")

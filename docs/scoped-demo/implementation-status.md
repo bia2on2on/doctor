@@ -294,3 +294,34 @@ prints one JSON line per mode, and the lane annotates the failing check by name.
   companion rule stays testable and the embedded rule stays build-based.
 * The reproducibility contract compared its second build against whatever older archive
   happened to sit in `/tmp`; it now hashes the archive that build actually produced.
+
+## Notice identity (browser-acceptance correction)
+
+**Defect.** The companion browser drill asserted `admin_page.locator(".notice-error").count() == 1`
+for a refused provisioning on a site without production CPMS. The standalone work added a
+build/mode banner (`data-cpsd-standalone="fault"`, class `notice-error`) to that same page, so
+the page now correctly renders **two** error notices and the count assertion failed — the
+assertion, not the page, was wrong. Its earlier corrective (`count() >= 1`) was equally wrong
+in the other direction: it could be satisfied by the banner alone, and it could not tell
+"CPMS inactive" from "wrong confirmation phrase".
+
+**Root cause.** Outcome notices had no machine-readable identity, so a drill could only count
+CSS classes or match Persian prose.
+
+**Correction (product, not test-only).** Both admin pages now render the outcome of a
+submitted action as
+`<div class="notice notice-<type>" data-cpdd-notice="<type>" data-cpdd-code="<CODE>">…`,
+where `data-cpdd-code` is the refusal's stable code (`CPMS_INACTIVE`, `CONFIRMATION`,
+`NONCE`, …) and is **omitted** rather than invented when there is none. This is useful to
+operators too: a screenshot or a support report now names the code.
+
+The drill asserts on that identity: the banner is checked separately (its own attribute, its
+fault code, its Persian text, computed `direction: rtl`), the refusal is checked by code and
+expected Persian text, and the class count survives only as a **closed set** (`== 2` where the
+banner is present, `== 1` on a healthy installation) so an unexpected third error still fails.
+No error reporting was suppressed and no assertion was removed.
+
+**Same correction in the scoped admin page**, which additionally stopped echoing a raw
+`Throwable` message into the UI (`خطای غیرمنتظره: ` . `$e->getMessage()`): it now renders the
+same Persian sentence as the strict page with `data-cpdd-code="UNEXPECTED"`, so a class name
+or file path can no longer reach the operator — the strict page already behaved this way.

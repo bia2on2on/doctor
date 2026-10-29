@@ -122,6 +122,53 @@ class ScopedPhpContractTests(unittest.TestCase):
             "exactly one place may install an adopted baseline",
         )
 
+    def test_outcome_notices_carry_a_stable_identity_and_code(self) -> None:
+        """A refusal must be addressable by identity, not by counting divs.
+
+        Both admin pages legitimately show more than one status block (the
+        build/mode banner and the outcome of the submitted action). The outcome
+        therefore carries `data-cpdd-notice` and, for a refusal, the stable
+        machine code, so an assertion (and an operator's support report) can name
+        the exact notice instead of selecting "the first error on the page".
+        """
+        admin = read(COMPANION / "includes" / "class-cpms-demo-admin.php")
+        scoped_admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        for name, source in (("strict", admin), ("scoped", scoped_admin)):
+            with self.subTest(admin=name):
+                self.assertIn('data-cpdd-notice="', source)
+                self.assertIn('''data-cpdd-code="' . esc_attr( $code )''', source)
+                self.assertIn("$code  = (string) ( self::$notice['code'] ?? '' );", source)
+                # A refusal records its own code; an unmodelled throw is explicit.
+                self.assertIn("'code' => $e->demo_code(),", source)
+                self.assertIn("'code' => 'UNEXPECTED',", source)
+
+    def test_no_raw_exception_text_reaches_either_admin_page(self) -> None:
+        """Requirement I: Persian, no raw PHP exceptions in the UI."""
+        for path in (
+            COMPANION / "includes" / "class-cpms-demo-admin.php",
+            COMPANION / "includes" / "class-cpms-demo-scoped-admin.php",
+        ):
+            source = read(path)
+            unmodelled = source[source.index("catch ( \\Throwable $e )") :]
+            unmodelled = unmodelled[: unmodelled.index("}") + 1]
+            with self.subTest(file=path.name):
+                self.assertNotIn("getMessage()", unmodelled)
+
+    def test_the_browser_drill_selects_notices_by_identity(self) -> None:
+        """The drill must not fall back to counting, in either direction.
+
+        Counting can be satisfied by the wrong element (any extra error) and it
+        cannot tell the banner from the action outcome, which is exactly how the
+        two-notice page broke it. The count stays only as a closed set.
+        """
+        drill = read(COMPANION / "tests" / "browser-acceptance.py")
+        self.assertIn("""[data-cpdd-notice="error"]""", drill)
+        self.assertIn('data-cpdd-code', drill)
+        self.assertIn("""[data-cpsd-standalone="fault"]""", drill)
+        self.assertNotIn('locator(".notice-error").count() >= 1', drill)
+        self.assertIn("""locator(".notice-error").count() == 2""", drill)
+        self.assertIn('getComputedStyle(el).direction', drill)
+
     def test_strict_mode_classes_are_still_loaded(self) -> None:
         for name in (
             "class-cpms-demo-preflight.php",
