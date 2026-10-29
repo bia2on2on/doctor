@@ -360,10 +360,18 @@ try {
 	if ( '' === $role_key ) {
 		$role_key = 'cpms_manager';
 	}
-	$real_admin = (int) ( $live['ids']['admin_id'] ?? 1 );
-	if ( $real_admin <= 0 ) {
-		$real_admin = 1;
-	}
+	// A user this drill creates itself, so "real" is not a guess: it is not a
+	// manifest persona, not a fixture account, and nothing in the demo created it.
+	$real_admin = (int) wp_insert_user(
+		array(
+			'user_login'   => 'ts-admin-' . strtolower( bin2hex( random_bytes( 3 ) ) ),
+			'user_pass'    => wp_generate_password( 24 ),
+			'user_email'   => 'ts-admin-' . strtolower( bin2hex( random_bytes( 3 ) ) ) . '@example.test',
+			'display_name' => 'real administrator',
+			'role'         => 'administrator',
+		)
+	);
+	cpsd_ts_check( $real_admin > 0, 'B: a real administrator was really created for the grant test', $checks );
 	$b_rows = array(
 		'clinic_id'  => $demo_clinic,
 		'wp_user_id' => $real_admin,
@@ -387,6 +395,7 @@ try {
 	cpsd_ts_check( cpsd_ts_problem( $b_preview, 'SCOPED_FOREIGN_TENANT_ROW:cpms_clinic_memberships:' . $b_id ), 'B: the teardown refuses and names the row', $checks, implode( ' | ', array_slice( (array) $b_preview['problems'], 0, 3 ) ) );
 	$wpdb->delete( $membership_table, array( 'id' => $b_id ), array( '%d' ) );
 	cpsd_ts_check( null === cpsd_ts_row( $membership_table, $b_id ) && true === (bool) $teardown->preview( $manifest->load() )['ok'], 'B: removing the adversarial grant restores a clean preview', $checks );
+	$report['real_admin'] = $real_admin;
 
 	// ---- C: a foreign tenant that overlaps everything ----------------------
 	$foreign = cpsd_ts_plant_foreign( $platform, $t, $demo_org, $manager, $role_key );
