@@ -1366,7 +1366,17 @@ try {
 	$live_resumed = $manifest->load();
 	cpsd_rec_check( is_array( $live_resumed ) && 'active' === (string) $live_resumed['status'], 'R10 the sealed manifest is active after resume', $checks );
 	cpsd_rec_check( array() !== (array) ( $live_resumed['owned']['tables'] ?? array() ), 'R10 the ownership map was sealed by the resume', $checks );
-	cpsd_rec_check( null === ( $live_resumed['failed_stage'] ?? 'x' ), 'R10 the failure flag was cleared by the resume', $checks );
+	// A resumed fixture must carry no failure at all. `?? 'x'` would have been a
+	// trap here: PHP's null-coalescing operator also falls through when the key
+	// EXISTS and holds null, which is exactly the cleared state.
+	$residual_failure = array();
+	foreach ( array( 'failed_stage', 'failure_code', 'failure_message' ) as $failure_field ) {
+		$failure_value = $live_resumed[ $failure_field ] ?? null;
+		if ( null !== $failure_value && '' !== $failure_value ) {
+			$residual_failure[] = $failure_field . '=' . (string) wp_json_encode( $failure_value );
+		}
+	}
+	cpsd_rec_check( array() === $residual_failure, 'R10 the failure flag was cleared by the resume (left: ' . implode( ',', $residual_failure ) . ')', $checks );
 	cpsd_rec_check( isset( $live_resumed['audit_chain_at_seal']['ok'] ) && true === (bool) $live_resumed['audit_chain_at_seal']['ok'], 'R10 the resumed seal records a valid audit chain', $checks );
 
 	$second_finish = '';
