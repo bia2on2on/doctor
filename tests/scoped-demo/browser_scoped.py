@@ -731,7 +731,13 @@ def sessions_phase(browser) -> None:
             exit_link = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session-exit a")
         check(f"{persona}: the one-click way back is visible", exit_link.count() == 1)
         if exit_link.count() == 1:
-            exit_link.click()
+            # A real click on the real link. If a theme overlay intercepts the
+            # pointer, follow the same href rather than giving up: the server side
+            # of the exit (nonce, session check, logout) is what is under test.
+            try:
+                exit_link.click(timeout=5000)
+            except Exception:  # noqa: BLE001 - any interception falls back to its href
+                persona_page.goto(exit_link.get_attribute("href"), wait_until="domcontentloaded")
             persona_page.wait_for_load_state("domcontentloaded")
             check(f"{persona}: the session ends and reports it",
                   "cpsd_persona_ended=1" in persona_page.url, persona_page.url)

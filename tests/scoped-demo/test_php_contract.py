@@ -692,14 +692,23 @@ class OwnerIncidentRepairContract(unittest.TestCase):
         session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
         for hook in ("'wp_body_open'", "'wp_footer'", "'admin_footer'"):
             self.assertIn(hook, session, f"{hook} must render the boundary")
+        # ... and the surface that survives a portal shell rendering its own
+        # document and ending the request itself: an output buffer on init.
+        self.assertIn("add_action( 'init', array( __CLASS__, 'maybe_start_boundary_buffer' ), 1 );", session)
+        self.assertIn("ob_start( array( __CLASS__, 'inject_boundary' ) );", session)
+        self.assertIn("'inject_boundary'", session)
         self.assertIn("self::$boundary_printed", session)
         self.assertIn('data-cpsd-session-boundary="1"', session)
         self.assertIn('data-cpsd-session-exit="1"', session)
         self.assertIn("esc_url( $session->exit_url() )", session)
-        # It is a notice and a link: no capability, no session change, no SQL.
-        banner = session.split("public static function render_boundary(", 1)[1].split("\n\t}", 1)[0]
-        for forbidden in ("add_cap(", "set_role(", "$wpdb", "wp_set_auth_cookie"):
+        # It is a notice and a link: no capability, no session change, no SQL. The
+        # buffer must also never touch a redirect or a non-HTML response.
+        banner = session.split("public static function boundary_html(", 1)[1]
+        for forbidden in ("add_cap(", "set_role(", "$wpdb", "wp_set_auth_cookie", "wp_redirect"):
             self.assertNotIn(forbidden, banner, forbidden)
+        inject = session.split("public static function inject_boundary(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("location:", inject.lower())
+        self.assertIn("text/html", inject)
         # And the drill accepts either surface rather than assuming the admin bar.
         drill = (ROOT / "tests" / "scoped-demo" / "browser_scoped.py").read_text(encoding="utf-8")
         self.assertIn('[data-cpsd-session-boundary="1"]', drill)

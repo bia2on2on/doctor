@@ -148,6 +148,9 @@ final class ScopedPersonaSession {
 		add_action( 'wp_body_open', array( __CLASS__, 'render_boundary' ), 1 );
 		add_action( 'wp_footer', array( __CLASS__, 'render_boundary' ), 1 );
 		add_action( 'admin_footer', array( __CLASS__, 'render_boundary' ), 1 );
+		// ... and the surface that is always there, including when a production
+		// portal shell renders its own document and ends the request itself.
+		add_action( 'init', array( __CLASS__, 'maybe_start_boundary_buffer' ), 1 );
 	}
 
 	/**
@@ -165,22 +168,101 @@ final class ScopedPersonaSession {
 		}
 		$env     = new Env();
 		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		$current = $session->current();
-		if ( null === $current ) {
+		if ( null === $session->current() ) {
 			return;
 		}
 		self::$boundary_printed = true;
+		echo self::boundary_html( $session );
+	}
+
+	/**
+	 * Start an output buffer for a persona session.
+	 *
+	 * The production portal shells render their OWN document on `template_redirect`
+	 * and end the request there, so the theme's `wp_body_open` and `wp_footer` never
+	 * fire on exactly the screens where the boundary matters most. A buffer started
+	 * before that point - and closed by PHP even when the template ends the request
+	 * with `exit` - is the one surface that is guaranteed to be there. The callback
+	 * is idempotent, so pages that DO render normally still print the banner once.
+	 *
+	 * Buffering is started only for a persona session, never for ordinary traffic.
+	 *
+	 * @return void
+	 */
+	public static function maybe_start_boundary_buffer(): void {
+		if ( is_admin() ) {
+			return;
+		}
+		$env     = new Env();
+		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
+		if ( null === $session->current() ) {
+			return;
+		}
+		ob_start( array( __CLASS__, 'inject_boundary' ) );
+	}
+
+	/**
+	 * Insert the boundary into the document PHP is about to send.
+	 *
+	 * A redirect, an empty body, a non-HTML response and an already printed banner
+	 * are all left untouched.
+	 *
+	 * @param string $html Buffered response body.
+	 * @return string
+	 */
+	public static function inject_boundary( $html ) {
+		$html = (string) $html;
+		if ( self::$boundary_printed || '' === trim( $html ) ) {
+			return $html;
+		}
+		if ( ! headers_sent() ) {
+			foreach ( (array) headers_list() as $header ) {
+				$lower = strtolower( (string) $header );
+				if ( 0 === strpos( $lower, 'location:' ) ) {
+					return $html;
+				}
+				if ( 0 === strpos( $lower, 'content-type:' ) && false === strpos( $lower, 'text/html' ) ) {
+					return $html;
+				}
+			}
+		}
+		$env     = new Env();
+		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
+		if ( null === $session->current() ) {
+			return $html;
+		}
+		self::$boundary_printed = true;
+		$banner = self::boundary_html( $session );
+		if ( false !== stripos( $html, '</body>' ) ) {
+			return (string) preg_replace( '#</body>#i', $banner . '</body>', $html, 1 );
+		}
+
+		return $html . $banner;
+	}
+
+	/**
+	 * The boundary markup. A notice and a nonced link: no capability, no SQL, no
+	 * session change.
+	 *
+	 * @param array{persona:string,user_id:int,manifest:array<string,mixed>} $current Sealed persona session.
+	 * @return string
+	 */
+	public static function boundary_html( array $current ): string {
 		$personas = Credentials::personas();
 		$label    = (string) ( $personas[ $current['persona'] ]['label'] ?? $current['persona'] );
-		echo '<div id="cpsd-persona-boundary" dir="rtl" data-cpsd-session-boundary="1" data-cpsd-persona="'
+		$env      = new Env();
+		$session  = new self( $env, new Platform(), new ScopedManifest( $env ) );
+		$html     = '<div id="cpsd-persona-boundary" dir="rtl" data-cpsd-session-boundary="1" data-cpsd-persona="'
 			. esc_attr( (string) $current['persona'] ) . '" style="position:fixed;inset-inline:0;bottom:0;z-index:99999;'
 			. 'background:#1d2327;color:#fff;padding:10px 16px;font:14px/1.6 Tahoma,sans-serif;text-align:center;'
 			. 'box-shadow:0 -2px 8px rgba(0,0,0,.25)">';
-		echo '<span data-cpsd-session-label="1">نشست نمایشی: <strong>' . esc_html( $label ) . '</strong></span> — ';
-		echo '<span>این نشست جداست و اختیار مدیرکل ندارد؛ همهٔ مجوزها همان‌طور که برای یک کاربر واقعی سنجیده می‌شود، سنجیده می‌شود.</span> ';
-		echo '<a href="' . esc_url( $session->exit_url() ) . '" data-cpsd-session-exit="1" '
+		$html    .= '<span data-cpsd-session-label="1">نشست نمایشی: <strong>' . esc_html( $label ) . '</strong></span> — ';
+		$html    .= '<span>این نشست جداست و اختیار مدیرکل ندارد؛ همهٔ مجوزها همان‌طور که برای یک کاربر واقعی سنجیده می‌شود، سنجیده می‌شود.</span> ';
+		$html    .= '<a href="' . esc_url( $session->exit_url() ) . '" data-cpsd-session-exit="1" '
 			. 'style="color:#72aee6;font-weight:700;text-decoration:underline">پایان نشست نمایشی و بازگشت</a>';
-		echo '</div>';
+		$html    .= '</div>';
+
+		return $html;
 	}
 
 	/**
