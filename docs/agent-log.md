@@ -2999,3 +2999,51 @@ real build verifies (`exit 0`, 330/330, revision named). One appended byte insid
 archive carries **exactly one** WordPress-discoverable header
 (`cpms-disposable-demo/cpms-disposable-demo.php: 1`, `uninstall.php: 0`) and the embedded
 bootstrap keeps `CPMS Embedded Core:` in place of a `Plugin Name:` key.
+
+### [2026-10-30 UTC] — Accepted on exact-head CI: 43/43 checks, twelve workflows, both database engines
+
+Head `8bdf6d75af15832079219d837bdccab76a2a7eec`. PR #287: open, **not merged**,
+`mergeable: true`, `mergeable_state: clean`, base `main` at `9306e38` (unchanged), 32
+files, +5766/−58, 9 commits. Check-runs at the head: **43 total, 43 success, 0 failure**.
+
+| workflow | run | jobs |
+|---|---|---|
+| Scoped demo (static + real WordPress integration) | `41095135213` | static (16 steps), `mysql-8` (**29 steps**), `mariadb-11.4.13` (**29 steps**) — every step success |
+| Standalone demo (real WordPress, no production plugin) | `41095135606` | package contract/build, `A–J teardown data safety` ×2, `Standalone on a non-empty site` ×2 (28 steps each) — every step success |
+| Pilot/Staging Readiness Gate | `41095135578` | release artifact, staging gate (33 steps), **responsive smoke (45 steps)**, upgrade path — every step success |
+| CI, Closure Gate, Companion compatibility, Disposable Demo Installer, External Disposable Site Acceptance, Facility Onboarding Matrix, First-Practice Browser Acceptance, Persian five-phase coexistence, Real WordPress Acceptance | — | success |
+
+**The previously red `Responsive smoke` is green at this head, with its own evidence.**
+The Day-2 run records `hold_attempts=[{… 'status': 200, 'slot_id': 6379 …}]` and the full
+chain `availability 200 → quote 200 → otp/request 200 → otp/verify 200 → availability 200
+→ quote 200 → hold 200 → confirm 400 CLINIC_VALIDATION_FAILED (the deliberate
+first-time gate) → confirm 200`. Four runs of this production code have now passed and one
+failed, on identical fixture ids (`clinic_a=16 clinic_b=17 loc_a1=17`).
+
+**The failing run cannot be attributed to this PR, and the cause is now narrowed.**
+- `git diff --stat 9306e38..HEAD -- clinic-practice-management/` is **empty**, and that job
+  installs the ZIP built from exactly that subtree and never installs the companion. It
+  never executes a byte this PR changes. That is construction, not probability.
+- The one failing request returned `404 CLINIC_NOT_FOUND` on `booking/hold` for slot
+  5803 — while `booking/quote` returned **200** for the same slot, clinician and Location,
+  immediately before it. `BookingService::quote()` calls the *same*
+  `requireClinician()`, `clinic_for_persisted_slot()` and `assert_requested_location_matches_slot()`
+  as `hold()`, and `clinic_for_persisted_slot()` **throws** `CLINIC_NOT_FOUND` for a
+  missing slot row or a non-participating cross-Clinic slot. A 200 quote therefore proves
+  the slot existed and the Clinic resolved at that instant, which narrows the live
+  candidates to a **state change between quote and hold** (the slot's `is_open`/capacity,
+  or Location/Organization activity) or an argument the widget changed in between.
+- What would settle it is not inference but one field: the harness records `code` and
+  discards the response `message`, and five distinct throw sites share that code. That
+  one-line instrumentation belongs to the pilot harness, not to this PR. **The failure is
+  therefore neither fixed nor declared flaky**: it is one unreproduced failure in a job
+  that runs none of this branch's code, with the decisive field unrecorded.
+
+**The boundary, as accepted by the green run.** The `sessions` phase and the aggregation
+step after it passed on both engines; the aggregation step exits non-zero unless the
+phase report says `ok`, so its success is the evidence that all eight passwordless
+transitions, the administrator/persona isolation, the four denial cases, the replay
+refusal and the visible boundary passed on MySQL 8 and MariaDB 11.4.13 at this head. The
+buffer now exists only on `template_redirect`, so REST/AJAX/admin/login responses are
+never buffered, downloads are never decorated, persona pages are marked non-cacheable,
+and both render paths return the page untouched if anything throws.

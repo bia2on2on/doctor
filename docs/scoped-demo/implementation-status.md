@@ -739,3 +739,14 @@ buffered), marked `nocache_headers()` for persona sessions, guarded against down
 against a throwing handler on both render paths. Local gates: 333/0, 345/0, 172 OK, 72 OK,
 16/16, 330/330 in sync, two builds byte-identical, and a damaged embedded file fails the
 verifier with exit 1.
+
+### Final acceptance at head `8bdf6d7` (2026-10-30)
+
+43/43 check-runs success; all twelve workflows green; every step of both real-WordPress
+jobs green on MySQL 8 and MariaDB 11.4.13 (29 steps each, including the eight
+passwordless persona sessions and the incident finish); both `Standalone on a non-empty
+site` jobs green; `Responsive smoke` green again with `booking/hold` 200. The earlier
+`Responsive smoke` failure ran none of this branch's code (empty production diff) and
+was not reproduced in four later runs; its exact throw site remains unproven because the
+harness records the error code but not the message. Nothing was merged, tagged, released
+or deployed.
