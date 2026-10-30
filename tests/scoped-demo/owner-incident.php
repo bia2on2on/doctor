@@ -83,17 +83,29 @@ $cpsd_snapshot = static function ( Env $env, Platform $platform, array $tables )
 };
 
 /**
- * Accounts under the synthetic prefix.
+ * Accounts under the synthetic prefix, optionally for ONE fixture.
  *
- * @param Env $env Environment.
+ * A CI site is shared by several drills in the same job, and a PARKED fixture
+ * keeps its eight accounts on purpose - that is what parking means. A site-wide
+ * count would therefore report another fixture's preserved evidence as this
+ * drill's failure, so the assertions below are fixture-scoped and the site-wide
+ * figure is reported next to them as evidence rather than used as a threshold.
+ *
+ * @param Env    $env     Environment.
+ * @param string $fixture Fixture id to restrict to, or '' for the whole site.
  * @return int
  */
-$cpsd_synthetic_users = static function ( Env $env ): int {
+$cpsd_synthetic_users = static function ( Env $env, string $fixture = '' ): int {
 	$count = 0;
 	foreach ( $env->all_users() as $user ) {
-		if ( 0 === strpos( (string) ( $user['login'] ?? '' ), 'cpsd-' ) ) {
-			++$count;
+		$login = (string) ( $user['login'] ?? '' );
+		if ( 0 !== strpos( $login, 'cpsd-' ) ) {
+			continue;
 		}
+		if ( '' !== $fixture && ! str_ends_with( $login, '-' . $fixture ) ) {
+			continue;
+		}
+		++$count;
 	}
 
 	return $count;
@@ -154,7 +166,8 @@ try {
 
 		$evidence['fixture_id']        = (string) $incident['fixture_id'];
 		$evidence['status']            = (string) $incident['status'];
-		$evidence['synthetic_users']   = $cpsd_synthetic_users( $env );
+		$evidence['synthetic_users']   = $cpsd_synthetic_users( $env, (string) $incident['fixture_id'] );
+		$evidence['synthetic_users_site'] = $cpsd_synthetic_users( $env );
 		$evidence['counts']            = $snapshot;
 		$evidence['verdict']           = (string) $verdict['verdict'];
 		$evidence['verdict_code']      = (string) $verdict['code'];
@@ -198,7 +211,8 @@ try {
 		$evidence['activation_mode'] = (string) ( $live['activation']['mode'] ?? '' );
 		$evidence['verdict']         = (string) $verdict['verdict'];
 		$evidence['teardown_blocked'] = (string) $verdict['teardown_blocked'];
-		$evidence['synthetic_users'] = $cpsd_synthetic_users( $env );
+		$evidence['synthetic_users'] = $cpsd_synthetic_users( $env, (string) $live['fixture_id'] );
+		$evidence['synthetic_users_site'] = $cpsd_synthetic_users( $env );
 		$evidence['parked_before']   = count( $manifest->preserved() );
 
 		if ( 'active' !== (string) $live['status'] || 'baseline_unavailable' !== (string) ( $live['activation']['mode'] ?? '' ) ) {
@@ -232,7 +246,8 @@ try {
 		$evidence['fresh_fixture']    = is_array( $fresh_live ) ? (string) $fresh_live['fixture_id'] : '';
 		$evidence['fresh_status']     = is_array( $fresh_live ) ? (string) $fresh_live['status'] : '';
 		$evidence['parked_manifest_baseline'] = array() !== (array) ( $record['manifest']['baseline'] ?? array() );
-		$evidence['parked_users']     = $cpsd_synthetic_users( $env );
+		$evidence['parked_users']     = $cpsd_synthetic_users( $env, $parked_id );
+		$evidence['synthetic_users_site_after_park'] = $cpsd_synthetic_users( $env );
 
 		if ( ! is_array( $record ) ) {
 			throw new RuntimeException( 'the parked fixture was not archived' );
@@ -243,8 +258,14 @@ try {
 		if ( (string) $fresh_live['fixture_id'] === $parked_id ) {
 			throw new RuntimeException( 'the fresh demo reused the parked fixture identity' );
 		}
-		if ( $evidence['parked_users'] <= (int) $before_park['users'] ) {
-			throw new RuntimeException( 'parking deleted synthetic accounts' );
+		// Parking deletes nothing: the parked fixture keeps all eight of its own
+		// accounts, and the site gains exactly the fresh fixture's eight.
+		if ( 8 !== (int) $evidence['parked_users'] ) {
+			throw new RuntimeException( 'parking did not keep the parked fixture\'s eight accounts (' . (string) $evidence['parked_users'] . ')' );
+		}
+		$site_before_park = (int) $evidence['synthetic_users_site'];
+		if ( (int) $evidence['synthetic_users_site_after_park'] !== $site_before_park + 8 ) {
+			throw new RuntimeException( 'parking must add exactly the fresh fixture\'s eight accounts (' . $site_before_park . ' -> ' . (string) $evidence['synthetic_users_site_after_park'] . ')' );
 		}
 		// Parking may only add the fresh fixture's rows; it may never remove one.
 		foreach ( $before_park as $short => $count ) {
@@ -264,7 +285,8 @@ try {
 		$after_clean = $cpsd_snapshot( $env, $platform, $cpsd_counted_tables );
 		$evidence['fresh_teardown_ok'] = true;
 		$evidence['parked_archive_after_teardown'] = count( $manifest->preserved() );
-		$evidence['synthetic_users_after'] = $cpsd_synthetic_users( $env );
+		$evidence['synthetic_users_after'] = $cpsd_synthetic_users( $env, $parked_id );
+		$evidence['synthetic_users_site_after'] = $cpsd_synthetic_users( $env );
 		$evidence['counts_after_teardown'] = $after_clean;
 		$evidence['live_manifest_after_teardown'] = null !== $manifest->load();
 

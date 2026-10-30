@@ -188,17 +188,51 @@ function cpsd_pt_fixture_counts( Platform $platform, array $clinics ): array {
 }
 
 /**
- * Every fixture-prefixed account that still exists.
+ * Every fixture-prefixed account that still exists, optionally for ONE fixture.
  *
+ * ScopedManifest::fixture_prefix() is "cpsd-", so every synthetic login is
+ * cpsd-<persona>-<32 hex>; no pre-existing site account can match it.
+ *
+ * The fixture scope matters on a shared CI site: a PARKED fixture keeps its eight
+ * accounts on purpose (that is the whole point of parking - nothing is deleted),
+ * so a site-wide count would report another fixture's preserved evidence as this
+ * drill's failure. The drill therefore asserts both: the fixture it tore down owns
+ * no surviving account, and the site-wide count is back to what it was before this
+ * fixture existed.
+ *
+ * @param string $fixture Fixture id to restrict to, or '' for the whole site.
  * @return list<int>
  */
-function cpsd_pt_synthetic_users(): array {
+function cpsd_pt_synthetic_users( string $fixture = '' ): array {
 	global $wpdb;
-	// ScopedManifest::fixture_prefix() is "cpsd-", so every synthetic login is
-	// cpsd-<persona>-<32 hex>. No pre-existing site account can match it.
 	$pattern = $wpdb->esc_like( 'cpsd-' ) . '%';
+	$rows    = (array) $wpdb->get_results( $wpdb->prepare( "SELECT ID, user_login FROM {$wpdb->users} WHERE user_login LIKE %s ORDER BY ID ASC", $pattern ), ARRAY_A );
+	$ids     = array();
+	foreach ( $rows as $row ) {
+		if ( '' !== $fixture && ! str_ends_with( (string) $row['user_login'], '-' . $fixture ) ) {
+			continue;
+		}
+		$ids[] = (int) $row['ID'];
+	}
 
-	return array_map( 'intval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT ID FROM {$wpdb->users} WHERE user_login LIKE %s ORDER BY ID ASC", $pattern ) ) );
+	return $ids;
+}
+
+/**
+ * The surviving synthetic logins, for a failure message that names the culprit.
+ *
+ * @param string $fixture Fixture id, or '' for the whole site.
+ * @return list<string>
+ */
+function cpsd_pt_synthetic_logins( string $fixture = '' ): array {
+	global $wpdb;
+	$pattern = $wpdb->esc_like( 'cpsd-' ) . '%';
+	$logins  = array_map( 'strval', (array) $wpdb->get_col( $wpdb->prepare( "SELECT user_login FROM {$wpdb->users} WHERE user_login LIKE %s ORDER BY ID ASC", $pattern ) ) );
+	if ( '' === $fixture ) {
+		return $logins;
+	}
+
+	return array_values( array_filter( $logins, static fn ( $login ) => str_ends_with( $login, '-' . $fixture ) ) );
 }
 
 /**
@@ -374,9 +408,15 @@ try {
 	// Clinic's lifecycle through the real portal, then the Administrator tears down.
 	wp_set_current_user( $admin_id );
 	$manifest->enable_mode( $admin_id );
+	// Site-wide account census BEFORE this fixture exists. On a shared CI site the
+	// previous drill may have PARKED a fixture, whose eight accounts stay on
+	// purpose; the invariant this drill can honestly prove is that its own fixture
+	// adds nothing back after its teardown, not that the site is empty.
+	$site_users_before = count( cpsd_pt_synthetic_users() );
 	$provisioner->provision( $admin_id );
 	$live = $manifest->load();
 	cpsd_pt_check( is_array( $live ) && 'active' === (string) $live['status'], 'P1 fixture provisioned', $checks );
+	$p1_fixture = (string) ( $live['fixture_id'] ?? '' );
 	$demo_clinic = (int) $live['ids']['clinic_id'];
 	$demo_org    = (int) $live['ids']['organization_id'];
 	$manager_id  = (int) $live['ids']['user_ids']['organization_manager'];
@@ -454,7 +494,16 @@ try {
 	$p1_result = $teardown->execute( $manifest->load(), $admin_id );
 	cpsd_pt_check( true === (bool) $p1_result['ok'], 'P1 authorized teardown completes after the lifecycle change', $checks );
 	cpsd_pt_check( null === $manifest->load(), 'P1 the manifest is released', $checks );
-	cpsd_pt_check( 0 === count( cpsd_pt_synthetic_users() ), 'P1 no synthetic account survives', $checks );
+	cpsd_pt_check(
+		0 === count( cpsd_pt_synthetic_users( $p1_fixture ) ),
+		'P1 no synthetic account of this fixture survives (survivors: ' . implode( ', ', cpsd_pt_synthetic_logins( $p1_fixture ) ) . ')',
+		$checks
+	);
+	cpsd_pt_check(
+		$site_users_before === count( cpsd_pt_synthetic_users() ),
+		'P1 the site-wide synthetic account count is back to the pre-fixture value (' . $site_users_before . ')',
+		$checks
+	);
 	cpsd_pt_check(
 		cpsd_pt_host_digest( $platform, $host_clinics ) === $host_digest,
 		'P1 every pre-existing host row is byte-identical',
@@ -559,7 +608,16 @@ try {
 	cpsd_pt_check( false === $ownership->exists(), 'P2 the ownership ledger is discarded only after the teardown is proven clean', $checks );
 	cpsd_pt_check( cpsd_pt_host_digest( $platform, $host_clinics ) === $host_digest, 'P2 every pre-existing host row is byte-identical', $checks );
 	cpsd_pt_check( (bool) $audit_guard->verify_chain()['ok'], 'P2 audit chain intact', $checks );
-	cpsd_pt_check( 0 === count( cpsd_pt_synthetic_users() ), 'P2 no synthetic account survives', $checks );
+	cpsd_pt_check(
+		0 === count( cpsd_pt_synthetic_users( $fixture ) ),
+		'P2 no synthetic account of this fixture survives (survivors: ' . implode( ', ', cpsd_pt_synthetic_logins( $fixture ) ) . ')',
+		$checks
+	);
+	cpsd_pt_check(
+		$site_users_before === count( cpsd_pt_synthetic_users() ),
+		'P2 the site-wide synthetic account count is back to the pre-fixture value (' . $site_users_before . ')',
+		$checks
+	);
 	$report['P2']['second_clinic'] = $second_clinic;
 	$report['P2']['anchors']       = $anchors;
 

@@ -670,3 +670,18 @@ control is the exact defect that caused the outage. Workflow contract tests: **7
 with PyYAML, **71 OK + 1 skipped** without it. Everything else in this document remains
 local-suite evidence and is still **NOT RUN** on real WordPress/MySQL/MariaDB/Chromium
 for the corrected head.
+
+### Corrections recorded from the second CI run of this branch
+
+Head `2a99e78`: the lane started and the static job went **green**, including the new
+workflow-YAML gate and the embedded-core synchronization gate. Both database jobs then
+failed at `scoped-portal.php` (`FAIL P1 no synthetic account survives`). The cause was
+mine and it was not a product defect: the new R11 drill parks a fixture, parking keeps
+that fixture's eight accounts on purpose, and every drill in the job shares one
+database — so a **site-wide** count of `cpsd-…` logins could never return to zero.
+`scoped-portal.php` and `tests/scoped-demo/owner-incident.php` now count the accounts of
+**the fixture under test** (login suffix `-<fixture>`) and, in addition, prove the
+site-wide count is back to its pre-fixture value; the incident drill asserts parking adds
+exactly the fresh fixture's eight. Failure messages name the surviving logins. The
+invariant is unchanged and is now stricter, not looser. Everything after the portal drill
+(Chromium phases, incident `stage`/`finish`, WPCS) remains **NOT RUN**.
