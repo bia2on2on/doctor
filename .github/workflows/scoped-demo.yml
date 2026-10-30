@@ -575,7 +575,7 @@ jobs:
           report () {
             FILE="$1"
             [ -f "$FILE" ] || return 0
-            grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:|cpsd_persona_boundary_error' "$FILE" \
+            { grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:|cpsd_persona_boundary_error' "$FILE" || true; } \
               | tail -6 | sed 's/%/%25/g' | while IFS= read -r LINE; do
                   echo "::error title=CPSD_PHPLOG (${{ matrix.db_name }})::$(printf '%s' "$LINE" | tr '\n' ' ' | cut -c1-900)"
                 done

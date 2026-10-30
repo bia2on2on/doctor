@@ -701,3 +701,15 @@ handler returns the page intact" path; the output handler catches `\Throwable` a
 `cpsd_persona_boundary_error` rather than ever taking a page down. `exit_url()` also no
 longer emits `https://site//?...`. Neither the real WordPress lanes nor Chromium has
 confirmed any of this yet.
+
+### What the real WordPress lanes proved at head `2bf9bf2`
+
+Both database jobs got through `provision`, `tamper`, `journeys`, the incident *stage*,
+`repair` **and** the whole `sessions` phase (eight passwordless transitions, the
+administrator/persona session isolation, the four denial cases, replay refusal, the
+one-click return, the visible boundary). The remaining red is the last step: the
+incident `finish` drill asserted that the total Clinic count returns to its pre-parking
+value, which contradicts the documented archive-in-place behaviour (the audit log's
+production foreign key makes a teardown leave its own Clinic behind, +1 for ever). The
+drill now proves the parked Clinic by id and expects exactly +1. Nothing else in the
+lane is known to be red; nothing past that step has run.

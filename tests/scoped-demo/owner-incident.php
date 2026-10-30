@@ -299,8 +299,27 @@ try {
 		if ( 8 !== (int) $evidence['synthetic_users_after'] ) {
 			throw new RuntimeException( 'the parked fixture must keep its eight accounts (' . (string) $evidence['synthetic_users_after'] . ')' );
 		}
-		if ( (int) $after_clean['cpms_clinics'] !== (int) $before_park['cpms_clinics'] ) {
-			throw new RuntimeException( 'the parked Clinic must survive the fresh teardown' );
+		// The parked Clinic must still be there, by id, after the fresh fixture's
+		// teardown. The COUNT is a different statement: the audit log holds a
+		// production foreign key to `cpms_clinics`, so a teardown archives its own
+		// Clinic in place instead of deleting it (documented in ScopedManifest and
+		// accepted by the administrator as a private-host consequence). The site
+		// therefore ends exactly ONE Clinic higher than before parking, and that
+		// extra row is the fresh fixture's archived Clinic - never the parked one.
+		$parked_clinic_id   = (int) ( $record['manifest']['ids']['clinic_id'] ?? 0 );
+		$parked_clinic_rows = $platform->count_where( $platform->table( 'cpms_clinics' ), 'id = %d', array( $parked_clinic_id ) );
+		$evidence['parked_clinic_id']             = $parked_clinic_id;
+		$evidence['parked_clinic_rows_after']     = $parked_clinic_rows;
+		$evidence['clinics_before_park']          = (int) $before_park['cpms_clinics'];
+		$evidence['clinics_after_teardown']       = (int) $after_clean['cpms_clinics'];
+		if ( 1 !== $parked_clinic_rows ) {
+			throw new RuntimeException( 'the parked Clinic must survive the fresh teardown (id ' . $parked_clinic_id . ': ' . $parked_clinic_rows . ' row(s))' );
+		}
+		if ( (int) $after_clean['cpms_clinics'] !== (int) $before_park['cpms_clinics'] + 1 ) {
+			throw new RuntimeException(
+				'the fresh teardown must leave exactly its own archived Clinic behind (clinics before parking '
+				. (string) $before_park['cpms_clinics'] . ', after teardown ' . (string) $after_clean['cpms_clinics'] . ', expected +1)'
+			);
 		}
 		$evidence['parked_record_intact'] = is_array( $manifest->preserved_record( $parked_id ) );
 		if ( true !== $evidence['parked_record_intact'] ) {
