@@ -383,3 +383,70 @@ WordPress 6.9.1 on SQLite — enough to prove `plugin_info()` / `get_plugins()` 
 embedded core (it requires MySQL/MariaDB). Activation, the browser upload, the eight persona
 journeys and the MySQL 8 / MariaDB 11.4.13 results come only from the GitHub Actions lanes
 named in the PR; where a lane has not run on the exact head, the PR report says NOT RUN.
+
+## Mission J — consolidating the demo installation fixes into PR #283
+
+**Context.** A second implementation of the same mission exists on
+`arena/db17f589-doctor` (`bdc6ef3`), branched from the same authoritative `main`
+(`4631764`). PR #283 (`arena/bd61ce8f-doctor`, head `5fbb7b3`) is 40 checks green and
+**3 failed**: `Standalone on a non-empty site (mysql-8)`, the same on
+`mariadb-11.4.13`, and `Responsive smoke (Chromium ×4 viewport)`.
+
+### CPSA_RECOVERY — root cause, proved on a real WordPress runtime
+
+The two standalone lanes stop at the Task-4 recovery drill:
+
+```
+CPSA_RECOVERY — production Hold exposes the final confirm button: state=bookable
+status=در حالت «دموی محدودشده» نوشتن در درمانگاه/سازمان نمایشی فقط برای حساب‌های
+ساختگی همان دمو و مدیر سایت مجاز است. …
+```
+
+The message is `ScopedTenantGuard::write_verdict()`'s refusal, and the refusal is
+**correct**. The chain:
+
+1. the drill books with `09009999999`, which is **not** the sealed synthetic mobile;
+2. `OtpService::verify()` provisions a **real** WordPress user for the unknown mobile
+   (`wp_insert_user`) and issues a real session (`wp_set_auth_cookie`);
+3. the public-booking **Hold** is therefore a write into the demo tenant by a
+   non-fixture, non-administrator actor, so the guard answers HTTP 403
+   `SCOPED_DEMO_TENANT_WRITE_REFUSED` and the widget never renders the confirm button.
+
+So the drill asserted that a real person could complete a booking inside the demo
+tenant — i.e. that Mission F's barrier was bypassed. The assertion, not the product,
+is the defect. `tests/scoped-demo/tenant-barrier-drill.php` proves the barrier's
+semantics on a real WordPress runtime (anonymous allowed, fixture account allowed,
+administrator allowed, real authenticated visitor **refused**, outside-demo writes
+unaffected, reads unaffected) and reads `wp_insert_user` + `wp_set_auth_cookie` from
+the shipped OTP service as the causal link.
+
+The residue that genuinely blocks the teardown is already there when the Hold is
+refused: one `cpms_otp_tokens` row for the foreign mobile bound to the demo Clinic
+and its `log`-provider `cpms_sms_messages` rows. `ATTRIBUTION` maps both tables to
+`@mobile`, so they are unattributable to the fixture and the teardown refuses with
+`SCOPED_FOREIGN_TENANT_ROW` — preserved, never deleted, audit chain intact.
+
+### Packaging verdict for PR #283's standalone build (verified locally)
+
+Built from `5fbb7b3` in this sandbox (`bash bin/build-demo-installer.sh`):
+`cpms-disposable-demo-1.0.0.zip`, 1,631,037 bytes, 358 entries, **exactly one**
+WordPress plugin header (`cpms-disposable-demo/cpms-disposable-demo.php`), the staged
+embedded bootstrap neutralised to `CPMS Embedded Core:` while keeping its executable
+code, and — through the real `Plugin_Upgrader::install()` on WordPress 6.9.1 —
+`plugin_info()` = `cpms-disposable-demo/cpms-disposable-demo.php`,
+`get_plugins('/cpms-disposable-demo')` = one entry, `validate_plugin()` = 0, site
+digest unchanged, no PHP diagnostics. The installation fix in #283 is therefore sound
+and does **not** need replacing by this branch's variant.
+
+### Disposition
+
+| Issue | #283 | this branch | Decision |
+| --- | --- | --- | --- |
+| Two-header install defect | regex neutralisation + permissive header scan | line-3 rewrite + `proof.txt` keys | **Adopt #283's** (verified above; equivalent guarantee) |
+| Real wp-admin upload/activate | Chromium drill in the lane | Chromium drill + PHP `Plugin_Upgrader` RED/GREEN drill | **Add this branch's PHP drill** to #283 (it produces the RED control the lane lacks) |
+| Scoped demo 403 | page moved to Tools (no CPMS coupling) | legacy `tools.php` → `admin.php` redirect | **Adopt #283's** (removes the coupling rather than redirecting it) |
+| Personas / OTP guidance | owner guide card | persona card + booking guide | **Adopt #283's** (already richer) |
+| Two-doctor scheduling | second clinician scheduled, staff slot on local today | both clinicians + 08:00–21:00 grid | **Adopt #283's** scheduling with this branch's hours assertion |
+| Tehran clinic hours | 09:xx / 14:xx template windows | 20-minute grid, 08:00–21:00 | **Merge**: keep #283's windows, add the hours assertion in `integration-wp.php` |
+| Wrong-mobile residue | preserve + explain, no deletion | `ScopedResidue` removal with 10 guards | **Keep #283's** as the default; `ScopedResidue` is a documented follow-up (unit-tested, not CI-proven) |
+| Recovery drill | asserts booking succeeds → impossible | n/a | **Replace the drill's assertions** (two files) |

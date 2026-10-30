@@ -391,6 +391,20 @@ jobs:
           # build, otherwise the standalone demo evaluates an older product.
           test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
 
+      - name: Tenant write barrier — real WordPress (why the wrong-mobile Hold is refused)
+        run: |
+          set -Eeuo pipefail
+          # Owner-facing truth: a visitor who verifies an OTP with their own mobile
+          # becomes a REAL WordPress user, and the demo tenant refuses their writes
+          # (Mission F). This drill proves that on this engine — anonymous allowed,
+          # fixture account allowed, administrator allowed, real visitor refused —
+          # so the recovery drill can assert the refusal instead of a booking.
+          wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/tenant-barrier-drill.php" \
+            /tmp/cpsa-ci/wpadmin/tenant-barrier.json \
+            --use-include --path="$WP_DIR" --allow-root \
+            | tee /tmp/cpsa-ci/wpadmin/tenant-barrier.log
+          grep -q '"ok":true' /tmp/cpsa-ci/wpadmin/tenant-barrier.json
+
       - name: A compatible third-party plugin stays active throughout
         run: |
           set -Eeuo pipefail
