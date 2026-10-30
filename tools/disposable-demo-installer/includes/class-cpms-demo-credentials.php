@@ -131,19 +131,27 @@ class Credentials {
 	 * session of that persona is invalidated. Nothing is returned to storage.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @param string              $prefix   Account prefix: cpdd- (strict) or cpsd- (scoped).
 	 * @return array<string,string> persona => new password
 	 * @throws Exception When a manifest account is missing or out of scope.
 	 */
-	public function rotate( array $manifest ): array {
+	public function rotate( array $manifest, string $prefix = 'cpdd-' ): array {
+		if ( ! in_array( $prefix, array( 'cpdd-', 'cpsd-' ), true ) ) {
+			throw new Exception( 'ROTATE_SCOPE', 'پیشوند حساب نمایشی برای چرخش رمز مجاز نیست.' );
+		}
 		return $this->env->with_lock(
 			'rotate_credentials',
-			function () use ( $manifest ): array {
+			function () use ( $manifest, $prefix ): array {
 				if ( 'active' !== (string) ( $manifest['status'] ?? '' ) ) {
 					throw new Exception( 'ROTATE_INACTIVE', 'چرخش رمز فقط برای دموی فعال مجاز است.' );
 				}
 				$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
 				$admin_id = (int) ( $manifest['admin_id'] ?? 0 );
-				if ( 1 !== preg_match( '/^[a-f0-9]{16}$/', $fixture ) ) {
+				// Strict disposable fixtures use 64-bit hex identities; scoped
+				// fixtures use 128-bit hex identities. The account prefix selects the
+				// same closed identity contract as the corresponding manifest class.
+				$fixture_pattern = 'cpsd-' === $prefix ? '/^[a-f0-9]{32}$/D' : '/^[a-f0-9]{16}$/D';
+				if ( 1 !== preg_match( $fixture_pattern, $fixture ) ) {
 					throw new Exception( 'ROTATE_SCOPE', 'شناسهٔ دمو نامعتبر است؛ چرخش رمز متوقف شد.' );
 				}
 				$users    = (array) ( $manifest['ids']['user_ids'] ?? array() );
@@ -157,7 +165,7 @@ class Credentials {
 					if ( $user_id === $admin_id || $this->env->user_can( $user_id, 'manage_options' ) || in_array( 'administrator', $account['roles'], true ) ) {
 						throw new Exception( 'ROTATE_SCOPE', 'حساب آزمایشی نباید Administrator باشد؛ چرخش رمز متوقف شد.' );
 					}
-					if ( 'cpdd-' . $persona . '-' . $fixture !== (string) $account['login'] ) {
+					if ( $prefix . $persona . '-' . $fixture !== (string) $account['login'] ) {
 						throw new Exception( 'ROTATE_SCOPE', 'نام کاربری «' . $persona . '» با شناسهٔ دمو هم‌خوان نیست؛ چرخش رمز متوقف شد.' );
 					}
 					$verified[ $persona ] = $user_id;

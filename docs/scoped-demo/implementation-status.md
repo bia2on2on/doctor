@@ -326,216 +326,45 @@ No error reporting was suppressed and no assertion was removed.
 same Persian sentence as the strict page with `data-cpdd-code="UNEXPECTED"`, so a class name
 or file path can no longer reach the operator — the strict page already behaved this way.
 
-## Mission I — real-host acceptance remediation (the owner's wp-admin install failed)
+## Standalone Owner-evaluation correction (this PR — exact-head CI pending)
 
-**Trigger.** On the Product Owner's real test site, **Plugins → Add New → Upload Plugin** of
-the standalone `cpms-disposable-demo-1.0.0.zip` ended in *"The plugin does not have a valid
-header."* Every lane was green at the time, because the lanes installed the package with
-`wp plugin install` — which never calls `Plugin_Upgrader::plugin_info()`. The Mission H
-text above ("exactly one plugin header") described the intent, not the artefact.
+**Packaging root cause (static + exact WP 7.1.3 source).** The standalone builder shipped the
+production bootstrap under `core/` with its `Plugin Name` header intact. WordPress scans the
+installed plugin directory's immediate PHP files, `get_plugins()` sorts by Name, and
+`Plugin_Upgrader::plugin_info()` returns the first key; the embedded "CPMS Classic" entry could
+therefore win over the outer demo bootstrap and the admin screen would offer the wrong
+activation basename. The builder now neutralizes ONLY the staged copy's metadata key to
+`CPMS Embedded Core:` and asserts every other byte of the bootstrap is identical to production.
+The production source and `bin/build-release.sh` are unchanged. The package contract mirrors
+the permissive `get_file_data()` regex over the first 8 KiB and requires exactly one
+discoverable header.
 
-### Root causes (each reproduced before it was fixed)
+**Acceptance correction.** `standalone-demo.yml` now seeds non-empty WordPress BEFORE install,
+then drives Plugins → Add New → Upload Plugin → Install Now → Activate Plugin in Chromium.
+A CI-only mu-plugin records the real `Plugin_Upgrader::plugin_info()`, `get_plugins()` and
+`validate_plugin()` from inside that upload. The same standalone build then runs all eight
+persona journeys, public booking/OTP, private messaging, consultation pricing/invoicing,
+RTL/mobile, clean teardown, and a real wrong-mobile public booking whose unattributable rows
+block cleanup and are preserved. One-time credentials and captured synthetic OTP codes are
+written only to non-public runner paths and are excluded from artifacts.
 
-| # | Symptom | Root cause | Correction |
-| --- | --- | --- | --- |
-| 1 | `no_plugin_header` on upload | The standalone ZIP shipped **two** plugin headers: `cpms-disposable-demo/cpms-disposable-demo.php` and the embedded `cpms-disposable-demo/core/clinic-practice-management.php`. `Plugin_Upgrader::plugin_info()` calls `get_plugins('/<dir>')`, which scans one level of sub-directories, and takes the first file — the nested production bootstrap — then `validate_plugin()` refuses it. | `bin/build-demo-installer.sh` rewrites **line 3 of the staged copy only** (`Plugin Name:` → `Embedded Core:`), proves the staged diff is exactly that line, proves the production source is byte-identical to Git, and refuses to package unless exactly one header remains. The embedded bootstrap keeps `define('CPMS_PLUGIN_FILE', __FILE__)` and all executable code. The production source and the production ZIP are untouched. |
-| 2 | HTTP 403 on the scoped demo page | The page is registered under the CPMS container menu, so its hookname is `cpms-…_page_cpms-scoped-demo`; the owner opened the legacy `tools.php?page=cpms-scoped-demo`, whose hookname is not registered, and `user_can_access_admin_page()` says no — for a legitimate administrator. | `Admin::legacy_tools_redirect_target()` maps both legacy Tools URLs to `admin.php?page=<slug>` (pure, unit-tested; `SCOPED_PAGE` mirrored with a drift test). No capability was widened; `manage_options` is still required and grants no clinical/financial authority. |
-| 3 | Only one doctor had a schedule; slots like 23:47 | `slot_plan()` anchored "now + 5 min" on a one-minute grid with no bounds, and the schedule was created for the first clinician only. | Asia/Tehran 20-minute grid inside **08:00–21:00**; the same-day block is clamped to opening hours (none after closing — the UI says to use the reception walk-in or book tomorrow); +1/+2 days carry 09:00/09:20/09:40 and 17:00/17:20/17:40; both clinicians get a schedule and slots (`counts.schedule_rows` = 14). Zone-aware `DateTimeImmutable` math only. |
-| 4 | `TEARDOWN_BLOCKED` after a booking with another mobile | A foreign-mobile OTP request on the demo clinic's booking page writes `cpms_otp_tokens` (clinic = demo, purged by `otp.cleanup` after 24 h) **and** `cpms_sms_messages` (`event=otp`, `provider=log`, `context_type=otp_token`, never purged). Neither is attributable to a fixture artefact, so the teardown correctly refuses with `SCOPED_FOREIGN_TENANT_ROW:<table>:<id>` — permanently, because nothing removes the SMS row. | New `ScopedResidue` (preview + execute, separate phrases, nonce, lock). It deletes **only** demo-clinic, post-baseline, expired-or-consumed OTP challenges whose mobile is not the synthetic one, plus the `log`-provider SMS echoes of exactly those challenges; it refuses a live challenge (`RESIDUE_LIVE_CHALLENGE`), any other SMS (`RESIDUE_OUT_OF_SCOPE`), a missing baseline, a non-verifying manifest, and — the stated limitation — any mobile known anywhere on the site (`RESIDUE_MOBILE_KNOWN`: patients, patient identities, slot holds, WP users; a human decides). The audit chain is verified before and after, the recovery itself is a new hash-chained audit row (`CPSD_DEMO_RESIDUE_RECOVERED`, masked mobile, ids, reason), and rate-limit counters, clinical/financial rows and audit history are never touched. |
-| 5 | Owner could not find persona access / OTP path | The page showed credentials once and nothing else. | Persona-access card (8 personas, Persian role description, correct portal link, suggested task, login name, synthetic patient mobile) and a booking/OTP guide (demo `log` SMS provider, one-time demo OTP, unchanged rate limits, clinic hours, explicit warning against entering any other mobile). No credential is re-shown, no OTP handling changed, no auth bypass. |
+**Usability/safety corrections.** The scoped evaluation console is an administrator-only Tools
+page (`manage_options`) with a plugin-row shortcut, independent of the production clinical menu
+and without any clinical/financial capability grant. The Owner guide names the synthetic mobile,
+the `log` provider, the exact OTP retrieval steps, credential rotation, and the unsafe-recovery
+boundary. Both synthetic doctors have bounded weekly templates and public slots at realistic
+Iranian hours (09:xx and 14:xx) on the next two LOCAL days; the old `now + 5 minutes` anchor
+that could produce 23:47 is gone. Reception arrival is proved separately through a reserved
+09:00 synthetic staff appointment on the Location's LOCAL today, so the board check does not
+force public booking to publish past or wall-clock-derived times. The CI observer refreshes the
+plugin cache before recording `plugin_info()` and rotates acceptance-fixture passwords only
+when `CPSD_CI_CAPTURE` is explicitly set, so it cannot invalidate another drill's own
+provision-time credentials. Wrong-mobile anonymous rows are never claimed by tenant/mobile/time alone: cleanup refuses
+with `SCOPED_FOREIGN_TENANT_ROW` / `TEARDOWN_BLOCKED`, preserves the rows and audit chain, and the
+Persian guidance says no safe automatic recovery exists without independent ownership evidence.
 
-### Acceptance that now exists (and did not before)
-
-* `tests/scoped-demo/test_standalone_package.py` (34): exactly one `Plugin Name:` across the
-  archive, at the plugin root; the staged core header is neutralised and still executable;
-  no `Requires Plugins:`; deterministic bytes; proof keys; the production source untouched.
-  Against the pre-fix build script the suite fails 6 tests (RED), against the fix it passes (GREEN).
-* `tests/scoped-demo/wp-admin-install-drill.php` — real WordPress runtime, real
-  `Plugin_Upgrader::install()` through `WP_Filesystem`: `snapshot` → `install <zip> red inspect`
-  (**must** observe `plugin_info()` = nested bootstrap, two plugins in the folder,
-  `validate_plugin()` = `no_plugin_header`) → `install <zip> green inspect` → browser upload →
-  `verify` (active, core booted, standalone mode, production absent, site digest unchanged,
-  no PHP diagnostics since the snapshot).
-* `tests/scoped-demo/synthesize_prefix_zip.py` derives the RED control from the fixed ZIP by
-  restoring the production header on line 3 of the embedded bootstrap — the exact byte layout
-  the owner received — so a silent drill can never pass.
-* `tests/scoped-demo/browser_wpadmin_install.py` — Chromium: wp-login → Plugins → Add New →
-  Upload Plugin → Install Now → Activate Plugin, asserting the installer page shows no header
-  error, the plugin row is active, the plugins screen lists one demo entry and no nested entry,
-  and the demo admin page renders with no PHP diagnostics.
-* `standalone-demo.yml` (`real-wordpress`, MySQL 8 and MariaDB 11.4.13): the site is seeded
-  non-empty **before** the upload; `php -S` runs with a 64 MB upload ceiling; RED → GREEN →
-  browser → verify replace `wp plugin install`; the static job counts headers in the archive
-  and checks `git diff --quiet` on the production bootstrap. Contract tests in
-  `.github/workflows/test_workflow_contracts.py` pin the order and forbid a WP-CLI install in
-  the installation phase.
-* Companion suites: `run-tests.php` 313 (Task 5 slot-plan table incl. before-opening, inside,
-  around closing, late night; both clinicians; legacy redirect), `scoped-run-tests.php` 67
-  (30 residue assertions: GREEN delete + audit row + chain intact, `RESIDUE_NONE`, live
-  challenge, out-of-scope SMS, queued SMS, mobile known in patients/identities (98-prefix)/
-  holds/users, tampered manifest, missing baseline, request phrases/nonces).
-
-### Evidence boundary for this document
-
-Everything in the table above was executed locally with `@php-wasm/cli` (PHP 8.5) against
-WordPress 6.9.1 on SQLite — enough to prove `plugin_info()` / `get_plugins()` /
-`validate_plugin()` behaviour and the archive contracts, **not** enough to activate the
-embedded core (it requires MySQL/MariaDB). Activation, the browser upload, the eight persona
-journeys and the MySQL 8 / MariaDB 11.4.13 results come only from the GitHub Actions lanes
-named in the PR; where a lane has not run on the exact head, the PR report says NOT RUN.
-
-## Mission J — consolidating the demo installation fixes into PR #283
-
-**Context.** A second implementation of the same mission exists on
-`arena/db17f589-doctor` (`bdc6ef3`), branched from the same authoritative `main`
-(`4631764`). PR #283 (`arena/bd61ce8f-doctor`, head `5fbb7b3`) is 40 checks green and
-**3 failed**: `Standalone on a non-empty site (mysql-8)`, the same on
-`mariadb-11.4.13`, and `Responsive smoke (Chromium ×4 viewport)`.
-
-### CPSA_RECOVERY — root cause, proved on a real WordPress runtime
-
-The two standalone lanes stop at the Task-4 recovery drill:
-
-```
-CPSA_RECOVERY — production Hold exposes the final confirm button: state=bookable
-status=در حالت «دموی محدودشده» نوشتن در درمانگاه/سازمان نمایشی فقط برای حساب‌های
-ساختگی همان دمو و مدیر سایت مجاز است. …
-```
-
-The message is `ScopedTenantGuard::write_verdict()`'s refusal, and the refusal is
-**correct**. The chain:
-
-1. the drill books with `09009999999`, which is **not** the sealed synthetic mobile;
-2. `OtpService::verify()` provisions a **real** WordPress user for the unknown mobile
-   (`wp_insert_user`) and issues a real session (`wp_set_auth_cookie`);
-3. the public-booking **Hold** is therefore a write into the demo tenant by a
-   non-fixture, non-administrator actor, so the guard answers HTTP 403
-   `SCOPED_DEMO_TENANT_WRITE_REFUSED` and the widget never renders the confirm button.
-
-So the drill asserted that a real person could complete a booking inside the demo
-tenant — i.e. that Mission F's barrier was bypassed. The assertion, not the product,
-is the defect. `tests/scoped-demo/tenant-barrier-drill.php` proves the barrier's
-semantics on a real WordPress runtime (anonymous allowed, fixture account allowed,
-administrator allowed, real authenticated visitor **refused**, outside-demo writes
-unaffected, reads unaffected) and reads `wp_insert_user` + `wp_set_auth_cookie` from
-the shipped OTP service as the causal link.
-
-The residue that genuinely blocks the teardown is already there when the Hold is
-refused: one `cpms_otp_tokens` row for the foreign mobile bound to the demo Clinic
-and its `log`-provider `cpms_sms_messages` rows. `ATTRIBUTION` maps both tables to
-`@mobile`, so they are unattributable to the fixture and the teardown refuses with
-`SCOPED_FOREIGN_TENANT_ROW` — preserved, never deleted, audit chain intact.
-
-### Packaging verdict for PR #283's standalone build (verified locally)
-
-Built from `5fbb7b3` in this sandbox (`bash bin/build-demo-installer.sh`):
-`cpms-disposable-demo-1.0.0.zip`, 1,631,037 bytes, 358 entries, **exactly one**
-WordPress plugin header (`cpms-disposable-demo/cpms-disposable-demo.php`), the staged
-embedded bootstrap neutralised to `CPMS Embedded Core:` while keeping its executable
-code, and — through the real `Plugin_Upgrader::install()` on WordPress 6.9.1 —
-`plugin_info()` = `cpms-disposable-demo/cpms-disposable-demo.php`,
-`get_plugins('/cpms-disposable-demo')` = one entry, `validate_plugin()` = 0, site
-digest unchanged, no PHP diagnostics. The installation fix in #283 is therefore sound
-and does **not** need replacing by this branch's variant.
-
-### Disposition
-
-| Issue | #283 | this branch | Decision |
-| --- | --- | --- | --- |
-| Two-header install defect | regex neutralisation + permissive header scan | line-3 rewrite + `proof.txt` keys | **Adopt #283's** (verified above; equivalent guarantee) |
-| Real wp-admin upload/activate | Chromium drill in the lane | Chromium drill + PHP `Plugin_Upgrader` RED/GREEN drill | **Add this branch's PHP drill** to #283 (it produces the RED control the lane lacks) |
-| Scoped demo 403 | page moved to Tools (no CPMS coupling) | legacy `tools.php` → `admin.php` redirect | **Adopt #283's** (removes the coupling rather than redirecting it) |
-| Personas / OTP guidance | owner guide card | persona card + booking guide | **Adopt #283's** (already richer) |
-| Two-doctor scheduling | second clinician scheduled, staff slot on local today | both clinicians + 08:00–21:00 grid | **Adopt #283's** scheduling with this branch's hours assertion |
-| Tehran clinic hours | 09:xx / 14:xx template windows | 20-minute grid, 08:00–21:00 | **Merge**: keep #283's windows, add the hours assertion in `integration-wp.php` |
-| Wrong-mobile residue | preserve + explain, no deletion | `ScopedResidue` removal with 10 guards | **Keep #283's** as the default; `ScopedResidue` is a documented follow-up (unit-tested, not CI-proven) |
-| Recovery drill | asserts booking succeeds → impossible | n/a | **Replace the drill's assertions** (two files) |
-
-### Exact-head CI inventory for PR #283 (`5fbb7b3`, base `4631764`) — as observed, not inferred
-
-43 check-runs: **40 success, 3 failure**. The three failures:
-
-| check | job steps |
-| --- | --- |
-| `Standalone on a non-empty site (mysql-8)` (job 123763324000) | steps 1–17 success, **18 `Chromium — real wrong-mobile public booking and blocked cleanup` failure**, 19–22 skipped |
-| `Standalone on a non-empty site (mariadb-11.4.13)` (job 123763324129) | identical pattern |
-| `Responsive smoke (Chromium ×4 viewport)` (job 123763836262, Pilot/Staging Readiness Gate) | steps 12 (Chromium responsive) and 13 (admin narrow RTL) success, **14 `Firefox/WebKit compatibility smoke` failure** — annotation: `webkit compatibility smoke failed (exit=1)`; Firefox passed; job logs are not fetchable from this sandbox (blob storage blocked) |
-
-Two important consequences:
-
-* **Step 12 `Real wp-admin ZIP upload and Activate Plugin (Chromium, not WP-CLI)` succeeded on both engines.**
-  The installation defect this mission is about is therefore already proven fixed at
-  runtime on this head — it just was never reached in the earlier report because the
-  lane's own recovery step fails later.
-* Steps **19–22 never ran on this head**: `Pre-existing WordPress data survives
-  provisioning`, `Deactivation and deletion destroy nothing`, `Both activation orders
-  refuse a second core`, `Remove the production plugin again and re-prove the standalone
-  build`. They must execute after the recovery step is corrected; until then those four
-  acceptance claims are **NOT RUN**, not passed.
-
-The WebKit failure is in a lane that installs only the **production** plugin
-(`clinic-practice-management/**`, `bin/pilot-*.py`); PR #283 changes no file that lane
-executes, and the same workflow passed on `main` at `4631764`. The likeliest explanation
-is a browser-engine/emulator flake, but that is **inference**: the job log is not
-reachable from this environment, so it needs a retry and, if it persists, its own
-investigation. It is not a demo-installation defect.
-
-## Mission K — final consolidation: the WebKit failure classified, the drill premises pinned
-
-### WebKit (`Responsive smoke … step 14 Firefox/WebKit compatibility smoke`)
-
-The step's own evidence, published to PR #283 as the `pilot-responsive-evidence`
-comment, contains the per-engine log. The WebKit section shows **exactly one** failed
-line out of thirteen:
-
-```
-INFO browser_engine=webkit browser_version=27.2 playwright_version=1.64.1 viewports=mobile-390,tablet-portrait-768
-FAIL secretary-mobile-390 — صف امروز (منشی) — login failed for pilot_secretary: http://localhost:8080/wp-login.php
-PASS secretary-tablet-portrait-768 — صف امروز (منشی) …
-PASS secretary-mobile-390 — مالی و تسویه (منشی) …
-… every other row PASS (doctor ×4, anonymous ×5, conditional assets)
-```
-
-Classification: **D — test/fixture defect (a race in the harness login helper)**, and
-**pre-existing**, not a regression of this PR:
-
-* the failing line is not a layout/compatibility assertion at all — it is the *login
-  setup* helper (`bin/pilot-responsive.py::login`), which navigates, submits and then
-  judges success from `page.url` after `wait_for_load_state("networkidle")`, with no
-  wait for the navigation it just triggered; WebKit's first navigation is the slowest
-  one, and the *same account at the other viewport in the same engine* logs in fine
-  immediately afterwards;
-* a login failure is recorded by CPMS only through `LoginRateLimiter` on **failed**
-  attempts (`MAX_PER_IP` 20 / `MAX_PER_USERNAME` 10 in a 900 s window), so a genuine
-  credential problem would have failed every later WebKit login too — it did not;
-* none of PR #283's 25 changed files is executed by that lane (`clinic-practice-management/**`,
-  `bin/pilot-*.py` are untouched), and the same workflow is green on `main@4631764`;
-* the earlier `Failure`s of the same workflow (6 in the `arena/19f8e063-doctor` history)
-  are unrelated steps (`Release Artifact`, evidence posting), so they neither support nor
-  contradict a WebKit flake — the evidence above does.
-
-**Resolution available, but deliberately not applied here:** the one-line class of fix is
-to make the helper deterministic — `with page.expect_navigation(): page.click("#wp-submit")`
-followed by `page.wait_for_url(lambda u: "wp-login.php" not in u or "loggedout" in u)` —
-keeping the identical success/failure semantics. It cannot be applied in this PR:
-`bin/pilot-responsive.py` lives under `clinic-practice-management/`, which the demo lane's
-`companion-isolation.py` classifies as **PRODUCTION**; a companion PR that also edits
-production source fails that gate by design, and the standing owner constraint forbids
-editing the production subtree from this work. It needs its own production-side PR (or an
-owner decision); nothing was disabled, no viewport dropped, and no assertion weakened.
-
-### The corrected drill's three premises are now unit-pinned
-
-`tests/scoped-demo/test_scoped_safety_regressions.py::RecoveryDrillPremisesTest` (3 tests)
-pins what the Task-4 acceptance rests on, so it cannot silently drift: `ATTRIBUTION` maps
-`cpms_otp_tokens` and `cpms_sms_messages` to `@mobile` (a foreign mobile is therefore
-unattributable, never deletable), the barrier allows only anonymous/fixture/administrator
-actors (`SCOPED_DEMO_TENANT_WRITE_REFUSED` otherwise), and the shipped OTP service really
-does `wp_insert_user` + `wp_set_auth_cookie` (so the drill's actor is a real user).
-
-### Local gate results for this head
-
-`tests/scoped-demo` **135 OK** (was 132), `run-tests.php` **313**, `scoped-run-tests.php`
-**67**, `companion-compat` **33**, `disposable-site` **13**, workflow contracts **65**,
-`companion-isolation.py` PASS, `evaluate.py --gate all` PASS, `php -l` clean,
-`php-wasm-cli` real-WordPress drill (barrier) **10/10**.
+**Evidence boundary.** Local PHP-wasm unit suites and Python packaging/workflow contracts are
+executed; they are NOT MySQL/MariaDB or browser acceptance. The real wp-admin upload, both DB
+engines, eight-persona browser run and wrong-mobile recovery are only proven when the exact PR
+head's `standalone-demo.yml` checks pass. This section must be updated with run IDs/head SHA
+before any merge recommendation.

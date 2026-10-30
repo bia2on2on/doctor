@@ -25,10 +25,11 @@
  *  - This plugin never touches the production plugin's source, options schema,
  *    authorization, OTP policy, booking concurrency, payment gates or license
  *    behaviour. In standalone mode the embedded core IS that plugin, at the
- *    same repository revision, booted through its own unmodified entry file.
+ *    same repository revision, booted through its own executable entry file
+ *    (only the staged docblock's discoverable Plugin Name key is neutralized).
  *  - It exposes no REST route, no AJAX action and no frontend surface. All work
- *    happens on two isolated wp-admin pages under the CPMS unified menu when
- *    available (Tools fallback otherwise), behind capability + nonce +
+ *    happens on isolated wp-admin pages (the scoped evaluation console is a
+ *    Tools page), behind capability + nonce +
  *    confirmation-phrase + site-identity checks.
  *  - The original mode refuses anything that is not a provably empty,
  *    single-site disposable installation. The separate scoped mode is disabled
@@ -165,6 +166,16 @@ add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\ScopedAdmin', 'register_menu' ), 11 );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_assets' ) );
+add_filter(
+	'plugin_action_links_' . plugin_basename( CPMS_DEMO_FILE ),
+	static function ( array $links ): array {
+		array_unshift(
+			$links,
+			'<a href="' . esc_url( admin_url( 'tools.php?page=' . CpmsDemo\ScopedAdmin::PAGE ) ) . '">' . esc_html__( 'دموی محدودشده', 'cpms' ) . '</a>'
+		);
+		return $links;
+	}
+);
 // Server-side refusal of portal Clinic creation while the scoped demo mode is
 // enabled. Priority 0 puts it ahead of the portal's own `template_redirect`
 // handler, so the request never reaches the production dispatcher. It returns

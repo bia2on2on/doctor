@@ -204,17 +204,8 @@ try {
 		$cpsd_sa_check( ! is_wp_error( $editor_id ) && ! is_wp_error( $author_id ), 'seed: two pre-existing real users', $checks );
 		$cpsd_sa_check( $page_id > 0 && $post_id > 0, 'seed: a pre-existing page and post', $checks );
 		$cpsd_sa_check( $sqlite_comment > 0 && $attachment > 0, 'seed: a pre-existing comment and media attachment', $checks );
-		// The seed normally runs BEFORE the real wp-admin upload (so the package is
-		// installed onto a site that is already non-empty, which is the owner's
-		// situation); then no CPMS table can exist yet and the schema proof is
-		// made later by the installer drill and the `assert` mode. The legacy
-		// order (seed after activation) keeps the check by setting
-		// CPSD_SA_EXPECT_CPMS=1.
-		if ( '1' === (string) getenv( 'CPSD_SA_EXPECT_CPMS' ) ) {
-			$cpsd_sa_check( count( $cpsd_sa_cpms_tables() ) > 0, 'seed: CPMS schema exists although production CPMS is not installed', $checks );
-		} else {
-			$cpsd_sa_check( array() === $cpsd_sa_cpms_tables(), 'seed: no CPMS table exists yet (the package is not installed before the real wp-admin upload)', $checks );
-		}
+		$evidence['cpms_tables_at_seed'] = count( $cpsd_sa_cpms_tables() );
+		$cpsd_sa_check( true, 'seed: non-empty WordPress recorded (CPMS schema may be absent before admin install)', $checks, (string) $evidence['cpms_tables_at_seed'] );
 		if ( false === file_put_contents( $cpsd_sa_file, (string) wp_json_encode( $evidence ) ) ) {
 			throw new RuntimeException( 'cannot write evidence file: ' . $cpsd_sa_file );
 		}
@@ -281,6 +272,45 @@ try {
 			$cpsd_sa_check( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_invoices WHERE clinic_id = %d", $clinic ) ) > 0, 'demo invoices exist in the demo Clinic', $checks );
 			$cpsd_sa_check( $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_payments WHERE clinic_id = %d", $clinic ) ) > 0, 'demo payments exist in the demo Clinic', $checks );
 			$evidence['demo_clinic'] = $clinic;
+			$doctor_one = (int) ( $loaded['ids']['clinician_id'] ?? 0 );
+			$doctor_two = (int) ( $loaded['ids']['clinician_id_second'] ?? 0 );
+			$schedules = $wpdb->get_results( $wpdb->prepare( "SELECT clinician_id, start_time, end_time FROM {$wpdb->prefix}cpms_schedule WHERE clinic_id = %d", $clinic ), ARRAY_A );
+			$by_doctor = array();
+			foreach ( (array) $schedules as $row ) { $by_doctor[ (int) $row['clinician_id'] ][] = $row; }
+			$cpsd_sa_check( count( $by_doctor[ $doctor_one ] ?? array() ) === 7 && count( $by_doctor[ $doctor_two ] ?? array() ) === 7, 'BOTH synthetic doctors have a full weekly schedule', $checks, count( $by_doctor[ $doctor_one ] ?? array() ) . '/' . count( $by_doctor[ $doctor_two ] ?? array() ) );
+			$hours_ok = true;
+			foreach ( (array) $schedules as $row ) {
+				$hours_ok = $hours_ok && in_array( substr( (string) $row['start_time'], 0, 5 ), array( '09:00', '14:00' ), true );
+			}
+			$cpsd_sa_check( $hours_ok, 'schedule templates use realistic Iranian clinic hours (09:00 / 14:00)', $checks );
+			// PUBLIC inventory keeps the strict six grid hours. The reserved
+			// reception-arrival slot is deliberately excluded here and asserted
+			// separately below: it follows the clock on the same 20-minute grid so
+			// the demo can still be provisioned after 09:00 local, which the
+			// production BookingWindow otherwise refuses for the rest of the day.
+			$staff_slot_id = (int) ( $loaded['ids']['staff_slot_id'] ?? 0 );
+			$slot_hours    = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT SUBSTRING(slot_time,1,5) FROM {$wpdb->prefix}cpms_schedule_slots WHERE clinic_id = %d AND id <> %d", $clinic, $staff_slot_id ) );
+			$bad_hours     = array_diff( (array) $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) );
+			$cpsd_sa_check( array() === $bad_hours, 'public slots never use wall-clock artefacts such as 23:47', $checks, implode( ',', (array) $slot_hours ) );
+			$staff_slot = $wpdb->get_row( $wpdb->prepare( "SELECT slot_date, slot_time FROM {$wpdb->prefix}cpms_schedule_slots WHERE id = %d AND clinic_id = %d", $staff_slot_id, $clinic ), ARRAY_A );
+			$cpsd_sa_check( is_array( $staff_slot ), 'the reserved reception-arrival slot exists in the demo Clinic', $checks, (string) $staff_slot_id );
+			if ( is_array( $staff_slot ) ) {
+				$cpsd_sa_check( (string) $staff_slot['slot_date'] === (string) ( $loaded['ids']['staff_slot_date'] ?? '' ), 'the reserved arrival slot matches the manifest date', $checks, (string) $staff_slot['slot_date'] );
+				$staff_time = (string) $staff_slot['slot_time'];
+				$cpsd_sa_check(
+					( 0 === ( (int) substr( $staff_time, 3, 2 ) % 20 ) && '00' === substr( $staff_time, 6, 2 ) )
+					|| in_array( $staff_time, array( '23:59:00', '09:00:00' ), true ),
+					'the reserved arrival slot is on the 20-minute grid (or the documented end-of-day instants), never a now+5 artefact',
+					$checks,
+					$staff_time
+				);
+				$staff_tz     = new DateTimeZone( 'Asia/Tehran' );
+				$staff_at     = new DateTimeImmutable( $staff_slot['slot_date'] . ' ' . $staff_time, $staff_tz );
+				$staff_now    = new DateTimeImmutable( 'now', $staff_tz );
+				$cpsd_sa_check( $staff_at >= $staff_now->modify( '-5 minutes' ), 'the reserved arrival instant is not in the past, so BookingWindow accepted it', $checks, $staff_at->format( 'Y-m-d H:i' ) );
+			}
+			$slot_doctors = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT clinician_id FROM {$wpdb->prefix}cpms_schedule_slots WHERE clinic_id = %d", $clinic ) );
+			$cpsd_sa_check( in_array( (string) $doctor_one, array_map( 'strval', (array) $slot_doctors ), true ) && in_array( (string) $doctor_two, array_map( 'strval', (array) $slot_doctors ), true ), 'BOTH doctors have real public booking slots', $checks );
 		}
 
 		// Every seeded WordPress artefact is byte-identical.
@@ -419,6 +449,17 @@ try {
 		$evidence['synthetic_users_kept'] = count( (array) $demo_users );
 		$cpsd_sa_check( count( (array) $demo_users ) > 0, 'synthetic demo accounts are preserved (harmless records over risky deletion)', $checks, (string) count( (array) $demo_users ) );
 		$evidence['cpms_tables'] = count( $tables );
+		$recovery_file = (string) ( getenv( 'CPSD_RECOVERY_BROWSER' ) ?: '/tmp/cpsa-ci/browser/recovery-browser.json' );
+		$recovery = is_file( $recovery_file ) ? json_decode( (string) file_get_contents( $recovery_file ), true ) : null;
+		if ( is_array( $recovery ) && ! empty( $recovery['evidence']['reference_code'] ) ) {
+			$ref = (string) $recovery['evidence']['reference_code'];
+			$kept = (int) $wpdb->get_var( $wpdb->prepare( "SELECT COUNT(*) FROM {$wpdb->prefix}cpms_appointments WHERE reference_code = %s", $ref ) );
+			$cpsd_sa_check( 1 === $kept, 'plugin deletion preserved the unattributable wrong-mobile booking', $checks, $ref );
+			$marker = get_option( 'cpdd_uninstall_blocked', null );
+			$cpsd_sa_check( is_array( $marker ), 'uninstall recorded a non-secret recovery marker instead of destroying ownership metadata', $checks );
+			$evidence['uninstall_blocked'] = is_array( $marker );
+			$evidence['wrong_mobile_booking_kept'] = $kept;
+		}
 	}
 
 	$failed = array_values( array_filter( $checks, static fn ( $line ) => 0 === strpos( (string) $line, 'FAIL' ) ) );

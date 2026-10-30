@@ -110,14 +110,12 @@ $slots = (int) $db->fetchValue(
 );
 cpdd_assert( $slots >= 6, 'open future slots available for a NEW public booking (count=' . $slots . ')' );
 
-// Regression (near-midnight fixture defect). The browser journey books the
-// earliest still-available slot and then checks that appointment in on the Staff
-// Portal reception board, which is strictly the Location's local "today"
-// (ReceptionPortalController::board -> VisitService::today plus today's booked
-// rows). Ask the production availability read - the same one the public booking
-// shortcode consumes - which day it offers first, and require that to be the
-// board's local day. Before the fix this held only outside a daily
-// ~22:55-24:00 Asia/Tehran window, so the lane failed on the wall clock alone.
+// Regression (near-midnight fixture defect). Public booking must offer real
+// future LOCAL clinic hours, while the reception-arrival drill uses a separate
+// synthetic staff appointment on the board's LOCAL today. This keeps the Staff
+// Portal reception board (ReceptionPortalController::board -> VisitService::today
+// plus today's booked rows) provable without anchoring public slots to the
+// current wall-clock minute or publishing past/unusual times such as 23:47.
 $location_timezone = (string) $db->fetchValue(
 	'SELECT timezone FROM ' . $db->table( 'cpms_locations' ) . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
 	array( (int) $fixture['ids']['location_ids'][0], $clinic_id )
@@ -132,45 +130,18 @@ foreach ( (array) ( App::bookingService()->availability( $doctor_id, null, null,
 		$offer_days[] = (string) $offer_day['date'];
 	}
 }
-// Realistic clinic hours (Asia/Tehran 08:00-21:00, 20-minute grid): the
-// fixture only carries a same-day row while the demo clinic is open. Decide
-// the expectation from the fixture's OWN still-future same-day rows - never
-// from the wall clock alone - so a slot that expired between provisioning and
-// this read cannot turn a correct outcome into a failure, and an unrealistic
-// row (23:47) can never pass again.
-$same_day_rows = (array) $db->fetchAll(
-	'SELECT slot_time FROM ' . $db->table( 'cpms_schedule_slots' )
-	. ' WHERE clinic_id = %d AND clinician_id = %d AND slot_date = %s AND is_open = 1 AND booked_count = 0 ORDER BY slot_time ASC',
-	array( $clinic_id, $doctor_id, $board_local_today )
+cpdd_assert(
+	array() !== $offer_days && $offer_days[0] >= $board_local_today,
+	'the earliest genuinely bookable public slot is a future LOCAL clinic day (first=' . ( $offer_days[0] ?? 'none' ) . ' board=' . $board_local_today . ')'
 );
-$board_local_now   = new DateTimeImmutable( 'now', new DateTimeZone( $location_timezone ) );
-$future_same_day   = 0;
-$realistic_rows    = true;
-foreach ( $same_day_rows as $same_day_row ) {
-	$slot_time = (string) ( $same_day_row['slot_time'] ?? '' );
-	$slot_at   = new DateTimeImmutable( $board_local_today . ' ' . $slot_time, new DateTimeZone( $location_timezone ) );
-	$hour      = (int) $slot_at->format( 'G' );
-	$minute    = (int) $slot_at->format( 'i' );
-	if ( $hour < 8 || $hour >= 21 || 0 !== $minute % 20 ) {
-		$realistic_rows = false;
-	}
-	if ( $slot_at > $board_local_now ) {
-		$future_same_day++;
-	}
-}
-cpdd_assert( $realistic_rows, 'every same-day fixture slot lies inside realistic clinic hours (08:00-21:00 Tehran, 20-minute grid; rows=' . count( $same_day_rows ) . ')' );
-if ( $future_same_day > 0 ) {
-	cpdd_assert(
-		array() !== $offer_days && $offer_days[0] === $board_local_today,
-		'the earliest genuinely bookable public slot is on the reception board local today (first=' . ( $offer_days[0] ?? 'none' ) . ' board=' . $board_local_today . ')'
-	);
-} else {
-	$board_local_tomorrow = $board_local_now->modify( '+1 day' )->format( 'Y-m-d' );
-	cpdd_assert(
-		array() !== $offer_days && $offer_days[0] === $board_local_tomorrow,
-		'outside clinic hours the earliest bookable public slot is tomorrow morning, never a late-night same-day row (first=' . ( $offer_days[0] ?? 'none' ) . ' tomorrow=' . $board_local_tomorrow . ')'
-	);
-}
+$staff_appointment_date = (string) $db->fetchValue(
+	'SELECT slot_date FROM ' . $db->table( 'cpms_appointments' ) . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+	array( (int) $fixture['ids']['appointment_id'], $clinic_id )
+);
+cpdd_assert(
+	$staff_appointment_date === $board_local_today,
+	'the synthetic reception-arrival appointment is on the reception board local today (appointment=' . $staff_appointment_date . ' board=' . $board_local_today . ')'
+);
 
 // --- 5. Real OTP request → demo code → real verify ------------------------
 $previous = ScopeContext::tryGet();

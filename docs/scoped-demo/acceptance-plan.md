@@ -19,7 +19,7 @@ This is a source contract, not runtime proof. It must be run locally and in CI.
 
 ## 2. Seeded existing-site fixture
 
-Each database lane starts with a clean WordPress install, production CPMS 1.0.0 ZIP, companion ZIP, and a seeded legitimate site. Seeding may use WP-CLI in CI; the Product Owner's own installation/activation path remains browser-only.
+Each standalone database lane starts with a seeded non-empty WordPress and NO production CPMS. The inner standalone ZIP is uploaded and activated through real wp-admin in Chromium; WP-CLI may seed/inspect but must not substitute for the Owner install/activate path. Companion lanes continue to test the production+companion combination separately.
 
 Minimum seed:
 
@@ -114,9 +114,9 @@ At minimum, exact-head CI must execute:
 - **MySQL 8** full positive journey + negative matrix.
 - **MariaDB 11.4.13** full positive journey + negative matrix.
 - WordPress 7.1.3; PHP 8.1, 8.2, 8.3, 8.4 for unit/static checks.
-- Real Chromium browser journey with six independent browser contexts and RTL at 320px/390px.
+- Real Chromium wp-admin ZIP upload/activation, eight independent persona contexts, public booking/OTP click path, wrong-mobile blocked cleanup, and RTL at 320px/390px.
 - Real WordPress integration with cross-connection `GET_LOCK` contention and fault injection.
-- Twice-built companion ZIP with identical SHA-256, one top-level `cpms-disposable-demo/`, no tests/docs/secrets, valid plugin header and `Requires Plugins`.
+- Twice-built standalone ZIP with identical SHA-256, one top-level `cpms-disposable-demo/`, exactly ONE WordPress-discoverable header, no tests/docs/secrets, no `Requires Plugins`, and an executable embedded bootstrap whose non-header bytes match production.
 - Full mandatory repository checks on the exact PR head: CI, WPCS, PHPStan, unit, integration, Real WP Acceptance, Closure Gate, Pilot/Staging, Disposable Demo Installer, and new Scoped Demo Acceptance.
 
 Screenshot pixels must actually be opened before any `INSPECTED` claim; artifact existence is not inspection. No universal hosting compatibility claim is allowed.

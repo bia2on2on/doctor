@@ -14,9 +14,12 @@
 #        active. Kept because the empty-site ("strict") workflows and the
 #        production/demo conflict drills exercise exactly that combination.
 #
-# Both archives contain exactly one top-level directory, one plugin main file
-# with one plugin header, no tests, no docs, no repository paths, no build
-# scripts and no development dependencies.
+# Both archives contain exactly one top-level directory and exactly ONE
+# WordPress-discoverable plugin header. In the standalone build the staged
+# embedded bootstrap keeps every executable byte of the production entry file;
+# only its docblock metadata key is neutralized so WordPress cannot offer the
+# embedded core as a second plugin. No tests, docs, repository paths, build
+# scripts or development dependencies are packaged.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -75,6 +78,31 @@ if [ "$MODE" = 'standalone' ]; then
   if [ -d "$PRODUCTION_SRC/vendor" ]; then
     cp -R "$PRODUCTION_SRC/vendor" "$CORE/vendor"
   fi
+  # Neutralize ONLY the staged copy's discoverable header key. WordPress scans
+  # the installed plugin directory's immediate PHP files; `core/*.php` competes
+  # with the outer bootstrap and get_plugins() sorts by Name, so the embedded
+  # "CPMS Classic" entry could win Plugin_Upgrader::plugin_info() and the admin
+  # screen would activate the wrong basename. Keep the PHP bootstrap executable
+  # and byte-identical apart from this one metadata key. The production source
+  # and the production release builder are never touched.
+  python3 - "$CORE/clinic-practice-management.php" "$PRODUCTION_SRC/clinic-practice-management.php" <<'PY'
+import pathlib, re, sys
+staged = pathlib.Path(sys.argv[1])
+source = pathlib.Path(sys.argv[2]).read_bytes()
+pattern = rb'(?m)^(?P<prefix>[ \t]*\*[ \t]*)Plugin Name:(?P<space>[ \t]*)'
+matches = list(re.finditer(pattern, source[:8192]))
+if len(matches) != 1:
+    raise SystemExit('embedded bootstrap must have exactly one Plugin Name header')
+m = matches[0]
+neutralized = source[:m.start()] + m.group('prefix') + b'CPMS Embedded Core:' + m.group('space') + source[m.end():]
+if neutralized == source:
+    raise SystemExit('header neutralization did not change the staged copy')
+staged.write_bytes(neutralized)
+# Every byte outside the metadata key is identical, including all PHP code.
+delta = len(b'CPMS Embedded Core:') - len(b'Plugin Name:')
+if neutralized[:m.start()] != source[:m.start()] or neutralized[m.end() + delta:] != source[m.end():]:
+    raise SystemExit('embedded bootstrap executable bytes changed')
+PY
   # Nothing from the repository's test/CI surface may ride along.
   find "$CORE" -type d \( -name tests -o -name .git -o -name node_modules \) -prune -exec rm -rf {} +
   find "$CORE" -type f \( -name 'phpunit.phar' -o -name '*.dist' -o -name 'composer.json' -o -name 'composer.lock' \) -delete
@@ -90,73 +118,20 @@ if find "$PKG" -name '*.php' -print0 | xargs -0 grep -l -E 'CPMS_DEV_OTP_ECHO[^)
   echo 'refusing to package: dev-echo define or md5 found' >&2; exit 1
 fi
 
-# ---------------------------------------------------------------------------
-# Exactly ONE discoverable WordPress plugin header in the standalone package.
-#
-# WordPress discovers plugins with get_plugins(), which scans the plugin root
-# AND one level of sub-directories, and Plugin_Upgrader::plugin_info() takes
-# the FIRST discovered file after sorting by plugin name. The embedded
-# production bootstrap (`core/clinic-practice-management.php`) carries the
-# production header "Clinic Practice Management (CPMS)", which sorts before
-# "CPMS Classic — Disposable Demo Installer". Shipping it verbatim therefore
-# made the wp-admin upload installer pick `core/clinic-practice-management.php`
-# as the plugin file, and the "Activate Plugin" link failed validate_plugin()
-# with `no_plugin_header` ("The plugin does not have a valid header").
-#
-# The fix is applied to the STAGED COPY ONLY: the single `Plugin Name:` header
-# line of the embedded bootstrap is rewritten into a non-header docblock line.
-# Nothing else in the file changes (verified below byte-for-byte), so the
-# embedded bootstrap keeps its exact executable PHP behaviour: CpmsDemo\
-# Standalone boots it with require_once and never reads header text. The
-# production source file and the production release ZIP are never touched.
-# ---------------------------------------------------------------------------
-if [ "$MODE" = 'standalone' ]; then
-  CORE_MAIN="$CORE/clinic-practice-management.php"
-  SRC_MAIN="$PRODUCTION_SRC/clinic-practice-management.php"
-  HEADER_LINES="$(grep -c -E '^[[:space:]/*#@]*Plugin Name:' "$CORE_MAIN" || true)"
-  [ "$HEADER_LINES" = '1' ] || { echo "embedded core bootstrap must carry exactly one Plugin Name header (found $HEADER_LINES)" >&2; exit 1; }
-  HEADER_LINE_NO="$(grep -n -E '^[[:space:]/*#@]*Plugin Name:' "$CORE_MAIN" | head -1 | cut -d: -f1)"
-  # The header must live inside the leading docblock (a ` * ` comment line):
-  # rewriting any other shape could change executable code, so refuse instead.
-  grep -q -E '^ \* Plugin Name:[[:space:]]+Clinic Practice Management \(CPMS\)[[:space:]]*$' "$CORE_MAIN" \
-    || { echo 'embedded core bootstrap header has an unexpected shape; refusing to rewrite it' >&2; exit 1; }
-  NEUTRALIZED=' * Embedded Core:     Clinic Practice Management (CPMS) — shipped inside cpms-disposable-demo, not a separate WordPress plugin (header neutralized by bin/build-demo-installer.sh)'
-  awk -v n="$HEADER_LINE_NO" -v repl="$NEUTRALIZED" 'NR == n { print repl; next } { print }' "$CORE_MAIN" > "$CORE_MAIN.tmp"
-  mv "$CORE_MAIN.tmp" "$CORE_MAIN"
-  # Byte-for-byte: the staged copy differs from the production source in that
-  # ONE line and nothing else. (diff exits 1 on differences; the exact shape of
-  # the difference is asserted, not just its presence.)
-  DIFF_OUT="$(diff "$SRC_MAIN" "$CORE_MAIN" || true)"
-  DIFF_LINES="$(printf '%s\n' "$DIFF_OUT" | grep -c -E '^[<>]' || true)"
-  [ "$DIFF_LINES" = '2' ] || { echo "staged core bootstrap must differ from the production source in exactly one line (got $DIFF_LINES changed lines)" >&2; exit 1; }
-  printf '%s\n' "$DIFF_OUT" | grep -q -E "^${HEADER_LINE_NO}c${HEADER_LINE_NO}\$" \
-    || { echo 'staged core bootstrap changed somewhere other than the Plugin Name line' >&2; exit 1; }
-  cmp -s "$SRC_MAIN" "$PRODUCTION_SRC/clinic-practice-management.php" \
-    || { echo 'production source file changed during the build; refusing' >&2; exit 1; }
-  grep -q -E '^[[:space:]/*#@]*Plugin Name:' "$CORE_MAIN" \
-    && { echo 'embedded core bootstrap still carries a Plugin Name header' >&2; exit 1; }
-  # The rewritten line is still inside the docblock, so the staged file stays
-  # valid PHP. When a PHP binary is available, prove it with the real linter.
-  if command -v php >/dev/null 2>&1; then
-    php -l "$CORE_MAIN" >/dev/null || { echo 'staged core bootstrap does not lint' >&2; exit 1; }
-  fi
-fi
-
-# No nested plugin bootstrap: exactly one file in the package may carry a
-# WordPress plugin header, in BOTH builds, and it is the demo main file. The
-# pattern mirrors WordPress's own header regex prefix (`[ \t/*#@]*`), so a
-# header hidden behind `#`, `//` or `@` would be caught too.
-HEADERS="$(grep -rl --include='*.php' -E '^[[:space:]/*#@]*Plugin Name:' "$PKG" | LC_ALL=C sort)"
-EXPECTED="$PKG/cpms-disposable-demo.php"
-[ "$HEADERS" = "$EXPECTED" ] || { printf 'unexpected plugin headers (exactly one expected, at the package root):\n%s\n' "$HEADERS" >&2; exit 1; }
-if [ "$MODE" = 'standalone' ]; then
-  # And the embedded bootstrap is still the real production entry file: its
-  # executable anchors are present verbatim.
-  for anchor in "define('CPMS_VERSION'" "define('CPMS_PLUGIN_FILE', __FILE__)" "defined('ABSPATH') || exit;"; do
-    grep -qF "$anchor" "$PKG/core/clinic-practice-management.php" \
-      || { echo "embedded core bootstrap lost its executable anchor: $anchor" >&2; exit 1; }
-  done
-fi
+# Exactly ONE WordPress-discoverable header in either build. Mirror the
+# permissive core get_file_data() regex over the first 8 KiB, not just the
+# canonical docblock spelling, so an alternate but valid header cannot slip in.
+python3 - "$PKG" <<'PY'
+import pathlib, re, sys
+root = pathlib.Path(sys.argv[1])
+pattern = re.compile(rb'^(?:[ \t]*<\?(?:php)?)?[ \t\/*#@]*Plugin Name:(.*)$', re.M)
+found = []
+for path in sorted(root.rglob('*.php')):
+    if pattern.search(path.read_bytes()[:8192]):
+        found.append(str(path.relative_to(root)))
+if found != ['cpms-disposable-demo.php']:
+    raise SystemExit('unexpected WordPress-discoverable plugin headers: ' + repr(found))
+PY
 
 # Deterministic bytes: fixed mtimes + sorted entry order (reproducible ZIP).
 find "$STAGE" -exec touch -h -d "2026-01-01T00:00:00Z" {} +
@@ -181,13 +156,5 @@ ENTRIES="$(zipinfo -1 "$ZIP" | wc -l)"
   echo "bytes=$BYTES"
   echo "sha256=$SHA"
   echo "entries=$ENTRIES"
-  echo "plugin_headers=1"
-  echo "plugin_header_file=$NAME/cpms-disposable-demo.php"
-  if [ "$MODE" = 'standalone' ]; then
-    echo "embedded_core_bootstrap=$NAME/core/clinic-practice-management.php"
-    echo "embedded_core_header=neutralized"
-    echo "embedded_core_bootstrap_sha256=$(sha256sum "$PKG/core/clinic-practice-management.php" | cut -d' ' -f1)"
-    echo "production_bootstrap_sha256=$(sha256sum "$PRODUCTION_SRC/clinic-practice-management.php" | cut -d' ' -f1)"
-  fi
   echo "production_revision=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 } | tee "$OUT_DIR/$NAME-$VERSION.proof.txt"
