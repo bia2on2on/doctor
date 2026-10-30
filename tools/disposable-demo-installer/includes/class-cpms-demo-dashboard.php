@@ -220,6 +220,9 @@ class Dashboard {
 		$allowed = array(
 			ScopedRequest::ACTION_PREPARE,
 			ScopedRequest::ACTION_RESUME,
+			ScopedRequest::ACTION_LAUNCH,
+			ScopedRequest::ACTION_FRESH_DEMO,
+			ScopedRequest::ACTION_PERSONA_ENTRY,
 			ScopedRequest::ACTION_ROTATE,
 			ScopedRequest::ACTION_PRIVATE_HOST,
 		);
@@ -268,6 +271,49 @@ class Dashboard {
 						'text' => 'دموی ناتمام با همان شواهد مهرشده کامل شد. اگر رمز نقش‌ها را ندارید، «دریافت رمز تازه» را بزنید.',
 					);
 					break;
+				case ScopedRequest::ACTION_LAUNCH:
+					// One request: prove from sealed evidence, finish the additive part
+					// (seal or activation), rotate the eight demo passwords, and render
+					// the eight real portal links. Every gate is re-checked inside the
+					// provisioner under its own lock; this switch grants nothing.
+					$launch            = $provisioner->launch( $admin_id );
+					self::$credentials = (array) $launch['credentials'];
+					self::$notice      = array(
+						'type' => 'success',
+						'text' => 'repaired' === (string) $launch['state']
+							? 'دمو بدون ساخت یا حذف هیچ ردیفی فعال شد. رمز تازهٔ هشت نقش فقط در همین پاسخ نمایش داده می‌شود؛ پایین همین صفحه هشت درگاه واقعی آماده است.'
+							: ( 'resumed' === (string) $launch['state']
+								? 'دموی ناتمام با همان شواهد مهرشده کامل شد. رمز تازهٔ هشت نقش فقط در همین پاسخ نمایش داده می‌شود؛ پایین همین صفحه هشت درگاه واقعی آماده است.'
+								: 'دمو از قبل آماده بود. رمز تازهٔ هشت نقش فقط در همین پاسخ نمایش داده می‌شود.' ),
+					);
+					break;
+				case ScopedRequest::ACTION_FRESH_DEMO:
+					// The old fixture is PARKED - its whole sealed evidence is archived
+					// and only the live pointers are dropped. No user, patient,
+					// appointment or financial row is deleted, adopted or modified.
+					$fresh             = $provisioner->preserve_and_reprovision( $admin_id );
+					self::$credentials = (array) $fresh['credentials'];
+					self::$notice      = array(
+						'type' => 'success',
+						'text' => 'دموی قبلی با همهٔ شواهد مهرشده‌اش برای بررسی بعدی نگه داشته شد و هیچ ردیفی از آن حذف نشد؛ یک دموی تازه و کاملاً جدا ساخته شد. رمز هشت نقش فقط در همین پاسخ نمایش داده می‌شود.',
+					);
+					break;
+				case ScopedRequest::ACTION_PERSONA_ENTRY:
+					// Hand-off, not impersonation: the target is resolved from the sealed
+					// manifest, the gate above already demanded manage_options +
+					// install_plugins + this action's nonce + the site fingerprint + HTTPS,
+					// and what leaves this request is a SINGLE-USE ticket, not a session.
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی فعالی برای ورود بدون رمز وجود ندارد.' );
+					}
+					$persona = isset( $post['cpsd_persona'] ) ? sanitize_key( (string) $post['cpsd_persona'] ) : '';
+					$ticket  = ( new ScopedPersonaSession( $env, $platform, $manifest ) )->issue( $loaded, $persona, $admin_id );
+					// The ticket URL carries a one-time secret, so it is NEVER rendered in a
+					// page that could be cached, logged or read from the DOM: the request
+					// answers with a redirect and nothing else.
+					wp_safe_redirect( $ticket['url'] );
+					exit;
 				case ScopedRequest::ACTION_ROTATE:
 					$loaded = $manifest->load();
 					if ( null === $loaded || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
@@ -396,10 +442,12 @@ class Dashboard {
 			$assessment = ( new ScopedRecovery( $env, $platform, $manifest ) )->assess( $loaded );
 			if ( ScopedRecovery::VERDICT_ACTIVE === $assessment['verdict'] ) {
 				self::render_ready( $request, $loaded, $assessment );
+			} elseif ( ScopedRecovery::VERDICT_USABLE === $assessment['verdict'] ) {
+				self::render_usable( $request, $loaded, $assessment );
 			} elseif ( ScopedRecovery::VERDICT_RESUMABLE === $assessment['verdict'] ) {
 				self::render_resumable( $request, $loaded, $assessment );
 			} else {
-				self::render_incomplete( $loaded, $assessment );
+				self::render_incomplete( $request, $loaded, $assessment );
 			}
 		} elseif ( ! $platform->available() ) {
 			self::render_core_unavailable();
@@ -459,6 +507,10 @@ class Dashboard {
 		);
 
 		echo '<div id="cpms-demo-portals" data-cpms-demo-portals="1">';
+		// Eight buttons first - the Owner's whole job - then the detailed, read-only
+		// map. Both read the same sealed fixture and the same production permissions.
+		$matrix = ( new ScopedPreview( self::env(), self::platform() ) )->matrix( get_current_user_id(), $manifest );
+		ScopedAdmin::render_persona_launcher( $request, $manifest, $matrix );
 		ScopedAdmin::render_persona_access( $manifest );
 		echo '</div>';
 		// Cleanup is deliberately NOT one click away from the ready hero: it is
@@ -494,15 +546,78 @@ class Dashboard {
 	 * @param array<string,mixed> $assessment Recovery assessment.
 	 * @return void
 	 */
-	private static function render_incomplete( array $manifest, array $assessment ): void {
+	private static function render_incomplete( ScopedRequest $request, array $loaded, array $assessment ): void {
 		echo '<div class="cpdd-card cpdd-hero cpdd-attention" data-cpms-demo-state="blocked" data-cpms-demo-code="' . esc_attr( (string) $assessment['code'] ) . '">';
-		echo '<h2>دموی ناتمام پیدا شد، اما ادامهٔ خودکار آن امن نیست</h2>';
+		echo '<h2>دموی ناتمام پیدا شد، اما تکمیل خودکار آن امن نیست</h2>';
 		echo '<p class="cpdd-hero-lead">' . esc_html( (string) $assessment['reason'] ) . '</p>';
-		echo '<p>دلیل سخت‌گیری: ادامهٔ خودکار فقط وقتی مجاز است که همهٔ ردیف‌های ساختگی پیش از مهر ساخته شده باشند. در غیر این صورت ادامه می‌تواند ردیف تکراری بسازد یا ردیفی را به دمو نسبت دهد که مالکیتش اثبات نشده است.</p>';
-		echo '<p>مسیر درست، پاک‌سازی مجاز همان دموی ناتمام و سپس ساخت دوباره از همین صفحه است. پاک‌سازی فقط ردیف‌های اثبات‌شدهٔ همین دمو را برمی‌دارد؛ کاربران، نوشته‌ها، دیدگاه‌ها و داده‌های بالینی/مالی قبلی سایت دست‌نخورده می‌مانند و تاریخچهٔ حسابرسی هرگز حذف نمی‌شود.</p>';
-		echo '<p><a class="button" href="' . esc_url( admin_url( 'tools.php?page=' . ScopedAdmin::PAGE ) ) . '" data-cpms-demo-console-hero="1">رفتن به صفحهٔ پاک‌سازی و ابزارهای پیشرفته</a></p>';
+		echo '<p>دلیل سخت‌گیری: تکمیل خودکار فقط وقتی مجاز است که همهٔ ردیف‌های ساختگی تا آخرین مرحله ساخته شده باشند. در غیر این صورت تکمیل می‌تواند ردیف تکراری بسازد یا ردیفی را به دمو نسبت دهد که مالکیتش اثبات نشده است.</p>';
+		echo '<p><strong>دو راه امن دارید و هر دو بدون SQL، بدون حذف کاربر و بدون غیرفعال‌کردن افزونه‌ای انجام می‌شوند:</strong></p>';
+		echo '<ol>';
+		echo '<li><strong>دموی قبلی را نگه دارید و یک دموی تازه بسازید.</strong> سند مهرشدهٔ دموی قبلی و دفتر مالکیت آن، همراه با همهٔ شناسه‌ها، در یک بایگانی مهرشده کنار گذاشته می‌شود تا بعداً به‌صورت انسانی بررسی شود. هیچ کاربر، بیمار، نوبت یا ردیف مالی حذف یا تغییر داده نمی‌شود و هیچ ردیفی به دموی تازه نسبت داده نمی‌شود. سپس یک دموی کاملاً تازه با شناسهٔ تصادفی جدید ساخته می‌شود و هشت درگاه آن آماده است.</li>';
+		echo '<li><strong>یا نخست دموی ناتمام را پاک‌سازی کنید.</strong> این کار فقط وقتی موفق می‌شود که همهٔ ردیف‌های آن با مدرک مهرشده اثبات‌شدنی باشند؛ در غیر این صورت خودش امتناع می‌کند و چیزی حذف نمی‌کند.</li>';
+		echo '</ol>';
+		self::render_form(
+			$request,
+			ScopedRequest::ACTION_FRESH_DEMO,
+			'نگه‌داشتن دموی قبلی و ساخت دموی تازه',
+			'دموی قبلی با همهٔ شواهدش بایگانی می‌شود و حذف نمی‌شود؛ سپس یک دموی تازه و جدا ساخته می‌شود. رمز هشت نقش در همین پاسخ نمایش داده می‌شود.'
+		);
+		echo '<p><a class="button" href="' . esc_url( admin_url( 'tools.php?page=' . ScopedAdmin::PAGE ) ) . '" data-cpms-demo-console-hero="1">پاک‌سازی مجاز و ابزارهای پیشرفته</a></p>';
+		echo '<p class="description">شناسهٔ دمو: <code dir="ltr">' . esc_html( (string) ( $loaded['fixture_id'] ?? '' ) ) . '</code></p>';
+		echo '</div>';
+		self::render_evidence( $assessment );
+	}
+
+	/**
+	 * The fixture is provably ours and complete, but its sealed baseline is gone.
+	 *
+	 * This is the Owner incident's state. The page must say three things plainly:
+	 * the demo can be used right now, no row is created or deleted by saying so,
+	 * and the CLEANUP direction stays blocked until a baseline exists - which is
+	 * a fact the operator needs, not a reason to withhold the portals.
+	 *
+	 * @param ScopedRequest       $request    Request gates.
+	 * @param array<string,mixed> $manifest   Verified manifest.
+	 * @param array<string,mixed> $assessment Recovery assessment.
+	 * @return void
+	 */
+	private static function render_usable( ScopedRequest $request, array $manifest, array $assessment ): void {
+		$activated = array() !== (array) ( $manifest['activation'] ?? array() );
+		echo '<div class="cpdd-card cpdd-hero" data-cpms-demo-state="usable" data-cpms-demo-activated="' . ( $activated ? '1' : '0' ) . '">';
+		echo '<h2>' . ( $activated ? 'دمو فعال است و هشت درگاه آماده‌اند' : 'یک کار باقی مانده: آماده‌سازی و ورود به هشت درگاه' ) . '</h2>';
+		echo '<p class="cpdd-hero-lead">' . esc_html( (string) $assessment['reason'] ) . '</p>';
+		echo '<p>این دکمه هیچ ردیفی نمی‌سازد و هیچ ردیفی را حذف نمی‌کند: مالکیت را با همان سند مهرشده تأیید می‌کند، دمو را فعال می‌کند و رمز تازهٔ هشت نقش را یک‌بار نشان می‌دهد. هشت درگاه واقعی محصول پایین همین صفحه‌اند.</p>';
+		self::render_form(
+			$request,
+			ScopedRequest::ACTION_LAUNCH,
+			'آماده‌سازی و ورود به هشت درگاه',
+			'فعال‌سازی افزودنی است: هیچ کاربر، بیمار، نوبت یا ردیف مالی ساخته یا حذف نمی‌شود. رمز هشت نقش فقط در همین پاسخ نمایش داده می‌شود.'
+		);
+		echo '<p class="cpdd-warn" data-cpms-demo-teardown-blocked="BASELINE_MISSING">پاک‌سازی خودکار این دمو تا زمانی که «پایهٔ مرجع پیش از ساخت» آن بازگردانده نشود مسدود می‌ماند؛ این محدودیت عمدی است و برای دیدن و استفاده از درگاه‌ها لازم نیست. اگر می‌خواهید بدون انتظار به یک دموی تازه برسید، از دکمهٔ زیر استفاده کنید: دموی قبلی با همهٔ شواهد مهرشده‌اش بایگانی می‌شود و هیچ ردیفی از آن حذف نمی‌شود.</p>';
+		self::render_form(
+			$request,
+			ScopedRequest::ACTION_FRESH_DEMO,
+			'نگه‌داشتن دموی قبلی و ساخت دموی تازه',
+			'دموی فعلی با سند مهرشده و دفتر مالکیتش بایگانی می‌شود، هیچ کاربر/بیمار/نوبت/ردیف مالی حذف یا تغییر نمی‌کند و هیچ ردیفی به دموی تازه نسبت داده نمی‌شود. سپس یک دموی تازه و کاملاً جدا ساخته می‌شود.'
+		);
 		echo '<p class="description">شناسهٔ دمو: <code dir="ltr">' . esc_html( (string) ( $manifest['fixture_id'] ?? '' ) ) . '</code></p>';
 		echo '</div>';
+
+		if ( $activated ) {
+			// Already activated: the portals and a fresh password set are the only
+			// remaining needs, exactly as on the fully sealed page.
+			self::render_form(
+				$request,
+				ScopedRequest::ACTION_ROTATE,
+				'دریافت رمز تازه برای هشت نقش',
+				'رمزها ذخیره نمی‌شوند؛ این دکمه رمز تازه می‌سازد و نشست‌های قبلی همین نقش‌های نمایشی را باطل می‌کند. هیچ داده‌ای پاک نمی‌شود.'
+			);
+			echo '<div id="cpms-demo-portals" data-cpms-demo-portals="1">';
+			$matrix = ( new ScopedPreview( self::env(), self::platform() ) )->matrix( get_current_user_id(), $manifest );
+			ScopedAdmin::render_persona_launcher( $request, $manifest, $matrix );
+			ScopedAdmin::render_persona_access( $manifest );
+			echo '</div>';
+		}
 		self::render_evidence( $assessment );
 	}
 

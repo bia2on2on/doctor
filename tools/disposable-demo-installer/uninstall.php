@@ -33,6 +33,10 @@ $cpms_demo_scoped_baseline = get_option( 'cpsd_baseline_pending', null );
 // survive uninstall exactly like the manifest and the pending baseline.
 $cpms_demo_scoped_ledger   = get_option( 'cpsd_ownership_ledger', null );
 $cpms_demo_scoped_seal     = get_option( 'cpsd_ownership_seal', null );
+// The sealed archive of parked fixtures is the only remaining proof of what an
+// abandoned run created. It is never discarded by an uninstall: losing it would
+// turn that fixture into rows nobody can attribute.
+$cpms_demo_scoped_preserved = get_option( 'cpsd_preserved', null );
 $cpms_demo_users           = function_exists( 'get_users' )
 	? get_users(
 		array(
@@ -73,6 +77,7 @@ if ( ( null !== $cpms_demo_manifest && false !== $cpms_demo_manifest )
 	|| ( null !== $cpms_demo_scoped_baseline && false !== $cpms_demo_scoped_baseline )
 	|| ( null !== $cpms_demo_scoped_ledger && false !== $cpms_demo_scoped_ledger )
 	|| ( null !== $cpms_demo_scoped_seal && false !== $cpms_demo_scoped_seal )
+	|| ( null !== $cpms_demo_scoped_preserved && false !== $cpms_demo_scoped_preserved )
 	|| ! empty( $cpms_demo_users )
 	|| ! empty( $cpms_demo_scoped_users )
 ) {
@@ -86,6 +91,7 @@ if ( ( null !== $cpms_demo_manifest && false !== $cpms_demo_manifest )
 				'blocked_at' => gmdate( 'c' ),
 				'status'     => is_array( $cpms_demo_active_manifest ) ? (string) ( $cpms_demo_active_manifest['status'] ?? 'unknown' ) : 'untracked_or_corrupt',
 				'fixture_id' => is_array( $cpms_demo_active_manifest ) ? (string) ( $cpms_demo_active_manifest['fixture_id'] ?? '' ) : '',
+				'preserved'  => is_array( $cpms_demo_scoped_preserved ) ? count( (array) ( $cpms_demo_scoped_preserved['records'] ?? array() ) ) : 0,
 			),
 			false
 		);

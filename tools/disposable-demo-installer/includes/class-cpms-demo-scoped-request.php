@@ -44,6 +44,19 @@ class ScopedRequest extends Request {
 	// already proved resumable.
 	public const ACTION_PREPARE = 'prepare';
 	public const ACTION_RESUME  = 'resume';
+	// The ONE action an Owner needs after a failed or interrupted run: prove the
+	// fixture from sealed evidence, finish the additive part (seal or activation),
+	// rotate the eight demo passwords and render the eight real portal links. It
+	// creates and deletes no data row, and it refuses with a stable code when the
+	// evidence does not prove the fixture.
+	public const ACTION_LAUNCH = 'launch';
+	// Park an unprovable fixture (its whole sealed evidence is archived; no row is
+	// deleted, adopted or modified) and provision a fresh, isolated demo.
+	public const ACTION_FRESH_DEMO = 'fresh_demo';
+	// One-click entry into ONE sealed persona's real portal, from the administrator
+	// session. The target is resolved from the sealed manifest, never from the
+	// request beyond a persona key; the transition itself is a single-use ticket.
+	public const ACTION_PERSONA_ENTRY = 'persona_entry';
 
 	/**
 	 * Action table. An empty `phrase` means "no typed phrase is required".
@@ -76,6 +89,21 @@ class ScopedRequest extends Request {
 				'nonce'  => 'cpsd_resume',
 				'phrase' => '',
 				'label'  => 'ادامهٔ ساخت دموی ناتمام',
+			),
+			self::ACTION_LAUNCH    => array(
+				'nonce'  => 'cpsd_launch',
+				'phrase' => '',
+				'label'  => 'آماده‌سازی و ورود به هشت درگاه',
+			),
+			self::ACTION_FRESH_DEMO => array(
+				'nonce'  => 'cpsd_fresh_demo',
+				'phrase' => '',
+				'label'  => 'نگه‌داشتن دموی قبلی و ساخت دموی تازه',
+			),
+			self::ACTION_PERSONA_ENTRY => array(
+				'nonce'  => 'cpsd_persona_entry',
+				'phrase' => '',
+				'label'  => 'ورود به درگاه یک نقش نمایشی',
 			),
 			self::ACTION_OTP       => array(
 				'nonce'  => 'cpsd_otp',

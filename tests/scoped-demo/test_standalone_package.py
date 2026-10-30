@@ -22,10 +22,12 @@ not a static source check.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -450,6 +452,121 @@ class PackageContents(unittest.TestCase):
         self.assertEqual(int(measured.group(1)), self.zip_path.stat().st_size)
         # A standalone package carries the real application; it is not a stub.
         self.assertGreater(int(measured.group(1)), 500_000)
+
+
+class ProductionToDemoSynchronization(unittest.TestCase):
+    """Requirement: the demo always carries the production core of this revision.
+
+    The demo is the Owner's evaluation environment for CPMS Classic V1, so the
+    production plugin must remain the single source of truth: no duplicated
+    implementation, no hand-copied files, and a build that fails when the embedded
+    core is stale or inconsistent with the tree it claims to embed.
+
+    These tests execute the real verifier (`verify_embedded_core.py`) against the
+    real standalone archive, and then run it against deliberately damaged copies
+    of that same archive. The control matters as much as the pass: a verifier that
+    cannot fail would certify nothing.
+    """
+
+    VERIFIER = ROOT / "tests" / "scoped-demo" / "verify_embedded_core.py"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not shutil.which("zip") or not shutil.which("unzip"):
+            raise unittest.SkipTest("zip/unzip not available")
+        cls.out = Path(tempfile.mkdtemp(prefix="cpsd-sync-"))
+        build = subprocess.run(
+            ["bash", str(BUILD), "--standalone"],
+            cwd=str(ROOT), env={**os.environ, "OUT_DIR": str(cls.out)},
+            capture_output=True, text=True, check=False,
+        )
+        if build.returncode != 0:
+            raise unittest.SkipTest("the standalone build failed; PackageContents reports why")
+        cls.zip_path = cls.out / "cpms-disposable-demo-1.0.0.zip"
+
+    def _verify(self, zip_path: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, str(self.VERIFIER), "--zip", str(zip_path)],
+            cwd=str(ROOT), capture_output=True, text=True, check=False,
+        )
+
+    def _rewrite(self, mutate) -> Path:
+        target = Path(tempfile.mkdtemp(prefix="cpsd-sync-tamper-")) / "demo.zip"
+        with zipfile.ZipFile(self.zip_path) as source, zipfile.ZipFile(target, "w") as destination:
+            entries = {name: source.read(name) for name in source.namelist()}
+            for name, data in mutate(entries).items():
+                destination.writestr(name, data)
+        return target
+
+    def test_the_embedded_core_equals_the_production_tree_byte_for_byte(self) -> None:
+        result = self._verify(self.zip_path)
+        self.assertEqual(0, result.returncode, result.stdout[-2000:] + result.stderr[-2000:])
+        summary = json.loads(result.stdout.split("EMBEDDED_CORE_SYNC=", 1)[1].splitlines()[0])
+        self.assertTrue(summary["ok"])
+        self.assertEqual([], summary["missing"])
+        self.assertEqual([], summary["extra"])
+        self.assertEqual([], summary["different"])
+        self.assertEqual([], summary["leaked_production_paths"])
+        self.assertEqual(summary["source_core_digest"], summary["embedded_core_digest"])
+        # A core of a handful of files would prove nothing about "the production
+        # product"; the real tree is hundreds of files.
+        self.assertGreater(summary["files_expected"], 250)
+
+    def test_a_missing_production_file_fails_the_check(self) -> None:
+        damaged = self._rewrite(
+            lambda entries: {
+                name: data for name, data in entries.items()
+                if name != "cpms-disposable-demo/core/src/Bootstrap/App.php"
+            }
+        )
+        result = self._verify(damaged)
+        self.assertEqual(1, result.returncode, result.stdout[-1000:])
+        self.assertIn("EMBEDDED_CORE_STALE", result.stderr)
+        self.assertIn("missing", result.stderr)
+
+    def test_an_edited_embedded_file_fails_the_check(self) -> None:
+        key = "cpms-disposable-demo/core/src/Bootstrap/App.php"
+        damaged = self._rewrite(lambda entries: {**entries, key: entries[key] + b"\n// demo-only change\n"})
+        result = self._verify(damaged)
+        self.assertEqual(1, result.returncode, result.stdout[-1000:])
+        self.assertIn("EMBEDDED_CORE_STALE", result.stderr)
+        self.assertIn("differing", result.stderr)
+
+    def test_a_non_production_file_inside_the_core_fails_the_check(self) -> None:
+        damaged = self._rewrite(
+            lambda entries: {**entries, "cpms-disposable-demo/core/src/DemoOnly.php": b"<?php // not production\n"}
+        )
+        result = self._verify(damaged)
+        self.assertEqual(1, result.returncode, result.stdout[-1000:])
+        self.assertIn("EMBEDDED_CORE_STALE", result.stderr)
+        self.assertIn("extra", result.stderr)
+
+    def test_an_embedded_core_that_lost_its_header_neutralization_fails_the_check(self) -> None:
+        key = "cpms-disposable-demo/core/clinic-practice-management.php"
+        damaged = self._rewrite(
+            lambda entries: {
+                **entries,
+                key: entries[key].replace(b"CPMS Embedded Core:", b"Plugin Name:", 1),
+            }
+        )
+        result = self._verify(damaged)
+        self.assertEqual(1, result.returncode, result.stdout[-1000:])
+        self.assertIn("EMBEDDED_CORE_STALE", result.stderr)
+
+    def test_the_demo_never_duplicates_the_production_tree_in_the_repository(self) -> None:
+        # The single source of truth is clinic-practice-management/. A copy inside
+        # the companion would be a fork that silently rots, regardless of CI.
+        self.assertFalse((COMPANION / "core").exists(), "the companion must not carry a core/ copy")
+        self.assertFalse((COMPANION / "src").exists(), "the companion must not carry production src/")
+        tracked = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "tools/disposable-demo-installer/core"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        self.assertEqual("", tracked)
+        # And the only place production files enter the package is the build.
+        build = read(BUILD)
+        self.assertIn('cp -R "$PRODUCTION_SRC/src"', build)
+        self.assertNotIn("cp -R clinic-practice-management", read(ROOT / "tools" / "disposable-demo-installer" / "cpms-disposable-demo.php"))
 
 
 class OwnerUsabilityContracts(unittest.TestCase):

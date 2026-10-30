@@ -192,6 +192,28 @@ class ScopedAdmin {
 					self::$otp    = $otp_helper->issue( $loaded );
 					self::$notice = array( 'type' => 'success', 'text' => 'کد OTP نمایشی فقط در همین پاسخ نشان داده میشود.' );
 					break;
+				case ScopedRequest::ACTION_LAUNCH:
+					// The same single action the Owner dashboard offers: prove the
+					// fixture from sealed evidence, finish only the additive part and
+					// rotate the demo passwords. No data row is created or deleted.
+					$launch            = $provisioner->launch( $admin_id );
+					self::$credentials = (array) $launch['credentials'];
+					self::$notice      = array(
+						'type' => 'success',
+						'text' => 'دمو آماده شد و رمز تازهٔ هشت نقش فقط در همین پاسخ نمایش داده می‌شود. هیچ ردیفی ساخته یا حذف نشد.',
+					);
+					break;
+				case ScopedRequest::ACTION_FRESH_DEMO:
+					// Park the old fixture (its whole sealed evidence is archived and
+					// only live pointers are dropped; no row is touched) and provision
+					// a fresh, isolated demo with its own namespace.
+					$fresh             = $provisioner->preserve_and_reprovision( $admin_id );
+					self::$credentials = (array) $fresh['credentials'];
+					self::$notice      = array(
+						'type' => 'success',
+						'text' => 'دموی قبلی با همهٔ شواهد مهرشده‌اش بایگانی شد و هیچ ردیفی از آن حذف نشد؛ دموی تازه ساخته شد.',
+					);
+					break;
 				case ScopedRequest::ACTION_DIAGNOSE:
 					$loaded = $manifest->load();
 					if ( null === $loaded ) {
@@ -316,12 +338,19 @@ class ScopedAdmin {
 				if ( ScopedRecovery::VERDICT_RESUMABLE === $recovery['verdict'] ) {
 					self::render_form( $request, ScopedRequest::ACTION_RESUME, 'ادامهٔ ساخت دموی ناتمام', '', 'همهٔ ردیف‌های ساختگی ساخته شده‌اند و فقط مهر نهایی ناقص است. ادامه هیچ ردیفی نمی‌سازد و هیچ ردیفی را حذف نمی‌کند؛ فقط مالکیت را مهر و دمو را فعال می‌کند.' );
 				}
+				if ( ScopedRecovery::VERDICT_ACTIVE !== $recovery['verdict'] ) {
+					// The one obvious action, plus the park-and-reprovision path that
+					// never deletes, adopts or modifies an ambiguous row.
+					self::render_form( $request, ScopedRequest::ACTION_LAUNCH, 'آماده‌سازی و ورود به هشت درگاه', '', 'فعال‌سازی افزودنی است: هیچ ردیفی ساخته یا حذف نمی‌شود. رمز تازهٔ هشت نقش فقط در همین پاسخ نمایش داده می‌شود.' );
+					self::render_form( $request, ScopedRequest::ACTION_FRESH_DEMO, 'نگه‌داشتن دموی قبلی و ساخت دموی تازه', '', 'دموی قبلی با سند مهرشده و دفتر مالکیتش بایگانی می‌شود و حذف نمی‌شود؛ سپس یک دموی تازه و جدا ساخته می‌شود. برای این کار هیچ SQL، حذف کاربر یا غیرفعال‌کردن افزونه‌ای لازم نیست.' );
+				}
 			}
 			self::render_form( $request, ScopedRequest::ACTION_DIAGNOSE, 'پیشنمایش پاکسازی', '', 'هیچ ردیفی حذف نمیشود؛ مالکیت دقیق و اقلام حفظشده نشان داده میشود.' );
 			self::render_diagnostic();
-			self::render_form( $request, ScopedRequest::ACTION_TEARDOWN, 'پاکسازی فقط دادههای دمو', 'REMOVE_ONLY_SCOPED_DEMO_DATA', 'در صورت باقی ماندن هر ردیف بالینی یا مالی دمو، موفقیت اعلام نمیشود.' );
+			self::render_form( $request, ScopedRequest::ACTION_TEARDOWN, 'پاک‌سازی فقط داده‌های دمو', 'REMOVE_ONLY_SCOPED_DEMO_DATA', 'در صورت باقی ماندن هر ردیف بالینی یا مالی دمو، موفقیت اعلام نمی‌شود. اگر پیام BASELINE_MISSING دیدید، پاک‌سازی تا بازگردانی «پایهٔ مرجع پیش از ساخت» مسدود است؛ در آن حالت از «آماده‌سازی و ورود به هشت درگاه» (استفادهٔ افزودنی، بدون تغییر هیچ ردیفی) یا «نگه‌داشتن دموی قبلی و ساخت دموی تازه» استفاده کنید.' );
 		}
 		self::render_teardown_result();
+		self::render_preserved( $manifest );
 		if ( is_array( $tombstone ) ) {
 			self::render_tombstone( $tombstone );
 		}
@@ -791,6 +820,81 @@ class ScopedAdmin {
 	 * @param array<string,mixed> $manifest Verified manifest.
 	 * @return void
 	 */
+	/**
+	 * The Owner's primary surface: eight big buttons, one per persona.
+	 *
+	 * WHAT EACH BUTTON DOES
+	 * ---------------------
+	 * It starts a real session hand-off: a POST (nonce + site fingerprint +
+	 * `manage_options` + `install_plugins` + HTTPS) that answers with a redirect to a
+	 * single-use, five-minute ticket. The ticket opens THAT persona's own WordPress
+	 * session - its own capabilities, its own production portal - and nothing else.
+	 * The administrator's account is never given the persona's authority and the
+	 * persona is never given the administrator's.
+	 *
+	 * WHAT IT HONESTLY CANNOT DO
+	 * --------------------------
+	 * WordPress authentication is one cookie per site. Two tabs of the same browser
+	 * share it, so a persona session opened in the same browser replaces the
+	 * administrator session there. The page therefore says so, and points at the one
+	 * arrangement that really does keep both: a private window (its own cookie jar)
+	 * for the persona. No tab-level isolation is claimed anywhere, because none is
+	 * implemented.
+	 *
+	 * @param ScopedRequest       $request Request gates (nonces, phrase policy).
+	 * @param array<string,mixed> $manifest Verified sealed manifest.
+	 * @param array<string,mixed> $matrix   Read-only authority matrix (ScopedPreview).
+	 * @return void
+	 */
+	public static function render_persona_launcher( ScopedRequest $request, array $manifest, array $matrix ): void {
+		$links    = (array) ( $manifest['links'] ?? array() );
+		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
+		$portals  = self::persona_portals();
+		$personas = Credentials::personas();
+		$allowed  = array();
+		foreach ( (array) ( $matrix['personas'] ?? array() ) as $row ) {
+			$allowed[ (string) $row['persona'] ] = (array) $row['authority'];
+		}
+
+		echo '<div class="cpdd-card" id="cpsd-persona-launcher" data-cpsd-persona-launcher="1">';
+		echo '<h2>هشت درگاه واقعی — با یک کلیک، بدون رمز</h2>';
+		echo '<p>هر دکمه یک نشست واقعی برای همان نقش نمایشی می‌سازد (همان حساب ساختگی مهرشده در سند دمو) و درگاه واقعی محصول را برایتان باز می‌کند. شما با حساب مدیرکل خود وارد شده‌اید و رمزی وارد نمی‌کنید.</p>';
+		echo '<p class="cpdd-warn" data-cpsd-cookie-note="1">کوکی ورود وردپرس بین پنجره‌های <em>یک</em> مرورگر مشترک است؛ پس برای اینکه نشست مدیرکل شما هم باز بماند، پنجرهٔ تازه را در حالت <strong>ناشناس/پروفایل دیگر</strong> باز کنید. اگر همان مرورگر را ادامه دهید، نشست مدیرکل در آن مرورگر جای خود را به نشست نقش می‌دهد و با دکمهٔ «پایان نشست نمایشی» به صفحهٔ ورود برمی‌گردید. هیچ‌جا ادعای جداسازی در سطح «زبانه» نکرده‌ایم؛ جداسازی واقعی از مرورگر می‌آید، نه از این افزونه.</p>';
+		echo '<div class="cpdd-persona-grid" data-cpsd-persona-grid="1">';
+		foreach ( Credentials::PERSONA_ORDER as $persona ) {
+			$map     = (array) ( $portals[ $persona ] ?? array() );
+			$url      = (string) ( $links[ (string) ( $map['link'] ?? '' ) ] ?? '' );
+			$label    = (string) ( $personas[ $persona ]['label'] ?? $persona );
+			$chips    = array();
+			foreach ( ScopedPreview::DOMAINS as $domain => $spec ) {
+				$chips[] = '<span data-cpsd-chip="' . esc_attr( $domain ) . '" data-cpsd-allow="'
+					. ( ! empty( $allowed[ $persona ][ $domain ] ) ? '1' : '0' ) . '">'
+					. esc_html( $spec['label'] ) . ': ' . ( ! empty( $allowed[ $persona ][ $domain ] ) ? 'دارد' : 'ندارد' )
+					. '</span>';
+			}
+			echo '<div class="cpdd-persona-tile" data-cpsd-persona-tile="' . esc_attr( $persona ) . '">';
+			echo '<h3>' . esc_html( $label ) . '</h3>';
+			echo '<p>' . esc_html( (string) ( $map['portal'] ?? '' ) ) . '<br /><span class="description">' . esc_html( (string) ( $map['hint'] ?? '' ) ) . '</span></p>';
+			echo '<p class="cpdd-authority-chips">' . implode( ' ', $chips ) . '</p>'; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Each chip is escaped above.
+			echo '<form method="post" target="_blank" rel="noopener" data-cpsd-form="' . esc_attr( ScopedRequest::ACTION_PERSONA_ENTRY ) . '" data-cpsd-persona-form="' . esc_attr( $persona ) . '">';
+			echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( ScopedRequest::ACTION_PERSONA_ENTRY ) . '" />';
+			echo '<input type="hidden" name="cpdd_nonce" value="' . esc_attr( $request->nonce( ScopedRequest::ACTION_PERSONA_ENTRY ) ) . '" />';
+			echo '<input type="hidden" name="cpdd_site" value="' . esc_attr( $request->site_fingerprint_field() ) . '" />';
+			echo '<input type="hidden" name="cpsd_persona" value="' . esc_attr( $persona ) . '" />';
+			echo '<button type="submit" class="button button-primary button-hero" data-cpsd-open-persona="' . esc_attr( $persona ) . '">ورود به درگاه ' . esc_html( $label ) . '</button>';
+			echo '</form>';
+			if ( '' !== $url ) {
+				echo '<p class="description"><a href="' . esc_url( $url ) . '" target="_blank" rel="noopener" data-cpsd-readonly-preview="' . esc_attr( $persona ) . '">پیش‌نمایش فقط‌خواندنی همین درگاه با حساب مدیرکل</a> — این پیوند نشست را عوض نمی‌کند و چون حساب شما اختیار بالینی/مالی ندارد، محتوای محدودشده را نشان می‌دهد. برای کارکرد واقعی نقش، از دکمهٔ بالا استفاده کنید.</p>';
+			}
+			echo '</div>';
+		}
+		echo '</div>';
+		echo '<p class="description">شناسهٔ دمو: <code dir="ltr">' . esc_html( $fixture ) . '</code> — نام کاربری هر نقش <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمزها ذخیره نمی‌شوند؛ اگر خواستید بدون این دکمه‌ها وارد شوید، از «چرخش رمز» رمز تازه بگیرید.</p>';
+		echo '</div>';
+
+		ScopedPreview::render( $matrix );
+	}
+
 	public static function render_persona_access( array $manifest ): void {
 		$links    = (array) ( $manifest['links'] ?? array() );
 		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
@@ -860,6 +964,46 @@ class ScopedAdmin {
 		echo '<table class="widefat striped"><thead><tr><th>جدول</th><th>ردیفهای قابل حذف</th></tr></thead><tbody>';
 		foreach ( (array) ( self::$diagnostic['plan'] ?? array() ) as $row ) {
 			echo '<tr><td>' . esc_html( (string) ( $row['table'] ?? '' ) ) . '</td><td>' . (int) ( $row['rows'] ?? 0 ) . '</td></tr>';
+		}
+		echo '</tbody></table></div>';
+	}
+
+	/**
+	 * Read-only list of PARKED fixtures.
+	 *
+	 * A parked fixture is deliberately not actionable: it has no live manifest
+	 * and no live ledger, and its rows may only be resolved by a human holding
+	 * the whole sealed payload. The card exists so the operator can see that
+	 * nothing was deleted and that the evidence survives, and so a later review
+	 * knows exactly which fixture to look at.
+	 *
+	 * @param ScopedManifest $manifest Manifest store.
+	 * @return void
+	 */
+	private static function render_preserved( ScopedManifest $manifest ): void {
+		try {
+			$records = $manifest->preserved();
+		} catch ( Exception $error ) {
+			echo '<div class="cpdd-card cpdd-attention" data-cpsd-preserved="invalid"><h2>بایگانی دموهای کنارگذاشته‌شده</h2>';
+			echo '<p class="cpdd-fail">' . esc_html( $error->getMessage() ) . ' (' . esc_html( $error->demo_code() ) . ')</p>';
+			echo '<p>هیچ ردیفی حذف یا تغییر نکرد. تا بررسی انسانی، دموی تازه‌ای بر پایهٔ این بایگانی ساخته نمی‌شود.</p></div>';
+
+			return;
+		}
+		if ( array() === $records ) {
+			return;
+		}
+		echo '<div class="cpdd-card" data-cpsd-preserved="' . esc_attr( (string) count( $records ) ) . '"><h2>بایگانی دموهای کنارگذاشته‌شده (بدون حذف)</h2>';
+		echo '<p>این دموها عمداً کنار گذاشته شده‌اند و هیچ ردیفی از آن‌ها حذف، تغییر یا به دموی تازه نسبت داده نشده است. سند مهرشده و دفتر مالکیت هرکدام در همین بایگانی نگه داشته می‌شود تا بعداً به‌صورت انسانی بررسی شود.</p>';
+		echo '<table class="widefat striped"><thead><tr><th>شناسهٔ دمو</th><th>دلیل</th><th>زمان</th><th>پایهٔ مرجع در سند</th></tr></thead><tbody>';
+		foreach ( $records as $record ) {
+			$parked = (array) ( $record['manifest'] ?? array() );
+			echo '<tr data-cpsd-preserved-fixture="' . esc_attr( (string) ( $record['fixture_id'] ?? '' ) ) . '">';
+			echo '<td dir="ltr">' . esc_html( (string) ( $record['fixture_id'] ?? '' ) ) . '</td>';
+			echo '<td dir="ltr">' . esc_html( (string) ( $record['reason_code'] ?? '' ) ) . '</td>';
+			echo '<td dir="ltr">' . esc_html( (string) ( $record['preserved_at'] ?? '' ) ) . '</td>';
+			echo '<td>' . ( array() !== (array) ( $parked['baseline'] ?? array() ) ? 'دارد' : 'ندارد' ) . '</td>';
+			echo '</tr>';
 		}
 		echo '</tbody></table></div>';
 	}

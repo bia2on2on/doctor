@@ -51,6 +51,10 @@ class ScopedPhpContractTests(unittest.TestCase):
             # Recovery: the read-only verdict that decides whether an
             # interrupted provisioning run may be finished additively.
             "class-cpms-demo-scoped-recovery.php",
+            # Owner access: the read-only authority matrix (production engine) and
+            # the single-use ticket that opens ONE sealed persona's real session.
+            "class-cpms-demo-scoped-preview.php",
+            "class-cpms-demo-scoped-session.php",
         }
         actual = {p.name for p in SCOPED}
         self.assertEqual(expected, actual)
@@ -411,6 +415,285 @@ class NonEmptySiteRoutingContract(unittest.TestCase):
         self.assertTrue("for _ in range(4):" in browser, "the Plugins screen is asserted on a redirect response")
         # And it must never assert success for a page it did not reach.
         self.assertTrue('if "plugins.php" in page.url:' in browser, "the retry does not check where it landed")
+
+
+
+class OwnerIncidentRepairContract(unittest.TestCase):
+    """Static contract for the repair path added after the Owner incident.
+
+    It proves only that the shipped source keeps the two safety properties that
+    the runtime drills in `tests/scoped-recovery.php` exercise against a real
+    database: a failed run never discards durable evidence, and the additive
+    repair never fabricates a seal.
+    """
+
+    # -- The Owner incident: a failed run must never destroy its own evidence --
+
+    def test_failure_record_merges_durable_evidence_instead_of_overwriting_it(self) -> None:
+        """The stale-snapshot overwrite is the defect; it must stay fixed.
+
+        `Provisioner::do_provision()` catches after `after_provision()` has
+        already written the sealed payload on disk. Saving the failing stage's
+        local `$manifest` over that record is what erased the sealed baseline and
+        the ownership map of a real install while its eight synthetic accounts
+        stayed alive.
+        """
+        provisioner = read(COMPANION / "includes" / "class-cpms-demo-provisioner.php")
+        self.assertIn("$this->record_failure( $manifest, $stage, $error );", provisioner)
+        self.assertNotIn("$this->manifest->save( $manifest );\n\t\t\tif ( $error instanceof", provisioner)
+        self.assertIn("protected function record_failure(", provisioner)
+        self.assertIn("protected function preserve_evidence(", provisioner)
+        merge = provisioner.split("protected function preserve_evidence(", 1)[1]
+        for evidence in ("'baseline'", "'owned'", "'audit_chain_at_seal'", "'host_before'"):
+            self.assertIn(evidence, merge, evidence)
+        # The handler must re-read the durable record, not write over it blind.
+        handler = provisioner.split("protected function record_failure(", 1)[1]
+        self.assertIn("$this->manifest->load()", handler)
+        # A record that fails verification is evidence of a tamper: it must not
+        # be replaced by a failure record.
+        self.assertIn("return;", handler)
+
+    def test_pending_baseline_is_dropped_only_after_the_portal_policy(self) -> None:
+        """Two writers of the same evidence must be ordered by durability.
+
+        `enforce_portal_clinic_policy()` is the call that can throw after the
+        seal is durable. Dropping the pending copy before it would leave that
+        failure with no baseline anywhere.
+        """
+        provisioner = read(COMPANION / "includes" / "class-cpms-demo-scoped-provisioner.php")
+        body = provisioner.split("private function seal_fixture(", 1)[1]
+        body = body.split("private function enforce_portal_clinic_policy(", 1)[0]
+        policy = body.find("$this->enforce_portal_clinic_policy( $manifest );")
+        clear = body.find("$this->scoped_manifest->clear_pending_baseline();")
+        self.assertNotEqual(-1, policy)
+        self.assertNotEqual(-1, clear)
+        self.assertLess(policy, clear)
+        # And the seal must be read back before the pending copy is dropped.
+        self.assertLess(body.find("$this->scoped_manifest->save( $manifest );"), policy)
+        self.assertIn("$reloaded = $this->scoped_manifest->load();", body)
+
+    def test_parked_fixture_archive_is_sealed_and_never_deleted(self) -> None:
+        """Parking is not deletion: the archive is the only surviving evidence."""
+        manifest = read(COMPANION / "includes" / "class-cpms-demo-scoped-manifest.php")
+        self.assertIn("public const PRESERVED_OPTION = 'cpsd_preserved';", manifest)
+        preserve = manifest.split("public function preserve(", 1)[1]
+        self.assertIn("MANIFEST_TAMPERED", preserve)
+        self.assertIn("persist_verified( self::PRESERVED_OPTION", preserve)
+        # The live pointers are released only after the archive write returned.
+        self.assertLess(
+            preserve.find("$this->write_preserved( $archive );"),
+            preserve.find("parent::delete();"),
+        )
+        writer = manifest.split("private function write_preserved(", 1)[1]
+        self.assertIn("persist_verified( self::PRESERVED_OPTION", writer)
+        self.assertIn("OPTION_WRITE_FAILED", writer)
+        self.assertIn("PRESERVED_INVALID", manifest)
+        uninstall = read(COMPANION / "uninstall.php")
+        self.assertIn("cpsd_preserved", uninstall)
+        self.assertNotIn("delete_option( 'cpsd_preserved' )", uninstall)
+        baseline = read(COMPANION / "includes" / "class-cpms-demo-scoped-baseline.php")
+        self.assertIn("'cpsd_preserved'", baseline)
+        teardown = read(COMPANION / "includes" / "class-cpms-demo-scoped-teardown.php")
+        self.assertNotIn("cpsd_preserved", teardown)
+
+    def test_activation_is_additive_and_never_fabricates_a_seal(self) -> None:
+        """The repaired state must stay distinguishable from a real seal.
+
+        An activation may mark the fixture active, but it may not invent the
+        ownership map, the audit-chain snapshot or the baseline: every gate that
+        requires a seal has to keep refusing.
+        """
+        provisioner = read(COMPANION / "includes" / "class-cpms-demo-scoped-provisioner.php")
+        activate = provisioner.split("public function activate(", 1)[1]
+        activate = activate.split("public function launch(", 1)[0]
+        self.assertIn("$payload['activation']", activate)
+        self.assertIn("'baseline_unavailable'", activate)
+        for fabricated in ("['owned']", "['audit_chain_at_seal']", "['baseline'] ="):
+            self.assertNotIn(fabricated + " =", activate, fabricated)
+        self.assertNotIn("create_user", activate)
+        self.assertNotIn("delete_user", activate)
+        self.assertIn("CPSD_DEMO_ACTIVATED_WITHOUT_BASELINE", activate)
+        # Activation is gated on the read-only assessment, inside its own lock.
+        self.assertIn("ScopedRecovery::VERDICT_USABLE", activate)
+        self.assertIn("with_lock(", activate)
+
+    def test_the_one_action_is_a_first_class_request_action(self) -> None:
+        """One obvious button, no typed phrase, no new authority."""
+        request = read(COMPANION / "includes" / "class-cpms-demo-scoped-request.php")
+        self.assertIn("public const ACTION_LAUNCH = 'launch';", request)
+        self.assertIn("public const ACTION_FRESH_DEMO = 'fresh_demo';", request)
+        launch = request.split("self::ACTION_LAUNCH", 1)[1].split("),", 1)[0]
+        self.assertIn("'phrase' => ''", launch)
+        for page in ("class-cpms-demo-dashboard.php", "class-cpms-demo-scoped-admin.php"):
+            source = read(COMPANION / "includes" / page)
+            self.assertIn("ScopedRequest::ACTION_LAUNCH", source, page)
+            self.assertIn("ScopedRequest::ACTION_FRESH_DEMO", source, page)
+            self.assertIn("$provisioner->launch( $admin_id )", source, page)
+            self.assertIn("$provisioner->preserve_and_reprovision( $admin_id )", source, page)
+
+    # -- Passwordless persona entry: a session hand-off, never impersonation ----
+
+    def test_persona_entry_is_scoped_to_the_sealed_fixture(self) -> None:
+        """The target comes from the sealed manifest, never from a name pattern."""
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        self.assertIn("$users[ $persona ] ?? 0", session)
+        self.assertIn("'cpsd-' . $persona . '-' . $fixture", session)
+        self.assertIn("in_array( $persona, Credentials::PERSONA_ORDER, true )", session)
+        # A demo-looking login is never enough on its own.
+        self.assertIn("PERSONA_NOT_SEALED", session)
+        self.assertNotIn("get_user_by(", session)
+        self.assertNotIn("str_starts_with( $login, 'cpsd-' )", session)
+
+    def test_persona_entry_uses_the_wordpress_session_primitive_only(self) -> None:
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        self.assertIn("$this->env->set_auth_cookie( $target['user_id'] )", session)
+        for forbidden in (
+            "add_cap(",
+            "add_role(",
+            "set_role(",
+            "wp_set_current_user(",
+            "$_SESSION",
+            "setcookie(",
+            "wp_set_password(",
+        ):
+            self.assertNotIn(forbidden, session, forbidden)
+        env = read(COMPANION / "includes" / "class-cpms-demo-env.php")
+        # Exactly one auth-cookie writer in the whole package.
+        self.assertEqual(1, env.count("wp_set_auth_cookie("))
+        for path in SCOPED + sorted((COMPANION / "includes").glob("class-cpms-demo-*.php")):
+            if path.name == "class-cpms-demo-env.php":
+                # The single, reviewed writer of the authentication cookie.
+                continue
+            self.assertNotIn("wp_set_auth_cookie(", read(path), path.name)
+            self.assertNotIn("wp_logout(", read(path), path.name)
+
+    def test_persona_entry_ticket_is_single_use_sealed_and_short_lived(self) -> None:
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        self.assertIn("public const TTL = 300;", session)
+        # Consumed before any other check can fail, so a replay never finds it.
+        redeem = session.split("public function redeem(", 1)[1].split("public function current(", 1)[0]
+        self.assertLess(
+            redeem.find("$this->env->option_delete( self::TICKET_OPTION );"),
+            redeem.find("$this->verify( $raw )"),
+        )
+        self.assertLess(
+            redeem.find("$this->env->option_delete( self::TICKET_OPTION );"),
+            redeem.find("$this->env->set_auth_cookie("),
+        )
+        self.assertIn("hash_equals(", redeem)
+        self.assertIn("ENTRY_TOKEN_EXPIRED", redeem)
+        self.assertIn("$this->manifest->load()", redeem)
+        # The token is stored only as a digest.
+        self.assertIn("'token_hash' => hash( 'sha256', $token )", session)
+        # The redirect comes from the sealed fixture, never from the request.
+        self.assertIn("'redirect' => $target['portal']", redeem)
+        self.assertNotIn("$_GET['redirect", session)
+        self.assertNotIn("$_REQUEST", session)
+
+    def test_persona_entry_refuses_administrator_targets(self) -> None:
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        self.assertIn("$user_id === $admin_id", session)
+        self.assertIn("PERSONA_NOT_SAFE", session)
+        self.assertIn("'manage_options'", session)
+
+    def test_persona_session_boundary_is_derived_from_sealed_state(self) -> None:
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        current = session.split("public function current(", 1)[1].split("public static function reset_cache", 1)[0]
+        self.assertIn("$this->manifest->load()", current)
+        self.assertNotIn("$_COOKIE", current)
+        self.assertNotIn("$_GET", current)
+        # The visible boundary and the way back are part of the shipped surface.
+        self.assertIn("cpsd-demo-persona-session", session)
+        self.assertIn("admin_bar_menu", session)
+        self.assertIn("'cpsd_persona_exit'", session)
+
+    def test_the_dashboard_offers_eight_buttons_and_changes_no_capability(self) -> None:
+        for page in ("class-cpms-demo-dashboard.php", "class-cpms-demo-scoped-admin.php"):
+            source = read(COMPANION / "includes" / page)
+            self.assertIn("ScopedRequest::ACTION_PERSONA_ENTRY", source, page)
+            self.assertNotIn("add_cap(", source, page)
+        admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        launcher = admin.split("public static function render_persona_launcher(", 1)[1]
+        launcher = launcher.split("public static function render_persona_access(", 1)[0]
+        self.assertIn("Credentials::PERSONA_ORDER", launcher)
+        self.assertIn("data-cpsd-open-persona=", launcher)
+        self.assertIn("data-cpsd-cookie-note", launcher)
+        # The single-use secret is never rendered: the request answers with a redirect.
+        self.assertNotIn("$ticket['token']", launcher)
+        dashboard = read(COMPANION / "includes" / "class-cpms-demo-dashboard.php")
+        self.assertIn("wp_safe_redirect( $ticket['url'] );", dashboard)
+
+    def test_the_authority_matrix_asks_production_and_grants_nothing(self) -> None:
+        preview = read(COMPANION / "includes" / "class-cpms-demo-scoped-preview.php")
+        self.assertIn("$this->platform->clinical_can(", preview)
+        self.assertIn("$this->platform->production_can(", preview)
+        for forbidden in ("add_cap(", "user_can( $", "current_user_can("):
+            self.assertNotIn(forbidden, preview, forbidden)
+        platform = read(COMPANION / "includes" / "class-cpms-demo-platform.php")
+        self.assertIn("App::authorization_service()->can(", platform)
+        self.assertIn("App::organization_clinic_provisioning_service()->can(", platform)
+
+    def test_the_demo_never_forks_production_business_logic(self) -> None:
+        """The demo must consume the production product, never reimplement it.
+
+        This is the requirement "never maintain a duplicated or simulated
+        implementation of production features inside the demo", checked on the
+        shipped surface rather than trusted. The tokenizer check with a positive
+        control lives in `scoped-run-tests.php` section (h); here the question is
+        whether the demo *delegates* to the same engines production uses.
+        """
+        platform = read(COMPANION / "includes" / "class-cpms-demo-platform.php")
+        body = platform.split("function clinical_can(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("App::authorization_service()->can(", body)
+        # No local shortcut can answer *yes* before production: every early return
+        # is a refusal, and the only way to obtain `true` is the delegation itself.
+        returns = [line.strip() for line in body.splitlines() if line.strip().startswith("return ")]
+        self.assertGreaterEqual(len(returns), 1, returns)
+        self.assertIn("App::authorization_service()->can(", returns[-1], returns)
+        for early in returns[:-1]:
+            self.assertEqual("return false;", early, f"an early return may only refuse, got {early}")
+        tenant = platform.split("function production_can(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("App::organization_clinic_provisioning_service()->can(", tenant)
+        self.assertIn("return", tenant)
+        # Authority is never fabricated anywhere in the shipped demo.
+        shipped = [COMPANION / "cpms-disposable-demo.php"] + sorted((COMPANION / "includes").glob("*.php"))
+        self.assertGreater(len(shipped), 25)
+        for path in shipped:
+            source = read(path)
+            for primitive in ("add_cap(", "remove_cap(", "add_role(", "remove_role(", "WP_Roles"):
+                self.assertNotIn(primitive, source, f"{path.name} must not create authority")
+
+    def test_the_demo_capability_map_still_exists_in_the_production_source(self) -> None:
+        """A capability rename in production must fail here, not render a matrix
+        that confidently asks about a permission the product no longer has."""
+        preview = read(COMPANION / "includes" / "class-cpms-demo-scoped-preview.php")
+        demo_caps = set(re.findall(r"'(cpms_[a-z0-9_]+)'", preview))
+        self.assertEqual(
+            {"cpms_patient_read", "cpms_finance_read", "cpms_visit_read", "cpms_org_clinic_update"},
+            demo_caps,
+        )
+        production = "\n".join(
+            path.read_text(encoding="utf-8")
+            for path in sorted((ROOT / "clinic-practice-management" / "src").rglob("*.php"))
+        )
+        production_caps = set(re.findall(r"'(cpms_[a-z0-9_]+)'", production))
+        self.assertEqual(set(), demo_caps - production_caps,
+                         "the demo asks about capabilities production does not define")
+
+    def test_the_new_owner_features_use_production_services_not_copies(self) -> None:
+        """Recovery and persona navigation are new demo surfaces; they must reach
+        the product through its services and WordPress primitives, never through a
+        second implementation of clinical, financial or tenant logic."""
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        # No SQL in the hand-off at all: it establishes a session, it does not
+        # re-derive permissions from tables.
+        for primitive in ("$wpdb", "get_users(", "wp_set_current_user(", "set_role("):
+            self.assertNotIn(primitive, session, primitive)
+        self.assertIn("set_auth_cookie(", session)
+        console = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        self.assertIn("ScopedRequest::ACTION_PERSONA_ENTRY", console)
+        self.assertNotIn("current_user_can( 'cpms_", console)
+
 
 
 if __name__ == "__main__":

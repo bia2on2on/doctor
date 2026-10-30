@@ -145,12 +145,24 @@ jobs:
           PY
           cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
 
+      - name: The shipped artifact embeds the production core of THIS revision
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/verify_embedded_core.py \
+            --zip /tmp/cpms-disposable-demo-1.0.0.zip \
+            --json /tmp/cpsa-sync-proof.json
+          python3 tests/scoped-demo/verify_embedded_core.py \
+            --zip /tmp/cpsa-2/cpms-disposable-demo-1.0.0.zip \
+            --json /tmp/cpsa-sync-proof-repro.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: cpms-disposable-demo-standalone
           path: |
             /tmp/cpms-disposable-demo-1.0.0.zip
             /tmp/cpsa-installer-proof.json
+            /tmp/cpsa-sync-proof.json
+            /tmp/cpsa-sync-proof-repro.json
             /tmp/cpsa-build.log
           if-no-files-found: error
           retention-days: 30

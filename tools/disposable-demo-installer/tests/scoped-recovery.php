@@ -1408,6 +1408,188 @@ try {
 		'early_resume'    => $early_finish_code,
 	);
 
+	// ---------------------- R11 the Owner incident: baseline lost, portals live
+	//
+	// The state below is the one a real populated install reported: manifest
+	// `failed`, eight `cpsd-…` accounts and every synthetic row alive, teardown
+	// refusing BASELINE_MISSING, preflight refusing a second fixture, and no
+	// action anywhere that could reach the eight portals.
+	//
+	// It is reproduced here the way the OLD failure handler produced it - by
+	// writing the failing stage's pre-seal snapshot over the sealed record and
+	// dropping the pending copy - because that is the defect this work fixes.
+	// The drill is explicit about being a reproduction of the defect, not a
+	// claim about the exact exception the Owner's run hit.
+	$manifest->enable_mode( $admin_id );
+	$env->set_fault_injector( null );
+	$services['provisioner']->provision( $admin_id );
+	$sealed_round = $manifest->load();
+	cpsd_rec_check(
+		is_array( $sealed_round ) && 'active' === (string) $sealed_round['status'] && array() !== (array) ( $sealed_round['baseline'] ?? array() ),
+		'R11 a sealed fixture exists before the incident is reproduced',
+		$checks
+	);
+	$incident_fixture = (string) $sealed_round['fixture_id'];
+	$incident_rows    = cpsd_rec_fixture_row_counts( $platform, $sealed_round );
+	$incident_users   = cpsd_rec_synthetic_users( $env );
+	cpsd_rec_check( 8 === $incident_users, 'R11 the fixture has exactly eight synthetic accounts', $checks );
+
+	// The stale snapshot the old handler saved: identity kept, seal evidence gone,
+	// status flagged failed at the seal stage.
+	$stale                 = $sealed_round;
+	$stale['status']       = 'failed';
+	$stale['failed_stage'] = 'seal';
+	$stale['failure_code'] = 'PORTAL_POLICY';
+	unset( $stale['baseline'], $stale['host_before'], $stale['owned'], $stale['audit_chain_at_seal'], $stale['sealed_at'] );
+	$manifest->save( $stale );
+	$manifest->clear_pending_baseline();
+
+	$incident = $manifest->load();
+	cpsd_rec_check( is_array( $incident ) && 'failed' === (string) $incident['status'], 'R11 the incident manifest reads failed', $checks );
+	cpsd_rec_check( array() === (array) ( $incident['baseline'] ?? array() ), 'R11 the sealed baseline is gone', $checks );
+	cpsd_rec_check( false === $manifest->has_pending_baseline(), 'R11 no pending baseline survives either', $checks );
+
+	$incident_preview = $services['teardown']->preview( $incident );
+	cpsd_rec_check(
+		false === (bool) $incident_preview['ok'] && in_array( 'BASELINE_MISSING', (array) $incident_preview['problems'], true ),
+		'R11 the destructive direction is refused with BASELINE_MISSING: ' . implode( ' | ', (array) $incident_preview['problems'] ),
+		$checks
+	);
+	$incident_preflight = $services['preflight']->run();
+	cpsd_rec_check( in_array( 'other_manifest', (array) $incident_preflight['blocking'], true ), 'R11 the preflight refuses a second fixture while the incident fixture exists', $checks );
+	$incident_provision_code = '';
+	try {
+		$services['provisioner']->provision( $admin_id );
+	} catch ( DemoException $error ) {
+		$incident_provision_code = $error->demo_code();
+	}
+	cpsd_rec_check( 'ALREADY_PROVISIONED' === $incident_provision_code, 'R11 a second provisioning run is refused (' . $incident_provision_code . ')', $checks );
+
+	$incident_verdict = ( new ScopedRecovery( $env, $platform, $manifest ) )->assess( $incident );
+	cpsd_rec_check( ScopedRecovery::VERDICT_USABLE === (string) $incident_verdict['verdict'], 'R11 the assessment offers the additive activation (' . (string) $incident_verdict['verdict'] . ' / ' . (string) $incident_verdict['code'] . ')', $checks );
+	cpsd_rec_check( 'BASELINE_MISSING' === (string) $incident_verdict['teardown_blocked'], 'R11 the assessment keeps the destructive direction blocked', $checks );
+	cpsd_rec_check( cpsd_rec_fixture_row_counts( $platform, $incident ) === $incident_rows, 'R11 reproducing the incident added and deleted no row', $checks );
+
+	// --- the one action ------------------------------------------------------
+	$launch = $services['provisioner']->launch( $admin_id );
+	cpsd_rec_check( 'repaired' === (string) $launch['state'], 'R11 the one action repairs the fixture (' . (string) $launch['state'] . ')', $checks );
+	cpsd_rec_check( count( (array) $launch['credentials'] ) === count( CpmsDemo\Credentials::PERSONA_ORDER ), 'R11 the one action returns a fresh password for all eight personas', $checks );
+
+	$launched = $manifest->load();
+	cpsd_rec_check( is_array( $launched ) && 'active' === (string) $launched['status'], 'R11 the repaired fixture is active', $checks );
+	cpsd_rec_check( 'baseline_unavailable' === (string) ( $launched['activation']['mode'] ?? '' ), 'R11 the activation records why it was needed', $checks );
+	cpsd_rec_check( array() === (array) ( $launched['owned'] ?? array() ), 'R11 the activation fabricates no ownership map', $checks );
+	cpsd_rec_check( empty( $launched['audit_chain_at_seal'] ), 'R11 the activation fabricates no sealed audit-chain claim', $checks );
+	cpsd_rec_check( array() === (array) ( $launched['baseline'] ?? array() ), 'R11 the activation fabricates no baseline', $checks );
+	cpsd_rec_check( $manifest->verify( $launched ), 'R11 the repaired record is HMAC-sealed', $checks );
+	cpsd_rec_check( is_array( $env->option_get( 'cpsd_ownership_ledger', false ) ), 'R11 the ownership ledger is opened by the repair', $checks );
+	cpsd_rec_check( cpsd_rec_synthetic_users( $env ) === $incident_users, 'R11 the repair created no account', $checks );
+	cpsd_rec_check( cpsd_rec_fixture_row_counts( $platform, $launched ) === $incident_rows, 'R11 the repair created and deleted no data row', $checks );
+	$incident_chain = $audit_guard->verify_chain();
+	cpsd_rec_check( true === (bool) $incident_chain['ok'], 'R11 the audit chain is valid after the repair', $checks );
+
+	// The eight real portal credentials must actually work.
+	$personas_checked = 0;
+	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $persona ) {
+		$login    = 'cpsd-' . $persona . '-' . (string) $launched['fixture_id'];
+		$password = (string) ( $launch['credentials'][ $persona ] ?? '' );
+		$authed   = wp_authenticate( $login, $password );
+		if ( $authed instanceof WP_User && 0 === strpos( (string) $authed->user_login, 'cpsd-' . $persona . '-' ) ) {
+			++$personas_checked;
+		}
+	}
+	cpsd_rec_check( count( CpmsDemo\Credentials::PERSONA_ORDER ) === $personas_checked, 'R11 all eight returned credentials authenticate (' . $personas_checked . ')', $checks );
+
+	$repeat_launch = $services['provisioner']->launch( $admin_id );
+	cpsd_rec_check( 'already' === (string) $repeat_launch['state'], 'R11 a second click is idempotent (' . (string) $repeat_launch['state'] . ')', $checks );
+	cpsd_rec_check( cpsd_rec_fixture_row_counts( $platform, $manifest->load() ) === $incident_rows, 'R11 the second click created and deleted no data row', $checks );
+
+	// Teardown must still refuse: the baseline is still missing.
+	$incident_retry = $services['teardown']->preview( $manifest->load() );
+	cpsd_rec_check(
+		false === (bool) $incident_retry['ok'] && in_array( 'BASELINE_MISSING', (array) $incident_retry['problems'], true ),
+		'R11 the repaired fixture still refuses teardown with BASELINE_MISSING',
+		$checks
+	);
+
+	// --- park it and reach a fresh, isolated demo ----------------------------
+	$fresh = $services['provisioner']->preserve_and_reprovision( $admin_id );
+	cpsd_rec_check( $incident_fixture === (string) $fresh['previous_fixture'], 'R11 the parked fixture is the incident fixture', $checks );
+	cpsd_rec_check( $incident_fixture === (string) ( $fresh['preserved']['fixture_id'] ?? '' ), 'R11 the archive names the parked fixture', $checks );
+	cpsd_rec_check( '' !== (string) ( $fresh['preserved']['reason_code'] ?? '' ), 'R11 the archive records why it was parked (' . (string) ( $fresh['preserved']['reason_code'] ?? '' ) . ')', $checks );
+	$fresh_manifest = $manifest->load();
+	cpsd_rec_check( is_array( $fresh_manifest ) && 'active' === (string) $fresh_manifest['status'], 'R11 a fresh demo is active again', $checks );
+	cpsd_rec_check( (string) $fresh_manifest['fixture_id'] !== $incident_fixture, 'R11 the fresh demo has its own 128-bit namespace', $checks );
+	cpsd_rec_check( 2 * $incident_users === cpsd_rec_synthetic_users( $env ), 'R11 the eight accounts of the parked fixture were NOT deleted', $checks );
+	cpsd_rec_check( count( $manifest->preserved() ) >= 1, 'R11 the parked evidence is archived', $checks );
+	$fresh_preview = $services['teardown']->preview( $fresh_manifest );
+	cpsd_rec_check( true === (bool) $fresh_preview['ok'], 'R11 the fresh demo can be torn down cleanly: ' . implode( ' | ', (array) ( $fresh_preview['problems'] ?? array() ) ), $checks );
+	$fresh_clean = $services['teardown']->execute( $fresh_manifest, $admin_id );
+	cpsd_rec_check( true === (bool) $fresh_clean['ok'], 'R11 the fresh demo tears down cleanly', $checks );
+	cpsd_rec_check( $incident_users === cpsd_rec_synthetic_users( $env ), 'R11 only the fresh demo was removed; the parked accounts remain', $checks );
+	cpsd_rec_check( null === $manifest->load(), 'R11 no live manifest survives the fresh teardown', $checks );
+	cpsd_rec_check( count( $manifest->preserved() ) >= 1, 'R11 the archive survives the fresh teardown untouched', $checks );
+	$host_digest_r11 = cpsd_rec_host_digest( $platform, $host );
+	cpsd_rec_check( $host_digest_r11 === $host_digest_before, 'R11 every pre-existing host row is byte-identical after the incident repair', $checks );
+	$report['owner_incident'] = array(
+		'verdict'          => (string) $incident_verdict['verdict'],
+		'teardown_blocked' => (string) $incident_verdict['teardown_blocked'],
+		'launch_state'     => (string) $launch['state'],
+		'repeat_state'     => (string) $repeat_launch['state'],
+		'personas_logged_in' => $personas_checked,
+		'rows'             => $incident_rows,
+		'parked_fixture'   => $incident_fixture,
+	);
+
+	// ------------- R12 a post-seal failure no longer destroys its own evidence
+	// The fixed handler must keep the sealed baseline and the ownership map when
+	// the run throws AFTER the seal is durable. This is the same fault position
+	// that produced the R11 state through the old code.
+	$manifest->enable_mode( $admin_id );
+	$env->set_fault_injector(
+		static function ( string $reached ): void {
+			if ( 'scoped_provision:after_seal_clear' === $reached ) {
+				throw new RuntimeException( 'INJECTED_FAULT:after-seal' );
+			}
+		}
+	);
+	$post_seal_interrupted = false;
+	try {
+		$services['provisioner']->provision( $admin_id );
+	} catch ( Throwable $error ) {
+		$post_seal_interrupted = true;
+	}
+	$env->set_fault_injector( null );
+	cpsd_rec_check( $post_seal_interrupted, 'R12 the run was interrupted after the seal became durable', $checks );
+
+	$post_seal = $manifest->load();
+	cpsd_rec_check( is_array( $post_seal ) && 'failed' === (string) ( $post_seal['status'] ?? '' ), 'R12 the interruption is still recorded as failed', $checks );
+	cpsd_rec_check( array() !== (array) ( $post_seal['baseline'] ?? array() ), 'R12 the sealed baseline SURVIVES the failure record (the defect is fixed)', $checks );
+	cpsd_rec_check( array() !== (array) ( $post_seal['owned'] ?? array() ), 'R12 the ownership map SURVIVES the failure record', $checks );
+	cpsd_rec_check( '' !== (string) ( $post_seal['failure_code'] ?? '' ), 'R12 the failure names its code (' . (string) ( $post_seal['failure_code'] ?? '' ) . ')', $checks );
+	$post_seal_users = cpsd_rec_synthetic_users( $env );
+	$post_seal_verdict = ( new ScopedRecovery( $env, $platform, $manifest ) )->assess( $post_seal );
+	cpsd_rec_check(
+		in_array( (string) $post_seal_verdict['verdict'], array( ScopedRecovery::VERDICT_RESUMABLE, ScopedRecovery::VERDICT_ACTIVE ), true ),
+		'R12 the assessment can still finish it (' . (string) $post_seal_verdict['verdict'] . ')',
+		$checks
+	);
+	$post_seal_launch = $services['provisioner']->launch( $admin_id );
+	cpsd_rec_check( in_array( (string) $post_seal_launch['state'], array( 'resumed', 'already' ), true ), 'R12 the one action finishes the interrupted fixture (' . (string) $post_seal_launch['state'] . ')', $checks );
+	$post_seal_done = $manifest->load();
+	cpsd_rec_check( is_array( $post_seal_done ) && 'active' === (string) $post_seal_done['status'], 'R12 the finished fixture is active', $checks );
+	cpsd_rec_check( $post_seal_users === cpsd_rec_synthetic_users( $env ), 'R12 finishing it created no account', $checks );
+	$post_seal_preview = $services['teardown']->preview( $post_seal_done );
+	cpsd_rec_check( true === (bool) $post_seal_preview['ok'], 'R12 the finished fixture can be torn down cleanly: ' . implode( ' | ', (array) ( $post_seal_preview['problems'] ?? array() ) ), $checks );
+	$post_seal_clean = $services['teardown']->execute( $post_seal_done, $admin_id );
+	cpsd_rec_check( true === (bool) $post_seal_clean['ok'], 'R12 it tears down cleanly', $checks );
+	cpsd_rec_check( null === $manifest->load(), 'R12 no live manifest survives the teardown', $checks );
+	$report['post_seal_failure_preserves_evidence'] = array(
+		'verdict'      => (string) $post_seal_verdict['verdict'],
+		'launch_state' => (string) $post_seal_launch['state'],
+		'baseline_kept' => array() !== (array) ( $post_seal['baseline'] ?? array() ),
+	);
+
 	// ------------------------------------------------------ final host invariant
 	// Every drill above (provisioning, four tamper vectors, three teardowns,
 	// four interrupted provisions, three interrupted teardowns, concurrency,

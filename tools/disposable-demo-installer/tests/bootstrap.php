@@ -129,6 +129,34 @@ function wp_nonce_field( string $action, string $name = '_wpnonce', bool $refere
 	return $html;
 }
 
+function wp_nonce_url( string $url, string $action = '' ): string {
+	return $url . ( false === strpos( $url, '?' ) ? '?' : '&' ) . '_wpnonce=' . rawurlencode( wp_create_nonce( $action ) );
+}
+
+function wp_login_url( string $redirect = '' ): string {
+	return 'https://demo.test/wp-login.php' . ( '' === $redirect ? '' : '?redirect_to=' . rawurlencode( $redirect ) );
+}
+
+function wp_kses_post( string $value ): string {
+	return $value;
+}
+
+function sanitize_text_field( string $value ): string {
+	return trim( preg_replace( '/[\r\n\t]+/', ' ', strip_tags( $value ) ) );
+}
+
+	/**
+	 * Record a redirect instead of emitting a header (no request ends in the harness).
+	 *
+	 * @param string $location Target.
+	 * @return bool
+	 */
+function wp_safe_redirect( string $location = '' ): bool {
+	$GLOBALS['cpdd_test_redirects'][] = $location;
+
+	return true;
+}
+
 function wp_die( string $message = '' ): void {
 	throw new RuntimeException( 'wp_die: ' . $message );
 }
@@ -320,6 +348,10 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	public array $users         = array();
 	public array $posts         = array();
 	public array $passwords     = array();
+	/** Auth-cookie transitions requested through Env::set_auth_cookie(). */
+	public array $auth_cookie_calls = array();
+	/** Number of Env::logout() calls. */
+	public int $logout_calls = 0;
 	public array $sessions      = array();
 	public array $caps          = array();
 	public array $plugin_list   = array( 'clinic-practice-management/clinic-practice-management.php', 'cpms-disposable-demo/cpms-disposable-demo.php' );
@@ -429,6 +461,25 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 
 	public function set_user_password( int $user_id, string $password ): void {
 		$this->passwords[ $user_id ] = $password;
+	}
+
+	/**
+	 * Record the session transition instead of writing a real cookie.
+	 *
+	 * @param int $user_id User id.
+	 * @return void
+	 */
+	public function set_auth_cookie( int $user_id ): void {
+		$this->auth_cookie_calls[] = $user_id;
+		$this->current_user        = $user_id;
+	}
+
+	/**
+	 * @return void
+	 */
+	public function logout(): void {
+		++$this->logout_calls;
+		$this->current_user = 0;
 	}
 
 	public function destroy_sessions( int $user_id ): void {
@@ -610,6 +661,10 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public bool $available_flag = true;
 	public string $schema     = '2026_10_27_0030';
 	public array $settings    = array();
+	/** Actor id => capability => allowed, for the production-engine stand-in. */
+	public array $clinical_authority = array();
+	/** Actor id => allowed, for the Organization resolver stand-in. */
+	public array $tenant_authority = array();
 	public int $fake_clinic_id = 0;
 	public string $fake_patient_mobile = '';
 	public ?string $fail_delete_on = null;
@@ -1681,6 +1736,40 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		return 'consultation_completed';
 	}
 
+	/**
+	 * Deterministic stand-in for the production Organization capability resolver.
+	 *
+	 * The fake records the question so a test can prove the preview matrix really
+	 * asks the production surface instead of reading a role name.
+	 *
+	 * @param int    $actor_id        Actor.
+	 * @param int    $organization_id Organization.
+	 * @param string $capability      Capability.
+	 * @return bool
+	 */
+	public function production_can( int $actor_id, int $organization_id, string $capability ): bool {
+		$this->calls[] = 'production_can:' . $actor_id . ':' . $organization_id . ':' . $capability;
+
+		return ! empty( $this->tenant_authority[ $actor_id ] );
+	}
+
+	/**
+	 * Deterministic stand-in for the production Clinic authorization engine.
+	 *
+	 * Empty by default - which is exactly the production invariant the preview is
+	 * built to report: holding `manage_options` grants no clinical authority.
+	 *
+	 * @param int    $actor_id   Actor.
+	 * @param int    $clinic_id  Clinic.
+	 * @param string $capability Capability.
+	 * @return bool
+	 */
+	public function clinical_can( int $actor_id, int $clinic_id, string $capability ): bool {
+		$this->calls[] = 'clinical_can:' . $actor_id . ':' . $clinic_id . ':' . $capability;
+
+		return ! empty( $this->clinical_authority[ $actor_id ][ $capability ] );
+	}
+
 	public function audit( string $action, int $actor_id, int $clinic_id, array $meta ): void {
 		$this->calls[] = 'audit:' . $action;
 		$this->tables_data['cpms_audit_logs'][] = array(
@@ -1696,6 +1785,8 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'staff'      => 'https://demo.test/cpms-staff-portal/',
 			'management' => 'https://demo.test/cpms-management-portal/',
 			'reception'  => 'https://demo.test/cpms-staff-portal/?cpms-module=reception',
+			'receptionist' => 'https://demo.test/cpms-staff-portal/?cpms-module=reception',
+			'accountant' => 'https://demo.test/cpms-staff-portal/?cpms-module=finance',
 			'finance'    => 'https://demo.test/cpms-staff-portal/?cpms-module=finance',
 			'doctor'     => 'https://demo.test/cpms-staff-portal/?cpms-module=doctor',
 			'reports'    => 'https://demo.test/cpms-staff-portal/?cpms-module=reports',

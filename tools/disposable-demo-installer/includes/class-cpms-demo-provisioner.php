@@ -505,20 +505,161 @@ class Provisioner {
 				$admin_id
 			);
 		} catch ( \Throwable $error ) {
-			$manifest['status']          = 'failed';
-			$manifest['failed_stage']    = $stage;
-			$manifest['failure_code']    = $error instanceof Exception ? $error->demo_code() : 'PROVISION_FAILED';
-			$manifest['failure_message'] = $error->getMessage();
-			try {
-				$this->manifest->save( $manifest );
-			} catch ( \Throwable $ignored ) {
-				unset( $ignored );
-			}
+			$this->record_failure( $manifest, $stage, $error );
 			if ( $error instanceof Exception ) {
 				throw $error;
 			}
 			throw new Exception( 'PROVISION_FAILED', 'ساخت دمو در مرحلهٔ «' . $stage . '» ناموفق بود: ' . $error->getMessage() );
 		}
+	}
+
+	/**
+	 * Record a failed run WITHOUT destroying the ownership evidence that is
+	 * already durable.
+	 *
+	 * WHY THIS IS NOT A THREE-LINE ASSIGNMENT
+	 * ---------------------------------------
+	 * The local `$manifest` array is a snapshot taken at the LAST successful
+	 * write of that stage. The record on disk can legitimately be *ahead* of it,
+	 * because the stages that finish the fixture (the seal) write their own
+	 * payload and only then hand control back:
+	 *
+	 *   1. `after_provision()` (scoped: `seal_fixture()`) saves a manifest that
+	 *      carries the sealed pre-provisioning `baseline`, `host_before`, the
+	 *      `owned` scope map and `audit_chain_at_seal`;
+	 *   2. only after that write reads back verified does it drop the sealed
+	 *      pending-baseline copy (the same evidence, kept twice on purpose);
+	 *   3. an exception thrown anywhere after (1) — for example by the portal
+	 *      policy read-back — is caught here.
+	 *
+	 * Saving the stale local copy over the durable record in that situation
+	 * ERASES the baseline and the ownership map while keeping the eight
+	 * synthetic accounts, which is the worst possible state: the demo exists,
+	 * but neither "finish it" nor "prove it unchanged, then remove it" can be
+	 * proven any more. That is exactly the observed Owner incident
+	 * (manifest `failed`, teardown `BASELINE_MISSING`, preflight blocked by the
+	 * incomplete demo, eight `cpsd-…` accounts alive).
+	 *
+	 * So the failure record is written from the DURABLE payload when one exists:
+	 * identity and evidence fields are kept, and only the failure metadata is
+	 * added. A manifest that does not verify is never overwritten — that would
+	 * destroy the evidence a human needs to interpret the tamper.
+	 *
+	 * @param array<string,mixed> $local Manifest snapshot of the failing stage.
+	 * @param string              $stage Stage name.
+	 * @param \Throwable          $error Failure.
+	 * @return void
+	 */
+	protected function record_failure( array $local, string $stage, \Throwable $error ): void {
+		$code    = $error instanceof Exception ? $error->demo_code() : 'PROVISION_FAILED';
+		$now     = $this->env->now_sql();
+		$failure = array(
+			'stage' => $stage,
+			'code'  => $code,
+			'at'    => $now,
+		);
+
+		$durable = null;
+		try {
+			$durable = $this->manifest->load();
+		} catch ( \Throwable $refused ) {
+			// MANIFEST_TAMPERED / MANIFEST_SITE_MISMATCH / MANIFEST_FORMAT: the
+			// record on disk is evidence, not something to overwrite. Leave it
+			// exactly as it is and let the refusal surface to the operator.
+			unset( $refused );
+
+			return;
+		}
+
+		$payload = is_array( $durable ) ? $this->preserve_evidence( $local, $durable ) : $local;
+		$payload['status']          = 'failed';
+		$payload['failed_stage']    = $stage;
+		$payload['failure_code']    = $code;
+		$payload['failure_message'] = $error->getMessage();
+		// Append-only, bounded history: a second failure must not hide the first
+		// one, and the sealed evidence a repair path needs must survive both.
+		$history   = (array) ( $payload['failure_history'] ?? array() );
+		$history[] = $failure;
+		if ( count( $history ) > 20 ) {
+			$history = array_slice( $history, -20 );
+		}
+		$payload['failure_history'] = $history;
+
+		try {
+			$this->manifest->save( $payload );
+		} catch ( \Throwable $ignored ) {
+			// A failure path never throws a second error over the original one.
+			unset( $ignored );
+		}
+	}
+
+	/**
+	 * Merge the durable record's ownership evidence into a stale local snapshot.
+	 *
+	 * Only fields that prove what the fixture owns (and what existed before it)
+	 * are taken from the durable record; the local snapshot keeps its own
+	 * progress fields because they are a superset of what was persisted for the
+	 * current stage.
+	 *
+	 * @param array<string,mixed> $local   Local snapshot.
+	 * @param array<string,mixed> $durable Verified record on disk.
+	 * @return array<string,mixed>
+	 */
+	protected function preserve_evidence( array $local, array $durable ): array {
+		// Evidence fields: the durable value wins whenever it carries something.
+		foreach ( array( 'baseline', 'host_before', 'owned', 'audit_chain_at_seal', 'sealed_at', 'shortcode', 'activation' ) as $key ) {
+			$value = $durable[ $key ] ?? null;
+			if ( null !== $value && array() !== $value && '' !== $value ) {
+				$local[ $key ] = $value;
+			}
+		}
+		// Progress fields the durable record may carry beyond the local snapshot:
+		// never shrink an id list that was already persisted.
+		if ( isset( $durable['ids'] ) && is_array( $durable['ids'] ) ) {
+			$local_ids = isset( $local['ids'] ) && is_array( $local['ids'] ) ? $local['ids'] : array();
+			foreach ( $durable['ids'] as $key => $value ) {
+				if ( ! array_key_exists( $key, $local_ids ) || array() === $local_ids[ $key ] || 0 === $local_ids[ $key ] ) {
+					$local_ids[ $key ] = $value;
+					continue;
+				}
+				if ( is_array( $value ) && is_array( $local_ids[ $key ] ) ) {
+					// Two shapes live in `ids`: ordered lists (`slot_ids`,
+					// `location_ids`) and persona maps (`user_ids`, keyed by persona,
+					// which every consumer reads by name). Re-indexing the map would
+					// destroy the persona keys, so only a list is de-duplicated and
+					// re-indexed.
+					$local_ids[ $key ] = self::is_id_list( $local_ids[ $key ] ) && self::is_id_list( $value )
+						? array_values( array_unique( array_merge( $local_ids[ $key ], $value ) ) )
+						: array_merge( $local_ids[ $key ], $value );
+				}
+			}
+			$local['ids'] = $local_ids;
+		}
+		foreach ( array( 'counts', 'links', 'slugs', 'messaging', 'pricing' ) as $key ) {
+			if ( isset( $durable[ $key ] ) && is_array( $durable[ $key ] ) ) {
+				$local[ $key ] = array_merge( (array) ( $local[ $key ] ?? array() ), $durable[ $key ] );
+			}
+		}
+
+		return $local;
+	}
+
+	/**
+	 * Whether an `ids` value is an ordered list (as opposed to a map keyed by
+	 * persona or by table name).
+	 *
+	 * `array_is_list()` is PHP 8.1+; this package supports older runtimes, so the
+	 * same property is expressed directly.
+	 *
+	 * @param array<mixed> $value Value.
+	 * @return bool
+	 */
+	protected static function is_id_list( array $value ): bool {
+		if ( array() === $value ) {
+			return true;
+		}
+
+		return array_keys( $value ) === range( 0, count( $value ) - 1 );
 	}
 
 	/**
