@@ -69,6 +69,44 @@ namespace {
 		function add_submenu_page( ...$args ) { return 'cpms_page_cpsd'; }
 	}
 
+	// The evaluation console must remain reachable for a legitimate site
+	// administrator even when the production clinical menu hides/reorders rows.
+	$GLOBALS['cpdd_test_management_pages'] = array();
+	$GLOBALS['cpdd_test_hooks']           = array();
+	CpmsDemo\ScopedAdmin::register_menu();
+	$scoped_page = $GLOBALS['cpdd_test_management_pages'][0] ?? array();
+	Cpdd_Test::ok(
+		'cpms-scoped-demo' === ( $scoped_page['menu_slug'] ?? '' )
+		&& 'manage_options' === ( $scoped_page['capability'] ?? '' )
+		&& array( CpmsDemo\ScopedAdmin::class, 'render' ) === ( $scoped_page['callback'] ?? null )
+		&& in_array( 'load-tools_page_cpms-scoped-demo', array_column( $GLOBALS['cpdd_test_hooks'], 'hook' ), true ),
+		'menu: scoped demo is a manage_options Tools page with its dispatch hook, not a clinical-menu child'
+	);
+	Cpdd_Test::ok(
+		isset( ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ] )
+		&& 'ROTATE_SCOPED_DEMO_CREDENTIALS' === ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ]['phrase'],
+		'credentials: scoped rotation has its own nonce/confirmation gate'
+	);
+
+	$rotate_env = new Cpdd_Fake_Env();
+	$rotate_env->seed_clean_site();
+	$rotate_ids = array();
+	$rotate_fixture = str_repeat( 'abcdef0123456789', 2 );
+	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $rotate_persona ) {
+		$rotate_ids[ $rotate_persona ] = $rotate_env->create_user( array(
+			'user_login' => 'cpsd-' . $rotate_persona . '-' . $rotate_fixture,
+			'user_pass'  => 'old-' . $rotate_persona,
+			'user_email' => $rotate_persona . '@demo.invalid',
+			'role'       => 'subscriber',
+		) );
+	}
+	$rotate_manifest = array( 'status' => 'active', 'fixture_id' => $rotate_fixture, 'admin_id' => 1, 'ids' => array( 'user_ids' => $rotate_ids ) );
+	$rotated = ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $rotate_manifest, 'cpsd-' );
+	Cpdd_Test::ok( 8 === count( $rotated ) && count( array_unique( $rotated ) ) === 8, 'credentials: scoped cpsd- accounts rotate to eight independent fresh passwords' );
+	Cpdd_Test::refuses( static fn () => ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $rotate_manifest, 'cpdd-' ), 'ROTATE_SCOPE', 'credentials: strict cpdd- prefix cannot rotate scoped cpsd- accounts' );
+	$short_fixture_manifest = array_replace( $rotate_manifest, array( 'fixture_id' => 'abcdef0123456789' ) );
+	Cpdd_Test::refuses( static fn () => ( new CpmsDemo\Credentials( $rotate_env ) )->rotate( $short_fixture_manifest, 'cpsd-' ), 'ROTATE_SCOPE', 'credentials: scoped rotation refuses a strict 64-bit fixture identity' );
+
 	final class Cpsd_Fake_Audit_Platform extends Cpdd_Fake_Platform {
 		public array $audit_rows = array();
 		public function table( string $short ): string { return $short; }

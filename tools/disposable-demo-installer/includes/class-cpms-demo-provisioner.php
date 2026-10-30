@@ -116,12 +116,19 @@ class Provisioner {
 	 * @throws Exception On any failed check or failed production call.
 	 */
 	public function provision( int $admin_id ): array {
-		return $this->env->with_lock(
+		$result = $this->env->with_lock(
 			'provision',
 			function () use ( $admin_id ): array {
 				return $this->do_provision( $admin_id );
 			}
 		);
+		// Non-secret completion signal, emitted AFTER the provisioning lock is
+		// released. Integrations (including CI-only credential capture) may rotate
+		// the one-time passwords here without re-entering the lock. No password,
+		// OTP, session or nonce is ever passed to observers.
+		do_action( 'cpms_demo_provisioned', $result['manifest'] );
+
+		return $result;
 	}
 
 	/**
@@ -276,7 +283,8 @@ class Provisioner {
 				$this->platform->assign_clinician_locations( $clinician_second_id, $manifest['ids']['location_ids'], $location_primary );
 
 				$stage = 'schedule';
-				$manifest['counts']['schedule_rows'] = $this->platform->create_bounded_schedule( $clinic_id, $clinician_id, $location_primary );
+				$manifest['counts']['schedule_rows'] = $this->platform->create_bounded_schedule( $clinic_id, $clinician_id, $location_primary, '09:00:00' );
+				$manifest['counts']['schedule_rows'] += $this->platform->create_bounded_schedule( $clinic_id, $clinician_second_id, $location_primary, '14:00:00' );
 
 				$stage   = 'patient';
 				$patient = $this->platform->create_patient(
@@ -302,21 +310,34 @@ class Provisioner {
 				$stage = 'slots';
 				$slots = $this->slot_plan();
 				foreach ( $slots as $slot ) {
-					$slot_id                = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $slot['date'], $slot['time'] );
+					$slot_clinician = 'doctor_second' === ( $slot['doctor'] ?? '' ) ? $clinician_second_id : $clinician_id;
+					$slot_id                = $this->platform->insert_slot( $clinic_id, $location_primary, $slot_clinician, $slot['date'], $slot['time'] );
 					$manifest['ids']['slot_ids'][] = $slot_id;
 				}
+				// The reception-arrival drill needs an appointment on the Location's
+				// operational day, while public booking must offer realistic future
+				// clinic hours. The reservation therefore follows the clock on the
+				// demo's own 20-minute grid (see staff_arrival_at()) instead of a
+				// hard-coded 09:00, which the production BookingWindow refuses for the
+				// rest of the day once 09:00 has passed — that made the demo
+				// unprovisionable for every install between 09:00 and midnight local.
+				$staff_arrival = $this->staff_arrival();
+				$local_today   = (string) $staff_arrival['date'];
+				$staff_slot_id = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $local_today, (string) $staff_arrival['time'] );
+				$manifest['ids']['slot_ids'][]      = $staff_slot_id;
+				$manifest['ids']['staff_slot_id']   = $staff_slot_id;
+				$manifest['ids']['staff_slot_date'] = $local_today;
 				$manifest = $this->manifest->save( $manifest );
 
 				$stage       = 'appointment';
-				$first       = $slots[0];
 				$appointment = $this->platform->create_staff_appointment(
 					$reception,
 					(int) $manifest['ids']['patient_id'],
 					$clinician_id,
-					$first['date'],
-					$first['time'],
+					$local_today,
+					(string) $staff_arrival['time'],
 					'SYNTHETIC-' . $fixture['fixture_id'],
-					(int) $manifest['ids']['slot_ids'][0]
+					$staff_slot_id
 				);
 				$manifest['ids']['appointment_id'] = $appointment;
 				$manifest = $this->manifest->save( $manifest );
@@ -656,72 +677,86 @@ class Provisioner {
 	}
 
 	/**
-	 * Future public-booking slots: one later-day 09:00 row reserved for the
-	 * synthetic staff appointment, one same-day public block, then the remaining
-	 * later-day rows. The plan never has fewer than six entries, so the "open
-	 * future slots for a NEW public booking" contract cannot be starved by the
-	 * wall clock, and the same-day block stays genuinely available for the public
-	 * journey instead of being consumed by the staff appointment. Deliberately
-	 * generated with the same production slot table contract.
+	 * The reserved reception-arrival instant, computed from the real clock.
 	 *
-	 * @return list<array{date:string,time:string}>
+	 * @return array{date:string,time:string}
+	 */
+	public function staff_arrival(): array {
+		return self::staff_arrival_at( new \DateTimeImmutable( 'now', new \DateTimeZone( 'Asia/Tehran' ) ) );
+	}
+
+	/**
+	 * First slot on the demo's 20-minute grid that the production BookingWindow
+	 * will still accept, expressed in the timezone of `$now`.
+	 *
+	 * The rule (pure, so it is testable at any hour):
+	 *
+	 *   1. never before the clinic's 09:00 opening;
+	 *   2. never earlier than `now + 2 minutes`, which keeps a booking that is
+	 *      created a moment later inside `minLeadHours = 0` instead of on its
+	 *      boundary;
+	 *   3. snapped UP to the next :00 / :20 / :40, never down — a floored time
+	 *      would be in the past and refused;
+	 *   4. if that instant would fall on the next calendar day (only possible
+	 *      in the last 20 minutes of the day), the arrival becomes 23:59 of the
+	 *      SAME day — the reception board only ever shows one operational day,
+	 *      so an arrival on "tomorrow" would not be visible when the drill looks
+	 *      for it. In the final minute of the day there is no future instant
+	 *      left, and the arrival becomes 09:00 of the next operational day.
+	 *
+	 * Nothing here loosens a production rule: the resulting slot is a normal
+	 * open slot that `BookingService::createByStaff()` validates like any other.
+	 *
+	 * @param \DateTimeImmutable $now Current instant in the Location timezone.
+	 * @return array{date:string,time:string}
+	 */
+	public static function staff_arrival_at( \DateTimeImmutable $now ): array {
+		$opening  = $now->setTime( 9, 0, 0 );
+		$earliest = $now->modify( '+2 minutes' );
+		$base     = $earliest > $opening ? $earliest : $opening;
+		$minute   = (int) $base->format( 'i' );
+		$step     = ( 20 - ( $minute % 20 ) ) % 20;
+		$arrival  = $base->setTime( (int) $base->format( 'H' ), $minute, 0 )->modify( '+' . $step . ' minutes' );
+		if ( $arrival->format( 'Y-m-d' ) !== $now->format( 'Y-m-d' ) ) {
+			$last_minute = $now->setTime( 23, 59, 0 );
+			$arrival     = $now < $last_minute ? $last_minute : $now->modify( '+1 day' )->setTime( 9, 0, 0 );
+		}
+
+		return array(
+			'date' => $arrival->format( 'Y-m-d' ),
+			'time' => $arrival->format( 'H:i:s' ),
+		);
+	}
+
+	/**
+	 * Deterministic, realistic Iranian clinic hours for BOTH synthetic doctors.
+	 *
+	 * Public slots are on the next two LOCAL calendar days (Asia/Tehran), never
+	 * anchored to "now + five minutes", so the Owner never sees artefacts such as
+	 * 23:47. Doctor one works mornings (09:00–09:40), doctor two afternoons
+	 * (14:00–14:40). These rows are open to the real public booking flow. The
+	 * synthetic staff-arrival appointment uses a separate reserved 09:00 slot on
+	 * the LOCAL today, so reception check-in remains provable on the board's local
+	 * day without publishing past or wall-clock-derived public times. Local dates
+	 * are carried per row and DST is handled by DateTimeImmutable in the Location
+	 * timezone, not by UTC arithmetic or browser clocks.
+	 *
+	 * @return list<array{date:string,time:string,doctor:string}>
 	 */
 	public function slot_plan(): array {
-		// The returned order is fixture ROLE order, not chronological, and that is
-		// deliberate. do_provision() books $slots[0] for the synthetic staff
-		// appointment, while the browser journey books the earliest still-available
-		// slot and then checks that appointment in on the Staff Portal reception
-		// board - which is strictly the Location's local "today"
-		// (ReceptionPortalController::board -> VisitService::today plus today's
-		// booked rows). Reserving a later-day slot for the staff appointment keeps
-		// the same-day public offer genuinely available instead of consuming it.
-		//
-		// The public block is anchored five minutes ahead on a whole-minute grid and
-		// every entry carries its OWN local date, so the block can never collapse as
-		// local midnight approaches. The previous plan anchored 45 minutes ahead and
-		// truncated DOWN to a 20-minute boundary, which silently dropped today's
-		// entries one by one (3 -> 2 -> 1 -> 0) and made this lane fail on the wall
-		// clock alone every day between ~22:55 and ~24:00 Asia/Tehran: with exactly
-		// one same-day slot the staff appointment consumed it and the browser timed
-		// out waiting for a same-day arrival row, and with none the "open future
-		// slots" bound failed. No date is hardcoded here and no production
-		// scheduling rule is bypassed - every entry is still a real strictly-future
-		// cpms_schedule_slots row with the normal 20-minute duration and capacity 1,
-		// persisted through Platform::insert_slot() and booked through the ordinary
-		// production booking service.
-		$tz  = new \DateTimeZone( 'Asia/Tehran' );
-		$now = new \DateTimeImmutable( 'now', $tz );
-
-		$upcoming = array();
+		$tz   = new \DateTimeZone( 'Asia/Tehran' );
+		$now  = new \DateTimeImmutable( 'now', $tz );
+		$plan = array();
 		for ( $day = 1; $day <= 2; $day++ ) {
+			$date = $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' );
 			foreach ( array( '09:00:00', '09:20:00', '09:40:00' ) as $time ) {
-				$upcoming[] = array(
-					'date' => $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' ),
-					'time' => $time,
-				);
+				$plan[] = array( 'date' => $date, 'time' => $time, 'doctor' => 'doctor' );
+			}
+			foreach ( array( '14:00:00', '14:20:00', '14:40:00' ) as $time ) {
+				$plan[] = array( 'date' => $date, 'time' => $time, 'doctor' => 'doctor_second' );
 			}
 		}
 
-		$anchor   = $now->modify( '+5 minutes' );
-		$anchor   = $anchor->setTime( (int) $anchor->format( 'H' ), (int) $anchor->format( 'i' ), 0 );
-		$journey  = $anchor->format( 'Y-m-d' );
-		$public   = array();
-		foreach ( array( 0, 20, 40 ) as $offset ) {
-			$slot = $anchor->modify( '+' . $offset . ' minutes' );
-			if ( $slot->format( 'Y-m-d' ) === $journey ) {
-				$public[] = array(
-					'date' => $slot->format( 'Y-m-d' ),
-					'time' => $slot->format( 'H:i:00' ),
-				);
-			}
-		}
-
-		// array_shift() cannot return null here: the loop above always fills six
-		// entries. The reserved slot is a later-day 09:00 row, so it can never
-		// collide with the anchored public block (which starts at most a few
-		// minutes ahead of "now").
-		$plan = array( array_shift( $upcoming ) );
-
-		return array_merge( $plan, $public, $upcoming );
+		return $plan;
 	}
 }

@@ -393,7 +393,7 @@ def provision_phase(browser) -> None:
     check("strict disposable mode still refuses non-empty site",
           admin.locator('[data-cpdd-preflight="fail"]').count() == 1)
 
-    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     check("scoped admin page renders", admin.locator('[data-cpsd-page="1"]').count() == 1)
 
     submit_form(admin, "enable", "I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE")
@@ -678,7 +678,7 @@ def patient_otp_journey(browser, targets: dict) -> None:
 
     # ------------------------------- sanctioned code disclosure (admin form)
     ctx_a, admin = admin_login(browser)
-    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     submit_form(admin, "otp", "SHOW_SCOPED_DEMO_OTP")
     otp_node = admin.locator("[data-cpsd-otp-code]")
     code = otp_node.inner_text().strip() if otp_node.count() else ""
@@ -813,7 +813,7 @@ def patient_otp_journey(browser, targets: dict) -> None:
 def tamper_phase(browser) -> None:
     """The scoped admin surface must refuse a manifest whose HMAC no longer holds."""
     ctx, admin = admin_login(browser)
-    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     # The whole body is used as the failure detail: when the page does not render
     # its own container, the reason (a PHP fatal, a WP error screen, a redirect)
     # is only visible in the text, and this lane's logs are not readable
@@ -1147,7 +1147,7 @@ def journeys_phase(browser) -> None:
 
     # ---------------- admin: registered additional Clinic, diagnostic, teardown
     ctx, admin = admin_login(browser)
-    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     # The ONLY way to obtain a second demo Clinic: the demo page's own form, which
     # seals the Clinic's identity into the append-only ownership ledger BEFORE the
     # row exists. The portal itself refuses the same action (see lifecycle_phase).
@@ -1160,7 +1160,7 @@ def journeys_phase(browser) -> None:
           "درمانگاه نمایشی دوم ساخته و مالکیت آن در دفتر مهرشدهٔ دمو ثبت شد" in admin.content(),
           admin.url)
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-ownership.png"))
-    admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     submit_form(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
     check("the read-only diagnostic page publishes the scoped surface",
           admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")

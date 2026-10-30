@@ -118,7 +118,7 @@ def demo_admin_phase(browser: Browser) -> dict:
         check("standalone demo admin page answers", status == 200, str(status))
         no_diagnostics(page, "standalone demo admin page", body)
 
-        status, body = visit(page, f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo")
+        status, body = visit(page, f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo")
         check("scoped demo admin page answers", status == 200, str(status))
         no_diagnostics(page, "scoped demo admin page", body)
 
@@ -169,7 +169,7 @@ def demo_admin_phase(browser: Browser) -> dict:
         )
 
         # One-time display: a fresh request must not resurrect the credentials.
-        status, body = visit(page, f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo")
+        status, body = visit(page, f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo")
         check(
             "one-time credentials card is gone on a later request",
             page.locator('[data-cpsd-secret="credentials"]').count() == 0,
@@ -179,6 +179,22 @@ def demo_admin_phase(browser: Browser) -> dict:
             "persona map survives the credentials' disappearance",
             page.locator('[data-cpsd-persona-access="1"] tr[data-cpsd-persona-portal]').count() == PERSONA_COUNT,
         )
+
+        guide = page.locator('[data-cpsd-owner-guide="1"]')
+        check("Owner booking/OTP walkthrough is rendered", guide.count() == 1)
+        guide_text = guide.inner_text() if guide.count() else ""
+        targets = load_targets()
+        expected_mobile = str(targets.get("patient_mobile") or "")
+        shown_mobile = page.locator("[data-cpsd-patient-mobile]").inner_text().strip() if page.locator("[data-cpsd-patient-mobile]").count() else ""
+        check("Owner guide names the exact synthetic patient mobile", bool(expected_mobile) and shown_mobile == expected_mobile,
+              f"shown={shown_mobile} expected={expected_mobile}")
+        check("Owner guide explains the demo SMS provider and admin OTP retrieval",
+              "log" in guide_text and "نمایش کد OTP نمایشی" in guide_text and "پیامک واقعی ارسال نمی‌شود" in guide_text)
+        check("Owner guide explains wrong-mobile recovery without unsafe deletion",
+              "تغییر شماره" in guide_text and "TEARDOWN_BLOCKED" in guide_text and "ادعای مالکیت" in guide_text and "حسابرسی" in guide_text)
+        check("credential rotation form is available without exposing a password",
+              page.locator('form[data-cpsd-form="rotate_credentials"]').count() == 1
+              and page.locator('[data-cpsd-secret="credentials"]').count() == 0)
 
         # The plugins screen is the operator's view of what is installed.
         status, body = visit(page, f"{BASE}/wp-admin/plugins.php")
@@ -192,7 +208,7 @@ def demo_admin_phase(browser: Browser) -> dict:
         # Phone viewport: the card must not overflow horizontally.
         phone = context.new_page()
         phone.set_viewport_size({"width": 390, "height": 844})
-        status, body = visit(phone, f"{BASE}/wp-admin/admin.php?page=cpms-scoped-demo")
+        status, body = visit(phone, f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo")
         overflow = phone.evaluate(
             "() => document.documentElement.scrollWidth - document.documentElement.clientWidth"
         )

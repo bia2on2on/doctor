@@ -59,47 +59,29 @@ class ScopedAdmin {
 	}
 
 	/**
-	 * Register a second page under the existing CPMS unified menu.
+	 * Register the administrator-only demo page under Tools.
+	 *
+	 * It deliberately does NOT depend on the production CPMS clinical menu.
+	 * That menu can hide/reorder its own rows and third-party coexistence
+	 * allowlists know only production slugs; coupling an evaluation console to
+	 * it made navigation fragile for legitimate administrators. Tools is a
+	 * stable WordPress location for `manage_options` and grants no clinical,
+	 * financial or audit capability.
 	 *
 	 * @return void
 	 */
 	public static function register_menu(): void {
-		$parent = self::cpms_parent_slug();
-		if ( null !== $parent ) {
-			$hook = add_submenu_page(
-				$parent,
-				'دموی محدودشده CPMS — سایت غیرخالی',
-				'دموی محدودشده CPMS',
-				self::CAP,
-				self::PAGE,
-				array( __CLASS__, 'render' )
-			);
-		} else {
-			$hook = add_management_page(
-				'دموی محدودشده CPMS — سایت غیرخالی',
-				'دموی محدودشده CPMS',
-				self::CAP,
-				self::PAGE,
-				array( __CLASS__, 'render' )
-			);
-		}
+		$hook = add_management_page(
+			'دموی محدودشده CPMS — سایت غیرخالی',
+			'دموی محدودشده CPMS',
+			self::CAP,
+			self::PAGE,
+			array( __CLASS__, 'render' )
+		);
 		if ( is_string( $hook ) ) {
 			self::$hook = $hook;
 			add_action( 'load-' . $hook, array( __CLASS__, 'dispatch' ) );
 		}
-	}
-
-	/**
-	 * @return string|null
-	 */
-	private static function cpms_parent_slug(): ?string {
-		$class = '\\ClinicCore\\Admin\\CpmsAdminMenu';
-		if ( ! class_exists( $class ) || ! is_callable( array( $class, 'parent_slug' ) ) ) {
-			return null;
-		}
-		$parent = (string) call_user_func( array( $class, 'parent_slug' ) );
-
-		return '' !== $parent ? $parent : null;
 	}
 
 	/**
@@ -155,6 +137,14 @@ class ScopedAdmin {
 					self::$provisioned = $provisioner->provision( $admin_id );
 					self::$credentials = self::$provisioned['credentials'];
 					self::$notice      = array( 'type' => 'success', 'text' => 'دمو ساخته شد. رمزها فقط در همین پاسخ نمایش داده میشوند.' );
+					break;
+				case ScopedRequest::ACTION_ROTATE:
+					$loaded = $manifest->load();
+					if ( null === $loaded || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
+						throw new Exception( 'NO_DEMO', 'دموی فعالی برای چرخش رمز وجود ندارد.' );
+					}
+					self::$credentials = $credentials->rotate( $loaded, 'cpsd-' );
+					self::$notice      = array( 'type' => 'success', 'text' => 'رمزهای نمایشی چرخیدند و نشست‌های قبلی باطل شدند؛ رمزهای تازه فقط در همین پاسخ نمایش داده می‌شوند.' );
 					break;
 				case ScopedRequest::ACTION_OTP:
 					$loaded = $manifest->load();
@@ -266,7 +256,8 @@ class ScopedAdmin {
 			self::render_ownership( $env, $manifest, $request, $loaded );
 			if ( 'active' === $status ) {
 				self::render_persona_access( $loaded );
-				self::render_form( $request, ScopedRequest::ACTION_OTP, 'ساخت کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'پس از درخواست کد از رابط واقعی بیمار، کد همان چالش زنده را نشان میدهد.' );
+				self::render_form( $request, ScopedRequest::ACTION_ROTATE, 'چرخش رمزهای نمایشی', 'ROTATE_SCOPED_DEMO_CREDENTIALS', 'رمزهای تازه فقط در همین پاسخ نشان داده می‌شوند و همه نشست‌های قبلی نقش‌های نمایشی باطل می‌شوند.' );
+				self::render_form( $request, ScopedRequest::ACTION_OTP, 'نمایش کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'ابتدا در رزرو عمومی با شماره ساختگی بالا کد بخواهید؛ سپس همین فرم کد همان چالش زنده را نشان می‌دهد. پیامک واقعی ارسال نمی‌شود.' );
 			} else {
 				echo '<div class="notice notice-warning inline"><p>وضعیت دمو ناتمام است: <code dir="ltr">' . esc_html( $status ) . '</code>. ساخت دمو تازهای مجاز نیست؛ از پیشنمایش و پاکسازی ایمن استفاده کنید.</p></div>';
 			}
@@ -586,7 +577,17 @@ class ScopedAdmin {
 			echo '</tr>';
 		}
 		echo '</tbody></table>';
-		echo '<p>نام کاربری هر نقش به شکل <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمز هر نقش فقط یک‌بار و در کارت «رمزهای یک‌بارمصرف» همان درخواستی که دمو را می‌سازد نشان داده می‌شود و ذخیره نمی‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر رمزها را از دست دادید، پس از پاک‌سازی مجاز دمو و ساخت دوبارهٔ آن رمزهای تازه صادر می‌شود.</p>';
+		echo '<p>نام کاربری هر نقش به شکل <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمز هر نقش فقط یک‌بار و در کارت «رمزهای یک‌بارمصرف» همان درخواستی که دمو را می‌سازد نشان داده می‌شود و ذخیره نمی‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر رمزها را از دست دادید، از فرم «چرخش رمزهای نمایشی» در همین صفحه رمز تازه بگیرید؛ چرخش همه نشست‌های قبلی آن نقش‌ها را باطل می‌کند و نیازی به پاک‌سازی داده ندارد.</p>';
+		$mobile = (string) ( $manifest['patient_mobile'] ?? '' );
+		echo '<div class="cpdd-card" data-cpsd-owner-guide="1"><h2>راهنمای مالک محصول: رزرو عمومی و OTP بدون دسترسی به دیتابیس</h2>';
+		echo '<ol>'
+			. '<li>پیوند «رزرو عمومی» را باز کنید، پزشک و یکی از نوبت‌های ساعت ۰۹ یا ۱۴ را انتخاب کنید و ادامه دهید.</li>'
+			. '<li>در فرم ورود، فقط شماره ساختگی <code dir="ltr" data-cpsd-patient-mobile="1">' . esc_html( $mobile ) . '</code> را وارد کنید و «دریافت کد» را بزنید.</li>'
+			. '<li>پیامک واقعی ارسال نمی‌شود: ارائه‌دهنده این درمانگاه ساختگی <code dir="ltr">log</code> است. به همین صفحه مدیریت برگردید و فرم «نمایش کد OTP نمایشی» را اجرا کنید تا کد همان چالش زنده نشان داده شود.</li>'
+			. '<li>کد را در فرم رزرو وارد و تأیید کنید، سپس نام/نام‌خانوادگی ساختگی را کامل و رزرو را نهایی کنید. کد یک‌بارمصرف است و محدودیت‌های درخواست/تلاش همان مسیر تولیدی باقی می‌مانند.</li>'
+			. '</ol>';
+		echo '<p class="cpdd-warn">شماره دیگری وارد نکنید. اگر اشتباهی شماره دیگری درخواست شد، پیش از تأیید کد با «تغییر شماره» به شماره ساختگی بالا برگردید. اگر با شماره دیگری رزرو را نهایی کردید، ردیف‌های عمومی ناشناس ممکن است مالکیت دقیق نداشته باشند؛ پاک‌سازی خودکار آن‌ها را حذف نمی‌کند و پیام TEARDOWN_BLOCKED را نشان می‌دهد. هیچ دکمه‌ای برای «ادعای مالکیت» یا حذف دستی داده ناشناس وجود ندارد؛ از پشتیبان قابل بازیابی نگه‌داری کنید و موضوع را برای بررسی انسانی ثبت کنید. تاریخچه حسابرسی هرگز حذف یا دست‌کاری نمی‌شود.</p>';
+		echo '<p><a class="button button-primary" href="' . esc_url( (string) ( $links['booking'] ?? '' ) ) . '" target="_blank" rel="noopener">بازکردن رزرو عمومی</a></p></div>';
 		$extra = array();
 		foreach ( array( 'messages' => 'پیام‌های خصوصی کارکنان', 'pricing' => 'تعرفه‌ها', 'reports' => 'گزارش‌ها' ) as $key => $label ) {
 			if ( ! empty( $links[ $key ] ) ) {

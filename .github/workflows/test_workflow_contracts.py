@@ -130,6 +130,58 @@ class WorkflowContractTests(unittest.TestCase):
         )
 
 
+class StandaloneAdminAcceptanceTests(unittest.TestCase):
+    def test_standalone_lane_uploads_the_inner_zip_through_real_wp_admin_on_both_engines(self):
+        text = workflow("standalone-demo.yml")
+        job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]
+        self.assertIn("db_image: mysql:8", job)
+        self.assertIn("db_image: mariadb:11.4.13", job)
+        self.assertIn("python3 tests/scoped-demo/browser_install.py", job)
+        self.assertIn("plugin-install.php?tab=upload", (ROOT / "tests" / "scoped-demo" / "browser_install.py").read_text())
+        self.assertIn("Plugin_Upgrader", (ROOT / "tests" / "scoped-demo" / "ci-observer.php").read_text())
+        # The acceptance install/activate must not be a WP-CLI substitution.
+        install = job.split("Real wp-admin ZIP upload and Activate Plugin", 1)[1].split("Enable and provision", 1)[0]
+        self.assertNotIn("wp plugin install /tmp/cpsa-ci/cpms-disposable-demo", install)
+        self.assertNotIn("wp plugin activate cpms-disposable-demo", install)
+        self.assertIn("wp plugin is-active cpms-disposable-demo", install)
+        # Non-empty WordPress is seeded BEFORE the admin upload.
+        self.assertLess(job.index("Seed a genuinely non-empty WordPress BEFORE"), job.index("Real wp-admin ZIP upload"))
+
+    def test_ci_observer_rotates_only_acceptance_capture_and_refreshes_plugin_cache(self):
+        observer = (ROOT / "tests" / "scoped-demo" / "ci-observer.php").read_text()
+        self.assertIn("getenv( 'CPSD_CI_CAPTURE' )", observer)
+        self.assertIn("wp_clean_plugins_cache", observer)
+        self.assertIn("$upgrader->result = $result;", observer)
+        self.assertIn("wp-admin/plugins.php", (ROOT / "tests" / "scoped-demo" / "browser_install.py").read_text())
+        text = workflow("standalone-demo.yml")
+        job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]
+        server = job.split("Start PHP built-in WordPress server", 1)[1].split("Real wp-admin ZIP upload", 1)[0]
+        self.assertIn("CPSD_CI_CAPTURE: '1'", server)
+        provision = job.split("Provision the scoped demo on the non-empty site", 1)[1].split("Export the read-only portal identifiers", 1)[0]
+        self.assertIn("CPSD_CI_CAPTURE: '1'", provision)
+        integration = job.split("Enable and provision the scoped demo", 1)[1].split("Provision the scoped demo on the non-empty site", 1)[0]
+        self.assertNotIn("CPSD_CI_CAPTURE", integration)
+
+    def test_standalone_evidence_never_uploads_one_time_credentials_or_otp_codes(self):
+        text = workflow("standalone-demo.yml")
+        job = text.split("  real-wordpress:\n", 1)[1].split("  teardown-safety:\n", 1)[0]
+        upload = job.split("actions/upload-artifact@v4", 1)[1]
+        self.assertNotIn("persona-credentials.json", upload)
+        self.assertNotIn("synthetic-otp.json", upload)
+        self.assertNotIn("/tmp/cpsa-ci/private", upload)
+        self.assertIn("recovery-browser.json", upload)
+        self.assertIn("admin-install-browser.json", upload)
+
+    def test_standalone_lane_runs_eight_personas_and_wrong_mobile_recovery(self):
+        text = workflow("standalone-demo.yml")
+        self.assertIn("python3 tests/scoped-demo/browser_scoped.py journeys", text)
+        self.assertIn("python3 tests/scoped-demo/browser_recovery.py", text)
+        self.assertIn("tests/scoped-demo/recovery-acceptance.php", text)
+        recovery = (ROOT / "tests" / "scoped-demo" / "browser_recovery.py").read_text()
+        self.assertIn("09009999999", recovery)
+        self.assertIn("SCOPED_FOREIGN_TENANT_ROW", recovery)
+
+
 class CompanionIsolationTests(unittest.TestCase):
     """Executable tests for the companion/production isolation rule."""
 
