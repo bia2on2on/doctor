@@ -479,3 +479,63 @@ executes, and the same workflow passed on `main` at `4631764`. The likeliest exp
 is a browser-engine/emulator flake, but that is **inference**: the job log is not
 reachable from this environment, so it needs a retry and, if it persists, its own
 investigation. It is not a demo-installation defect.
+
+## Mission K — final consolidation: the WebKit failure classified, the drill premises pinned
+
+### WebKit (`Responsive smoke … step 14 Firefox/WebKit compatibility smoke`)
+
+The step's own evidence, published to PR #283 as the `pilot-responsive-evidence`
+comment, contains the per-engine log. The WebKit section shows **exactly one** failed
+line out of thirteen:
+
+```
+INFO browser_engine=webkit browser_version=27.2 playwright_version=1.64.1 viewports=mobile-390,tablet-portrait-768
+FAIL secretary-mobile-390 — صف امروز (منشی) — login failed for pilot_secretary: http://localhost:8080/wp-login.php
+PASS secretary-tablet-portrait-768 — صف امروز (منشی) …
+PASS secretary-mobile-390 — مالی و تسویه (منشی) …
+… every other row PASS (doctor ×4, anonymous ×5, conditional assets)
+```
+
+Classification: **D — test/fixture defect (a race in the harness login helper)**, and
+**pre-existing**, not a regression of this PR:
+
+* the failing line is not a layout/compatibility assertion at all — it is the *login
+  setup* helper (`bin/pilot-responsive.py::login`), which navigates, submits and then
+  judges success from `page.url` after `wait_for_load_state("networkidle")`, with no
+  wait for the navigation it just triggered; WebKit's first navigation is the slowest
+  one, and the *same account at the other viewport in the same engine* logs in fine
+  immediately afterwards;
+* a login failure is recorded by CPMS only through `LoginRateLimiter` on **failed**
+  attempts (`MAX_PER_IP` 20 / `MAX_PER_USERNAME` 10 in a 900 s window), so a genuine
+  credential problem would have failed every later WebKit login too — it did not;
+* none of PR #283's 25 changed files is executed by that lane (`clinic-practice-management/**`,
+  `bin/pilot-*.py` are untouched), and the same workflow is green on `main@4631764`;
+* the earlier `Failure`s of the same workflow (6 in the `arena/19f8e063-doctor` history)
+  are unrelated steps (`Release Artifact`, evidence posting), so they neither support nor
+  contradict a WebKit flake — the evidence above does.
+
+**Resolution available, but deliberately not applied here:** the one-line class of fix is
+to make the helper deterministic — `with page.expect_navigation(): page.click("#wp-submit")`
+followed by `page.wait_for_url(lambda u: "wp-login.php" not in u or "loggedout" in u)` —
+keeping the identical success/failure semantics. It cannot be applied in this PR:
+`bin/pilot-responsive.py` lives under `clinic-practice-management/`, which the demo lane's
+`companion-isolation.py` classifies as **PRODUCTION**; a companion PR that also edits
+production source fails that gate by design, and the standing owner constraint forbids
+editing the production subtree from this work. It needs its own production-side PR (or an
+owner decision); nothing was disabled, no viewport dropped, and no assertion weakened.
+
+### The corrected drill's three premises are now unit-pinned
+
+`tests/scoped-demo/test_scoped_safety_regressions.py::RecoveryDrillPremisesTest` (3 tests)
+pins what the Task-4 acceptance rests on, so it cannot silently drift: `ATTRIBUTION` maps
+`cpms_otp_tokens` and `cpms_sms_messages` to `@mobile` (a foreign mobile is therefore
+unattributable, never deletable), the barrier allows only anonymous/fixture/administrator
+actors (`SCOPED_DEMO_TENANT_WRITE_REFUSED` otherwise), and the shipped OTP service really
+does `wp_insert_user` + `wp_set_auth_cookie` (so the drill's actor is a real user).
+
+### Local gate results for this head
+
+`tests/scoped-demo` **135 OK** (was 132), `run-tests.php` **313**, `scoped-run-tests.php`
+**67**, `companion-compat` **33**, `disposable-site` **13**, workflow contracts **65**,
+`companion-isolation.py` PASS, `evaluate.py --gate all` PASS, `php -l` clean,
+`php-wasm-cli` real-WordPress drill (barrier) **10/10**.

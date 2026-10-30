@@ -965,3 +965,40 @@ class DefectMMembershipRegistrationCannotOutrankThePrincipal(unittest.TestCase):
         drill = read(ROOT / "tests" / "scoped-demo" / "teardown-safety.php")
         self.assertIn("B2: a REGISTERED grant to a real person is still REFUSED", drill)
         self.assertIn("register_rows(", drill)
+
+
+class RecoveryDrillPremisesTest(unittest.TestCase):
+    """The three facts the corrected Task-4 acceptance rests on.
+
+    A wrong-mobile booking cannot reach Hold/confirm (the tenant write barrier
+    refuses a real actor), and the rows it does leave behind are unattributable
+    to the fixture — so the teardown must refuse, not delete. If any of these
+    three ever changes, the recovery drill must change with it; nothing here may
+    be "fixed" by relaxing the barrier instead.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.teardown = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-teardown.php"
+        )
+        cls.guard = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-guard.php"
+        )
+        cls.otp = read(
+            ROOT / "clinic-practice-management" / "src" / "Application" / "Auth" / "OtpService.php"
+        )
+
+    def test_foreign_otp_and_sms_rows_stay_attributable_only_by_mobile(self) -> None:
+        attribution = self.teardown.split("private const ATTRIBUTION = array(", 1)[1].split(");", 1)[0]
+        self.assertIn("'cpms_otp_tokens' => '@mobile'", attribution)
+        self.assertIn("'cpms_sms_messages' => '@mobile'", attribution)
+
+    def test_a_real_authenticated_actor_is_refused_on_a_demo_tenant_write(self) -> None:
+        self.assertIn("if ( self::is_fixture_actor( $loaded ) || current_user_can( 'manage_options' ) ) {", self.guard)
+        self.assertIn("if ( 0 === get_current_user_id() ) {", self.guard)
+        self.assertIn("SCOPED_DEMO_TENANT_WRITE_REFUSED", self.guard)
+
+    def test_otp_verification_provisions_a_real_user_and_a_session(self) -> None:
+        self.assertIn("wp_set_auth_cookie", self.otp)
+        self.assertIn("wp_insert_user", self.otp)
