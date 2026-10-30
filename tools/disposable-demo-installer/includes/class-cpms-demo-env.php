@@ -129,7 +129,12 @@ class Env {
 	/**
 	 * Complete user inventory — required for the "no other accounts" preflight.
 	 *
-	 * @return list<array{id:int,login:string,email:string,roles:list<string>}>
+	 * `registered` is reported read-only so an administrator can tell WHEN a
+	 * pre-existing `cpsd-…` account was created (before or after this package was
+	 * installed) instead of guessing from its name. It is never used as proof of
+	 * ownership: a date, like a login, is not a sealed record.
+	 *
+	 * @return list<array{id:int,login:string,email:string,roles:list<string>,registered:string}>
 	 */
 	public function all_users(): array {
 		$users = get_users(
@@ -141,10 +146,11 @@ class Env {
 		$out   = array();
 		foreach ( $users as $user ) {
 			$out[] = array(
-				'id'    => (int) $user->ID,
-				'login' => (string) $user->user_login,
-				'email' => (string) $user->user_email,
-				'roles' => array_values( array_map( 'strval', (array) $user->roles ) ),
+				'id'         => (int) $user->ID,
+				'login'      => (string) $user->user_login,
+				'email'      => (string) $user->user_email,
+				'roles'      => array_values( array_map( 'strval', (array) $user->roles ) ),
+				'registered' => (string) ( $user->user_registered ?? '' ),
 			);
 		}
 

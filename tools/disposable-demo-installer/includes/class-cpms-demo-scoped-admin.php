@@ -268,15 +268,10 @@ class ScopedAdmin {
 		}
 		$state = $preflight->run();
 		$tombstone = $manifest->tombstone();
-		echo '<div class="wrap cpdd" dir="rtl" data-cpsd-page="1">';
-		echo '<h1>دموی محدودشده CPMS — سایت آزمایشی غیرخالی</h1>';
-		\CpmsDemo\Standalone::render_banner();
-		self::render_notice();
-		self::render_setup_summary( $manifest, $state, $loaded, $manifest_error );
-		self::render_identity( $env, $manifest, $manifest->mode_enabled(), $loaded, $manifest_error );
-		self::render_preflight( $state );
-		// Read the same counter the gate reads, but never let a counting failure
-		// turn into a page error: 0 renders no consent card at all.
+		// Read the same counter the single-Clinic gate reads, but never let a
+		// counting failure turn into a page error: 0 renders no consent card at
+		// all. It is read BEFORE the summary card so that card can point at the
+		// confirmation instead of leaving "preflight must turn green" unexplained.
 		$clinic_count = 0;
 		try {
 			$clinic_count = (int) $platform->count_all( 'cpms_clinics' );
@@ -284,6 +279,14 @@ class ScopedAdmin {
 			unset( $e );
 			$clinic_count = 0;
 		}
+		echo '<div class="wrap cpdd" dir="rtl" data-cpsd-page="1">';
+		echo '<h1>دموی محدودشده CPMS — سایت آزمایشی غیرخالی</h1>';
+		\CpmsDemo\Standalone::render_banner();
+		self::render_notice();
+		self::render_setup_summary( $manifest, $state, $loaded, $manifest_error, $clinic_count );
+		self::render_identity( $env, $manifest, $manifest->mode_enabled(), $loaded, $manifest_error );
+		self::render_preflight( $state );
+		self::render_preserved_namespace( $env, $platform );
 		self::render_private_host_consent( $env, $manifest, $request, $clinic_count );
 		self::render_credentials( $loaded );
 		self::render_otp();
@@ -328,12 +331,26 @@ class ScopedAdmin {
 	 * @param array<string,mixed> $state    Preflight state.
 	 * @param array<string,mixed>|null $loaded Verified manifest.
 	 * @param string              $error    Manifest verification error.
+	 * @param int                 $clinics  Current `COUNT(*)` on `cpms_clinics`.
 	 * @return void
 	 */
-	private static function render_setup_summary( ScopedManifest $manifest, array $state, ?array $loaded, string $error ): void {
+	private static function render_setup_summary( ScopedManifest $manifest, array $state, ?array $loaded, string $error, int $clinics = 0 ): void {
 		$ready  = ! empty( $state['ok'] );
 		$mode   = $manifest->mode_enabled();
 		$active = is_array( $loaded ) && 'active' === (string) ( $loaded['status'] ?? '' );
+
+		// The single-Clinic gate is the one blocker an operator cannot fix by
+		// reading the table: it needs a typed acceptance of THIS domain. Naming it
+		// here keeps "the preflight must turn green" from being a dead end.
+		$blocking    = array();
+		$blocking_id = array();
+		foreach ( (array) ( $state['checks'] ?? array() ) as $check ) {
+			if ( 'pass' !== (string) ( $check['status'] ?? '' ) ) {
+				$blocking[]    = (string) ( $check['label'] ?? '' );
+				$blocking_id[] = (string) ( $check['id'] ?? '' );
+			}
+		}
+		$needs_private_host = 1 === $clinics && ! $active && '' === $error && null === $manifest->private_host_consent();
 
 		if ( '' !== $error ) {
 			$headline = 'وضعیت مالکیت دمو معتبر نیست و هر تغییری متوقف است.';
@@ -343,6 +360,9 @@ class ScopedAdmin {
 			$tone     = 'pass';
 		} elseif ( ! $mode ) {
 			$headline = 'یک کار باقی مانده: حالت دمو را فعال کنید.';
+			$tone     = 'todo';
+		} elseif ( $needs_private_host && array( 'host_scope' ) === $blocking_id ) {
+			$headline = 'یک کار باقی مانده: تأیید «سایت آزمایشی خصوصی» برای همین دامنه.';
 			$tone     = 'todo';
 		} elseif ( ! $ready ) {
 			$headline = 'یک کار باقی مانده: پیش‌بررسی باید سبز شود.';
@@ -363,16 +383,11 @@ class ScopedAdmin {
 		if ( $active ) {
 			echo '<p><a class="button button-primary" href="#cpsd-personas">رفتن به نقش‌های نمایشی</a></p>';
 		}
-		if ( ! $ready && '' === $error ) {
-			$blocking = array();
-			foreach ( (array) ( $state['checks'] ?? array() ) as $check ) {
-				if ( 'pass' !== (string) ( $check['status'] ?? '' ) ) {
-					$blocking[] = (string) ( $check['label'] ?? '' );
-				}
-			}
-			if ( array() !== $blocking ) {
-				echo '<p>برای ادامه فقط این موارد مانده‌اند: <strong>' . esc_html( implode( ' · ', $blocking ) ) . '</strong></p>';
-			}
+		if ( $needs_private_host ) {
+			echo '<p data-cpsd-private-host-hint="1">این سایت تک‌درمانگاهی است. برای گام دوم یک تأیید کوتاه لازم است و انجام آن آسان است: در همین صفحه، پایین‌تر، در کادر «یک تأیید لازم است»، عبارت نام همین دامنه را بنویسید (دکمهٔ «کپی عبارت» آن را در حافظه می‌گذارد) و «تأیید سایت آزمایشی خصوصی» را بزنید. این تأیید فقط برای همین دامنه معتبر است.</p>';
+		}
+		if ( ! $ready && '' === $error && array() !== $blocking ) {
+			echo '<p>برای ادامه فقط این موارد مانده‌اند: <strong>' . esc_html( implode( ' · ', $blocking ) ) . '</strong></p>';
 		}
 		echo '<p class="description">هر عملیات با یک عبارت تأیید انجام می‌شود. عبارت را لازم نیست از حفظ بنویسید: کنار هر فرم دکمهٔ «کپی عبارت» هست.</p>';
 		echo '</div>';
@@ -458,6 +473,49 @@ class ScopedAdmin {
 			echo '<tr><th>' . esc_html( $label ) . '</th><td dir="ltr">' . esc_html( (string) $value ) . '</td></tr>';
 		}
 		echo '</tbody></table></div>';
+	}
+
+	/**
+	 * What pre-existing `cpsd-` rows mean, and what this page will (not) do
+	 * about them.
+	 *
+	 * A populated test site usually already has synthetic leftovers from an
+	 * earlier run whose sealed evidence is gone. They are shown here, in the
+	 * operator's language, with the two facts that decide the safe answer:
+	 * nothing in this package proves they are ours, and no row is ever deleted
+	 * unless a sealed record proves it. The names are shown so a human can judge;
+	 * the package itself never promotes a name to ownership.
+	 *
+	 * @param Env      $env      Environment.
+	 * @param Platform $platform CPMS adapter.
+	 * @return void
+	 */
+	private static function render_preserved_namespace( Env $env, Platform $platform ): void {
+		$survey = FixtureNamespace::survey( $env, $platform );
+		if ( (int) $survey['total'] <= 0 ) {
+			return;
+		}
+		echo '<div class="cpdd-card cpdd-attention" data-cpsd-preserved-namespace="' . esc_attr( (string) $survey['total'] ) . '"><h2>بقایای قبلی با پیشوند cpsd-: گزارش، بدون حذف</h2>';
+		echo '<p>روی این سایت ' . esc_html( FixtureNamespace::counts_fa( $survey ) ) . ' از قبل وجود دارد. این موارد ساختهٔ <strong>همین</strong> دمو نیستند: هیچ سند مهرشده‌ای آن‌ها را به این اجرا نسبت نمی‌دهد. بنابراین:</p><ul>';
+		echo '<li>حذف نمی‌شوند، تغییر نمی‌کنند و رمزشان دست‌کاری نمی‌شود؛</li>';
+		echo '<li>به نقش‌های این دمو متصل یا وارد نمی‌شوند و دسترسی تازه‌ای نمی‌گیرند؛</li>';
+		echo '<li>دموی جدید نام‌های خودش را با شناسهٔ تصادفی تازه می‌سازد و پاک‌سازی هم فقط ردیف‌های مهرشدهٔ خودش را حذف می‌کند.</li>';
+		echo '</ul><p>دلیل سخت‌گیری: نام کاربری و شکل نام، <em>مالکیت</em> را اثبات نمی‌کند؛ اگر این بسته بر پایهٔ نام حذف می‌کرد، ممکن بود حساب واقعی سایت شما را پاک کند. اگر این موارد را می‌شناسید و می‌خواهید پاک شوند، این کار را با پشتیبان کامل و به‌صورت دستی و آگاهانه در پیشخوان وردپرس انجام دهید؛ این صفحه هیچ دکمه‌ای برای آن ندارد.</p>';
+		if ( array() !== (array) $survey['users'] ) {
+			echo '<table class="widefat striped"><thead><tr><th>نام کاربری</th><th>نقش‌ها</th><th>دامنهٔ ایمیل</th><th>تاریخ ثبت (UTC)</th><th>الگوی این بسته</th></tr></thead><tbody>';
+			foreach ( (array) $survey['users'] as $user ) {
+				echo '<tr data-cpsd-preserved-user="' . esc_attr( (string) $user['login'] ) . '">';
+				echo '<td dir="ltr">' . esc_html( (string) $user['login'] ) . '</td>';
+				echo '<td dir="ltr">' . esc_html( implode( ', ', (array) $user['roles'] ) ) . '</td>';
+				echo '<td dir="ltr">' . esc_html( (string) $user['email_domain'] ) . '</td>';
+				echo '<td dir="ltr">' . esc_html( (string) $user['registered'] ) . '</td>';
+				echo '<td>' . ( $user['signature'] ? 'نام و ایمیل با الگوی حساب‌های ساختگی هم‌خوان است' : 'هم‌خوان نیست' ) . '</td>';
+				echo '</tr>';
+			}
+			echo '</tbody></table>';
+			echo '<p class="description">ستون آخر فقط یک نشانهٔ ظاهری است، نه اثبات مالکیت؛ حتی برای ردیف‌های «هم‌خوان» هم هیچ عملی خودکار انجام نمی‌شود.</p>';
+		}
+		echo '</div>';
 	}
 
 	private static function render_preflight( array $state ): void {

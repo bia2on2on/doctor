@@ -107,6 +107,49 @@ $cpsd_sa_seed_digest = static function () use ( $cpsd_sa_tag ): array {
 };
 
 /**
+ * Digest of PRE-EXISTING accounts that merely LOOK like this package's.
+ *
+ * The Owner's site carries eight `cpsd-` prefixed accounts that no artifact in
+ * this repository created. A login prefix is text, not ownership, so this
+ * package never adopts them and never deletes them. The drill therefore seeds
+ * exactly that shape (a `cpsd-` login with a NON-demo e-mail domain) and
+ * digests login, e-mail, roles and the password hash so any later adoption,
+ * rename, role change or password reset shows up as a difference.
+ *
+ * @return array{count:int,digest:string,logins:list<string>}
+ */
+$cpsd_sa_legacy_digest = static function (): array {
+	global $wpdb;
+	$rows   = array();
+	$logins = array();
+	$users  = get_users(
+		array(
+			'search'         => 'cpsd-legacy-*',
+			'search_columns' => array( 'user_login' ),
+			'orderby'        => 'ID',
+			'order'          => 'ASC',
+			'fields'         => array( 'ID', 'user_login', 'user_email' ),
+		)
+	);
+	foreach ( (array) $users as $user ) {
+		$account = (array) $user;
+		$id      = (int) ( $account['ID'] ?? 0 );
+		$data    = get_userdata( $id );
+		$roles   = $data ? array_values( (array) $data->roles ) : array();
+		sort( $roles );
+		$pass    = (string) $wpdb->get_var( $wpdb->prepare( "SELECT user_pass FROM {$wpdb->users} WHERE ID = %d", $id ) );
+		$logins[] = (string) ( $account['user_login'] ?? '' );
+		$rows[]   = $id . ':' . (string) ( $account['user_login'] ?? '' ) . ':' . (string) ( $account['user_email'] ?? '' ) . ':' . implode( ',', $roles ) . ':' . md5( $pass );
+	}
+
+	return array(
+		'count'  => count( $rows ),
+		'digest' => md5( implode( '|', $rows ) ),
+		'logins' => $logins,
+	);
+};
+
+/**
  * Every CPMS table that currently exists.
  *
  * @return list<string>
@@ -191,6 +234,32 @@ try {
 				'post_mime_type' => 'image/png',
 			)
 		);
+		// Eight PRE-EXISTING `cpsd-` accounts whose ownership this package cannot
+		// prove: the login shape is right, the e-mail domain is NOT one this package
+		// ever writes. The Owner's site was in exactly this state.
+		$legacy_created = 0;
+		for ( $i = 1; $i <= 8; $i++ ) {
+			$login = 'cpsd-legacy-' . str_pad( (string) $i, 2, '0', STR_PAD_LEFT );
+			if ( username_exists( $login ) ) {
+				$legacy_created++;
+				continue;
+			}
+			$created = wp_insert_user(
+				array(
+					'user_login'   => $login,
+					'user_pass'    => wp_generate_password( 32 ),
+					'user_email'   => $login . '@example.invalid',
+					'display_name' => 'حساب از پیش موجود ' . $i,
+					'role'         => 0 === $i % 2 ? 'subscriber' : 'editor',
+				)
+			);
+			if ( ! is_wp_error( $created ) ) {
+				$legacy_created++;
+			}
+		}
+		$legacy = $cpsd_sa_legacy_digest();
+		$evidence['preserved_users'] = $legacy;
+		$cpsd_sa_check( 8 === $legacy_created && 8 === $legacy['count'], 'seed: eight pre-existing cpsd- prefixed accounts with UNPROVEN ownership', $checks, (string) $legacy['count'] );
 		$seed      = $cpsd_sa_seed_digest();
 		$evidence += $seed;
 		$evidence['seeded_ids'] = array(
@@ -318,6 +387,10 @@ try {
 		$cpsd_sa_check( (string) $now['digest'] === (string) $recorded['digest'], 'every seeded user/post/comment/media row is byte-identical', $checks, (string) $now['digest'] . ' vs ' . (string) $recorded['digest'] );
 		$cpsd_sa_check( (int) $now['users'] === (int) $recorded['users'] && (int) $now['posts'] === (int) $recorded['posts'], 'no seeded user or post disappeared', $checks );
 		$evidence['seed_after'] = $now;
+		$legacy_now = $cpsd_sa_legacy_digest();
+		$cpsd_sa_check( 8 === (int) $legacy_now['count'], 'the eight pre-existing cpsd- accounts still exist', $checks, (string) $legacy_now['count'] );
+		$cpsd_sa_check( (string) $legacy_now['digest'] === (string) ( $recorded['preserved_users']['digest'] ?? '' ), 'pre-existing cpsd- accounts are byte-identical (login, e-mail, roles, password hash)', $checks, (string) $legacy_now['digest'] . ' vs ' . (string) ( $recorded['preserved_users']['digest'] ?? '' ) );
+		$evidence['preserved_users_after'] = $legacy_now;
 	}
 
 	if ( 'conflict' === $cpsd_sa_mode ) {
@@ -448,6 +521,9 @@ try {
 		);
 		$evidence['synthetic_users_kept'] = count( (array) $demo_users );
 		$cpsd_sa_check( count( (array) $demo_users ) > 0, 'synthetic demo accounts are preserved (harmless records over risky deletion)', $checks, (string) count( (array) $demo_users ) );
+		$legacy_now = $cpsd_sa_legacy_digest();
+		$cpsd_sa_check( 8 === (int) $legacy_now['count'], 'the eight pre-existing cpsd- accounts survived deactivation and deletion', $checks, (string) $legacy_now['count'] );
+		$cpsd_sa_check( (string) $legacy_now['digest'] === (string) ( $recorded['preserved_users']['digest'] ?? '' ), 'pre-existing cpsd- accounts are byte-identical after plugin deletion', $checks );
 		$evidence['cpms_tables'] = count( $tables );
 		$recovery_file = (string) ( getenv( 'CPSD_RECOVERY_BROWSER' ) ?: '/tmp/cpsa-ci/browser/recovery-browser.json' );
 		$recovery = is_file( $recovery_file ) ? json_decode( (string) file_get_contents( $recovery_file ), true ) : null;

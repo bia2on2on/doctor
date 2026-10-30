@@ -25,6 +25,25 @@ class Admin {
 	public const ACTION = 'cpdd_action';
 
 	/**
+	 * One-shot marker written by the activation hook: "show this administrator
+	 * the page that actually fits this site". It carries no authority - the
+	 * redirect it enables is a navigation choice made again, server-side, from
+	 * live state - and it expires on its own.
+	 */
+	public const LANDING_TRANSIENT = 'cpdd_landing_after_activation';
+
+	/**
+	 * Slug of the scoped console, repeated here on purpose.
+	 *
+	 * The strict page must be able to LINK to the scoped page even in a request
+	 * where the scoped classes were not loaded (the strict unit suite is exactly
+	 * such a request), so a class-constant reference would create a load-order
+	 * dependency for a navigation string. `ScopedAdmin::PAGE` remains the owner of
+	 * the slug, and a static contract test fails if the two literals ever differ.
+	 */
+	public const SCOPED_PAGE = 'cpms-scoped-demo';
+
+	/**
 	 * @var string Hook suffix of the active companion page.
 	 */
 	private static string $hook = '';
@@ -208,6 +227,123 @@ class Admin {
 			$args[ $safe_key ] = sanitize_text_field( $value );
 		}
 		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=' . self::PAGE ) ) );
+		exit;
+	}
+
+	/**
+	 * The page an administrator should be looking at on THIS site.
+	 *
+	 * The strict disposable mode is only legal on a provably empty installation;
+	 * the scoped mode exists for everything else. Deciding here - from live state,
+	 * through the real preflight - means the installer never sends a Product Owner
+	 * with a populated test site to a page that can only tell them "no".
+	 *
+	 * @return array{scoped:bool,occupancy:array{occupied:bool,reasons:list<string>,labels:list<string>}}
+	 */
+	public static function setup_target(): array {
+		$env      = self::env();
+		$platform = self::platform();
+		$manifest = self::manifest( $env );
+		try {
+			$state     = ( new Preflight( $env, $platform, $manifest ) )->run();
+			$occupancy = Preflight::occupancy( (array) $state['checks'], $platform->available() );
+		} catch ( \Throwable $error ) {
+			// Navigation must never fatal. An unreadable state is treated as
+			// "cannot prove the site is empty", which is the strict page - the
+			// page that explains why nothing may run.
+			unset( $error );
+			$occupancy = array(
+				'occupied' => false,
+				'reasons'  => array(),
+				'labels'   => array(),
+			);
+		}
+		// A recorded strict fixture is managed HERE whatever else the site holds.
+		$scoped = (bool) $occupancy['occupied'] && ! $manifest->exists();
+
+		return array( 'scoped' => $scoped, 'occupancy' => $occupancy );
+	}
+
+	/**
+	 * @param bool $scoped Whether this site needs the scoped console.
+	 * @return string Absolute admin URL.
+	 */
+	public static function setup_page_url( bool $scoped ): string {
+		if ( $scoped ) {
+			return admin_url( 'tools.php?page=' . self::SCOPED_PAGE );
+		}
+
+		$base = null !== self::cpms_parent_slug() ? 'admin.php?page=' : 'tools.php?page=';
+
+		return admin_url( $base . self::PAGE );
+	}
+
+	/**
+	 * Remember, for one short request window, that this administrator just
+	 * activated the demo and should be shown the right page.
+	 *
+	 * @param int $user_id Acting administrator.
+	 * @return void
+	 */
+	public static function mark_landing( int $user_id ): void {
+		if ( $user_id <= 0 ) {
+			return;
+		}
+		set_transient(
+			self::LANDING_TRANSIENT,
+			array(
+				'user' => $user_id,
+				'at'   => time(),
+			),
+			10 * MINUTE_IN_SECONDS
+		);
+	}
+
+	/**
+	 * One-shot landing after activation.
+	 *
+	 * Runs on `admin_init`, i.e. only inside wp-admin, only for the administrator
+	 * who activated, only for one GET request, and only when the transient has
+	 * not already been consumed. It grants nothing: the target is re-decided from
+	 * live state on every request, and a failed redirect leaves the operator on
+	 * the page they asked for.
+	 *
+	 * @return void
+	 */
+	public static function maybe_land_after_activation(): void {
+		$marker = get_transient( self::LANDING_TRANSIENT );
+		if ( ! is_array( $marker ) ) {
+			return;
+		}
+		$user_id = function_exists( 'get_current_user_id' ) ? (int) get_current_user_id() : 0;
+		if ( $user_id <= 0 || (int) ( $marker['user'] ?? 0 ) !== $user_id ) {
+			return;
+		}
+		if ( ! current_user_can( self::CAP ) ) {
+			return;
+		}
+		if ( function_exists( 'is_network_admin' ) && is_network_admin() ) {
+			return;
+		}
+		if ( function_exists( 'wp_doing_ajax' ) && wp_doing_ajax() ) {
+			return;
+		}
+		if ( function_exists( 'wp_doing_cron' ) && wp_doing_cron() ) {
+			return;
+		}
+		if ( defined( 'REST_REQUEST' ) && REST_REQUEST ) {
+			return;
+		}
+		if ( 'GET' !== strtoupper( (string) ( $_SERVER['REQUEST_METHOD'] ?? '' ) ) ) {
+			return;
+		}
+		// Consume first: a redirect that cannot happen must not become a loop.
+		delete_transient( self::LANDING_TRANSIENT );
+		if ( headers_sent() ) {
+			return;
+		}
+		$target = self::setup_target();
+		wp_safe_redirect( self::setup_page_url( (bool) $target['scoped'] ) );
 		exit;
 	}
 
@@ -435,12 +571,13 @@ class Admin {
 		echo '<div class="wrap cpdd" dir="rtl">';
 		echo '<h1>دموی یک‌بارمصرف CPMS Classic</h1>';
 		\CpmsDemo\Standalone::render_banner();
-		echo '<p class="cpdd-lead">این صفحه فقط برای <strong>سایت آزمایشی خالی</strong> است. هیچ دادهٔ واقعی بیمار، پیامک واقعی یا پرداخت واقعی ساخته نمی‌شود و افزونهٔ Production تغییر نمی‌کند.</p>';
+		echo '<p class="cpdd-lead">این صفحه فقط برای <strong>سایت آزمایشی خالی</strong> است. هیچ دادهٔ واقعی بیمار، پیامک واقعی یا پرداخت واقعی ساخته نمی‌شود و افزونهٔ Production تغییر نمی‌کند. اگر سایت شما خالی نیست، کارت «این سایت خالی نیست» پایین همین صفحه مسیر درست را نشان می‌دهد.</p>';
 
 		self::render_notice();
 		if ( is_array( $uninstall_blocked ) ) {
 			echo '<div class="notice notice-warning inline" data-cpdd-uninstall-blocked="1"><p>تلاش قبلی برای حذف افزونهٔ همراه متوقف شد زیرا دادهٔ دمو هنوز در پایگاه‌داده وجود داشت. فرادادهٔ مالکیت حفظ شده است؛ اکنون می‌توانید تشخیص و پاک‌سازی ایمن را اجرا کنید.</p></div>';
 		}
+		self::render_route_card( $state, $cpms_available, null !== $loaded || $manifest->exists() );
 		self::render_identity( $env, $manifest, $loaded );
 		if ( '' !== $manifest_err ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $manifest_err ) . '</p></div>';
@@ -472,7 +609,10 @@ class Admin {
 			self::render_tombstone( $request, $tombstone );
 		}
 
-		self::render_instructions( null !== self::cpms_parent_slug() );
+		self::render_instructions(
+			null !== self::cpms_parent_slug(),
+			! empty( Preflight::occupancy( (array) $state['checks'], $cpms_available )['occupied'] ) && ! $manifest->exists()
+		);
 		self::render_limitations();
 		echo '</div>';
 	}
@@ -600,6 +740,40 @@ class Admin {
 			echo '<tr><td>' . esc_html( $check['label'] ) . '</td><td class="' . ( $pass ? 'cpdd-pass' : 'cpdd-fail' ) . '">' . ( $pass ? 'PASS' : 'FAIL' ) . '</td><td>' . esc_html( $check['detail'] ) . '</td></tr>';
 		}
 		echo '</tbody></table></div>';
+	}
+
+	/**
+	 * Turn a red preflight into a next step instead of a dead end.
+	 *
+	 * Rendered only when the site is provably NOT empty (and no strict fixture is
+	 * recorded, in which case this page is the right page). It names the checks
+	 * that are red for occupancy reasons, says plainly that this is not a fault of
+	 * the site, and links to the scoped console - which is the mode built for
+	 * exactly this installation. It performs no action and grants nothing.
+	 *
+	 * @param array{ok:bool,checks:list<array{id:string,label:string,status:string,detail:string}>} $state Preflight state.
+	 * @param bool $cpms_available Whether CPMS tables are readable.
+	 * @param bool $strict_fixture Whether a strict demo is recorded here.
+	 * @return void
+	 */
+	private static function render_route_card( array $state, bool $cpms_available, bool $strict_fixture ): void {
+		if ( $strict_fixture ) {
+			return;
+		}
+		$occupancy = Preflight::occupancy( (array) $state['checks'], $cpms_available );
+		if ( ! $occupancy['occupied'] ) {
+			return;
+		}
+		echo '<div class="cpdd-card cpdd-attention" data-cpdd-route="scoped">';
+		echo '<h2>این سایت خالی نیست: مسیر درست «دموی محدودشده CPMS» است</h2>';
+		echo '<p>این صفحه فقط برای یک <strong>وردپرس تازه و خالی</strong> ساخته شده است. روی همین سایت این موارد خالی نیستند: <strong>'
+			. esc_html( implode( ' · ', $occupancy['labels'] ) )
+			. '</strong> — بنابراین ردیف‌های قرمز پایین طبیعی‌اند و ساخت دمو از این صفحه مسدود می‌ماند. این FAIL دربارهٔ سلامت سایت شما نیست؛ فقط می‌گوید این صفحه به این سایت تعلق ندارد.</p>';
+		echo '<p>برای سایت غیرخالی، همین بسته یک صفحهٔ جداگانه با نام <strong>«دموی محدودشده CPMS»</strong> دارد که دقیقاً برای همین وضعیت نوشته شده است: یک سازمان، یک درمانگاه، دو شعبه و هشت حساب کاملاً ساختگی <em>کنار</em> دادهٔ فعلی می‌سازد؛ هیچ کاربر، برگه، دیدگاه یا رکورد درمانگاهی فعلی را تغییر نمی‌دهد، و پاک‌سازی‌اش فقط ردیف‌هایی را حذف می‌کند که مالکیتشان با سند مهرشده اثبات شده است. زنجیرهٔ حسابرسی و دادهٔ بالینی/مالی سایت شما حفظ می‌شود.</p>';
+		echo '<p><a class="button button-primary button-hero" href="' . esc_url( admin_url( 'tools.php?page=' . self::SCOPED_PAGE ) ) . '" data-cpdd-goto-scoped="1">رفتن به دموی محدودشده CPMS</a></p>';
+		echo '<p class="description">سه گام آن‌جا: ۱) فعال‌سازی حالت محدودشده ۲) ساخت دمو ۳) ورود با هشت نقش. نه ساخت سایت تازه لازم است، نه دستکاری پایگاه‌داده، نه حذف داده.</p>';
+		echo '<p class="description">اگر سایت شما تک‌درمانگاهی است، پیش از ساخت دمو همان صفحه یک تأیید کوتاه می‌خواهد: نوشتن نام همین دامنه. تأیید به همین سایت مهر می‌شود و بدون آن ساخت دمو عمداً انجام نمی‌شود.</p>';
+		echo '</div>';
 	}
 
 	/**
@@ -801,15 +975,23 @@ class Admin {
 	}
 
 	/**
+	 * @param bool $cpms_menu_available Whether the CPMS menu hosts this page.
+	 * @param bool $occupied Whether this site is provably NOT empty.
 	 * @return void
 	 */
-	private static function render_instructions( bool $cpms_menu_available ): void {
+	private static function render_instructions( bool $cpms_menu_available, bool $occupied = false ): void {
 		echo '<div class="cpdd-card"><h2>دستورالعمل فارسی</h2><ol class="cpdd-steps">';
 		$menu_step = $cpms_menu_available
 			? 'به «مدیریت مطب» → «دموی یک‌بارمصرف CPMS» بروید و همهٔ بررسی‌ها را PASS ببینید. اگر FAIL بود، دمو ساخته نمی‌شود.'
 			: 'تا وقتی CPMS Classic غیرفعال است، صفحه از مسیر Tools → «دموی یک‌بارمصرف CPMS» در دسترس می‌ماند؛ بررسی CPMS باید FAIL باشد و ساخت دمو ممکن نیست.';
+		$first_step = $occupied
+			// Never tell the owner of a populated site to build another empty
+			// WordPress: that is the exact instruction that made setup feel
+			// impossible. The correct first step is the other console.
+			? 'این سایت خالی نیست، پس این صفحه به آن تعلق ندارد و هیچ سایت تازه‌ای لازم نیست: از کارت بالای همین صفحه به «دموی محدودشده CPMS» بروید.'
+			: 'یک WordPress تازه و خالی (تک‌سایتی، HTTPS) بسازید و افزونهٔ Production «Clinic Practice Management» را نصب و فعال کنید.';
 		$steps = array(
-			'یک WordPress تازه و خالی (تک‌سایتی، HTTPS) بسازید و افزونهٔ Production «Clinic Practice Management» را نصب و فعال کنید.',
+			$first_step,
 			'این افزونهٔ همراه را از Plugins → Add New → Upload Plugin نصب و فعال کنید. اگر افزونهٔ اصلی فعال نباشد، فعال‌سازی متوقف می‌شود.',
 			$menu_step,
 			'عبارت تأیید را تایپ کنید و «ساخت دمو» را بزنید. رمزها فقط در همان پاسخ نمایش داده می‌شوند؛ همان‌جا کپی کنید.',

@@ -10,7 +10,7 @@ A standard-library Python test under `tests/scoped-demo/` must parse the compani
 - `Preflight::SYSTEM_TABLES` has exactly 10 entries.
 - `Preflight::KNOWN_TABLES` has exactly 60 entries (schema `2026_10_27_0030`) and is the union of operational + system.
 - `Teardown::DELETE_ORDER` has 50 entries, all known.
-- `CPMS_DEMO_SCHEMA_VERSION` equals the latest migration `2026_10_18_0029`.
+- `CPMS_DEMO_SCHEMA_VERSION` equals the latest migration `2026_10_27_0030`.
 - `docs/scoped-demo/ownership-map.md` mentions every one of the 60 tables.
 - The production `HashChain` and `AuditLogger` contracts still exist.
 - The strict disposable preflight constants are unchanged.
