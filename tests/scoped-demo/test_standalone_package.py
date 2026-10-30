@@ -470,13 +470,74 @@ class OwnerUsabilityContracts(unittest.TestCase):
         self.assertNotIn("add_cap(", self.admin)
         self.assertNotIn("set_role(", self.admin)
 
+    def test_the_one_click_dashboard_grants_nothing_new(self) -> None:
+        """The Owner dashboard is navigation, not authority.
+
+        It is a separate file, so the scoped console's "Tools page only" rule
+        above still holds. The dashboard's own rules are: `manage_options` only,
+        no capability it does not already need, every action forwarded to the
+        same ScopedRequest gate - and NO top-level menu of its own.
+        """
+        dashboard = read(COMPANION / "includes" / "class-cpms-demo-dashboard.php")
+        self.assertNotIn("add_menu_page(", dashboard)
+        self.assertIn("add_submenu_page(", dashboard)
+        self.assertIn("add_management_page(", dashboard)
+        # CPMS owns exactly one top-level menu (production `CpmsAdminMenu`); the
+        # demo page must hang beneath it when present and fall back to Tools when
+        # it is not, never invent a second CPMS-branded top-level menu.
+        self.assertIn("Admin::cpms_parent_slug()", dashboard)
+        self.assertIn("'admin.php?page=' : 'tools.php?page='", dashboard)
+        self.assertIn("'manage_options'", dashboard)
+        self.assertNotIn("add_cap(", dashboard)
+        self.assertNotIn("set_role(", dashboard)
+        for forbidden in ("set_current_user(", "wp_set_auth_cookie(", "switch_to_user"):
+            self.assertNotIn(forbidden, dashboard)
+        # The dashboard may not decide its own state: the read-only verdict and
+        # the live preflight do, and the page only renders their answer.
+        self.assertIn("new ScopedRecovery(", dashboard)
+        self.assertIn("$assessment['verdict']", dashboard)
+        # A POST never acts from the dashboard: dispatch is bound to load-* and
+        # re-authorizes through ScopedRequest.
+        self.assertIn("$request->authorize( $action, $post );", dashboard)
+        # The boot file must ship it and register it.
+        bootstrap = read(COMPANION / "cpms-disposable-demo.php")
+        self.assertIn("includes/class-cpms-demo-dashboard.php", bootstrap)
+        self.assertIn("'CpmsDemo\\\\Dashboard', 'register_menu'", bootstrap)
+
+    def test_the_companion_never_registers_a_top_level_admin_menu(self) -> None:
+        """One top-level CPMS menu is a product invariant, not a preference.
+
+        The production plugin owns «مدیریت مطب» (`CpmsAdminMenu`). A companion
+        that added its own top-level entry would split the product's navigation
+        and bypass the coexistence contracts that know only production slugs, so
+        every companion surface is a CPMS child or a Tools page.
+        """
+        files = sorted((COMPANION / "includes").glob("*.php")) + [COMPANION / "cpms-disposable-demo.php"]
+        offenders = [p.name for p in files if "add_menu_page(" in read(p)]
+        self.assertEqual([], offenders, "the companion must not create a top-level wp-admin menu")
+        # And the menu resolver it shares with the strict console stays public and
+        # hook-independent, so all three pages agree on the parent.
+        admin = read(COMPANION / "includes" / "class-cpms-demo-admin.php")
+        self.assertIn("public static function cpms_parent_slug(): ?string {", admin)
+        self.assertIn("public const DASHBOARD_PAGE = 'cpms-demo';", admin)
+        # No page may hard-code the dashboard's pagenow.
+        for path in files:
+            body = read(path)
+            if path.name == "class-cpms-demo-admin.php":
+                continue
+            self.assertNotIn("admin.php?page=' . CpmsDemo\\Dashboard::PAGE", body, path.name)
+
     def test_owner_guide_covers_mobile_otp_rotation_and_safe_recovery(self) -> None:
         for token in (
             'data-cpsd-owner-guide="1"', 'data-cpsd-patient-mobile="1"', 'log',
             'نمایش کد OTP نمایشی', 'تغییر شماره', 'TEARDOWN_BLOCKED', 'ادعای مالکیت', 'حسابرسی',
-            'ROTATE_SCOPED_DEMO_CREDENTIALS',
+            'چرخش رمزهای نمایشی',
         ):
             self.assertIn(token, self.admin)
+        # Rotation is additive and reversible by another rotation, so it is a
+        # button, not a typed phrase. The teardown phrase is the only one left.
+        self.assertNotIn("ROTATE_SCOPED_DEMO_CREDENTIALS", self.admin)
+        self.assertIn("REMOVE_ONLY_SCOPED_DEMO_DATA", self.admin)
         self.assertIn("هشت حساب ساختگی", self.setup)
         self.assertIn("cpms-disposable-demo-1.0.0.zip", self.setup)
         self.assertNotIn("clinic-practice-management-1.0.0.zip", self.setup)

@@ -61,6 +61,7 @@ The baseline file lives outside the web root, contains IDs/hashes, never raw PHI
 1. Upload and activate production CPMS and companion ZIPs through `wp-admin/plugin-install.php` in Chromium.
 2. Open the companion page and verify strict disposable mode remains the default and still refuses the non-empty seeded site.
 3. Activate scoped mode with a distinct typed phrase `I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE`; verify disabled-by-default before submission.
+   > **Superseded (see *Mission N* in `implementation-status.md`).** The typed phrase is now required only for the irreversible teardown; activation, provisioning, resume and rotation are one click and are still gated by POST + capability + action nonce + site fingerprint + HTTPS.
 4. Run the scoped preflight; record every check result.
 5. Provision six personas; capture the six one-time passwords from the no-store response and verify no password appears in any subsequent render, option, log, or artifact.
 6. Open six independent Chromium browser contexts and authenticate through `wp-login.php`; verify each receives a distinct session and exact persona identity.

@@ -48,6 +48,9 @@ class ScopedPhpContractTests(unittest.TestCase):
             # Stage 1/2 of the tenant-safety work: the server-side tenant write
             # barrier and the recorder of demo-created rows.
             "class-cpms-demo-scoped-guard.php",
+            # Recovery: the read-only verdict that decides whether an
+            # interrupted provisioning run may be finished additively.
+            "class-cpms-demo-scoped-recovery.php",
         }
         actual = {p.name for p in SCOPED}
         self.assertEqual(expected, actual)
@@ -63,9 +66,16 @@ class ScopedPhpContractTests(unittest.TestCase):
     def test_distinct_manifest_and_phrases(self) -> None:
         self.assertIn("cpsd_manifest", self.all_scoped)
         self.assertIn("cpsd_tombstone", self.all_scoped)
-        self.assertIn("I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE", self.all_scoped)
+        # The typed phrase is reserved for the one irreversible action. Setup,
+        # resume and rotation are additive and are protected by capability,
+        # nonce and site fingerprint (see ScopedRequest::phrase_required()).
         self.assertIn("REMOVE_ONLY_SCOPED_DEMO_DATA", self.all_scoped)
-        self.assertIn("CREATE_SCOPED_DEMO_ON_TEST_SITE", self.all_scoped)
+        self.assertNotIn("I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE", self.all_scoped)
+        self.assertNotIn("CREATE_SCOPED_DEMO_ON_TEST_SITE", self.all_scoped)
+        self.assertNotIn("RESUME_SCOPED_DEMO_SEAL_STAGE", self.all_scoped)
+        request = read(COMPANION / "includes" / "class-cpms-demo-request.php")
+        self.assertIn("public function phrase_required( string $action ): bool", request)
+        self.assertIn("'' !== $expected_phrase", request)
         self.assertIn("class ScopedRequest extends Request", self.all_scoped)
         self.assertIn("class ScopedPreflight extends Preflight", self.all_scoped)
         self.assertIn("class ScopedManifest extends Manifest", self.all_scoped)
@@ -209,8 +219,19 @@ class NonEmptySiteRoutingContract(unittest.TestCase):
         # One-shot and non-destructive: consumed before the redirect, GET only.
         self.assertLess(
             self.admin.index("delete_transient( self::LANDING_TRANSIENT );\n\t\tif ( headers_sent() )"),
-            self.admin.index("wp_safe_redirect( self::setup_page_url("),
+            self.admin.index("wp_safe_redirect( Dashboard::page_url() );"),
         )
+        # The landing never hard-codes a pagenow: the dashboard is a CPMS child
+        # menu when that menu exists and a Tools page when it does not, so only
+        # its own resolver knows which URL this site serves.
+        landing = self.admin[self.admin.index("public static function maybe_land_after_activation") :]
+        landing = landing[: landing.index("public static function enqueue_assets")]
+        self.assertNotIn("admin.php?page=", landing)
+        # The landing stores no mode decision: it always opens the dashboard,
+        # which re-reads live state on the request that follows.
+        landing = self.admin[self.admin.index("public static function maybe_land_after_activation") :]
+        landing = landing[: landing.index("public static function enqueue_assets")]
+        self.assertNotIn("setup_page_url(", landing)
         self.assertTrue("'GET' !== strtoupper(" in self.admin, "the landing accepts non-GET requests too")
         self.assertTrue("wp_doing_ajax" in self.admin, "the landing is not excluded from AJAX")
         self.assertTrue("current_user_can( self::CAP )" in self.admin, "the landing does not re-check the capability")
@@ -352,7 +373,7 @@ class NonEmptySiteRoutingContract(unittest.TestCase):
         self.assertTrue("if ( 1 !== $clinics ) {" in self.scoped_admin, "the consent card is no longer single-Clinic only")
         self.assertTrue("$manifest->private_host_consent()" in self.scoped_admin, "the sealed acceptance is no longer read")
         # The clean-site page names the same confirmation before sending the owner on.
-        route = self.admin[self.admin.index('data-cpdd-route="scoped"') : self.admin.index("private static function render_credentials")]
+        route = self.admin[self.admin.index('data-cpdd-route="scoped"') : self.admin.index("function render_credentials(")]
         self.assertTrue("\u062a\u06a9\u200c\u062f\u0631\u0645\u0627\u0646\u06af\u0627\u0647\u06cc" in route,
                         "the route card does not mention the single-Clinic confirmation")
 

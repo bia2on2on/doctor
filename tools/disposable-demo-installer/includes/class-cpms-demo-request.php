@@ -4,9 +4,14 @@
  *
  * Every mutating action requires, in this order: POST, an authenticated
  * Administrator with manage_options AND install_plugins, an action-specific
- * nonce, an exact confirmation phrase typed by the operator, and the site
- * identity fingerprint that was displayed on the form. The last check is what
- * makes an accidental cross-tab/cross-site submission impossible.
+ * nonce, and the site identity fingerprint that was displayed on the form. The
+ * last check is what makes an accidental cross-tab/cross-site submission
+ * impossible.
+ *
+ * An action whose phrase is the empty string requires no typed phrase: the
+ * phrase is anti-misclick friction, and it is kept only for destructive or
+ * irreversible actions (see `phrase_required()`). It is never an authorization
+ * control, so no protection depends on it.
  *
  * @package CpmsDisposableDemo
  */
@@ -102,7 +107,7 @@ class Request {
 	}
 
 	/**
-	 * @return string Expected confirmation phrase.
+	 * @return string Expected confirmation phrase ('' when none is required).
 	 * @throws Exception On unknown action.
 	 */
 	public function phrase( string $action ): string {
@@ -112,6 +117,27 @@ class Request {
 		}
 
 		return $actions[ $action ]['phrase'];
+	}
+
+	/**
+	 * Whether this action needs the typed confirmation phrase at all.
+	 *
+	 * A phrase is a human anti-misclick device, not an authorization control:
+	 * every request is already gated by POST, an authenticated administrator with
+	 * the required capabilities, an action-specific nonce, the site-identity
+	 * fingerprint and HTTPS. It is therefore required only where the action is
+	 * destructive or records an irreversible consequence, and dropped where it is
+	 * pure friction (creating the demo, entering an existing demo, rotating the
+	 * demo's own one-time passwords).
+	 *
+	 * An empty phrase means "no phrase", never "the empty string matches".
+	 *
+	 * @param string $action Action key.
+	 * @return bool
+	 * @throws Exception On unknown action.
+	 */
+	public function phrase_required( string $action ): bool {
+		return '' !== $this->phrase( $action );
 	}
 
 	/**
@@ -157,9 +183,11 @@ class Request {
 			throw new Exception( 'NONCE', 'توکن امنیتی فرم نامعتبر یا منقضی است؛ صفحه را دوباره بارگذاری کنید.' );
 		}
 
-		$phrase = isset( $post['cpdd_confirm'] ) && is_string( $post['cpdd_confirm'] ) ? trim( $post['cpdd_confirm'] ) : '';
-		if ( ! hash_equals( $expected_phrase, $phrase ) ) {
-			throw new Exception( 'CONFIRMATION', 'عبارت تأیید دقیقاً مطابق متن صفحه وارد نشده است.' );
+		if ( '' !== $expected_phrase ) {
+			$phrase = isset( $post['cpdd_confirm'] ) && is_string( $post['cpdd_confirm'] ) ? trim( $post['cpdd_confirm'] ) : '';
+			if ( ! hash_equals( $expected_phrase, $phrase ) ) {
+				throw new Exception( 'CONFIRMATION', 'عبارت تأیید دقیقاً مطابق متن صفحه وارد نشده است.' );
+			}
 		}
 
 		$fingerprint = isset( $post['cpdd_site'] ) && is_string( $post['cpdd_site'] ) ? $post['cpdd_site'] : '';
