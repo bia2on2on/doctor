@@ -677,8 +677,17 @@ def sessions_phase(browser) -> None:
         check(f"{persona}: the ticket lands on its own portal",
               "/wp-login.php" not in persona_page.url, persona_page.url)
 
-        boundary = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session")
-        check(f"{persona}: the session boundary is visible", boundary.count() == 1)
+        # The boundary must be visible on the persona's own surface. The
+        # server-rendered banner is authoritative (it does not depend on the theme
+        # rendering an admin bar); the admin-bar node is accepted as a second form.
+        banner = persona_page.locator('[data-cpsd-session-boundary="1"]')
+        bar_node = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session")
+        check(f"{persona}: the session boundary is visible",
+              banner.count() + bar_node.count() >= 1,
+              f"banner={banner.count()} admin_bar={bar_node.count()} url={persona_page.url}")
+        check(f"{persona}: the boundary names the persona it belongs to",
+              banner.count() != 1 or (banner.get_attribute("data-cpsd-persona") == persona),
+              banner.get_attribute("data-cpsd-persona") if banner.count() == 1 else "")
         account = persona_ctx.cookies()
         check(f"{persona}: the context holds that account's own WordPress session",
               any(c.get("name", "").startswith("wordpress_logged_in_") for c in account))
@@ -717,8 +726,10 @@ def sessions_phase(browser) -> None:
         # authority on the way out either.
         transitions[persona] = persona_page.url
         persona_page.goto(f"{BASE}/", wait_until="domcontentloaded")
-        exit_link = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session-exit a")
-        check(f"{persona}: the way back is visible in the admin bar", exit_link.count() == 1)
+        exit_link = persona_page.locator('[data-cpsd-session-exit="1"]')
+        if exit_link.count() == 0:
+            exit_link = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session-exit a")
+        check(f"{persona}: the one-click way back is visible", exit_link.count() == 1)
         if exit_link.count() == 1:
             exit_link.click()
             persona_page.wait_for_load_state("domcontentloaded")

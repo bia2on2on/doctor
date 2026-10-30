@@ -104,6 +104,14 @@ final class ScopedPersonaSession {
 	private static $current_cache = false;
 
 	/**
+	 * Guards the one-time banner render: hooks are attached to several surfaces and
+	 * a theme may fire more than one of them.
+	 *
+	 * @var bool
+	 */
+	private static $boundary_printed = false;
+
+	/**
 	 * @param Env            $env      Environment.
 	 * @param Platform       $platform Production adapter.
 	 * @param ScopedManifest $manifest Sealed manifest store.
@@ -131,6 +139,48 @@ final class ScopedPersonaSession {
 		// capability.
 		add_action( 'admin_bar_menu', array( __CLASS__, 'admin_bar_node' ), 100 );
 		add_filter( 'show_admin_bar', array( __CLASS__, 'force_admin_bar_for_persona_session' ), 20 );
+		// The admin bar is the canonical place for plugin-owned context, but it is not
+		// guaranteed: a portal screen rendered by a production template that does not
+		// call wp_footer(), or a site that disables the admin bar for the persona's
+		// role, would hide the boundary - and an invisible boundary is not a boundary.
+		// The server-rendered banner is therefore the authoritative one, and the
+		// admin-bar node is the secondary one.
+		add_action( 'wp_body_open', array( __CLASS__, 'render_boundary' ), 1 );
+		add_action( 'wp_footer', array( __CLASS__, 'render_boundary' ), 1 );
+		add_action( 'admin_footer', array( __CLASS__, 'render_boundary' ), 1 );
+	}
+
+	/**
+	 * Print the session boundary once per request, on whatever surface rendered.
+	 *
+	 * It names the persona, states plainly that this is a separate demo session
+	 * without administrator authority, and carries the one nonced way back. It grants
+	 * nothing and changes nothing: it is a notice plus a link.
+	 *
+	 * @return void
+	 */
+	public static function render_boundary(): void {
+		if ( self::$boundary_printed ) {
+			return;
+		}
+		$env     = new Env();
+		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
+		$current = $session->current();
+		if ( null === $current ) {
+			return;
+		}
+		self::$boundary_printed = true;
+		$personas = Credentials::personas();
+		$label    = (string) ( $personas[ $current['persona'] ]['label'] ?? $current['persona'] );
+		echo '<div id="cpsd-persona-boundary" dir="rtl" data-cpsd-session-boundary="1" data-cpsd-persona="'
+			. esc_attr( (string) $current['persona'] ) . '" style="position:fixed;inset-inline:0;bottom:0;z-index:99999;'
+			. 'background:#1d2327;color:#fff;padding:10px 16px;font:14px/1.6 Tahoma,sans-serif;text-align:center;'
+			. 'box-shadow:0 -2px 8px rgba(0,0,0,.25)">';
+		echo '<span data-cpsd-session-label="1">نشست نمایشی: <strong>' . esc_html( $label ) . '</strong></span> — ';
+		echo '<span>این نشست جداست و اختیار مدیرکل ندارد؛ همهٔ مجوزها همان‌طور که برای یک کاربر واقعی سنجیده می‌شود، سنجیده می‌شود.</span> ';
+		echo '<a href="' . esc_url( $session->exit_url() ) . '" data-cpsd-session-exit="1" '
+			. 'style="color:#72aee6;font-weight:700;text-decoration:underline">پایان نشست نمایشی و بازگشت</a>';
+		echo '</div>';
 	}
 
 	/**

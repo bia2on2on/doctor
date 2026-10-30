@@ -680,6 +680,31 @@ class OwnerIncidentRepairContract(unittest.TestCase):
         self.assertEqual(set(), demo_caps - production_caps,
                          "the demo asks about capabilities production does not define")
 
+    def test_the_session_boundary_does_not_depend_on_the_theme(self) -> None:
+        """An invisible boundary is not a boundary.
+
+        The admin bar is the canonical place for plugin-owned context, but it is
+        rendered by the theme and can be absent on a portal template. The
+        server-rendered banner is therefore authoritative: it must be hooked on
+        more than one surface, printed at most once, name the persona, and carry
+        the single nonced way back.
+        """
+        session = read(COMPANION / "includes" / "class-cpms-demo-scoped-session.php")
+        for hook in ("'wp_body_open'", "'wp_footer'", "'admin_footer'"):
+            self.assertIn(hook, session, f"{hook} must render the boundary")
+        self.assertIn("self::$boundary_printed", session)
+        self.assertIn('data-cpsd-session-boundary="1"', session)
+        self.assertIn('data-cpsd-session-exit="1"', session)
+        self.assertIn("esc_url( $session->exit_url() )", session)
+        # It is a notice and a link: no capability, no session change, no SQL.
+        banner = session.split("public static function render_boundary(", 1)[1].split("\n\t}", 1)[0]
+        for forbidden in ("add_cap(", "set_role(", "$wpdb", "wp_set_auth_cookie"):
+            self.assertNotIn(forbidden, banner, forbidden)
+        # And the drill accepts either surface rather than assuming the admin bar.
+        drill = (ROOT / "tests" / "scoped-demo" / "browser_scoped.py").read_text(encoding="utf-8")
+        self.assertIn('[data-cpsd-session-boundary="1"]', drill)
+        self.assertIn('[data-cpsd-session-exit="1"]', drill)
+
     def test_the_new_owner_features_use_production_services_not_copies(self) -> None:
         """Recovery and persona navigation are new demo surfaces; they must reach
         the product through its services and WordPress primitives, never through a

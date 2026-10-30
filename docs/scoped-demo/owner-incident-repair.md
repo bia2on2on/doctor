@@ -171,12 +171,19 @@ session. That preview shows what the administrator is allowed to see — which i
 deliberately less than the persona sees — and is never presented as the persona's
 experience.
 
-**The way back.** Personas get a WordPress admin-bar node
-«نشست نمایشی: <role>» with a child link «پایان نشست نمایشی و بازگشت». It is a
-nonced GET, it admits only a session whose user id is one of the sealed personas of
-the *live* fixture (state derived from sealed options, never from a cookie), it
-writes an audit row, and it calls `wp_logout()`. It never authenticates anybody and
-never hands administrator authority to the persona.
+**The way back, and the boundary that makes it honest.** Every persona page carries a
+server-rendered banner — «نشست نمایشی: <role> — این نشست جداست و اختیار مدیرکل ندارد»
+with the link «پایان نشست نمایشی و بازگشت» — plus the same node in the WordPress admin
+bar. The banner is the authoritative one because it does not depend on the theme
+rendering an admin bar: it is printed on `wp_body_open`, `wp_footer` and `admin_footer`,
+at most once per request, and on nothing but a persona session (state derived from the
+sealed options, never from a cookie). The first CI run of the `sessions` drill proved
+this matters — the admin bar alone was not visible on the portal surface.
+
+The exit is a nonced GET. It admits only a session whose user id is one of the sealed
+personas of the *live* fixture, writes an audit row, calls `wp_logout()`, and lands on
+the login screen with an explanation. It never authenticates anybody and never hands
+administrator authority to the persona.
 
 **The unavoidable UX limitation, stated on the page and here.** WordPress
 authentication is one site-wide cookie. Two tabs of the *same* browser share the
