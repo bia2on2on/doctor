@@ -36,6 +36,28 @@ class ScopedManifest extends Manifest {
 	 */
 	public const PENDING_BASELINE_OPTION = 'cpsd_baseline_pending';
 
+	/**
+	 * Explicit, informed administrator acceptance of the ONE consequence the
+	 * scoped mode cannot undo on a single-Clinic host site.
+	 *
+	 * The audit log has a production foreign key to `cpms_clinics`, so the demo's
+	 * anchor Clinic is archived in place at teardown and `COUNT(*)` on
+	 * `cpms_clinics` stays one higher for ever. Production decides "implicit
+	 * single-Clinic install" from exactly that count
+	 * (`SystemClinicResolver::resolve()`, `FirstPracticeSetupService`,
+	 * `single_clinic_display_row()`), so on a host that had exactly one Clinic
+	 * this permanently moves the site from implicit scope to "explicit scope
+	 * required" — a real change to pre-existing site behaviour.
+	 *
+	 * That is acceptable ONLY where the administrator has said, explicitly and
+	 * in so many words, that this site is a private test site rather than a
+	 * production install. This marker records that statement: HMAC-sealed, bound
+	 * to this site's fingerprint and to the host name the administrator typed.
+	 * Deleting the marker revokes the acceptance; the preflight reads this record
+	 * and nothing else, so no request payload can grant it.
+	 */
+	public const PRIVATE_HOST_OPTION = 'cpsd_private_host';
+
 	public function __construct( Env $env ) {
 		parent::__construct( $env );
 		$this->option           = 'cpsd_manifest';
@@ -152,6 +174,85 @@ class ScopedManifest extends Manifest {
 
 	public function disable_mode(): void {
 		$this->env->option_delete( self::MODE_OPTION );
+	}
+
+	/**
+	 * Record the administrator's explicit statement that this host is a private
+	 * test site, which is what makes the single-Clinic anchor consequence an
+	 * informed choice instead of a silent one.
+	 *
+	 * @param int    $actor_id Acting Administrator.
+	 * @param string $host     Host name the administrator typed to confirm.
+	 * @return void
+	 * @throws Exception When the statement cannot be stored and verified.
+	 */
+	public function enable_private_host( int $actor_id, string $host ): void {
+		// Fail closed at the write too, not only at the read: a record that
+		// names any host but this one could never be honoured, so refuse it
+		// here instead of storing a sealed record that silently does nothing.
+		$host = strtolower( trim( $host ) );
+		if ( '' === $host || $host !== self::host_of( $this->env->home_url() ) ) {
+			throw new Exception( 'PRIVATE_HOST_MISMATCH', 'تأیید سایت آزمایشی خصوصی فقط برای دامنهٔ همین سایت ثبت می‌شود.' );
+		}
+		$payload = array(
+			'enabled'  => true,
+			'actor_id' => $actor_id,
+			'at'       => $this->env->now_sql(),
+			'site'     => $this->site_fingerprint(),
+			'host'     => $host,
+		);
+		$payload['mac'] = $this->mac( $payload );
+		if ( ! $this->env->persist_verified( self::PRIVATE_HOST_OPTION, $payload ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'ثبت تأیید سایت آزمایشی خصوصی ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+		}
+	}
+
+	/**
+	 * The verified private-test-site statement, or null when absent, tampered or
+	 * belonging to a different site. Never trusts an unsealed value.
+	 *
+	 * @return array{actor_id:int,at:string,host:string}|null
+	 */
+	public function private_host_consent(): ?array {
+		$raw = $this->env->option_get( self::PRIVATE_HOST_OPTION, false );
+		if ( ! is_array( $raw ) || true !== ( $raw['enabled'] ?? false ) ) {
+			return null;
+		}
+		$host = (string) ( $raw['host'] ?? '' );
+		$mac  = (string) ( $raw['mac'] ?? '' );
+		unset( $raw['mac'] );
+		if ( '' === $mac || ! hash_equals( $this->mac( $raw ), $mac ) ) {
+			return null;
+		}
+		if ( (string) ( $raw['site'] ?? '' ) !== $this->site_fingerprint() ) {
+			return null;
+		}
+		if ( '' === $host || strtolower( $host ) !== self::host_of( $this->env->home_url() ) ) {
+			return null;
+		}
+
+		return array(
+			'actor_id' => (int) ( $raw['actor_id'] ?? 0 ),
+			'at'       => (string) ( $raw['at'] ?? '' ),
+			'host'     => $host,
+		);
+	}
+
+	public function disable_private_host(): void {
+		$this->env->option_delete( self::PRIVATE_HOST_OPTION );
+	}
+
+	/**
+	 * Normalised host of a site URL. The administrator types exactly this to
+	 * accept the private-test-site consequence: their own host name, not a
+	 * shared machine phrase, so the confirmation cannot be reused on a different
+	 * site and needs no transcription of a long token.
+	 *
+	 * @param string $url Any site URL.
+	 * @return string
+	 */
+	public static function host_of( string $url ): string {
+		return strtolower( (string) wp_parse_url( $url, PHP_URL_HOST ) );
 	}
 
 	/**

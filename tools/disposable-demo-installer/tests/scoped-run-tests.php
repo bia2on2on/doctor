@@ -68,6 +68,15 @@ namespace {
 	if ( ! function_exists( 'add_submenu_page' ) ) {
 		function add_submenu_page( ...$args ) { return 'cpms_page_cpsd'; }
 	}
+	if ( ! function_exists( 'wp_register_script' ) ) {
+		function wp_register_script( ...$args ) { return true; }
+	}
+	if ( ! function_exists( 'wp_enqueue_script' ) ) {
+		function wp_enqueue_script( ...$args ) { return true; }
+	}
+	if ( ! function_exists( 'wp_add_inline_script' ) ) {
+		function wp_add_inline_script( ...$args ) { return true; }
+	}
 
 	// The evaluation console must remain reachable for a legitimate site
 	// administrator even when the production clinical menu hides/reorders rows.
@@ -251,6 +260,116 @@ namespace {
 	Cpdd_Test::equals( 'fail', ScopedPreflight::host_scope_decision( 1 )['status'], 'single-Clinic host is refused by the implicit-scope gate' );
 	Cpdd_Test::equals( 'pass', ScopedPreflight::host_scope_decision( 2 )['status'], 'multi-Clinic host passes the implicit-scope gate' );
 	Cpdd_Test::equals( 'pass', ScopedPreflight::host_scope_decision( 7 )['status'], 'larger multi-Clinic host passes the implicit-scope gate' );
+
+	// 7b. The real-host case: a PRIVATE TEST SITE that has exactly one Clinic.
+	//
+	// The Owner's own install is this shape, and refusing it outright made the
+	// demo unusable there. The consequence is real, not cosmetic, so it is not
+	// waived: the administrator must state, in a sealed record naming this site
+	// and its host, that the site is a private test site and that the permanent
+	// implicit-scope change is acceptable.
+	$single_no_consent = ScopedPreflight::host_scope_decision( 1 );
+	Cpdd_Test::equals( 'fail', $single_no_consent['status'], 'single-Clinic host is still refused without the explicit private-site acceptance' );
+	Cpdd_Test::ok(
+		false !== strpos( $single_no_consent['detail'], 'آزمایشی خصوصی' ),
+		'the refusal tells the operator that a private test site can be accepted instead of dead-ending'
+	);
+	$single_consent = ScopedPreflight::host_scope_decision( 1, true, 'begoobehesh.ir' );
+	Cpdd_Test::equals( 'pass', $single_consent['status'], 'single-Clinic host passes once the private-site acceptance is recorded' );
+	Cpdd_Test::ok(
+		false !== strpos( $single_consent['detail'], 'begoobehesh.ir' ) && false !== strpos( $single_consent['detail'], 'بایگانی' ),
+		'the accepted state still states the host and the permanent archive consequence'
+	);
+	Cpdd_Test::equals( 'pass', ScopedPreflight::host_scope_decision( 2, false )['status'], 'the acceptance is not needed on an already multi-Clinic host' );
+	Cpdd_Test::equals( 'fail', ScopedPreflight::host_scope_decision( 0, true )['status'], 'a zero-Clinic host cannot be accepted into scoped mode' );
+
+	// The acceptance is a sealed, site- and host-bound record: it cannot be
+	// hand-written, cannot be replayed from another site, and cannot be granted
+	// by a request payload.
+	$consent_ctx = cpsd_fixture();
+	$consent_manifest = $consent_ctx['manifest'];
+	$consent_host     = ScopedRequest::private_host_phrase( $consent_ctx['env'] );
+	Cpdd_Test::equals( null, $consent_manifest->private_host_consent(), 'no private-site acceptance exists by default' );
+	$consent_manifest->enable_private_host( 1, $consent_host );
+	$stored = $consent_manifest->private_host_consent();
+	Cpdd_Test::ok( is_array( $stored ) && $consent_host === (string) $stored['host'], 'the private-site acceptance is stored and verified for this host' );
+	Cpdd_Test::ok( '' !== (string) ( $stored['at'] ?? '' ) && 1 === (int) ( $stored['actor_id'] ?? 0 ), 'the acceptance records who accepted it and when' );
+
+	$raw = $consent_ctx['env']->option_get( ScopedManifest::PRIVATE_HOST_OPTION, false );
+	Cpdd_Test::ok( is_array( $raw ) && isset( $raw['mac'] ), 'the acceptance lives in its own separately sealed option' );
+	$raw['host'] = 'evil.example';
+	$consent_ctx['env']->option_set( ScopedManifest::PRIVATE_HOST_OPTION, $raw );
+	Cpdd_Test::equals( null, $consent_manifest->private_host_consent(), 'a hand-edited acceptance fails its HMAC and is ignored' );
+	$consent_manifest->enable_private_host( 1, $consent_host );
+	Cpdd_Test::ok( is_array( $consent_manifest->private_host_consent() ), 're-recording the acceptance restores it' );
+
+	$wrong_host_ctx = cpsd_fixture();
+	$wrong_host_code = '';
+	try {
+		$wrong_host_ctx['manifest']->enable_private_host( 1, 'someone-else.example' );
+	} catch ( CpmsDemo\Exception $e ) {
+		$wrong_host_code = $e->demo_code();
+	}
+	Cpdd_Test::equals( 'PRIVATE_HOST_MISMATCH', $wrong_host_code, 'recording an acceptance for another host is refused at the write' );
+	Cpdd_Test::equals( null, $wrong_host_ctx['manifest']->private_host_consent(), 'and nothing sealed is left behind, so it cannot be replayed across sites' );
+
+	$foreign_site_ctx = cpsd_fixture();
+	$foreign_site_ctx['manifest']->enable_private_host( 1, ScopedRequest::private_host_phrase( $foreign_site_ctx['env'] ) );
+	$foreign_raw       = $foreign_site_ctx['env']->option_get( ScopedManifest::PRIVATE_HOST_OPTION, false );
+	$foreign_raw['site'] = str_repeat( 'f', 32 );
+	$foreign_site_ctx['env']->option_set( ScopedManifest::PRIVATE_HOST_OPTION, $foreign_raw );
+	Cpdd_Test::equals( null, $foreign_site_ctx['manifest']->private_host_consent(), 'an acceptance sealed for another site fingerprint is refused' );
+
+	$consent_manifest->disable_private_host();
+	Cpdd_Test::equals( null, $consent_manifest->private_host_consent(), 'the acceptance can be withdrawn' );
+
+	// The card the Owner actually sees on a single-Clinic host. Rendered for real
+	// (not pattern-matched), because this is the one path CI's multi-Clinic host
+	// never reaches: a broken card here would reach the operator first.
+	$render_ctx    = cpsd_fixture();
+	$render_request = new ScopedRequest( $render_ctx['env'], $render_ctx['manifest'] );
+	$render_consent = new ReflectionMethod( CpmsDemo\ScopedAdmin::class, 'render_private_host_consent' );
+	ob_start();
+	$render_consent->invoke( null, $render_ctx['env'], $render_ctx['manifest'], $render_request, 1 );
+	$pending_html = (string) ob_get_clean();
+	Cpdd_Test::ok(
+		false !== strpos( $pending_html, 'data-cpsd-private-host="pending"' )
+		&& false !== strpos( $pending_html, 'data-cpsd-form="private_host"' )
+		&& false !== strpos( $pending_html, 'data-cpdd-copy-value="' . ScopedRequest::private_host_phrase( $render_ctx['env'] ) . '"' ),
+		'a single-Clinic host renders a plain-language acceptance form whose phrase is its own host'
+	);
+	Cpdd_Test::ok(
+		false === strpos( $pending_html, 'password' ) && false === strpos( $pending_html, 'cpms_patients' ),
+		'the acceptance card exposes no credential and no clinical table name'
+	);
+	$render_ctx['manifest']->enable_private_host( 1, ScopedRequest::private_host_phrase( $render_ctx['env'] ) );
+	ob_start();
+	$render_consent->invoke( null, $render_ctx['env'], $render_ctx['manifest'], $render_request, 1 );
+	$accepted_html = (string) ob_get_clean();
+	Cpdd_Test::ok(
+		false !== strpos( $accepted_html, 'data-cpsd-private-host="accepted"' )
+		&& false === strpos( $accepted_html, 'data-cpsd-form="private_host"' ),
+		'once accepted, the card reports the recorded acceptance instead of asking again'
+	);
+	ob_start();
+	$render_consent->invoke( null, $render_ctx['env'], $render_ctx['manifest'], $render_request, 2 );
+	Cpdd_Test::equals( '', (string) ob_get_clean(), 'a multi-Clinic host is never asked to accept anything' );
+
+	// An unreadable host must never collapse into "empty phrase matches empty
+	// field": the request layer refuses rather than authorising nothing.
+	$empty_host_ctx  = cpsd_fixture();
+	$empty_host_ctx['env']->home = '';
+	$empty_request   = new ScopedRequest( $empty_host_ctx['env'], $empty_host_ctx['manifest'] );
+	$empty_code     = '';
+	try {
+		$empty_request->phrase( ScopedRequest::ACTION_PRIVATE_HOST );
+	} catch ( CpmsDemo\Exception $e ) {
+		$empty_code = $e->demo_code();
+	}
+	Cpdd_Test::equals( 'PRIVATE_HOST_MISMATCH', $empty_code, 'a host that cannot be read never yields an empty confirmation phrase' );
+	ob_start();
+	$render_consent->invoke( null, $empty_host_ctx['env'], $empty_host_ctx['manifest'], $empty_request, 1 );
+	Cpdd_Test::equals( '', (string) ob_get_clean(), 'and the card is not rendered at all in that case' );
 
 	// 8. Interrupted provisioning keeps a sealed pre-provisioning baseline so the
 	// recovery teardown can still prove what pre-existed.

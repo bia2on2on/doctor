@@ -965,3 +965,73 @@ class DefectMMembershipRegistrationCannotOutrankThePrincipal(unittest.TestCase):
         drill = read(ROOT / "tests" / "scoped-demo" / "teardown-safety.php")
         self.assertIn("B2: a REGISTERED grant to a real person is still REFUSED", drill)
         self.assertIn("register_rows(", drill)
+
+
+class PrivateTestHostAcceptanceTest(unittest.TestCase):
+    """The real-host case: a private test site that has exactly one Clinic.
+
+    The Owner's own install is that shape, and the gate refused it outright.
+    The fix is not a waiver: the consequence is real (the demo's anchor Clinic
+    is archived, never deleted, so `COUNT(*)` on cpms_clinics stays one higher
+    and production's implicit single-Clinic scope is gone for good), so the
+    acceptance must be explicit, sealed, site-bound and revocable -- and the
+    gate must still fail closed without it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.preflight = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-preflight.php"
+        )
+        cls.manifest = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-manifest.php"
+        )
+        cls.request = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-request.php"
+        )
+        cls.admin = read(
+            ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-scoped-admin.php"
+        )
+
+    def test_the_gate_is_fail_closed_by_default(self) -> None:
+        self.assertIn("public static function host_scope_decision( int $clinic_count, bool $private_host = false, string $host = '' ): array {", self.preflight)
+        block = self.preflight.split("if ( 1 === $clinic_count ) {", 1)[1].split("return array(", 2)
+        self.assertIn("if ( ! $private_host ) {", block[0], "a single-Clinic host must still refuse without the acceptance")
+
+    def test_the_acceptance_is_read_from_a_sealed_record_not_from_the_request(self) -> None:
+        self.assertIn("$this->manifest instanceof ScopedManifest ? $this->manifest->private_host_consent() : null", self.preflight)
+        self.assertNotIn("$_POST", self.preflight.split("check_host_scope", 1)[1][:1200])
+
+    def test_the_record_is_hmac_sealed_and_bound_to_this_site_and_host(self) -> None:
+        self.assertIn("public const PRIVATE_HOST_OPTION = 'cpsd_private_host';", self.manifest)
+        self.assertIn("hash_equals( $this->mac( $raw ), $mac )", self.manifest)
+        self.assertIn("!== $this->site_fingerprint()", self.manifest)
+        self.assertIn("!== self::host_of( $this->env->home_url() )", self.manifest)
+        self.assertIn("public function disable_private_host(): void {", self.manifest)
+        # Fail closed on the write path too: an acceptance naming another host
+        # could never be honoured, so it is refused instead of stored.
+        self.assertIn("throw new Exception( 'PRIVATE_HOST_MISMATCH'", self.manifest)
+
+    def test_the_phrase_is_this_sites_own_host_name(self) -> None:
+        self.assertIn("return ScopedManifest::host_of( $env->home_url() );", self.request)
+        self.assertIn("if ( self::ACTION_PRIVATE_HOST === $action ) {", self.request)
+        # The fixed machine phrases are untouched: only the new action is dynamic.
+        for phrase in ("I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE", "CREATE_SCOPED_DEMO_ON_TEST_SITE", "REMOVE_ONLY_SCOPED_DEMO_DATA"):
+            self.assertIn(phrase, self.request)
+
+    def test_accepting_never_bypasses_the_administrator_or_nonce_gates(self) -> None:
+        dispatch = self.admin.split("case ScopedRequest::ACTION_PRIVATE_HOST:", 1)[1][:600]
+        self.assertNotIn("skip", dispatch.lower())
+        authorize = read(ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-request.php")
+        self.assertIn("$request->authorize( $action, $post );", self.admin)
+        self.assertIn("if ( ! $this->env->user_can( $user_id, 'manage_options' ) || ! $this->env->user_can( $user_id, 'install_plugins' ) ) {", authorize)
+
+    def test_the_setup_page_states_the_next_step_and_links_the_personas(self) -> None:
+        self.assertIn('data-cpsd-summary=', self.admin)
+        self.assertIn("href=\"#cpsd-personas\"", self.admin)
+        self.assertIn('id="cpsd-personas"', self.admin)
+        self.assertIn('data-cpdd-copy=', self.admin)
+
+    def test_no_impersonation_or_credential_exposure_was_added(self) -> None:
+        for forbidden in ("set_current_user(", "wp_set_auth_cookie(", "switch_to_user"):
+            self.assertNotIn(forbidden, self.admin)
