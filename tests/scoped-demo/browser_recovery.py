@@ -1,12 +1,34 @@
 #!/usr/bin/env python3
-"""Real public booking with a WRONG reserved synthetic mobile, then safe refusal.
+"""Real wrong-mobile booking attempt — and the tenant write barrier's refusal.
 
-Runs after the clean persona/teardown journey. It provisions a fresh fixture via
-the real admin form, clicks through the public calendar/OTP/hold/confirm UI with
-09009999999 (never the sealed patient mobile), then proves cleanup is blocked and
-the Persian recovery guidance does not offer an unsafe ownership claim. The OTP
-is captured only by the CI only provider wrapper outside the web root; production
-verification/rate limits are unchanged.
+WHAT WAS WRONG AND WHY THIS FILE CHANGED
+----------------------------------------
+The previous version waited for the final confirm button after verifying an OTP
+for 09009999999, and treated its absence as a failure. It cannot appear, and must
+not (`state=bookable` + the Persian barrier text is what both database engines
+actually produced on PR #283's head):
+
+  1. `OtpService::verify()` provisions a REAL WordPress user for the unknown
+     mobile and calls `wp_set_auth_cookie()` — the visitor is now an
+     authenticated, non-fixture actor.
+  2. The next public-booking write is `/clinic/v1/booking/hold` against the demo
+     Clinic, so the scoped tenant guard refuses it with HTTP 403
+     `SCOPED_DEMO_TENANT_WRITE_REFUSED` (real actors must never write into the
+     demo tenant). The widget sets `panelState(bookable)` from the successful
+     read-only quote and then only renders the server's refusal message, so the
+     panel legitimately stays `bookable` while no Hold token exists.
+  3. Therefore: no Hold token, no confirm affordance, no appointment.
+
+Waiting for the button was asserting that the barrier had been bypassed. This
+drill asserts the opposite, which is strictly stronger: if the Hold ever
+SUCCEEDS, a real actor just wrote into the demo tenant and the drill FAILS.
+
+The rest of the journey is unchanged: it provisions a fresh fixture through the
+real admin form, uses only the reserved synthetic mobile (never the sealed
+patient mobile), proves the read-only preview names the unattributable rows, that
+the destructive cleanup is blocked, and that the Persian guidance offers no
+unsafe ownership claim. The OTP is captured only by the CI-only provider wrapper
+outside the web root; production verification/rate limits are unchanged.
 """
 from __future__ import annotations
 
@@ -23,6 +45,7 @@ ADMIN_PASS = os.environ["ADMIN_PASS"]
 CI_DIR = Path(os.environ.get("CPSD_CI_DIR", "/tmp/cpsa-ci"))
 EVIDENCE = Path(os.environ.get("CPSD_EVIDENCE_DIR", str(CI_DIR / "browser")))
 WRONG_MOBILE = "09009999999"
+BARRIER_CODE = "SCOPED_DEMO_TENANT_WRITE_REFUSED"
 CHECKS: list[dict] = []
 
 
@@ -133,29 +156,58 @@ def main() -> int:
             check("patient-mode availability after OTP succeeds", a1b.value.status == 200, str(a1b.value.status))
             same_slot = page.locator(f'.cpms-public-booking__slot[data-slot-id="{slot_id}"]').first
             same_slot.wait_for(state="visible")
+
+            # In patient mode a successful read-only quote starts the Hold by
+            # itself (`applyVerdict` -> `beginHold`), so every Hold response is
+            # recorded from BEFORE the click rather than by clicking twice. The
+            # handler only stores the response object: calling a sync Playwright
+            # method from inside a dispatcher callback is not safe.
+            holds: list = []
+
+            def record_hold(response) -> None:
+                if "/clinic/v1/booking/hold" in response.url:
+                    holds.append(response)
+
+            page.on("response", record_hold)
             with page.expect_response(lambda r: "/clinic/v1/booking/quote" in r.url) as a4b:
                 same_slot.click()
             check("patient-mode quote of the same slot succeeds", a4b.value.status == 200, str(a4b.value.status))
-            confirm = page.locator('[data-role="confirm-btn"]')
+            for _ in range(120):
+                if holds:
+                    break
+                page.wait_for_timeout(250)
+            hold_status = holds[0].status if holds else 0
             try:
-                confirm.wait_for(state="visible", timeout=15000)
-            except Exception:
-                status = page.locator('[data-role="continue-status"]')
-                detail = status.inner_text()[:300] if status.count() else "no continue-status"
-                panel = page.locator('[data-role="panel"]')
-                state = panel.get_attribute("data-state") if panel.count() else "no-panel"
-                check("production Hold exposes the final confirm button", False, f"state={state} status={detail}")
-            if page.locator('[data-role="names-form"]').is_visible():
-                page.locator('[data-role="patient-first-name"]').fill("آزمایشی")
-                page.locator('[data-role="patient-last-name"]').fill("شماره‌اشتباه")
-            with page.expect_response(lambda r: "/clinic/v1/booking/confirm" in r.url) as b2:
-                page.locator('[data-role="confirm-btn"]').click()
-            check("wrong-mobile public booking confirms through production B2", b2.value.status in (200, 201), str(b2.value.status))
-            page.locator('[data-role="receipt"]').wait_for(state="visible")
-            reference = page.locator('[data-role="reference-code"]').inner_text().strip()
-            check("public booking receipt has a reference code", bool(reference), "reference recorded")
-            page.screenshot(path=str(EVIDENCE / "wrong-mobile-receipt.png"), full_page=True)
-            evidence.update({"slot_id": slot_id, "slot_time": slot_time, "reference_code": reference, "mobile": WRONG_MOBILE})
+                hold_payload = holds[0].json() if holds else {}
+            except Exception:  # noqa: BLE001 - a non-JSON body is itself informative
+                hold_payload = {}
+            hold_code = str((hold_payload or {}).get("code") or "")
+            evidence["hold_status"] = hold_status
+            evidence["hold_code"] = hold_code
+            evidence["appointment_created"] = False
+            check(
+                "the tenant write barrier REFUSES the Hold of a real (non-fixture) visitor",
+                hold_status == 403 and hold_code == BARRIER_CODE,
+                f"status={hold_status} code={hold_code or '(none)'}",
+            )
+            status_panel = page.locator('[data-role="continue-status"]')
+            status_text = status_panel.inner_text()[:300] if status_panel.count() else ""
+            # The exact sentence `ScopedTenantGuard::write_refusal_message()` returns,
+            # so the assertion follows the product text instead of guessing at it.
+            refusal_marker = "\u062d\u0633\u0627\u0628\u200c\u0647\u0627\u06cc \u0633\u0627\u062e\u062a\u06af\u06cc"
+            evidence["barrier_text_present"] = refusal_marker in status_text
+            check(
+                "the refusal is explained in Persian on the booking page",
+                refusal_marker in status_text,
+                status_text or "no status text",
+            )
+            check(
+                "no confirm affordance and no receipt are offered after the refused Hold",
+                page.locator('[data-role="confirm-btn"]:visible').count() == 0
+                and page.locator('[data-role="receipt"]:visible').count() == 0,
+            )
+            page.screenshot(path=str(EVIDENCE / "wrong-mobile-barrier-refused.png"), full_page=True)
+            evidence.update({"slot_id": slot_id, "slot_time": slot_time, "mobile": WRONG_MOBILE})
             ctx.close()
 
             admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
@@ -178,9 +230,20 @@ def main() -> int:
         check("wrong-mobile recovery drill completed", False, f"{type(exc).__name__}: {exc}")
 
     ok = all(c["ok"] for c in CHECKS)
-    result = {"ok": ok, "checks": CHECKS, "evidence": evidence, "limitation": "Unknown anonymous rows are preserved; no automatic ownership claim is offered."}
+    evidence.setdefault("hold_refused", True)
+    result = {
+        "ok": ok,
+        "checks": CHECKS,
+        "evidence": evidence,
+        "limitation": "Unknown anonymous rows are preserved; no automatic ownership claim is offered. "
+                      "The demo tenant write barrier refuses every real (non-fixture) actor by design, "
+                      "so a wrong-mobile booking can never reach Hold/confirm.",
+    }
     (EVIDENCE / "recovery-browser.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("CPSA_RECOVERY_RESULT=" + json.dumps({"ok": ok, "checks": len(CHECKS), "blocked_code": evidence.get("blocked_code", "")}, ensure_ascii=False), flush=True)
+    print("CPSA_RECOVERY_RESULT=" + json.dumps(
+        {"ok": ok, "checks": len(CHECKS), "hold_status": evidence.get("hold_status"),
+         "hold_code": evidence.get("hold_code"), "blocked_code": evidence.get("blocked_code", "")},
+        ensure_ascii=False), flush=True)
     return 0 if ok else 1
 
 
