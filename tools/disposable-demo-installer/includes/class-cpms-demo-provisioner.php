@@ -26,6 +26,10 @@ class Provisioner {
 	 * an OTP identity, while still matching the production mobile validator.
 	 */
 	public const MOBILE_PREFIX = '0900';
+	/** Demo clinic opening hour (Asia/Tehran) — first same-day slot may start here. */
+	public const CLINIC_OPEN_HOUR = 8;
+	/** Demo clinic closing hour (Asia/Tehran) — no same-day slot starts at or after it. */
+	public const CLINIC_CLOSE_HOUR = 21;
 
 	/**
 	 * Consultation-fee values used by the synthetic pricing fixture.
@@ -276,7 +280,11 @@ class Provisioner {
 				$this->platform->assign_clinician_locations( $clinician_second_id, $manifest['ids']['location_ids'], $location_primary );
 
 				$stage = 'schedule';
-				$manifest['counts']['schedule_rows'] = $this->platform->create_bounded_schedule( $clinic_id, $clinician_id, $location_primary );
+				// Both doctor personas get the same bounded weekly template: a demo
+				// in which «پزشک دوم» has no schedule at all cannot show the
+				// per-doctor separation (private threads, fees, queue) it exists for.
+				$manifest['counts']['schedule_rows'] = $this->platform->create_bounded_schedule( $clinic_id, $clinician_id, $location_primary )
+					+ $this->platform->create_bounded_schedule( $clinic_id, $clinician_second_id, $location_primary );
 
 				$stage   = 'patient';
 				$patient = $this->platform->create_patient(
@@ -304,6 +312,11 @@ class Provisioner {
 				foreach ( $slots as $slot ) {
 					$slot_id                = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $slot['date'], $slot['time'] );
 					$manifest['ids']['slot_ids'][] = $slot_id;
+				}
+				// The second doctor offers the same open plan (appended AFTER the first
+				// doctor's rows so slot_ids[0] stays the reserved staff-appointment row).
+				foreach ( $slots as $slot ) {
+					$manifest['ids']['slot_ids'][] = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_second_id, $slot['date'], $slot['time'] );
 				}
 				$manifest = $this->manifest->save( $manifest );
 
@@ -676,52 +689,80 @@ class Provisioner {
 		// booked rows). Reserving a later-day slot for the staff appointment keeps
 		// the same-day public offer genuinely available instead of consuming it.
 		//
-		// The public block is anchored five minutes ahead on a whole-minute grid and
-		// every entry carries its OWN local date, so the block can never collapse as
-		// local midnight approaches. The previous plan anchored 45 minutes ahead and
-		// truncated DOWN to a 20-minute boundary, which silently dropped today's
-		// entries one by one (3 -> 2 -> 1 -> 0) and made this lane fail on the wall
-		// clock alone every day between ~22:55 and ~24:00 Asia/Tehran: with exactly
-		// one same-day slot the staff appointment consumed it and the browser timed
-		// out waiting for a same-day arrival row, and with none the "open future
-		// slots" bound failed. No date is hardcoded here and no production
-		// scheduling rule is bypassed - every entry is still a real strictly-future
-		// cpms_schedule_slots row with the normal 20-minute duration and capacity 1,
-		// persisted through Platform::insert_slot() and booked through the ordinary
-		// production booking service.
+		// Realistic Iranian clinic hours (Asia/Tehran, 20-minute grid):
+		//   * later days carry a morning block (09:00/09:20/09:40) and an evening
+		//     block (17:00/17:20/17:40) for +1 and +2 days;
+		//   * the same-day block starts at the first 20-minute grid time at least
+		//     five minutes ahead, never before CLINIC_OPEN and never at or after
+		//     CLINIC_CLOSE. Before opening it starts AT opening (08:00), after
+		//     closing there is no same-day row - the owner books tomorrow or uses
+		//     the reception «ورود حضوری بدون نوبت». The previous plan anchored
+		//     "now + 5 minutes" on a one-minute grid without any bound, which
+		//     produced rows such as 23:47 - technically valid, visibly unrealistic.
+		// Every entry is still a real strictly-future cpms_schedule_slots row with
+		// the normal 20-minute duration and capacity 1, persisted through
+		// Platform::insert_slot() and booked through the ordinary production
+		// booking service; no date is hardcoded and no scheduling rule is bypassed.
+		// Asia/Tehran has had no DST since 2022, and every arithmetic step below is
+		// zone-aware DateTimeImmutable math, so a future rule change cannot break it.
 		$tz  = new \DateTimeZone( 'Asia/Tehran' );
 		$now = new \DateTimeImmutable( 'now', $tz );
 
 		$upcoming = array();
 		for ( $day = 1; $day <= 2; $day++ ) {
-			foreach ( array( '09:00:00', '09:20:00', '09:40:00' ) as $time ) {
+			$date = $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' );
+			foreach ( array( '09:00:00', '09:20:00', '09:40:00', '17:00:00', '17:20:00', '17:40:00' ) as $time ) {
 				$upcoming[] = array(
-					'date' => $now->modify( '+' . $day . ' days' )->format( 'Y-m-d' ),
+					'date' => $date,
 					'time' => $time,
 				);
 			}
 		}
 
-		$anchor   = $now->modify( '+5 minutes' );
-		$anchor   = $anchor->setTime( (int) $anchor->format( 'H' ), (int) $anchor->format( 'i' ), 0 );
-		$journey  = $anchor->format( 'Y-m-d' );
-		$public   = array();
-		foreach ( array( 0, 20, 40 ) as $offset ) {
-			$slot = $anchor->modify( '+' . $offset . ' minutes' );
-			if ( $slot->format( 'Y-m-d' ) === $journey ) {
-				$public[] = array(
-					'date' => $slot->format( 'Y-m-d' ),
-					'time' => $slot->format( 'H:i:00' ),
-				);
-			}
+		$public = array();
+		foreach ( self::same_day_grid( $now ) as $slot ) {
+			$public[] = array(
+				'date' => $slot->format( 'Y-m-d' ),
+				'time' => $slot->format( 'H:i:00' ),
+			);
 		}
 
-		// array_shift() cannot return null here: the loop above always fills six
-		// entries. The reserved slot is a later-day 09:00 row, so it can never
-		// collide with the anchored public block (which starts at most a few
-		// minutes ahead of "now").
+		// array_shift() cannot return null here: the loop above always fills
+		// twelve entries. The reserved slot is the +1-day 09:00 row, so it can
+		// never collide with the same-day block.
 		$plan = array( array_shift( $upcoming ) );
 
 		return array_merge( $plan, $public, $upcoming );
+	}
+
+	/**
+	 * Same-day public slot starts: up to three consecutive 20-minute grid times,
+	 * strictly in the future, inside [CLINIC_OPEN, CLINIC_CLOSE) of the given
+	 * local moment. Pure, so the hour arithmetic is unit-tested for the whole
+	 * day (before opening, inside hours, around closing, late night, midnight).
+	 *
+	 * @param \DateTimeImmutable $now Zone-aware local "now" (Asia/Tehran).
+	 * @return list<\DateTimeImmutable>
+	 */
+	public static function same_day_grid( \DateTimeImmutable $now ): array {
+		$anchor  = $now->modify( '+5 minutes' );
+		$rounded = (int) ceil( ( (int) $anchor->format( 'i' ) + ( (int) $anchor->format( 's' ) > 0 ? 1 : 0 ) ) / 20 ) * 20;
+		$anchor  = $anchor->setTime( (int) $anchor->format( 'H' ), 0, 0 )->modify( '+' . $rounded . ' minutes' );
+		$open    = $now->setTime( self::CLINIC_OPEN_HOUR, 0, 0 );
+		$close   = $now->setTime( self::CLINIC_CLOSE_HOUR, 0, 0 );
+		if ( $anchor < $open ) {
+			$anchor = $open;
+		}
+		$today = $now->format( 'Y-m-d' );
+		$grid  = array();
+		foreach ( array( 0, 20, 40 ) as $offset ) {
+			$slot = $anchor->modify( '+' . $offset . ' minutes' );
+			if ( $slot->format( 'Y-m-d' ) !== $today || $slot >= $close || $slot <= $now ) {
+				continue;
+			}
+			$grid[] = $slot;
+		}
+
+		return $grid;
 	}
 }

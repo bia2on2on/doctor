@@ -325,3 +325,61 @@ No error reporting was suppressed and no assertion was removed.
 `Throwable` message into the UI (`خطای غیرمنتظره: ` . `$e->getMessage()`): it now renders the
 same Persian sentence as the strict page with `data-cpdd-code="UNEXPECTED"`, so a class name
 or file path can no longer reach the operator — the strict page already behaved this way.
+
+## Mission I — real-host acceptance remediation (the owner's wp-admin install failed)
+
+**Trigger.** On the Product Owner's real test site, **Plugins → Add New → Upload Plugin** of
+the standalone `cpms-disposable-demo-1.0.0.zip` ended in *"The plugin does not have a valid
+header."* Every lane was green at the time, because the lanes installed the package with
+`wp plugin install` — which never calls `Plugin_Upgrader::plugin_info()`. The Mission H
+text above ("exactly one plugin header") described the intent, not the artefact.
+
+### Root causes (each reproduced before it was fixed)
+
+| # | Symptom | Root cause | Correction |
+| --- | --- | --- | --- |
+| 1 | `no_plugin_header` on upload | The standalone ZIP shipped **two** plugin headers: `cpms-disposable-demo/cpms-disposable-demo.php` and the embedded `cpms-disposable-demo/core/clinic-practice-management.php`. `Plugin_Upgrader::plugin_info()` calls `get_plugins('/<dir>')`, which scans one level of sub-directories, and takes the first file — the nested production bootstrap — then `validate_plugin()` refuses it. | `bin/build-demo-installer.sh` rewrites **line 3 of the staged copy only** (`Plugin Name:` → `Embedded Core:`), proves the staged diff is exactly that line, proves the production source is byte-identical to Git, and refuses to package unless exactly one header remains. The embedded bootstrap keeps `define('CPMS_PLUGIN_FILE', __FILE__)` and all executable code. The production source and the production ZIP are untouched. |
+| 2 | HTTP 403 on the scoped demo page | The page is registered under the CPMS container menu, so its hookname is `cpms-…_page_cpms-scoped-demo`; the owner opened the legacy `tools.php?page=cpms-scoped-demo`, whose hookname is not registered, and `user_can_access_admin_page()` says no — for a legitimate administrator. | `Admin::legacy_tools_redirect_target()` maps both legacy Tools URLs to `admin.php?page=<slug>` (pure, unit-tested; `SCOPED_PAGE` mirrored with a drift test). No capability was widened; `manage_options` is still required and grants no clinical/financial authority. |
+| 3 | Only one doctor had a schedule; slots like 23:47 | `slot_plan()` anchored "now + 5 min" on a one-minute grid with no bounds, and the schedule was created for the first clinician only. | Asia/Tehran 20-minute grid inside **08:00–21:00**; the same-day block is clamped to opening hours (none after closing — the UI says to use the reception walk-in or book tomorrow); +1/+2 days carry 09:00/09:20/09:40 and 17:00/17:20/17:40; both clinicians get a schedule and slots (`counts.schedule_rows` = 14). Zone-aware `DateTimeImmutable` math only. |
+| 4 | `TEARDOWN_BLOCKED` after a booking with another mobile | A foreign-mobile OTP request on the demo clinic's booking page writes `cpms_otp_tokens` (clinic = demo, purged by `otp.cleanup` after 24 h) **and** `cpms_sms_messages` (`event=otp`, `provider=log`, `context_type=otp_token`, never purged). Neither is attributable to a fixture artefact, so the teardown correctly refuses with `SCOPED_FOREIGN_TENANT_ROW:<table>:<id>` — permanently, because nothing removes the SMS row. | New `ScopedResidue` (preview + execute, separate phrases, nonce, lock). It deletes **only** demo-clinic, post-baseline, expired-or-consumed OTP challenges whose mobile is not the synthetic one, plus the `log`-provider SMS echoes of exactly those challenges; it refuses a live challenge (`RESIDUE_LIVE_CHALLENGE`), any other SMS (`RESIDUE_OUT_OF_SCOPE`), a missing baseline, a non-verifying manifest, and — the stated limitation — any mobile known anywhere on the site (`RESIDUE_MOBILE_KNOWN`: patients, patient identities, slot holds, WP users; a human decides). The audit chain is verified before and after, the recovery itself is a new hash-chained audit row (`CPSD_DEMO_RESIDUE_RECOVERED`, masked mobile, ids, reason), and rate-limit counters, clinical/financial rows and audit history are never touched. |
+| 5 | Owner could not find persona access / OTP path | The page showed credentials once and nothing else. | Persona-access card (8 personas, Persian role description, correct portal link, suggested task, login name, synthetic patient mobile) and a booking/OTP guide (demo `log` SMS provider, one-time demo OTP, unchanged rate limits, clinic hours, explicit warning against entering any other mobile). No credential is re-shown, no OTP handling changed, no auth bypass. |
+
+### Acceptance that now exists (and did not before)
+
+* `tests/scoped-demo/test_standalone_package.py` (34): exactly one `Plugin Name:` across the
+  archive, at the plugin root; the staged core header is neutralised and still executable;
+  no `Requires Plugins:`; deterministic bytes; proof keys; the production source untouched.
+  Against the pre-fix build script the suite fails 6 tests (RED), against the fix it passes (GREEN).
+* `tests/scoped-demo/wp-admin-install-drill.php` — real WordPress runtime, real
+  `Plugin_Upgrader::install()` through `WP_Filesystem`: `snapshot` → `install <zip> red inspect`
+  (**must** observe `plugin_info()` = nested bootstrap, two plugins in the folder,
+  `validate_plugin()` = `no_plugin_header`) → `install <zip> green inspect` → browser upload →
+  `verify` (active, core booted, standalone mode, production absent, site digest unchanged,
+  no PHP diagnostics since the snapshot).
+* `tests/scoped-demo/synthesize_prefix_zip.py` derives the RED control from the fixed ZIP by
+  restoring the production header on line 3 of the embedded bootstrap — the exact byte layout
+  the owner received — so a silent drill can never pass.
+* `tests/scoped-demo/browser_wpadmin_install.py` — Chromium: wp-login → Plugins → Add New →
+  Upload Plugin → Install Now → Activate Plugin, asserting the installer page shows no header
+  error, the plugin row is active, the plugins screen lists one demo entry and no nested entry,
+  and the demo admin page renders with no PHP diagnostics.
+* `standalone-demo.yml` (`real-wordpress`, MySQL 8 and MariaDB 11.4.13): the site is seeded
+  non-empty **before** the upload; `php -S` runs with a 64 MB upload ceiling; RED → GREEN →
+  browser → verify replace `wp plugin install`; the static job counts headers in the archive
+  and checks `git diff --quiet` on the production bootstrap. Contract tests in
+  `.github/workflows/test_workflow_contracts.py` pin the order and forbid a WP-CLI install in
+  the installation phase.
+* Companion suites: `run-tests.php` 313 (Task 5 slot-plan table incl. before-opening, inside,
+  around closing, late night; both clinicians; legacy redirect), `scoped-run-tests.php` 67
+  (30 residue assertions: GREEN delete + audit row + chain intact, `RESIDUE_NONE`, live
+  challenge, out-of-scope SMS, queued SMS, mobile known in patients/identities (98-prefix)/
+  holds/users, tampered manifest, missing baseline, request phrases/nonces).
+
+### Evidence boundary for this document
+
+Everything in the table above was executed locally with `@php-wasm/cli` (PHP 8.5) against
+WordPress 6.9.1 on SQLite — enough to prove `plugin_info()` / `get_plugins()` /
+`validate_plugin()` behaviour and the archive contracts, **not** enough to activate the
+embedded core (it requires MySQL/MariaDB). Activation, the browser upload, the eight persona
+journeys and the MySQL 8 / MariaDB 11.4.13 results come only from the GitHub Actions lanes
+named in the PR; where a lane has not run on the exact head, the PR report says NOT RUN.

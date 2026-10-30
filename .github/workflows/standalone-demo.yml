@@ -121,6 +121,25 @@ jobs:
             echo 'FAIL: the standalone package must not require the production plugin' >&2; exit 1
           fi
           unzip -Z1 "$ZIP1" | grep -qx 'cpms-disposable-demo/core/clinic-practice-management.php'
+          # Exactly ONE WordPress plugin header in the whole package, and it is the
+          # standalone bootstrap. A second header inside core/ made
+          # Plugin_Upgrader::plugin_info() pick the embedded production bootstrap
+          # and validate_plugin() fail with "The plugin does not have a valid
+          # header" on the owner's real site.
+          HEADERS=0
+          for ENTRY in $(unzip -Z1 "$ZIP1" | grep -E '\.php$'); do
+            if unzip -p "$ZIP1" "$ENTRY" | head -c 8192 | grep -q '^ \* Plugin Name:'; then
+              echo "PLUGIN_HEADER $ENTRY"; HEADERS=$((HEADERS + 1))
+            fi
+          done
+          test "$HEADERS" = 1
+          unzip -p "$ZIP1" cpms-disposable-demo/cpms-disposable-demo.php | head -c 8192 | grep -q '^ \* Plugin Name:'
+          unzip -p "$ZIP1" cpms-disposable-demo/core/clinic-practice-management.php | sed -n 3p | grep -q '^ \* Embedded Core:'
+          unzip -p "$ZIP1" cpms-disposable-demo/core/clinic-practice-management.php | grep -q "define('CPMS_PLUGIN_FILE', __FILE__);"
+          grep -qx 'plugin_headers=1' /tmp/cpsa-1/cpms-disposable-demo-1.0.0.proof.txt
+          grep -qx 'embedded_core_header=neutralized' /tmp/cpsa-1/cpms-disposable-demo-1.0.0.proof.txt
+          # The production source itself is never rewritten by the build.
+          git -C "$GITHUB_WORKSPACE" diff --quiet -- clinic-practice-management/clinic-practice-management.php
           unzip -Z1 "$ZIP1" | grep -q 'cpms-disposable-demo/core/src/Bootstrap/App.php'
           unzip -Z1 "$ZIP1" | grep -q 'cpms-disposable-demo/core/templates/'
           test "$(unzip -Z1 "$ZIP1" | grep -c '^cpms-disposable-demo/core/src/')" -gt 250
@@ -223,7 +242,7 @@ jobs:
             echo 'FAIL: production CPMS present on a clean install' >&2; exit 1
           fi
 
-      - name: Install ONLY the standalone demo package from a real ZIP
+      - name: Build the standalone package and synthesize the pre-fix RED control
         run: |
           set -Eeuo pipefail
           if ! OUT_DIR=/tmp/cpsa-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" > /tmp/cpsa-ci/build.log 2>&1; then
@@ -231,29 +250,131 @@ jobs:
             exit 1
           fi
           tail -3 /tmp/cpsa-ci/build.log
-          # Diagnostic surface: job logs are not readable in every review
-          # environment, so a failed install/activation becomes an annotation
-          # carrying the real WP-CLI error and the PHP error log tail.
-          cpsa_fail() {
-            local title="$1" detail="$2"
-            printf '%s\n' "$detail" | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
-              echo "::error title=${title}::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
-            done
-            if [ -f "$WP_DIR/wp-content/debug.log" ]; then
-              grep -E 'PHP Fatal|PHP Parse|Uncaught|critical error' "$WP_DIR/wp-content/debug.log" \
-                | tail -4 | sed 's/\r//g' | while IFS= read -r LINE; do
-                  echo "::error title=${title}_PHPLOG::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
-                done
+          grep -qx 'plugin_headers=1' /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.proof.txt
+          grep -qx 'plugin_header_file=cpms-disposable-demo/cpms-disposable-demo.php' /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.proof.txt
+          # The RED control is the broken layout the owner actually received: the
+          # same package with the production `Plugin Name:` header restored inside
+          # core/clinic-practice-management.php (two discoverable headers).
+          mkdir -p /tmp/cpsa-ci/red /tmp/cpsa-ci/wpadmin
+          python3 "$GITHUB_WORKSPACE/tests/scoped-demo/synthesize_prefix_zip.py" \
+            /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip /tmp/cpsa-ci/red/cpms-disposable-demo-prefix.zip
+          sha256sum /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip /tmp/cpsa-ci/red/cpms-disposable-demo-prefix.zip \
+            | tee /tmp/cpsa-ci/wpadmin/package-sha256.txt
+
+      - name: Seed a genuinely non-empty site BEFORE the upload and record its digest
+        run: |
+          set -Eeuo pipefail
+          # The owner installs onto a site that already has users, pages, posts,
+          # comments and media. Seed them first so the real wp-admin upload and
+          # activation run against — and are proven not to touch — that data.
+          CPSD_SA_MODE=seed CPSD_SA_EXPECT_CPMS=0 CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
+            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
+            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsa-ci/seed.jsonl
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/seed.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
+          print('SEED_OK=' + str(bool(data.get('ok'))))
+          print('SEED=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
+                  print('::error title=CPSA_SEED::' + str(line).replace('%', '%25').replace('\n', ' '))
+              sys.exit(1)
+          import shutil; shutil.copy('/tmp/cpsa-ci/seed.jsonl', '/tmp/cpsa-ci/seed-evidence.jsonl')
+          PY
+
+      - name: Playwright Chromium (pinned)
+        uses: ./.github/actions/playwright-browsers
+        with:
+          browsers: chromium
+
+      - name: Start PHP built-in WordPress server
+        run: |
+          set -Eeuo pipefail
+          mkdir -p /tmp/cpsa-ci/browser
+          nohup php -d upload_max_filesize=64M -d post_max_size=64M -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ci/php-server.log 2>&1 &
+          echo $! > /tmp/cpsa-ci/php-server.pid
+          for i in $(seq 1 30); do
+            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then
+              echo "PHP_SERVER_READY=1"
+              exit 0
             fi
+            sleep 1
+          done
+          tail -50 /tmp/cpsa-ci/php-server.log || true
+          echo 'FAIL: PHP built-in server did not become ready' >&2
+          exit 1
+
+      - name: Installer drill — snapshot the non-empty site before any upload
+        run: |
+          set -Eeuo pipefail
+          # cpsa_drill <label> <drill positional args…>  (evidence JSON path is part of the args)
+          cpsa_drill() {
+            local label="$1"; shift
+            local log="/tmp/cpsa-ci/wpadmin/drill-${label}.log"
+            if ! wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/wp-admin-install-drill.php" "$@" \
+                --use-include --path="$WP_DIR" --allow-root > "$log" 2>&1; then
+              grep -E '^FAIL' "$log" | tail -4 | while IFS= read -r LINE; do
+                echo "::error title=CPSA_WPADMIN_DRILL::$(printf '%s' "$LINE" | sed 's/%/%25/g')"
+              done
+              tail -20 "$log"
+              return 1
+            fi
+            grep -E '^(PASS|FAIL)' "$log"
           }
-          if ! INSTALL_OUT="$(wp plugin install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip --path="$WP_DIR" --allow-root 2>&1)"; then
-            cpsa_fail CPSA_INSTALL "$INSTALL_OUT"; exit 1
-          fi
-          printf '%s\n' "$INSTALL_OUT"
-          if ! ACTIVATE_OUT="$(wp plugin activate cpms-disposable-demo --path="$WP_DIR" --allow-root 2>&1)"; then
-            cpsa_fail CPSA_ACTIVATE "$ACTIVATE_OUT"; exit 1
-          fi
-          printf '%s\n' "$ACTIVATE_OUT"
+          declare -f cpsa_drill > /tmp/cpsa-ci/wpadmin/cpsa_drill.sh
+          cpsa_drill snapshot snapshot /tmp/cpsa-ci/wpadmin/snapshot.json
+
+      - name: Installer drill — RED control (the pre-fix two-header ZIP must reproduce the defect)
+        run: |
+          set -Eeuo pipefail
+          source /tmp/cpsa-ci/wpadmin/cpsa_drill.sh
+          # Real Plugin_Upgrader::install() of the broken layout: plugin_info()
+          # must pick core/clinic-practice-management.php, get_plugins() must see
+          # TWO plugins and validate_plugin() must fail with no_plugin_header —
+          # "The plugin does not have a valid header." If the defect is NOT
+          # observed the control fails, so a silent drill can never pass.
+          cpsa_drill red install /tmp/cpsa-ci/red/cpms-disposable-demo-prefix.zip red inspect /tmp/cpsa-ci/wpadmin/red.json
+
+      - name: Installer drill — GREEN (the fixed ZIP through the real Plugin_Upgrader)
+        run: |
+          set -Eeuo pipefail
+          source /tmp/cpsa-ci/wpadmin/cpsa_drill.sh
+          cpsa_drill green install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip green inspect /tmp/cpsa-ci/wpadmin/green.json
+
+      - name: Real wp-admin — Plugins → Add New → Upload Plugin → Install Now → Activate Plugin (Chromium)
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSA_ZIP: /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip
+          CPSD_EVIDENCE_DIR: /tmp/cpsa-ci/browser
+        run: |
+          set -Eeuo pipefail
+          test ! -d "$WP_DIR/wp-content/plugins/cpms-disposable-demo" \
+            || { echo 'FAIL: the package must not be installed before the browser upload' >&2; exit 1; }
+          python3 tests/scoped-demo/browser_wpadmin_install.py | tee /tmp/cpsa-ci/wpadmin/browser-install.log
+          python3 - <<'PY'
+          import json, sys
+          data = json.loads(open('/tmp/cpsa-ci/browser/wpadmin-install.json', encoding='utf-8').read())
+          checks = data.get('checks', [])
+          print('WPADMIN_INSTALL_CHECKS=' + str(len(checks)))
+          print('WPADMIN_INSTALL_OK=' + str(bool(data.get('ok'))))
+          print('WPADMIN_INSTALL_EVIDENCE=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
+          if not data.get('ok'):
+              failed = [item for item in checks if not item.get('ok')]
+              detail = ' || '.join(
+                  str(item.get('name')) + ' — ' + str(item.get('detail', ''))[:240] for item in failed[-3:]
+              ) or 'wp-admin installation failed'
+              print('::error title=CPSA_WPADMIN_INSTALL::' + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
+      - name: Installer drill — verify after the browser activation (runtime, data, PHP log)
+        run: |
+          set -Eeuo pipefail
+          source /tmp/cpsa-ci/wpadmin/cpsa_drill.sh
+          cpsa_drill verify verify /tmp/cpsa-ci/wpadmin/verify.json /tmp/cpsa-ci/wpadmin/snapshot.json
           wp plugin is-active cpms-disposable-demo --path="$WP_DIR" --allow-root
           # The production plugin is absent, and must stay absent.
           if wp plugin list --field=name --path="$WP_DIR" --allow-root | grep -qx 'clinic-practice-management'; then
@@ -269,25 +390,6 @@ jobs:
           # The embedded core must be at the SAME schema head as the production
           # build, otherwise the standalone demo evaluates an older product.
           test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
-
-      - name: Seed a genuinely non-empty site and record its digest
-        run: |
-          set -Eeuo pipefail
-          CPSD_SA_MODE=seed CPSD_SA_EVIDENCE=/tmp/cpsa-ci/seed.json \
-            wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/standalone-acceptance.php" \
-            --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
-            | tee /tmp/cpsa-ci/seed.jsonl
-          python3 - <<'PY'
-          import json, sys
-          data = json.loads(open('/tmp/cpsa-ci/seed.jsonl', encoding='utf-8').read().strip().splitlines()[-1])
-          print('SEED_OK=' + str(bool(data.get('ok'))))
-          print('SEED=' + json.dumps(data.get('evidence', {}), ensure_ascii=False))
-          if not data.get('ok'):
-              for line in [c for c in data.get('checks', []) if str(c).startswith('FAIL')] or [str(data.get('error'))]:
-                  print('::error title=CPSA_SEED::' + str(line).replace('%', '%25').replace('\n', ' '))
-              sys.exit(1)
-          import shutil; shutil.copy('/tmp/cpsa-ci/seed.jsonl', '/tmp/cpsa-ci/seed-evidence.jsonl')
-          PY
 
       - name: A compatible third-party plugin stays active throughout
         run: |
@@ -333,28 +435,6 @@ jobs:
                   print('::error title=CPSA_PROVISION::' + str(line).replace('%', '%25').replace('\n', ' '))
               sys.exit(1)
           PY
-
-      - name: Playwright Chromium (pinned)
-        uses: ./.github/actions/playwright-browsers
-        with:
-          browsers: chromium
-
-      - name: Start PHP built-in WordPress server
-        run: |
-          set -Eeuo pipefail
-          mkdir -p /tmp/cpsa-ci/browser
-          nohup php -S 0.0.0.0:8080 -t "$WP_DIR" > /tmp/cpsa-ci/php-server.log 2>&1 &
-          echo $! > /tmp/cpsa-ci/php-server.pid
-          for i in $(seq 1 30); do
-            if curl -fsS "$WP_URL/wp-login.php" >/dev/null 2>&1; then
-              echo "PHP_SERVER_READY=1"
-              exit 0
-            fi
-            sleep 1
-          done
-          tail -50 /tmp/cpsa-ci/php-server.log || true
-          echo 'FAIL: PHP built-in server did not become ready' >&2
-          exit 1
 
       - name: Export the read-only portal identifiers
         run: |
@@ -550,6 +630,11 @@ jobs:
             /tmp/cpsa-ci/*.jsonl
             /tmp/cpsa-ci/*.txt
             /tmp/cpsa-ci/*.log
+            /tmp/cpsa-ci/wpadmin/*.json
+            /tmp/cpsa-ci/wpadmin/*.log
+            /tmp/cpsa-ci/wpadmin/*.txt
+            /tmp/cpsa-ci/browser/wpadmin-install.json
+            /tmp/cpsa-ci/browser/wpadmin-install-*.png
           if-no-files-found: warn
           retention-days: 30
 

@@ -19,6 +19,34 @@ The scoped teardown never deletes `cpms_audit_logs`; it preserves unrelated queu
 
 Real MySQL 8 / MariaDB 11.4.13 / Chromium acceptance must be executed on the exact PR head before this mode can be claimed production-ready.
 
+### Owner-facing additions (real-host remediation)
+
+- **Persona access + booking/OTP guide.** The scoped page renders one card per synthetic
+  persona (8: organization manager, clinic manager, two doctors, two receptionists,
+  accountant, patient) with a Persian role description, the correct portal link, a suggested
+  task and the login name — never a password — plus the synthetic patient mobile (`0900…`)
+  and a step-by-step public booking → demo OTP (`SHOW_SCOPED_DEMO_OTP`) guide. The demo
+  clinic's SMS provider is `log`, so no SMS leaves the site; OTP expiry, attempt ceiling,
+  one-time consumption and production rate limits are unchanged.
+- **Clinic hours.** Demo slots live on an Asia/Tehran 20-minute grid inside 08:00–21:00 for
+  both doctors; outside those hours no same-day row exists and the guide points to the
+  reception walk-in or tomorrow's slots.
+- **Legacy URL.** `tools.php?page=cpms-scoped-demo` redirects to
+  `admin.php?page=cpms-scoped-demo` (the page lives under the CPMS container; the legacy
+  hookname was unregistered, which WordPress reports as 403 even for administrators).
+- **Foreign-mobile OTP residue (`ScopedResidue`).** A booking attempt with any mobile other
+  than the synthetic one leaves one `cpms_otp_tokens` row and one `log`-provider
+  `cpms_sms_messages` row in the demo clinic that no fixture artefact explains, so the
+  teardown correctly refuses (`SCOPED_FOREIGN_TENANT_ROW` → `TEARDOWN_BLOCKED`). The page
+  offers an explicit preview (`PREVIEW_EXPIRED_DEMO_OTP_RESIDUE`) and removal
+  (`REMOVE_EXPIRED_DEMO_OTP_RESIDUE`) of exactly those rows, only once the challenge is
+  expired or consumed, only for the demo clinic above the sealed baseline, only when the
+  mobile is unknown to patients, patient identities, slot holds and WP users
+  (`RESIDUE_MOBILE_KNOWN` refuses and asks for a human decision), under a lock, with the
+  audit hash chain verified before and after and a new hash-chained audit row
+  (`CPSD_DEMO_RESIDUE_RECOVERED`, masked mobile). Rate-limit counters, clinical/financial
+  rows and audit history are never touched.
+
 ## Surface
 
 One page: **مدیریت مطب → دموی یک‌بارمصرف CPMS** when CPMS Classic is active.

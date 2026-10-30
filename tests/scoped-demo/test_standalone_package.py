@@ -427,5 +427,186 @@ class PackageContents(unittest.TestCase):
         self.assertGreater(int(measured.group(1)), 500_000)
 
 
+# WordPress's own header regex (wp-includes/functions.php, get_file_data):
+#   ^(?:[ \t]*<\?php)?[ \t/*#@]*Plugin Name:(.*)$   (flags: m, i)
+# It is applied to the first 8 KiB of every candidate file.
+WP_PLUGIN_NAME_RE = re.compile(r"^(?:[ \t]*<\?php)?[ \t/*#@]*Plugin Name:(.*)$", re.M | re.I)
+WP_HEADER_WINDOW = 8 * 1024
+
+
+def wp_plugin_name(data: bytes) -> str:
+    """Mirror of get_file_data()['Name'] for one file's bytes."""
+    head = data[:WP_HEADER_WINDOW].decode("utf-8", errors="replace").replace("\r", "\n")
+    match = WP_PLUGIN_NAME_RE.search(head)
+    if not match:
+        return ""
+    return re.sub(r"\s*(?:\*\/|\?>).*", "", match.group(1)).strip()
+
+
+def wp_get_plugins(archive: zipfile.ZipFile, folder: str) -> dict[str, str]:
+    """Mirror of get_plugins('/<folder>') on the archive contents.
+
+    WordPress scans the plugin folder itself and ONE level of sub-directories
+    for *.php files, keeps the ones whose header has a non-empty Name, and
+    sorts them by Name (uasort + strnatcasecmp). The key is the path relative
+    to the plugin folder, which is exactly what Plugin_Upgrader::plugin_info()
+    prefixes with the destination name.
+    """
+    found: dict[str, str] = {}
+    prefix = folder + "/"
+    for name in archive.namelist():
+        if not name.startswith(prefix) or not name.endswith(".php"):
+            continue
+        rel = name[len(prefix):]
+        if rel.count("/") > 1:
+            continue  # deeper than one sub-directory: never scanned by get_plugins()
+        plugin_name = wp_plugin_name(archive.read(name))
+        if plugin_name:
+            found[rel] = plugin_name
+    return dict(sorted(found.items(), key=lambda item: item[1].casefold()))
+
+
+class OneDiscoverablePluginHeader(unittest.TestCase):
+    """Mission A: the standalone ZIP has exactly ONE WordPress-discoverable header.
+
+    Root cause of "The plugin does not have a valid header" on wp-admin upload:
+    the embedded production bootstrap kept its own `Plugin Name:` header, so
+    get_plugins('/cpms-disposable-demo') returned two plugins, sorted by name,
+    with "Clinic Practice Management (CPMS)" first. Plugin_Upgrader::plugin_info()
+    returned `cpms-disposable-demo/core/clinic-practice-management.php`, and the
+    Activate link failed validate_plugin() with `no_plugin_header` because
+    get_plugins() never scans two levels deep. These tests build the real ZIP
+    and apply WordPress's own discovery rules to it.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not shutil.which("zip") or not shutil.which("unzip"):
+            raise unittest.SkipTest("zip/unzip not available")
+        cls.out = Path(tempfile.mkdtemp(prefix="missiona-header-"))
+        cls.source_before = PRODUCTION_MAIN.read_bytes()
+        cls.build = subprocess.run(
+            ["bash", str(BUILD)],
+            cwd=str(ROOT),
+            env={**os.environ, "OUT_DIR": str(cls.out)},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        cls.zip_path = cls.out / "cpms-disposable-demo-1.0.0.zip"
+        cls.proof = (cls.out / "cpms-disposable-demo-1.0.0.proof.txt").read_text() if cls.zip_path.is_file() else ""
+
+    def test_the_build_succeeds(self) -> None:
+        self.assertEqual(self.build.returncode, 0, self.build.stderr[-2000:])
+        self.assertTrue(self.zip_path.is_file())
+
+    def test_exactly_one_header_anywhere_in_the_archive(self) -> None:
+        with zipfile.ZipFile(self.zip_path) as archive:
+            carriers = [
+                name for name in archive.namelist()
+                if name.endswith(".php") and wp_plugin_name(archive.read(name)) != ""
+            ]
+        self.assertEqual(carriers, ["cpms-disposable-demo/cpms-disposable-demo.php"])
+
+    def test_wordpress_discovery_sees_only_the_demo_plugin(self) -> None:
+        # get_plugins('/cpms-disposable-demo') — the call plugin_info() makes.
+        with zipfile.ZipFile(self.zip_path) as archive:
+            plugins = wp_get_plugins(archive, "cpms-disposable-demo")
+        self.assertEqual(list(plugins), ["cpms-disposable-demo.php"])
+        self.assertTrue(plugins["cpms-disposable-demo.php"].startswith("CPMS Classic"))
+        # Plugin_Upgrader::plugin_info() = destination_name . '/' . first key.
+        self.assertEqual(
+            "cpms-disposable-demo/" + next(iter(plugins)),
+            "cpms-disposable-demo/cpms-disposable-demo.php",
+        )
+
+    def test_the_embedded_bootstrap_has_no_header_but_all_of_its_code(self) -> None:
+        with zipfile.ZipFile(self.zip_path) as archive:
+            staged = archive.read("cpms-disposable-demo/core/clinic-practice-management.php")
+        self.assertEqual(wp_plugin_name(staged), "")
+        source_lines = PRODUCTION_MAIN.read_bytes().splitlines()
+        staged_lines = staged.splitlines()
+        self.assertEqual(len(source_lines), len(staged_lines), "the rewrite must not add or drop lines")
+        changed = [index for index, pair in enumerate(zip(source_lines, staged_lines)) if pair[0] != pair[1]]
+        self.assertEqual(len(changed), 1, f"exactly one line may differ, got {changed}")
+        self.assertIn(b"Plugin Name:", source_lines[changed[0]])
+        self.assertNotIn(b"Plugin Name:", staged_lines[changed[0]])
+        self.assertTrue(staged_lines[changed[0]].startswith(b" * "), "the replacement stays inside the docblock")
+        # The executable part of the production entry file is byte-identical.
+        for anchor in (
+            b"define('CPMS_VERSION', '1.0.0');",
+            b"define('CPMS_PLUGIN_FILE', __FILE__);",
+            b"defined('ABSPATH') || exit;",
+        ):
+            self.assertIn(anchor, staged)
+        self.assertNotIn(b"Requires Plugins:", staged)
+
+    def test_the_production_source_is_never_modified_by_the_build(self) -> None:
+        self.assertEqual(PRODUCTION_MAIN.read_bytes(), self.source_before)
+        self.assertIn(b"Plugin Name:       Clinic Practice Management (CPMS)", self.source_before)
+        tracked = subprocess.run(
+            ["git", "status", "--porcelain", "--", "clinic-practice-management/clinic-practice-management.php"],
+            cwd=str(ROOT), capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(tracked.stdout.strip(), "", "the build must leave the production entry file untouched")
+
+    def test_the_production_release_packaging_is_not_part_of_this_build(self) -> None:
+        # The demo build never calls into the production release build, and the
+        # production ZIP contract is unchanged: this repository ships it from
+        # its own script with the real header intact.
+        script = read(BUILD)
+        self.assertNotIn("build-release.sh", script)
+        self.assertNotIn("bin/release", script)
+
+    def test_the_proof_records_the_single_header_and_the_neutralized_core(self) -> None:
+        self.assertIn("plugin_headers=1\n", self.proof)
+        self.assertIn("plugin_header_file=cpms-disposable-demo/cpms-disposable-demo.php\n", self.proof)
+        self.assertIn("embedded_core_header=neutralized\n", self.proof)
+        self.assertRegex(self.proof, r"(?m)^embedded_core_bootstrap_sha256=[0-9a-f]{64}$")
+        self.assertRegex(self.proof, r"(?m)^production_bootstrap_sha256=[0-9a-f]{64}$")
+        staged = re.search(r"(?m)^embedded_core_bootstrap_sha256=([0-9a-f]{64})$", self.proof).group(1)
+        source = re.search(r"(?m)^production_bootstrap_sha256=([0-9a-f]{64})$", self.proof).group(1)
+        self.assertNotEqual(staged, source, "the staged bootstrap is the neutralized copy, not the source")
+        self.assertEqual(source, hashlib.sha256(PRODUCTION_MAIN.read_bytes()).hexdigest())
+
+    def test_the_pre_fix_shape_is_detected_as_two_plugins(self) -> None:
+        """RED control: with the production header restored inside core/, the
+        same WordPress rules rank the embedded bootstrap first — which is the
+        defect. This proves the discovery mirror can see the bug it guards."""
+        with zipfile.ZipFile(self.zip_path) as archive:
+            staged = archive.read("cpms-disposable-demo/core/clinic-practice-management.php")
+            demo_main = archive.read("cpms-disposable-demo/cpms-disposable-demo.php")
+        restored = re.sub(
+            rb"^ \* Embedded Core:[^\n]*$",
+            b" * Plugin Name:       Clinic Practice Management (CPMS)",
+            staged,
+            count=1,
+            flags=re.M,
+        )
+        self.assertNotEqual(restored, staged)
+        red = Path(tempfile.mkdtemp(prefix="missiona-red-")) / "red.zip"
+        with zipfile.ZipFile(red, "w") as archive:
+            archive.writestr("cpms-disposable-demo/cpms-disposable-demo.php", demo_main)
+            archive.writestr("cpms-disposable-demo/core/clinic-practice-management.php", restored)
+        with zipfile.ZipFile(red) as archive:
+            plugins = wp_get_plugins(archive, "cpms-disposable-demo")
+        self.assertEqual(list(plugins), ["core/clinic-practice-management.php", "cpms-disposable-demo.php"])
+        # plugin_info() would point at the nested bootstrap, which get_plugins()
+        # (no folder argument, used by validate_plugin) never lists -> no_plugin_header.
+        self.assertEqual("cpms-disposable-demo/" + next(iter(plugins)), "cpms-disposable-demo/core/clinic-practice-management.php")
+
+    def test_the_build_refuses_a_second_header(self) -> None:
+        """The build script itself is a gate: a second header anywhere in the
+        staged package aborts the build instead of shipping it."""
+        script = read(BUILD)
+        self.assertIn("grep -rl --include='*.php' -E '^[[:space:]/*#@]*Plugin Name:'", script)
+        self.assertIn('EXPECTED="$PKG/cpms-disposable-demo.php"', script)
+        self.assertNotIn("core/clinic-practice-management.php\" | LC_ALL=C sort)", script)
+        self.assertIn("embedded_core_header=neutralized", script)
+
+
+PRODUCTION_MAIN = ROOT / "clinic-practice-management" / "clinic-practice-management.php"
+
+
 if __name__ == "__main__":
     unittest.main()

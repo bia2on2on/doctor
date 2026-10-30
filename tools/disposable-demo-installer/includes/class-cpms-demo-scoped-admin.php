@@ -41,6 +41,8 @@ class ScopedAdmin {
 
 	/** @var array<string,mixed>|null */
 	private static $teardown = null;
+	/** @var array<string,mixed>|null */
+	private static $residue = null;
 
 	/** @var array{manifest:array<string,mixed>,credentials:array<string,string>}|null */
 	private static $provisioned = null;
@@ -56,6 +58,7 @@ class ScopedAdmin {
 		self::$teardown    = null;
 		self::$provisioned = null;
 		self::$extra       = null;
+		self::$residue = null;
 	}
 
 	/**
@@ -141,6 +144,7 @@ class ScopedAdmin {
 		$otp_helper   = new ScopedOtp( $env, $platform, $manifest );
 		$ownership    = new ScopedOwnership( $env, $manifest );
 		$clinics      = new ScopedClinics( $env, $platform, $manifest, $ownership );
+		$residue      = new ScopedResidue( $env, $platform, $manifest, $audit_guard );
 		$post         = (array) wp_unslash( $_POST );
 		// phpcs:enable WordPress.Security.NonceVerification.Missing
 		try {
@@ -197,6 +201,22 @@ class ScopedAdmin {
 							? 'درمانگاه ناتمام در دفتر مالکیت دمو ثبت شد.'
 							: 'قصد ناتمام لغو شد؛ هیچ درمانگاهی ثبت نشد.',
 					);
+					break;
+				case ScopedRequest::ACTION_RESIDUE_PREVIEW:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					self::$residue = array( 'mode' => 'preview' ) + $residue->preview( $loaded );
+					self::$notice  = array( 'type' => 'info', 'text' => 'پیش‌نمایش باقی‌ماندهٔ OTP اجرا شد؛ هیچ ردیفی حذف نشد.' );
+					break;
+				case ScopedRequest::ACTION_RESIDUE:
+					$loaded = $manifest->load();
+					if ( null === $loaded ) {
+						throw new Exception( 'NO_DEMO', 'دموی ثبت‌شده‌ای وجود ندارد.' );
+					}
+					self::$residue = array( 'mode' => 'executed' ) + $residue->execute( $loaded, $admin_id );
+					self::$notice  = array( 'type' => 'success', 'text' => 'باقی‌ماندهٔ منقضی OTP شمارهٔ غیرساختگی حذف شد؛ پرونده‌ها، داده‌های بالینی/مالی و زنجیرهٔ حسابرسی دست نخوردند.' );
 					break;
 				case ScopedRequest::ACTION_TEARDOWN:
 					$loaded = $manifest->load();
@@ -272,6 +292,7 @@ class ScopedAdmin {
 			}
 			self::render_form( $request, ScopedRequest::ACTION_DIAGNOSE, 'پیشنمایش پاکسازی', 'RUN_READ_ONLY_SCOPED_DIAGNOSTIC', 'هیچ ردیفی حذف نمیشود؛ مالکیت دقیق و اقلام حفظشده نشان داده میشود.' );
 			self::render_diagnostic();
+			self::render_residue( $request, $status );
 			self::render_form( $request, ScopedRequest::ACTION_TEARDOWN, 'پاکسازی فقط دادههای دمو', 'REMOVE_ONLY_SCOPED_DEMO_DATA', 'در صورت باقی ماندن هر ردیف بالینی یا مالی دمو، موفقیت اعلام نمیشود.' );
 		}
 		self::render_teardown_result();
@@ -569,24 +590,35 @@ class ScopedAdmin {
 		$personas = Credentials::personas();
 		echo '<div class="cpdd-card" data-cpsd-persona-access="1"><h2>دسترسی به نقش‌های نمایشی</h2>';
 		echo '<p>برای هر نقش یک حساب ساختگی ساخته شده است. با همان حساب در درگاه خودش وارد شوید تا همان چیزی را ببینید که یک کاربر واقعی با آن نقش می‌بیند. این صفحه هیچ سازوکار «ورود به‌جای دیگری» ندارد و دسترسی هر نقش را خود درگاه تولیدی تعیین می‌کند.</p>';
-		echo '<table class="widefat striped cpdd-personas"><thead><tr><th>نقش</th><th>درگاه</th><th>برای چه کاری</th><th>ورود</th></tr></thead><tbody>';
+		$mobile = (string) ( $manifest['patient_mobile'] ?? '' );
+		echo '<table class="widefat striped cpdd-personas"><thead><tr><th>نقش</th><th>شرح نقش</th><th>درگاه</th><th>برای چه کاری</th><th>نام کاربری / ورود</th></tr></thead><tbody>';
 		foreach ( Credentials::PERSONA_ORDER as $key ) {
 			$persona = (array) ( $personas[ $key ] ?? array() );
 			$map     = (array) ( $portals[ $key ] ?? array() );
 			$url     = (string) ( $links[ $map['link'] ?? '' ] ?? '' );
+			$login   = 'cpsd-' . $key . '-' . $fixture;
 			echo '<tr data-cpsd-persona-portal="' . esc_attr( $key ) . '" data-cpsd-portal-link="' . esc_attr( (string) ( $map['link'] ?? '' ) ) . '">';
 			echo '<td>' . esc_html( (string) ( $persona['label'] ?? $key ) ) . '</td>';
+			echo '<td class="cpdd-persona-scope">' . esc_html( (string) ( $persona['scope'] ?? '' ) ) . '</td>';
 			echo '<td>' . esc_html( (string) ( $map['portal'] ?? '-' ) ) . '</td>';
 			echo '<td>' . esc_html( (string) ( $map['hint'] ?? '' ) ) . '</td>';
-			if ( '' === $url ) {
-				echo '<td>-</td>';
+			echo '<td>';
+			if ( 'patient' === $key ) {
+				// The patient has no password: the portal logs in with a one-time SMS code
+				// for the synthetic mobile. The mobile is not a secret - it is part of the
+				// fixture identity - and it is what the owner must type into the OTP form.
+				echo '<span>ورود با OTP برای شمارهٔ ساختگی</span> <code dir="ltr" data-cpsd-patient-mobile="1">' . esc_html( $mobile ) . '</code>';
 			} else {
-				echo '<td><a class="button button-secondary" dir="ltr" target="_blank" rel="noopener" href="' . esc_url( $url ) . '">' . esc_html__( 'بازکردن درگاه', 'cpms' ) . '</a></td>';
+				echo '<code dir="ltr" data-cpsd-persona-login="' . esc_attr( $key ) . '">' . esc_html( $login ) . '</code>';
 			}
-			echo '</tr>';
+			if ( '' !== $url ) {
+				echo '<br><a class="button button-secondary" dir="ltr" target="_blank" rel="noopener" href="' . esc_url( $url ) . '">' . esc_html__( 'بازکردن درگاه', 'cpms' ) . '</a>';
+			}
+			echo '</td></tr>';
 		}
 		echo '</tbody></table>';
 		echo '<p>نام کاربری هر نقش به شکل <code dir="ltr">cpsd-&lt;role&gt;-' . esc_html( $fixture ) . '</code> است. رمز هر نقش فقط یک‌بار و در کارت «رمزهای یک‌بارمصرف» همان درخواستی که دمو را می‌سازد نشان داده می‌شود و ذخیره نمی‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر رمزها را از دست دادید، پس از پاک‌سازی مجاز دمو و ساخت دوبارهٔ آن رمزهای تازه صادر می‌شود.</p>';
+		self::render_booking_guide( $manifest );
 		$extra = array();
 		foreach ( array( 'messages' => 'پیام‌های خصوصی کارکنان', 'pricing' => 'تعرفه‌ها', 'reports' => 'گزارش‌ها' ) as $key => $label ) {
 			if ( ! empty( $links[ $key ] ) ) {
@@ -597,6 +629,36 @@ class ScopedAdmin {
 			echo '<p>میان‌برها: ' . wp_kses_post( implode( ' · ', $extra ) ) . '</p>';
 		}
 		echo '<p>Shortcode رزرو: <code dir="ltr">' . esc_html( (string) ( $manifest['shortcode'] ?? '' ) ) . '</code></p></div>';
+	}
+
+	/**
+	 * How the owner books and logs in as the patient WITHOUT database access.
+	 *
+	 * The demo clinic's SMS provider is `log`: no SMS is sent anywhere, the
+	 * production OTP flow writes the challenge to its own tables exactly as it
+	 * would with a real gateway, and only the «SHOW_SCOPED_DEMO_OTP» request on
+	 * this page can reveal the code of the LIVE challenge of the synthetic
+	 * mobile - once, through the existing secure rebind (audit row
+	 * CPDD_DEMO_OTP_REBOUND). The guide changes nothing about OTP: no token is
+	 * created here, no rate limit is reset, no expiry is extended.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return void
+	 */
+	private static function render_booking_guide( array $manifest ): void {
+		$links  = (array) ( $manifest['links'] ?? array() );
+		$mobile = (string) ( $manifest['patient_mobile'] ?? '' );
+		$public = (string) ( $links['booking'] ?? $links['patient'] ?? '' );
+		echo '<div class="cpdd-card" data-cpsd-booking-guide="1"><h2>رزرو نوبت و ورود بیمار بدون دسترسی به پایگاه داده</h2>';
+		echo '<ol>';
+		echo '<li>برگهٔ رزرو عمومی دمو را باز کنید' . ( '' === $public ? '' : ' (<a href="' . esc_url( $public ) . '" target="_blank" rel="noopener" dir="ltr">' . esc_html( $public ) . '</a>)' ) . ' و پزشک و یکی از نوبت‌های نمایشی را انتخاب کنید.</li>';
+		echo '<li>در مرحلهٔ شماره موبایل <strong>فقط</strong> شمارهٔ ساختگی دمو <code dir="ltr">' . esc_html( $mobile ) . '</code> را وارد و «ارسال کد» را بزنید. هیچ پیامکی ارسال نمی‌شود: ارائه‌دهندهٔ پیامک درمانگاه نمایشی <code dir="ltr">log</code> است و کد فقط در جدول‌های خود CPMS ثبت می‌شود.</li>';
+		echo '<li>همان لحظه به همین صفحه برگردید و «ساخت کد OTP نمایشی» را با عبارت <code dir="ltr">SHOW_SCOPED_DEMO_OTP</code> اجرا کنید. کد فقط برای <em>آخرین چالش زندهٔ دست‌نخورده</em> همان شماره نشان داده می‌شود، فقط یک‌بار، و در حسابرسی ثبت می‌شود. اگر پیش از درخواست کد از رابط بیمار این دکمه را بزنید، «چالش زنده‌ای یافت نشد» می‌بینید — این رفتار درست است.</li>';
+		echo '<li>کد را در رابط بیمار وارد کنید؛ کد منقضی یا مصرف‌شده دوباره نمایش داده نمی‌شود و محدودیت نرخ OTP تولیدی تغییری نکرده است (پس از چند درخواست پشت‌سرهم باید منتظر پنجرهٔ بعدی بمانید).</li>';
+		echo '<li>برای مسیر کامل پذیرش → پزشک → صندوق، با حساب «پذیرش» وارد شوید و نوبت همین بیمار را پذیرش کنید؛ اگر امروز خارج از ساعت کاری نمایشی (۰۸:۰۰ تا ۲۱:۰۰ تهران) هستید، از «ورود حضوری بدون نوبت» در ماژول پذیرش استفاده کنید یا نوبت فردا را رزرو کنید.</li>';
+		echo '</ol>';
+		echo '<p class="cpdd-warn" data-cpsd-foreign-mobile-warning="1">هشدار: شمارهٔ موبایل واقعی یا هر شمارهٔ دیگری را در رزرو دمو وارد نکنید. با شمارهٔ دیگر هیچ کدی نمایش داده نمی‌شود، همان محدودیت نرخ تولیدی اعمال می‌شود و ردیف‌های OTP/پیامکِ آن شماره متعلق به دمو شمرده نمی‌شوند؛ پاک‌سازی تا رفع آن‌ها با <code dir="ltr">TEARDOWN_BLOCKED</code> متوقف می‌ماند (بخش «بازیابی باقی‌ماندهٔ OTP» همین صفحه را ببینید).</p>';
+		echo '</div>';
 	}
 
 	private static function render_otp(): void {
@@ -625,6 +687,56 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
+	/**
+	 * Recovery of foreign-mobile OTP residue (the TEARDOWN_BLOCKED case).
+	 *
+	 * Shown only while a demo exists. Preview is read-only; the destructive
+	 * action has its own phrase, and the class refuses whenever the mobile is
+	 * known anywhere on the site (RESIDUE_MOBILE_KNOWN) - the Persian text
+	 * tells the owner what that means and that a human must decide.
+	 *
+	 * @param ScopedRequest $request Request helper (nonces/phrases).
+	 * @param string        $status  Manifest status.
+	 * @return void
+	 */
+	private static function render_residue( ScopedRequest $request, string $status ): void {
+		if ( ! in_array( $status, array( 'active', 'teardown_failed' ), true ) ) {
+			return;
+		}
+		echo '<div class="cpdd-card" data-cpsd-residue-card="1"><h2>بازیابی باقی‌ماندهٔ OTP (پاک‌سازی متوقف‌شده با شمارهٔ غیرساختگی)</h2>';
+		echo '<p>اگر کسی در برگهٔ رزرو دمو شمارهٔ موبایلی غیر از شمارهٔ ساختگی وارد کرده باشد، یک چالش OTP و یک ردیف پیامک (ارائه‌دهندهٔ <code dir="ltr">log</code>؛ پیامکی ارسال نشده) داخل درمانگاه دمو می‌ماند که به هیچ اثر ساختگی نسبت داده نمی‌شود؛ پاک‌سازی به‌درستی با <code dir="ltr">SCOPED_FOREIGN_TENANT_ROW</code> / <code dir="ltr">TEARDOWN_BLOCKED</code> متوقف می‌شود. این بخش <strong>فقط</strong> همان دو نوع ردیف را — پس از انقضا یا مصرف چالش، و فقط وقتی آن شماره در هیچ پروندهٔ بیمار، هویت، نگه‌داشت نوبت یا حساب کاربری سایت نباشد — حذف می‌کند. پرونده‌ها، داده‌های بالینی/مالی، شمارنده‌های محدودیت نرخ و ردیف‌های حسابرسی هرگز لمس نمی‌شوند؛ خودِ حذف با یک ردیف حسابرسی جدید (<code dir="ltr">' . esc_html( ScopedResidue::AUDIT_ACTION ) . '</code>، شمارهٔ پوشانده‌شده) ثبت می‌شود.</p>';
+		echo '<p class="cpdd-warn">محدودیت: اگر شماره در جای دیگری از سایت وجود داشته باشد (<code dir="ltr">RESIDUE_MOBILE_KNOWN</code>)، ابزار دمو حذف نمی‌کند، چون ممکن است به فرد واقعی تعلق داشته باشد؛ تعیین تکلیف این ردیف‌ها با مالک سایت و پس از بررسی انسانی است. تا آن زمان پاک‌سازی عمداً متوقف می‌ماند.</p>';
+		self::render_form( $request, ScopedRequest::ACTION_RESIDUE_PREVIEW, 'پیش‌نمایش باقی‌ماندهٔ OTP', 'PREVIEW_EXPIRED_DEMO_OTP_RESIDUE', 'فقط‌خواندنی؛ ردیف‌های قابل حذف و دلیل هر امتناع را نشان می‌دهد.' );
+		if ( is_array( self::$residue ) ) {
+			$mode = (string) ( self::$residue['mode'] ?? 'preview' );
+			$ok   = ! empty( self::$residue['ok'] );
+			echo '<div data-cpsd-residue="' . esc_attr( $mode . '-' . ( $ok ? 'ok' : 'refused' ) ) . '">';
+			if ( 'executed' === $mode ) {
+				$deleted = (array) ( self::$residue['deleted'] ?? array() );
+				echo '<p>حذف‌شده: ';
+				$parts = array();
+				foreach ( $deleted as $table => $count ) {
+					$parts[] = esc_html( (string) $table ) . ' = ' . (int) $count;
+				}
+				echo esc_html( implode( ' | ', $parts ) ) . '</p>';
+				echo '<p>زنجیرهٔ حسابرسی پیش و پس از حذف تأیید شد (' . (int) ( self::$residue['audit_checked'] ?? 0 ) . ' ردیف).</p>';
+			} else {
+				echo '<p>چالش‌های منقضی/مصرف‌شدهٔ قابل حذف: ' . count( (array) ( self::$residue['otp_token_ids'] ?? array() ) ) . ' — پژواک‌های پیامک log قابل حذف: ' . count( (array) ( self::$residue['sms_message_ids'] ?? array() ) ) . '</p>';
+				$problems = (array) ( self::$residue['problems'] ?? array() );
+				if ( array() !== $problems ) {
+					echo '<div class="notice notice-warning inline"><p>' . esc_html( implode( ' | ', $problems ) ) . '</p></div>';
+				}
+			}
+			$masked = (array) ( self::$residue['mobiles_masked'] ?? array() );
+			if ( array() !== $masked ) {
+				echo '<p>شماره‌ها (پوشانده): <code dir="ltr">' . esc_html( implode( ', ', $masked ) ) . '</code></p>';
+			}
+			echo '</div>';
+		}
+		self::render_form( $request, ScopedRequest::ACTION_RESIDUE, 'حذف باقی‌ماندهٔ منقضی OTP', 'REMOVE_EXPIRED_DEMO_OTP_RESIDUE', 'فقط چالش‌های منقضی/مصرف‌شدهٔ شمارهٔ غیرساختگی و پژواک پیامک log آن‌ها؛ در صورت شناخته‌بودن شماره در سایت، امتناع می‌کند.' );
+		echo '</div>';
+	}
+
 	private static function render_teardown_result(): void {
 		if ( ! is_array( self::$teardown ) ) {
 			return;
@@ -643,7 +755,12 @@ class ScopedAdmin {
 	private static function render_instructions(): void {
 		echo '<div class="cpdd-card"><h2>دستورالعمل فارسی</h2><ol>';
 		echo '<li>ابتدا یک پشتیبان کامل و قابل بازیابی از سایت آزمایشی بگیرید.</li>';
-		echo '<li>دو ZIP جداگانه CPMS Classic و companion را از wp-admin نصب و فعال کنید.</li>';
+		if ( \CpmsDemo\Standalone::is_embedded() ) {
+			echo '<li>در حالت مستقل (standalone) فقط همین یک ZIP از مسیر افزونه‌ها ← افزودن ← بارگذاری افزونه نصب و فعال می‌شود؛ هستهٔ CPMS داخل همین بسته است و افزونهٔ تولیدی جداگانه لازم نیست و نباید نصب شود.</li>';
+		} else {
+			echo '<li>دو ZIP جداگانه CPMS Classic و companion را از wp-admin نصب و فعال کنید.</li>';
+		}
+		echo '<li>این صفحه را همیشه از منوی «مدیریت مطب» یا نشانی <code dir="ltr">admin.php?page=cpms-scoped-demo</code> باز کنید؛ نشانی قدیمی <code dir="ltr">tools.php?page=cpms-scoped-demo</code> به‌طور خودکار به همین‌جا هدایت می‌شود. دسترسی به این صفحه با قابلیت <code dir="ltr">manage_options</code> است و هیچ مجوز بالینی یا مالی اعطا نمی‌کند.</li>';
 		echo '<li>حالت محدودشده را با عبارت <code dir="ltr">I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE</code> فعال کنید.</li>';
 		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای همهٔ شخصیت‌ها را همان لحظه ذخیره کنید.</li>';
 		echo '<li>هر شخصیت را در یک پنجره خصوصی جداگانه وارد کرده و جریانهای رزرو، پذیرش، بالینی و مالی را انجام دهید.</li>';

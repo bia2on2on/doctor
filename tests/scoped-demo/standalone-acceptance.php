@@ -204,7 +204,17 @@ try {
 		$cpsd_sa_check( ! is_wp_error( $editor_id ) && ! is_wp_error( $author_id ), 'seed: two pre-existing real users', $checks );
 		$cpsd_sa_check( $page_id > 0 && $post_id > 0, 'seed: a pre-existing page and post', $checks );
 		$cpsd_sa_check( $sqlite_comment > 0 && $attachment > 0, 'seed: a pre-existing comment and media attachment', $checks );
-		$cpsd_sa_check( count( $cpsd_sa_cpms_tables() ) > 0, 'seed: CPMS schema exists although production CPMS is not installed', $checks );
+		// The seed normally runs BEFORE the real wp-admin upload (so the package is
+		// installed onto a site that is already non-empty, which is the owner's
+		// situation); then no CPMS table can exist yet and the schema proof is
+		// made later by the installer drill and the `assert` mode. The legacy
+		// order (seed after activation) keeps the check by setting
+		// CPSD_SA_EXPECT_CPMS=1.
+		if ( '1' === (string) getenv( 'CPSD_SA_EXPECT_CPMS' ) ) {
+			$cpsd_sa_check( count( $cpsd_sa_cpms_tables() ) > 0, 'seed: CPMS schema exists although production CPMS is not installed', $checks );
+		} else {
+			$cpsd_sa_check( array() === $cpsd_sa_cpms_tables(), 'seed: no CPMS table exists yet (the package is not installed before the real wp-admin upload)', $checks );
+		}
 		if ( false === file_put_contents( $cpsd_sa_file, (string) wp_json_encode( $evidence ) ) ) {
 			throw new RuntimeException( 'cannot write evidence file: ' . $cpsd_sa_file );
 		}

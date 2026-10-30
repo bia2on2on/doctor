@@ -47,6 +47,7 @@ namespace {
 	use CpmsDemo\ScopedManifest;
 	use CpmsDemo\ScopedPreflight;
 	use CpmsDemo\ScopedRequest;
+	use CpmsDemo\ScopedResidue;
 
 	require_once __DIR__ . '/bootstrap.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-manifest.php';
@@ -57,6 +58,7 @@ namespace {
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-residue.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
 
 	if ( ! defined( 'ARRAY_A' ) ) {
@@ -238,6 +240,151 @@ namespace {
 	Cpdd_Test::ok( false !== strpos( $all, 'never deletes' ) || 1 === preg_match( '/never deletes|Never deletes|عدم حذف/', $all ), 'audit preservation is documented in scoped sources' );
 	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*cpms_audit_logs|TRUNCATE TABLE|CPMS_DEV_OTP_ECHO[^;]*define/i', $all ), 'no audit delete, truncate or dev OTP define in scoped sources' );
 	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*WHERE\s+(created_at|request_id|ip_hash)/i', $all ), 'no broad time/request/IP deletion predicate' );
+
+	// 9. Explicit recovery of foreign-mobile OTP residue (Mission B / Task 4).
+	//
+	// A visitor requested a code on the demo booking page with a mobile that is
+	// not the synthetic one. The production OTP flow left a challenge and a
+	// log-provider SMS row inside the demo clinic; neither can be attributed to
+	// a fixture artifact, so the teardown is (correctly) TEARDOWN_BLOCKED.
+	final class Cpsd_Fake_Residue_Platform extends Cpdd_Fake_Platform {
+		public array $audit_rows = array();
+		public function fetch_all( string $sql, array $params = array() ): array {
+			if ( str_contains( $sql, 'cpms_audit_logs' ) ) {
+				$after = (int) ( $params[0] ?? 0 );
+				$out   = array();
+				foreach ( $this->audit_rows as $row ) {
+					if ( (int) $row['id'] > $after ) {
+						$out[] = $row;
+					}
+				}
+				return array_slice( $out, 0, (int) ( $params[1] ?? 1000 ) );
+			}
+			return parent::fetch_all( $sql, $params );
+		}
+		public function audit( string $action, int $actor_id, int $clinic_id, array $meta ): void {
+			$this->calls[] = 'audit:' . $action;
+			$prev = array() === $this->audit_rows ? HashChain::GENESIS : (string) end( $this->audit_rows )['row_hash'];
+			$row  = array(
+				'id'               => count( $this->audit_rows ) + 1,
+				'prev_hash'        => $prev,
+				'clinic_id'        => $clinic_id,
+				'actor_wp_user_id' => $actor_id,
+				'actor_role'       => 'wordpress_administrator',
+				'action'           => $action,
+				'resource_type'    => 'clinic',
+				'resource_id'      => $clinic_id,
+				'patient_id'       => null,
+				'ip_hash'          => null,
+				'session_id'       => null,
+				'request_id'       => null,
+				'created_at'       => '2026-10-30 00:00:00.000',
+				'before_json'      => null,
+				'after_json'       => null,
+				'meta_json'        => (string) json_encode( $meta ),
+			);
+			$row['row_hash']    = HashChain::computeRowHash( $prev, HashChain::fieldsFor( $row ) );
+			$this->audit_rows[] = $row;
+		}
+	}
+
+	function cpsd_residue_world( string $foreign = '09121234567', string $expires = '2000-01-01 00:00:00', ?string $consumed = null, string $provider = 'log', string $sms_status = 'SENT' ): array {
+		$env = new Cpdd_Fake_Env();
+		$env->seed_clean_site();
+		$platform = new Cpsd_Fake_Residue_Platform();
+		$platform->seed_clean_install();
+		$platform->audit( 'BASELINE', 1, 1, array() );
+		$manifest = new ScopedManifest( $env );
+		$data = cpsd_manifest_data();
+		$data['patient_mobile'] = '09001234567';
+		$data['baseline'] = array( 'cpms' => array( 'cpms_otp_tokens' => array( 'max_id' => 10 ), 'cpms_sms_messages' => array( 'max_id' => 20 ) ), 'wp' => array() );
+		$sealed = $manifest->save( $data );
+		// Baseline (pre-existing, foreign clinic) rows must never be touched.
+		$platform->tables_data['cpms_otp_tokens'] = array(
+			array( 'id' => 5, 'clinic_id' => 1, 'mobile' => $foreign, 'purpose' => 'login', 'expires_at' => '2000-01-01 00:00:00', 'consumed_at' => null, 'attempts' => 0, 'created_at' => '1999-12-31 23:55:00' ),
+			// Synthetic patient challenge inside the demo clinic: owned by the teardown, not by residue recovery.
+			array( 'id' => 11, 'clinic_id' => 2, 'mobile' => '09001234567', 'purpose' => 'login', 'expires_at' => '2000-01-01 00:00:00', 'consumed_at' => null, 'attempts' => 0, 'created_at' => '1999-12-31 23:55:00' ),
+			// The foreign-mobile challenge of the demo clinic.
+			array( 'id' => 12, 'clinic_id' => 2, 'mobile' => $foreign, 'purpose' => 'login', 'expires_at' => $expires, 'consumed_at' => $consumed, 'attempts' => 0, 'created_at' => '1999-12-31 23:55:00' ),
+		);
+		$platform->tables_data['cpms_sms_messages'] = array(
+			array( 'id' => 15, 'clinic_id' => 1, 'recipient' => $foreign, 'event' => 'otp', 'provider' => 'log', 'status' => 'SENT', 'context_type' => 'otp_token', 'context_id' => 5, 'created_at' => '1999-12-31 23:55:00' ),
+			array( 'id' => 21, 'clinic_id' => 2, 'recipient' => '09001234567', 'event' => 'otp', 'provider' => 'log', 'status' => 'SENT', 'context_type' => 'otp_token', 'context_id' => 11, 'created_at' => '1999-12-31 23:55:00' ),
+			array( 'id' => 22, 'clinic_id' => 2, 'recipient' => $foreign, 'event' => 'otp', 'provider' => $provider, 'status' => $sms_status, 'context_type' => 'otp_token', 'context_id' => 12, 'created_at' => '1999-12-31 23:55:00' ),
+		);
+		$platform->tables_data['cpms_patients']           = array();
+		$platform->tables_data['cpms_patient_identities'] = array();
+		$platform->tables_data['cpms_slot_holds']         = array();
+		$guard   = new ScopedAuditGuard( $platform );
+		$residue = new ScopedResidue( $env, $platform, $manifest, $guard );
+		return array( 'env' => $env, 'platform' => $platform, 'manifest' => $manifest, 'sealed' => $sealed, 'residue' => $residue, 'guard' => $guard );
+	}
+
+	$w = cpsd_residue_world();
+	$preview = $w['residue']->preview( $w['sealed'] );
+	Cpdd_Test::equals( true, (bool) $preview['ok'], 'residue: expired foreign challenge + its log SMS echo are recoverable' );
+	Cpdd_Test::equals( array( 12 ), $preview['otp_token_ids'], 'residue: only the post-baseline foreign-mobile challenge of the demo clinic is planned' );
+	Cpdd_Test::equals( array( 22 ), $preview['sms_message_ids'], 'residue: only its log-provider SMS echo is planned' );
+	Cpdd_Test::equals( array( '0912****567' ), $preview['mobiles_masked'], 'residue: the mobile is reported masked only' );
+	Cpdd_Test::equals( 3, count( $w['platform']->tables_data['cpms_otp_tokens'] ), 'residue: preview deletes nothing' );
+	$result = $w['residue']->execute( $w['sealed'], 1 );
+	Cpdd_Test::equals( array( 'cpms_sms_messages' => 1, 'cpms_otp_tokens' => 1 ), $result['deleted'], 'residue: execute removes exactly the two planned rows' );
+	$left_tokens = array_map( static fn ( array $r ): int => (int) $r['id'], $w['platform']->tables_data['cpms_otp_tokens'] );
+	$left_sms    = array_map( static fn ( array $r ): int => (int) $r['id'], $w['platform']->tables_data['cpms_sms_messages'] );
+	Cpdd_Test::equals( array( 5, 11 ), $left_tokens, 'residue: baseline and synthetic challenges survive' );
+	Cpdd_Test::equals( array( 15, 21 ), $left_sms, 'residue: baseline and synthetic SMS rows survive' );
+	Cpdd_Test::ok( in_array( 'audit:' . ScopedResidue::AUDIT_ACTION, $w['platform']->calls, true ), 'residue: the recovery is audited through the production audit service' );
+	Cpdd_Test::equals( 2, count( $w['platform']->audit_rows ), 'residue: exactly one audit row was APPENDED (none edited, none deleted)' );
+	Cpdd_Test::equals( true, (bool) $w['guard']->verify_chain()['ok'], 'residue: the append-only audit hash chain still verifies' );
+	Cpdd_Test::ok( false === strpos( (string) $w['platform']->audit_rows[1]['meta_json'], '09121234567' ), 'residue: the audit row never carries the full foreign mobile' );
+	Cpdd_Test::refuses( static fn () => $w['residue']->execute( $w['sealed'], 1 ), 'RESIDUE_NONE', 'residue: a second run finds nothing and deletes nothing' );
+
+	$w = cpsd_residue_world( '09121234567', '2999-01-01 00:00:00' );
+	$preview = $w['residue']->preview( $w['sealed'] );
+	Cpdd_Test::equals( false, (bool) $preview['ok'], 'residue: a LIVE foreign challenge blocks recovery' );
+	Cpdd_Test::ok( str_starts_with( (string) ( $preview['problems'][0] ?? '' ), 'RESIDUE_LIVE_CHALLENGE' ), 'residue: the live challenge is named as the reason' );
+	Cpdd_Test::refuses( static fn () => $w['residue']->execute( $w['sealed'], 1 ), 'RESIDUE_LIVE_CHALLENGE', 'residue: execute refuses while the challenge is live' );
+	Cpdd_Test::equals( 3, count( $w['platform']->tables_data['cpms_sms_messages'] ), 'residue: nothing deleted on refusal' );
+
+	$w = cpsd_residue_world( '09121234567', '2000-01-01 00:00:00', null, 'kavenegar' );
+	$preview = $w['residue']->preview( $w['sealed'] );
+	Cpdd_Test::equals( false, (bool) $preview['ok'], 'residue: an SMS row that is not a log-provider OTP echo is out of scope' );
+	Cpdd_Test::ok( str_starts_with( (string) ( $preview['problems'][0] ?? '' ), 'RESIDUE_OUT_OF_SCOPE' ), 'residue: out-of-scope SMS row is reported, not deleted' );
+
+	$w = cpsd_residue_world( '09121234567', '2000-01-01 00:00:00', null, 'log', 'QUEUED' );
+	Cpdd_Test::equals( false, (bool) $w['residue']->preview( $w['sealed'] )['ok'], 'residue: an in-flight SMS row is never removed' );
+
+	$w = cpsd_residue_world();
+	$w['platform']->tables_data['cpms_patients'][] = array( 'id' => 900, 'clinic_id' => 1, 'mobile' => '09121234567', 'first_name' => 'واقعی', 'last_name' => 'واقعی' );
+	$preview = $w['residue']->preview( $w['sealed'] );
+	Cpdd_Test::equals( false, (bool) $preview['ok'], 'residue: a mobile known to a patient record is refused' );
+	Cpdd_Test::ok( str_starts_with( (string) ( $preview['problems'][0] ?? '' ), 'RESIDUE_MOBILE_KNOWN: 0912****567 -> cpms_patients.mobile' ), 'residue: the refusal names the holder, masked' );
+	Cpdd_Test::refuses( static fn () => $w['residue']->execute( $w['sealed'], 1 ), 'RESIDUE_MOBILE_KNOWN', 'residue: execute refuses a known mobile' );
+	Cpdd_Test::equals( 3, count( $w['platform']->tables_data['cpms_otp_tokens'] ), 'residue: a known mobile keeps every row' );
+
+	$w = cpsd_residue_world( '989121234567' );
+	$w['platform']->tables_data['cpms_patient_identities'][] = array( 'id' => 901, 'organization_id' => 1, 'normalized_mobile' => '09121234567' );
+	Cpdd_Test::equals( false, (bool) $w['residue']->preview( $w['sealed'] )['ok'], 'residue: mobile normalisation (98-prefix) still finds the identity holder' );
+
+	$w = cpsd_residue_world();
+	$tampered = $w['sealed'];
+	$tampered['mac'] = str_repeat( '0', 64 );
+	Cpdd_Test::equals( array( 'MANIFEST_TAMPERED' ), $w['residue']->preview( $tampered )['problems'], 'residue: a tampered manifest is refused' );
+	$no_baseline = $w['sealed'];
+	unset( $no_baseline['baseline'] );
+	$no_baseline = $w['manifest']->save( $no_baseline );
+	Cpdd_Test::ok( str_starts_with( (string) ( $w['residue']->preview( $no_baseline )['problems'][0] ?? '' ), 'BASELINE_MISSING' ), 'residue: without a sealed baseline nothing is bounded, nothing is deleted' );
+
+	// The request layer: distinct phrases, distinct nonces, same gates.
+	$ctx = cpsd_fixture();
+	$request = new ScopedRequest( $ctx['env'], $ctx['manifest'] );
+	Cpdd_Test::equals( 'REMOVE_EXPIRED_DEMO_OTP_RESIDUE', $request->phrase( ScopedRequest::ACTION_RESIDUE ), 'residue: distinct destructive phrase' );
+	Cpdd_Test::equals( 'PREVIEW_EXPIRED_DEMO_OTP_RESIDUE', $request->phrase( ScopedRequest::ACTION_RESIDUE_PREVIEW ), 'residue: distinct preview phrase' );
+	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_RESIDUE, cpsd_post( $ctx, ScopedRequest::ACTION_RESIDUE, array( 'cpdd_confirm' => 'REMOVE_ONLY_SCOPED_DEMO_DATA' ) ) ), 'CONFIRMATION', 'residue: the teardown phrase does not authorize residue recovery' );
+
+	// 7. The legacy Tools URL redirect covers the scoped page under its real slug.
+	Cpdd_Test::equals( \CpmsDemo\ScopedAdmin::PAGE, \CpmsDemo\Admin::SCOPED_PAGE, 'the scoped page slug mirrored in Admin never drifts from ScopedAdmin::PAGE' );
+	Cpdd_Test::ok( in_array( \CpmsDemo\ScopedAdmin::PAGE, \CpmsDemo\Admin::legacy_redirect_pages(), true ), 'tools.php?page=cpms-scoped-demo is redirected to admin.php instead of a WordPress 403' );
 
 	exit( Cpdd_Test::summary() );
 }

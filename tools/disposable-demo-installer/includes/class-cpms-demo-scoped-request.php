@@ -29,6 +29,11 @@ class ScopedRequest extends Request {
 	// was interrupted between sealing the intent and registering the Clinic.
 	public const ACTION_ADD_CLINIC     = 'add_clinic';
 	public const ACTION_RESOLVE_CLINIC = 'resolve_clinic';
+	// Explicit, separately confirmed recovery of foreign-mobile OTP residue
+	// (expired/consumed challenges + their log-provider SMS echoes) that keeps
+	// a demo TEARDOWN_BLOCKED. Preview is read-only; execute is narrowly scoped.
+	public const ACTION_RESIDUE_PREVIEW = 'residue_preview';
+	public const ACTION_RESIDUE         = 'residue';
 
 	/**
 	 * @return array<string,array{nonce:string,phrase:string,label:string}>
@@ -69,6 +74,16 @@ class ScopedRequest extends Request {
 				'nonce'  => 'cpsd_resolve_clinic',
 				'phrase' => 'RESOLVE_INTERRUPTED_DEMO_CLINIC',
 				'label'  => 'تعیین تکلیف درمانگاه نمایشی ناتمام',
+			),
+			self::ACTION_RESIDUE_PREVIEW => array(
+				'nonce'  => 'cpsd_residue_preview',
+				'phrase' => 'PREVIEW_EXPIRED_DEMO_OTP_RESIDUE',
+				'label'  => 'پیش‌نمایش باقی‌ماندهٔ OTP',
+			),
+			self::ACTION_RESIDUE => array(
+				'nonce'  => 'cpsd_residue',
+				'phrase' => 'REMOVE_EXPIRED_DEMO_OTP_RESIDUE',
+				'label'  => 'حذف باقی‌ماندهٔ منقضی OTP',
 			),
 		);
 	}

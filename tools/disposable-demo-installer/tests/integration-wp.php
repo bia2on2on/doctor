@@ -132,10 +132,45 @@ foreach ( (array) ( App::bookingService()->availability( $doctor_id, null, null,
 		$offer_days[] = (string) $offer_day['date'];
 	}
 }
-cpdd_assert(
-	array() !== $offer_days && $offer_days[0] === $board_local_today,
-	'the earliest genuinely bookable public slot is on the reception board local today (first=' . ( $offer_days[0] ?? 'none' ) . ' board=' . $board_local_today . ')'
+// Realistic clinic hours (Asia/Tehran 08:00-21:00, 20-minute grid): the
+// fixture only carries a same-day row while the demo clinic is open. Decide
+// the expectation from the fixture's OWN still-future same-day rows - never
+// from the wall clock alone - so a slot that expired between provisioning and
+// this read cannot turn a correct outcome into a failure, and an unrealistic
+// row (23:47) can never pass again.
+$same_day_rows = (array) $db->fetchAll(
+	'SELECT slot_time FROM ' . $db->table( 'cpms_schedule_slots' )
+	. ' WHERE clinic_id = %d AND clinician_id = %d AND slot_date = %s AND is_open = 1 AND booked_count = 0 ORDER BY slot_time ASC',
+	array( $clinic_id, $doctor_id, $board_local_today )
 );
+$board_local_now   = new DateTimeImmutable( 'now', new DateTimeZone( $location_timezone ) );
+$future_same_day   = 0;
+$realistic_rows    = true;
+foreach ( $same_day_rows as $same_day_row ) {
+	$slot_time = (string) ( $same_day_row['slot_time'] ?? '' );
+	$slot_at   = new DateTimeImmutable( $board_local_today . ' ' . $slot_time, new DateTimeZone( $location_timezone ) );
+	$hour      = (int) $slot_at->format( 'G' );
+	$minute    = (int) $slot_at->format( 'i' );
+	if ( $hour < 8 || $hour >= 21 || 0 !== $minute % 20 ) {
+		$realistic_rows = false;
+	}
+	if ( $slot_at > $board_local_now ) {
+		$future_same_day++;
+	}
+}
+cpdd_assert( $realistic_rows, 'every same-day fixture slot lies inside realistic clinic hours (08:00-21:00 Tehran, 20-minute grid; rows=' . count( $same_day_rows ) . ')' );
+if ( $future_same_day > 0 ) {
+	cpdd_assert(
+		array() !== $offer_days && $offer_days[0] === $board_local_today,
+		'the earliest genuinely bookable public slot is on the reception board local today (first=' . ( $offer_days[0] ?? 'none' ) . ' board=' . $board_local_today . ')'
+	);
+} else {
+	$board_local_tomorrow = $board_local_now->modify( '+1 day' )->format( 'Y-m-d' );
+	cpdd_assert(
+		array() !== $offer_days && $offer_days[0] === $board_local_tomorrow,
+		'outside clinic hours the earliest bookable public slot is tomorrow morning, never a late-night same-day row (first=' . ( $offer_days[0] ?? 'none' ) . ' tomorrow=' . $board_local_tomorrow . ')'
+	);
+}
 
 // --- 5. Real OTP request → demo code → real verify ------------------------
 $previous = ScopeContext::tryGet();

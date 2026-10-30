@@ -392,6 +392,77 @@ Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['manifest']
 Cpdd_Test::equals( count( Credentials::PERSONA_ORDER ), count( $post['credentials'] ), 'provisioning: independent credentials returned for every persona' );
 Cpdd_Test::equals( 2, count( $post['manifest']['ids']['location_ids'] ), 'provisioning: two locations created' );
 Cpdd_Test::ok( count( $post['manifest']['ids']['slot_ids'] ) >= 6, 'provisioning: enough future public-booking slots' );
+// Both doctor personas own a schedule and open slots (Mission B / Task 5).
+$slot_rows        = $ctx['platform']->tables_data['cpms_schedule_slots'];
+$schedule_rows    = $ctx['platform']->tables_data['cpms_schedule'];
+$clinician_first  = (int) $post['manifest']['ids']['clinician_id'];
+$clinician_second = (int) $post['manifest']['ids']['clinician_id_second'];
+$slots_by         = array( $clinician_first => 0, $clinician_second => 0 );
+foreach ( $slot_rows as $row ) {
+	if ( isset( $slots_by[ (int) $row['clinician_id'] ] ) ) {
+		++$slots_by[ (int) $row['clinician_id'] ];
+	}
+}
+Cpdd_Test::ok( $clinician_second > 0 && $clinician_second !== $clinician_first, 'provisioning: the second doctor is a distinct clinician' );
+Cpdd_Test::ok( $slots_by[ $clinician_first ] >= 6 && $slots_by[ $clinician_second ] >= 6, 'provisioning: BOTH doctor personas own open demo slots (' . $slots_by[ $clinician_first ] . '/' . $slots_by[ $clinician_second ] . ')' );
+Cpdd_Test::equals( $slots_by[ $clinician_first ], $slots_by[ $clinician_second ], 'provisioning: both doctors get the same slot plan' );
+Cpdd_Test::equals( count( $slot_rows ), count( $post['manifest']['ids']['slot_ids'] ), 'provisioning: every inserted slot (both doctors) is tracked in the manifest for teardown' );
+$schedule_by = array();
+foreach ( $schedule_rows as $row ) {
+	$schedule_by[ (int) $row['clinician_id'] ] = ( $schedule_by[ (int) $row['clinician_id'] ] ?? 0 ) + 1;
+}
+Cpdd_Test::ok( ( $schedule_by[ $clinician_first ] ?? 0 ) === 7 && ( $schedule_by[ $clinician_second ] ?? 0 ) === 7, 'provisioning: both doctors have the bounded weekly schedule template' );
+Cpdd_Test::equals( 14, (int) $post['manifest']['counts']['schedule_rows'], 'provisioning: schedule row count covers both doctors' );
+Cpdd_Test::equals( $clinician_first, (int) $slot_rows[0]['clinician_id'], 'provisioning: slot_ids[0] (the staff appointment row) belongs to the first doctor' );
+Cpdd_Test::equals( '09:00:00', (string) $slot_rows[0]['slot_time'], 'provisioning: the staff appointment row is the next-day 09:00 slot' );
+
+// Realistic Iranian clinic hours: the same-day block lives on a 20-minute grid
+// inside 08:00-21:00 Asia/Tehran and is strictly future for EVERY minute of the
+// day (the old plan produced rows such as 23:47).
+$tehran = new DateTimeZone( 'Asia/Tehran' );
+$grid_ok = true;
+$grid_detail = '';
+for ( $minute_of_day = 0; $minute_of_day < 1440 && $grid_ok; $minute_of_day += 7 ) {
+	$probe = ( new DateTimeImmutable( '2026-03-21 00:00:00', $tehran ) )->modify( '+' . $minute_of_day . ' minutes +13 seconds' );
+	$grid  = \CpmsDemo\Provisioner::same_day_grid( $probe );
+	$hhmm  = $probe->format( 'H:i' );
+	if ( count( $grid ) > 3 ) {
+		$grid_ok = false; $grid_detail = $hhmm . ': more than three rows'; break;
+	}
+	foreach ( $grid as $slot ) {
+		if ( $slot <= $probe || $slot->format( 'Y-m-d' ) !== $probe->format( 'Y-m-d' ) || (int) $slot->format( 'i' ) % 20 !== 0 || (int) $slot->format( 's' ) !== 0
+			|| (int) $slot->format( 'H' ) < \CpmsDemo\Provisioner::CLINIC_OPEN_HOUR || (int) $slot->format( 'H' ) >= \CpmsDemo\Provisioner::CLINIC_CLOSE_HOUR
+			|| ( $slot->getTimestamp() - $probe->getTimestamp() ) < 5 * 60 ) {
+			$grid_ok = false; $grid_detail = $hhmm . ' -> ' . $slot->format( 'H:i:s' ); break;
+		}
+	}
+	if ( $minute_of_day <= 19 * 60 + 40 && 3 !== count( $grid ) ) {
+		$grid_ok = false; $grid_detail = $hhmm . ': expected three rows, got ' . count( $grid ); break;
+	}
+	if ( $minute_of_day >= 20 * 60 + 55 && array() !== $grid ) {
+		$grid_ok = false; $grid_detail = $hhmm . ': expected no same-day row after closing'; break;
+	}
+}
+Cpdd_Test::ok( $grid_ok, 'slot plan: same-day rows are strictly future, 20-minute grid, 08:00-21:00 Tehran for every minute of the day' . ( '' === $grid_detail ? '' : ' — ' . $grid_detail ) );
+$fmt = static function ( array $grid ): string {
+	return implode( ',', array_map( static fn( DateTimeImmutable $d ): string => $d->format( 'H:i' ), $grid ) );
+};
+Cpdd_Test::equals( '08:00,08:20,08:40', $fmt( \CpmsDemo\Provisioner::same_day_grid( new DateTimeImmutable( '2026-03-21 03:00:00', $tehran ) ) ), 'slot plan: before opening the block starts at 08:00' );
+Cpdd_Test::equals( '08:00,08:20,08:40', $fmt( \CpmsDemo\Provisioner::same_day_grid( new DateTimeImmutable( '2026-03-21 00:00:00', $tehran ) ) ), 'slot plan: at midnight the block is the morning opening' );
+Cpdd_Test::equals( '10:20,10:40,11:00', $fmt( \CpmsDemo\Provisioner::same_day_grid( new DateTimeImmutable( '2026-03-21 10:07:00', $tehran ) ) ), 'slot plan: inside hours the block is the next 20-minute grid times' );
+Cpdd_Test::equals( '20:40', $fmt( \CpmsDemo\Provisioner::same_day_grid( new DateTimeImmutable( '2026-03-21 20:30:00', $tehran ) ) ), 'slot plan: around closing only rows before 21:00 survive' );
+Cpdd_Test::equals( '', $fmt( \CpmsDemo\Provisioner::same_day_grid( new DateTimeImmutable( '2026-03-21 23:47:00', $tehran ) ) ), 'slot plan: late night produces no same-day row (no more 23:47 slots)' );
+$plan_now = ( new Provisioner( $ctx['env'], $ctx['platform'], $ctx['manifest'], new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ), new Credentials( $ctx['env'] ) ) )->slot_plan();
+Cpdd_Test::ok( count( $plan_now ) >= 12, 'slot plan: at least twelve rows regardless of the wall clock' );
+Cpdd_Test::equals( '09:00:00', $plan_now[0]['time'], 'slot plan: first row (staff appointment) is 09:00 next day' );
+Cpdd_Test::equals( ( new DateTimeImmutable( 'now', $tehran ) )->modify( '+1 day' )->format( 'Y-m-d' ), $plan_now[0]['date'], 'slot plan: first row is tomorrow (Tehran)' );
+foreach ( $plan_now as $row ) {
+	$when = new DateTimeImmutable( $row['date'] . ' ' . $row['time'], $tehran );
+	if ( (int) $when->format( 'H' ) < \CpmsDemo\Provisioner::CLINIC_OPEN_HOUR || (int) $when->format( 'H' ) >= \CpmsDemo\Provisioner::CLINIC_CLOSE_HOUR || (int) $when->format( 'i' ) % 20 !== 0 ) {
+		Cpdd_Test::ok( false, 'slot plan: every row is inside realistic clinic hours on the 20-minute grid — ' . $row['date'] . ' ' . $row['time'] );
+		break;
+	}
+}
 $expected_shortcode = '[cpms_public_booking clinic_id="' . (int) $post['manifest']['ids']['clinic_id'] . '"]';
 Cpdd_Test::equals( $expected_shortcode, $post['manifest']['shortcode'], 'provisioning: page uses the actual production shortcode' );
 $page = $ctx['env']->post( (int) $post['manifest']['ids']['booking_page_id'] );
@@ -1591,5 +1662,30 @@ try {
 	}
 }
 cpdd_test_reset_hooks();
+
+// --- Legacy Tools URL -> canonical admin.php URL (the reproducible 403). ----
+// Once the core is booted both demo pages live under «مدیریت مطب»; WordPress
+// answers the old tools.php?page=… URL with HTTP 403 because the hookname it
+// derives for a tools.php request (tools_page_<slug>) is not the registered
+// one. The strict page already redirected; the scoped page did not.
+Cpdd_Test::equals(
+	array( 'cpms-disposable-demo', 'cpms-scoped-demo' ),
+	\CpmsDemo\Admin::legacy_redirect_pages(),
+	'legacy-url: both demo pages are covered by the Tools redirect'
+);
+Cpdd_Test::equals(
+	'https://example.test/wp-admin/admin.php?page=cpms-scoped-demo',
+	\CpmsDemo\Admin::legacy_tools_redirect_target( array( 'page' => 'cpms-scoped-demo' ) ),
+	'legacy-url: tools.php?page=cpms-scoped-demo resolves to the canonical scoped page'
+);
+Cpdd_Test::equals(
+	'https://example.test/wp-admin/admin.php?page=cpms-disposable-demo&clinic_id=7',
+	\CpmsDemo\Admin::legacy_tools_redirect_target( array( 'page' => 'cpms-disposable-demo', 'clinic_id' => '7', '_wpnonce' => 'x', 'redirect_to' => 'https://evil.test' ) ),
+	'legacy-url: only bounded scalar arguments are forwarded; nonce and redirect targets are dropped'
+);
+Cpdd_Test::ok( null === \CpmsDemo\Admin::legacy_tools_redirect_target( array( 'page' => 'cpms-settings' ) ), 'legacy-url: a production page slug is not touched' );
+Cpdd_Test::ok( null === \CpmsDemo\Admin::legacy_tools_redirect_target( array( 'page' => 'cpms-scoped-demo/../x' ) ), 'legacy-url: a slug that does not survive sanitize_key is refused' );
+Cpdd_Test::ok( null === \CpmsDemo\Admin::legacy_tools_redirect_target( array() ), 'legacy-url: a request without page is ignored' );
+Cpdd_Test::ok( null === \CpmsDemo\Admin::legacy_tools_redirect_target( array( 'page' => array( 'cpms-scoped-demo' ) ) ), 'legacy-url: a non-string page is ignored' );
 
 exit( Cpdd_Test::summary() );

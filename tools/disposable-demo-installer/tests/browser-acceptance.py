@@ -279,6 +279,17 @@ def extract_credentials_from_admin_dom(admin_page) -> dict:
     return creds
 
 
+def tehran_zone():
+    """Asia/Tehran as a tzinfo (tzdata when present; the exact +03:30 otherwise)."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo("Asia/Tehran")
+    except Exception:  # pragma: no cover - tzdata missing on an exotic runner
+        # Asia/Tehran has had no DST since 2022-09-21, so +03:30 is exact.
+        return timezone(timedelta(hours=3, minutes=30))
+
+
 def wait_out_local_midnight() -> None:
     """Bounded guard so the fixture and the reception board share one local day.
 
@@ -1117,6 +1128,7 @@ def main() -> None:
                         'clinician_id' => (int) $m['ids']['clinician_id'],
                         'clinician_name' => (string) ($doc['full_name'] ?? ''),
                         'patient_mobile' => (string) $m['patient_mobile'],
+                        'patient_id' => (int) ($m['ids']['patient_id'] ?? 0),
                     ]);
                     """
                 )
@@ -1254,6 +1266,35 @@ def main() -> None:
             )
             check("booked appointment persisted in DB", appointment_id > 0, str(appointment_id))
 
+            # The demo slot plan follows realistic Iranian clinic hours (08:00-21:00
+            # Asia/Tehran, 20-minute grid). Inside those hours the public journey
+            # books a same-day row and reception checks it in from the board, which
+            # is strictly the Location's local "today". Outside them the earliest
+            # open row is tomorrow, and the owner's documented path for the full
+            # reception -> doctor -> cashier journey is the production walk-in
+            # («ورود حضوری بدون نوبت») - so that is what this lane exercises then.
+            # Neither branch relaxes an assertion: both end in a real 'waiting'
+            # visit produced by the production reception module.
+            booked_slot = wp_eval(
+                r"""
+                $db = \ClinicCore\Bootstrap\App::db();
+                $row = $db->fetchRow('SELECT slot_date, slot_time FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d', [(int) getenv('AID')]);
+                echo (string) ($row['slot_date'] ?? '') . ' ' . (string) ($row['slot_time'] ?? '');
+                """,
+                {"AID": str(appointment_id)},
+            )
+            booked_slot_date, _, booked_slot_time = booked_slot.partition(" ")
+            tehran_today = datetime.now(tehran_zone()).strftime("%Y-%m-%d")
+            same_day_booking = booked_slot_date == tehran_today
+            print(f"[reception] booked slot={booked_slot} tehran_today={tehran_today} branch={'arrival' if same_day_booking else 'walk-in'}", flush=True)
+            slot_match = re.fullmatch(r"(\d{2}):(\d{2}):\d{2}", booked_slot_time)
+            check(
+                "booked slot is a realistic clinic-hours row (Tehran 08:00-21:00, 20-minute grid)",
+                bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", booked_slot_date)) and slot_match is not None
+                and 8 <= int(slot_match.group(1)) < 21 and int(slot_match.group(2)) % 20 == 0,
+                booked_slot,
+            )
+
             rec_ctx, rec_page = open_persona_context(browser, rotated_creds, "receptionist")
             contexts.append(rec_ctx)
             rec_page.goto(links["receptionist"], wait_until="domcontentloaded")
@@ -1265,23 +1306,62 @@ def main() -> None:
             l_sel = rec_page.locator('[data-role="sr-location-select"]')
             rec_page.locator(f'[data-role="sr-location-select"] option[value="{fixture_meta["location_id"]}"]').wait_for(state="attached", timeout=30000)
             l_sel.select_option(str(fixture_meta["location_id"]))
-            arrive_btn = rec_page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
-            arrive_btn.wait_for(state="visible", timeout=35000)
-            arrive_btn.click()
-            arrive_btn.wait_for(state="detached", timeout=35000)
+            if same_day_booking:
+                arrive_btn = rec_page.locator(f'[data-role="sr-arrive"][data-appointment-id="{appointment_id}"]')
+                arrive_btn.wait_for(state="visible", timeout=35000)
+                arrive_btn.click()
+                arrive_btn.wait_for(state="detached", timeout=35000)
+                visit_lookup_code = r"""
+                    $db = \ClinicCore\Bootstrap\App::db();
+                    echo (int) $db->fetchValue("SELECT id FROM " . $db->table('cpms_visits') . " WHERE clinic_id = %d AND appointment_id = %d AND status = 'waiting' ORDER BY id DESC LIMIT 1", [(int) getenv('CID'), (int) getenv('AID')]);
+                    """
+                visit_lookup_env = {"CID": str(fixture_meta["clinic_id"]), "AID": str(appointment_id)}
+            else:
+                # Walk-in: find the synthetic patient through the Clinic-scoped
+                # search (by the synthetic mobile), choose the first demo doctor
+                # explicitly (two doctors are eligible, so no first-row fallback),
+                # and submit the production walk-in boundary.
+                search_input = rec_page.locator('[data-role="sr-search-input"]')
+                search_input.wait_for(state="visible")
+                search_input.fill("")
+                search_input.type(fixture_meta["patient_mobile"], delay=10)
+                rec_page.wait_for_function(
+                    """(pid) => !!document.querySelector('[data-role="sr-search-result"][data-patient-id="' + pid + '"]')""",
+                    arg=str(fixture_meta["patient_id"]),
+                    timeout=30000,
+                )
+                rec_page.locator(f'[data-role="sr-search-result"][data-patient-id="{fixture_meta["patient_id"]}"]').click()
+                rec_page.wait_for_selector('[data-role="sr-walkin"]', state="visible", timeout=15000)
+                rec_page.wait_for_function(
+                    """() => { const w = document.querySelector('[data-role="sr-walkin-clinician-wrap"]'); const s = document.querySelector('[data-role="sr-walkin-clinician"]'); return !!w && !w.hidden && !!s && s.options.length > 1; }""",
+                    timeout=30000,
+                )
+                rec_page.select_option('[data-role="sr-walkin-clinician"]', str(fixture_meta["clinician_id"]))
+                with rec_page.expect_response(lambda r: "/staff/portal/reception/walk-ins" in r.url and r.request.method == "POST", timeout=30000) as walkin_info:
+                    rec_page.locator('[data-role="sr-walkin-submit"]').click()
+                walkin_status = walkin_info.value.status
+                try:
+                    walkin_body = walkin_info.value.json()
+                except Exception:  # noqa: BLE001 - a non-JSON answer is simply a failed check below
+                    walkin_body = {}
+                walkin_data = walkin_body.get("data", walkin_body) if isinstance(walkin_body, dict) else {}
+                walkin_visit = (walkin_data.get("visit") or {}) if isinstance(walkin_data, dict) else {}
+                check("outside clinic hours: production walk-in answered HTTP 200", walkin_status == 200, str(walkin_status))
+                check(
+                    "outside clinic hours: walk-in produced a waiting visit without creating an appointment",
+                    walkin_visit.get("status") == "waiting" and walkin_visit.get("source") == "walk_in" and walkin_visit.get("appointment_id") is None,
+                    json.dumps(walkin_visit, ensure_ascii=False)[:200],
+                )
+                visit_lookup_code = r"""
+                    $db = \ClinicCore\Bootstrap\App::db();
+                    echo (int) $db->fetchValue("SELECT id FROM " . $db->table('cpms_visits') . " WHERE clinic_id = %d AND patient_id = %d AND source = 'walk_in' AND status = 'waiting' ORDER BY id DESC LIMIT 1", [(int) getenv('CID'), (int) getenv('PID')]);
+                    """
+                visit_lookup_env = {"CID": str(fixture_meta["clinic_id"]), "PID": str(fixture_meta["patient_id"])}
             assert_rtl_and_no_overflow(rec_page, "Staff portal")
             rec_ctx.close()
             contexts.remove(rec_ctx)
 
-            visit_id = int(
-                wp_eval(
-                    r"""
-                    $db = \ClinicCore\Bootstrap\App::db();
-                    echo (int) $db->fetchValue("SELECT id FROM " . $db->table('cpms_visits') . " WHERE clinic_id = %d AND appointment_id = %d AND status = 'waiting' ORDER BY id DESC LIMIT 1", [(int) getenv('CID'), (int) getenv('AID')]);
-                    """,
-                    {"CID": str(fixture_meta["clinic_id"]), "AID": str(appointment_id)},
-                )
-            )
+            visit_id = int(wp_eval(visit_lookup_code, visit_lookup_env))
             check("reception check-in created waiting visit in DB", visit_id > 0, str(visit_id))
 
             # 14. Doctor clinical workflow

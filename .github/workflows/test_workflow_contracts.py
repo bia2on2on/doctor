@@ -130,6 +130,79 @@ class WorkflowContractTests(unittest.TestCase):
         )
 
 
+class StandaloneWpAdminInstallContractTests(unittest.TestCase):
+    """The standalone lane must install the package the way the Product Owner
+    does — Plugins → Add New → Upload Plugin → Install Now → Activate Plugin in
+    a real browser — and it must first PROVE that its installer drill sees the
+    two-header defect (RED) before it is allowed to pass on the fixed ZIP
+    (GREEN). A lane that only ran `wp plugin install` let the broken package
+    ship with a green badge."""
+
+    def setUp(self):
+        self.text = workflow("standalone-demo.yml")
+        self.static_job = self.text.split("  static:\n", 1)[1].split("\n  real-wordpress:", 1)[0]
+        self.real_job = self.text.split("\n  real-wordpress:", 1)[1].split("\n  teardown-safety:", 1)[0]
+        # Everything up to the first post-installation step: the only path that
+        # may put the package onto the site is the browser upload.
+        self.install_phase = self.real_job.split(
+            "      - name: A compatible third-party plugin stays active throughout\n", 1
+        )[0]
+
+    def test_lane_covers_mysql_8_and_mariadb_11_4_13(self):
+        self.assertIn("db_image: mysql:8\n", self.real_job)
+        self.assertIn("db_image: mariadb:11.4.13\n", self.real_job)
+        self.assertIn("fail-fast: false", self.real_job)
+
+    def test_static_job_proves_exactly_one_plugin_header_and_an_untouched_production_source(self):
+        self.assertIn('test "$HEADERS" = 1', self.static_job)
+        self.assertIn("grep -qx 'plugin_headers=1'", self.static_job)
+        self.assertIn("grep -qx 'embedded_core_header=neutralized'", self.static_job)
+        self.assertIn("sed -n 3p | grep -q '^ \\* Embedded Core:'", self.static_job)
+        self.assertIn(
+            'git -C "$GITHUB_WORKSPACE" diff --quiet -- clinic-practice-management/clinic-practice-management.php',
+            self.static_job,
+        )
+        self.assertIn("tests.scoped-demo.test_standalone_package", self.static_job)
+
+    def test_real_job_installs_through_wp_admin_not_through_wp_cli(self):
+        self.assertNotIn("wp plugin install", self.install_phase)
+        self.assertNotIn("wp plugin activate", self.install_phase)
+        self.assertIn("python3 tests/scoped-demo/browser_wpadmin_install.py", self.real_job)
+        self.assertIn("CPSA_ZIP: /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip", self.real_job)
+        self.assertIn("wpadmin-install.json", self.real_job)
+        self.assertIn("::error title=CPSA_WPADMIN_INSTALL::", self.real_job)
+        # The real upload needs a PHP upload ceiling above the package size.
+        self.assertIn(
+            'php -d upload_max_filesize=64M -d post_max_size=64M -S 0.0.0.0:8080 -t "$WP_DIR"',
+            self.real_job,
+        )
+
+    def test_red_control_runs_before_green_and_both_before_the_browser_upload(self):
+        red = self.real_job.index("install /tmp/cpsa-ci/red/cpms-disposable-demo-prefix.zip red inspect")
+        green = self.real_job.index("install /tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip green inspect")
+        browser = self.real_job.index("python3 tests/scoped-demo/browser_wpadmin_install.py")
+        verify = self.real_job.index("verify verify /tmp/cpsa-ci/wpadmin/verify.json /tmp/cpsa-ci/wpadmin/snapshot.json")
+        snapshot = self.real_job.index("snapshot snapshot /tmp/cpsa-ci/wpadmin/snapshot.json")
+        self.assertLess(snapshot, red)
+        self.assertLess(red, green)
+        self.assertLess(green, browser)
+        self.assertLess(browser, verify)
+        self.assertIn("tests/scoped-demo/synthesize_prefix_zip.py", self.real_job)
+        self.assertIn("tests/scoped-demo/wp-admin-install-drill.php", self.real_job)
+        self.assertIn("::error title=CPSA_WPADMIN_DRILL::", self.real_job)
+
+    def test_site_is_non_empty_before_the_upload_and_the_core_proofs_follow_activation(self):
+        seed = self.real_job.index("CPSD_SA_MODE=seed CPSD_SA_EXPECT_CPMS=0")
+        browser = self.real_job.index("python3 tests/scoped-demo/browser_wpadmin_install.py")
+        schema = self.real_job.index("test \"$(cat /tmp/cpsa-ci/schema.txt)\" = '2026_10_27_0030'")
+        self.assertLess(seed, browser)
+        self.assertLess(browser, schema)
+        self.assertIn("wp plugin is-active cpms-disposable-demo", self.real_job)
+        self.assertIn("echo 'FAIL: production CPMS was installed'", self.real_job)
+        # The synthesizer and the drill are shipped tests, so the lane re-runs on their change.
+        self.assertIn("- 'tests/scoped-demo/**'", self.text)
+
+
 class CompanionIsolationTests(unittest.TestCase):
     """Executable tests for the companion/production isolation rule."""
 
