@@ -48,9 +48,6 @@ class ScopedPhpContractTests(unittest.TestCase):
             # Stage 1/2 of the tenant-safety work: the server-side tenant write
             # barrier and the recorder of demo-created rows.
             "class-cpms-demo-scoped-guard.php",
-            # Real-host remediation (Task 4): explicit, ownership-proven recovery
-            # of foreign-mobile OTP/SMS residue that blocks the teardown.
-            "class-cpms-demo-scoped-residue.php",
         }
         actual = {p.name for p in SCOPED}
         self.assertEqual(expected, actual)

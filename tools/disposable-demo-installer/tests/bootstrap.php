@@ -49,32 +49,10 @@ function plugin_basename( string $file ): string {
 	return ( $dir !== '' ? $dir . '/' : '' ) . basename( $file );
 }
 
-function add_query_arg( $key, $value = null, $url = null ): string {
-	// Both WordPress signatures: ( $key, $value, $url ) and ( array $args, $url ).
-	if ( is_array( $key ) ) {
-		$url  = (string) $value;
-		$args = $key;
-	} else {
-		$url  = (string) $url;
-		$args = array( (string) $key => $value );
-	}
-	foreach ( $args as $name => $item ) {
-		$sep = str_contains( $url, '?' ) ? '&' : '?';
-		$url = $url . $sep . rawurlencode( (string) $name ) . '=' . rawurlencode( (string) $item );
-	}
+function add_query_arg( string $key, $value, string $url ): string {
+	$sep = str_contains( $url, '?' ) ? '&' : '?';
 
-	return $url;
-}
-
-function admin_url( string $path = '' ): string {
-	return 'https://example.test/wp-admin/' . ltrim( $path, '/' );
-}
-
-function sanitize_text_field( $value ): string {
-	$value = (string) $value;
-	$value = preg_replace( '/[\x00-\x1F\x7F]/', '', $value ) ?? '';
-
-	return trim( $value );
+	return $url . $sep . rawurlencode( $key ) . '=' . rawurlencode( (string) $value );
 }
 
 function sanitize_key( string $key ): string {
@@ -1164,10 +1142,6 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %d/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' = %d', $params );
 		}
-		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) = %s/', $probe, $m ) === 1 ) {
-			// Single string-equality probe (ScopedResidue::mobile_holder()).
-			return $this->matches( $m[1], $m[2] . ' = %s', $params );
-		}
 		if ( preg_match( '/FROM wp_([a-z_]+) WHERE ([a-z_]+) IN \((.*)\)/', $probe, $m ) === 1 ) {
 			return $this->matches( $m[1], $m[2] . ' IN (' . $m[3] . ')', $params );
 		}
@@ -1329,15 +1303,14 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 
 	public function create_clinician( int $clinic_id, int $wp_user_id, string $full_name ): int {
 		$this->calls[] = 'create_clinician';
-		$id            = count( $this->tables_data['cpms_clinicians'] ) + 1;
 		$this->tables_data['cpms_clinicians'][] = array(
-			'id'         => $id,
+			'id'         => 1,
 			'clinic_id'  => $clinic_id,
 			'wp_user_id' => $wp_user_id,
 			'full_name'  => $full_name,
 		);
 
-		return $id;
+		return 1;
 	}
 
 	public function assign_clinician_locations( int $clinician_id, array $location_ids, int $primary_id ): void {

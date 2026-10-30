@@ -78,7 +78,6 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-guard.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-clinics.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
-require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-residue.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
 
 /**

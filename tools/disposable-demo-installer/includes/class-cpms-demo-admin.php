@@ -23,12 +23,6 @@ class Admin {
 	public const PAGE   = 'cpms-disposable-demo';
 	public const CAP    = 'manage_options';
 	public const ACTION = 'cpdd_action';
-	/**
-	 * Slug of the scoped (non-empty-site) page. Mirrored here so the legacy
-	 * Tools redirect covers it without loading ScopedAdmin first; the scoped
-	 * test-suite asserts the two constants never drift apart.
-	 */
-	public const SCOPED_PAGE = 'cpms-scoped-demo';
 
 	/**
 	 * @var string Hook suffix of the active companion page.
@@ -184,53 +178,12 @@ class Admin {
 		// This is a read-only route selector; the exact slug is checked below and no state changes here.
 		// phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Navigation only; no state mutation or privileged action.
 		$query = isset( $_GET ) && is_array( $_GET ) ? wp_unslash( $_GET ) : array();
-		$target = self::legacy_tools_redirect_target( $query );
-		if ( null === $target ) {
+		$raw_page = $query['page'] ?? '';
+		if ( ! is_string( $raw_page ) || self::PAGE !== sanitize_key( $raw_page ) || self::PAGE !== $raw_page ) {
 			return;
 		}
 		if ( ! current_user_can( self::CAP ) ) {
 			wp_die( esc_html__( 'دسترسی ندارید.', 'cpms' ), 403 );
-		}
-		wp_safe_redirect( $target );
-		exit;
-	}
-
-	/**
-	 * Demo pages that live under the CPMS menu once the core is booted.
-	 *
-	 * Both are registered under `tools.php` only as a fallback (core absent).
-	 * Once the core is present they move under «مدیریت مطب», and WordPress then
-	 * answers the OLD `tools.php?page=…` URL with HTTP 403: `user_can_access_
-	 * admin_page()` resolves the parent of a `tools.php` request to `tools.php`,
-	 * builds the hookname `tools_page_<slug>`, finds it unregistered and dies
-	 * with "Sorry, you are not allowed to access this page." — for an
-	 * administrator too. A bookmark, an old document, or a link copied while the
-	 * core was inactive is enough to hit it. The scoped page had no redirect at
-	 * all, which is the reproducible 403 of the scoped demo page.
-	 *
-	 * @return list<string>
-	 */
-	public static function legacy_redirect_pages(): array {
-		return array( self::PAGE, self::SCOPED_PAGE );
-	}
-
-	/**
-	 * Canonical `admin.php` URL for a legacy `tools.php?page=…` request, or null
-	 * when the request is not a legacy demo-page URL.
-	 *
-	 * Pure: no redirect, no capability check, no exit — so it is unit-testable.
-	 *
-	 * @param array<string,mixed> $query Unslashed query arguments.
-	 * @return string|null
-	 */
-	public static function legacy_tools_redirect_target( array $query ): ?string {
-		$raw_page = $query['page'] ?? '';
-		if ( ! is_string( $raw_page ) || '' === $raw_page ) {
-			return null;
-		}
-		$page = sanitize_key( $raw_page );
-		if ( $page !== $raw_page || ! in_array( $page, self::legacy_redirect_pages(), true ) ) {
-			return null;
 		}
 
 		// Forward only bounded scalar arguments with conventional keys. Never forward
@@ -254,8 +207,8 @@ class Admin {
 			}
 			$args[ $safe_key ] = sanitize_text_field( $value );
 		}
-
-		return add_query_arg( $args, admin_url( 'admin.php?page=' . $page ) );
+		wp_safe_redirect( add_query_arg( $args, admin_url( 'admin.php?page=' . self::PAGE ) ) );
+		exit;
 	}
 
 	/**
