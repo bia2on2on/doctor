@@ -820,6 +820,19 @@ namespace {
 	Cpdd_Test::ok( str_contains( $tamper_html, 'data-cpms-demo-state="manifest-invalid"' ), 'dashboard: an unverifiable manifest is refused in plain Persian' );
 	Cpdd_Test::ok( ! str_contains( $tamper_html, 'data-cpsd-form=' ), 'dashboard: an unverifiable manifest renders zero action forms' );
 
+	// (e2) No state is a dead end, and none links the console twice.
+	$state_html = array(
+		'prepare'          => $dash_html,
+		'ready'            => $ready_html,
+		'resumable'        => $resume_html,
+		'blocked'          => $blocked_html,
+		'manifest-invalid' => $tamper_html,
+	);
+	foreach ( $state_html as $state_name => $html ) {
+		Cpdd_Test::equals( 1, substr_count( $html, 'data-cpms-demo-console="1"' ), 'dashboard: the ' . $state_name . ' state links the authorized console exactly once' );
+	}
+	Cpdd_Test::equals( 0, substr_count( $blocked_html, 'data-cpms-demo-console-hero="1"' ) - 1, 'dashboard: the blocked hero keeps its own marker, so no attribute is duplicated' );
+
 	// (f) The dashboard never adds impersonation, credential storage or a bypass.
 	$dashboard_source = (string) file_get_contents( CPMS_DEMO_DIR . 'includes/class-cpms-demo-dashboard.php' );
 	foreach ( array( 'set_current_user(', 'wp_set_auth_cookie(', 'switch_to_user' ) as $forbidden ) {

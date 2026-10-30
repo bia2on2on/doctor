@@ -286,9 +286,10 @@ class ScopedRecovery {
 		);
 
 		// --- 8. How much of the seal itself survived ----------------------------
-		$owned       = (array) ( $manifest['owned'] ?? array() );
 		// `audit_chain_at_seal` is an ARRAY (the verifier's report), so it is tested
-		// for presence, never string-cast: casting would raise "Array to string".
+		// for presence below, never string-cast: casting would raise
+		// "Array to string conversion" on every assessment of a sealed manifest.
+		$owned       = (array) ( $manifest['owned'] ?? array() );
 		$owned_ok    = array() !== $owned && ! empty( $manifest['audit_chain_at_seal'] );
 		$sealed_flag = $owned_ok && is_array( $ledger_raw );
 		$seal_detail = $sealed_flag

@@ -500,7 +500,7 @@ class Dashboard {
 		echo '<p class="cpdd-hero-lead">' . esc_html( (string) $assessment['reason'] ) . '</p>';
 		echo '<p>دلیل سخت‌گیری: ادامهٔ خودکار فقط وقتی مجاز است که همهٔ ردیف‌های ساختگی پیش از مهر ساخته شده باشند. در غیر این صورت ادامه می‌تواند ردیف تکراری بسازد یا ردیفی را به دمو نسبت دهد که مالکیتش اثبات نشده است.</p>';
 		echo '<p>مسیر درست، پاک‌سازی مجاز همان دموی ناتمام و سپس ساخت دوباره از همین صفحه است. پاک‌سازی فقط ردیف‌های اثبات‌شدهٔ همین دمو را برمی‌دارد؛ کاربران، نوشته‌ها، دیدگاه‌ها و داده‌های بالینی/مالی قبلی سایت دست‌نخورده می‌مانند و تاریخچهٔ حسابرسی هرگز حذف نمی‌شود.</p>';
-		echo '<p><a class="button" href="' . esc_url( admin_url( 'tools.php?page=' . ScopedAdmin::PAGE ) ) . '" data-cpms-demo-console="1">رفتن به صفحهٔ پاک‌سازی و ابزارهای پیشرفته</a></p>';
+		echo '<p><a class="button" href="' . esc_url( admin_url( 'tools.php?page=' . ScopedAdmin::PAGE ) ) . '" data-cpms-demo-console-hero="1">رفتن به صفحهٔ پاک‌سازی و ابزارهای پیشرفته</a></p>';
 		echo '<p class="description">شناسهٔ دمو: <code dir="ltr">' . esc_html( (string) ( $manifest['fixture_id'] ?? '' ) ) . '</code></p>';
 		echo '</div>';
 		self::render_evidence( $assessment );
@@ -599,7 +599,6 @@ class Dashboard {
 		if ( is_array( $state ) ) {
 			self::render_preflight_summary( $state );
 		}
-		self::render_advanced_link();
 	}
 
 	/**
@@ -633,7 +632,6 @@ class Dashboard {
 		}
 		echo '</tbody></table>';
 		echo '<p>مالکیت هرگز از نام کاربری، دامنهٔ ایمیل یا تاریخ ثبت نتیجه نمی‌شود؛ فقط سند مهرشده، پایهٔ مرجع مهرشده و دفتر مالکیت مهرشده.</p>';
-		self::render_advanced_link();
 		echo '</details>';
 	}
 
@@ -648,6 +646,10 @@ class Dashboard {
 	 * @return void
 	 */
 	private static function render_footer(): void {
+		// Rendered in every state, so no state is a dead end: an operator who
+		// lands on "resumable" or "manifest-invalid" can still reach the authorized
+		// console (OTP preview, ownership, teardown) without guessing a URL.
+		self::render_advanced_link();
 		echo '<div class="cpdd-card"><h2>در این دمو چه چیزی واقعی است؟</h2><ul>';
 		echo '<li>هشت درگاه، همان درگاه‌های واقعی محصول هستند و دسترسی هر نقش را سرور تعیین می‌کند. هیچ «ورود به‌جای دیگری» و هیچ دور زدن احراز هویتی وجود ندارد.</li>';
 		echo '<li>همهٔ داده‌های دمو ساختگی و با شناسهٔ تصادفی مهر شده‌اند؛ داده‌های قبلی سایت و زنجیرهٔ حسابرسی حفظ می‌شود.</li>';

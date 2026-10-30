@@ -26,6 +26,7 @@ use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
 use CpmsDemo\Credentials;
+use CpmsDemo\Dashboard;
 use CpmsDemo\Env;
 use CpmsDemo\Platform;
 use CpmsDemo\ScopedAuditGuard;
