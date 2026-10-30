@@ -101,6 +101,12 @@ jobs:
           python3 -m unittest discover -s tests/companion-compat -p 'test_*.py'
           python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
 
+      - name: Workflow files parse as YAML before GitHub tries to run them
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 bin/check-workflow-yaml.py
+
       - name: Workflow contract tests
         run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 
@@ -495,7 +501,7 @@ jobs:
               sys.exit(1)
           PY
 
-      - name: Chromium: one Persian action reaches the eight real portals (repair phase)
+      - name: 'Chromium: one Persian action reaches the eight real portals (repair phase)'
         env:
           BASE: ${{ env.WP_URL }}
           ADMIN_USER: ${{ env.ADMIN_USER }}
@@ -505,7 +511,7 @@ jobs:
           set -Eeuo pipefail
           python3 tests/scoped-demo/browser_scoped.py repair | tee /tmp/cpsd-ci/browser-repair.log
 
-      - name: Chromium: eight passwordless persona sessions, and the abuse cases (sessions phase)
+      - name: 'Chromium: eight passwordless persona sessions, and the abuse cases (sessions phase)'
         env:
           BASE: ${{ env.WP_URL }}
           ADMIN_USER: ${{ env.ADMIN_USER }}

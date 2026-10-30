@@ -658,3 +658,15 @@ what distinguishes two builds of the same version. The freshness proof reasons a
 correctly — that remains the job of the PHP suites and the real-WordPress lanes. **NOT
 RUN here:** real WordPress, MySQL 8, MariaDB 11.4.13, Chromium, WPCS, and the two new CI
 steps themselves; they run only on the exact PR head.
+
+### Correction recorded after the first CI run of this branch
+
+The head `c9c8fe9` failed to start `scoped-demo.yml` at all: two step names contained
+an unquoted `: ` (`- name: Chromium: one Persian action …`), which is invalid YAML, so
+GitHub created **zero jobs** and none of that lane's gates ran. The names are now
+quoted, all 16 workflow files parse with a real parser, and `bin/check-workflow-yaml.py`
+(fail-closed when no parser is available) runs in both static lanes; its negative
+control is the exact defect that caused the outage. Workflow contract tests: **72 OK**
+with PyYAML, **71 OK + 1 skipped** without it. Everything else in this document remains
+local-suite evidence and is still **NOT RUN** on real WordPress/MySQL/MariaDB/Chromium
+for the corrected head.

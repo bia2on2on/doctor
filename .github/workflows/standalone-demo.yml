@@ -90,6 +90,12 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
           coverage: none
 
+      - name: Workflow files parse as YAML before GitHub tries to run them
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 bin/check-workflow-yaml.py
+
       - name: PHP syntax (every shipped file, both builds)
         run: |
           set -Eeuo pipefail

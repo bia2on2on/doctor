@@ -1211,6 +1211,60 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
                 self.assertIn("clinic-practice-management", build)
                 self.assertIn("core", build)
 
+    def test_every_workflow_is_parsed_and_the_parser_gate_is_wired(self):
+        """A workflow that is not valid YAML does not fail a step, it fails to start.
+
+        GitHub then reports a run with zero jobs, and every gate inside the workflow
+        silently did not run. A step name containing an unquoted `: ` (for example
+        `- name: Chromium: one Persian action ...`) is enough to do that. So the
+        parser gate is mandatory in the lanes that carry this project's evidence, and
+        the checker itself must exist and must fail on that exact defect.
+        """
+        checker = ROOT / "bin" / "check-workflow-yaml.py"
+        self.assertTrue(checker.is_file(), "the workflow YAML checker is missing")
+        for filename in ("scoped-demo.yml", "standalone-demo.yml"):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                self.assertIn("python3 bin/check-workflow-yaml.py", text)
+                self.assertIn("pip install --quiet --disable-pip-version-check pyyaml", text)
+
+    def test_no_workflow_declares_an_unquoted_colon_in_a_step_name(self):
+        # The cheap, parser-independent version of the same rule, so this fails with
+        # a precise message even where no YAML library is installed.
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                stripped = line.strip()
+                if not stripped.startswith("- name: ") and not stripped.startswith("- uses: "):
+                    continue
+                value = stripped.split(": ", 1)[1]
+                if value[:1] in ("'", '"'):
+                    continue
+                if ": " in value:
+                    offenders.append(f"{path.name}:{number}: {value[:60]}")
+        self.assertEqual([], offenders, "quote these step names")
+
+    def test_the_workflow_yaml_checker_rejects_a_colon_in_a_step_name(self):
+        """Positive control for the two checks above, without needing PyYAML."""
+        import tempfile as _tempfile
+
+        source = workflow("scoped-demo.yml")
+        self.assertNotIn("- name: Chromium: one", source)
+        probe = ROOT / "bin" / "check-workflow-yaml.py"
+        self.assertIn("not valid YAML", probe.read_text(encoding="utf-8"))
+        self.assertIn("WORKFLOW_YAML_OK", probe.read_text(encoding="utf-8"))
+        with _tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "probe.yml"
+            candidate.write_text("name: probe\non:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
+                                 "    steps:\n      - name: Chromium: one thing\n        run: true\n",
+                                 encoding="utf-8")
+            try:
+                import yaml as _yaml
+            except ImportError:
+                self.skipTest("no YAML library in this interpreter; CI installs pyyaml")
+            with self.assertRaises(_yaml.YAMLError):
+                _yaml.safe_load(candidate.read_text(encoding="utf-8"))
+
     def test_every_lane_that_ships_the_artifact_proves_the_embedded_core_is_current(self):
         """The demo is the Owner's evaluation copy of the production product.
 
