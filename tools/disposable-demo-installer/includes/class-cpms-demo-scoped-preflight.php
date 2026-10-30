@@ -188,26 +188,48 @@ class ScopedPreflight extends Preflight {
 	 * convert a working implicit-scope install into "explicit scope required",
 	 * which is a silent, durable change to pre-existing site behaviour.
 	 *
-	 * This mode is therefore only offered where the host site is already
-	 * multi-Clinic: adding one more Clinic to a count that is already >= 2 cannot
-	 * change any `=== 1` or `=== 0` decision. A zero-Clinic site must use the
-	 * strict disposable mode instead.
+	 * This mode is therefore offered without further ceremony only where the host
+	 * site is already multi-Clinic: adding one more Clinic to a count that is
+	 * already >= 2 cannot change any `=== 1` or `=== 0` decision. A zero-Clinic
+	 * site must use the strict disposable mode instead.
+	 *
+	 * A host with exactly ONE Clinic — a real private test site, which is exactly
+	 * the case the Owner hit on a real domain — is not silently refused and not
+	 * silently allowed either: the administrator may state, in a sealed record
+	 * that names this site and its host, that the site is a private test site and
+	 * that they accept the permanent implicit-scope change. Without that record
+	 * the gate still fails closed, because it is read from the sealed option and
+	 * never from the request.
 	 *
 	 * @return array{id:string,label:string,status:string,detail:string}
 	 */
 	private function check_host_scope(): array {
-		$decision = self::host_scope_decision( $this->platform->count_all( 'cpms_clinics' ) );
+		$consent  = $this->manifest instanceof ScopedManifest ? $this->manifest->private_host_consent() : null;
+		$host     = is_array( $consent ) ? (string) ( $consent['host'] ?? '' ) : '';
+		$decision = self::host_scope_decision( $this->platform->count_all( 'cpms_clinics' ), is_array( $consent ), $host );
 
 		return $this->result( 'host_scope', 'دامنهٔ ضمنی درمانگاه میزبان', (string) $decision['status'], (string) $decision['detail'] );
 	}
 
 	/**
+	 * Whether the administrator has already accepted the single-Clinic
+	 * consequence on this exact site.
+	 *
+	 * @return bool
+	 */
+	public function private_host_consented(): bool {
+		return $this->manifest instanceof ScopedManifest && null !== $this->manifest->private_host_consent();
+	}
+
+	/**
 	 * Pure decision table for the host implicit-scope gate.
 	 *
-	 * @param int $clinic_count Current `COUNT(*)` on `cpms_clinics`.
+	 * @param int    $clinic_count       Current `COUNT(*)` on `cpms_clinics`.
+	 * @param bool   $private_host       Sealed private-test-site acceptance exists for this site.
+	 * @param string $host              This site's host, for the Persian explanation.
 	 * @return array{status:string,detail:string}
 	 */
-	public static function host_scope_decision( int $clinic_count ): array {
+	public static function host_scope_decision( int $clinic_count, bool $private_host = false, string $host = '' ): array {
 		if ( $clinic_count < 1 ) {
 			return array(
 				'status' => 'fail',
@@ -215,9 +237,20 @@ class ScopedPreflight extends Preflight {
 			);
 		}
 		if ( 1 === $clinic_count ) {
+			if ( ! $private_host ) {
+				return array(
+					'status' => 'fail',
+					'detail' => 'این سایت تک‌درمانگاهی است. ساخت دمو یک «درمانگاه لنگر» اضافه می‌کند که پس از پاک‌سازی هم باقی می‌ماند و در نتیجه دامنهٔ ضمنی تک‌درمانگاهی این سایت برای همیشه به «نیازمند انتخاب درمانگاه» تغییر می‌کند. '
+						. 'اگر این سایت یک سایت آزمایشی خصوصی است و این تغییر را می‌پذیرید، همین پایین با نوشتن نام دامنه تأیید کنید؛ در غیر این صورت ابتدا یک درمانگاه واقعی دیگر بسازید یا از حالت یک‌بارمصرف استفاده کنید.',
+				);
+			}
+
 			return array(
-				'status' => 'fail',
-				'detail' => 'این سایت تک‌درمانگاهی است و دامنهٔ ضمنی آن به تعداد کل درمانگاه‌ها وابسته است؛ لنگرِ درمانگاه آزمایشی آن را برای همیشه تغییر می‌دهد. ابتدا یک درمانگاه واقعی دیگر بسازید یا از حالت یک‌بارمصرف استفاده کنید.',
+				'status' => 'pass',
+				'detail' => 'تک‌درمانگاهی است، اما شما صریحاً تأیید کرده‌اید که این سایت یک سایت آزمایشی خصوصی است. '
+					. 'با ساخت دمو، درمانگاه لنگر پس از پاک‌سازی بایگانی می‌شود و شمار درمانگاه‌ها یکی بیشتر از قبل می‌ماند؛ یعنی این سایت از حالت «تک‌درمانگاهی خودکار» خارج می‌شود. '
+					. 'برای بازگشت به حالت قبل باید ردیف لنگر بایگانی‌شده به‌صورت دستی و با پشتیبان بررسی شود؛ این کار عمداً خودکار نیست چون ردیف‌های حسابرسی هرگز حذف نمی‌شوند.'
+					. ( '' === $host ? '' : ' (دامنهٔ تأییدشده: ' . $host . ')' ),
 			);
 		}
 

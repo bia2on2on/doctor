@@ -93,6 +93,28 @@ class ScopedAdmin {
 			return;
 		}
 		wp_enqueue_style( 'cpsd-admin', CPMS_DEMO_URL . 'assets/admin.css', array(), CPMS_DEMO_VERSION );
+		// The confirmation phrases are deliberately long and exact; the operator
+		// should not have to retype them by hand. This only copies text into the
+		// input that is already on the page - it never submits the form, and the
+		// server-side phrase check is unchanged.
+		// A handle with no file: the behaviour is four lines and must not add a
+		// second asset to the package for a clipboard convenience.
+		wp_register_script( 'cpsd-admin-copy', false, array(), CPMS_DEMO_VERSION, true );
+		wp_enqueue_script( 'cpsd-admin-copy' );
+		wp_add_inline_script(
+			'cpsd-admin-copy',
+			"( function () {\n"
+			. "\tdocument.addEventListener( 'click', function ( event ) {\n"
+			. "\t\tvar button = event.target.closest( '[data-cpdd-copy]' );\n"
+			. "\t\tif ( ! button ) { return; }\n"
+			. "\t\tevent.preventDefault();\n"
+			. "\t\tvar field = document.getElementById( button.getAttribute( 'data-cpdd-copy' ) );\n"
+			. "\t\tif ( ! field ) { return; }\n"
+			. "\t\tfield.value = button.getAttribute( 'data-cpdd-copy-value' ) || '';\n"
+			. "\t\tfield.focus();\n"
+			. "\t} );\n"
+			. "}() );\n"
+		);
 	}
 
 	/**
@@ -129,6 +151,15 @@ class ScopedAdmin {
 			$request->authorize( $action, $post );
 			$admin_id = $env->current_user_id();
 			switch ( $action ) {
+				case ScopedRequest::ACTION_PRIVATE_HOST:
+					// The consequence is accepted for THIS host only; the phrase was
+					// this site's own host name, and the sealed record names it too.
+					$manifest->enable_private_host( $admin_id, ScopedRequest::private_host_phrase( $env ) );
+					self::$notice = array(
+						'type' => 'success',
+						'text' => 'تأیید شد که این سایت یک سایت آزمایشی خصوصی است. پیش‌بررسی اکنون اجازهٔ ساخت دمو را می‌دهد؛ توجه کنید که پس از پاک‌سازی، شمار درمانگاه‌های این سایت یکی بیشتر از قبل می‌ماند.',
+					);
+					break;
 				case ScopedRequest::ACTION_ENABLE:
 					$manifest->enable_mode( $admin_id );
 					self::$notice = array( 'type' => 'success', 'text' => 'حالت محدودشده فعال شد. ساخت دمو همچنان نیاز به تأیید جداگانه دارد.' );
@@ -241,8 +272,19 @@ class ScopedAdmin {
 		echo '<h1>دموی محدودشده CPMS — سایت آزمایشی غیرخالی</h1>';
 		\CpmsDemo\Standalone::render_banner();
 		self::render_notice();
+		self::render_setup_summary( $manifest, $state, $loaded, $manifest_error );
 		self::render_identity( $env, $manifest, $manifest->mode_enabled(), $loaded, $manifest_error );
 		self::render_preflight( $state );
+		// Read the same counter the gate reads, but never let a counting failure
+		// turn into a page error: 0 renders no consent card at all.
+		$clinic_count = 0;
+		try {
+			$clinic_count = (int) $platform->count_all( 'cpms_clinics' );
+		} catch ( \Throwable $e ) {
+			unset( $e );
+			$clinic_count = 0;
+		}
+		self::render_private_host_consent( $env, $manifest, $request, $clinic_count );
 		self::render_credentials( $loaded );
 		self::render_otp();
 		if ( '' !== $manifest_error ) {
@@ -271,6 +313,111 @@ class ScopedAdmin {
 		}
 		self::render_instructions();
 		self::render_limitations();
+		echo '</div>';
+	}
+
+	/**
+	 * One card that answers the only two questions a non-technical operator has:
+	 * "is it ready?" and "what exactly is the next click?".
+	 *
+	 * The detailed tables stay below it, unchanged, for anyone who wants the
+	 * evidence. This card never grants anything: it only reads the same state the
+	 * gates read.
+	 *
+	 * @param ScopedManifest      $manifest Manifest store.
+	 * @param array<string,mixed> $state    Preflight state.
+	 * @param array<string,mixed>|null $loaded Verified manifest.
+	 * @param string              $error    Manifest verification error.
+	 * @return void
+	 */
+	private static function render_setup_summary( ScopedManifest $manifest, array $state, ?array $loaded, string $error ): void {
+		$ready  = ! empty( $state['ok'] );
+		$mode   = $manifest->mode_enabled();
+		$active = is_array( $loaded ) && 'active' === (string) ( $loaded['status'] ?? '' );
+
+		if ( '' !== $error ) {
+			$headline = 'وضعیت مالکیت دمو معتبر نیست و هر تغییری متوقف است.';
+			$tone     = 'fail';
+		} elseif ( $active ) {
+			$headline = 'دمو آماده است.';
+			$tone     = 'pass';
+		} elseif ( ! $mode ) {
+			$headline = 'یک کار باقی مانده: حالت دمو را فعال کنید.';
+			$tone     = 'todo';
+		} elseif ( ! $ready ) {
+			$headline = 'یک کار باقی مانده: پیش‌بررسی باید سبز شود.';
+			$tone     = 'fail';
+		} else {
+			$headline = 'یک کار باقی مانده: دمو را بسازید.';
+			$tone     = 'todo';
+		}
+
+		echo '<div class="cpdd-card" data-cpsd-summary="' . esc_attr( $tone ) . '">';
+		echo '<h2>از کجا شروع کنم؟</h2>';
+		echo '<p class="cpdd-summary-headline"><strong>' . esc_html( $headline ) . '</strong></p>';
+		echo '<ol class="cpdd-steps">';
+		echo '<li data-cpsd-step="1" class="' . ( $mode ? 'is-done' : 'is-next' ) . '">فعال‌سازی حالت محدودشده <span class="cpdd-step-state">' . ( $mode ? 'انجام شد' : 'نوبت شما' ) . '</span></li>';
+		echo '<li data-cpsd-step="2" class="' . ( $active ? 'is-done' : ( $mode && $ready ? 'is-next' : '' ) ) . '">ساخت دمو <span class="cpdd-step-state">' . ( $active ? 'انجام شد' : ( $mode && $ready ? 'نوبت شما' : 'پس از فعال‌سازی' ) ) . '</span></li>';
+		echo '<li data-cpsd-step="3" class="' . ( $active ? 'is-next' : '' ) . '">ورود با نقش‌های نمایشی <span class="cpdd-step-state">' . ( $active ? 'نوبت شما' : 'پس از ساخت دمو' ) . '</span></li>';
+		echo '</ol>';
+		if ( $active ) {
+			echo '<p><a class="button button-primary" href="#cpsd-personas">رفتن به نقش‌های نمایشی</a></p>';
+		}
+		if ( ! $ready && '' === $error ) {
+			$blocking = array();
+			foreach ( (array) ( $state['checks'] ?? array() ) as $check ) {
+				if ( 'pass' !== (string) ( $check['status'] ?? '' ) ) {
+					$blocking[] = (string) ( $check['label'] ?? '' );
+				}
+			}
+			if ( array() !== $blocking ) {
+				echo '<p>برای ادامه فقط این موارد مانده‌اند: <strong>' . esc_html( implode( ' · ', $blocking ) ) . '</strong></p>';
+			}
+		}
+		echo '<p class="description">هر عملیات با یک عبارت تأیید انجام می‌شود. عبارت را لازم نیست از حفظ بنویسید: کنار هر فرم دکمهٔ «کپی عبارت» هست.</p>';
+		echo '</div>';
+	}
+
+	/**
+	 * The single-Clinic gate, explained in one short paragraph and resolved by an
+	 * explicit typed acceptance of THIS host.
+	 *
+	 * The gate itself stays exactly where it was: the sealed record this form
+	 * writes is read by ScopedPreflight, and without it provisioning is still
+	 * refused with the same fail-closed code. The form only makes an existing,
+	 * deliberate decision reachable for an operator who does not read PHP.
+	 *
+	 * @param Env             $env      Environment.
+	 * @param ScopedManifest  $manifest Manifest store.
+	 * @param ScopedRequest   $request  Request gates.
+	 * @param int             $clinics  Current `COUNT(*)` on `cpms_clinics`.
+	 * @return void
+	 */
+	private static function render_private_host_consent( Env $env, ScopedManifest $manifest, ScopedRequest $request, int $clinics ): void {
+		$consent = $manifest->private_host_consent();
+		if ( 1 !== $clinics ) {
+			// Multi-Clinic: nothing to accept, nothing to explain.
+			return;
+		}
+		$host = ScopedRequest::private_host_phrase( $env );
+		if ( '' === $host ) {
+			// Without a readable host name there is no site-bound phrase to type.
+			return;
+		}
+		if ( is_array( $consent ) ) {
+			echo '<div class="cpdd-card" data-cpsd-private-host="accepted"><h2>سایت آزمایشی خصوصی: تأییدشده</h2>';
+			echo '<p>تأیید شما ثبت شده است: این سایت یک سایت آزمایشی خصوصی است و می‌پذیرید که پس از پاک‌سازی دمو، شمار درمانگاه‌های سایت یکی بیشتر از قبل بماند.</p>';
+			echo '<p>دامنهٔ تأییدشده: <code dir="ltr">' . esc_html( (string) ( $consent['host'] ?? '' ) ) . '</code> — زمان ثبت: <span dir="ltr">' . esc_html( (string) ( $consent['at'] ?? '' ) ) . '</span></p>';
+			echo '</div>';
+
+			return;
+		}
+
+		echo '<div class="cpdd-card cpdd-attention" data-cpsd-private-host="pending"><h2>یک تأیید لازم است: این سایت تک‌درمانگاهی است</h2>';
+		echo '<p>ساخت دمو یک «درمانگاه لنگر» ساختگی اضافه می‌کند. پس از پاک‌سازی، این ردیف بایگانی می‌شود و حذف نمی‌شود (چون ردیف‌های حسابرسی حذف نمی‌شوند)، پس شمار درمانگاه‌های سایت یکی بیشتر از قبل می‌ماند.</p>';
+		echo '<p>در یک سایت با یک درمانگاه، همین یک عدد تعیین می‌کند که سیستم «تک‌درمانگاهی» کار کند یا از کاربر بخواهد درمانگاه را انتخاب کند. پس این تغییر برای همیشه در رفتار سایت می‌ماند.</p>';
+		echo '<p>اگر این سایت یک <strong>سایت آزمایشی خصوصی</strong> است و این تغییر را می‌پذیرید، عبارت زیر را عیناً بنویسید. عبارت، نام دامنهٔ همین سایت است؛ با آن، تأیید شما به همین نصب گره می‌خورد.</p>';
+		self::render_form( $request, ScopedRequest::ACTION_PRIVATE_HOST, 'تأیید سایت آزمایشی خصوصی', $host, 'این تأیید برای همان دامنه ثبت و مهر می‌شود؛ روی سایت دیگری قابل استفاده نیست.' );
 		echo '</div>';
 	}
 
@@ -333,9 +480,11 @@ class ScopedAdmin {
 		foreach ( $fields as $name => $value ) {
 			echo '<input type="hidden" name="' . esc_attr( (string) $name ) . '" value="' . esc_attr( (string) $value ) . '" />';
 		}
+		$field_id = 'cpdd-phrase-' . preg_replace( '/[^a-z0-9_]/', '', $action );
 		echo '<h2>' . esc_html( $title ) . '</h2><p>' . esc_html( $hint ) . '</p>';
-		echo '<p><label>عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
-		echo '<p><input type="text" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required /></p>';
+		echo '<p><label for="' . esc_attr( $field_id ) . '">عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
+		echo '<p><input type="text" id="' . esc_attr( $field_id ) . '" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required />'
+			. ' <button type="button" class="button" data-cpdd-copy="' . esc_attr( $field_id ) . '" data-cpdd-copy-value="' . esc_attr( $phrase ) . '">کپی عبارت</button></p>';
 		echo '<p><button type="submit" class="button ' . ( ScopedRequest::ACTION_TEARDOWN === $action ? 'button-link-delete' : 'button-primary' ) . '">' . esc_html( $title ) . '</button></p>';
 		echo '</form>';
 	}
@@ -558,7 +707,7 @@ class ScopedAdmin {
 		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
 		$portals  = self::persona_portals();
 		$personas = Credentials::personas();
-		echo '<div class="cpdd-card" data-cpsd-persona-access="1"><h2>دسترسی به نقش‌های نمایشی</h2>';
+		echo '<div class="cpdd-card" id="cpsd-personas" data-cpsd-persona-access="1"><h2>دسترسی به نقش‌های نمایشی</h2>';
 		echo '<p>برای هر نقش یک حساب ساختگی ساخته شده است. با همان حساب در درگاه خودش وارد شوید تا همان چیزی را ببینید که یک کاربر واقعی با آن نقش می‌بیند. این صفحه هیچ سازوکار «ورود به‌جای دیگری» ندارد و دسترسی هر نقش را خود درگاه تولیدی تعیین می‌کند.</p>';
 		echo '<table class="widefat striped cpdd-personas"><thead><tr><th>نقش</th><th>درگاه</th><th>برای چه کاری</th><th>ورود</th></tr></thead><tbody>';
 		foreach ( Credentials::PERSONA_ORDER as $key ) {
@@ -642,15 +791,12 @@ class ScopedAdmin {
 	}
 
 	private static function render_instructions(): void {
-		echo '<div class="cpdd-card"><h2>دستورالعمل فارسی</h2><ol>';
-		echo '<li>ابتدا یک پشتیبان کامل و قابل بازیابی از سایت آزمایشی بگیرید.</li>';
-		echo '<li>دو ZIP جداگانه CPMS Classic و companion را از wp-admin نصب و فعال کنید.</li>';
-		echo '<li>حالت محدودشده را با عبارت <code dir="ltr">I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE</code> فعال کنید.</li>';
-		echo '<li>پیشبررسی را سبز کنید و سپس دمو را بسازید؛ رمزهای همهٔ شخصیت‌ها را همان لحظه ذخیره کنید.</li>';
-		echo '<li>هر شخصیت را در یک پنجره خصوصی جداگانه وارد کرده و جریانهای رزرو، پذیرش، بالینی و مالی را انجام دهید.</li>';
-		echo '<li>پیشنمایش پاکسازی را بررسی کنید، سپس با عبارت <code dir="ltr">REMOVE_ONLY_SCOPED_DEMO_DATA</code> فقط دادههای دمو را حذف کنید.</li>';
-		echo '<li>نتیجه حفظ baseline و زنجیره حسابرسی را بررسی کنید؛ در صورت هشدار ناقص، دوباره پاکسازی را اجرا کنید.</li>';
-		echo '</ol></div>';
+		echo '<div class="cpdd-card" data-cpsd-instructions="1"><h2>سه گام، به زبان ساده</h2><ol>';
+		echo '<li><strong>حالت دمو را فعال کنید.</strong> فرم «فعال‌سازی حالت محدودشده» را بزنید؛ عبارت تأیید را با دکمهٔ «کپی عبارت» در کادر بگذارید و ارسال کنید. این کار هیچ کاربر و هیچ رکورد درمانگاهی نمی‌سازد.</li>';
+		echo '<li><strong>دمو را بسازید.</strong> وقتی همهٔ ردیف‌های پیش‌بررسی سبز شدند، فرم «ساخت دموی محدودشده» را اجرا کنید. رمز هشت نقش فقط یک‌بار و در همان پاسخ نشان داده می‌شود؛ همان لحظه آن را جایی امن نگه دارید. اگر از دست رفت، با «چرخش رمزهای نمایشی» رمز تازه بگیرید.</li>';
+		echo '<li><strong>با نقش‌ها کار کنید.</strong> از کارت «دسترسی به نقش‌های نمایشی» هر نقش را در یک پنجرهٔ خصوصی جدا باز کنید و جریان‌های نوبت، پذیرش، بالینی و مالی را ببینید. برای رزرو عمومی و کد نمایشی، راهنمای همان کارت را دنبال کنید.</li>';
+		echo '</ol>';
+		echo '<p>در پایان، اول «پیش‌نمایش پاک‌سازی» را ببینید و بعد «پاک‌سازی فقط داده‌های دمو» را اجرا کنید. دادهٔ قبلی سایت و تاریخچهٔ حسابرسی حفظ می‌شوند.</p></div>';
 	}
 
 	private static function render_limitations(): void {

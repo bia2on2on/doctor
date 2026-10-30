@@ -26,3 +26,14 @@
   .cpdd .cpdd-kv th { width: auto; }
   .cpdd .cpdd-pass-field { min-width: 0; }
 }
+/* Setup summary: the operator's first question is "is it ready, and what is
+   the next single click?". Kept RTL-safe and readable on 320px. */
+.cpdd .cpdd-summary-headline { font-size: 15px; margin: 4px 0 10px; }
+.cpdd .cpdd-steps { list-style: none; padding-inline-start: 0; margin: 0 0 10px; }
+.cpdd .cpdd-steps li { display: flex; gap: 8px; align-items: baseline; justify-content: space-between; border-inline-start: 4px solid #dcdcde; padding: 6px 10px; margin-bottom: 6px; background: #f6f7f7; }
+.cpdd .cpdd-steps li.is-next { border-inline-start-color: #2271b1; background: #f0f6fc; font-weight: 600; }
+.cpdd .cpdd-steps li.is-done { border-inline-start-color: #007017; }
+.cpdd .cpdd-step-state { font-weight: 400; color: #50575e; white-space: nowrap; }
+.cpdd [data-cpsd-summary="pass"] .cpdd-summary-headline { color: #007017; }
+.cpdd [data-cpsd-summary="fail"] .cpdd-summary-headline { color: #b32d2e; }
+.cpdd .cpdd-attention { border-color: #dba617; background: #fffdf5; }

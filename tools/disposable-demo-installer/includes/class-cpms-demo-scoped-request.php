@@ -30,6 +30,11 @@ class ScopedRequest extends Request {
 	// was interrupted between sealing the intent and registering the Clinic.
 	public const ACTION_ADD_CLINIC     = 'add_clinic';
 	public const ACTION_RESOLVE_CLINIC = 'resolve_clinic';
+	// Accept, in so many words, that a single-Clinic host is a PRIVATE TEST SITE
+	// and that the demo's archived anchor Clinic will change its implicit scope
+	// for good. Its confirmation phrase is the site's own host name, so the
+	// acceptance is site-specific and cannot be replayed on another install.
+	public const ACTION_PRIVATE_HOST = 'private_host';
 
 	/**
 	 * @return array<string,array{nonce:string,phrase:string,label:string}>
@@ -76,6 +81,47 @@ class ScopedRequest extends Request {
 				'phrase' => 'RESOLVE_INTERRUPTED_DEMO_CLINIC',
 				'label'  => 'تعیین تکلیف درمانگاه نمایشی ناتمام',
 			),
+			// `phrase` is resolved per site by phrase(); the value here is only a
+			// placeholder so the action stays discoverable next to its siblings.
+			self::ACTION_PRIVATE_HOST  => array(
+				'nonce'  => 'cpsd_private_host',
+				'phrase' => '',
+				'label'  => 'تأیید سایت آزمایشی خصوصی',
+			),
 		);
+	}
+
+	/**
+	 * The exact text an administrator types to accept the private-test-site
+	 * consequence: this install's own host name.
+	 *
+	 * @param Env $env Environment.
+	 * @return string
+	 */
+	public static function private_host_phrase( Env $env ): string {
+		return ScopedManifest::host_of( $env->home_url() );
+	}
+
+	/**
+	 * Per-site phrase resolution. Only ACTION_PRIVATE_HOST is dynamic; every
+	 * other action keeps its fixed, shared-nothing machine phrase.
+	 *
+	 * @param string $action Action key.
+	 * @return string
+	 * @throws Exception On unknown action.
+	 */
+	public function phrase( string $action ): string {
+		if ( self::ACTION_PRIVATE_HOST === $action ) {
+			$phrase = self::private_host_phrase( $this->env );
+			// An unreadable home_url() must never degrade into "the empty phrase
+			// matches the empty field".
+			if ( '' === $phrase ) {
+				throw new Exception( 'PRIVATE_HOST_MISMATCH', 'نام دامنهٔ این سایت خوانده نشد؛ تأیید سایت آزمایشی خصوصی ممکن نیست.' );
+			}
+
+			return $phrase;
+		}
+
+		return parent::phrase( $action );
 	}
 }
