@@ -38,6 +38,25 @@ class ScopedRecovery {
 	/** A verified, sealed, active fixture. Nothing to do but look at it. */
 	public const VERDICT_ACTIVE = 'active';
 
+	/**
+	 * A complete fixture that the sealed manifest proves, whose sealed
+	 * pre-provisioning baseline is gone.
+	 *
+	 * Every synthetic row this package created is present with the exact id,
+	 * login, slug and tenant the HMAC-sealed manifest names, so the fixture is
+	 * provably OURS. What is missing is the record of what existed BEFORE it, and
+	 * that record cannot be reconstructed after the fact - which makes only the
+	 * destructive direction unprovable.
+	 *
+	 * Activation (an additive marker plus the ownership ledger and one audit row)
+	 * creates and deletes no data row, so it is safe here. A teardown is NOT, and
+	 * stays refused with `BASELINE_MISSING` until a human restores a baseline.
+	 * Reporting the two directions separately is the point: the alternative -
+	 * refusing everything - is the dead end that left a real Owner install
+	 * unusable while its eight portals already existed.
+	 */
+	public const VERDICT_USABLE = 'usable';
+
 	/** Every synthetic row exists and only the seal is missing; finishing is safe. */
 	public const VERDICT_RESUMABLE = 'resumable';
 
@@ -83,7 +102,7 @@ class ScopedRecovery {
 	 * tampered payload. This method therefore never has to trust a raw option.
 	 *
 	 * @param array<string,mixed> $manifest Verified manifest payload.
-	 * @return array{verdict:string,code:string,reason:string,status:string,sealed:bool,checks:list<array{id:string,label:string,status:string,detail:string}>}
+	 * @return array{verdict:string,code:string,reason:string,status:string,sealed:bool,usable:bool,teardown_blocked:string,checks:list<array{id:string,label:string,status:string,detail:string}>}
 	 */
 	public function assess( array $manifest ): array {
 		$checks = array();
@@ -218,7 +237,7 @@ class ScopedRecovery {
 			$has_base,
 			$has_base
 				? ( array() !== $baseline ? 'پایهٔ مرجع در سند مالکیت مهر شده است.' : 'پایهٔ مرجع مهرشدهٔ اجرای ناتمام موجود است.' )
-				: 'پایهٔ مرجع پیدا نشد؛ بدون آن نه ادامه و نه پاک‌سازی قابل اثبات نیست.'
+				: 'پایهٔ مرجع پیدا نشد؛ بدون آن پاک‌سازی خودکار و اثبات دست‌نخوردگی دادهٔ قبلی قابل اثبات نیست (فعال‌سازی افزودنی همچنان ممکن است).'
 		);
 
 		// --- 6. The sealed ownership ledger -------------------------------------
@@ -300,14 +319,20 @@ class ScopedRecovery {
 		$add( 'seal', 'کامل‌بودن مهر مالکیت', $sealed_flag, $seal_detail );
 
 		// --- Verdict -------------------------------------------------------------
-		$structural = $shape_ok && $tenant_ok && $accounts_ok && $page_ok && $has_base;
-		$code       = '';
-		$reason     = '';
+		// "Is this fixture provably OURS?" and "is there a baseline?" are two
+		// different questions with two different safe answers. Conflating them is
+		// what turned a real install into a dead end: identity was fine, the
+		// baseline was gone, so every action - including the additive one that
+		// creates and deletes nothing - was refused.
+		$identity_ok = $shape_ok && $tenant_ok && $accounts_ok && $page_ok;
+		$structural  = $identity_ok && $has_base;
+		$code        = '';
+		$reason      = '';
 
 		if ( ! $known_status ) {
 			$code   = 'DEMO_STATUS_UNKNOWN';
 			$reason = 'وضعیت ثبت‌شدهٔ دمو شناخته‌شده نیست؛ هیچ عملی خودکار انجام نمی‌شود.';
-		} elseif ( ! $structural ) {
+		} elseif ( ! $identity_ok ) {
 			$code   = $tenant_ok && $accounts_ok ? 'DEMO_INCOMPLETE' : 'DEMO_EVIDENCE_MISSING';
 			$reason = 'شواهد مهرشدهٔ دمو با ردیف‌های زنده هم‌خوان نیست؛ نه ادامهٔ خودکار مجاز است و نه پاک‌سازی، تا موضوع به‌صورت انسانی بررسی شود.';
 		} elseif ( ! $ledger_ok ) {
@@ -315,12 +340,14 @@ class ScopedRecovery {
 			$reason = 'دفتر مالکیت مهرشده معتبر نیست؛ تا بازگردانی آن هیچ عملی انجام نمی‌شود.';
 		} elseif ( 'active' === $status && $sealed_flag ) {
 			return array(
-				'verdict'  => self::VERDICT_ACTIVE,
-				'code'     => '',
-				'reason'   => 'دمو کامل و مهرشده است.',
-				'status'   => $status,
-				'sealed'   => true,
-				'checks'   => $checks,
+				'verdict'          => self::VERDICT_ACTIVE,
+				'code'             => '',
+				'reason'           => 'دمو کامل و مهرشده است.',
+				'status'           => $status,
+				'sealed'           => true,
+				'usable'           => true,
+				'teardown_blocked' => '',
+				'checks'           => $checks,
 			);
 		} elseif ( $owned_ok && ! is_array( $ledger_raw ) ) {
 			// A sealed manifest whose ledger disappeared is lost ownership, not an
@@ -343,14 +370,31 @@ class ScopedRecovery {
 			} elseif ( ! $complete ) {
 				$code   = 'DEMO_INCOMPLETE';
 				$reason = 'همهٔ ردیف‌های ساختگی تا مرحلهٔ مهر کامل نیستند؛ ادامهٔ خودکار مجاز نیست و مسیر درست، پاک‌سازی مجاز و ساخت دوباره است.';
+			} elseif ( ! $has_base ) {
+				// Same completeness proof as RESUMABLE, minus the baseline. The
+				// additive activation is safe; only the destructive direction is
+				// unprovable, and it stays refused.
+				return array(
+					'verdict'          => self::VERDICT_USABLE,
+					'code'             => '',
+					'reason'           => 'همهٔ ردیف‌های ساختگی این دمو با شناسه و نام کاربری مهرشده وجود دارند، اما پایهٔ مرجع پیش از ساخت (برای اثبات دست‌نخوردگی دادهٔ قبلی سایت) در دسترس نیست. '
+						. 'دمو را می‌توان بدون ساخت یا حذف هیچ ردیفی فعال و استفاده کرد؛ پاک‌سازی خودکار تا بازگردانی پایهٔ مرجع مسدود می‌ماند.',
+					'status'           => $status,
+					'sealed'           => false,
+					'usable'           => true,
+					'teardown_blocked' => 'BASELINE_MISSING',
+					'checks'           => $checks,
+				);
 			} else {
 				return array(
-					'verdict'  => self::VERDICT_RESUMABLE,
-					'code'     => '',
-					'reason'   => 'همهٔ ردیف‌های ساختگی ساخته شده‌اند و فقط مهر نهایی ناقص است؛ ادامه با همان شواهد مهرشده ایمن است.',
-					'status'   => $status,
-					'sealed'   => false,
-					'checks'   => $checks,
+					'verdict'          => self::VERDICT_RESUMABLE,
+					'code'             => '',
+					'reason'           => 'همهٔ ردیف‌های ساختگی ساخته شده‌اند و فقط مهر نهایی ناقص است؛ ادامه با همان شواهد مهرشده ایمن است.',
+					'status'           => $status,
+					'sealed'           => false,
+					'usable'           => false,
+					'teardown_blocked' => '',
+					'checks'           => $checks,
 				);
 			}
 		} else {
@@ -359,12 +403,14 @@ class ScopedRecovery {
 		}
 
 		return array(
-			'verdict' => self::VERDICT_BLOCKED,
-			'code'    => $code,
-			'reason'  => $reason,
-			'status'  => $status,
-			'sealed'  => $sealed_flag,
-			'checks'  => $checks,
+			'verdict'          => self::VERDICT_BLOCKED,
+			'code'             => $code,
+			'reason'           => $reason,
+			'status'           => $status,
+			'sealed'           => $sealed_flag,
+			'usable'           => false,
+			'teardown_blocked' => '',
+			'checks'           => $checks,
 		);
 	}
 

@@ -511,6 +511,298 @@ def provision_phase(browser) -> None:
     ctx.close()
 
 
+def repair_phase(browser) -> None:
+    """The Owner's actual starting point: baseline lost, eight portals alive.
+
+    Precondition: `tests/scoped-demo/owner-incident.php` (mode `stage`) has put
+    the site into the state a real install reported - manifest `failed`, the
+    sealed pre-provisioning baseline gone, eight `cpsd-…` accounts and every
+    synthetic row present, teardown refusing BASELINE_MISSING and the preflight
+    refusing a second fixture.
+
+    This phase proves the only thing the Owner needed: ONE Persian action on the
+    page they already had, after which the eight real portals are reachable, with
+    no SQL, no user deletion and no plugin disabled - and that clicking it twice
+    changes nothing.
+    """
+    ctx, admin = admin_login(browser)
+    dashboard = f"{BASE}/wp-admin/admin.php?page=cpms-demo"
+    admin.goto(dashboard, wait_until="domcontentloaded")
+
+    check("the incident state is reported as usable, not as a dead end",
+          admin.locator('[data-cpms-demo-state="usable"]').count() == 1)
+    check("the blocked teardown is stated on the page",
+          admin.locator('[data-cpms-demo-teardown-blocked="BASELINE_MISSING"]').count() == 1)
+    launch = admin.locator('form[data-cpsd-form="launch"]')
+    check("the one obvious action is offered", launch.count() == 1)
+    check("the additive repair asks for no typed phrase",
+          launch.locator('input[name="cpdd_confirm"]').count() == 0)
+    check("the page offers no destructive action",
+          admin.locator('form[data-cpsd-form="teardown"]').count() == 0)
+    check("the additive repair is not mistaken for a resume",
+          admin.locator('form[data-cpsd-form="resume"]').count() == 0)
+    admin.screenshot(path=str(EVIDENCE / "repair-incident-page.png"))
+
+    submit_form(admin, "launch")
+    notice = admin.locator('.notice-success')
+    check("the one action reports success", notice.count() >= 1)
+    check("the page now says the demo is activated",
+          admin.locator('[data-cpms-demo-activated="1"]').count() == 1)
+
+    credentials_card = admin.locator('[data-cpms-demo-secret="credentials"]')
+    check("the one action shows the eight one-time passwords", credentials_card.count() == 1)
+    rows = credentials_card.locator("tr[data-cpsd-persona]")
+    check("one credential row per persona", rows.count() == len(PERSONAS), f"rows={rows.count()}")
+    creds: dict[str, dict[str, str]] = {}
+    for i in range(rows.count()):
+        row = rows.nth(i)
+        persona = row.get_attribute("data-cpsd-persona") or ""
+        username = row.locator("td").nth(1).inner_text().strip()
+        password = row.locator("textarea.cpdd-pass-field").input_value().strip()
+        creds[persona] = {"username": username, "password": password}
+    check("the rotated credentials are complete",
+          sorted(creds.keys()) == sorted(PERSONAS) and all(v["username"] and v["password"] for v in creds.values()),
+          json.dumps(sorted(creds.keys())))
+
+    access = admin.locator('[data-cpsd-persona-access="1"]')
+    check("the eight portal links are on the same page", access.count() == 1)
+    access_rows = access.locator("tr[data-cpsd-persona-portal]")
+    check("the portal map covers every persona", access_rows.count() == len(PERSONAS),
+          f"rows={access_rows.count()}")
+    doctor_link = ""
+    for i in range(access_rows.count()):
+        row = access_rows.nth(i)
+        if (row.get_attribute("data-cpsd-persona-portal") or "") == "doctor":
+            doctor_link = row.locator("a").first.get_attribute("href") or ""
+    check("the doctor portal link is a real URL", doctor_link.startswith("http"), doctor_link)
+    admin.screenshot(path=str(EVIDENCE / "repair-portals.png"))
+
+    # The purpose of the whole exercise: a rotated password must really open the
+    # real production portal of that persona.
+    if creds.get("doctor", {}).get("username") and doctor_link:
+        doc_ctx, doc_page = persona_login(browser, creds["doctor"]["username"], creds["doctor"]["password"])
+        doc_page.goto(doctor_link, wait_until="domcontentloaded")
+        body = doc_page.content()
+        denied = "دسترسی ندارید" in body or "You do not have sufficient permissions" in body
+        check("the doctor portal renders for the rotated password",
+              doc_page.locator("script.cpms-doctor-portal__config").count() >= 1 and not denied,
+              f"url={doc_page.url} denied={denied}")
+        doc_page.screenshot(path=str(EVIDENCE / "repair-doctor-portal.png"))
+        doc_ctx.close()
+    else:
+        check("the doctor portal was opened with the rotated password", False, "no doctor credentials")
+
+    # A second click must be a no-op: same fixture, same portals, no new rows.
+    admin.goto(dashboard, wait_until="domcontentloaded")
+    submit_form(admin, "launch")
+    check("a second click keeps the same demo activated",
+          admin.locator('[data-cpms-demo-activated="1"]').count() == 1)
+    check("a second click still maps every persona",
+          admin.locator('tr[data-cpsd-persona-portal]').count() == len(PERSONAS),
+          f"rows={admin.locator('tr[data-cpsd-persona-portal]').count()}")
+    check("a second click still offers no destructive action",
+          admin.locator('form[data-cpsd-form="teardown"]').count() == 0)
+    admin.screenshot(path=str(EVIDENCE / "repair-second-click.png"))
+
+    JOURNEY_EVIDENCE["repair"] = {
+        "activated": True,
+        "personas": sorted(creds.keys()),
+        "doctor_portal": doctor_link,
+    }
+    ctx.close()
+
+
+def sessions_phase(browser) -> None:
+    """Eight passwordless transitions, real sessions, and one honest boundary.
+
+    For each persona the ADMIN session issues a single-use ticket (the POST the
+    Owner's button sends), and the ticket is redeemed in a SEPARATE browser
+    context. That is what makes the isolation real rather than claimed: a different
+    cookie jar, so the administrator session in the first context is provably still
+    the administrator's afterwards. (Two tabs of one browser share cookies; the page
+    says so, and this drill never pretends otherwise.)
+
+    It also proves the abuse cases: a persona cannot open the admin dashboard, an
+    unauthenticated POST cannot obtain a ticket, a redeemed ticket cannot be replayed
+    and cannot be replayed against another persona.
+    """
+    admin_ctx, admin = admin_login(browser)
+    dashboard = f"{BASE}/wp-admin/admin.php?page=cpms-demo"
+    admin.goto(dashboard, wait_until="domcontentloaded")
+
+    launcher = admin.locator('[data-cpsd-persona-launcher="1"]')
+    check("the dashboard shows the persona launcher", launcher.count() == 1)
+    tiles = launcher.locator("[data-cpsd-persona-tile]")
+    check("the launcher is eight tiles", tiles.count() == len(PERSONAS), f"tiles={tiles.count()}")
+    check("each tile carries its own one-click button",
+          launcher.locator("[data-cpsd-open-persona]").count() == len(PERSONAS))
+    check("the cookie-sharing limitation is stated on the page",
+          launcher.locator('[data-cpsd-cookie-note="1"]').count() == 1)
+    authority = admin.locator('[data-cpsd-authority="1"]')
+    check("the read-only authority matrix is rendered", authority.count() == 1)
+    admin_row = authority.locator("[data-cpsd-authority-admin]")
+    check("the matrix names the administrator row", admin_row.count() == 1)
+    admin_allows = authority.locator("[data-cpsd-admin-allow]")
+    granted = [admin_allows.nth(i).get_attribute("data-cpsd-admin-allow") for i in range(admin_allows.count())]
+    check("being an administrator grants no clinical/financial/tenant/messaging authority",
+          admin_allows.count() == 4 and all(v == "0" for v in granted), json.dumps(granted))
+
+    # Read the nonce + fingerprint + action once: they are the same for every tile.
+    form0 = launcher.locator('[data-cpsd-persona-form="doctor"]')
+    check("the per-persona form is a POST to the dashboard",
+          form0.count() == 1 and (form0.get_attribute("target") or "") == "_blank")
+    tokens = {name: form0.locator(f'input[name="{name}"]').input_value()
+              for name in ("cpsd_action", "cpdd_nonce", "cpdd_site")}
+
+    transitions: dict[str, str] = {}
+    for persona in PERSONAS:
+        # Issue the ticket with the ADMIN session, without following the redirect.
+        post = admin.request.post(
+            f"{BASE}/wp-admin/admin.php?page=cpms-demo",
+            form={**tokens, "cpsd_persona": persona},
+            max_redirects=0,
+        )
+        location = post.headers.get("location", "")
+        check(f"admin can issue a ticket for {persona}",
+              post.status in (302, 303) and "cpsd_persona_entry=" in location,
+              f"status={post.status} location={location[:80]}")
+        if "cpsd_persona_entry=" not in location:
+            continue
+        ticket = location if location.startswith("http") else BASE + location
+
+        # Redeem in a SEPARATE context: its own cookie jar.
+        persona_ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+        persona_page = persona_ctx.new_page()
+        persona_page.goto(ticket, wait_until="domcontentloaded")
+        check(f"{persona}: the ticket lands on its own portal",
+              "/wp-login.php" not in persona_page.url, persona_page.url)
+
+        # The boundary must be visible on the persona's own surface. The
+        # server-rendered banner is authoritative (it does not depend on the theme
+        # rendering an admin bar); the admin-bar node is accepted as a second form.
+        banner = persona_page.locator('[data-cpsd-session-boundary="1"]')
+        bar_node = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session")
+        check(f"{persona}: the session boundary is visible",
+              banner.count() + bar_node.count() >= 1,
+              f"banner={banner.count()} admin_bar={bar_node.count()} url={persona_page.url}")
+        check(f"{persona}: the boundary names the persona it belongs to",
+              banner.count() != 1 or (banner.get_attribute("data-cpsd-persona") == persona),
+              banner.get_attribute("data-cpsd-persona") if banner.count() == 1 else "")
+        account = persona_ctx.cookies()
+        check(f"{persona}: the context holds that account's own WordPress session",
+              any(c.get("name", "").startswith("wordpress_logged_in_") for c in account))
+
+        # The persona cannot reach the administrator dashboard. The property that
+        # matters is that the launcher, its forms and its nonce never render for a
+        # persona - not which language WordPress chooses for its denial page.
+        persona_page.goto(dashboard, wait_until="domcontentloaded")
+        body = persona_page.content()
+        check(f"{persona}: the administrator dashboard is denied to a persona",
+              'data-cpsd-persona-launcher' not in body and 'cpsd_persona_entry' not in body,
+              persona_page.url)
+
+        # A persona cannot mint a ticket - not for itself and not for another
+        # persona. This is the cross-persona escalation attempt in its simplest form.
+        if persona == PERSONAS[0]:
+            escalated = persona_page.request.post(
+                f"{BASE}/wp-admin/admin.php?page=cpms-demo",
+                form={**tokens, "cpsd_persona": "clinic_manager"},
+                max_redirects=0,
+            )
+            check("a persona cannot mint a ticket for another persona",
+                  "cpsd_persona_entry=" not in escalated.headers.get("location", ""),
+                  f"status={escalated.status} location={escalated.headers.get('location', '')[:80]}")
+
+        # Cross-role denial on the administrator console as well.
+        persona_page.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+        console_body = persona_page.content()
+        check(f"{persona}: the scoped console is denied to a persona",
+              'data-cpsd-page="1"' not in console_body
+              and 'data-cpsd-persona-access' not in console_body
+              and 'cpsd_action' not in console_body,
+              persona_page.url)
+        # The obvious, secure way back: the boundary node ends THIS session and
+        # leaves the account with nothing. It must not hand out administrator
+        # authority on the way out either.
+        transitions[persona] = persona_page.url
+        persona_page.goto(f"{BASE}/", wait_until="domcontentloaded")
+        exit_link = persona_page.locator('[data-cpsd-session-exit="1"]')
+        if exit_link.count() == 0:
+            exit_link = persona_page.locator("#wp-admin-bar-cpsd-demo-persona-session-exit a")
+        check(f"{persona}: the one-click way back is visible", exit_link.count() == 1)
+        if exit_link.count() == 1:
+            # A real click on the real link. If a theme overlay intercepts the
+            # pointer, follow the same href rather than giving up: the server side
+            # of the exit (nonce, session check, logout) is what is under test.
+            try:
+                exit_link.click(timeout=5000)
+            except Exception:  # noqa: BLE001 - any interception falls back to its href
+                persona_page.goto(exit_link.get_attribute("href"), wait_until="domcontentloaded")
+            persona_page.wait_for_load_state("domcontentloaded")
+            check(f"{persona}: the session ends and reports it",
+                  "cpsd_persona_ended=1" in persona_page.url, persona_page.url)
+            check(f"{persona}: ending the session leaves no WordPress session behind",
+                  not any(c.get("name", "").startswith("wordpress_logged_in_")
+                          for c in persona_ctx.cookies()))
+            persona_page.goto(dashboard, wait_until="domcontentloaded")
+            check(f"{persona}: after ending the session the dashboard demands a login",
+                  "/wp-login.php" in persona_page.url, persona_page.url)
+        persona_ctx.close()
+
+    check("all eight transitions completed", sorted(transitions.keys()) == sorted(PERSONAS),
+          json.dumps(sorted(transitions.keys())))
+
+    # Replay: the very first ticket was already consumed; the store holds only the
+    # most recent one, so reusing a stale URL must never authenticate anybody.
+    replay_ctx = browser.new_context()
+    replay_page = replay_ctx.new_page()
+    first_persona = PERSONAS[0]
+    stale = admin.request.post(
+        f"{BASE}/wp-admin/admin.php?page=cpms-demo",
+        form={**tokens, "cpsd_persona": first_persona},
+        max_redirects=0,
+    ).headers.get("location", "")
+    # Consume it once, then try the same URL again in a fresh context.
+    used_ctx = browser.new_context()
+    used_page = used_ctx.new_page()
+    used_page.goto(stale if stale.startswith("http") else BASE + stale, wait_until="domcontentloaded")
+    check("the ticket was valid the first time it was used",
+          "/wp-login.php" not in used_page.url, used_page.url)
+    replay_page.goto(stale if stale.startswith("http") else BASE + stale, wait_until="domcontentloaded")
+    check("a consumed ticket is refused on replay",
+          "cpsd_persona_error=" in replay_page.url and "/wp-login.php" in replay_page.url,
+          replay_page.url)
+    check("the replay established no session",
+          not any(c.get("name", "").startswith("wordpress_logged_in_") for c in replay_ctx.cookies()))
+    replay_ctx.close()
+    used_ctx.close()
+
+    # Unauthenticated visitor: no ticket, no session.
+    anon_ctx = browser.new_context()
+    anon_page = anon_ctx.new_page()
+    anon = anon_page.request.post(
+        f"{BASE}/wp-admin/admin.php?page=cpms-demo",
+        form={**tokens, "cpsd_persona": "doctor"},
+        max_redirects=0,
+    )
+    check("an unauthenticated POST cannot obtain a ticket",
+          "cpsd_persona_entry=" not in anon.headers.get("location", ""),
+          f"status={anon.status} location={anon.headers.get('location', '')[:80]}")
+    check("an unauthenticated POST created no session",
+          not any(c.get("name", "").startswith("wordpress_logged_in_") for c in anon_ctx.cookies()))
+    anon_ctx.close()
+
+    # The administrator session survived every transition above.
+    admin.goto(dashboard, wait_until="domcontentloaded")
+    check("the administrator is still signed in after eight persona transitions",
+          admin.locator('[data-cpsd-persona-launcher="1"]').count() == 1)
+    check("the administrator still sees the eight buttons",
+          admin.locator("[data-cpsd-open-persona]").count() == len(PERSONAS))
+    JOURNEY_EVIDENCE["persona_sessions"] = {"transitions": sorted(transitions.keys()),
+                                            "admin_authority": granted}
+    admin_ctx.close()
+
+
 def page_journey(page, label: str, url: str, marker: str) -> None:
     page.goto(url, wait_until="domcontentloaded")
     body = page.content()
@@ -1629,6 +1921,10 @@ def main() -> int:
                     tamper_phase(browser)
                 if phase in ("all", "journeys"):
                     journeys_phase(browser)
+                if phase in ("all", "repair"):
+                    repair_phase(browser)
+                if phase in ("all", "sessions"):
+                    sessions_phase(browser)
             finally:
                 browser.close()
     except Exception as exc:

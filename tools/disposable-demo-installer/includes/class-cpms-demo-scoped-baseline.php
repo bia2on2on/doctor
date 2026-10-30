@@ -113,6 +113,13 @@ class ScopedBaseline {
 		// enumerated here (never matched by prefix) and must never be reported as
 		// host-option residue while the fixture is still live.
 		'cpsd_ownership_ledger',
+		// The monotonic ratchet that makes a truncated or replayed ledger
+		// detectable. Demo-owned and enumerated for the same reason as the ledger.
+		'cpsd_ownership_seal',
+		// The sealed archive of PARKED fixtures. It exists only while a fixture has
+		// been parked for later resolution, and it must never be reported as
+		// host-option residue while a newer live fixture exists.
+		'cpsd_preserved',
 		'cpdd_manifest',
 		'cpdd_tombstone',
 		'cpdd_had_clean_teardown',

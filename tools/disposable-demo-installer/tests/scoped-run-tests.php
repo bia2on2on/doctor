@@ -41,6 +41,88 @@ namespace ClinicCore\Infrastructure\Audit {
 }
 
 namespace {
+	/**
+	 * Shipped-surface fork scan.
+	 *
+	 * @param array<int,string> $files Absolute PHP file paths.
+	 * @return array<int,string> Human-readable problems; empty means clean.
+	 */
+	function cpsd_fork_problems( array $files ): array {
+		$problems = array();
+		foreach ( $files as $file ) {
+			$source = (string) file_get_contents( $file );
+			$short  = basename( $file );
+			if ( ! str_contains( $source, '<?php' ) ) {
+				$problems[] = $short . ': not a PHP file';
+				continue;
+			}
+			// Authority is production's. The demo may *ask* the production engines and
+			// may use WordPress's own authentication primitive; it may never create,
+			// remove or rewrite a capability or role.
+			foreach ( array( 'add_cap(', 'remove_cap(', 'add_role(', 'remove_role(', 'WP_Roles', 'wp_user_roles' ) as $forbidden ) {
+				if ( str_contains( $source, $forbidden ) ) {
+					$problems[] = $short . ': fabricates authority via ' . $forbidden;
+				}
+			}
+			// Declarations must live in the demo's own namespace.
+			$tokens      = token_get_all( $source );
+			$namespace   = '';
+			$previous    = null;
+			$count       = count( $tokens );
+			for ( $index = 0; $index < $count; $index++ ) {
+				$token = $tokens[ $index ];
+				if ( ! is_array( $token ) ) {
+					continue;
+				}
+				if ( T_NAMESPACE === $token[0] ) {
+					$name = '';
+					for ( $next = $index + 1; $next < $count; $next++ ) {
+						$part = $tokens[ $next ];
+						if ( is_array( $part ) && in_array( $part[0], array( T_STRING, T_NAME_QUALIFIED, T_NS_SEPARATOR ), true ) ) {
+							$name .= $part[1];
+							continue;
+						}
+						if ( is_array( $part ) && T_WHITESPACE === $part[0] ) {
+							continue;
+						}
+						break;
+					}
+					$namespace = trim( $name );
+					continue;
+				}
+				if ( in_array( $token[0], array( T_CLASS, T_INTERFACE, T_TRAIT ), true ) ) {
+					// `::class` and `new class()` are not declarations.
+					if ( is_array( $previous ) && in_array( $previous[0], array( T_DOUBLE_COLON, T_NEW, T_OBJECT_OPERATOR ), true ) ) {
+						continue;
+					}
+					$name = '';
+					for ( $next = $index + 1; $next < $count; $next++ ) {
+						$part = $tokens[ $next ];
+						if ( is_array( $part ) && T_WHITESPACE === $part[0] ) {
+							continue;
+						}
+						if ( is_array( $part ) && T_STRING === $part[0] ) {
+							$name = $part[1];
+						}
+						break;
+					}
+					if ( '' === $name ) {
+						continue;
+					}
+					if ( '' === $namespace ) {
+						$problems[] = $short . ': declares ' . $name . ' outside the demo namespace';
+					} elseif ( 'CpmsDemo' !== $namespace ) {
+						$problems[] = $short . ': declares ' . $namespace . '\\' . $name . ' (production namespace)';
+					}
+				}
+				if ( ! is_array( $token ) || ! in_array( $token[0], array( T_WHITESPACE, T_COMMENT, T_DOC_COMMENT ), true ) ) {
+					$previous = $token;
+				}
+			}
+		}
+
+		return $problems;
+	}
 	use ClinicCore\Infrastructure\Audit\HashChain;
 	use CpmsDemo\ScopedAuditGuard;
 	use CpmsDemo\ScopedBaseline;
@@ -60,6 +142,8 @@ namespace {
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-recovery.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preview.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-session.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-dashboard.php';
 
@@ -593,7 +677,13 @@ namespace {
 				'location_secondary' => 'cpsd-' . $fixture . '-branch',
 				'page'               => 'cpsd-' . $fixture . '-booking',
 			),
-			'links'          => array( 'booking' => 'https://demo.test/?page_id=' . $page ),
+			// A real sealed manifest carries every portal URL the production adapter
+			// reports, not only the booking page: the passwordless entry resolves its
+			// redirect target from exactly this map.
+			'links'          => array_merge(
+				array( 'booking' => 'https://demo.test/?page_id=' . $page ),
+				$platform->portal_links()
+			),
 			'counts'         => array( 'future_slots' => 3 ),
 		);
 		if ( '' !== $stage ) {
@@ -692,11 +782,28 @@ namespace {
 	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $ledger['verdict'], 'recovery: a tampered ledger blocks everything' );
 	Cpdd_Test::equals( 'SCOPED_OWNERSHIP_LEDGER_INVALID', (string) $ledger['code'], 'recovery: the tampered ledger names its stable code' );
 
-	// No baseline anywhere: neither resume nor teardown can be proven.
+	// No baseline anywhere. This is the Owner incident: every synthetic row is
+	// proven by the sealed manifest, but the "what existed before" record is gone.
+	// ACTIVATION is additive (no row is created, changed or deleted), so it stays
+	// available; the DESTRUCTIVE direction is the one that is unprovable and it
+	// stays refused with an explicit code. Refusing both - the previous policy -
+	// left a real install unusable while its eight portals already existed.
 	$no_base_ctx = cpsd_full_demo( 'failed', 'seal', false );
 	$no_base_ctx['manifest']->clear_pending_baseline();
 	$no_base = $recovery( $no_base_ctx );
-	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $no_base['verdict'], 'recovery: a missing baseline blocks recovery' );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_USABLE, (string) $no_base['verdict'], 'recovery: a missing baseline keeps the additive activation available' );
+	Cpdd_Test::equals( true, (bool) $no_base['usable'], 'recovery: the usable verdict says the demo may be used' );
+	Cpdd_Test::equals( false, (bool) $no_base['sealed'], 'recovery: the usable verdict never claims a complete seal' );
+	Cpdd_Test::equals( 'BASELINE_MISSING', (string) $no_base['teardown_blocked'], 'recovery: the usable verdict names the edit that stays blocked' );
+	// Unusable evidence still blocks everything, baseline or not.
+	$no_base_missing_account = cpsd_full_demo( 'failed', 'seal', false );
+	$no_base_missing_account['manifest']->clear_pending_baseline();
+	unset( $no_base_missing_account['env']->users[ $no_base_missing_account['ids']['user_ids']['doctor'] ] );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $recovery( $no_base_missing_account )['verdict'], 'recovery: a missing account still blocks even without a baseline' );
+	// An interruption BEFORE the last write stage is not complete, so it is not
+	// usable either - even though its baseline is missing too.
+	$no_base_early = cpsd_full_demo( 'failed', 'finance', false );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $recovery( $no_base_early )['verdict'], 'recovery: an incomplete run without a baseline is not usable' );
 
 	// `finish()` refuses anything that is not provably resumable.
 	$finish_ctx = cpsd_full_demo( 'active', '', true );
@@ -841,6 +948,572 @@ namespace {
 	Cpdd_Test::ok( str_contains( $dashboard_source, 'phrase_required' ), 'dashboard: the rendered form follows the server-side phrase policy' );
 	Cpdd_Test::ok( str_contains( $dashboard_source, '$request->authorize( $action, $post );' ), 'dashboard: every action goes through the shared authorization chain' );
 
+	// -----------------------------------------------------------------------
+	// 13. The Owner incident: the sealed baseline is gone, eight portals live.
+	//
+	// The shape below is the one a real install reported: manifest `failed`,
+	// teardown BASELINE_MISSING, preflight refusing a second fixture, and eight
+	// synthetic accounts plus their rows already on the site. Before this
+	// section, every action was refused: resume needed a seal, teardown needed a
+	// baseline, provisioning needed the fixture to be gone. The Owner's only
+	// remaining instruction was "run SQL", which the package must never require.
+	// -----------------------------------------------------------------------
+
+	/** Row and account counts that an additive repair must not change. */
+	$cpsd_owner_counts = static function ( array $ctx ): array {
+		$counts = array( 'users' => count( (array) $ctx['env']->all_users() ) );
+		foreach ( array( 'cpms_organizations', 'cpms_clinics', 'cpms_locations', 'cpms_patients', 'cpms_visits', 'cpms_appointments', 'cpms_invoices', 'cpms_payments', 'cpms_schedule_slots', 'cpms_clinic_memberships', 'cpms_organization_memberships', 'cpms_audit_logs' ) as $short ) {
+			$counts[ $short ] = count( (array) ( $ctx['platform']->tables_data[ $short ] ?? array() ) );
+		}
+
+		return $counts;
+	};
+
+	/** The real services, exactly as the admin pages build them. */
+	$cpsd_owner_provisioner = static function ( array $ctx ): CpmsDemo\ScopedProvisioner {
+		$guard = new CpmsDemo\ScopedAuditGuard( $ctx['platform'] );
+
+		return new CpmsDemo\ScopedProvisioner(
+			$ctx['env'],
+			$ctx['platform'],
+			$ctx['manifest'],
+			new CpmsDemo\ScopedPreflight( $ctx['env'], $ctx['platform'], $ctx['manifest'], $guard, new CpmsDemo\ScopedBaseline( $ctx['env'], $ctx['platform'] ) ),
+			new CpmsDemo\Credentials( $ctx['env'] ),
+			new CpmsDemo\ScopedBaseline( $ctx['env'], $ctx['platform'] ),
+			$guard
+		);
+	};
+
+	/** The incident state: everything was written, only the baseline is gone. */
+	$cpsd_incident = static function (): array {
+		$ctx = cpsd_full_demo( 'failed', 'seal', false );
+		$ctx['manifest']->clear_pending_baseline();
+
+		return $ctx;
+	};
+
+	$incident               = $cpsd_incident();
+	$incident_before        = $cpsd_owner_counts( $incident );
+	$incident_verdict_pre   = $recovery( $incident );
+	$incident_manifest = (array) $incident['manifest']->load();
+	Cpdd_Test::equals( 'failed', (string) $incident_manifest['status'], 'incident: the recorded status is failed' );
+	Cpdd_Test::equals( array(), (array) ( $incident_manifest['baseline'] ?? array() ), 'incident: the sealed baseline is gone' );
+	Cpdd_Test::equals( false, $incident['manifest']->has_pending_baseline(), 'incident: no pending baseline survived either' );
+	Cpdd_Test::equals( 8, count( (array) $incident_manifest['ids']['user_ids'] ), 'incident: all eight accounts are recorded in the sealed manifest' );
+	Cpdd_Test::equals( 8, $incident_before['users'] - 1, 'incident: all eight synthetic accounts really exist (plus the host owner)' );
+
+	// The destructive direction must stay refused: without a baseline nobody can
+	// prove what pre-existed, so nothing may be deleted.
+	$incident_teardown = new CpmsDemo\ScopedTeardown(
+		$incident['env'],
+		$incident['platform'],
+		$incident['manifest'],
+		new CpmsDemo\ScopedAuditGuard( $incident['platform'] ),
+		new CpmsDemo\ScopedBaseline( $incident['env'], $incident['platform'] )
+	);
+	$incident_preview = $incident_teardown->preview( $incident_manifest );
+	Cpdd_Test::equals( false, (bool) $incident_preview['ok'], 'incident: teardown preview is refused (' . implode( ' | ', (array) $incident_preview['problems'] ) . ')' );
+	Cpdd_Test::equals( 'BASELINE_MISSING', (string) $incident_verdict_pre['teardown_blocked'], 'incident: the assessment names the one blocked edit as BASELINE_MISSING' );
+
+	// The additive direction, however, is provable: the sealed manifest names the
+	// exact ids and logins, and every one of them still matches the live row.
+	$incident_verdict = $recovery( $incident );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_USABLE, (string) $incident_verdict['verdict'], 'incident: the verdict is usable, not a dead end' );
+	Cpdd_Test::equals( 'BASELINE_MISSING', (string) $incident_verdict['teardown_blocked'], 'incident: the usable verdict names the blocked edit' );
+
+	// --- activation --------------------------------------------------------
+	$incident_provisioner = $cpsd_owner_provisioner( $incident );
+	$activation           = $incident_provisioner->activate( 1 );
+	Cpdd_Test::equals( 'repaired', (string) $activation['state'], 'activate: a usable fixture is activated' );
+	Cpdd_Test::equals( 'active', (string) $activation['manifest']['status'], 'activate: the recorded status becomes active' );
+	Cpdd_Test::equals( 'baseline_unavailable', (string) $activation['manifest']['activation']['mode'], 'activate: the activation names why it was needed' );
+	Cpdd_Test::equals( 'none', (string) $activation['manifest']['activation']['row_effect'], 'activate: the activation states its row effect' );
+	Cpdd_Test::equals( 1, (int) $activation['manifest']['activation']['actor_id'], 'activate: the acting administrator is recorded' );
+	Cpdd_Test::equals( 1, preg_match( '/^[a-f0-9]{32}$/D', (string) $activation['manifest']['activation']['evidence'] ), 'activate: the evidence fingerprint is a stable digest' );
+	Cpdd_Test::equals( 'seal', (string) ( $activation['manifest']['repaired_from_failure']['stage'] ?? '' ), 'activate: the failure it repaired is preserved, not erased' );
+	Cpdd_Test::equals( null, $activation['manifest']['failed_stage'] ?? null, 'activate: the failure flag itself is cleared' );
+	// NOT a seal: no ownership map and no audit-chain snapshot may be invented.
+	Cpdd_Test::equals( array(), (array) ( $activation['manifest']['owned'] ?? array() ), 'activate: no ownership map is fabricated by the activation' );
+	Cpdd_Test::equals( null, $activation['manifest']['audit_chain_at_seal'] ?? null, 'activate: no sealed audit-chain claim is fabricated' );
+	Cpdd_Test::equals( array(), (array) ( $activation['manifest']['baseline'] ?? array() ), 'activate: no baseline is fabricated' );
+
+	$incident_after = $cpsd_owner_counts( $incident );
+	$mutated        = array();
+	foreach ( $incident_before as $short => $count ) {
+		if ( 'cpms_audit_logs' === $short ) {
+			continue;
+		}
+		if ( $incident_after[ $short ] !== $count ) {
+			$mutated[] = $short . ':' . $count . '->' . $incident_after[ $short ];
+		}
+	}
+	Cpdd_Test::equals( array(), $mutated, 'activate: not one user or data row was created or deleted (' . implode( ',', $mutated ) . ')' );
+	Cpdd_Test::ok( $incident_after['cpms_audit_logs'] > $incident_before['cpms_audit_logs'], 'activate: the activation is recorded in the append-only audit log' );
+	Cpdd_Test::ok( in_array( 'audit:CPSD_DEMO_ACTIVATED_WITHOUT_BASELINE', (array) $incident['platform']->calls, true ), 'activate: the audit row names the additive activation' );
+	Cpdd_Test::ok( is_array( $incident['env']->option_get( 'cpsd_ownership_ledger', false ) ), 'activate: the ownership ledger is opened for the recovered fixture' );
+
+	// A second click is a no-op, and it must stay a no-op under a real re-assess.
+	$second_activation = $incident_provisioner->activate( 1 );
+	Cpdd_Test::equals( 'already', (string) $second_activation['state'], 'activate: a repeated click is idempotent' );
+	Cpdd_Test::equals( $cpsd_owner_counts( $incident ), $incident_after, 'activate: a repeated click changes no count' );
+	Cpdd_Test::equals(
+		CpmsDemo\ScopedRecovery::VERDICT_USABLE,
+		(string) $recovery( $incident )['verdict'],
+		'activate: the fixture stays usable after activation (it is still not sealed)'
+	);
+	$incident_reloaded = $incident['manifest']->load();
+	Cpdd_Test::ok( is_array( $incident_reloaded ) && $incident['manifest']->verify( $incident_reloaded ), 'activate: the activation payload is HMAC-sealed' );
+
+	// Activation never becomes a way round an unusable fixture.
+	$unsafe_ctx  = cpsd_full_demo( 'failed', 'clinical', false );
+	$unsafe_prov = $cpsd_owner_provisioner( $unsafe_ctx );
+	Cpdd_Test::refuses( static fn () => $unsafe_prov->activate( 1 ), 'RECOVERY_NOT_SAFE', 'activate: an interruption before the seal is refused even though the demo exists' );
+	$unsafe_missing = cpsd_full_demo( 'failed', 'seal', false );
+	unset( $unsafe_missing['env']->users[ $unsafe_missing['ids']['user_ids']['doctor'] ] );
+	$unsafe_missing_prov = $cpsd_owner_provisioner( $unsafe_missing );
+	Cpdd_Test::refuses( static fn () => $unsafe_missing_prov->activate( 1 ), 'DEMO_EVIDENCE_MISSING', 'activate: a missing sealed account is never adopted' );
+
+	// --- launch: the ONE action the Owner needs ---------------------------
+	$launch_ctx        = $cpsd_incident();
+	$launch_before     = $cpsd_owner_counts( $launch_ctx );
+	$launch_provisioner = $cpsd_owner_provisioner( $launch_ctx );
+	$launched          = $launch_provisioner->launch( 1 );
+	Cpdd_Test::equals( 'repaired', (string) $launched['state'], 'launch: one click repairs a usable fixture' );
+	Cpdd_Test::equals( count( CpmsDemo\Credentials::PERSONA_ORDER ), count( (array) $launched['credentials'] ), 'launch: a fresh password for every one of the eight personas' );
+	$expected_logins = array();
+	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $persona ) {
+		$expected_logins[ $persona ] = 'cpsd-' . $persona . '-' . (string) $launch_ctx['fixture'];
+		Cpdd_Test::equals( $expected_logins[ $persona ], (string) ( $launch_ctx['env']->user( (int) $launch_ctx['ids']['user_ids'][ $persona ] )['login'] ?? '' ), 'launch: the portal login of ' . $persona . ' is the sealed one' );
+		Cpdd_Test::equals( (string) ( $launched['credentials'][ $persona ] ?? '' ), (string) ( $launch_ctx['env']->passwords[ (int) $launch_ctx['ids']['user_ids'][ $persona ] ] ?? '' ), 'launch: the shown password is the password that was actually set for ' . $persona );
+	}
+	$launch_after = $cpsd_owner_counts( $launch_ctx );
+	$launch_mutated = array();
+	foreach ( $launch_before as $short => $count ) {
+		if ( 'cpms_audit_logs' === $short ) {
+			continue;
+		}
+		if ( $launch_after[ $short ] !== $count ) {
+			$launch_mutated[] = $short . ':' . $count . '->' . $launch_after[ $short ];
+		}
+	}
+	Cpdd_Test::equals( array(), $launch_mutated, 'launch: the one-click repair creates and deletes no row (' . implode( ',', $launch_mutated ) . ')' );
+	Cpdd_Test::equals( 'active', (string) ( $launch_ctx['manifest']->load()['status'] ?? '' ), 'launch: the fixture is active afterwards' );
+	$launch_again = $launch_provisioner->launch( 1 );
+	Cpdd_Test::equals( 'already', (string) $launch_again['state'], 'launch: a repeated click rotates the passwords only' );
+	Cpdd_Test::equals( $launch_after, $cpsd_owner_counts( $launch_ctx ), 'launch: the repeated click creates and deletes no row either' );
+	$launch_blocked = cpsd_full_demo( 'failed', 'clinical', false );
+	$launch_blocked_prov = $cpsd_owner_provisioner( $launch_blocked );
+	Cpdd_Test::refuses( static fn () => $launch_blocked_prov->launch( 1 ), 'RECOVERY_NOT_SAFE', 'launch: an unprovable fixture is refused, never forced' );
+
+	// --- parking: keep the evidence, never delete or adopt a row ----------
+	$park_ctx      = cpsd_full_demo( 'failed', 'clinical', false );
+	$park_before   = $cpsd_owner_counts( $park_ctx );
+	$park_fixture  = (string) $park_ctx['fixture'];
+	$park_loaded   = (array) $park_ctx['manifest']->load();
+	$parked_record = $park_ctx['manifest']->preserve( $park_loaded, 'DEMO_EVIDENCE_MISSING', 1 );
+	Cpdd_Test::equals( $park_fixture, (string) $parked_record['fixture_id'], 'park: the archive names the fixture it parked' );
+	Cpdd_Test::equals( 'DEMO_EVIDENCE_MISSING', (string) $parked_record['reason_code'], 'park: the archive records why it was parked' );
+	Cpdd_Test::equals( false, $park_ctx['manifest']->exists(), 'park: the live manifest is released so a fresh fixture can be created' );
+	Cpdd_Test::equals( false, is_array( $park_ctx['env']->option_get( 'cpsd_ownership_ledger', false ) ), 'park: the live ledger is released with it' );
+	Cpdd_Test::equals( array(), (array) ( $parked_record['manifest']['baseline'] ?? array() ), 'park: a missing baseline is recorded honestly, never invented' );
+	Cpdd_Test::equals( $park_before, $cpsd_owner_counts( $park_ctx ), 'park: no user and no data row is deleted or changed by parking' );
+	$park_archive = $park_ctx['manifest']->preserved();
+	Cpdd_Test::equals( 1, count( $park_archive ), 'park: the archive holds exactly one record' );
+	Cpdd_Test::equals( $park_fixture, (string) $park_ctx['manifest']->preserved_record( $park_fixture )['fixture_id'], 'park: the record is retrievable by fixture id' );
+	Cpdd_Test::equals( null, $park_ctx['manifest']->preserved_record( str_repeat( 'ef', 16 ) ), 'park: an unknown fixture has no archive record' );
+	// Idempotent: a repeated park returns the same record and adds nothing.
+	$park_again = $park_ctx['manifest']->preserve( $park_loaded, 'DEMO_EVIDENCE_MISSING', 1 );
+	Cpdd_Test::equals( $parked_record, $park_again, 'park: parking the same fixture twice is idempotent' );
+	Cpdd_Test::equals( 1, count( $park_ctx['manifest']->preserved() ), 'park: the second park does not duplicate the record' );
+	// Tamper-evident: the archive is sealed like every other evidence record.
+	$park_raw = $park_ctx['env']->option_get( 'cpsd_preserved', array() );
+	$park_raw['records'][0]['reason_code'] = 'RESOLVED';
+	$park_ctx['env']->option_set( 'cpsd_preserved', $park_raw );
+	Cpdd_Test::refuses( static fn () => $park_ctx['manifest']->preserved(), 'PRESERVED_INVALID', 'park: an edited archive is refused, never trusted' );
+	// A tampered live manifest may never be filed away as if it were evidence.
+	$park_tampered = cpsd_full_demo( 'failed', 'seal', false );
+	$park_tampered_payload = (array) $park_tampered['manifest']->load();
+	$park_tampered_payload['ids']['clinic_id'] = 999;
+	Cpdd_Test::refuses( static fn () => $park_tampered['manifest']->preserve( $park_tampered_payload, 'DEMO_INCOMPLETE', 1 ), 'MANIFEST_TAMPERED', 'park: a manifest that does not verify is never archived as ours' );
+	// Parking a fully sealed, usable demo is refused: it can be torn down instead.
+	$park_active = cpsd_full_demo( 'active', '', true );
+	$park_active_prov = $cpsd_owner_provisioner( $park_active );
+	Cpdd_Test::refuses( static fn () => $park_active_prov->preserve_and_reprovision( 1 ), 'DEMO_IS_USABLE', 'park: a complete sealed demo is never abandoned' );
+
+	// --- the page: one obvious action, in Persian, with no typed phrase ---
+	$usable_ctx  = $cpsd_incident();
+	$usable_html = $render_dashboard( $usable_ctx );
+	Cpdd_Test::ok( str_contains( $usable_html, 'data-cpms-demo-state="usable"' ), 'dashboard: a usable-but-unsealed demo renders the usable state' );
+	Cpdd_Test::ok( str_contains( $usable_html, 'data-cpsd-form="launch"' ), 'dashboard: the one obvious action is the launch form' );
+	Cpdd_Test::ok( str_contains( $usable_html, 'آماده‌سازی و ورود به هشت درگاه' ), 'dashboard: the action is labelled in plain Persian' );
+	Cpdd_Test::ok( str_contains( $usable_html, 'data-cpms-demo-teardown-blocked="BASELINE_MISSING"' ), 'dashboard: the blocked teardown is stated, not hidden' );
+	Cpdd_Test::ok( str_contains( $usable_html, 'data-cpsd-form="fresh_demo"' ), 'dashboard: the park-and-reprovision escape hatch is offered' );
+	Cpdd_Test::ok( ! str_contains( $usable_html, 'name="cpdd_confirm"' ), 'dashboard: the additive repair asks for no typed phrase' );
+	Cpdd_Test::ok( ! str_contains( $usable_html, 'data-cpsd-form="teardown"' ), 'dashboard: teardown stays off the one-click page' );
+	Cpdd_Test::ok( ! str_contains( $usable_html, 'data-cpsd-form="resume"' ), 'dashboard: resume is not offered for a fixture with no baseline' );
+	Cpdd_Test::equals( 1, substr_count( $usable_html, 'data-cpms-demo-console="1"' ), 'dashboard: the usable state still links the authorized console exactly once' );
+
+	// After activation the same page becomes the portals page.
+	$usable_html_after = $render_dashboard( $incident );
+	Cpdd_Test::ok( str_contains( $usable_html_after, 'data-cpms-demo-activated="1"' ), 'dashboard: the activated page says so' );
+	Cpdd_Test::ok( str_contains( $usable_html_after, 'data-cpsd-form="rotate_credentials"' ), 'dashboard: after activation a fresh password set is one click away' );
+	Cpdd_Test::ok( str_contains( $usable_html_after, 'id="cpms-demo-portals"' ) && str_contains( $usable_html_after, 'data-cpsd-persona-access="1"' ), 'dashboard: after activation the eight portal rows are on the page' );
+	Cpdd_Test::equals( count( CpmsDemo\Credentials::PERSONA_ORDER ), substr_count( $usable_html_after, 'data-cpsd-persona-portal=' ), 'dashboard: after activation there is one portal row per persona' );
+
+	// -----------------------------------------------------------------------
+	// 14. The failure handler itself: a failed run must not erase the evidence
+	//     that is already durable.
+	//
+	// This is the defect behind the Owner incident, tested directly rather than
+	// inferred: the handler used to save the failing stage's local `$manifest`
+	// snapshot over the record on disk. When the failure happened after the seal
+	// was durable, that overwrote the sealed baseline and the ownership map while
+	// the eight synthetic accounts stayed alive - the "demo exists, but nothing
+	// about it can be proven" state.
+	// -----------------------------------------------------------------------
+	$failure_ctx = new Cpdd_Fake_Env();
+	$failure_ctx->seed_clean_site();
+	$failure_platform = new Cpdd_Fake_Platform();
+	$failure_platform->seed_clean_install();
+	$failure_platform->set_env( $failure_ctx );
+	$failure_manifest = new CpmsDemo\ScopedManifest( $failure_ctx );
+	$failure_fixture  = str_repeat( 'cd', 16 );
+
+	$failure_durable = array(
+		'fixture_id'          => $failure_fixture,
+		'status'              => 'active',
+		'sealed_at'           => '2026-01-01 00:00:00',
+		'schema_version'      => CPMS_DEMO_SCHEMA_VERSION,
+		'ids'                 => array(
+			'user_ids'        => array( 'doctor' => 9, 'patient' => 10 ),
+			'organization_id' => 2,
+			'clinic_id'       => 2,
+			'clinic'          => 2,
+		),
+		'slugs'               => array( 'organization' => 'cpsd-' . $failure_fixture ),
+		'counts'              => array( 'future_slots' => 3 ),
+		'baseline'            => array( 'tables' => array( 'cpms_clinics' => array( 'count' => 1 ) ) ),
+		'host_before'         => array( 'clinic_count' => 1 ),
+		'owned'               => array( 'tables' => array( 'cpms_invoices' => array( 7 ) ) ),
+		'audit_chain_at_seal' => array( 'ok' => true ),
+	);
+	$failure_manifest->save( $failure_durable );
+	$failure_stale = array(
+		'fixture_id'     => $failure_fixture,
+		'status'         => 'provisioning',
+		'schema_version' => CPMS_DEMO_SCHEMA_VERSION,
+		'ids'            => array(
+			'user_ids' => array( 'doctor' => 9 ),
+		),
+		'slugs'          => array( 'organization' => 'cpsd-' . $failure_fixture ),
+		'counts'         => array(),
+	);
+	// Exposes the protected handler to the test; nothing else is overridden.
+	$failure_probe = new class( $failure_ctx, $failure_platform, $failure_manifest, new CpmsDemo\Preflight( $failure_ctx, $failure_platform, $failure_manifest ), new CpmsDemo\Credentials( $failure_ctx ) ) extends CpmsDemo\Provisioner {
+		public function cpsd_record_failure( array $local, string $stage, \Throwable $error ): void {
+			$this->record_failure( $local, $stage, $error );
+		}
+	};
+	$failure_probe->cpsd_record_failure( $failure_stale, 'seal', new CpmsDemo\Exception( 'PORTAL_POLICY', 'policy read-back failed' ) );
+	$failure_recorded = (array) $failure_manifest->load();
+	Cpdd_Test::equals( 'failed', (string) $failure_recorded['status'], 'failure: the run is recorded as failed' );
+	Cpdd_Test::equals( 'seal', (string) $failure_recorded['failed_stage'], 'failure: the stage is recorded' );
+	Cpdd_Test::equals( 'PORTAL_POLICY', (string) $failure_recorded['failure_code'], 'failure: the stable code is recorded' );
+	// The three pieces of evidence that only exist after the seal.
+	Cpdd_Test::equals( $failure_durable['baseline'], (array) ( $failure_recorded['baseline'] ?? array() ), 'failure: the durable sealed baseline survives the failure record' );
+	Cpdd_Test::equals( $failure_durable['host_before'], (array) ( $failure_recorded['host_before'] ?? array() ), 'failure: the durable host evidence survives' );
+	Cpdd_Test::equals( $failure_durable['owned'], (array) ( $failure_recorded['owned'] ?? array() ), 'failure: the durable ownership map survives' );
+	Cpdd_Test::equals( $failure_durable['audit_chain_at_seal'], (array) ( $failure_recorded['audit_chain_at_seal'] ?? array() ), 'failure: the sealed audit-chain state survives' );
+	Cpdd_Test::equals( '2026-01-01 00:00:00', (string) $failure_recorded['sealed_at'], 'failure: the seal timestamp survives' );
+	// Progress fields are a union: a stale snapshot must never shrink the record.
+	Cpdd_Test::ok( isset( $failure_recorded['ids']['user_ids']['doctor'], $failure_recorded['ids']['user_ids']['patient'] ), 'failure: the account ids are the union of both copies, never the smaller one' );
+	// The failure history is append-only and bounded.
+	Cpdd_Test::equals( 1, count( (array) ( $failure_recorded['failure_history'] ?? array() ) ), 'failure: the first failure is kept in the history' );
+	$failure_probe->cpsd_record_failure( $failure_recorded, 'seal', new CpmsDemo\Exception( 'PORTAL_POLICY', 'second attempt' ) );
+	$failure_again = (array) $failure_manifest->load();
+	Cpdd_Test::equals( 2, count( (array) ( $failure_again['failure_history'] ?? array() ) ), 'failure: a second failure appends to the history instead of replacing it' );
+	Cpdd_Test::equals( $failure_durable['baseline'], (array) ( $failure_again['baseline'] ?? array() ), 'failure: the baseline still survives after a second failure' );
+	// A manifest that does not verify is evidence of a tamper and is never overwritten.
+	$failure_tampered = (array) $failure_manifest->load();
+	$failure_tampered['mac'] = str_repeat( '0', 64 );
+	$failure_ctx->option_set( 'cpsd_manifest', $failure_tampered );
+	$failure_probe->cpsd_record_failure( $failure_stale, 'seal', new CpmsDemo\Exception( 'PORTAL_POLICY', 'third attempt' ) );
+	Cpdd_Test::equals( $failure_tampered, (array) $failure_ctx->option_get( 'cpsd_manifest', array() ), 'failure: an unverifiable durable record is left exactly as it was' );
+
+	// The seal order is the second half of the same defect: the pending copy may
+	// only be dropped after the portal policy passed, because that call is the one
+	// that can throw after the seal became durable.
+	$seal_source = (string) file_get_contents( CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php' );
+	$seal_start  = (int) strpos( $seal_source, 'private function seal_fixture(' );
+	$seal_end    = (int) strpos( $seal_source, 'private function enforce_portal_clinic_policy(' );
+	Cpdd_Test::ok( $seal_start > 0 && $seal_end > $seal_start, 'seal: the sealed fixture method is locatable in the shipped source' );
+	$seal_body   = substr( $seal_source, $seal_start, $seal_end - $seal_start );
+	$policy_at   = strpos( $seal_body, '$this->enforce_portal_clinic_policy( $manifest );' );
+	$clear_at    = strpos( $seal_body, '$this->scoped_manifest->clear_pending_baseline();' );
+	Cpdd_Test::ok( false !== $policy_at && false !== $clear_at, 'seal: both the policy enforcement and the pending-baseline drop are present' );
+	Cpdd_Test::ok( $policy_at < $clear_at, 'seal: the portal policy is enforced BEFORE the pending baseline is dropped' );
+
+
+	// -----------------------------------------------------------------------
+	// 15. Passwordless entry into ONE sealed persona, from the administrator
+	//     session: single-use, sealed, five minute, provable, reversible - and
+	//     useless to everybody else.
+	// -----------------------------------------------------------------------
+	$persona_ctx  = cpsd_full_demo( 'active', '', true );
+	$persona_fx   = (string) $persona_ctx['fixture'];
+	$persona_seen = new CpmsDemo\ScopedPersonaSession( $persona_ctx['env'], $persona_ctx['platform'], $persona_ctx['manifest'] );
+
+	// Every one of the eight personas is reachable, and the ticket names exactly the
+	// sealed account - never a username prefix, never an id range.
+	$issued = 0;
+	$wrong  = array();
+	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $persona_key ) {
+		$ticket = $persona_seen->issue( $persona_ctx['manifest']->load(), $persona_key, 1 );
+		++$issued;
+		if ( (int) $ticket['user_id'] !== (int) $persona_ctx['ids']['user_ids'][ $persona_key ] ) {
+			$wrong[] = $persona_key;
+		}
+		if ( $ticket['login'] !== 'cpsd-' . $persona_key . '-' . $persona_fx ) {
+			$wrong[] = $persona_key . ':login';
+		}
+		if ( 0 !== strpos( $ticket['portal'], 'https://' ) ) {
+			$wrong[] = $persona_key . ':portal';
+		}
+	}
+	Cpdd_Test::equals( 8, $issued, 'persona: all eight personas can be reached' );
+	Cpdd_Test::equals( array(), $wrong, 'persona: every ticket resolves to the sealed id, login and portal (' . implode( ',', $wrong ) . ')' );
+	$ticket_store = (array) $persona_ctx['env']->option_get( 'cpsd_persona_ticket', array() );
+	Cpdd_Test::ok( isset( $ticket_store['token_hash'], $ticket_store['fixture_id'], $ticket_store['persona'] ), 'persona: the store holds ONE ticket record (a new click supersedes it)' );
+	Cpdd_Test::ok( ! isset( $ticket_store['token'] ), 'persona: the ticket value itself is never stored, only its digest' );
+
+	// Redeem: a real session is established for that account and nothing else.
+	$redeem_ticket = $persona_seen->issue( $persona_ctx['manifest']->load(), 'doctor', 1 );
+	$redeemed      = $persona_seen->redeem( $redeem_ticket['token'] );
+	Cpdd_Test::equals( (int) $persona_ctx['ids']['user_ids']['doctor'], (int) $redeemed['user_id'], 'redeem: the session belongs to the sealed doctor account' );
+	Cpdd_Test::equals( array( (int) $persona_ctx['ids']['user_ids']['doctor'] ), (array) $persona_ctx['env']->auth_cookie_calls, 'redeem: WordPress is asked for exactly that one session, once' );
+	Cpdd_Test::equals( $redeem_ticket['portal'], (string) $redeemed['redirect'], 'redeem: the redirect is the sealed portal URL, never user input' );
+	Cpdd_Test::equals( (int) $persona_ctx['ids']['user_ids']['doctor'], (int) $persona_ctx['env']->current_user, 'redeem: the browser is now that persona' );
+	// The persona did NOT inherit the administrator's authority.
+	$persona_ctx['env']->caps[ (int) $persona_ctx['ids']['user_ids']['doctor'] ]['manage_options'] = false;
+	Cpdd_Test::ok( ! $persona_ctx['env']->user_can( $redeemed['user_id'], 'manage_options' ), 'redeem: the persona session holds no administrator authority' );
+
+	// Replay: the ticket was consumed BEFORE the session existed.
+	Cpdd_Test::refuses( static fn () => $persona_seen->redeem( $redeem_ticket['token'] ), 'ENTRY_TOKEN_INVALID', 'replay: the same ticket can never be used twice' );
+	Cpdd_Test::equals( 1, count( (array) $persona_ctx['env']->auth_cookie_calls ), 'replay: the refused replay established no second session' );
+
+	// Expiry.
+	$persona_ctx['env']->current_user = 1;
+	$expired = $persona_seen->issue( $persona_ctx['manifest']->load(), 'receptionist', 1 );
+	$expired_raw = (array) $persona_ctx['env']->option_get( 'cpsd_persona_ticket', array() );
+	$expired_raw['expires_at'] = time() - 1;
+	// Re-seal so only the clock is wrong, not the MAC.
+	$sealed_expired = $persona_ctx['manifest']->seal( array_diff_key( $expired_raw, array( 'mac' => '' ) ) );
+	$persona_ctx['env']->option_set( 'cpsd_persona_ticket', $sealed_expired );
+	Cpdd_Test::refuses( static fn () => $persona_seen->redeem( $expired['token'] ), 'ENTRY_TOKEN_EXPIRED', 'expiry: an expired ticket is refused' );
+
+	// Tampering with the stored record.
+	$tamper_ticket = $persona_seen->issue( $persona_ctx['manifest']->load(), 'accountant', 1 );
+	$tamper_raw    = (array) $persona_ctx['env']->option_get( 'cpsd_persona_ticket', array() );
+	$tamper_raw['user_id'] = (int) $persona_ctx['ids']['user_ids']['doctor'];
+	$persona_ctx['env']->option_set( 'cpsd_persona_ticket', $tamper_raw );
+	Cpdd_Test::refuses( static fn () => $persona_seen->redeem( $tamper_ticket['token'] ), 'ENTRY_TOKEN_INVALID', 'tamper: an edited ticket is refused, never trusted' );
+
+	// A ticket for a different site is refused.
+	$other_ticket = $persona_seen->issue( $persona_ctx['manifest']->load(), 'doctor', 1 );
+	$other_raw    = (array) $persona_ctx['env']->option_get( 'cpsd_persona_ticket', array() );
+	$other_raw['site'] = str_repeat( '0', 32 );
+	$persona_ctx['env']->option_set( 'cpsd_persona_ticket', $persona_ctx['manifest']->seal( array_diff_key( $other_raw, array( 'mac' => '' ) ) ) );
+	Cpdd_Test::refuses( static fn () => $persona_seen->redeem( $other_ticket['token'] ), 'ENTRY_TOKEN_INVALID', 'site: a ticket sealed for another site is refused' );
+
+	// A malformed token never reaches the stored record.
+	Cpdd_Test::refuses( static fn () => $persona_seen->redeem( 'not-a-ticket' ), 'ENTRY_TOKEN_INVALID', 'token: a malformed value is refused before anything is read' );
+
+	// A ticket issued for a fixture that was torn down mid-flight is refused even
+	// though the ticket itself is valid: the target is re-proved against the LIVE
+	// sealed fixture at redemption time.
+	$torn_ctx  = cpsd_full_demo( 'active', '', true );
+	$torn_seen = new CpmsDemo\ScopedPersonaSession( $torn_ctx['env'], $torn_ctx['platform'], $torn_ctx['manifest'] );
+	$torn_ticket = $torn_seen->issue( $torn_ctx['manifest']->load(), 'doctor', 1 );
+	$torn_ctx['manifest']->delete();
+	Cpdd_Test::refuses( static fn () => $torn_seen->redeem( $torn_ticket['token'] ), 'NO_DEMO', 'fixture: a ticket is useless once the fixture is gone' );
+
+	// Only the eight sealed accounts are reachable - never an administrator, never an
+	// arbitrary user, never an account that merely looks like a demo account.
+	$guard_ctx = cpsd_full_demo( 'active', '', true );
+	$guard     = new CpmsDemo\ScopedPersonaSession( $guard_ctx['env'], $guard_ctx['platform'], $guard_ctx['manifest'] );
+	$guard_manifest = (array) $guard_ctx['manifest']->load();
+	Cpdd_Test::refuses( static fn () => $guard->issue( $guard_manifest, 'administrator', 1 ), 'PERSONA_UNKNOWN', 'target: an arbitrary role name is refused' );
+	Cpdd_Test::refuses( static fn () => $guard->issue( $guard_manifest, 'doctor', (int) $guard_ctx['ids']['user_ids']['doctor'] ), 'PERSONA_NOT_SEALED', 'target: a persona cannot issue a ticket for itself' );
+	// A persona that somehow holds manage_options is refused outright.
+	$unsafe_ctx = cpsd_full_demo( 'active', '', true );
+	$unsafe_ctx['env']->caps[ (int) $unsafe_ctx['ids']['user_ids']['accountant'] ]['manage_options'] = true;
+	$unsafe_session = new CpmsDemo\ScopedPersonaSession( $unsafe_ctx['env'], $unsafe_ctx['platform'], $unsafe_ctx['manifest'] );
+	Cpdd_Test::refuses( static fn () => $unsafe_session->issue( (array) $unsafe_ctx['manifest']->load(), 'accountant', 1 ), 'PERSONA_NOT_SAFE', 'target: a demo account with administrator authority is never auto-entered' );
+	// An account whose login drifted from the sealed value is refused.
+	$drift_ctx = cpsd_full_demo( 'active', '', true );
+	$drift_ctx['env']->users[ (int) $drift_ctx['ids']['user_ids']['doctor'] ]['login'] = 'cpsd-doctor-' . str_repeat( 'cd', 16 );
+	$drift_session = new CpmsDemo\ScopedPersonaSession( $drift_ctx['env'], $drift_ctx['platform'], $drift_ctx['manifest'] );
+	Cpdd_Test::refuses( static fn () => $drift_session->issue( (array) $drift_ctx['manifest']->load(), 'doctor', 1 ), 'PERSONA_NOT_SEALED', 'target: a renamed account is never entered (same id, other login)' );
+
+	// The session boundary is derived from sealed state, not from a cookie.
+	$boundary_ctx = cpsd_full_demo( 'active', '', true );
+	$boundary     = new CpmsDemo\ScopedPersonaSession( $boundary_ctx['env'], $boundary_ctx['platform'], $boundary_ctx['manifest'] );
+	$boundary_ctx['env']->current_user = 1;
+	Cpdd_Test::equals( null, $boundary->current(), 'boundary: the administrator session is not reported as a persona session' );
+	$boundary_ctx['env']->current_user = (int) $boundary_ctx['ids']['user_ids']['doctor'];
+	Cpdd_Test::equals( 'doctor', (string) ( $boundary->current()['persona'] ?? '' ), 'boundary: a sealed persona account is recognised as its own session' );
+	// The boundary must also exist where no theme footer is ever rendered - the
+	// production portal shells render their own document and end the request. That
+	// surface is the output handler, exercised here as the product runs it.
+	$buffer_ctx = cpsd_full_demo( 'active', '', true );
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	$buffer_page = '<!doctype html><html><body class="logged-in"><p>portal</p></body></html>';
+	$buffer_once = CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-session-boundary="1"' ), 'boundary: the output handler injects the banner into a portal document' );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-persona="doctor"' ), 'boundary: the injected banner names the persona' );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-session-exit="1"' ), 'boundary: the injected banner carries the one-click way back' );
+	Cpdd_Test::ok( (int) strpos( $buffer_once, 'data-cpsd-session-boundary' ) < (int) strpos( $buffer_once, '</body>' ), 'boundary: the banner is spliced in before the closing body tag' );
+	$buffer_twice = CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_once );
+	Cpdd_Test::equals( 1, substr_count( $buffer_twice, 'data-cpsd-session-boundary' ), 'boundary: the banner is printed at most once per request' );
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	Cpdd_Test::equals( '', CpmsDemo\ScopedPersonaSession::inject_boundary( '' ), 'boundary: an empty body (a redirect) is never decorated' );
+	$buffer_ctx['env']->current_user = 1;
+	Cpdd_Test::equals( $buffer_page, CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page ), 'boundary: an administrator request is left byte-for-byte untouched' );
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	// A broken banner must never take the page with it: an error inside the handler
+	// returns the document unchanged instead of turning it into a fatal page.
+	$GLOBALS['cpdd_active_fake_env'] = null;
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	Cpdd_Test::equals( $buffer_page, CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page ), 'boundary: a failing handler returns the page intact' );
+	$GLOBALS['cpdd_active_fake_env'] = $buffer_ctx['env'];
+
+	// The buffer itself: started only for a persona session, and (by hooking
+	// `template_redirect`) only on the front-end template path, so REST, admin-ajax
+	// and admin responses are never buffered or inspected at all.
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	$buffer_ctx['env']->current_user = 1;
+	$admin_level = ob_get_level();
+	$GLOBALS['cpdd_test_nocache_headers'] = 0;
+	CpmsDemo\ScopedPersonaSession::maybe_start_boundary_buffer();
+	Cpdd_Test::equals( $admin_level, ob_get_level(), 'boundary: no buffer is started for an administrator request' );
+	Cpdd_Test::equals( 0, (int) $GLOBALS['cpdd_test_nocache_headers'], 'boundary: an administrator request is not marked private' );
+
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	// A capture buffer outside the product's one, so the flushed result can be
+	// inspected without writing it to the test output.
+	ob_start();
+	CpmsDemo\ScopedPersonaSession::maybe_start_boundary_buffer();
+	$persona_level = ob_get_level();
+	$persona_nocache = (int) $GLOBALS['cpdd_test_nocache_headers'];
+	echo '<html><body><p>portal</p></body></html>';
+	ob_end_flush();
+	$buffer_flushed = (string) ob_get_clean();
+	Cpdd_Test::equals( $admin_level + 2, $persona_level, 'boundary: a persona request is buffered' );
+	Cpdd_Test::equals( 1, $persona_nocache, 'boundary: a session-bearing persona page is marked private' );
+	Cpdd_Test::ok( false !== strpos( $buffer_flushed, 'data-cpsd-session-boundary="1"' ), 'boundary: flushing the buffer injects the banner into the rendered page' );
+	Cpdd_Test::ok( (int) strpos( $buffer_flushed, 'data-cpsd-session-boundary' ) < (int) strpos( $buffer_flushed, '</body>' ), 'boundary: the flushed banner sits inside the body' );
+	$buffer_ctx['env']->current_user = 1;
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+
+	// ... and it disappears with the fixture.
+	$boundary_ctx['manifest']->delete();
+	CpmsDemo\ScopedPersonaSession::reset_cache();
+	Cpdd_Test::equals( null, $boundary->current(), 'boundary: once the fixture is gone, no session is claimed as a demo persona' );
+
+	// --- read-only authority matrix -----------------------------------------
+	$preview_ctx = cpsd_full_demo( 'active', '', true );
+	$preview_ctx['platform']->clinical_authority[ (int) $preview_ctx['ids']['user_ids']['doctor'] ]['cpms_patient_read'] = true;
+	$preview_ctx['platform']->clinical_authority[ (int) $preview_ctx['ids']['user_ids']['accountant'] ]['cpms_finance_read'] = true;
+	$preview_ctx['platform']->tenant_authority[ (int) $preview_ctx['ids']['user_ids']['organization_manager'] ]         = true;
+	$matrix = ( new CpmsDemo\ScopedPreview( $preview_ctx['env'], $preview_ctx['platform'] ) )->matrix( 1, (array) $preview_ctx['manifest']->load() );
+	Cpdd_Test::equals( 8, count( (array) $matrix['personas'] ), 'preview: one row per persona' );
+	$by_persona = array();
+	foreach ( (array) $matrix['personas'] as $row ) {
+		$by_persona[ (string) $row['persona'] ] = (array) $row['authority'];
+	}
+	Cpdd_Test::equals( true, (bool) $by_persona['doctor']['clinical'], 'preview: the doctor row reflects the production engine' );
+	Cpdd_Test::equals( false, (bool) $by_persona['doctor']['financial'], 'preview: a capability the persona lacks is reported as absent' );
+	Cpdd_Test::equals( true, (bool) $by_persona['accountant']['financial'], 'preview: the accountant row reflects the production engine' );
+	Cpdd_Test::equals( true, (bool) $by_persona['organization_manager']['tenant'], 'preview: organization authority is resolved by the organization service' );
+	Cpdd_Test::equals( false, (bool) $by_persona['patient']['clinical'], 'preview: a persona with no authority reports none' );
+	// The administrator's column: no clinical, financial, messaging or tenant power.
+	foreach ( CpmsDemo\ScopedPreview::DOMAINS as $domain => $spec ) {
+		Cpdd_Test::equals( false, (bool) $matrix['admin'][ $domain ], 'preview: the administrator has no ' . $domain . ' authority by virtue of being an administrator' );
+	}
+	Cpdd_Test::ok( str_contains( CpmsDemo\ScopedPreview::admin_summary_fa( (array) $matrix['admin'] ), 'هیچ اختیار' ), 'preview: the page states the administrator has no clinical authority' );
+	// The probe really asked production (not a role name lookup).
+	$asked = implode( "\n", (array) $preview_ctx['platform']->calls );
+	Cpdd_Test::ok( str_contains( $asked, 'clinical_can:1:' ) && str_contains( $asked, 'cpms_patient_read' ), 'preview: the administrator column comes from the production clinical engine' );
+	Cpdd_Test::ok( str_contains( $asked, 'production_can:' ), 'preview: the tenant domain comes from the production organization resolver' );
+
+	// --- the dashboard: eight clear buttons, and no capability change --------
+	$launch_ctx  = cpsd_full_demo( 'active', '', true );
+	$launch_html = $render_dashboard( $launch_ctx );
+	Cpdd_Test::ok( str_contains( $launch_html, 'data-cpsd-persona-launcher="1"' ), 'launcher: the owner dashboard carries the launcher' );
+	Cpdd_Test::equals( count( CpmsDemo\Credentials::PERSONA_ORDER ), substr_count( $launch_html, 'data-cpsd-open-persona=' ), 'launcher: exactly one button per persona' );
+	Cpdd_Test::equals( count( CpmsDemo\Credentials::PERSONA_ORDER ), substr_count( $launch_html, 'data-cpsd-persona-form=' ), 'launcher: each button posts its own persona' );
+	Cpdd_Test::ok( str_contains( $launch_html, 'data-cpsd-form="persona_entry"' ), 'launcher: the action is the reviewed request action' );
+	Cpdd_Test::ok( ! str_contains( $launch_html, 'name="cpdd_confirm"' ), 'launcher: no typed phrase is needed to enter a demo persona' );
+	Cpdd_Test::ok( str_contains( $launch_html, 'data-cpsd-cookie-note="1"' ), 'launcher: the cookie-sharing limitation is stated on the page' );
+	Cpdd_Test::ok( str_contains( $launch_html, 'data-cpsd-authority="1"' ), 'launcher: the read-only authority matrix is rendered' );
+	$domains = count( CpmsDemo\ScopedPreview::DOMAINS );
+	// Each tile renders the attribute once per chip AND once per matrix cell, so the
+	// count is exactly twice the persona x domain product.
+	Cpdd_Test::equals( 2 * count( CpmsDemo\Credentials::PERSONA_ORDER ) * $domains, substr_count( $launch_html, 'data-cpsd-allow=' ), 'launcher: every persona tile reports all four authority domains' );
+	Cpdd_Test::equals( $domains, substr_count( $launch_html, 'data-cpsd-admin-allow=' ), 'launcher: the administrator row reports the same four domains' );
+	$launcher_source = (string) file_get_contents( CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-session.php' );
+	foreach ( array( 'add_cap(', 'set_role(', 'determine_current_user', 'wp_set_current_user(' ) as $forbidden ) {
+		Cpdd_Test::ok( ! str_contains( $launcher_source, $forbidden ), 'session: no privilege primitive: ' . $forbidden );
+	}
+	Cpdd_Test::ok( str_contains( $launcher_source, 'wp_set_auth_cookie' ), 'session: the transition uses the WordPress authentication primitive' );
+	Cpdd_Test::ok( ! str_contains( $launcher_source, '$session[\'redirect\'] = $' ), 'session: the redirect target never comes from the request' );
+
+
+	// (h) The demo must never fork the production product.
+	//
+	// The standalone package carries the real CPMS core at build time and then
+	// *uses* it. That only stays true if no shipped demo file declares a symbol in
+	// a production namespace, fabricates a WordPress/CPMS capability, or edits the
+	// capability tables directly. The harness itself may define a guarded double
+	// for the audit hash chain (the drills run without the production plugin), so
+	// that rule is checked against the guard rather than ignored.
+	$cpsd_fork_files = array(
+		CPMS_DEMO_DIR . 'cpms-disposable-demo.php',
+		CPMS_DEMO_DIR . 'uninstall.php',
+	);
+	foreach ( (array) glob( CPMS_DEMO_DIR . 'includes/*.php' ) as $cpsd_fork_file ) {
+		$cpsd_fork_files[] = $cpsd_fork_file;
+	}
+	Cpdd_Test::ok( count( $cpsd_fork_files ) > 25, 'fork: the scan covers the shipped surface (' . count( $cpsd_fork_files ) . ' files)' );
+	$cpsd_fork_problems = cpsd_fork_problems( $cpsd_fork_files );
+	Cpdd_Test::equals( array(), $cpsd_fork_problems, 'fork: no shipped file declares a production symbol or grants a capability (found: ' . implode( ' | ', $cpsd_fork_problems ) . ')' );
+
+	// The harness double may exist, but only behind a guard that loses to the real
+	// class. An ungated `final class HashChain` would shadow production whenever the
+	// suite runs inside a real WordPress, and would silently change what is tested.
+	$cpsd_harness = (string) file_get_contents( __DIR__ . '/scoped-run-tests.php' );
+	Cpdd_Test::ok(
+		str_contains( $cpsd_harness, "if ( ! class_exists( 'ClinicCore\\\\Infrastructure\\\\Audit\\\\HashChain' ) ) {" ),
+		'fork: the harness audit double is guarded by class_exists'
+	);
+
+	// Positive control: a file that does fork must be reported, otherwise this whole
+	// section could be a green no-op.
+	$cpsd_fork_control = (string) tempnam( sys_get_temp_dir(), 'cpsdfork' );
+	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture in the system temp dir.
+	file_put_contents(
+		$cpsd_fork_control,
+		"<?php\nnamespace ClinicCore\\Application\\Authorization;\nfinal class AuthorizationService { public function can() { add_cap( 'cpms_patient_read' ); return true; } }\n"
+	);
+	$cpsd_fork_found = cpsd_fork_problems( array( $cpsd_fork_control ) );
+	unlink( $cpsd_fork_control );
+	Cpdd_Test::ok( count( $cpsd_fork_found ) >= 2, 'fork: the checker catches a production class and a capability grant (control)' );
+	Cpdd_Test::ok(
+		(bool) array_filter( $cpsd_fork_found, static fn ( $line ) => str_contains( $line, 'AuthorizationService' ) ),
+		'fork: the control names the forked production symbol'
+	);
+
+
 	// (g) Static proof that every class reference in the demo's PHP resolves.
 	// The `wp eval-file` drills are never executed by this harness, which is how a
 	// bare `ScopedRecovery::class` in scoped-integration.php reached CI twice: it
@@ -868,6 +1541,7 @@ namespace {
 	unlink( $cpsd_control_file );
 	Cpdd_Test::equals( 1, count( $cpsd_control ), 'class refs: the checker catches an un-imported class (control)' );
 	Cpdd_Test::ok( str_contains( (string) ( $cpsd_control[0] ?? '' ), 'MissingThing' ), 'class refs: the control names the offending symbol' );
+
 
 	exit( Cpdd_Test::summary() );
 }

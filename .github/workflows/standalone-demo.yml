@@ -90,6 +90,12 @@ jobs:
           extensions: mysqli, curl, mbstring, xml, zip, gd, sodium, intl
           coverage: none
 
+      - name: Workflow files parse as YAML before GitHub tries to run them
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 bin/check-workflow-yaml.py
+
       - name: PHP syntax (every shipped file, both builds)
         run: |
           set -Eeuo pipefail
@@ -145,12 +151,24 @@ jobs:
           PY
           cp "$ZIP1" /tmp/cpms-disposable-demo-1.0.0.zip
 
+      - name: The shipped artifact embeds the production core of THIS revision
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/verify_embedded_core.py \
+            --zip /tmp/cpms-disposable-demo-1.0.0.zip \
+            --json /tmp/cpsa-sync-proof.json
+          python3 tests/scoped-demo/verify_embedded_core.py \
+            --zip /tmp/cpsa-2/cpms-disposable-demo-1.0.0.zip \
+            --json /tmp/cpsa-sync-proof-repro.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: cpms-disposable-demo-standalone
           path: |
             /tmp/cpms-disposable-demo-1.0.0.zip
             /tmp/cpsa-installer-proof.json
+            /tmp/cpsa-sync-proof.json
+            /tmp/cpsa-sync-proof-repro.json
             /tmp/cpsa-build.log
           if-no-files-found: error
           retention-days: 30
@@ -573,6 +591,21 @@ jobs:
           wp eval 'echo \CpmsDemo\Standalone::status()["fault"];' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/fault-after.txt
           test -z "$(cat /tmp/cpsa-ci/fault-after.txt)"
           wp eval 'echo defined("CPMS_VERSION") ? "CORE_OK" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_OK
+
+      - name: Surface PHP diagnostics from the demo site (annotations only)
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          report () {
+            FILE="$1"
+            [ -f "$FILE" ] || return 0
+            { grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:|cpsd_persona_boundary_error' "$FILE" || true; } \
+              | tail -6 | sed 's/%/%25/g' | while IFS= read -r LINE; do
+                  echo "::error title=CPSA_CI_PHPLOG (${{ matrix.db_name }})::$(printf '%s' "$LINE" | tr '\n' ' ' | cut -c1-900)"
+                done
+          }
+          report /tmp/cpsa-ci/php-server.log
+          report "$WP_DIR/wp-content/debug.log"
 
       - name: Publish sanitized evidence (no credentials, no PHI)
         if: always()

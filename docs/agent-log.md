@@ -2807,3 +2807,243 @@ The Mission-F drills did not pass on the first attempt. Every failure below was 
   - `Disposable Demo Installer (browser-only companion)` [41046870802](https://github.com/bia2on2on/doctor/actions/runs/41046870802): the ZIP → clean WP → browser lane.
 - **What the four rounds changed.** Round 1: a missing `Dashboard` import in a drill, one WPCS alignment, a drill asserting the pre-Mission-N landing contract, and - found while fixing that - four dashboard states with no route to the console and one duplicated attribute. Round 2: the *other* missing import (`ScopedRecovery`), which is why the same annotation survived round 1, plus a static `class-refs.php` checker with a positive control so this defect class cannot recur silently; and the drill was too narrow about a correct product state (`needs-consent` on a one-Clinic site). Round 3: R10 asserted "no failure recorded" with `?? 'x'`, which can never be true when the key exists and holds `null` - the product was right, the drill was wrong. Round 4: green.
 - **Not done, deliberately:** no merge, no release, no tag, no deployment, no Phase 20 action. The demo's usefulness on the Owner's own private site is the Owner's call to confirm; CI proves the contract, not their workflow.
+
+### [2026-10-30 UTC] — The Owner incident: a failed run that destroyed its own evidence
+
+- **Task.** Unblock the Owner's real failed standalone installation on a populated private WordPress site — not cleanup or DB administration, but reaching the eight real Classic V1 portals — without manual SQL, deleting users, disabling another plugin, fabricating ownership or bypassing a valid refusal.
+- **Diagnosis (source-level, not inferred from a live database).** `Provisioner::do_provision()`'s `catch` saved the failing stage's local `$manifest` snapshot over the record on disk. The snapshot is the **pre-seal** one, so any throwable raised after `seal_fixture()` had written the sealed payload erased `baseline`, `host_before`, `owned` and `audit_chain_at_seal` while the eight synthetic accounts and every synthetic row survived. `seal_fixture()` also dropped the duplicate pending baseline **before** `enforce_portal_clinic_policy()`, the one check that can throw after that write, so the erased baseline had no second copy. That combination produces exactly the reported state: manifest `failed`, teardown `BASELINE_MISSING`, preflight blocked, eight `cpsd-…` accounts alive. Which exception the Owner's run actually hit is **unknowable** from the surviving state (the record that would name it is the one that was overwritten); `PORTAL_POLICY` is the most likely candidate and is stated as inference only.
+- **Fix 1 — a failure may not destroy evidence.** New `Provisioner::record_failure()` + `preserve_evidence()`: reload the durable record (a record that does not verify is left byte-identical), merge the failure metadata onto **it**, keep every evidence field, union id lists by shape (lists de-duplicated, persona maps kept keyed — the first version re-indexed `user_ids` and destroyed the persona keys, caught by the new section 14 test), merge counts/links/slugs, append to a bounded `failure_history`.
+- **Fix 2 — ordering.** `enforce_portal_clinic_policy()` now runs before `clear_pending_baseline()`; the seal read-back verifies baseline **and** `owned` **and** `audit_chain_at_seal`; two fault points make the order testable.
+- **Fix 3 — two questions, two answers.** `ScopedRecovery` no longer conflates "is it provably ours?" with "is there a baseline?". A complete fixture with no baseline is `usable` (`usable: true`, `teardown_blocked: 'BASELINE_MISSING'`): the additive direction is allowed, the destructive one stays refused. The previous policy refused both, which is precisely the dead end.
+- **Fix 4 — the one action.** `ScopedProvisioner::launch()` behind `ScopedRequest::ACTION_LAUNCH`, labelled «آماده‌سازی و ورود به هشت درگاه» on the dashboard and in the console: it reads the sealed evidence, chooses `finish()` or `activate()` itself, rotates the eight demo passwords once and renders the eight real portal links on the same page. `activate()` is deliberately **not** a seal — no `owned` map, no `audit_chain_at_seal`, no baseline is fabricated, so `sealed` stays false and the teardown stays refused; it writes one audit row (`CPSD_DEMO_ACTIVATED_WITHOUT_BASELINE`) and proves its own write. One click gives access to all eight portals; opening eight simultaneous sessions would need an impersonation primitive this package deliberately does not have, and the doc says so instead of implying otherwise.
+- **Fix 5 — never delete what cannot be proven.** `ScopedManifest::preserve()` / `preserved()` + `ScopedRequest::ACTION_FRESH_DEMO`: archive the fixture's whole sealed record (manifest + ledger + ratchet) into sealed `cpsd_preserved`, verify it read back, and only then release the live pointers, then provision a fresh isolated demo. No user or data row is deleted, adopted or modified; the archive is listed read-only on the page; `uninstall.php` blocks on it and never deletes it; `ScopedBaseline::COMPANION_OPTIONS` enumerates it so it is never mistaken for host-option residue.
+- **Local evidence.** `tests/run-tests.php` **333 PASS / 0 FAIL** (strict mode unchanged). `tests/scoped-run-tests.php` **275 PASS / 0 FAIL** (was 174): section 13 stages the incident and drives `activate()`/`launch()`/parking/dashboard rendering, section 14 tests `record_failure`/`preserve_evidence`/seal ordering with a tampered-record control. `tests/scoped-demo/test_php_contract.py` **28 OK** (was 23). `evaluate.py --gate all` **PASS** (0 blockers / 0 gaps). `token_get_all(..., TOKEN_PARSE)` clean on every edited file.
+- **Drills added for the real database and a real browser.** `tests/scoped-demo/owner-incident.php` (`stage` reproduces the defect explicitly as a reproduction, `finish` proves the repair changed no counted row and that parking deletes nothing), `browser_scoped.py repair` (Chromium: the one click, the eight portal links, a rotated password really opening the doctor portal, a second click a no-op) and `tests/scoped-recovery.php` **R11** (incident → repair → park → fresh demo → host rows byte-identical) / **R12** (a fault after the durable seal no longer destroys the baseline). Wired into `scoped-demo.yml` for mysql-8 and mariadb-11.4.13.
+- **Residual risks, stated.** An activated-but-unsealed fixture still cannot be torn down automatically (no proof, no deletion); parking leaves the old rows and eight accounts in place, attributed and listed but blocking `uninstall.php` by design; the pending baseline is a large serialized option whose size on very large sites is **not benchmarked**; and the triggering exception on the Owner's site remains unknown.
+- **NOT RUN here:** real WordPress, MySQL 8, MariaDB 11.4.13, Chromium, WPCS. This sandbox has no PHP binary, no MySQL/MariaDB server and no Docker; PHP suites run under php-wasm (PHP 8.2.33) and nothing above is claimed green until the exact PR head's CI says so. No merge, release, tag, deployment or Phase 20 work.
+
+### [2026-10-30 UTC] — Requirement C on the Owner's incident: eight buttons, one real session, and the limitation stated instead of hidden
+
+- **Task.** The Owner added a requirement to the same PR: as their existing WordPress administrator, clicking any of the eight persona buttons must open that persona's real portal immediately, with no username and no password — a tightly scoped, server-authorized session transition, not unrestricted impersonation, and one that composes with the failed-manifest/`BASELINE_MISSING` repair rather than replacing it.
+- **What "no password" is allowed to mean.** Exactly one thing: WordPress establishes a genuine session for that sealed demo account. So the button does not "log you in as" anybody from the client side and there is no `act_as` flag, no `current_user` override, no capability copy and no role simulation. The only authentication primitive used is WordPress's own `wp_set_auth_cookie()` (now wrapped once in `Env::set_auth_cookie()`, which `test_php_contract` confines to that file).
+- **The hand-off, in the order it cannot skip.** `ScopedRequest::authorize()` (`manage_options` **and** `install_plugins`, nonce `cpsd_persona_entry`, rendered site fingerprint, HTTPS or loopback) → `ScopedPersonaSession::target()` resolves the account **only** from the HMAC-sealed manifest (`ids.user_ids[persona]` plus the exact sealed login `cpsd-<persona>-<fixture>`, refusing `administrator`, refusing `manage_options`, refusing self and id ≤ 1 — a `cpsd-` prefix is never accepted as ownership) → `issue()` stores one ticket whose value is only present as a SHA-256 digest, HMAC-bound to site + fixture + persona + user + issuing administrator, TTL 300 s → the handler answers `wp_safe_redirect()` and exits, so the token is in no page → `init` priority 2 redemption deletes the ticket **unconditionally before any other check**, then verifies HMAC, site, expiry and digest, reloads the **live** sealed manifest, re-runs `target()`, and only then opens the session and redirects to the portal URL from the sealed `links` map. Replay finds nothing; a torn-down fixture finds no fixture; a stale or foreign ticket authenticates nobody.
+- **Read-only preview is not an operation.** `ScopedPreview` asks the production engine itself — `AuthorizationService::can()` for `cpms_patient_read` / `cpms_finance_read` / `cpms_visit_read` and `OrganizationClinicProvisioningService::can()` for `cpms_org_clinic_update` — for all eight personas **and** for the administrator, and renders four chips per tile plus a table. The administrator row is expected all-`—` and the unit suite asserts it, so a site that really granted one would be reported, not concealed. Being a WordPress administrator still confers no clinical, financial, messaging or tenant authority; the preview link is labelled as changing no session.
+- **The boundary is visible and the way back is one click.** Personas get an admin-bar node `نشست نمایشی: <role>` with a child exit link; `show_admin_bar` is forced on for personas only. The exit is a nonced GET that admits only a session whose user id is one of the sealed personas of the **live** fixture (derived from sealed options, never from a cookie), writes `CPSD_DEMO_PERSONA_SESSION_CLOSED`, calls `wp_logout()` and lands on the login screen. It never authenticates anyone and hands no administrator authority to the persona.
+- **The limitation, stated three times (page, setup guide, report).** WordPress auth is one site-wide cookie, so tabs of one browser share it and a persona session in one tab replaces the administrator session in the others. No tab isolation is claimed anywhere — the page recommends a private window or a second browser profile, which *is* real isolation, and the same-browser path only costs the administrator a re-login. The CI drill proves the isolated mode with separate browser contexts and asserts the honest note is rendered.
+- **The drill proves it rather than asserting it.** New `browser_scoped.py sessions` phase: for each of the eight personas, issue the ticket with the administrator's session and redeem it in a **separate browser context**, then assert the portal opened (not the login page), the boundary node exists, the context holds that account's own `wordpress_logged_in_` cookie, the administrator dashboard and console are denied with no launcher/form/nonce in the body, a persona cannot mint a ticket for another persona, a consumed ticket is refused on replay with **no** session created, an unauthenticated POST obtains no ticket, the exit link ends the session and leaves nothing behind, and the administrator is still signed in and still sees eight buttons afterwards. Wired into `scoped-demo.yml` between the `repair` phase and the incident `finish`, with a new aggregation step so a failure actually fails the job.
+- **A real defect found by the new contract test.** `scoped-demo.yml` was uploading `/tmp/cpsd-ci/browser/persona-credentials.json` — the one-time persona passwords — as a CI artifact, while the standalone lane explicitly forbids exactly that. The path is removed; the round trip is proven by the browser phases, not by archiving secrets. The workflow contract now asserts that no uploaded path contains `persona-credentials.json`, `cpsd_persona_entry` or `synthetic-otp.json`.
+- **Local evidence.** `tests/scoped-run-tests.php` **326 PASS / 0 FAIL** (new section 15: 26 assertions over the eight personas, redeem, replay, expiry, tampered MAC, foreign site, malformed token, torn fixture, administrator/self/unsafe/renamed targets, the one-ticket boundary, the matrix, the launcher HTML and forbidden primitives), `tests/run-tests.php` **333 PASS / 0 FAIL**, `tests/scoped-demo` **155 OK** (`test_php_contract` 35), `.github/workflows/test_workflow_contracts.py` **67 OK** (was 64), `evaluate.py --gate all` **PASS** (0 blockers / 0 gaps), `token_get_all`/`lint.mjs` clean on every edited file.
+- **NOT RUN here:** real WordPress, MySQL 8, MariaDB 11.4.13, Chromium and WPCS — this sandbox has no PHP binary, no database server, no Docker and no YAML parser, so every browser and database claim above is a design-and-drill statement until the exact PR head's CI says otherwise. No merge, release, tag, deployment or Phase 20 work.
+
+### [2026-10-30 UTC] — Requirement D: the demo artifact must be the production product, proven file by file
+
+- **Task.** The Owner made production-to-demo synchronization a permanent requirement: one source of truth, the real core embedded automatically from the same revision, no duplicated or simulated implementation, no manual copying, standalone installation preserved, deterministic packaging and the single-header fix intact, CI that fails on a stale or inconsistent embedded core, no forked logic or weakened authorization in the new dashboard/recovery/passwordless features, a documented update process, and evidence in the report. Same branch, same PR.
+- **What was already true, verified before adding anything.** `bin/build-demo-installer.sh` copies the production tree into `core/` at build time, prunes tests/docs/composer/vendored tooling, neutralizes exactly one header key, pins mtimes and sorts entries, and refuses more than one discoverable header. No production file is checked into the demo subtree (`git ls-files` confirms), so there is no copy to keep in step by hand. `companion-sync.yml` + `evaluate.py` already keep the *contract* (`compatibility.json`) in step and fail closed; `generate.py --check` reports `up to date`.
+- **The gap that mattered.** Nothing compared the *archive* with the tree it claims to embed. A ZIP built before a production change, from a partial checkout, or edited afterwards would pass every existing check. That is precisely the "stale or inconsistent" case the requirement names.
+- **New: `tests/scoped-demo/verify_embedded_core.py`.** Derives the expected `core/` inventory from `clinic-practice-management/` using the build's own documented rules, allows exactly one transformation (the renamed header key, proven to be the only change), and fails on `missing`, `extra`, `different` and `leaked_production_paths`. Emits `EMBEDDED_CORE_SYNC={…}` with `production_revision`, `production_tree_dirty`, per-category lists and an `embedded_core_digest`/`source_core_digest` pair. Wired into the static lane of `scoped-demo.yml` and into `standalone-demo.yml` for **both** builds of the same revision; the JSON proofs are uploaded.
+- **The verifier was made to fail on purpose.** Four damage classes, each executed and each rejected with the right category: a deleted `core/src/Bootstrap/App.php` (missing), one appended byte (different), an invented `core/src/DemoOnly.php` (extra), and a restored `Plugin Name:` header (different). Six of them are now automated tests in `test_standalone_package.py`, including the positive control — a freshness check that cannot fail would certify nothing.
+- **New: the shipped surface cannot fork the product.** `scoped-run-tests.php` section (h) tokenizes every shipped demo file and fails if one declares a symbol in a production namespace, declares outside the demo namespace, or fabricates authority (`add_cap`/`remove_cap`/`add_role`/`remove_role`/`WP_Roles`/`wp_user_roles`). Its positive control — a synthetic file declaring `ClinicCore\Application\Authorization\AuthorizationService` and calling `add_cap()` — must yield two findings including the forked symbol. The one real production-namespace declaration in the repository is the harness's audit-chain double, which the section requires to stay behind a `class_exists` guard so it can never shadow the real class.
+- **The new Owner surfaces are held to the same rule.** `test_php_contract.py` asserts both `Platform` probes delegate to `App::authorization_service()->can()` / `App::organization_clinic_provisioning_service()->can()`, that every early return in those bodies is `return false;` (a refusal, never an allow), that the passwordless hand-off contains no `$wpdb`, `get_users(`, `wp_set_current_user(` or `set_role(`, and that the demo's four capability keys still exist literally in the production source — so a capability rename in production fails the demo suite instead of rendering an authority matrix about a permission the product no longer has.
+- **Documented update process.** `companion-sync.md` §1a (design, the freshness proof, what it refuses, the five-step update path, and the honest version-bump limitation) and a Persian section in `setup-fa.md` for the Owner: a production commit is the new source of truth → CI builds and verifies that revision → an installed demo is updated by uploading the new ZIP and pressing «جایگزینی نسخهٔ فعلی با نسخهٔ بارگذاریشده» → files and `core/` are replaced wholesale while the accounts, sealed fixture and audit chain stay untouched → deleting the plugin to "update" it is explicitly discouraged because that is the recovery path `uninstall.php` blocks on purpose.
+- **Local evidence.** `scoped-run-tests.php` **331 PASS / 0 FAIL** (was 326), `run-tests.php` **333 PASS / 0 FAIL**, `tests/scoped-demo` **171 OK** (was 162; `test_php_contract` 38, `test_standalone_package` 38), workflow contracts **69 OK** (was 67), `evaluate.py --gate all` **PASS** (0 blockers / 0 gaps), `evaluate.py --gate compatibility` **PASS**, `generate.py --check` **up to date**, and `verify_embedded_core.py` on a real build of this tree: **330/330 files, digest `2005e508…`, revision `9306e38…`, tree clean**.
+- **NOT RUN here:** real WordPress, MySQL 8, MariaDB 11.4.13, Chromium, WPCS, and the two new CI steps themselves — this sandbox has no PHP binary (php-wasm 8.2.33 only), no database server, no Docker and no YAML parser. Everything above is local-suite evidence; the CI claim waits for the exact PR head. No merge, release, tag, deployment or Phase 20 work.
+
+### [2026-10-30 UTC] — The first CI run of this branch never started: an unquoted colon in a step name
+
+- **Head `c9c8fe98bd66bd7ac4c1066d983a62c65b5e8d8c`.** The `Scoped demo (static + real WordPress integration)` run [41071645512](https://github.com/bia2on2on/doctor/actions/runs/41071645512) reported **`failure` with zero jobs**. That is a workflow-level startup failure, not a failing step: the file was not valid YAML, so GitHub never created a job and **every gate inside that lane silently did not run**. The other 12 check runs on the same head started normally.
+- **Cause, and it was mine.** Two step names I wrote in the previous round put a colon followed by a space inside an unquoted plain scalar: `- name: Chromium: one Persian action reaches the eight real portals (repair phase)` and `- name: Chromium: eight passwordless persona sessions, and the abuse cases (sessions phase)`. YAML reads the second `: ` as a mapping key and rejects the line (`mapping values are not allowed here`). Reproduced exactly with a real parser (`js-yaml`), and the reported line number was the *next* step, which is why a superficial reading of the error points at innocent code.
+- **Why the earlier "anchored inspection" missed it.** I had no YAML parser in this sandbox and validated by inspection only, which is precisely the method that cannot catch this class of defect. Using an inspection method as if it were a parse was the mistake; the honest label for those edits was "YAML not validated".
+- **Fix 1 — the two names are quoted.** With that, all 16 workflow files parse (verified with `js-yaml` over the whole directory, not just the edited file).
+- **Fix 2 — a parser gate, so this cannot recur silently.** New `bin/check-workflow-yaml.py` loads every workflow with PyYAML and then checks the shape a workflow needs (`name`, trigger, `jobs`, `runs-on`, `steps`, each step with `run`/`uses`). It **fails closed** when no parser is installed (exit 2) instead of degrading into a green no-op. Wired into the static lane of `scoped-demo.yml` and the static job of `standalone-demo.yml`, each installing `pyyaml` first.
+- **The gate was made to fail on the exact defect.** Re-introducing the unquoted `Chromium: one Persian action ...` name makes it exit 1 with `::error title=WORKFLOW_YAML::scoped-demo.yml: not valid YAML: mapping values are not allowed here`; restoring the file makes it pass. Locally that proof ran through PyYAML 6.0.3 installed with `pip install --target` (system installs are blocked by PEP 668).
+- **Two more contract tests.** One asserts both lanes wire the checker; one is a parser-independent rule — no `- name:`/`- uses:` value may contain an unquoted `: ` — so the failure mode is caught with a precise message even where no YAML library exists. A third test is the positive control for the same rule using a minimal probe document.
+- **Re-run after the fix (local).** `scoped-run-tests.php` **331 PASS / 0 FAIL**, `run-tests.php` **333 PASS / 0 FAIL**, `tests/scoped-demo` **171 OK**, workflow contracts **72 OK** (with PyYAML; **71 + 1 skipped** without it — the skipped one is the parser-dependent control, and the parser-independent sibling still runs), `evaluate.py --gate all` **PASS**, `verify_embedded_core.py` **330/330 in sync** at the new head.
+- **NOT RUN:** everything that CI has not yet executed on the fixed head — real WordPress, MySQL 8, MariaDB 11.4.13, Chromium, WPCS, and the two new sync steps. The previous head's CI result (`failure`, zero jobs) is reported above rather than replaced by the local suites.
+
+### [2026-10-30 UTC] — Second CI result: the static lane (and the new sync gate) went green, and two drills were asserting against a shared site
+
+- **Head `2a99e78a69917656854f9b6c16394ea721bc1154`, run [41072134585](https://github.com/bia2on2on/doctor/actions/runs/41072134585).** The workflow now *starts*: `Static gates, unit tests and reproducible companion ZIP` **success**, including the two new steps ("Workflow files parse as YAML before GitHub tries to run them" and "The standalone artifact embeds the production core of THIS revision"), i.e. the parser fix and the synchronization gate are proven in CI. Both `Real WordPress integration` jobs failed at **`Management-portal lifecycle drills on the real database`** with `FAIL P1 no synthetic account survives`. Steps after it did not run.
+- **Diagnosis (source, not a guess).** My own new **R11** drill in `tests/scoped-recovery.php` ends by parking the incident fixture, and it asserts exactly that the parked eight accounts are **not** deleted (`2 * $incident_users === cpsd_rec_synthetic_users()`). Every drill in this job shares one WordPress database, so from that point on the site legitimately contains eight `cpsd-…` accounts from the parked fixture. `scoped-portal.php` then counted `cpsd-…` logins **site-wide** and required zero after its own teardown — an assertion that could never pass on a site that also holds a parked fixture. `tests/scoped-demo/owner-incident.php` had the same site-wide shape (`8 !== synthetic_users`), so it would have failed next for the same reason. The product behaviour is correct; my drills were written as if the site were empty.
+- **Fix, without weakening the check.** `cpsd_pt_synthetic_users()` and the incident drill's counter now take an optional fixture id and match logins that **end with `-<fixture>`**, so each drill proves the stronger, precise statement: *its own* fixture left no surviving account, and the site-wide count returned to the pre-fixture value. The incident drill additionally asserts that parking adds exactly the fresh fixture's eight accounts (`before + 8`) instead of comparing against a site total, and every failure message now **names the surviving logins** instead of only counting them.
+- **Why this is a correction, not a concession.** The invariant under test — "a teardown deletes every synthetic account of the fixture it tore down" — is unchanged; what changed is that another fixture's *preserved* evidence is no longer mistaken for this drill's failure. Parking leaving accounts in place is the documented, required behaviour (nothing is deleted that cannot be proved).
+- **Local evidence after the fix.** `scoped-run-tests.php` 331/0, `run-tests.php` 333/0, `tests/scoped-demo` 171 OK, workflow contracts 72 OK, `check-workflow-yaml.py` 16/16 files, `verify_embedded_core.py` 330/330 in sync.
+- **NOT RUN:** anything after the portal drill in either database job — the Chromium phases (`provision`, `tamper`, `journeys`, `repair`, `sessions`) and the incident `stage`/`finish`, plus WPCS. This fix is the only reason to expect them to proceed, and that expectation is not evidence.
+
+### [2026-10-30 UTC] — Third CI round: the portal drill and the incident stage pass; the boundary was invisible
+
+- **Head `c78274d54f1df5eb8bdb3d7477fecff0939fef77`, run [41073332711](https://github.com/bia2on2on/doctor/actions/runs/41073332711).** Real progress, all of it from CI rather than from local suites: the static job green (including both new gates), and in **both** database jobs the previously failing `Management-portal lifecycle drills` now pass, `Stage the Owner incident` **passes**, and `Chromium: one Persian action reaches the eight real portals (repair phase)` **passes**. The lane then failed at my new `sessions` phase with one check: `organization_manager: the session boundary is visible`.
+- **What that means, precisely.** The ticket was issued, redeemed, and the browser really landed on the persona's own portal (the preceding check passed), so the hand-off authenticated the right account. What failed was the *visible boundary*: the plan put it only in the WordPress admin bar, and the portal screens are front-end pages rendered by production templates — the admin bar was not on them. An invisible session boundary fails requirements B/C on their own terms, so this was a real defect, not a brittle assertion.
+- **Fix.** The boundary is now a server-rendered banner hooked on `wp_body_open`, `wp_footer` and `admin_footer`, printed **at most once** per request, and only for a session whose user id is one of the sealed personas of the live fixture. It names the persona, states that the session is separate and holds no administrator authority, and carries the nonced «پایان نشست نمایشی و بازگشت» link; it contains no capability, no SQL and no session change. The admin-bar node stays as the secondary surface. The drill now accepts either surface and asserts the banner names the persona it belongs to, and `test_php_contract` pins the banner's hooks, its single-print guard and the absence of privilege primitives inside it.
+- **Local evidence.** `tests/scoped-demo` **172 OK**, `scoped-run-tests.php` 331/0, `run-tests.php` 333/0, workflow contracts 72 OK, `check-workflow-yaml.py` 16/16, `verify_embedded_core.py` 330/330.
+- **Still NOT RUN:** a full pass of the `sessions` phase, the aggregation step, the incident `finish` step, WPCS, and every later browser phase. The next exact-head run is the only evidence for the banner fix.
+- **Fourth CI round, head `1709e77`: the banner was still absent (`banner=0 admin_bar=0` on `/?page_id=7`).** The hooks were right and the session was real, but the production portal shells render their **own** document on `template_redirect` and end the request there, so neither `wp_body_open` nor `wp_footer` nor the admin bar exists on exactly the screens that matter. A hook that the page never fires is not a boundary. Fixed properly: `maybe_start_boundary_buffer()` starts an output buffer on `init` **only for a persona session**, and its callback `inject_boundary()` inserts the same banner before `</body>` (or appends it) — PHP closes that buffer even when the template ends the request with `exit`, so the boundary is present on portal shells and theme pages alike, printed once, and never on a redirect or a non-HTML response. The drill's click on the return link now falls back to its href if a theme overlay intercepts the pointer, because the server-side exit is what is under test. Contract test extended to pin the buffer, the redirect/non-HTML guards and the absence of privileged primitives in the banner.
+- **Fifth CI round, head `fc67496`: three failures, and the unit suite found the real cause.** The `sessions` phase still reported `banner=0 admin_bar=0`; the two `Standalone on a non-empty site` jobs failed inside `journeys` with `wp:options baseline row digest changed (changed: recovery_keys)`; and WPCS went red. Those three look unrelated and are not. `recovery_keys` is written by WordPress only when its fatal-error handler catches a fatal, so the buffer path was **throwing** on the live site, and the persona's portal was being replaced by WordPress's error page — which is exactly why the banner *and* the admin bar were both absent, on `1709e77` as well. The new harness test reproduced it in one line without WordPress: `boundary_html(): Argument #1 ($current) must be of type array, ScopedPersonaSession given`. Both call sites passed the session object where the resolved persona array belonged. Fixed; the harness now proves the injection, the single print, the untouched administrator page, the untouched redirect and the "a failing handler returns the page intact" path. Two harness gaps were found the same way and closed with stubs (`home_url()`, `wp_create_nonce()`), and `exit_url()` no longer produces `https://site//?...`.
+- **Lesson recorded, because it cost five CI cycles:** the harness can prove this code; I reached for CI before I asked it. The test I added for the buffer is what found the defect, not the four runs.
+- **CI diagnostics added (not speculative churn, they were the only readable channel):** both real-WP lanes now have an `if: failure()` step that surfaces `PHP Fatal/Parse error`, `Uncaught`, `Warning:`/`Notice:`/`Deprecated:` and `cpsd_persona_boundary_error` lines from the server log and `wp-content/debug.log` as `::error::` annotations. Step logs and artifacts are unreadable from this sandbox (blob host unreachable), annotations are not; the WPCS violation text was recovered the same way, from the PR's own evidence comment (`class-cpms-demo-scoped-session.php:175 [ERROR] WordPress.Security.EscapeOutput.OutputNotEscaped — found 'self'`), and fixed with a scoped `phpcs:ignore` that names why the output is already escaped.
+- **Sixth CI round, head `2bf9bf2`: the sessions phase passed in BOTH database jobs.** Eight passwordless transitions, the isolation between the administrator's context and each persona's, the denials (dashboard, console, cross-persona ticket, anonymous POST), the replay refusal and the one-click return all passed, and the persona pages carried the boundary. The lane then failed one step later, at the last one: `Prove the repair changed no data row and park the fixture safely` → `RuntimeException: the parked Clinic must survive the fresh teardown`.
+- **That assertion was mine and it was wrong, not the product.** A teardown archives its own anchor Clinic **in place** instead of deleting it (the audit log holds a production foreign key to `cpms_clinics`), which is documented in `ScopedManifest::PRIVATE_HOST_OPTION` and is the exact +1 the administrator accepts as a private-host consequence. So the site correctly ends one Clinic higher than before parking, and comparing totals proved nothing about the parked row. The drill now proves the parked Clinic **by id** (exactly one row survives) and asserts the total is exactly `before + 1` (the fresh fixture's archived Clinic), with both numbers in the evidence and in the failure message.
+- **Also fixed:** my new diagnostics step could itself fail (a `grep` with no match under `pipefail`), which is worse than useless in a failure path; it is now `{ grep ... || true; }`.
+- **NOT RUN at this head:** the incident `finish` step still (that is what these two fixes target), WPCS on the new head, and both database jobs end to end.
+
+### [2026-10-30 UTC] — Green: all twelve workflows pass on the same head, both database engines
+
+Head `c4d465275c1767f40b91f49f924052a9ab753b62`. This is the first run of this branch in
+which every workflow completed successfully. The evidence, as read back from the API
+rather than inferred:
+
+| workflow | run | result |
+|---|---|---|
+| Scoped demo (static + real WordPress integration) | `41086474912` | **success** |
+| Standalone demo (real WordPress, no production plugin) | `41086474696` | **success** |
+| CI (incl. `WPCS (changed code)`, `Static Analysis`, `Integration (WP 7.1 + MySQL 8)`) | `41086474989` | **success** |
+| Closure Gate, Companion compatibility, Disposable Demo Installer, External Disposable Site Acceptance, Facility Onboarding Matrix, First-Practice Browser Acceptance, Persian five-plugin coexistence, Pilot/Staging Readiness, Real WordPress Acceptance | — | **success** |
+
+Inside the scoped workflow, on **both** `mysql-8` and `mariadb-11.4.13`, every step of
+`Real WordPress integration` is green, in order: scoped integration on the seeded
+non-empty site, runtime safety drills, the management-portal lifecycle drills (P1–P4),
+provision, tamper/restore, the six persona journeys, the incident *stage*, the repair
+phase, **the eight passwordless persona sessions with all their abuse cases**, the
+evidence aggregation, and the incident *finish* (the repair changed no data row, the
+fixture parked with its eight accounts and its Clinic intact, the audit chain verified).
+`Standalone on a non-empty site` and `A–J teardown data safety` are green on both
+engines as well, and the static job ran both new gates (workflow-YAML parse, embedded
+core sync at revision `c4d4652`, 330/330 files).
+
+What this does **not** claim: nothing here was merged, tagged, released or deployed, and
+Phase 20 was not started. The unit, integration and browser results come from CI; this
+sandbox still has no PHP binary, database server, Docker or Chromium, so every number in
+the report that came from here is php-wasm, Python or a parse — never a real WordPress
+run. The permanent limitations stay stated in the PR: a parked fixture's rows and its
+eight accounts remain (attribution, not deletion), a teardown leaves its own anchor
+Clinic row behind (the audit table's production foreign key, accepted explicitly for a
+private host), and one browser holds one WordPress session, so real isolation needs a
+private window.
+
+### [2026-10-30 UTC] — PR #287 stabilization: the unrelated red, and a smaller buffer
+
+**PR state, verified rather than assumed.** `#287`, open, not merged, `mergeable: true`,
+`mergeable_state: unstable` (one failing check), head `6c79f9d6b1daf66c24b14b130c543d7e6ec19da2`,
+base `main` at `9306e38` (unchanged since 13:00Z), branch
+`arena/c5e32d01-doctor`. Check-runs at that head: **43 total, 42 success, 1 failure**
+(`Responsive smoke (Chromium ×4 viewport)`); the other twelve workflows are green.
+Branch protection is not readable with this integration's permission (`403`), so nothing
+here should be read as a statement about required checks.
+
+**The failing check cannot be caused by this PR, and that is evidence, not a guess.**
+`git diff --stat 9306e38..HEAD -- clinic-practice-management/` is **empty**: the
+production tree this PR ships is byte-identical to `main`. The failing job
+(`responsive` in `pilot-gate.yml`) `needs: release-artifact`, i.e. it installs the ZIP
+built from that identical subtree, and it never installs the companion
+(`grep -n cpms-disposable-demo .github/workflows/pilot-gate.yml` finds no install step).
+The only code this PR adds is the companion, which that job cannot load.
+
+**What actually failed, in its own words.**
+`FAIL journey-A1-public — stage=hold-countdown … otp/verify http=200; v1/availability
+http=200; booking/quote http=200 slot_id=5803 clinician_id=19 location_id=17;
+booking/hold http=404 code=CLINIC_NOT_FOUND …`. The same workflow passed three times in
+a row on this branch (`fc67496` 15:07Z, `2bf9bf2` 15:37Z, `c4d4652` 16:04Z) and failed
+once (16:29Z), on a head whose only difference is documentation. The failing run is also
+the run whose own logs show a different environment: `cached browser binaries did not
+launch on this runner`, then 68 s installing browser dependencies. Wall-clock differs by
+25 minutes; the fixture is deterministic and produced identical ids in both runs
+(`DAY2_FIXTURE_OK clinic_a=16 clinic_b=17 …`).
+
+**What the 404 can and cannot be.** `booking/hold` returns `CLINIC_NOT_FOUND` (404) from
+five distinct places in `BookingService`: a missing slot row, a slot whose Clinic differs
+from the clinician's home Clinic without an active participation, a Clinic whose
+Organization is not `active`, a Location that is not an active Clinic-owned Location, or
+a slot that is no longer `is_open` (capacity). The fixture inserts the Organization as
+`active`, gives both Clinics that Organization, and seeds the slot with `clinic_id` =
+clinic A and `location_id` = Location A1 — the values the failing request sent. The
+harness records the error **code** but not the response **message**, and every one of
+those five sites uses that same code, so the evidence in hand **cannot** distinguish
+"the slot was no longer open" from "the Clinic/Organization check failed". I am not
+calling this fixed, and I am not calling it flaky: it is one failure, in a job that
+never executes this PR's code, with a different runner environment, and the decisive
+detail is not recorded anywhere readable from here. The concrete improvement that would
+settle it is a one-line change in `clinic-practice-management/bin/pilot-day2-workflows.py`
+(record `message` beside `code`); it is outside this PR's scope and I have not made it.
+
+**The boundary is now smaller as well as guarded.** Reviewing the buffer rather than
+trusting it: the production portal shells (`src/Frontend/*Controller.php`) render their
+own document and `exit` on `template_redirect` priority 1, and their templates are the
+only ones that close `</body>` — so no WordPress hook can reach those pages and an output
+buffer is the only way to render a boundary without modifying production code. What
+changed in this round:
+- the buffer starts on `template_redirect` **priority 0** instead of `init`: it now runs
+  before the portal controllers and **never exists for REST, admin-ajax, the admin
+  screens or `wp-login.php`**, which do not fire that hook — JSON can no longer be
+  inspected at all, let alone altered;
+- `nocache_headers()` for a persona request, because the page now carries a
+  session-scoped nonce and must not be stored by a shared page cache;
+- a `content-disposition:` guard, so a download body is never decorated;
+- `render_boundary()` (the theme path) carries the same `\Throwable` guard the buffer
+  handler already had, so the banner can never take a page down on either path;
+- the harness now proves the buffer end to end: no buffer and no private marking for an
+  administrator request, exactly one buffer for a persona request, `nocache_headers()`
+  called once, and the flushed page carrying the banner **before `</body>`**.
+
+**Local evidence at this head (executed here, php-wasm/Python only).**
+`tools/…/tests/run-tests.php` **333/0**; `tools/…/tests/scoped-run-tests.php`
+**345/0** (was 339); `tests/scoped-demo` **172 OK**; PHP lint over all 47 shipped/test
+PHP files **0 failures**; workflow contracts **72 OK**; `check-workflow-yaml.py`
+**16/16**; `evaluate.py --gate all` **PASS**; `verify_embedded_core.py` **330/330**,
+digest `2005e508…c022687`, revision `6c79f9d…`.
+
+**Synchronization controls re-run by hand, positive and negative.** Two independent
+`bin/build-demo-installer.sh` runs produced byte-identical archives (`sha256
+2b88d42399eb5f36f6a0c54fa9b1bed4e1960a888ade729dedd264b9f9613052`, 1 695 800 bytes). The
+real build verifies (`exit 0`, 330/330, revision named). One appended byte inside
+`core/src/Application/Booking/BookingService.php` makes the same verifier exit **1** with
+`EMBEDDED_CORE_STALE::different: ['src/Application/Booking/BookingService.php']`. The
+archive carries **exactly one** WordPress-discoverable header
+(`cpms-disposable-demo/cpms-disposable-demo.php: 1`, `uninstall.php: 0`) and the embedded
+bootstrap keeps `CPMS Embedded Core:` in place of a `Plugin Name:` key.
+
+### [2026-10-30 UTC] — Accepted on exact-head CI: 43/43 checks, twelve workflows, both database engines
+
+Head `8bdf6d75af15832079219d837bdccab76a2a7eec`. PR #287: open, **not merged**,
+`mergeable: true`, `mergeable_state: clean`, base `main` at `9306e38` (unchanged), 32
+files, +5766/−58, 9 commits. Check-runs at the head: **43 total, 43 success, 0 failure**.
+
+| workflow | run | jobs |
+|---|---|---|
+| Scoped demo (static + real WordPress integration) | `41095135213` | static (16 steps), `mysql-8` (**29 steps**), `mariadb-11.4.13` (**29 steps**) — every step success |
+| Standalone demo (real WordPress, no production plugin) | `41095135606` | package contract/build, `A–J teardown data safety` ×2, `Standalone on a non-empty site` ×2 (28 steps each) — every step success |
+| Pilot/Staging Readiness Gate | `41095135578` | release artifact, staging gate (33 steps), **responsive smoke (45 steps)**, upgrade path — every step success |
+| CI, Closure Gate, Companion compatibility, Disposable Demo Installer, External Disposable Site Acceptance, Facility Onboarding Matrix, First-Practice Browser Acceptance, Persian five-phase coexistence, Real WordPress Acceptance | — | success |
+
+**The previously red `Responsive smoke` is green at this head, with its own evidence.**
+The Day-2 run records `hold_attempts=[{… 'status': 200, 'slot_id': 6379 …}]` and the full
+chain `availability 200 → quote 200 → otp/request 200 → otp/verify 200 → availability 200
+→ quote 200 → hold 200 → confirm 400 CLINIC_VALIDATION_FAILED (the deliberate
+first-time gate) → confirm 200`. Four runs of this production code have now passed and one
+failed, on identical fixture ids (`clinic_a=16 clinic_b=17 loc_a1=17`).
+
+**The failing run cannot be attributed to this PR, and the cause is now narrowed.**
+- `git diff --stat 9306e38..HEAD -- clinic-practice-management/` is **empty**, and that job
+  installs the ZIP built from exactly that subtree and never installs the companion. It
+  never executes a byte this PR changes. That is construction, not probability.
+- The one failing request returned `404 CLINIC_NOT_FOUND` on `booking/hold` for slot
+  5803 — while `booking/quote` returned **200** for the same slot, clinician and Location,
+  immediately before it. `BookingService::quote()` calls the *same*
+  `requireClinician()`, `clinic_for_persisted_slot()` and `assert_requested_location_matches_slot()`
+  as `hold()`, and `clinic_for_persisted_slot()` **throws** `CLINIC_NOT_FOUND` for a
+  missing slot row or a non-participating cross-Clinic slot. A 200 quote therefore proves
+  the slot existed and the Clinic resolved at that instant, which narrows the live
+  candidates to a **state change between quote and hold** (the slot's `is_open`/capacity,
+  or Location/Organization activity) or an argument the widget changed in between.
+- What would settle it is not inference but one field: the harness records `code` and
+  discards the response `message`, and five distinct throw sites share that code. That
+  one-line instrumentation belongs to the pilot harness, not to this PR. **The failure is
+  therefore neither fixed nor declared flaky**: it is one unreproduced failure in a job
+  that runs none of this branch's code, with the decisive field unrecorded.
+
+**The boundary, as accepted by the green run.** The `sessions` phase and the aggregation
+step after it passed on both engines; the aggregation step exits non-zero unless the
+phase report says `ok`, so its success is the evidence that all eight passwordless
+transitions, the administrator/persona isolation, the four denial cases, the replay
+refusal and the visible boundary passed on MySQL 8 and MariaDB 11.4.13 at this head. The
+buffer now exists only on `template_redirect`, so REST/AJAX/admin/login responses are
+never buffered, downloads are never decorated, persona pages are marked non-cacheable,
+and both render paths return the page untouched if anything throws.

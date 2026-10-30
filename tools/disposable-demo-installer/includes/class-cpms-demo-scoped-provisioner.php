@@ -276,20 +276,49 @@ class ScopedProvisioner extends Provisioner {
 		);
 		$manifest['audit_chain_at_seal'] = $this->audit_guard->verify_chain();
 		$manifest = $this->scoped_manifest->save( $manifest );
+		$this->env->maybe_inject_fault(
+			'scoped_provision:after_seal_save',
+			array( 'fixture_id' => (string) $manifest['fixture_id'] )
+		);
 
-		// Prove the sealed baseline actually survived the write before discarding
-		// the pending copy. save() already reads the record back, but the baseline
-		// is the one field the recovery path cannot reconstruct, so it is asserted
+		// Prove the sealed record actually survived the write before discarding
+		// the pending copy. save() already reads the record back, but the seal is
+		// the one payload the recovery path cannot reconstruct, so it is asserted
 		// explicitly on a fresh load (which also re-verifies the HMAC and the site
 		// fingerprint).
 		$reloaded = $this->scoped_manifest->load();
 		if ( ! is_array( $reloaded ) || array() === (array) ( $reloaded['baseline'] ?? array() ) ) {
 			throw new Exception( 'OPTION_WRITE_FAILED', 'پایهٔ مرجع در فایل مالکیت تأیید نشد؛ عملیات متوقف شد.' );
 		}
+		// The scope map is what a teardown uses to prove what it may delete, so a
+		// record that lost it is not a finished seal either.
+		if ( array() === (array) ( $reloaded['owned'] ?? array() ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'نقشهٔ مالکیت در فایل مهرشده تأیید نشد؛ عملیات متوقف شد.' );
+		}
+		// The sealed audit-chain state is the third piece of the seal. A record
+		// without it reports `sealed=false` to the recovery verdict, so finishing
+		// here and claiming success would leave a fixture that can never be torn
+		// down cleanly.
+		if ( empty( $reloaded['audit_chain_at_seal'] ) ) {
+			throw new Exception( 'OPTION_WRITE_FAILED', 'وضعیت زنجیرهٔ حسابرسی در فایل مهرشده تأیید نشد؛ عملیات متوقف شد.' );
+		}
+
+		// The portal policy is enforced BEFORE the duplicate baseline copy is
+		// dropped. Ordering is evidence-preservation, not style: this method can
+		// throw (a resolver that still grants Clinic creation, a missing
+		// membership row, a refused write), and while the pending record exists
+		// the run stays recoverable no matter which of the recoverable paths the
+		// operator needs. Discarding it first and failing after is precisely how
+		// the sealed evidence of a real install can disappear (see
+		// Provisioner::record_failure()).
+		$this->enforce_portal_clinic_policy( $manifest );
+
 		// Only now is the pending copy redundant.
 		$this->scoped_manifest->clear_pending_baseline();
-
-		$this->enforce_portal_clinic_policy( $manifest );
+		$this->env->maybe_inject_fault(
+			'scoped_provision:after_seal_clear',
+			array( 'fixture_id' => (string) $manifest['fixture_id'] )
+		);
 
 		return $manifest;
 	}
@@ -427,5 +456,261 @@ class ScopedProvisioner extends Provisioner {
 				throw new Exception( 'COLLISION', 'کلید محدودیت نرخ دمو از قبل وجود دارد.' );
 			}
 		}
+	}
+
+	/**
+	 * Activate a complete fixture whose sealed baseline is gone.
+	 *
+	 * NOT a seal, and deliberately not written as one: no `owned` scope map and
+	 * no `audit_chain_at_seal` are invented, so every gate that needs a complete
+	 * seal keeps refusing. What is added is exactly:
+	 *
+	 *   - the ownership ledger record (org + clinic ids the sealed manifest
+	 *     names), if it was never opened;
+	 *   - `status: active` plus an `activation` block naming the reason, the
+	 *     actor, the time and a fingerprint of the evidence that justified it;
+	 *   - one append-only audit row.
+	 *
+	 * Idempotent: a second call finds the activation already recorded with the
+	 * same evidence and returns the manifest unchanged (`state: already`).
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{state:string,manifest:array<string,mixed>}
+	 * @throws Exception When the fixture is not provably ours, or not complete.
+	 */
+	public function activate( int $admin_id ): array {
+		return $this->env->with_lock(
+			'activate',
+			function () use ( $admin_id ): array {
+				$manifest = $this->scoped_manifest->load();
+				if ( ! is_array( $manifest ) ) {
+					throw new Exception( 'NO_DEMO', 'سند مالکیت دمو برای فعال‌سازی پیدا نشد.' );
+				}
+				// Re-assessed INSIDE the lock: the state shown to the operator must
+				// still be the state on disk when the write happens.
+				$assessment = ( new ScopedRecovery( $this->env, $this->platform, $this->scoped_manifest ) )->assess( $manifest );
+				if ( ScopedRecovery::VERDICT_ACTIVE === $assessment['verdict'] ) {
+					return array( 'state' => 'already', 'manifest' => $manifest );
+				}
+				if ( ScopedRecovery::VERDICT_USABLE === $assessment['verdict'] && array() !== (array) ( $manifest['activation'] ?? array() ) ) {
+					return array( 'state' => 'already', 'manifest' => $manifest );
+				}
+				if ( ScopedRecovery::VERDICT_USABLE !== $assessment['verdict'] ) {
+					throw new Exception(
+						'' !== (string) $assessment['code'] ? (string) $assessment['code'] : 'ACTIVATION_NOT_SAFE',
+						(string) $assessment['reason']
+					);
+				}
+				$ids     = (array) ( $manifest['ids'] ?? array() );
+				$fixture = (string) ( $manifest['fixture_id'] ?? '' );
+				$org     = (int) ( $ids['organization_id'] ?? 0 );
+				$clinic  = (int) ( $ids['clinic_id'] ?? 0 );
+
+				// The ledger proves which Clinics this fixture owns. Opening it is
+				// additive and is refused if it already carries another fixture's
+				// chain; that refusal is the correct answer, not a fallback.
+				$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
+				if ( ! $ownership->exists() ) {
+					$ownership->open( $fixture, $org, $clinic );
+				}
+
+				// The failure that made the repair necessary is kept, not erased: the
+				// append-only `failure_history` already holds every attempt, and this
+				// names the one that was repaired.
+				$previous_failure = array(
+					'stage' => (string) ( $manifest['failed_stage'] ?? '' ),
+					'code'  => (string) ( $manifest['failure_code'] ?? '' ),
+				);
+
+				$payload                            = $manifest;
+				$payload['status']                  = 'active';
+				$payload['activation']              = array(
+					'mode'       => 'baseline_unavailable',
+					'at'         => $this->env->now_sql(),
+					'actor_id'   => $admin_id,
+					'evidence'   => $this->evidence_fingerprint( $manifest ),
+					'row_effect' => 'none',
+				);
+				$payload['repaired_from_failure']   = $previous_failure;
+				$payload['failed_stage']            = null;
+				$payload['failure_code']            = null;
+				$payload['failure_message']         = null;
+
+				$saved = $this->scoped_manifest->save( $payload );
+				// Prove the write before anything else observes it: a marker that
+				// did not survive is not an activation.
+				if ( 'active' !== (string) ( $saved['status'] ?? '' ) || array() === (array) ( $saved['activation'] ?? array() ) ) {
+					throw new Exception( 'OPTION_WRITE_FAILED', 'نشانگر فعال‌سازی ذخیره و تأیید نشد؛ عملیات متوقف شد.' );
+				}
+
+				$this->platform->audit(
+					'CPSD_DEMO_ACTIVATED_WITHOUT_BASELINE',
+					$admin_id,
+					$clinic,
+					array(
+						'fixture_id'       => $fixture,
+						'evidence'         => (string) $saved['activation']['evidence'],
+						'teardown_blocked' => 'BASELINE_MISSING',
+						'row_effect'       => 'none',
+					)
+				);
+
+				return array( 'state' => 'repaired', 'manifest' => $saved );
+			}
+		);
+	}
+
+	/**
+	 * The single action an Owner needs: make the eight portals reachable.
+	 *
+	 * It decides from sealed evidence, never from the request:
+	 *   ACTIVE    -> nothing to repair;
+	 *   RESUMABLE -> the same additive seal `finish()` performs;
+	 *   USABLE    -> the additive activation `activate()` performs;
+	 *   anything else -> refused with the stable code, and the UI offers the two
+	 *   safe alternatives (park + fresh demo, or an authorized teardown).
+	 *
+	 * Then it rotates the eight demo passwords once, because they are never
+	 * stored and the run that created them may never have shown them. Rotation
+	 * touches no data row: it sets a new password per synthetic persona and
+	 * invalidates those personas' old sessions.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{state:string,manifest:array<string,mixed>,credentials:array<string,string>}
+	 * @throws Exception On any refusal.
+	 */
+	public function launch( int $admin_id ): array {
+		$manifest = $this->scoped_manifest->load();
+		if ( ! is_array( $manifest ) ) {
+			throw new Exception( 'NO_DEMO', 'سند مالکیت دمو پیدا نشد.' );
+		}
+		$assessment = ( new ScopedRecovery( $this->env, $this->platform, $this->scoped_manifest ) )->assess( $manifest );
+		$state      = 'already';
+
+		if ( ScopedRecovery::VERDICT_RESUMABLE === $assessment['verdict'] ) {
+			// `finish()` re-assesses under the provisioning lock.
+			$manifest = (array) $this->finish( $admin_id )['manifest'];
+			$state    = 'resumed';
+		} elseif ( ScopedRecovery::VERDICT_USABLE === $assessment['verdict'] ) {
+			// `activate()` re-assesses under its own lock and is idempotent.
+			$activation = $this->activate( $admin_id );
+			$manifest   = (array) $activation['manifest'];
+			$state      = 'repaired' === (string) $activation['state'] ? 'repaired' : 'already';
+		} elseif ( ScopedRecovery::VERDICT_ACTIVE !== $assessment['verdict'] ) {
+			throw new Exception(
+				'' !== (string) $assessment['code'] ? (string) $assessment['code'] : 'LAUNCH_NOT_SAFE',
+				(string) $assessment['reason']
+			);
+		}
+
+		// Rotation requires an active fixture and re-verifies every persona's id,
+		// login and non-administrator status before touching a password.
+		$credentials = $this->credentials->rotate( $manifest, 'cpsd-' );
+
+		return array(
+			'state'       => $state,
+			'manifest'    => $manifest,
+			'credentials' => $credentials,
+		);
+	}
+
+	/**
+	 * Park an unresolvable fixture, then provision a fresh, isolated one.
+	 *
+	 * WHY PARKING IS NOT DELETION
+	 * ---------------------------
+	 * The old fixture may be incomplete in a way no sealed record can repair.
+	 * Its rows must still never be adopted (a new fixture proves its own rows by
+	 * its own 128-bit namespace), never modified, and never deleted without the
+	 * evidence a teardown needs. So the whole sealed record - manifest plus the
+	 * ownership ledger chain and its ratchet - is copied into a sealed
+	 * `cpsd_preserved` record, the LIVE pointers (`cpsd_manifest` and the ledger
+	 * options) are removed so a new fixture can have its own, and nothing else is
+	 * touched. The parked copy is the input to a later, explicit, human-reviewed
+	 * resolution; this class offers no code path that deletes it.
+	 *
+	 * Idempotency and refusal:
+	 *   - refuses when the live manifest does not verify (never park a tampered
+	 *     record as if it were evidence);
+	 *   - refuses when the fixture is fully ACTIVE and sealed, because parking a
+	 *     working demo would only lose the ability to tear it down;
+	 *   - parking the same fixture twice returns the existing record unchanged.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>,preserved:array<string,mixed>,previous_fixture:string}
+	 * @throws Exception On any refusal.
+	 */
+	public function preserve_and_reprovision( int $admin_id ): array {
+		$previous = '';
+		// The park step is its own critical section. It must NOT wrap the
+		// provisioning call: `Env::with_lock()` is a single-slot guard, so a
+		// nested acquisition is refused as a concurrent operation - correctly, and
+		// the two steps really are sequential.
+		$this->env->with_lock(
+			'preserve',
+			function () use ( $admin_id, &$previous ): void {
+				$manifest = $this->scoped_manifest->load();
+				if ( ! is_array( $manifest ) ) {
+					throw new Exception( 'NO_DEMO', 'دموی قابل کنارگذاری وجود ندارد.' );
+				}
+				$assessment = ( new ScopedRecovery( $this->env, $this->platform, $this->scoped_manifest ) )->assess( $manifest );
+				if ( ScopedRecovery::VERDICT_ACTIVE === $assessment['verdict'] ) {
+					// A fully sealed fixture can be torn down, so abandoning it would
+					// only lose that ability. Everything else - including a fixture that
+					// is usable but can never be torn down because its baseline is gone -
+					// may be parked: that is exactly the state parking exists for.
+					throw new Exception( 'DEMO_IS_USABLE', 'این دمو کامل و مهرشده است و پاک‌سازی آن ممکن است؛ برای کنارگذاشتن، نخست پاک‌سازی مجاز را اجرا کنید. برای استفاده، دکمهٔ «آماده‌سازی و ورود به هشت درگاه» را بزنید.' );
+				}
+				if ( ScopedRecovery::VERDICT_RESUMABLE === $assessment['verdict'] ) {
+					// Finishing it is additive and safe, so the page offers that first;
+					// parking a completable fixture would throw away a clean teardown.
+					throw new Exception( 'DEMO_IS_COMPLETABLE', 'این دمو با یک مرحلهٔ افزودنی کامل می‌شود و پاک‌سازی آن هم ممکن است؛ کنارگذاشتن آن لازم نیست. دکمهٔ «آماده‌سازی و ورود به هشت درگاه» را بزنید.' );
+				}
+				$previous = (string) ( $manifest['fixture_id'] ?? '' );
+				$this->scoped_manifest->preserve(
+					$manifest,
+					'' !== (string) $assessment['code'] ? (string) $assessment['code'] : (string) $assessment['verdict'],
+					$admin_id
+				);
+			}
+		);
+
+		$result                     = $this->provision( $admin_id );
+		$result['previous_fixture'] = $previous;
+		$result['preserved']        = (array) $this->scoped_manifest->preserved_record( $previous );
+
+		return $result;
+	}
+
+	/**
+	 * Stable fingerprint of the evidence an activation relies on.
+	 *
+	 * Derived from the sealed manifest's own identity, tenancy and account ids,
+	 * so it changes if - and only if - the evidence changes. It contains no
+	 * password, OTP, session or PHI.
+	 *
+	 * @param array<string,mixed> $manifest Verified manifest.
+	 * @return string
+	 */
+	private function evidence_fingerprint( array $manifest ): string {
+		$ids   = (array) ( $manifest['ids'] ?? array() );
+		$users = (array) ( $ids['user_ids'] ?? array() );
+		ksort( $users );
+		$slugs = (array) ( $manifest['slugs'] ?? array() );
+		ksort( $slugs );
+		$material = wp_json_encode(
+			array(
+				'fixture_id'      => (string) ( $manifest['fixture_id'] ?? '' ),
+				'schema_version'  => (string) ( $manifest['schema_version'] ?? '' ),
+				'organization_id' => (int) ( $ids['organization_id'] ?? 0 ),
+				'clinic_id'       => (int) ( $ids['clinic_id'] ?? 0 ),
+				'location_ids'    => array_map( 'intval', (array) ( $ids['location_ids'] ?? array() ) ),
+				'user_ids'        => $users,
+				'slugs'           => $slugs,
+			),
+			JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+		);
+
+		return substr( hash( 'sha256', (string) $material ), 0, 32 );
 	}
 }

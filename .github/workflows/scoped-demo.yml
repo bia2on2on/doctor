@@ -101,6 +101,12 @@ jobs:
           python3 -m unittest discover -s tests/companion-compat -p 'test_*.py'
           python3 .github/scripts/companion-compat/evaluate.py --root . --gate compatibility
 
+      - name: Workflow files parse as YAML before GitHub tries to run them
+        run: |
+          set -Eeuo pipefail
+          python3 -m pip install --quiet --disable-pip-version-check pyyaml
+          python3 bin/check-workflow-yaml.py
+
       - name: Workflow contract tests
         run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
 
@@ -154,6 +160,14 @@ jobs:
           PY
           cp "$ZIP1" /tmp/cpms-disposable-demo-companion-1.0.0.zip
 
+      - name: The standalone artifact embeds the production core of THIS revision
+        run: |
+          set -Eeuo pipefail
+          OUT_DIR=/tmp/cpsd-sync bash bin/build-demo-installer.sh --standalone | tee /tmp/cpsd-sync-build.log
+          python3 tests/scoped-demo/verify_embedded_core.py \
+            --zip /tmp/cpsd-sync/cpms-disposable-demo-1.0.0.zip \
+            --json /tmp/cpsd-sync-proof.json
+
       - uses: actions/upload-artifact@v4
         with:
           name: cpsd-static-evidence
@@ -161,6 +175,8 @@ jobs:
             /tmp/cpsd-installer-proof.json
             /tmp/cpsd-build-1.log
             /tmp/cpms-disposable-demo-companion-1.0.0.zip
+            /tmp/cpsd-sync-proof.json
+            /tmp/cpsd-sync-build.log
           if-no-files-found: error
           retention-days: 30
 
@@ -456,6 +472,117 @@ jobs:
               sys.exit(1)
           PY
 
+      # ---------------------------------------------------------------------
+      # The Owner incident, end to end on this database engine.
+      #
+      # `stage` reproduces the exact state a real populated install reported (see
+      # the file header): a failed manifest whose sealed baseline is gone, eight
+      # synthetic accounts and every synthetic row still present, teardown
+      # refusing BASELINE_MISSING, preflight refusing a second fixture. The
+      # Chromium phase then clicks the ONE Persian action and proves the eight
+      # real portals are reachable; `finish` proves nothing else changed and that
+      # the same state can still be parked for a fresh demo without deleting an
+      # ambiguous row.
+      # ---------------------------------------------------------------------
+      - name: Stage the Owner incident (baseline lost, eight portals alive)
+        run: |
+          set -Eeuo pipefail
+          CPSD_INCIDENT_MODE=stage wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/owner-incident.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-owner-incident-stage.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-owner-incident-stage.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_OWNER_INCIDENT_STAGE=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'stage failed'), file=sys.stderr)
+              print('::error title=SCOPED_OWNER_INCIDENT_STAGE::' + str(data.get('error', 'stage failed'))[:900].replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
+      - name: 'Chromium: one Persian action reaches the eight real portals (repair phase)'
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsd-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_scoped.py repair | tee /tmp/cpsd-ci/browser-repair.log
+
+      - name: 'Chromium: eight passwordless persona sessions, and the abuse cases (sessions phase)'
+        env:
+          BASE: ${{ env.WP_URL }}
+          ADMIN_USER: ${{ env.ADMIN_USER }}
+          ADMIN_PASS: ${{ env.ADMIN_PASS }}
+          CPSD_EVIDENCE_DIR: /tmp/cpsd-ci/browser
+        run: |
+          set -Eeuo pipefail
+          python3 tests/scoped-demo/browser_scoped.py sessions | tee /tmp/cpsd-ci/browser-sessions.log
+
+      - name: Aggregate the Owner-incident and persona-session browser evidence
+        run: |
+          set -Eeuo pipefail
+          python3 - <<'PY'
+          import json, sys
+          from pathlib import Path
+          ok = True
+          for phase in ('repair', 'sessions'):
+              path = Path(f'/tmp/cpsd-ci/browser/browser-result-{phase}.json')
+              if not path.exists():
+                  print(f'FAIL missing browser result for phase {phase}', file=sys.stderr)
+                  sys.exit(1)
+              data = json.loads(path.read_text(encoding='utf-8'))
+              print(f'CPSD_BROWSER_{phase.upper()}_CHECKS=' + str(len(data.get('checks', []))))
+              print(f'CPSD_BROWSER_{phase.upper()}_OK=' + str(bool(data.get('ok'))))
+              for item in data.get('checks', []):
+                  print('  ' + ('PASS ' if item.get('ok') else 'FAIL ') + str(item.get('name')) + ' — ' + str(item.get('detail', '')))
+              if not data.get('ok'):
+                  ok = False
+                  failed = [item for item in data.get('checks', []) if not item.get('ok')]
+                  detail = ' || '.join(
+                      str(item.get('name')) + ' — ' + str(item.get('detail', ''))[:240]
+                      for item in failed[-3:]
+                  ) or str(data.get('error', f'phase {phase} failed'))
+                  print('::error title=CPSD_BROWSER_' + phase.upper() + '::'
+                        + detail.replace('%', '%25').replace('\r', '').replace('\n', ' '))
+          if not ok:
+              sys.exit(1)
+          PY
+
+      - name: Prove the repair changed no data row and park the fixture safely
+        run: |
+          set -Eeuo pipefail
+          CPSD_INCIDENT_MODE=finish wp eval-file "$GITHUB_WORKSPACE/tests/scoped-demo/owner-incident.php" \
+            --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
+            | tee /tmp/cpsd-ci/scoped-owner-incident-finish.json
+          python3 - <<'PY'
+          import json, sys
+          raw = open('/tmp/cpsd-ci/scoped-owner-incident-finish.json', encoding='utf-8').read().strip().splitlines()[-1]
+          data = json.loads(raw)
+          print('SCOPED_OWNER_INCIDENT_FINISH=' + json.dumps(data, ensure_ascii=False))
+          if not data.get('ok'):
+              print(data.get('error', 'finish failed'), file=sys.stderr)
+              print('::error title=SCOPED_OWNER_INCIDENT_FINISH::' + str(data.get('error', 'finish failed'))[:900].replace('%', '%25').replace('\r', '').replace('\n', ' '))
+              sys.exit(1)
+          PY
+
+      - name: Surface PHP diagnostics from the demo site (annotations only)
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          report () {
+            FILE="$1"
+            [ -f "$FILE" ] || return 0
+            { grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:|cpsd_persona_boundary_error' "$FILE" || true; } \
+              | tail -6 | sed 's/%/%25/g' | while IFS= read -r LINE; do
+                  echo "::error title=CPSD_PHPLOG (${{ matrix.db_name }})::$(printf '%s' "$LINE" | tr '\n' ' ' | cut -c1-900)"
+                done
+          }
+          report /tmp/cpsd-ci/php-server.log
+          report "$WP_DIR/wp-content/debug.log"
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -469,8 +596,14 @@ jobs:
             /tmp/cpsd-ci/browser-tamper.log
             /tmp/cpsd-ci/browser-provision.log
             /tmp/cpsd-ci/browser.log
+            /tmp/cpsd-ci/browser-repair.log
+            /tmp/cpsd-ci/browser-sessions.log
+            /tmp/cpsd-ci/scoped-owner-incident-stage.json
+            /tmp/cpsd-ci/scoped-owner-incident-finish.json
             /tmp/cpsd-ci/browser/persona-targets.json
-            /tmp/cpsd-ci/browser/persona-credentials.json
+            # persona-credentials.json is one-time material and is never uploaded
+            # here (the standalone lane already forbids it); the round trip is
+            # proven by the journeys phase, not by archiving secrets.
             /tmp/cpsd-ci/browser/browser-result.json
             /tmp/cpsd-ci/browser/browser-result-*.json
             /tmp/cpsd-ci/browser/*.png

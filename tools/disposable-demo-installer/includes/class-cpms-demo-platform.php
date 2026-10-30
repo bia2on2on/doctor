@@ -916,6 +916,29 @@ class Platform {
 	}
 
 	/**
+	 * Ask the PRODUCTION clinical authorization engine what one actor may do in one
+	 * Clinic.
+	 *
+	 * Used only to REPORT authority (the read-only preview matrix) - never to decide
+	 * whether a demo action is allowed. The engine itself enforces every real
+	 * request, and it deliberately grants nothing for `manage_options`: a WordPress
+	 * administrator has no clinical, financial or messaging authority inside a
+	 * Clinic unless a durable active membership says so.
+	 *
+	 * @param int    $actor_id   WordPress user id.
+	 * @param int    $clinic_id  Clinic id.
+	 * @param string $capability Production capability key (for example `cpms_patient_read`).
+	 * @return bool
+	 */
+	public function clinical_can( int $actor_id, int $clinic_id, string $capability ): bool {
+		if ( $actor_id <= 0 || $clinic_id <= 0 || '' === $capability ) {
+			return false;
+		}
+
+		return (bool) App::authorization_service()->can( $actor_id, $clinic_id, $capability );
+	}
+
+	/**
 	 * Designate (or suspend) an Organization manager through the production
 	 * service, under the caller's own Organization authority.
 	 *

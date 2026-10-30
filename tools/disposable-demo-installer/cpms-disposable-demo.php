@@ -79,6 +79,8 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preview.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-session.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-recovery.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-guard.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-clinics.php';
@@ -208,3 +210,8 @@ add_action( 'template_redirect', array( 'CpmsDemo\\ScopedAdmin', 'guard_portal_c
 // refuses writes into the demo tenant by real users, on the server. Every hook
 // returns immediately unless a scoped fixture is active.
 CpmsDemo\ScopedTenantGuard::register();
+// Passwordless entry into one sealed persona, from the administrator session. It
+// adds two GET endpoints (both nonce- and ticket-gated), one admin-bar node and a
+// display filter; it never touches capabilities and never runs for a visitor who is
+// not an authenticated administrator holding manage_options + install_plugins.
+CpmsDemo\ScopedPersonaSession::register();

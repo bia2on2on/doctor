@@ -215,6 +215,30 @@ class Env {
 	}
 
 	/**
+	 * Establish the logged-in session of one user, using WordPress's own primitive.
+	 *
+	 * This is deliberately the ONLY place the demo package writes an authentication
+	 * cookie, and it is called from exactly one place (the single-use ticket of a
+	 * sealed persona). It is not an impersonation switch: it creates that user's own
+	 * session, with that user's own capabilities, exactly as `wp-login.php` would.
+	 *
+	 * @param int $user_id User id.
+	 * @return void
+	 */
+	public function set_auth_cookie( int $user_id ): void {
+		wp_set_auth_cookie( $user_id, false, is_ssl() );
+	}
+
+	/**
+	 * End the current session (used by the persona-session exit link).
+	 *
+	 * @return void
+	 */
+	public function logout(): void {
+		wp_logout();
+	}
+
+	/**
 	 * @param int $user_id User id.
 	 * @return bool
 	 */

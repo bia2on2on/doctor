@@ -59,6 +59,81 @@ token. A fixed `concurrency` group additionally serialises runs, and a fixed
 branch name plus an existing-PR lookup prevents duplicate PRs for the same
 `main` revision.
 
+## 1a. The artifact: the production core, embedded at build time
+
+The Owner's demo is their private copy of **CPMS Classic V1**. Requirement: it must
+always reflect the real product — same application code, same interfaces, same
+authorization, same clinical workflows, scheduling, finance, messaging and portals —
+and nobody may ever maintain a second implementation inside the demo.
+
+**One source, one path.** `clinic-practice-management/` is the only source of truth.
+`bin/build-demo-installer.sh` copies it into `core/` at build time. No production
+file is checked into the demo subtree (`git ls-files tools/disposable-demo-installer/core`
+is empty, and a contract test asserts it), so there is nothing to keep equal by hand.
+
+| Property | How it is guaranteed | Where it is proven |
+|---|---|---|
+| The core is the production tree at this revision | byte-for-byte comparison of every file in the archive against the tree | `tests/scoped-demo/verify_embedded_core.py`, run in the static lane of `scoped-demo.yml` and twice in `standalone-demo.yml` |
+| No hand-copying, no drift | the build is the only path production code takes into the package | workflow contract test + build script |
+| Standalone installation | `core/` is shipped inside the package, so the production plugin is never installed separately | `tests/scoped-demo/test_standalone_package.py` |
+| Deterministic bytes | fixed mtimes, sorted entry order, `-X` | reproducibility assertions in both lanes |
+| One discoverable plugin header | the staged bootstrap's `Plugin Name:` key is renamed to `CPMS Embedded Core:` and nothing else changes | regex mirror of `get_file_data()` over every packaged PHP file |
+| The demo never forks product logic | no shipment declares a production symbol or fabricates a capability; the demo asks the production engines | `scoped-run-tests.php` section (h), tokenized, with a positive control |
+| Authorization is not weakened | clinical permission comes only from `App::authorization_service()->can()`; organization permission only from `App::organization_clinic_provisioning_service()->can()`; every early return refuses | `test_php_contract.py` |
+
+**The freshness proof, and what it refuses.** `verify_embedded_core.py` derives the
+expected `core/` inventory from `clinic-practice-management/` using the build's own
+documented rules, allows exactly one transformation (the renamed header key), and
+fails on:
+
+* **missing** — a production file the archive does not carry (built before that file
+  existed, or from a partial tree);
+* **extra** — a file inside `core/` that is not production code;
+* **different** — any changed byte, including an embedded core that lost the header
+  neutralization;
+* **leaked production paths** — the production tree's own layout appearing outside
+  `core/`.
+
+It prints `EMBEDDED_CORE_SYNC={…}` with `production_revision`, `production_tree_dirty`,
+the per-category lists and an `embedded_core_digest`/`source_core_digest` pair. Six
+tests in `test_standalone_package.py` execute it against a real archive **and** against
+four deliberately damaged copies of that archive (missing file, edited file, extra
+file, un-neutralized header) — a verifier that cannot fail would certify nothing.
+
+**The update process.**
+
+1. *A production change lands on `main`.* That commit is the new source of truth. The
+   `companion-sync` workflow keeps the *contract* (`compatibility.json`) in step
+   automatically and opens a review PR; it never touches `clinic-practice-management/`
+   and never merges.
+2. *CI builds the artifact from that revision.* The build embeds the core at that
+   exact commit; the freshness proof compares the result with that same tree and fails
+   the lane if anything is missing, extra or different. The publishable ZIP therefore
+   always corresponds to a tested revision, and its proof file records
+   `production_revision`.
+3. *Nobody copies code by hand, ever.* There is no "sync the demo sources" step,
+   because the demo has no product sources of its own.
+4. *An already installed demo is updated separately, and deliberately.* Upload the new
+   `cpms-disposable-demo-1.0.0.zip` in wp-admin → **افزونه‌ها → افزودن → بارگذاری
+   افزونه**, and press **«جایگزینی نسخهٔ فعلی با نسخهٔ بارگذاری‌شده»** when WordPress
+   reports that the destination exists. That replaces the plugin files — including the
+   embedded `core/` — wholesale; nothing is merged and no demo data lives in those
+   files, so the eight accounts, the sealed fixture and the audit chain are untouched.
+   Do **not** delete the plugin to "update" it: its own `uninstall.php` treats the
+   fixture as recovery evidence and blocks there by design, and a fresh install would
+   not carry the demo's state.
+5. *The demo never receives product code from an update channel.* The production
+   update bucket, `plugins_api`, auto-updates and `upgrader_pre_install` are all
+   intercepted (`Standalone::is_production_reference()`), so a WordPress update can
+   never overwrite the embedded core with a different revision behind the Owner's back.
+
+**Honest limitation.** The packaging version (`1.0.0`, in the demo's plugin header) is
+a human decision and is **not** bumped automatically by production changes. WordPress
+therefore may not show an "update available" notice after a production commit; the
+update is the explicit ZIP upload in step 4. Two builds of the same version are
+byte-identical only when built from the same revision — the proof file is what tells
+them apart.
+
 ## 2. What is updated automatically
 
 Only the fields listed under `auto_sync.safe_updates` in the manifest:
@@ -163,6 +238,7 @@ The report distinguishes two severities:
 | Gate reports *"unsupported compatibility contract version"* | `contract_version` in the manifest was bumped without updating `SUPPORTED_CONTRACT_VERSIONS`. | Update `evaluate.py`, or restore the previous contract version. |
 | Gate reports *"source element could not be parsed"* | A companion or production file changed shape (e.g. a constant moved from a class constant to a method-local literal). | Teach `companion_state.py` / `production_schema.py` the new shape. Never silence the finding. |
 | A wrong ownership rule was merged | Review miss. | Revert immediately. Every rule change is a data-safety change and must be reviewed as one. |
+| `EMBEDDED_CORE_STALE` with `missing`/`extra`/`different` | The archive was built from a different tree than the one being verified (stale build, partial checkout, or an edited ZIP). | Rebuild with `bash bin/build-demo-installer.sh --standalone` at the revision under test, then verify again. Never relax the verifier: a passing check on a stale core is exactly the failure this requirement exists to prevent. |
 
 Regenerate the manifest locally with:
 

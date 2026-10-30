@@ -182,6 +182,66 @@ class StandaloneAdminAcceptanceTests(unittest.TestCase):
         self.assertIn("SCOPED_FOREIGN_TENANT_ROW", recovery)
 
 
+    def test_scoped_lane_stages_and_repairs_the_owner_incident_in_one_cycle(self):
+        """The Owner's failure (sealed fixture alive, baseline gone) must be
+        reproduced, repaired and proven inside the SAME lane, on both databases.
+        Splitting it across workflows would let the repair be certified on a
+        fixture that was never in the incident state."""
+        text = workflow("scoped-demo.yml")
+        self.assertIn("tests/scoped-demo/owner-incident.php", text)
+        self.assertIn("CPSD_INCIDENT_MODE=stage", text)
+        self.assertIn("CPSD_INCIDENT_MODE=finish", text)
+        self.assertIn("python3 tests/scoped-demo/browser_scoped.py repair", text)
+        # Stage must run before the repair phase, and the row-effect proof after it.
+        self.assertLess(text.index("CPSD_INCIDENT_MODE=stage"),
+                        text.index("browser_scoped.py repair"))
+        self.assertLess(text.index("browser_scoped.py repair"),
+                        text.index("CPSD_INCIDENT_MODE=finish"))
+        # Both supported databases, not one.
+        matrix = text.split("      matrix:\n", 1)[1].split("\n\n    services:", 1)[0]
+        self.assertIn("mysql-8", matrix)
+        self.assertIn("mariadb-11.4.13", matrix)
+
+    def test_scoped_lane_proves_eight_passwordless_sessions_not_just_markup(self):
+        text = workflow("scoped-demo.yml")
+        self.assertIn("python3 tests/scoped-demo/browser_scoped.py sessions", text)
+        phase = text.split("sessions phase", 1)[1].split("Aggregate", 1)[0]
+        self.assertIn("CPSD_EVIDENCE_DIR", phase)
+        # The phase results are aggregated and can fail the job.
+        aggregate = text.split("Aggregate the Owner-incident and persona-session", 1)[1].split("- name:", 1)[0]
+        self.assertIn("('repair', 'sessions')", aggregate)
+        self.assertIn("sys.exit(1)", aggregate)
+        # The one-time ticket and the one-time passwords are never uploaded as
+        # evidence, directly or by glob. Only path lines count: a comment that
+        # names the file is documentation, an uploaded path is a leak.
+        upload = text.split("actions/upload-artifact@v4", 1)[-1]
+        paths = [line.strip() for line in upload.splitlines() if line.strip().startswith("/tmp/")]
+        self.assertTrue(paths, "the upload block should list evidence paths")
+        for secret in ("persona-credentials.json", "cpsd_persona_entry", "synthetic-otp.json"):
+            self.assertFalse([p for p in paths if secret in p],
+                             f"{secret} must never be uploaded as CI evidence")
+
+    def test_the_session_drill_isolates_contexts_and_tries_the_abuse_cases(self):
+        """A drill that reused one cookie jar would 'pass' while proving nothing:
+        same-browser transitions overwrite the administrator session. The phase
+        must therefore open separate browser contexts and attempt replay,
+        anonymous and cross-persona abuse."""
+        source = (ROOT / "tests" / "scoped-demo" / "browser_scoped.py").read_text(encoding="utf-8")
+        body = source.split("def sessions_phase(", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("browser.new_context(", body)
+        for attempt in ("replay", "unauthenticated", "mint a ticket for another persona"):
+            self.assertIn(attempt, body, attempt)
+        # Every persona is exercised, not a sample of them.
+        self.assertIn("for persona in PERSONAS:", body)
+        # The honest limitation is asserted to be on the page, not assumed.
+        self.assertIn("data-cpsd-cookie-note", body)
+        # No claim of per-tab isolation anywhere in the shipped page or the drill.
+        for text in (body,
+                     (ROOT / "tools" / "disposable-demo-installer" / "includes"
+                      / "class-cpms-demo-scoped-admin.php").read_text(encoding="utf-8")):
+            self.assertNotIn("جداسازی زبانه", text)
+
+
 class CompanionIsolationTests(unittest.TestCase):
     """Executable tests for the companion/production isolation rule."""
 
@@ -1150,6 +1210,103 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
                 build = (ROOT / "bin" / "build-demo-installer.sh").read_text(encoding="utf-8")
                 self.assertIn("clinic-practice-management", build)
                 self.assertIn("core", build)
+
+    def test_every_workflow_is_parsed_and_the_parser_gate_is_wired(self):
+        """A workflow that is not valid YAML does not fail a step, it fails to start.
+
+        GitHub then reports a run with zero jobs, and every gate inside the workflow
+        silently did not run. A step name containing an unquoted `: ` (for example
+        `- name: Chromium: one Persian action ...`) is enough to do that. So the
+        parser gate is mandatory in the lanes that carry this project's evidence, and
+        the checker itself must exist and must fail on that exact defect.
+        """
+        checker = ROOT / "bin" / "check-workflow-yaml.py"
+        self.assertTrue(checker.is_file(), "the workflow YAML checker is missing")
+        for filename in ("scoped-demo.yml", "standalone-demo.yml"):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                self.assertIn("python3 bin/check-workflow-yaml.py", text)
+                self.assertIn("pip install --quiet --disable-pip-version-check pyyaml", text)
+
+    def test_no_workflow_declares_an_unquoted_colon_in_a_step_name(self):
+        # The cheap, parser-independent version of the same rule, so this fails with
+        # a precise message even where no YAML library is installed.
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+                stripped = line.strip()
+                if not stripped.startswith("- name: ") and not stripped.startswith("- uses: "):
+                    continue
+                value = stripped.split(": ", 1)[1]
+                if value[:1] in ("'", '"'):
+                    continue
+                if ": " in value:
+                    offenders.append(f"{path.name}:{number}: {value[:60]}")
+        self.assertEqual([], offenders, "quote these step names")
+
+    def test_the_workflow_yaml_checker_rejects_a_colon_in_a_step_name(self):
+        """Positive control for the two checks above, without needing PyYAML."""
+        import tempfile as _tempfile
+
+        source = workflow("scoped-demo.yml")
+        self.assertNotIn("- name: Chromium: one", source)
+        probe = ROOT / "bin" / "check-workflow-yaml.py"
+        self.assertIn("not valid YAML", probe.read_text(encoding="utf-8"))
+        self.assertIn("WORKFLOW_YAML_OK", probe.read_text(encoding="utf-8"))
+        with _tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "probe.yml"
+            candidate.write_text("name: probe\non:\n  push:\njobs:\n  j:\n    runs-on: ubuntu-latest\n"
+                                 "    steps:\n      - name: Chromium: one thing\n        run: true\n",
+                                 encoding="utf-8")
+            try:
+                import yaml as _yaml
+            except ImportError:
+                self.skipTest("no YAML library in this interpreter; CI installs pyyaml")
+            with self.assertRaises(_yaml.YAMLError):
+                _yaml.safe_load(candidate.read_text(encoding="utf-8"))
+
+    def test_every_lane_that_ships_the_artifact_proves_the_embedded_core_is_current(self):
+        """The demo is the Owner's evaluation copy of the production product.
+
+        A duplicated implementation is impossible by design (the core is embedded
+        at build time), but a *stale* archive is still possible: built before a
+        production change, built from a partial tree, or edited afterwards. Every
+        lane that produces or ships that archive must therefore compare it against
+        the production tree at the same revision, and the verifier must exist.
+        """
+        verifier = ROOT / "tests" / "scoped-demo" / "verify_embedded_core.py"
+        self.assertTrue(verifier.is_file(), "the embedded-core verifier is missing")
+        self.assertIn("EMBEDDED_CORE_SYNC=", verifier.read_text(encoding="utf-8"))
+        for filename in ("standalone-demo.yml", "scoped-demo.yml"):
+            with self.subTest(filename=filename):
+                text = workflow(filename)
+                self.assertIn("python3 tests/scoped-demo/verify_embedded_core.py", text)
+                step = text.split("embeds the production core of THIS revision", 1)[1]
+                step = step.split("- name:", 1)[0]
+                self.assertIn("--zip", step)
+                self.assertIn("--json", step)
+        # The lane that publishes the Owner's download verifies BOTH builds, so a
+        # reproducibility failure and a staleness failure cannot hide behind each
+        # other.
+        standalone = workflow("standalone-demo.yml")
+        self.assertEqual(2, standalone.count("verify_embedded_core.py \\"))
+        self.assertIn("/tmp/cpsa-sync-proof.json", standalone)
+
+    def test_the_build_is_the_only_path_production_code_takes_into_the_demo(self):
+        # A checked-in copy would be a fork that rots silently, and no CI check can
+        # make two copies stay equal.
+        tracked = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files",
+             "tools/disposable-demo-installer/core", "tools/disposable-demo-installer/src"],
+            capture_output=True, text=True, check=False,
+        ).stdout.strip()
+        self.assertEqual("", tracked, "production code must never be committed inside the demo")
+        build = (ROOT / "bin" / "build-demo-installer.sh").read_text(encoding="utf-8")
+        self.assertIn('cp -R "$PRODUCTION_SRC/src"', build)
+        # Determinism and the single-discoverable-header fix stay part of the build.
+        self.assertIn('find "$STAGE" -exec touch -h -d "2026-01-01T00:00:00Z"', build)
+        self.assertIn("unexpected WordPress-discoverable plugin headers", build)
+        self.assertIn("CPMS Embedded Core:", build)
 
     def test_auto_sync_opens_a_reviewable_pr_and_never_merges(self):
         text = workflow("companion-sync.yml")
