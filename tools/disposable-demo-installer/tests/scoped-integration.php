@@ -33,6 +33,7 @@ use CpmsDemo\ScopedAuditGuard;
 use CpmsDemo\ScopedBaseline;
 use CpmsDemo\ScopedManifest;
 use CpmsDemo\ScopedPreflight;
+use CpmsDemo\ScopedRecovery;
 use CpmsDemo\ScopedProvisioner;
 use CpmsDemo\ScopedTeardown;
 

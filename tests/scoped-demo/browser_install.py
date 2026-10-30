@@ -81,12 +81,32 @@ def main() -> int:
             state_node = page.locator("[data-cpms-demo-state]").first
             dash_state = (state_node.get_attribute("data-cpms-demo-state") if state_node.count() else "") or ""
             check("the dashboard states this site's live situation",
-                  dash_state in {"prepare", "ready", "resumable", "blocked", "manifest-invalid",
-                                 "core-unavailable", "empty-site"}, dash_state)
-            check("a populated site is offered the one-click prepare action, not the empty-site page",
-                  dash_state == "prepare" and page.locator('[data-cpsd-form="prepare"]').count() == 1, dash_state)
-            check("the dashboard does not ask for a typed phrase to build the demo",
-                  page.locator('input[name="cpdd_confirm"]').count() == 0)
+                  dash_state in {"prepare", "needs-consent", "ready", "resumable", "blocked",
+                                 "manifest-invalid", "core-unavailable", "empty-site"}, dash_state)
+            check("a populated site is offered the demo's next action, not the empty-site page",
+                  dash_state in {"prepare", "needs-consent"}, dash_state)
+            if dash_state == "needs-consent":
+                # This site has exactly one Clinic, and the demo necessarily adds one
+                # synthetic anchor Clinic that survives teardown (audit rows are never
+                # deleted). The consequence is disclosed and accepted once, bound to
+                # THIS site's own host name - the only phrase the one-click page asks.
+                consent = page.locator('form[data-cpsd-form="private_host"]')
+                check("a single-Clinic site asks for the site-bound acceptance",
+                      consent.count() == 1, dash_state)
+                phrase = consent.locator('input[name="cpdd_confirm"]')
+                check("the acceptance is one required field, not a machine token",
+                      phrase.count() == 1 and phrase.first.get_attribute("required") is not None)
+                phrase_code = consent.locator("label code")
+                consent_host = (phrase_code.first.inner_text().strip() if phrase_code.count() else "")
+                check("the acceptance phrase is this site's own host name",
+                      consent_host != "" and consent_host in BASE, f"{consent_host!r} in {BASE!r}")
+                check("a single-Clinic site is offered no demo action it cannot use",
+                      page.locator('form[data-cpsd-form="prepare"]').count() == 0)
+            else:
+                check("the one-click prepare form is present",
+                      page.locator('form[data-cpsd-form="prepare"]').count() == 1, dash_state)
+                check("building the demo asks for no typed phrase",
+                      page.locator('input[name="cpdd_confirm"]').count() == 0)
             console = page.locator('[data-cpms-demo-console="1"]')
             console_href = (console.first.get_attribute("href") if console.count() else "") or ""
             check("the scoped console is one real link away, not a URL to type",

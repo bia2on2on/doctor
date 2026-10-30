@@ -841,5 +841,33 @@ namespace {
 	Cpdd_Test::ok( str_contains( $dashboard_source, 'phrase_required' ), 'dashboard: the rendered form follows the server-side phrase policy' );
 	Cpdd_Test::ok( str_contains( $dashboard_source, '$request->authorize( $action, $post );' ), 'dashboard: every action goes through the shared authorization chain' );
 
+	// (g) Static proof that every class reference in the demo's PHP resolves.
+	// The `wp eval-file` drills are never executed by this harness, which is how a
+	// bare `ScopedRecovery::class` in scoped-integration.php reached CI twice: it
+	// resolved to the global `\ScopedRecovery`, `php -l` was satisfied and every
+	// local suite stayed green. See class-refs.php.
+	require_once __DIR__ . '/class-refs.php';
+	$cpsd_ref_files = array( CPMS_DEMO_DIR . 'cpms-disposable-demo.php' );
+	foreach ( array( 'includes', 'tests' ) as $cpsd_ref_dir ) {
+		foreach ( (array) glob( CPMS_DEMO_DIR . $cpsd_ref_dir . '/*.php' ) as $cpsd_ref_file ) {
+			$cpsd_ref_files[] = $cpsd_ref_file;
+		}
+	}
+	Cpdd_Test::ok( count( $cpsd_ref_files ) > 30, 'class refs: the scan covers the entry file, includes and drills (' . count( $cpsd_ref_files ) . ' files)' );
+	$cpsd_ref_problems = cpsd_class_ref_problems( $cpsd_ref_files );
+	Cpdd_Test::equals( array(), $cpsd_ref_problems, 'class refs: every Name:: and new Name resolves (found: ' . implode( ' | ', $cpsd_ref_problems ) . ')' );
+
+	// Positive control: without it this section could be a green no-op.
+	$cpsd_control_file = (string) tempnam( sys_get_temp_dir(), 'cpsdrefs' );
+	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture in the system temp dir.
+	file_put_contents(
+		$cpsd_control_file,
+		"<?php\nnamespace CpmsDemo;\nuse CpmsDemo\\Env;\nfunction cpsd_control() { return array( Env::class, MissingThing::class ); }\n"
+	);
+	$cpsd_control = cpsd_class_ref_problems( array( $cpsd_control_file ) );
+	unlink( $cpsd_control_file );
+	Cpdd_Test::equals( 1, count( $cpsd_control ), 'class refs: the checker catches an un-imported class (control)' );
+	Cpdd_Test::ok( str_contains( (string) ( $cpsd_control[0] ?? '' ), 'MissingThing' ), 'class refs: the control names the offending symbol' );
+
 	exit( Cpdd_Test::summary() );
 }
