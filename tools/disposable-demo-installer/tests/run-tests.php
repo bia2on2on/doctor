@@ -401,8 +401,55 @@ $slot_plan = ( new CpmsDemo\Provisioner( $ctx['env'], $ctx['platform'], $ctx['ma
 $slot_hours = array_unique( array_map( static fn ( $slot ) => substr( $slot['time'], 0, 5 ), $slot_plan ) );
 Cpdd_Test::ok( array() === array_diff( $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) ), 'provisioning: public slots never depend on now+5 minutes (no 23:47 artefact)' );
 Cpdd_Test::ok( array( 'doctor', 'doctor_second' ) === array_values( array_unique( array_column( $slot_plan, 'doctor' ) ) ), 'provisioning: public slots cover both synthetic doctors' );
-$local_today = ( new DateTimeImmutable( 'now', new DateTimeZone( 'Asia/Tehran' ) ) )->format( 'Y-m-d' );
-Cpdd_Test::equals( $local_today, $post['manifest']['ids']['staff_slot_date'], 'provisioning: reception-arrival staff slot is on the LOCAL today' );
+$tehran         = new DateTimeZone( 'Asia/Tehran' );
+$tehran_now     = new DateTimeImmutable( 'now', $tehran );
+$local_today    = $tehran_now->format( 'Y-m-d' );
+$local_tomorrow = $tehran_now->modify( '+1 day' )->format( 'Y-m-d' );
+Cpdd_Test::ok(
+	in_array( $post['manifest']['ids']['staff_slot_date'], array( $local_today, $local_tomorrow ), true ),
+	'provisioning: reception-arrival staff slot is on an operational day the board shows (local today, or tomorrow only when today has no future grid slot)',
+	(string) $post['manifest']['ids']['staff_slot_date']
+);
+$staff_row = null;
+foreach ( $ctx['platform']->tables_data['cpms_schedule_slots'] as $slot_row ) {
+	if ( (int) ( $slot_row['id'] ?? 0 ) === (int) $post['manifest']['ids']['staff_slot_id'] ) {
+		$staff_row = $slot_row;
+		break;
+	}
+}
+Cpdd_Test::ok( is_array( $staff_row ), 'provisioning: the reserved staff-arrival slot row exists' );
+if ( is_array( $staff_row ) ) {
+	Cpdd_Test::equals( $post['manifest']['ids']['staff_slot_date'], (string) $staff_row['slot_date'], 'provisioning: the reserved slot date matches the manifest' );
+	$staff_time = (string) $staff_row['slot_time'];
+	Cpdd_Test::ok(
+		( 0 === ( (int) substr( $staff_time, 3, 2 ) % 20 ) && '00' === substr( $staff_time, 6, 2 ) )
+		|| in_array( $staff_time, array( '23:59:00', '09:00:00' ), true ),
+		'provisioning: the reserved staff-arrival slot is on the 20-minute grid (or the documented end-of-day instants), never a now+5 artefact',
+		$staff_time
+	);
+	$staff_instant = new DateTimeImmutable( $staff_row['slot_date'] . ' ' . $staff_row['slot_time'], $tehran );
+	Cpdd_Test::ok(
+		$staff_instant >= $tehran_now->modify( '-1 minute' ),
+		'provisioning: the reserved staff-arrival instant is not in the past, so the production BookingWindow accepts it',
+		$staff_instant->format( 'Y-m-d H:i:s' )
+	);
+}
+// The rule itself, at the hours that actually decide CI: the old hard-coded
+// 09:00 was refused by BookingWindow for the rest of the day once it passed.
+$arrival_cases = array(
+	'2026-10-30 01:40:00' => '2026-10-30 09:00:00',
+	'2026-10-30 08:59:00' => '2026-10-30 09:20:00',
+	'2026-10-30 09:00:59' => '2026-10-30 09:20:00',
+	'2026-10-30 09:20:00' => '2026-10-30 09:40:00',
+	'2026-10-30 14:41:00' => '2026-10-30 15:00:00',
+	'2026-10-30 23:50:00' => '2026-10-30 23:59:00',
+	'2026-10-30 23:59:30' => '2026-10-31 09:00:00',
+	'2026-10-31 00:05:00' => '2026-10-31 09:00:00',
+);
+foreach ( $arrival_cases as $case_now => $case_want ) {
+	$case = CpmsDemo\Provisioner::staff_arrival_at( new DateTimeImmutable( $case_now, $tehran ) );
+	Cpdd_Test::equals( $case_want, $case['date'] . ' ' . $case['time'], 'provisioning: staff arrival follows the clock on the clinic grid at ' . $case_now );
+}
 Cpdd_Test::ok( in_array( (int) $post['manifest']['ids']['staff_slot_id'], array_map( 'intval', $post['manifest']['ids']['slot_ids'] ), true ), 'provisioning: the reserved staff-arrival slot is owned by the fixture' );
 $expected_shortcode = '[cpms_public_booking clinic_id="' . (int) $post['manifest']['ids']['clinic_id'] . '"]';
 Cpdd_Test::equals( $expected_shortcode, $post['manifest']['shortcode'], 'provisioning: page uses the actual production shortcode' );

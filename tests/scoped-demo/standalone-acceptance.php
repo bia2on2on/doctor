@@ -283,9 +283,32 @@ try {
 				$hours_ok = $hours_ok && in_array( substr( (string) $row['start_time'], 0, 5 ), array( '09:00', '14:00' ), true );
 			}
 			$cpsd_sa_check( $hours_ok, 'schedule templates use realistic Iranian clinic hours (09:00 / 14:00)', $checks );
-			$slot_hours = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT SUBSTRING(slot_time,1,5) FROM {$wpdb->prefix}cpms_schedule_slots WHERE clinic_id = %d", $clinic ) );
-			$bad_hours = array_diff( (array) $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) );
+			// PUBLIC inventory keeps the strict six grid hours. The reserved
+			// reception-arrival slot is deliberately excluded here and asserted
+			// separately below: it follows the clock on the same 20-minute grid so
+			// the demo can still be provisioned after 09:00 local, which the
+			// production BookingWindow otherwise refuses for the rest of the day.
+			$staff_slot_id = (int) ( $loaded['ids']['staff_slot_id'] ?? 0 );
+			$slot_hours    = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT SUBSTRING(slot_time,1,5) FROM {$wpdb->prefix}cpms_schedule_slots WHERE clinic_id = %d AND id <> %d", $clinic, $staff_slot_id ) );
+			$bad_hours     = array_diff( (array) $slot_hours, array( '09:00', '09:20', '09:40', '14:00', '14:20', '14:40' ) );
 			$cpsd_sa_check( array() === $bad_hours, 'public slots never use wall-clock artefacts such as 23:47', $checks, implode( ',', (array) $slot_hours ) );
+			$staff_slot = $wpdb->get_row( $wpdb->prepare( "SELECT slot_date, slot_time FROM {$wpdb->prefix}cpms_schedule_slots WHERE id = %d AND clinic_id = %d", $staff_slot_id, $clinic ), ARRAY_A );
+			$cpsd_sa_check( is_array( $staff_slot ), 'the reserved reception-arrival slot exists in the demo Clinic', $checks, (string) $staff_slot_id );
+			if ( is_array( $staff_slot ) ) {
+				$cpsd_sa_check( (string) $staff_slot['slot_date'] === (string) ( $loaded['ids']['staff_slot_date'] ?? '' ), 'the reserved arrival slot matches the manifest date', $checks, (string) $staff_slot['slot_date'] );
+				$staff_time = (string) $staff_slot['slot_time'];
+				$cpsd_sa_check(
+					( 0 === ( (int) substr( $staff_time, 3, 2 ) % 20 ) && '00' === substr( $staff_time, 6, 2 ) )
+					|| in_array( $staff_time, array( '23:59:00', '09:00:00' ), true ),
+					'the reserved arrival slot is on the 20-minute grid (or the documented end-of-day instants), never a now+5 artefact',
+					$checks,
+					$staff_time
+				);
+				$staff_tz     = new DateTimeZone( 'Asia/Tehran' );
+				$staff_at     = new DateTimeImmutable( $staff_slot['slot_date'] . ' ' . $staff_time, $staff_tz );
+				$staff_now    = new DateTimeImmutable( 'now', $staff_tz );
+				$cpsd_sa_check( $staff_at >= $staff_now->modify( '-5 minutes' ), 'the reserved arrival instant is not in the past, so BookingWindow accepted it', $checks, $staff_at->format( 'Y-m-d H:i' ) );
+			}
 			$slot_doctors = $wpdb->get_col( $wpdb->prepare( "SELECT DISTINCT clinician_id FROM {$wpdb->prefix}cpms_schedule_slots WHERE clinic_id = %d", $clinic ) );
 			$cpsd_sa_check( in_array( (string) $doctor_one, array_map( 'strval', (array) $slot_doctors ), true ) && in_array( (string) $doctor_two, array_map( 'strval', (array) $slot_doctors ), true ), 'BOTH doctors have real public booking slots', $checks );
 		}

@@ -315,12 +315,15 @@ class Provisioner {
 					$manifest['ids']['slot_ids'][] = $slot_id;
 				}
 				// The reception-arrival drill needs an appointment on the Location's
-				// LOCAL today, while public booking must offer realistic future clinic
-				// hours. Reserve a separate 09:00 staff-arrival slot today instead of
-				// anchoring anything to "now + minutes" (the old 23:47 artefact) or
-				// forcing the public schedule into the current wall-clock minute.
-				$local_today   = ( new \DateTimeImmutable( 'now', new \DateTimeZone( 'Asia/Tehran' ) ) )->format( 'Y-m-d' );
-				$staff_slot_id = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $local_today, '09:00:00' );
+				// operational day, while public booking must offer realistic future
+				// clinic hours. The reservation therefore follows the clock on the
+				// demo's own 20-minute grid (see staff_arrival_at()) instead of a
+				// hard-coded 09:00, which the production BookingWindow refuses for the
+				// rest of the day once 09:00 has passed — that made the demo
+				// unprovisionable for every install between 09:00 and midnight local.
+				$staff_arrival = $this->staff_arrival();
+				$local_today   = (string) $staff_arrival['date'];
+				$staff_slot_id = $this->platform->insert_slot( $clinic_id, $location_primary, $clinician_id, $local_today, (string) $staff_arrival['time'] );
 				$manifest['ids']['slot_ids'][]      = $staff_slot_id;
 				$manifest['ids']['staff_slot_id']   = $staff_slot_id;
 				$manifest['ids']['staff_slot_date'] = $local_today;
@@ -332,7 +335,7 @@ class Provisioner {
 					(int) $manifest['ids']['patient_id'],
 					$clinician_id,
 					$local_today,
-					'09:00:00',
+					(string) $staff_arrival['time'],
 					'SYNTHETIC-' . $fixture['fixture_id'],
 					$staff_slot_id
 				);
@@ -671,6 +674,58 @@ class Provisioner {
 		);
 
 		return $manifest;
+	}
+
+	/**
+	 * The reserved reception-arrival instant, computed from the real clock.
+	 *
+	 * @return array{date:string,time:string}
+	 */
+	public function staff_arrival(): array {
+		return self::staff_arrival_at( new \DateTimeImmutable( 'now', new \DateTimeZone( 'Asia/Tehran' ) ) );
+	}
+
+	/**
+	 * First slot on the demo's 20-minute grid that the production BookingWindow
+	 * will still accept, expressed in the timezone of `$now`.
+	 *
+	 * The rule (pure, so it is testable at any hour):
+	 *
+	 *   1. never before the clinic's 09:00 opening;
+	 *   2. never earlier than `now + 2 minutes`, which keeps a booking that is
+	 *      created a moment later inside `minLeadHours = 0` instead of on its
+	 *      boundary;
+	 *   3. snapped UP to the next :00 / :20 / :40, never down — a floored time
+	 *      would be in the past and refused;
+	 *   4. if that instant would fall on the next calendar day (only possible
+	 *      in the last 20 minutes of the day), the arrival becomes 23:59 of the
+	 *      SAME day — the reception board only ever shows one operational day,
+	 *      so an arrival on "tomorrow" would not be visible when the drill looks
+	 *      for it. In the final minute of the day there is no future instant
+	 *      left, and the arrival becomes 09:00 of the next operational day.
+	 *
+	 * Nothing here loosens a production rule: the resulting slot is a normal
+	 * open slot that `BookingService::createByStaff()` validates like any other.
+	 *
+	 * @param \DateTimeImmutable $now Current instant in the Location timezone.
+	 * @return array{date:string,time:string}
+	 */
+	public static function staff_arrival_at( \DateTimeImmutable $now ): array {
+		$opening  = $now->setTime( 9, 0, 0 );
+		$earliest = $now->modify( '+2 minutes' );
+		$base     = $earliest > $opening ? $earliest : $opening;
+		$minute   = (int) $base->format( 'i' );
+		$step     = ( 20 - ( $minute % 20 ) ) % 20;
+		$arrival  = $base->setTime( (int) $base->format( 'H' ), $minute, 0 )->modify( '+' . $step . ' minutes' );
+		if ( $arrival->format( 'Y-m-d' ) !== $now->format( 'Y-m-d' ) ) {
+			$last_minute = $now->setTime( 23, 59, 0 );
+			$arrival     = $now < $last_minute ? $last_minute : $now->modify( '+1 day' )->setTime( 9, 0, 0 );
+		}
+
+		return array(
+			'date' => $arrival->format( 'Y-m-d' ),
+			'time' => $arrival->format( 'H:i:s' ),
+		);
 	}
 
 	/**
