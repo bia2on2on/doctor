@@ -450,3 +450,32 @@ and does **not** need replacing by this branch's variant.
 | Tehran clinic hours | 09:xx / 14:xx template windows | 20-minute grid, 08:00–21:00 | **Merge**: keep #283's windows, add the hours assertion in `integration-wp.php` |
 | Wrong-mobile residue | preserve + explain, no deletion | `ScopedResidue` removal with 10 guards | **Keep #283's** as the default; `ScopedResidue` is a documented follow-up (unit-tested, not CI-proven) |
 | Recovery drill | asserts booking succeeds → impossible | n/a | **Replace the drill's assertions** (two files) |
+
+### Exact-head CI inventory for PR #283 (`5fbb7b3`, base `4631764`) — as observed, not inferred
+
+43 check-runs: **40 success, 3 failure**. The three failures:
+
+| check | job steps |
+| --- | --- |
+| `Standalone on a non-empty site (mysql-8)` (job 123763324000) | steps 1–17 success, **18 `Chromium — real wrong-mobile public booking and blocked cleanup` failure**, 19–22 skipped |
+| `Standalone on a non-empty site (mariadb-11.4.13)` (job 123763324129) | identical pattern |
+| `Responsive smoke (Chromium ×4 viewport)` (job 123763836262, Pilot/Staging Readiness Gate) | steps 12 (Chromium responsive) and 13 (admin narrow RTL) success, **14 `Firefox/WebKit compatibility smoke` failure** — annotation: `webkit compatibility smoke failed (exit=1)`; Firefox passed; job logs are not fetchable from this sandbox (blob storage blocked) |
+
+Two important consequences:
+
+* **Step 12 `Real wp-admin ZIP upload and Activate Plugin (Chromium, not WP-CLI)` succeeded on both engines.**
+  The installation defect this mission is about is therefore already proven fixed at
+  runtime on this head — it just was never reached in the earlier report because the
+  lane's own recovery step fails later.
+* Steps **19–22 never ran on this head**: `Pre-existing WordPress data survives
+  provisioning`, `Deactivation and deletion destroy nothing`, `Both activation orders
+  refuse a second core`, `Remove the production plugin again and re-prove the standalone
+  build`. They must execute after the recovery step is corrected; until then those four
+  acceptance claims are **NOT RUN**, not passed.
+
+The WebKit failure is in a lane that installs only the **production** plugin
+(`clinic-practice-management/**`, `bin/pilot-*.py`); PR #283 changes no file that lane
+executes, and the same workflow passed on `main` at `4631764`. The likeliest explanation
+is a browser-engine/emulator flake, but that is **inference**: the job log is not
+reachable from this environment, so it needs a retry and, if it persists, its own
+investigation. It is not a demo-installation defect.
