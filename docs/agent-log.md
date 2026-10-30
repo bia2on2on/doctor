@@ -2918,3 +2918,84 @@ eight accounts remain (attribution, not deletion), a teardown leaves its own anc
 Clinic row behind (the audit table's production foreign key, accepted explicitly for a
 private host), and one browser holds one WordPress session, so real isolation needs a
 private window.
+
+### [2026-10-30 UTC] — PR #287 stabilization: the unrelated red, and a smaller buffer
+
+**PR state, verified rather than assumed.** `#287`, open, not merged, `mergeable: true`,
+`mergeable_state: unstable` (one failing check), head `6c79f9d6b1daf66c24b14b130c543d7e6ec19da2`,
+base `main` at `9306e38` (unchanged since 13:00Z), branch
+`arena/c5e32d01-doctor`. Check-runs at that head: **43 total, 42 success, 1 failure**
+(`Responsive smoke (Chromium ×4 viewport)`); the other twelve workflows are green.
+Branch protection is not readable with this integration's permission (`403`), so nothing
+here should be read as a statement about required checks.
+
+**The failing check cannot be caused by this PR, and that is evidence, not a guess.**
+`git diff --stat 9306e38..HEAD -- clinic-practice-management/` is **empty**: the
+production tree this PR ships is byte-identical to `main`. The failing job
+(`responsive` in `pilot-gate.yml`) `needs: release-artifact`, i.e. it installs the ZIP
+built from that identical subtree, and it never installs the companion
+(`grep -n cpms-disposable-demo .github/workflows/pilot-gate.yml` finds no install step).
+The only code this PR adds is the companion, which that job cannot load.
+
+**What actually failed, in its own words.**
+`FAIL journey-A1-public — stage=hold-countdown … otp/verify http=200; v1/availability
+http=200; booking/quote http=200 slot_id=5803 clinician_id=19 location_id=17;
+booking/hold http=404 code=CLINIC_NOT_FOUND …`. The same workflow passed three times in
+a row on this branch (`fc67496` 15:07Z, `2bf9bf2` 15:37Z, `c4d4652` 16:04Z) and failed
+once (16:29Z), on a head whose only difference is documentation. The failing run is also
+the run whose own logs show a different environment: `cached browser binaries did not
+launch on this runner`, then 68 s installing browser dependencies. Wall-clock differs by
+25 minutes; the fixture is deterministic and produced identical ids in both runs
+(`DAY2_FIXTURE_OK clinic_a=16 clinic_b=17 …`).
+
+**What the 404 can and cannot be.** `booking/hold` returns `CLINIC_NOT_FOUND` (404) from
+five distinct places in `BookingService`: a missing slot row, a slot whose Clinic differs
+from the clinician's home Clinic without an active participation, a Clinic whose
+Organization is not `active`, a Location that is not an active Clinic-owned Location, or
+a slot that is no longer `is_open` (capacity). The fixture inserts the Organization as
+`active`, gives both Clinics that Organization, and seeds the slot with `clinic_id` =
+clinic A and `location_id` = Location A1 — the values the failing request sent. The
+harness records the error **code** but not the response **message**, and every one of
+those five sites uses that same code, so the evidence in hand **cannot** distinguish
+"the slot was no longer open" from "the Clinic/Organization check failed". I am not
+calling this fixed, and I am not calling it flaky: it is one failure, in a job that
+never executes this PR's code, with a different runner environment, and the decisive
+detail is not recorded anywhere readable from here. The concrete improvement that would
+settle it is a one-line change in `clinic-practice-management/bin/pilot-day2-workflows.py`
+(record `message` beside `code`); it is outside this PR's scope and I have not made it.
+
+**The boundary is now smaller as well as guarded.** Reviewing the buffer rather than
+trusting it: the production portal shells (`src/Frontend/*Controller.php`) render their
+own document and `exit` on `template_redirect` priority 1, and their templates are the
+only ones that close `</body>` — so no WordPress hook can reach those pages and an output
+buffer is the only way to render a boundary without modifying production code. What
+changed in this round:
+- the buffer starts on `template_redirect` **priority 0** instead of `init`: it now runs
+  before the portal controllers and **never exists for REST, admin-ajax, the admin
+  screens or `wp-login.php`**, which do not fire that hook — JSON can no longer be
+  inspected at all, let alone altered;
+- `nocache_headers()` for a persona request, because the page now carries a
+  session-scoped nonce and must not be stored by a shared page cache;
+- a `content-disposition:` guard, so a download body is never decorated;
+- `render_boundary()` (the theme path) carries the same `\Throwable` guard the buffer
+  handler already had, so the banner can never take a page down on either path;
+- the harness now proves the buffer end to end: no buffer and no private marking for an
+  administrator request, exactly one buffer for a persona request, `nocache_headers()`
+  called once, and the flushed page carrying the banner **before `</body>`**.
+
+**Local evidence at this head (executed here, php-wasm/Python only).**
+`tools/…/tests/run-tests.php` **333/0**; `tools/…/tests/scoped-run-tests.php`
+**345/0** (was 339); `tests/scoped-demo` **172 OK**; PHP lint over all 47 shipped/test
+PHP files **0 failures**; workflow contracts **72 OK**; `check-workflow-yaml.py`
+**16/16**; `evaluate.py --gate all` **PASS**; `verify_embedded_core.py` **330/330**,
+digest `2005e508…c022687`, revision `6c79f9d…`.
+
+**Synchronization controls re-run by hand, positive and negative.** Two independent
+`bin/build-demo-installer.sh` runs produced byte-identical archives (`sha256
+2b88d42399eb5f36f6a0c54fa9b1bed4e1960a888ade729dedd264b9f9613052`, 1 695 800 bytes). The
+real build verifies (`exit 0`, 330/330, revision named). One appended byte inside
+`core/src/Application/Booking/BookingService.php` makes the same verifier exit **1** with
+`EMBEDDED_CORE_STALE::different: ['src/Application/Booking/BookingService.php']`. The
+archive carries **exactly one** WordPress-discoverable header
+(`cpms-disposable-demo/cpms-disposable-demo.php: 1`, `uninstall.php: 0`) and the embedded
+bootstrap keeps `CPMS Embedded Core:` in place of a `Plugin Name:` key.

@@ -724,3 +724,18 @@ and `CI` with its `WPCS (changed code)` job green. The static job ran both new g
 workflow-YAML parse (16/16 files) and embedded-core sync at that exact revision
 (330/330 files). Earlier red rounds and their causes are recorded above and are not
 retroactively softened: each was a real defect, three of them mine.
+
+### Stabilization round (head `6c79f9d` + the corrections above)
+
+Verified live: PR #287 open/unmerged, 43 check-runs at the head (42 success, one red),
+twelve workflows green, base `main` unchanged at `9306e38`. The single red check
+(`Responsive smoke`) runs a production ZIP built from a subtree this PR does not touch
+(the production diff against `main` is empty) and never installs the companion, so it
+cannot be caused by this branch's content; its 404 (`CLINIC_NOT_FOUND` on
+`booking/hold`) has five possible throw sites that the harness's recorded evidence
+cannot distinguish, so it is neither fixed nor declared flaky. The boundary buffer was
+narrowed to `template_redirect` priority 0 (no REST/AJAX/admin/login responses are ever
+buffered), marked `nocache_headers()` for persona sessions, guarded against downloads and
+against a throwing handler on both render paths. Local gates: 333/0, 345/0, 172 OK, 72 OK,
+16/16, 330/330 in sync, two builds byte-identical, and a damaged embedded file fails the
+verifier with exit 1.

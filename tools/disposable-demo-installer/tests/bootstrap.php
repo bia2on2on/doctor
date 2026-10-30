@@ -25,6 +25,14 @@ function add_action( string $hook, $callback, int $priority = 10, int $accepted_
 	return true;
 }
 
+function nocache_headers(): void {
+	$GLOBALS['cpdd_test_nocache_headers'] = (int) ( $GLOBALS['cpdd_test_nocache_headers'] ?? 0 ) + 1;
+}
+
+function is_admin(): bool {
+	return false;
+}
+
 function do_action( string $hook, ...$args ): void {
 	$GLOBALS['cpdd_test_actions'][] = array( 'hook' => $hook, 'args' => $args );
 }

@@ -1387,6 +1387,34 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-session.php';
 	Cpdd_Test::equals( $buffer_page, CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page ), 'boundary: a failing handler returns the page intact' );
 	$GLOBALS['cpdd_active_fake_env'] = $buffer_ctx['env'];
 
+	// The buffer itself: started only for a persona session, and (by hooking
+	// `template_redirect`) only on the front-end template path, so REST, admin-ajax
+	// and admin responses are never buffered or inspected at all.
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	$buffer_ctx['env']->current_user = 1;
+	$admin_level = ob_get_level();
+	$GLOBALS['cpdd_test_nocache_headers'] = 0;
+	CpmsDemo\ScopedPersonaSession::maybe_start_boundary_buffer();
+	Cpdd_Test::equals( $admin_level, ob_get_level(), 'boundary: no buffer is started for an administrator request' );
+	Cpdd_Test::equals( 0, (int) $GLOBALS['cpdd_test_nocache_headers'], 'boundary: an administrator request is not marked private' );
+
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	// A capture buffer outside the product's one, so the flushed result can be
+	// inspected without writing it to the test output.
+	ob_start();
+	CpmsDemo\ScopedPersonaSession::maybe_start_boundary_buffer();
+	$persona_level = ob_get_level();
+	$persona_nocache = (int) $GLOBALS['cpdd_test_nocache_headers'];
+	echo '<html><body><p>portal</p></body></html>';
+	ob_end_flush();
+	$buffer_flushed = (string) ob_get_clean();
+	Cpdd_Test::equals( $admin_level + 2, $persona_level, 'boundary: a persona request is buffered' );
+	Cpdd_Test::equals( 1, $persona_nocache, 'boundary: a session-bearing persona page is marked private' );
+	Cpdd_Test::ok( false !== strpos( $buffer_flushed, 'data-cpsd-session-boundary="1"' ), 'boundary: flushing the buffer injects the banner into the rendered page' );
+	Cpdd_Test::ok( (int) strpos( $buffer_flushed, 'data-cpsd-session-boundary' ) < (int) strpos( $buffer_flushed, '</body>' ), 'boundary: the flushed banner sits inside the body' );
+	$buffer_ctx['env']->current_user = 1;
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+
 	// ... and it disappears with the fixture.
 	$boundary_ctx['manifest']->delete();
 	CpmsDemo\ScopedPersonaSession::reset_cache();

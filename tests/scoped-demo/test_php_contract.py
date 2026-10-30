@@ -693,9 +693,15 @@ class OwnerIncidentRepairContract(unittest.TestCase):
         for hook in ("'wp_body_open'", "'wp_footer'", "'admin_footer'"):
             self.assertIn(hook, session, f"{hook} must render the boundary")
         # ... and the surface that survives a portal shell rendering its own
-        # document and ending the request itself: an output buffer on init.
-        self.assertIn("add_action( 'init', array( __CLASS__, 'maybe_start_boundary_buffer' ), 1 );", session)
+        # document and ending the request itself: an output buffer started on
+        # `template_redirect` at priority 0 — before the portal controllers run at
+        # priority 1, and never for REST, admin-ajax or admin requests, which do not
+        # fire that hook at all.
+        self.assertIn("add_action( 'template_redirect', array( __CLASS__, 'maybe_start_boundary_buffer' ), 0 );", session)
+        self.assertNotIn("add_action( 'init', array( __CLASS__, 'maybe_start_boundary_buffer' )", session)
         self.assertIn("ob_start( array( __CLASS__, 'inject_boundary' ) );", session)
+        # A session-bearing page must not be cached by a shared page cache.
+        self.assertIn("nocache_headers();", session)
         self.assertIn("'inject_boundary'", session)
         self.assertIn("self::$boundary_printed", session)
         self.assertIn('data-cpsd-session-boundary="1"', session)
@@ -709,11 +715,20 @@ class OwnerIncidentRepairContract(unittest.TestCase):
         inject = session.split("private static function do_inject_boundary(", 1)[1].split("\n\t}", 1)[0]
         self.assertIn("location:", inject.lower())
         self.assertIn("text/html", inject)
+        # A download is not a page: never decorate an attachment body.
+        self.assertIn("content-disposition:", inject.lower())
+        # Nothing is appended to a partial or empty document.
+        self.assertIn("'' === trim( $html )", inject)
         # A demo banner must never be able to take a page down: the public output
         # handler catches \Throwable, logs the reason and returns the page intact.
         handler = session.split("public static function inject_boundary(", 1)[1].split("\n\t}", 1)[0]
         self.assertIn("catch ( \\Throwable $error )", handler)
         self.assertIn("report_boundary_error", handler)
+        # The theme path carries the same guarantee as the buffer path.
+        theme = session.split("public static function render_boundary(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("catch ( \\Throwable $error )", theme)
+        starter = session.split("public static function maybe_start_boundary_buffer(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("catch ( \\Throwable $error )", starter)
         error_log = session.split("private static function report_boundary_error(", 1)[1].split("\n\t}", 1)[0]
         self.assertIn("error_log(", error_log)
         # The banner is spliced in, never used as a preg_replace replacement (where

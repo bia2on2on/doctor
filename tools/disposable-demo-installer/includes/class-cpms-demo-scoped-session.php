@@ -157,7 +157,13 @@ final class ScopedPersonaSession {
 		add_action( 'admin_footer', array( __CLASS__, 'render_boundary' ), 1 );
 		// ... and the surface that is always there, including when a production
 		// portal shell renders its own document and ends the request itself.
-		add_action( 'init', array( __CLASS__, 'maybe_start_boundary_buffer' ), 1 );
+		//
+		// Priority 0 on `template_redirect`, not earlier: the portal controllers
+		// render and end the request at priority 1, so this runs first, while REST
+		// (`/wp-json`), admin-ajax and the admin screens never fire
+		// `template_redirect` at all - their responses are therefore never buffered,
+		// never inspected and never touched.
+		add_action( 'template_redirect', array( __CLASS__, 'maybe_start_boundary_buffer' ), 0 );
 	}
 
 	/**
@@ -173,15 +179,20 @@ final class ScopedPersonaSession {
 		if ( self::$boundary_printed ) {
 			return;
 		}
-		$env     = new Env();
-		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		$current = $session->current();
-		if ( null === $current ) {
-			return;
+		try {
+			$env     = new Env();
+			$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
+			$current = $session->current();
+			if ( null === $current ) {
+				return;
+			}
+			self::$boundary_printed = true;
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- boundary_html() escapes every dynamic value with esc_attr()/esc_html()/esc_url(); the static markup around them is constant.
+			echo self::boundary_html( $current, $session );
+		} catch ( \Throwable $error ) {
+			// Same rule as the output handler: a banner may never break the page.
+			self::report_boundary_error( $error );
 		}
-		self::$boundary_printed = true;
-		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- boundary_html() escapes every dynamic value with esc_attr()/esc_html()/esc_url(); the static markup around them is constant.
-		echo self::boundary_html( $current, $session );
 	}
 
 	/**
@@ -199,15 +210,17 @@ final class ScopedPersonaSession {
 	 * @return void
 	 */
 	public static function maybe_start_boundary_buffer(): void {
-		if ( is_admin() ) {
-			return;
-		}
 		try {
 			$env     = new Env();
 			$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
 			if ( null === $session->current() ) {
 				return;
 			}
+			// The page now carries a session-scoped nonce and a session-context
+			// banner. A shared page cache must not store it, so the response is marked
+			// private exactly as WordPress does for its own session-bearing screens.
+			// This affects demo persona requests only.
+			nocache_headers();
 			ob_start( array( __CLASS__, 'inject_boundary' ) );
 		} catch ( \Throwable $error ) {
 			self::report_boundary_error( $error );
@@ -271,6 +284,10 @@ final class ScopedPersonaSession {
 					return $html;
 				}
 				if ( 0 === strpos( $lower, 'content-type:' ) && false === strpos( $lower, 'text/html' ) ) {
+					return $html;
+				}
+				// A file download is not a page: decorating it would corrupt the body.
+				if ( 0 === strpos( $lower, 'content-disposition:' ) ) {
 					return $html;
 				}
 			}
